@@ -149,3 +149,66 @@ takes both a literal and a bare ident.
 📌 Verify commands, all green: `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`; `cargo ci`
 → **299 passed**, 7 ignored, 0 failed. (Clippy has one error in `src/trace.rs`, Niobe's file, not
 mine.)
+
+---
+
+## Turn 8 — 2026-07-29 — mobius as producer of record, opset 24, `onnx-runtime-ir` on the merits
+
+📌 **The mirror is not the repo.** I derived §4.18 from `justinchuby/onnx-genai-models`. The
+authoritative producer is `onnxruntime/mobius`. Re-deriving found the earlier reading was wrong on
+one substantive point: mobius **does** emit `com.microsoft::GroupQueryAttention`, via a
+`RotaryAttentionToGQA` rewrite and a direct `_forward_gqa()` path, both gated on the target EP
+advertising GQA support. So the op set is a function of producer × revision × **how we describe
+ourselves to the producer**. The last factor is partly under our control and I had not considered
+it at all.
+
+📌 **Coverage claims need a producer *and* a revision.** Same argument Trinity used to pin
+`accuracy_level`: unpinned, the reference drifts. Raised for Morpheus's §8.5.
+
+📌 **The real find: an open-ended opset window was a correctness bug, not untidiness.**
+`ai.onnx::Attention` gained optional input 6 `nonpad_kv_seqlen` at opset 24, and mobius defaults to
+opset 24. My row said `23 ..= OPSET_ANY`, so the predicate would have claimed the static-cache form
+and silently used the wrong per-batch causal offset. This is precisely the failure my own §7.1 rule
+exists to prevent, and I had written the rule and then violated it in the window column. Lesson:
+**the opset window is part of the claim predicate, not metadata about it.**
+
+📌 Opset windows are **schema-version** windows, not model-opset windows. `Node_GetSinceVersion`
+returns the resolved op schema version — an `Add` in an opset-24 model reports 14. That is why
+closing `RMSNormalization` at `23 ..= 23` does not exclude opset-24 graphs, and it is the fact that
+makes closed windows cheap. I nearly got this backwards.
+
+📌 The policy I settled on, deliberately *not* blanket: close a window when the op has ever gained
+an input or attribute across a revision (`Attention`, Q/DQ); leave it open when it has not
+(elementwise). Closing all ~70 elementwise windows at 27 would decline valid opset-28 graphs the
+day onnx 1.23 ships — that is death-by-fallback bought with no evidence. The closed set is the set
+with evidence behind it.
+
+📌 **`onnx-runtime-ir`: separating the two objections paid off.** Justin retired the prudential
+half by owning the crate; the structural half was untouched by that, and because I had recorded
+them separately I could say so without appearing to resist. Answer is still defer, but for one
+reason instead of two, and the disposition changed: the trigger is now a switch rather than a
+question. Generalisable: **when deferring, name the objections separately and name the trigger** —
+it makes the later re-evaluation cheap and non-adversarial.
+
+📌 Honest self-check on the trigger: I had to argue *against* my own preference here. Compiled-graph
+caching and prepack keying both sounded like they fired it; neither does. Caching needs a stable
+hash key, not a graph; prepack is node-local. Wanting a nice library is not a requirement.
+
+📌 `Swish` was free coverage — one `#elif` in `ew_unary.comp`, one op code, one row, two variants.
+That is the §5.2 leverage thesis behaving exactly as advertised, on an op that is in every LLM MLP.
+
+⚠️ **Build environment:** Switch had uncommitted, non-compiling work in `rust/src/vk/caps.rs`
+(four `E0503` borrow errors), so `cargo build` failed in the main tree through no fault of mine. I
+verified in a throwaway `git worktree add .mouse-verify HEAD --detach`, copied my files in, built
+and tested there, then removed the worktree. **Reusable technique**: it validates your own changes
+against a green baseline without touching another owner's in-flight files. Do not `git stash`.
+
+📌 Verify recipe with real hardware:
+`$env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"; $env:PATH="$env:VULKAN_SDK\Bin;$env:PATH"` — all 170
+variants compile with `glslc`, no `ALLOW_MISSING_GLSLC` needed. Regenerate the variant table with
+`MOUSE_BLESS_VARIANTS=1 cargo test --lib variants`. **306 passed / 0 failed / 7 ignored**, clippy
+clean, in the verify worktree (HEAD + my files).
+
+📌 A device dispatch test now passes: `vk::dispatch_integration::add_f32_dispatches_end_to_end`.
+Switch's path is real. My kernels are still `UNEXERCISED` — none of mine has executed — but the
+seam to exercise them exists now, and that is the T1 unblock.

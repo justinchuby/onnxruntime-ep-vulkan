@@ -476,24 +476,35 @@ Sequence types (`SequenceAt`/`Construct`/`Empty`/`Erase`/`Insert`/`Length`/`Map`
 (`OP_ARCHITECTURE.md` §2.1) — these need non-tensor value types, non-numeric data, or a codec. A
 GPU compute EP has nothing to offer them.
 
-### 4.18 Coverage is relative to a *producer*, not to a model architecture (2026-07-29)
+### 4.18 Coverage is relative to a *producer* — and to a *revision* of that producer (2026-07-29)
 
 The single most consequential thing the review of Justin's ONNX crates turned up, and it corrects a
-premise this whole document was built on.
+premise this whole document was built on. Morpheus elevated the rule into `DESIGN.md` §8.5: *a
+coverage number without a named producer is not well-formed.* The correction below extends it: a
+named producer without a named revision is not well-formed either.
 
-§4.1–4.17 derive the op inventory from what the **ORT GenAI model builder** emits. Justin's own
-`onnx-genai-models` (the `mobius` package) builds the same models — Qwen3, Qwen3.5, Qwen2.5-VL,
-Qwen3-VL, DeepSeek V3, Mamba, and more — and emits a **substantially different op set**. Read from
-`src/mobius/components/_attention.py` and `src/mobius/models/qwen.py`:
+§4.1–4.17 derive the op inventory from what the **ORT GenAI model builder** emits. The
+`mobius` builder — **authoritatively `onnxruntime/mobius`**, not the `justinchuby/onnx-genai-models`
+mirror this section was first written against — builds the same models (Qwen3, Qwen3.5, Qwen2.5-VL,
+Qwen3-VL, DeepSeek V3, Mamba) and emits a **substantially different op set**.
 
-| Role in a Qwen3 decoder layer | ORT GenAI builder emits | `onnx-genai-models` emits |
+**Producer pinned:** `onnxruntime/mobius` @ `87fd878` (`main`, 2026-07-29), MIT-licensed,
+`OPSET_VERSION = 24` in `src/mobius/_constants.py`.
+
+| Role in a Qwen3 decoder layer | ORT GenAI builder emits | `onnxruntime/mobius` @ `87fd878` emits |
 |---|---|---|
-| Attention | `com.microsoft::GroupQueryAttention` (up to 16 inputs) | **`ai.onnx::Attention` @ opset 23** (6 inputs) |
-| RMS norm | `com.microsoft::SimplifiedLayerNormalization` | **`ai.onnx::RMSNormalization` @ opset 23** |
-| Residual + norm | `com.microsoft::SkipSimplifiedLayerNormalization` (fused) | not fused — plain `Add` + `RMSNormalization` |
-| Rotary | `com.microsoft::RotaryEmbedding` | **`ai.onnx::RotaryEmbedding` @ opset 23** |
-| Q/K norm | inputs 14/15 of the GQA node, *or* separate nodes | always separate `RMSNormalization` nodes |
+| Attention | `com.microsoft::GroupQueryAttention` (up to 16 inputs) | **`ai.onnx::Attention` @ opset 24** (6–7 inputs, `_outputs=3`) |
+| RMS norm | `com.microsoft::SimplifiedLayerNormalization` | **`ai.onnx::RMSNormalization`** (schema v23), incl. **rank-4** for per-head Q/K norm |
+| Residual + norm | `com.microsoft::SkipSimplifiedLayerNormalization` (fused) | plain `Add` + `RMSNormalization` at build time; **fused to `SkipSimplifiedLayerNormalization` post-optimization** for EPs that advertise it |
+| Rotary | `com.microsoft::RotaryEmbedding` | **`ai.onnx::RotaryEmbedding`** (schema v23) |
+| Q/K norm | inputs 14/15 of the GQA node, *or* separate nodes | always separate `RMSNormalization` nodes, on every EP path |
+| SwiGLU activation | `Sigmoid` + `Mul` | **`ai.onnx::Swish` @ opset 24** |
+| KV cache (static) | — | **`ai.onnx::TensorScatter` @ opset 24** + `Attention` input 6 `nonpad_kv_seqlen` |
 | int4 weights | `com.microsoft::MatMulNBits` | `com.microsoft::MatMulNBits` — **the one op both agree on** |
+| int4 embedding | — | `com.microsoft::GatherBlockQuantized` |
+| quantized MoE | decomposed | **`com.microsoft::QMoE`** (`activation_type="swiglu"`, `swiglu_fusion=2`, 15 inputs) |
+| float MoE | decomposed | decomposed — `MatMul`/`TopK`/`Softmax`/`Equal`/`ReduceSum`; **no fused float `MoE` node** |
+| QDQ fallback path | — | `DequantizeLinear` (with `block_size`) + `MatMul`, via an inlined function body, for EPs without `MatMulNBits` |
 
 Before this review the registry held only the left-hand column. A Qwen3 model built by Justin's own
 toolchain would therefore have had **every norm, every rotary and every attention node declined
@@ -513,14 +524,113 @@ that is wrong about one of them, in the permissive direction.
 `seqlens_k` indirection, no in-place KV-cache aliasing requirement, no `do_rotary` fold, and rotary
 arrives as its own node. It unblocks a model family we can *build ourselves and iterate on locally*,
 which matters far more now that we have two working GPUs on this machine. GQA remains committed and
-remains the harder kernel; it is no longer obviously the one to write first. Flagged for Morpheus,
-since T3's definition is his to ratify.
+remains the harder kernel. Morpheus ratified this in `DESIGN.md` §10.0.2.
 
-**And it partially settles R1 (the fused-QK-norm GQA question).** For the `onnx-genai-models` path
-the answer is definitive: Q/K norm is always separate `RMSNormalization` nodes applied before the
-attention op, the choice is *not* conditioned on execution provider, and the 16-input form never
-occurs. For the ORT GenAI path the hazard stands unchanged — its builder does emit inputs 14/15
-when its fused path is enabled — so §4.10's precondition is narrowed, not removed.
+#### 4.18.1 What the re-derivation against the authoritative repo changed
+
+Checked rather than assumed, per the coordinator's instruction. Three of the earlier conclusions
+survived; four things are new or corrected.
+
+**Survived.** The three standard-domain rows (`Attention`, `RMSNormalization`, `RotaryEmbedding`)
+are still what mobius emits, still with no `_domain=` kwarg, and `MatMulNBits` is still the
+quantized linear op. The core §4.18 finding is not weakened.
+
+**Corrected — 1: `GroupQueryAttention` is reachable from mobius after all.** The earlier reading
+said mobius "never emits GQA at all". That is wrong. `onnxruntime/mobius` has both a
+`RotaryAttentionToGQA` rewrite rule and a direct `Attention._forward_gqa()` fast path, and both are
+gated on the *target EP advertising GQA support*. Which spelling arrives therefore depends on how
+**we** are described to the builder, not on the model. Same for
+`SkipSimplifiedLayerNormalization`, which mobius fuses post-optimization for every EP except QNN,
+OpenVINO, TRT-RTX and `onnx-standard`. This is a stronger version of the §4.18 thesis, not a
+weaker one: the op set is a function of the producer, the producer *revision*, **and the EP
+description we hand it**. It also means our contrib rows are not dead code on the mobius path.
+
+**Corrected — 2: opset 24, not 23**, with real schema consequences. See §4.19.
+
+**New — 3: four ops mobius emits that we had no row for.** `ai.onnx::Swish` (opset 24, the SwiGLU
+activation — `x·σ(αx)`, and mobius always uses α=1, i.e. SiLU), `ai.onnx::TensorScatter` (opset 24,
+static KV-cache write), and confirmation of `com.microsoft::GatherBlockQuantized` and
+`com.microsoft::QMoE` with a concrete attribute vocabulary rather than the low-confidence
+fingerprint §9.4 flagged. `Swish` and `TensorScatter` now have rows; `Swish` also has a shader,
+because it is one `#elif` branch in the existing `ew_unary` template — the leverage thesis working
+exactly as §5.2 claims.
+
+**New — 4: a third domain exists.** For native GGUF formats (MXFP4, IQ4_NL, IQ3_S) mobius emits
+`pkg.nxrt::BlockQuantizedMatMul`. We do not register it and should not: it is an nxrt-runtime
+extension, not something ORT will hand a plugin EP. Recorded so nobody rediscovers it as a mystery
+`[not-registered]` bucket.
+
+**Method consequence — pin the producer revision in the census.** Trinity pins `accuracy_level` on
+the `MatMulNBits` oracle because an unpinned accumulator type drifts reference values across runner
+hardware. The same argument applies one level up: an unpinned producer revision drifts the *op set*
+under a coverage claim. §2.2's census harness must record the producer's commit SHA and default
+opset alongside every census, and a coverage number quoted without them should be treated as
+unsourced. Raised with Morpheus for `DESIGN.md` §8.5, which is his to edit.
+
+**And it settles R1 (the fused-QK-norm GQA question) for this producer.** Definitive: mobius
+applies Q/K norm as *separate* `RMSNormalization` nodes before the attention op, at **rank 4**
+(`Reshape` to `[0,0,-1,head_dim]`, norm, `Reshape` back), the choice is *not* conditioned on
+execution provider, and norm weights are never passed into the attention or GQA node. The 16-input
+form is an ORT-GenAI construct. For the ORT GenAI path the hazard stands unchanged, so §4.10's
+precondition is narrowed, not removed. One derived requirement: **the RMS-norm kernel must handle
+rank 4**, not just the rank-3 hidden-state case.
+
+Secondary consequence: mobius's `PackQKVForGQA` rewrite requires Q/K/V projections to share an
+input with no intervening ops, and Qwen3's Q/K norm sits between them — so **QKV packing never
+happens for Qwen3**. Three separate `MatMul` nodes, not one packed one. That is a partitioning
+input, and it makes the GEMM the T2 target it already was.
+
+---
+
+### 4.19 Opset 24 — what moved, and why open-ended windows were a correctness bug (2026-07-29)
+
+mobius defaults to opset 24. The standard-domain rows were windowed `23 ..= OPSET_ANY` — open-ended
+upward — so opset-24 nodes were *nominally* in range. That is not the same as being correct at 24,
+and for one op it was actively wrong.
+
+Verified against onnx v1.22.0 (`defs.cc`, `old.cc`, `operator_sets.h`, `Changelog.md`). Opset 24
+shipped in **onnx v1.19.0, 2025-08-26**, and is final. Its dominant theme is the new `float8e8m0`
+scale type, which caused 19 pure type-constraint bumps. Two ops are genuinely new and one changed
+its arity.
+
+| Op | Changed at 24? | Consequence for us | Action |
+|---|---|---|---|
+| **`Attention`** | **Yes — new optional input 6 `nonpad_kv_seqlen`** (`int64`, `(batch,)`) | **Correctness bug.** With `is_causal=1` it moves the causal offset to `nonpad_kv_seqlen[b] − q_seq_len` *per batch element*. A kernel that ignores it attends to padding and returns plausible wrong logits. mobius supplies it on its static-cache path. | Window closed at `23 ..= 24`; predicate declines input 6 explicitly (`[missing-input]`… in the *present* direction) |
+| **`TensorScatter`** | **New at 24** | The other half of the static-cache pattern; the spec explicitly permits aliasing `present_cache` onto `past_cache`, which is Switch's `bind_aliased_output` seam | Row added, `24 ..= 24`, `"circular"` mode and `axis = 0` declined |
+| **`Swish`** | **New at 24** | mobius's SwiGLU activation | Row added, `24 ..= 24`, shader added to `ew_unary`, `alpha = 1` only |
+| `RMSNormalization` | **No** — still schema v23, unrevised through opset 27 | none | Window closed at `23 ..= 23` |
+| `RotaryEmbedding` | **No** — still schema v23, unrevised through opset 27 | none | Window closed at `23 ..= 23` |
+| `QuantizeLinear` / `DequantizeLinear` | Yes — `float8e8m0` admitted as a scale type at 24; revised again at 25 | Low direct risk (we decline the dtype anyway) but the revision *rate* is the hazard | Window closed at `21 ..= 25` |
+| `Cast`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Pad`, `Shape`, `Size`, `Identity`, `Constant`, `ConstantOfShape`, `Flatten`, `If`, `Loop`, `Scan`, `SplitToSequence`, `TopK` | Type constraint only (`float8e8m0`, or `bfloat16` for the last two) | None. Our predicates check the *actual* edge dtype against the row's `caps`; a `float8e8m0` tensor is in no capability set we declare, so these decline on dtype without any window change | No change |
+
+#### 4.19.1 The rule this establishes
+
+An `ai.onnx` row's opset window is a **schema-version** window, not a model-opset window:
+`Node_GetSinceVersion` reports the version of the op schema ORT resolved, so an `Add` in an
+opset-24 model still reports 14. That is why closing `RMSNormalization` at 23 does not exclude
+opset-24 graphs — mobius builds at 24 and its RMS-norm nodes still resolve to schema v23.
+
+Given that, the policy is:
+
+> **A standard-domain row may be open-ended upward only if the op has never gained an input or an
+> attribute across a revision. Rows for ops in active revision are closed at the highest schema
+> version somebody has actually read, recorded in `registry::ONNX_SPEC_READ`.**
+
+An unread future revision then declines as `[opset]` — visible in the histogram, one row edit to
+fix — instead of being claimed by a predicate written against an older schema. This is the
+`ai.onnx` analogue of what `ContribSchema` + `SCHEMA_VERIFIED_ON` already do for `com.microsoft`
+(§9.4). Both now answer "when did anyone last check?" with a date rather than with silence.
+
+The elementwise rows stay open-ended, and that is a judgement, not an oversight: those ops have not
+gained an input or attribute in a decade, closing ~70 windows at 27 would decline valid opset-28
+graphs the day onnx 1.23 ships, and the only opset-24 change to any of them was a dtype the caps
+set already refuses. The closed set is the set with evidence behind it.
+
+One errata to carry forward, not yet acted on: onnx main records that the **`Attention`-24
+reference implementation is itself wrong** for `nonpad_kv_seqlen != q_sequence_length` (top-left
+instead of bottom-right causal alignment, NaN for fully-masked rows), corrected in onnx 1.23
+*without an opset bump*. If we ever claim input 6, we must decide which semantics to implement, and
+a differential test against onnx ≤ 1.22's reference would encode the bug. Filed as **R4** in §13.
 
 ---
 
@@ -1516,6 +1626,7 @@ landed so far depends on their outcome.
 | OQ-M5 | Conformance harness crash containment (per-op subprocess) and GPU-hang recovery. | Trinity |
 | ~~OQ-M6~~ | ~~License review for reading llama.cpp Vulkan shaders as a reference for the 3 XL kernels.~~ **RESOLVED 🟢 GREEN 2026-07-28 (Rai).** See below. | ~~Coordinator~~ |
 | OQ-M7 | Does ORT 1.28's `CreateExternalResourceImporterForDeviceImpl` remove the KV-cache round-trip before M2 lands? | Tank / Morpheus |
+| R4 | The `Attention`-24 reference implementation is itself wrong for `nonpad_kv_seqlen != q_sequence_length` (top-left instead of bottom-right causal alignment; NaN for fully-masked rows), corrected in onnx 1.23 **without an opset bump**. If we claim input 6, which semantics do we implement — and does the differential oracle encode the bug? See §4.19. | Mouse + Trinity |
 
 ### 13.1 OQ-M6 resolution — reading llama.cpp's Vulkan shaders is authorized
 
@@ -1680,6 +1791,70 @@ then we need an IR, and at that point `onnx-runtime-ir` is the first thing to re
 something to write. Today `ops/partition.rs` consumes an already-built `Island` and the clustering
 that produces it is one union-find pass, so we do not.
 
+#### 14.3.1 Re-evaluation after Justin retired the prudential objection (2026-07-29)
+
+> "onnx-runtime-ir 是我们自己的 crate 所以可以放心用"
+
+That retires the **prudential** half above, completely and correctly: version churn, unpublished
+status and third-party lifetime risk are not arguments against a crate we own and can change. I am
+not treating it as retiring the structural half, because the structural argument is about *where we
+sit in the process*, not about who wrote the library — and Justin removed a constraint, he did not
+issue an instruction to adopt.
+
+Re-evaluating the structural argument on its merits, with trust removed as a factor:
+
+**What the copy would cost, precisely.** ORT hands `GetCapability` an `OrtGraph` and `OrtNode`
+handles across a C ABI. We never see a protobuf. Adopting the IR means walking every node and edge
+through Tank's `sys.rs` accessors and materialising an arena — for a Qwen3-0.6B graph, on the order
+of a few thousand nodes and values, per session, inside the host's address space. The cost is not
+the memory; it is that the transcription becomes a correctness surface. A `NodeView` today is a
+borrowed window onto ORT's own truth and cannot disagree with it. An arena can, and a transcription
+bug in the layer that decides what we claim is the most expensive class of bug this project has,
+because it fails as a wrong answer rather than as a decline.
+
+**Does the recorded trigger fire?** I said: adopt it the day we need a graph representation that
+outlives a single `GetCapability` call. Taking the three candidates the coordinator named, honestly:
+
+1. **Compiled-subgraph caching — no.** What outlives the call is the *compiled artefact* (SPIR-V
+   pipelines, prepacked weights) keyed by a structural hash, not the graph. We need a stable key,
+   which is ~50 lines of hashing over the node list we already walk. Keeping an entire IR alive to
+   own a hash key is the tail wagging the dog.
+2. **Prepack keyed on graph structure — no, and it is keyed on less than that.** §8.2.1's prepack
+   requests are keyed on the *initializer* plus `MatMulNBits`'s `K`/`N`/`bits`/`block_size`. That
+   is node-local. It does not need edges at all, let alone an IR.
+3. **Repeated reachability queries during fusion analysis — not yet, and this is the closest
+   one.** `ops/partition.rs` today evaluates an already-built `Island`, and the clustering that
+   produces one is a single union-find pass over claimed nodes — no repeated queries, no mutation.
+   That stays true for the fusions T1–T2 need, which are all local patterns (`Add`+`RMSNorm`,
+   `MatMul`+activation) matchable in one pass. It stops being true if we ever do **producer-side
+   graph rewriting** — replacing a subgraph with a different node set rather than merely selecting
+   one — and ORT's plugin-EP surface does not offer us that anyway.
+
+**So: still defer, and now for exactly one reason instead of two.** The remaining reason is real
+and is not about the crate. What has changed materially is the *disposition*: with the prudential
+objection gone, the moment the trigger fires there is nothing left to weigh — no evaluation round,
+no dependency-risk conversation. The trigger is now a switch rather than a question.
+
+**Two sharpened triggers,** so the next person does not have to re-derive this:
+
+- **T-IR-1:** the first time we need to answer "is node A reachable from node B" more than once per
+  `GetCapability` call, or need a mutable graph across calls. That is when union-find stops being
+  enough and an arena with real producer/consumer edges starts paying for itself.
+- **T-IR-2:** the first time we need to *construct* ONNX — a decomposition emitted as nodes rather
+  than as a dispatch sequence, or a graph written out for a test fixture. Building a graph is what
+  this IR is unambiguously better at than anything we would write, and unlike consuming a graph it
+  has no `OrtGraph` on the other side to compete with.
+
+Neither fires today. Nothing to route to Tank; `Cargo.toml` is unchanged.
+
+One thing worth flagging to Niobe rather than filing here: the same workspace contains
+`onnx-runtime-optimizer` and `onnx-runtime-shape-inference`. `onnx-runtime-shape-inference` in
+particular is the Rust home of the capability §14.2 wanted and could only get as a Python oracle —
+if it can infer over an ORT-supplied graph without the full transcription, it fires a *different*
+trigger (claiming nodes we currently decline for symbolic shapes) with a much smaller structural
+cost, because shape inference wants a value graph and not the whole node arena. Not evaluated this
+turn; recorded so it is not lost.
+
 ### 14.4 What we actually adopted
 
 No new dependency lines. Nothing for Tank to add to `Cargo.toml`. What changed is the **op table**,
@@ -1711,8 +1886,17 @@ linkage.
 - In-house crates evaluated in §14 — <https://github.com/justinchuby/onnx-ir-rust>,
   <https://github.com/justinchuby/onnx-shape-inference>,
   <https://github.com/justinchuby/onnx-genai>,
-  <https://github.com/justinchuby/onnx-genai-models>
-- `onnx-genai-models` attention construction (the §4.18 finding) —
-  `src/mobius/components/_attention.py`, `src/mobius/models/qwen.py`
+  <https://github.com/justinchuby/onnx-genai-models> (mirror; superseded as the producer of record)
+- **Producer of record** — `onnxruntime/mobius` @ `87fd878` (`main`, 2026-07-29), MIT,
+  `OPSET_VERSION = 24`. Attention construction in `src/mobius/components/_attention.py`; norm in
+  `src/mobius/components/_rms_norm.py`; rotary in `src/mobius/components/_rotary_embedding.py`;
+  quantized linear in `src/mobius/components/_quantized_linear.py`; MoE in
+  `src/mobius/components/_moe.py`; GQA fusion in `src/mobius/rewrite_rules/_group_query_attention.py`
 - ONNX opset 23 additions (`Attention`, `RMSNormalization`, `RotaryEmbedding`) —
   <https://onnx.ai/onnx/operators/>
+- **ONNX opset 24** (onnx v1.19.0, 2025-08-26; §4.19) — `onnx/defs/nn/defs.cc` (Attention-24),
+  `onnx/defs/nn/old.cc` (Attention-23), `onnx/defs/tensor/defs.cc` (TensorScatter-24),
+  `onnx/defs/math/defs.cc` (Swish-24), `onnx/defs/quantization/old.cc` (Q/DQ 21/23/24),
+  `onnx/defs/operator_sets.h` (opset membership),
+  `onnx/version_converter/adapters/Attention_24_23.h` (proof that 24 cannot be downgraded to 23
+  when `nonpad_kv_seqlen` is present)
