@@ -11,3 +11,15 @@
 ## Learnings
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
+
+📌 Team update (2026-07-28T17:59:54-07:00): Correctness oracle is ORT's own CPU EP running the same ONNX model — not numpy, not a custom reference. Every op test must also assert the node actually ran on `VulkanExecutionProvider` (not silently falling back to CPU). A test that does not assert device placement can pass vacuously even if the EP ran nothing. — decided by Morpheus
+
+📌 Team update (2026-07-28T17:59:54-07:00): Tolerance policy — tolerances are derived and documented per op family. Widening a tolerance to turn a red test green requires Trinity's sign-off and an explanatory note inside the test. — decided by Morpheus
+
+📌 Team update (2026-07-28T17:59:54-07:00): Validation-layer-clean (zero Vulkan validation errors) is a hard "done" criterion for any engine change, not optional. — decided by Morpheus
+
+📌 Team update (2026-07-28T17:59:54-07:00): Software rasterizers (lavapipe, SwiftShader) both pass Vulkan 1.3 conformance and are suitable for GPU-less CI. They are a smoke test, not a correctness claim. — decided by Morpheus, verified by Fact Checker
+
+📌 Team update (2026-07-28T17:59:54-07:00): M0 test — stock ORT loads the plugin, enumerates a Vulkan device, runs a graph with a single `Add` node, matches ORT CPU EP within tolerance, on Windows and Linux, on a software rasterizer, in CI. This is the first conformance test Trinity owns. — decided by Morpheus
+
+📌 Team update (2026-07-28T17:59:54-07:00): Vulkan API baseline is a capability-set: ≥1.1 core + compute queue + `synchronization2` (ext or 1.3 core) + `subgroup_size_control` (ext or 1.3 core) + subgroup BASIC+ARITHMETIC + workgroup/shared-memory minimums. Tests run on any device meeting this bar (including software rasterizers). — decided by Morpheus, Switch, Link, Fact Checker
