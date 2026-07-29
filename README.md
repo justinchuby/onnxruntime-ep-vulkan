@@ -5,8 +5,12 @@ shipped as an out-of-tree **plugin EP**. It is loaded by a stock, unmodified ONN
 the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxruntime`.
 
 > **Status: early implementation.** The architecture is settled and written down; the crate
-> scaffolding, the test harness and CI have landed and M0 is in progress. See the milestone plan in
-> [`docs/DESIGN.md`](docs/DESIGN.md) §10.
+> scaffolding, the test harness and CI have landed and M0 is in progress. **No shader in this
+> repository has executed on a GPU yet** — the tests that pass today exercise host-side logic
+> (node claiming, registry invariants, decline paths, layering), not GPU numerics, and the only
+> lanes that execute anything on a device use the lavapipe software rasterizer. See
+> [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the full execution status and §10 for the milestone
+> plan.
 
 | | |
 |---|---|
@@ -32,6 +36,23 @@ Everything unclaimed runs on ORT's CPU EP.
 
 Conservative claiming with clean CPU fallback is a hard requirement, not a stopgap: an unclaimed
 op is always correct, and a wrongly-claimed one is silently wrong.
+
+## Building
+
+**Prerequisite: the Vulkan SDK, or `glslc` on `PATH`.** Shaders are compiled from GLSL to SPIR-V at
+build time and embedded in the library; there is no checked-in SPIR-V, deliberately — a checked-in
+binary that drifts from its source would silently change what runs
+([`docs/DESIGN.md`](docs/DESIGN.md) §7.8). A build without `glslc` fails with a message naming what
+to install.
+
+```powershell
+cargo build --release        # from rust/
+cargo test                   # lib + layering + capability-dump tests
+```
+
+`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` builds a **shader-less** artifact for lint-only and
+docs-only lanes. It can create no compute pipeline, it advertises no device, and it must never be
+shipped.
 
 ## Intended usage
 

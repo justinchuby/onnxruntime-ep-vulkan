@@ -255,3 +255,174 @@ the one that would be wrong, in the direction everyone wants to hear.
 is reprioritizing M1's template infrastructure or M2's device allocator to reach a contrib kernel
 sooner, because contrib is what everyone can see. §10.0 states M0/M1 are *unaffected* by the ruling
 as an explicit instruction, not as an omission.
+
+---
+
+## 2026-07-28T22:28:08-07:00 — OQ-3: adopting the owner's better argument over my own framing
+
+**The proposal that overturns your framing is worth more than the one that confirms it, and you
+should say so in the document rather than quietly merging the two.** I had recorded "registry
+primary, BDA an optimization on top." Tank showed BDA is not an optimization of the registry at all
+— it is a *second shader architecture*, unusable by descriptor-bound shaders without
+`GL_EXT_buffer_reference`, and it does not even remove the side table because building a descriptor
+set still needs a `VkBuffer`. §6.4 now records that I abandoned my framing and why. Burying it would
+have taught the opposite of what I want from this team.
+
+**Watch for decisions that impose their cost on someone else's surface.** BDA's real price was a
+second shader family and a second conformance matrix — Mouse's and Trinity's work — while looking
+like a runtime-layer choice. A cost that lands outside the deciding module is the one most likely to
+be under-weighted, and a lead is the only person positioned to see it.
+
+**Consistency check: I had already rejected this shape once.** Two paths where one is unreachable on
+several targets and therefore chronically under-tested is exactly what I rejected the
+`synchronization2` layer shim for. When a new proposal has the same *shape* as one you already
+ruled on, the prior ruling is evidence — and refusing your own earlier phrasing to stay consistent
+with your own earlier reasoning is the right trade.
+
+**Prefer designs that make a hazard impossible by construction over designs that make it unlikely,
+even when the second is simpler.** Reserved virtual address space (`MEM_RESERVE`/`PROT_NONE`) makes
+ORT's `base + offset` arithmetic correct because the span *is* contiguous VA of exactly that size;
+makes uniqueness OS-guaranteed rather than hoped-for; and turns a stray dereference into an MMU
+fault at an address we recognise instead of silent corruption at `0x1000`. The price was a page-table
+reservation costing no physical memory. That is a very cheap way to delete a class of bug.
+
+**Probe, do not classify.** For Android's narrower address space I ruled probe-and-halve rather than
+a per-platform constant table: a table of address-space widths *will* be wrong about some device we
+have never seen, whereas a reservation either succeeds or does not. Same instinct as the §7.2
+capability gate — interrogate the machine in front of you rather than predicting it from a
+classification. And it converts a blocking cross-owner dependency into a local implementation
+detail, which is usually the more valuable half.
+
+**"A tenth requires a decision record" only works if you actually write the record.** Mouse staged
+`MultiHeadAttention` and `MoE`, taking the set from nine to eleven. Ratified with reasons — MHA
+arrives as one node exactly like GQA; float `MoE` exists so `QMoE` has a differentiable-testable
+oracle. A clause that gets silently overrun the first time it is exercised is not a control.
+
+**Nesting beats a parallel table when provenance must not be optional.** Mouse put `SchemaBaseline`
+*inside* `ContribSchema`, so it is impossible to record a schema shape without recording where the
+shape came from. A parallel table can be half-filled; a nested field cannot. Tank deleted his
+duplicate side table — two places recording the same fact is a hazard best fixed by deleting one,
+not by testing that they agree.
+
+**Contained-today is not contained-tomorrow unless a mechanism holds it.** Four contrib rows target
+schemas that exist only on ORT main. They are all `Staged` so nothing is claimed — but "we will
+remember not to flip these" is not a control, so C2 gained item 6: a row with a non-release baseline
+may not go `Live`, enforced as a build failure. Same move as amendment A2. **Every time I find
+myself relying on the team remembering something, that is the signal to write a test instead.**
+
+**Read what a subordinate document actually says before treating it as a reversal.** §13.2 reading
+"independent implementation, no obligation" looked like the llama.cpp accelerant had evaporated. Its
+own rows say *read the shaders for tiling and subgroup strategy* — that is algorithm study, exactly
+what I priced in and what Rai permits obligation-free. **No obligation attaching is the expected
+outcome of using the accelerant correctly, not evidence of its absence.** I nearly widened three
+tiers on a misreading of a document that agreed with me.
+
+**Pre-commit the conditions under which you will widen, before the input arrives.** §8.4 now states
+what Switch's read must show for T3 and T4 to hold, and that T5a never assumed a reference. Same
+discipline as §11.1's reversal conditions: write the test before the data, or the data gets
+interpreted to fit the schedule you have already published.
+
+**Name the risk's *kind*, not just its size.** T5a is gated on an upstream schema stabilizing
+(OQ-16), which is not the same risk as "the Vulkan kernel is hard" and has different mitigations. If
+it slips, the honest report is "we are gated upstream" — averaging it into a Vulkan schedule slip
+would misdirect every mitigation anyone chose in response.
+
+---
+
+## 2026-07-28T22:28:08-07:00 — the OQ-M6 accelerant ruling and the OQ-4 doc/code divergence
+
+**When two owners appear to disagree, check whether they are answering the same question before
+adjudicating.** Mouse (`OP_COVERAGE.md` §13.2) and Switch (D-S4-10) looked like a conflict over
+whether llama.cpp's Vulkan shaders are a usable accelerant for the XL kernels. They were not in
+conflict at all. Mouse answered *"can this be copied?"* — no, the block formats differ, which is
+exactly why no licensing obligation attaches. Switch answered *"does reading it save time?"* — yes,
+for tiling strategy and subgroup reduction shape, which are format-independent. Both were right.
+Had I adjudicated on Mouse's answer alone I would have widened three tiers on a finding that never
+addressed the thing my estimates depended on.
+
+**The resolving distinction, worth keeping:** the quantization block format dictates the *innermost
+unpack*, not the *tiling schedule* or the *reduction shape*. The unpack is the cheap part. The tile
+sizes, the GEMV/GEMM specialisation split and the subgroup reduction structure are where the weeks
+go, and those transfer.
+
+**A schedule that survives a challenge by silence has not survived it.** I had pre-committed to
+widening T3/T4/T5a if the accelerant evaporated. When it turned out to be merely narrower, the
+correct action was still to *state* that the estimates hold and why — not to let them stand by
+default because nothing forced a change. An unexamined estimate and a re-affirmed estimate look
+identical in the document and are worth completely different amounts.
+
+**When the doc and the code disagree, decide which one is wrong on the merits — do not reflexively
+make the code obey the doc.** OQ-4 provisionally chose build-time `glslc` *with a checked-in SPIR-V
+fallback*. `build.rs` implements a hard panic instead. The coordinator offered to have Switch
+reconcile the code to my decision. On examination the code was right and my provisional decision was
+wrong: I changed the decision.
+
+**Convenience bought with a silent-divergence hazard is a bad trade.** A checked-in `.spv` that
+drifts from its `.comp` changes what actually runs with no signal at all — it moves our worst
+failure class ("silently wrong numbers") into the build system, which is the one place we have no
+differential oracle. And the obvious mitigation defeats the purpose: freshness-hash the fallback and
+a stale one fails the build, which is the very failure the fallback existed to prevent. It buys
+nothing. This is the same shape as the layer shim and as BDA — a second path that is chronically
+under-exercised and therefore chronically wrong.
+
+**A hard dependency is only defensible if it fails well.** The five conditions I attached are the
+general form: an actionable error naming the fix; a loud, documented escape hatch; an artifact
+produced by that escape hatch that is *inert* rather than subtly broken (advertises zero devices,
+claims nothing) — this was new work, not something the code already did; no release artifact from an
+escape-hatch build; and a from-clean-clone CI lane, because a prerequisite list nobody tests is
+simply wrong.
+
+**Name the reversal route when you close a question.** OQ-4 reopens by vendoring a compiler
+(`shaderc` or `naga`) so `cargo build` is self-sufficient — never by checking in binaries. Saying so
+means a future contributor's instinct to "just commit the .spv" meets an argument instead of a
+vacuum.
+
+---
+
+## 2026-07-28T22:28:08-07:00 — the oracle came back positive, and the danger that created
+
+**A positive result on a risk you named is the moment to bank the *conditions*, not to move on.**
+Trinity's answer was "yes, the CPU EP works as an oracle for the quantized path" — my strategy
+survived. The valuable part was not the yes. It was the two things she could only have learned by
+running it: `MatMulNBits` `accuracy_level` 4 diverging ~3.6e-3 from levels 0–3, and fp16 producing
+NaN/Inf on 1.27. Neither is visible from reading the schema. Had I simply accepted the headline,
+the unpinned accuracy level would have made our reference values drift across CI runner hardware
+and the flake would have presented as a bug in *our* kernel — sending Mouse to debug correct code.
+
+**Generalized: an oracle knob the runtime selects from the host machine must be pinned.** Anything
+ORT chooses by sniffing the CPU — accuracy level, thread count, arena behaviour — is a hidden input
+to every expected value we record. An oracle that changes with the machine is not an oracle.
+
+**Where "compare against the reference implementation" stops working.** I had treated
+CPU-EP-as-oracle as universal. Trinity's bit-exact NumPy check on dequantize showed the boundary:
+comparing two implementations of the same schema tests *behaviour*, not *reading*. A shared
+misreading of a bit layout passes on both sides. So behaviour goes to the CPU EP; bit-layout
+interpretation goes to an independently written statement of the layout. This is the same shape as
+C6 — the point of both is to make a wrong thing *locatable*, not merely detectable.
+
+**Convergent independent evidence is worth flagging as such.** Fact Checker found the 1.27
+null-allocator `PrePack` bug in source, Tank hit it building, Trinity hit it numerically. Three
+different methods landing on the same version turns a cautious pin into a defensible one. When that
+happens, say so in the document — it is the difference between being able to answer "why not 1.27?"
+and having to re-derive it.
+
+**Test counts are execution claims and they had started to imply more than was true.** We were
+reporting 227 green while nothing in the repository had ever run a shader on any device — no ICD,
+no `glslc`, Switch's device path still stubs. Every one of those tests is real and measures exactly
+the host-side logic that must be right before a kernel is worth writing, but a reader would
+reasonably infer GPU numerics. This is structurally identical to RAI-003: a true statement
+positioned so it implies something untrue. I wrote §9.1.2 and a README line rather than relying on
+"§10 shows M0 is incomplete" — **disclosure that requires cross-referencing two sections is not
+disclosure.** The coordinator caught this before I did, which is itself the lesson: I had been
+applying this discipline to Link's platform claims and to my own architecture claims, but not to
+our test numbers.
+
+**A constraint wants enforcement from both ends.** C1 is now static (Tank banning the contrib
+domain as a *value*, which kills `==`, `!=`, `matches!`, `if let`, `starts_with` at once) and
+runtime (Trinity asserting `com.microsoft::NotARealOp` declines ordinarily). Static alone can be
+satisfied by code that never runs; runtime alone can be reintroduced on a path no test reaches.
+Worth asking of every hard rule I write: which end is unguarded?
+
+**A harness change can change what a green run means, and then it belongs in the design record.**
+Dropping the autouse EP fixture turned "skipped" into "executed" for 8 tests with no EP built.
+That is not housekeeping — it is the reason the runtime half of C1 has any force at all.

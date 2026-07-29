@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T21:01:56-07:00 (RAI-003 CI-coverage disclosure; lavapipe-only correction; `com.microsoft` in scope by user ruling — §1.4 constraints, §10.0 milestone reconciliation; §7 frozen; OQ-1, OQ-8 and OQ-11 resolved)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T22:28:08-07:00 (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -119,15 +119,28 @@ in scope. The deciding fact, verified by Mouse from the ORT GenAI model builder 
 builder *emits* contrib ops directly, so an EP that declines the domain cannot run a Qwen graph at
 all — and Qwen3.5 is a named target. I am not re-litigating that here.
 
-**The admitted set for v1 is these nine**, which are the ops a Qwen3.5-class GenAI-built graph
-actually contains:
+**The admitted set for v1 is these eleven.** Nine were admitted on 2026-07-28T19:16:08-07:00 as the
+ops a Qwen3.5-class GenAI-built graph actually contains:
 
 `GroupQueryAttention`, `RotaryEmbedding`, `SimplifiedLayerNormalization`,
 `SkipSimplifiedLayerNormalization`, `MatMulNBits`, `LinearAttention`, `CausalConvWithState`,
 `QMoE`, `GatherBlockQuantized`.
 
-Adding a tenth is a scoping decision inside an in-scope domain — a decision record and a tier
-assignment, not a re-opened non-goal. What follows is what I still own, and it matters *more* now
+**Two more are ratified here, 2026-07-28T22:28:08-07:00**, both staged by Mouse in `5ae991a` and
+both accepted — this is the "a tenth requires a decision record" clause working as intended, and the
+record is this paragraph:
+
+- **`MultiHeadAttention`** — the non-GQA fused attention form that ViT and BERT-style encoders
+  export. Admitted for the same reason as `GroupQueryAttention` and not by analogy to it: it
+  *arrives* as a single node, and decomposing it materializes a `[B,H,S,S]` score matrix. It is
+  tier 5c's vision-tower dependency (§10 M3+), and it should share `ops/attention.rs`'s kernel with
+  GQA rather than becoming a twelfth thing to write.
+- **`MoE`** — the float-expert sibling of `QMoE`. Admitted because a routing implementation that
+  only exists in its quantized form cannot be differentially tested against a float oracle, which
+  makes `QMoE` much harder to verify, not easier. Cheaper to carry both than to debug one.
+
+Adding a twelfth is the same clause again: a decision record and a tier assignment, inside an
+in-scope domain. What follows is what I still own, and it matters *more* now
 that the domain is admitted, not less. Contrib ops are a genuinely more dangerous surface than
 `ai.onnx` and the discipline below is the whole reason admitting them is safe.
 
@@ -146,18 +159,18 @@ first contrib op onward.
 This is the substantive difference from `ai.onnx` and the constraint everything else hangs off.
 `ai.onnx` gives us a monotonic opset number we can range-check in the claim predicate; a schema
 change is *visible* as a number we did not accept. Contrib schemas carry no such number — they are
-versioned by ORT *release*, and several of the nine (`LinearAttention`, `CausalConvWithState`,
-`QMoE`) are new and still moving. A contrib schema change therefore does not bump anything we can
-test against: it silently changes what our claim predicate *should* accept, while our predicate goes
-on accepting what it always did.
+versioned by ORT *release*, and several of the eleven (`LinearAttention`, `CausalConvWithState`,
+`QMoE`, `MoE`) are new and still moving. A contrib schema change therefore does not bump anything we
+can test against: it silently changes what our claim predicate *should* accept, while our predicate
+goes on accepting what it always did.
 
 The protocol, and it is a hard precondition on the first contrib op landing — not on tier 3
-generally, on **op #1 of the nine**:
+generally, on **op #1 of the eleven**:
 
 1. **The ORT version is pinned per release** and recorded in `Cargo.toml`, `docs/`, and the CI
    matrix. Trinity has pinned 1.28. A contrib claim predicate is only ever validated against a
    pinned version.
-2. **Each of the nine records the ORT version its predicate was written against**, in the registry
+2. **Each of the eleven records the ORT version its predicate was written against**, in the registry
    entry, next to the predicate. Not in a comment in a design document — in the table, where it can
    be printed by `--dump-capabilities` and diffed.
 3. **`tools/graph_census.py` runs in CI against pinned `.onnx` artifacts** and reports per-op claim
@@ -171,6 +184,62 @@ generally, on **op #1 of the nine**:
    decline, not to guess.** Declining is a performance regression that CI reports as a claim-rate
    drop; guessing is wrong logits that nothing reports at all. This ordering is not negotiable and
    it is the contrib-specific restatement of §1.3.
+6. **A contrib row whose baseline is not a released ORT version may not be flipped from `Staged` to
+   `Live`.** *Added 2026-07-28T22:28:08-07:00 — see below.*
+
+**C2's implemented shape is confirmed** (Mouse, `registry.rs`; Tank, `sys.rs`; both in `5ae991a`).
+`SchemaBaseline` is nested *inside* `ContribSchema` and surfaced through `OpSpec::schema_baseline()`,
+with build-failing tests requiring a baseline on every `com.microsoft` row and forbidding one on
+every `ai.onnx` row. This is better than the flat side table I would have accepted, and the reason is
+worth stating as a general rule: **the nested placement makes it impossible to record a schema shape
+without recording where the shape came from.** A parallel table can be half-filled; a nested field
+cannot. Tank arrived at the same requirement from `sys.rs` within the hour, they reconciled as *sys
+owns the type, registry owns the data*, and he deleted his side table — the right call, because two
+places recording the same fact is a hazard best fixed by deleting one rather than by testing that
+they agree. Ratified as the C2 mechanism of record. The asymmetry (default-domain rows print
+`n/a (opset-versioned)`) is also right: their compatibility contract *is* the opset window, and a
+baseline there would dilute the signal on the rows where it matters.
+
+**On Tank's 18-line cross-owner edit to `registry.rs`: ratify now, Mouse reviews after.** The shape
+is ratified on its merits and does not depend on the wording of one replaced test. Blocking a
+ratification on a review of a test that replaced a now-uncompilable test would stall four other
+people to protect a low-risk change that is already green and already covered from Tank's side in
+`layering.rs` (every contrib row has a baseline, no default-domain row does, no baseline claims a
+release newer than the one we compile against). Mouse should still review it — it is his file, he
+should own the final wording, and Tank asked for exactly that — but as a follow-up, not a gate.
+Tank yielding placement to Mouse's design and *saying why it was better* rather than just yielding
+is the behaviour I want between owners; that is how a boundary gets stronger instead of just being
+defended.
+
+**The main-branch-only schemas — ruling.** Four of the eleven (`LinearAttention`,
+`CausalConvWithState`, `QMoE`, `MoE`) carry `MAIN_BASELINE` — `main (post-1.28.0)` — because they do
+not appear in the pinned release at all. Recording that honestly is exactly what C2 is for, and
+Mouse recording it rather than writing `1.28.0` across the board is the constraint doing its job on
+its first real test. Three rulings follow:
+
+1. **The situation is contained today and must stay contained by mechanism, not by intention.** All
+   four rows are `OpStatus::Staged`, so `claim_decision` declines them with a machine-readable
+   `[staged]` reason and the graph runs on CPU. Nothing is claimed against an unreleased schema, so
+   there is no correctness exposure right now. But "we will remember not to flip these" is not a
+   control, so: **C2 item 6 — a contrib row whose baseline is not a released ORT version may not be
+   flipped from `Staged` to `Live`.** Enforce it the same way C1 is enforced, as a test rather than
+   a convention: a row that is `Live` with a non-release baseline fails the build. This is the same
+   pattern as A2 — convert the warning into a gate, because a warning is what gets dropped under
+   schedule pressure.
+2. **The registry test asserting agreement on the verification *date* while not comparing release
+   strings is correct**, and I want the reasoning recorded rather than left as a compromise.
+   Comparing release strings would force `MAIN_BASELINE` to lie in order to pass. The date is the
+   fact that actually matters — *when did a human last read this schema* — and it is the only field
+   both baselines can honestly share.
+3. **The milestone consequence, which is real: `LinearAttention` and `CausalConvWithState` gate
+   T5a, the named Qwen3.5 target, and they are targeting a schema that has never shipped.** That is
+   a genuine schedule risk and it is not Mouse's to absorb quietly, so it is now **OQ-16** in §11:
+   the release these ops first appear in, and whether their schema changed between our fingerprint
+   and that release, is a tracked question with an owner. Practically, this means the T5a kernels
+   may be written twice, and the fingerprints will need re-verification against the release the
+   moment it exists. The correct report upward if that slips is *not* that Qwen3.5 slipped for
+   Vulkan reasons — it is that we are gated on an upstream schema stabilizing, which is a different
+   risk with different mitigations.
 
 #### C3 — Contrib declines use the ordinary machine-readable decline path, never a special case
 
@@ -183,7 +252,7 @@ is that a user debugging a Qwen graph and a user debugging a ResNet read the sam
 decline reason a contrib op needs (`UnsupportedAttributeValue`, `UnverifiedSchemaVersion`) is added
 to the shared enum for everyone.
 
-#### C4 — Every one of the nine gets a hand-written claim predicate
+#### C4 — Every one of the eleven gets a hand-written claim predicate
 
 Not the shared `caps`-column helper. Their attribute surface — `num_heads`, `kv_num_heads`,
 `do_rotary`, `rotary_interleaved`, `scale`, `softcap`, `bits`, `block_size`, `accuracy_level`,
@@ -201,20 +270,20 @@ known and the predicate can be written against them instead of against the schem
 
 #### C6 — CPU fallback is the safety net and it must stay intact
 
-ORT's own CPU implementation of every one of the nine is the reference and the fallback. **A contrib
+ORT's own CPU implementation of every one of the eleven is the reference and the fallback. **A contrib
 op we claim but get subtly wrong is strictly worse than one we decline** — the decline costs a
 transfer boundary and shows up in `largest_island_flops`; the wrong claim costs correctness and
-shows up nowhere. Concretely: the nine are claimed incrementally, one at a time, each landing with
+shows up nowhere. Concretely: the eleven are claimed incrementally, one at a time, each landing with
 its differential test before the next begins; and **numerical verification for contrib ops is
 per-layer, not final-logits**. Comparing final tokens on a 1.7B model against ORT CPU will pass with
 a broken kernel far more often than anyone expects — sampling hides a great deal. Trinity owns the
 per-layer mechanism; this is a binding constraint on the coverage plan, not a suggestion.
 
-#### C7 — The nine are budgeted as XL work, not as coverage
+#### C7 — The XL kernels are budgeted as XL work, not as coverage
 
 Three of them (`GroupQueryAttention`, `MatMulNBits`, `LinearAttention`) have no kernel-template
 leverage and each gates a separate tier. They must never be counted in an op-coverage number as if
-they were nine of the 174. §10.0 and §1.5 state the schedule consequence honestly.
+they were eleven of the 174. §10.0 and §1.5 state the schedule consequence honestly.
 
 ### 1.5 Two different claims, deliberately kept apart
 
@@ -603,7 +672,47 @@ and are aggregated per op type; with `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` or tr
 prints exactly which ops were declined, how many, and why. This is the single most valuable
 diagnostic the MLX EP has, and it is cheap. It ships in M0.
 
-Claimed nodes → convex clustering → `EpGraphSupportInfo_AddNodesToFuse` per cluster.
+Claimed nodes → convex clustering → **minimum-viable-subgraph filter** →
+`EpGraphSupportInfo_AddNodesToFuse` per surviving cluster.
+
+**Where `ops::partition::retain_viable` is invoked — the answer to Mouse's question.** Exactly one
+call site, in `ep.rs`'s `GetCapability`, positioned as the **third of four stages** and never
+anywhere else:
+
+```
+GetCapability(OrtGraph) →
+  1. per-node claim      registry::claim_decision(&NodeView)      → claimed / declined + reason
+  2. cluster             maximal convex connected components of the claimed set → Vec<Island>
+  3. FILTER              ops::partition::retain_viable(&islands, &model, &policy)
+                                                                   → (kept, dropped + RejectReason)
+  4. report              AddNodesToFuse(kept) ; declines for step 1 and step 3 both go to the
+                         one decline vocabulary and the one CLAIM_DEBUG dump
+```
+
+Four properties of that placement are binding, not incidental:
+
+1. **After clustering, never before.** The rule is about an *island*, not a node — whether the work
+   inside pays for the transfers at its edges. There is no meaningful per-node form of it, and a
+   per-node approximation would re-introduce exactly the shredding it exists to prevent.
+2. **Before `AddNodesToFuse`, so a rejected island is never handed to ORT at all.** Filtering after
+   the fact would mean un-claiming, which the ORT surface does not offer.
+3. **A step-3 rejection is a decline like any other**, carrying `DeclineCode::Partition` with the
+   modelled numbers (`~Xns compute against ~Yns transfer, below the Zx margin`) into the same
+   `CLAIM_DEBUG` output as a step-1 decline. This is §8.4 A3's requirement, and it is why the
+   dropped set is returned rather than discarded: a silently-declined region is otherwise
+   indistinguishable at the console from a missing op, and we would spend real time mis-diagnosing
+   one as the other.
+4. **`retain_viable` stays pure — data in, verdict out.** It does not touch the graph API or the
+   device. `ep.rs` builds `Island` values from the cluster and the `TransferModel` from the device
+   calibration, calls the function, and translates the verdicts back into ORT calls. This is the
+   §4.2 boundary rule applied to partitioning: policy in `ops/`, ABI in `ep.rs`.
+
+The `TransferModel` handed to it is the one calibrated at device init (`OP_COVERAGE.md` §7.2;
+§8.4 A3), not a constant — with `TransferModel::UMA` / `DISCRETE` as the pre-calibration defaults so
+M0/M1 have a defined behaviour before Niobe's measurements exist. `CoverageReport`, computed from
+the same `(kept, dropped)` pair, is what produces `largest_island_flops` for §10.0's milestone
+reporting — the rule and its metric live in one module deliberately, because their drifting apart is
+exactly how a coverage number becomes a lie.
 
 ### 5.5 `Compile` — plan build and prepacking
 
@@ -721,14 +830,96 @@ honestly slow for anything small, and we will say so rather than benchmark it.
   which is what makes a per-inference copy disappear entirely.
 
 The one hard problem M2 must solve: **ORT's allocator API is pointer-based, and a `VkBuffer` is
-not a pointer.** The v1 answer is an opaque-handle registry — `Alloc` returns a unique tagged
-64-bit value from a reserved range, and the EP resolves it to `(VkBuffer, offset)` through a
-process-wide map. We deliberately do **not** build on `VK_KHR_buffer_device_address` (which would
-give a real GPU virtual address) because it is optional, and MoltenVK support is partial
-(`ENGINE.md` §8). Revisit if profiling shows the map lookup matters; it will not.
+not a pointer.** This is OQ-3, and it is now **decided** — see §6.4.
 
 **M3+ — persistence.** Keep prepacked weights and, where a graph allows, activation buffers
 resident across `Compute` calls; shapeless recording so a growing dimension does not retrace.
+
+### 6.4 OQ-3 RESOLVED — reserved virtual address space, resolved through an opaque-handle registry
+
+> **Decided 2026-07-28T22:28:08-07:00** on Tank's proposal (`.squad/decisions/inbox/tank-oq3-allocator-proposal.md`,
+> D-T8). **Accepted in full, including the part that goes further than my own framing.** Binding on
+> `allocator.rs`, `transfer.rs`, `ENGINE.md` and every op that receives an ORT data pointer.
+
+**The decision.** `Alloc(size)` sub-allocates real Vulkan memory through `gpu-allocator`, carves a
+matching span out of a large region of **reserved-but-uncommitted virtual address space**
+(`VirtualAlloc(MEM_RESERVE, PAGE_NOACCESS)` on Windows; `mmap(PROT_NONE, MAP_NORESERVE)` on
+Linux/Android/macOS), records `span_base -> (VkBuffer, offset, size, generation)`, and returns
+`span_base` as the `void*`. Resolution to `(VkBuffer, offset)` happens **once per binding when a
+descriptor set is built** — not per element, not per dispatch — and is cached in the compiled plan.
+`Free` quarantines the span and bumps a generation rather than recycling it immediately.
+
+**`VK_KHR_buffer_device_address` is not carried at all.** I had written "registry primary, BDA an
+optimization on top". Tank's argument that BDA is **not an optimization of the registry but a second
+shader architecture** is correct and it changes the answer, so I am adopting his position rather
+than the one I brought. A `VkDeviceAddress` is unusable by a descriptor-bound shader: consuming one
+requires `GL_EXT_buffer_reference` / `PhysicalStorageBuffer` addressing, which is a second shader
+family, a second variant axis in the manifest, and a second set of conformance runs — a permanent
+cost on Mouse's and Trinity's surface, not a branch in Tank's. And it *does not even remove the side
+table*, because building a descriptor set still needs a `VkBuffer`, so address → buffer resolution
+survives regardless; BDA only pays off under a fully-bindless design, which is a much larger bet
+nobody has proposed. The platform evidence points the same way: `PLATFORMS.md` MVK3 (BDA needs
+Metal 3 / Apple Silicon — Intel Macs excluded), MVK4 (MoltenVK explicitly advises the explicit
+binding model), and my own §7.2 freezing BDA as probed-not-required. **Two paths where one is
+unreachable on Apple and on older Android drivers is not a dual design; it is one design plus an
+under-tested liability**, which is the same failure shape I rejected the `synchronization2` layer
+shim for. Nothing forecloses BDA later: if a bindless GEMM path is ever adopted and measurement
+shows descriptor construction to be a real cost, BDA slots in *alongside* the registry for shaders
+that opted into buffer references. Revisit then, **with numbers**.
+
+**Why reserved VA rather than a synthetic token — the part that decided it.** My stated fear was
+that ORT performs pointer arithmetic on values it believes are addresses, and that the resulting bug
+would be invisible until some ORT-internal path `memcpy`s from an allocator pointer. Reserved VA
+answers that **by construction rather than by convention**, which is a different quality of answer:
+
+- `base + offset` from the memory-pattern planner stays inside the same allocation because the span
+  *is* contiguous reserved VA of exactly that size; an interior pointer resolves to
+  `(VkBuffer, offset + delta)` correctly. A token scheme cannot provide this at all.
+- `align_up(ptr, 256)` works exactly; span bases are 2 MiB-aligned, which dominates
+  `minStorageBufferOffsetAlignment` on all target hardware.
+- Uniqueness against real heap pointers is **OS-guaranteed** — the kernel will not hand that range
+  to anyone else. A hand-rolled "reserved" numeric range can collide; a real reservation cannot.
+- A stray dereference is an **MMU fault at an address we recognise**, with a stack trace naming the
+  culprit, instead of a read or write to whatever happens to live at `0x1000`. This converts my
+  worst case from silent corruption into a crash at the scene.
+- Use-after-free resolves to a quarantined span and becomes a loud `OrtStatus` rather than a silent
+  alias onto a different live tensor.
+
+I want the general principle recorded, because it will recur: **when a design can make a hazard
+impossible by construction, prefer it to a design that makes the hazard merely unlikely, even if
+the second is simpler.** The cost here is a page-table reservation that consumes no physical memory.
+
+Two supporting points I specifically endorse. Tank notes the NV reference calls
+`DisableMemPattern()`; **we must not rely on that** — an EP cannot force a caller's session options,
+and a design that only works with mem-pattern off breaks the first time somebody leaves it on. And
+the resolution cost (a subtract, a shift, one flat-array load, under an `RwLock` taken for write
+only on `Alloc`/`Free`) is stated plainly now precisely so it cannot later be cited as a reason to
+reopen BDA without measurement.
+
+**The Android sub-question: a tuning parameter, not a blocking dependency.** Android's narrower
+virtual address space (39-bit on many devices) means the reservation size must be **derived from the
+platform at runtime, not hard-coded**. That is a requirement on the implementation, and it is
+Tank's to satisfy now — not a dependency on Link's matrix. Rationale: the design does not change
+with the answer, only a constant does, and the correct implementation is to *probe and back off*
+rather than to look a number up in a table. Binding form:
+
+1. The region size is chosen at allocator construction by attempting a reservation and **halving on
+   failure** down to a documented floor, rather than by consulting a per-platform constant. A table
+   of platform address-space widths is a table that will be wrong about some device we have never
+   seen; a reservation that either succeeds or does not is correct on every device by construction.
+2. The chosen size, the granularity, and the number of back-off steps taken are recorded in the
+   capability dump. On a 39-bit device this is the line that will explain a later allocation
+   failure.
+3. Falling below the floor is a **clean allocator-construction failure with a specific message**,
+   which degrades the EP to M0/M1 host-I/O behaviour or to no device at all — never a silent
+   success with a region too small to serve the model.
+4. Link's platform matrix should still record observed address-space widths, because it tells us
+   whether the back-off is ever actually taken. That is *information*, and it does not gate M2.
+
+**What this means for OQ-13.** An imported external buffer becomes an ordinary registry entry
+(Tank's D-T9 step 6), so nothing downstream — descriptor construction, translate handlers, data
+transfer — needs to know a buffer came from outside. That is the registry serving the importer, and
+it is a further argument for a single resolution mechanism.
 
 ---
 
@@ -821,7 +1012,7 @@ without a new decision record:
 | `shaderFloat16`, `storageBuffer16BitAccess` | `VkPhysicalDeviceVulkan12Features` / `VK_KHR_shader_float16_int8` + `VK_KHR_16bit_storage` | Gates fp16 op variants; absent → those ops are not claimed for fp16. |
 | `shaderInt8`, integer dot product | extension probe | Gates future quantized ops. |
 | Timeline semaphores | 1.2 core or `VK_KHR_timeline_semaphore` | Post-v0 multi-stream pipelining. Unused in v0. |
-| `bufferDeviceAddress` | 1.2 core or `VK_KHR_buffer_device_address` | OQ-3 alternative only. |
+| `bufferDeviceAddress` | 1.2 core or `VK_KHR_buffer_device_address` | **Not used.** OQ-3 is resolved against it (§6.4); probed for diagnostics only, and a future bindless GEMM path would have to re-argue it with numbers. |
 | Cooperative matrix | `VK_KHR_cooperative_matrix` / `VK_NV_cooperative_matrix2` | Post-v0 GEMM variants, llama.cpp's `_cm2` split. |
 
 `VkApplicationInfo::apiVersion` is set to `min(vkEnumerateInstanceVersion(), VK_API_VERSION_1_3)`
@@ -1033,6 +1224,65 @@ the whole module.
 Note that shader targets are **independent of the barrier decision**: `synchronization2` is a
 host-side API, not a SPIR-V capability. Nothing in `shaders/` changes because of §7.3.
 
+### 7.8 OQ-4 RESOLVED — the Vulkan SDK is a hard build dependency; there is no checked-in SPIR-V
+
+> **Decided 2026-07-28T22:28:08-07:00.** This **changes the provisional decision** recorded in
+> OQ-4 ("build-time `glslc` with a checked-in SPIR-V fallback so a plain `cargo build` works") to
+> match what `build.rs` actually does. The doc was wrong, not the code. Binding on Switch, Tank,
+> Link and Trinity.
+
+**The decision.** `glslc` from the Vulkan SDK (or on `PATH`) is a **required build prerequisite**.
+There is no checked-in `.spv` fallback and none will be added. A build without `glslc` fails with an
+actionable error naming the SDK, `PATH`, and the escape hatch.
+
+**Why I changed the decision rather than the code.** The fallback was meant to prevent exactly the
+outcome the coordinator hit — a new contributor cloning the repo and getting a build failure. That
+is a real cost and I am not dismissing it. But a checked-in fallback buys convenience by creating a
+**silent-divergence hazard**, and it is a bad trade at our shader count:
+
+1. **A checked-in `.spv` that no longer matches its `.comp` is undetectable at a glance and changes
+   what runs.** CI (which has the SDK) would compile from source while a contributor without it ran
+   a stale binary — and the two would differ in numerical behaviour with no signal. That is the
+   "silently wrong" failure class this project's whole claim discipline exists to avoid, relocated
+   into the build system. Freshness could be enforced by hashing, but then a stale artifact fails
+   the build *anyway* and the fallback has bought nothing.
+2. **"Reviewable diffs" — the original argument for checked-in SPIR-V — does not survive contact
+   with the artifact.** SPIR-V binary diffs are not reviewable, and the shader-variant table already
+   generates **168** modules from 69 rows. Every shader edit would rewrite a large set of binaries,
+   making PR diffs unreadable and producing binary merge conflicts.
+3. **The prerequisite is normal for this ecosystem and it is honest.** Several Vulkan projects
+   require the SDK. A dependency stated in the README costs a contributor one install; a stale
+   binary costs somebody a day of debugging a numerical difference that is not in the source.
+
+This is the same principle as §6.4: **prefer the design where the hazard cannot occur to the one
+where it is merely unlikely**, and pay a visible cost rather than accept an invisible one.
+
+**Five binding conditions**, because a hard dependency is only defensible if it fails well:
+
+1. **The failure message must be actionable without documentation.** It names the missing tool, how
+   many shaders exist, the SDK, `PATH`, and the escape hatch. It already does; this pins it.
+2. **The escape hatch (`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1`) is for lint-only and
+   docs-only lanes, and it must stay loud.** It emits a `cargo:warning` stating that the artifact
+   can create no pipeline and must not be shipped. It already does; this pins it.
+3. **A shader-less artifact must be inert at runtime, not subtly broken.** If `SHADER_MODULES` is
+   empty, the EP must **advertise zero devices and claim nothing**, with a specific reason
+   (`built without shaders`) in the log and in `CLAIM_DEBUG` — never load, claim nodes, and fail at
+   pipeline creation. An escape-hatch build that looks like a working EP is worse than one that
+   does not build. *Switch owns this guard; it is the one thing the current code does not yet
+   enforce.*
+4. **No release artifact may be produced from an escape-hatch build.** The release workflow asserts
+   `SHADER_MODULES` is non-empty. *Trinity/Link.*
+5. **The prerequisite is documented where a contributor meets it first** — root `README.md` (done),
+   `rust/README.md` (*Tank*), and the CI setup step that installs it (*Link*, already true on both
+   lanes). Plus a from-clean-clone lane that proves the documented prerequisites are sufficient,
+   because a prerequisite list nobody tests is a prerequisite list that is wrong.
+
+**What would reverse this.** Evidence that the SDK requirement is actually blocking contribution —
+a platform where `glslc` is genuinely hard to obtain, or repeated contributor friction. The remedy
+then is **not** checked-in SPIR-V; it is vendoring a compiler (`shaderc` as a Cargo dependency, or
+`naga`), which removes the prerequisite without introducing a second source of truth. That is the
+right escape route and it stays open.
+
 
 ---
 
@@ -1208,6 +1458,79 @@ this accelerant is used — **read the tiling and subgroup strategies, do not po
 treat any shader that ends up substantially adapted as triggering Rai's conditions. Without it I
 would widen the tier-3/4/5a estimates rather than hold them.
 
+**Clarification, 2026-07-28T22:28:08-07:00 — the accelerant is still available and the timeline
+does not widen.** `OP_COVERAGE.md` §13.2 records every XL kernel as an *independent implementation
+with no obligation attaching*, which reads at first glance as though the accelerant I priced in had
+evaporated. It has not, and the distinction is the same one I stated when I priced it. Mouse's rows
+say, in their own text, "read llama.cpp's flash-attention Vulkan shaders for tiling and
+subgroup-reduction strategy" and "read `mul_mat_vec_q*` for the memory-access strategy" — that *is*
+algorithm study, which is what I assumed and what Rai's 🟢 permits without obligation. What he
+declines is **source adaptation**, which I also declined ("do not port the code"), and his reason for
+declining it on `MatMulNBits` is stronger than mine: llama.cpp's block formats are not ONNX's, so
+adaptation would not even work there. His §13.2 closes by saying the study "removes the largest
+single unknown from the XL-kernel estimates". Those are the same position, and no obligation
+attaching is the *expected* outcome of using the accelerant correctly, not evidence of its absence.
+
+So: **the estimates hold and I am not widening T3/T4/T5a.** What I would need from Switch's
+independent read to keep them — stated now, before his answer arrives, so it is a test rather than a
+rationalization:
+
+1. **For `GroupQueryAttention`**: that the flash-attention tiling schedule and the subgroup-reduction
+   shape are transferable *independently of data layout* — i.e. that the useful content is the loop
+   structure, the online-softmax rescaling order, and what lives in shared memory versus registers.
+   If Switch reports the schedules are entangled with ggml's KV layout such that a reader gains
+   little, T3 widens.
+2. **For `MatMulNBits`**: that dequant-in-register patterns and the memory-access strategy transfer
+   even though the block format differs. This is the one I would most expect to be weaker, and it is
+   the one Mouse already flagged. If the answer is that the access strategy is a consequence of the
+   block format and does not survive changing it, T4 widens.
+3. **For `LinearAttention`**: nothing — there is no reference to read, Mouse says so, and my estimate
+   never assumed one. This tier's risk is OQ-16 (an unreleased schema), not licensing.
+
+If Switch's read is negative on 1 or 2, I widen the corresponding tier and say so plainly rather
+than absorbing it, per §1.5. A timeline that quietly absorbs a lost accelerant is a timeline that
+has started lying.
+
+**RULING, 2026-07-28T22:28:08-07:00 — Switch's read has landed and the estimates HOLD. T3, T4 and
+T5a are not widened.** I am stating this explicitly rather than letting the estimates stand by
+default, because a schedule that survives a challenge by silence has not actually survived it.
+
+Switch (D-S4-10), who read llama.cpp's shader pipeline closely while writing `ENGINE.md`, judges
+Mouse's "adaptation would not even work" too strong. His finding, against my pre-committed test
+above:
+
+| Test | Switch's answer | Result |
+|---|---|---|
+| 1. GQA — flash-attention tiling and subgroup-reduction shape transfer independently of layout | **Yes.** GEMV-vs-GEMM tile-size specialisation-constant structure and the per-lane partial dot → `subgroupAdd` reduction shape are layout-independent. | **T3 holds** |
+| 2. `MatMulNBits` — dequant-in-register and access strategy survive a different block format | **Yes, partially and usefully.** The ONNX nibble layout genuinely is incompatible with llama.cpp's K-quant structs — no code moves — but dequant-in-register *patterns* and the memory-access strategy transfer as algorithmic reference. | **T4 holds** |
+| 3. `LinearAttention` — no reference assumed | Unchanged; there is nothing to read. Its risk is OQ-16. | **T5a holds** (on this axis) |
+
+**The two of them are not actually in conflict, and it is worth being precise about where they
+differ**, because the difference is small and the licensing conclusion is identical. Both agree we
+write our own code and that **no obligation attaches** — that is settled and Rai's 🟢 covers it.
+They differ only on whether *reading* still saves time given the block-format mismatch. Mouse
+reasoned from the artifact (the structs are different, so nothing can be copied), which is correct
+and is exactly why no obligation attaches. Switch reasoned from the *schedule* (what does a reader
+learn that they would otherwise have to derive), which is the question my estimates actually depend
+on. **The distinction that resolves it: the block format dictates the innermost unpack, not the
+tiling schedule or the reduction shape** — and it is the latter two that cost weeks to get right on
+unfamiliar hardware, not the former.
+
+So the accelerant survives in Switch's narrower form, and that narrower form is the one I priced in:
+tiling and reduction structure as algorithmic reference, never the quantization layout. Two riders
+on holding the estimates:
+
+- **Budget the study time explicitly.** Switch asks that items 1–2 carry real algorithm-study time
+  rather than being treated as free. Agreed — "we may read llama.cpp" is not the same as "reading it
+  is instantaneous." That reading is inside the T3/T4 estimates, not a discount applied to them.
+- **The `MatMulNBits` unpack is ours from first principles.** The one part Mouse is unambiguously
+  right about gets no reference and no schedule relief; it is dictated by the ONNX contrib schema.
+
+**General rule from this exchange, since it will recur:** when two owners appear to disagree, check
+whether they are answering the same question before adjudicating. Here one answered "can this be
+copied?" and the other "does reading it help?" — both correctly, about different things. My error
+would have been to widen three tiers on the first answer when my estimates depended on the second.
+
 ---
 
 ## 9. Testing and benchmarking strategy
@@ -1252,6 +1575,82 @@ correctness claim — lavapipe does not reproduce driver-specific subgroup, deno
 behaviour, and **there is currently no CI coverage of any physical GPU, on any platform**; §11.1's
 on-device work is what begins to close that gap. Link owns which lanes exist; Trinity owns what runs
 on them.
+
+#### 9.1.1 The oracle is validated, not assumed — and what validating it cost
+
+§9.1's premise had one genuinely open risk: the CPU EP is an excellent oracle for `ai.onnx` float
+ops, but the quantized contrib path (§1.4) is a different animal, and if the CPU EP could not serve
+as an oracle for a GenAI-built int4 graph then the differential strategy for the *entire* quantized
+half of the project — the half containing all three XL kernels — would have needed rethinking
+before M2. Trinity ran the experiment rather than reasoning about it. **Result (2026-07-28): the
+ORT CPU EP is usable as a differential oracle for the quantized path. §9.1 stands unchanged and no
+rework is required.**
+
+Two findings emerged that only running it could have produced, and both are now binding:
+
+1. **The oracle is pinned to `accuracy_level=1`.** `MatMulNBits`' `accuracy_level` 4 (int8/VNNI)
+   diverges from levels 0–3 by ~3.6e-3 at K=1024, N=512. Unpinned, ORT would select a level based
+   on the CPU it happens to be running on, so our reference values would have drifted **silently
+   across CI runner hardware** — and the resulting flake would have looked like a bug in our
+   kernel. Generalized as a rule: **any oracle knob whose value the runtime chooses from the host
+   machine must be pinned explicitly and recorded in the test, not left to default.** An oracle
+   that changes with the machine is not an oracle. This applies to future additions too — thread
+   count, arena settings, graph-optimization level.
+2. **fp16 activations produce NaN/Inf on ORT 1.27**, independently reproducing the null-allocator
+   `PrePack` bug Fact Checker found and that drove Tank's version pin. The fp16 oracle test is
+   gated on ORT ≥ 1.28 and runs in CI. Three independent lines of evidence — Fact Checker's source
+   read, Tank's build experience, Trinity's numerical failure — now converge on 1.28, so the
+   `ORT_API_VERSION_MIN = 24` compile floor with a **pinned runtime** of 1.28 is settled on
+   evidence rather than on caution.
+
+**The one documented exception to "the CPU EP is the oracle".** Trinity implemented Mouse's
+three-regime tolerance policy but checks **dequantize bit-exact against NumPy, not against the CPU
+EP**. This is correct and I am ratifying it as the general rule for *layout* semantics: where a
+kernel's job is to interpret a bit layout defined by a schema, comparing against another
+implementation of that same schema does not test the reading — a shared misreading passes on both
+sides, which is precisely the failure mode §9.1 exists to prevent. So: **behaviour is checked
+against the CPU EP; bit-layout interpretation is checked against an independently written
+specification of the layout.** The two are complementary and neither substitutes for the other.
+This is C6 (§1.4 — per-layer verification, never final-logits) applied one level down, and the two
+now reinforce each other: with per-layer capture implemented, a wrong kernel is *locatable* without
+comparing logits across a 150k vocabulary, and with bit-exact dequant checks a wrong *unpack* is
+locatable without running a kernel at all.
+
+**No autouse EP fixture.** `conftest` no longer registers the EP as an autouse fixture, so tests
+that do not require Vulkan actually execute instead of skipping wholesale. This changes what a
+green run means, which is why it belongs in this document: 206 collected and 8 passing **with no EP
+built at all** is now a meaningful signal rather than a vacuous one — and among those 8 is the
+runtime half of C1, confirming that `com.microsoft::NotARealOp` takes the ordinary decline path.
+**C1 is therefore enforced from both ends**: Tank's static ban on the domain as a *value* in
+`layering.rs` (no `==`, `!=`, `matches!`, `if let`, `starts_with` can express it) and Trinity's
+runtime assertion that an unregistered contrib op declines like any other unregistered op. A
+constraint checked only statically can be satisfied by code that never runs; a constraint checked
+only at runtime can be reintroduced in a path no test reaches. C1 now has neither hole.
+
+#### 9.1.2 Execution status — what has actually run, as of 2026-07-28T22:28:08-07:00
+
+This document describes a design and a partially-implemented crate. It must not be read as
+describing a working GPU pipeline, and the following is stated here so that no reader has to infer
+it:
+
+- **No shader in this repository has ever been executed on any device.** As of this revision the
+  development machine has no Vulkan ICD installed and no `glslc` (§7.8), the shader corpus is a
+  variant table plus GLSL sources that have not been compiled here, and Switch's device path is
+  vocabulary, seams and stubs rather than a live submit loop.
+- **Trinity's lavapipe lanes are the only place anything will execute on a device**, and they
+  execute on a software rasterizer, which §9.1 already qualifies as a smoke test rather than a
+  correctness claim.
+- Every "green" count reported to date — 227 tests at the `cbb1a0d` level, 206 collected / 8 passing
+  in the no-EP configuration — measures **host-side logic**: claim predicates, registry invariants,
+  the layering lint, decline paths, and the harness itself. That is real work and it is exactly what
+  has to be right before a kernel is worth writing, but it is not evidence about numerics on a GPU.
+- The first genuine execution evidence is M0's exit criteria (§10); the first evidence about
+  *vendor* hardware is §11.1's on-device experiment, which has no hardware yet.
+
+The rule this encodes, and it applies to every document in `docs/`: **a test count is a claim about
+what was executed, and it must not be allowed to imply more execution than occurred.** The same
+discipline that produced the RAI-003 platform disclosure in `README.md` and Link's
+unverified-usability statement in `PLATFORMS.md` §8 applies to our own test numbers.
 
 ### 9.2 Benchmarking — Niobe
 
@@ -1347,12 +1746,15 @@ number going up is the only thing that means the named target is getting closer.
 3. Validation layers report zero errors and zero warnings in the debug lane.
 4. A machine with no Vulkan ICD loads the plugin, advertises zero devices, logs a warning, and the
    session still runs on CPU.
-5. `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` prints per-op decline reasons.
-6. The layering lint is in CI and fails a deliberately-planted violation, including a planted
+5. **A shader-less build (`ALLOW_MISSING_GLSLC=1`) advertises zero devices and claims nothing, with
+   a `built without shaders` reason** — it never loads, claims, and then fails at pipeline creation
+   (§7.8 condition 3).
+6. `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` prints per-op decline reasons.
+7. The layering lint is in CI and fails a deliberately-planted violation, including a planted
    `cmd_pipeline_barrier` outside `vk/barrier.rs` (§4.2, §7.5).
-7. **The full test suite passes twice per lane — once with the default barrier backend and once
+8. **The full test suite passes twice per lane — once with the default barrier backend and once
    with `ep.force_legacy_barriers=1` — with identical numerical results** (§7.5 item 5).
-8. Both sibling docs and this one are consistent; §12 lists every divergence.
+9. Both sibling docs and this one are consistent; §12 lists every divergence.
 
 ### M1 — "A useful elementwise EP" (`OP_COVERAGE.md` tier T1 — 87 ops)
 
@@ -1392,7 +1794,7 @@ Switch's, not Mouse's, and it should be resourced accordingly.
 
 | Work | Owner |
 |---|---|
-| `allocator.rs`, `transfer.rs`, handle registry (OQ-3), `OrtMemoryDevice` wiring | Tank |
+| `allocator.rs`, `transfer.rs`, **reserved-VA span registry (§6.4, OQ-3 resolved)** incl. platform probe-and-halve sizing, `OrtMemoryDevice` wiring | Tank |
 | Device-local arena, staging ring, coherence handling, barrier batching | Switch |
 | Reductions / `MatMul` / `Gemm` / `Softmax` / norms — semantics, claim, tiling; the fused Softmax and RMSNorm kernels from the §5.6 allowlist | Mouse + Switch |
 | MVS transfer-cost calibration at device init + its claim-debug dump (§8.4 A3) | Mouse + Switch |
@@ -1434,11 +1836,11 @@ person's deep work — and §1.5's months-scale claim rests on them.
 |---|---|---|---|
 | **OQ-1** | ~~How many real devices report Vulkan 1.1/1.2 **without** `VK_KHR_synchronization2` or `VK_EXT_subgroup_size_control`?~~ **RESOLVED 2026-07-28T19:16:08-07:00.** Link measured it (`PLATFORMS.md` §8, vulkan.gpuinfo.org 2026-07-28): `VK_KHR_synchronization2` is missing on **31.43% of Android** and **12.22% of Windows**; `VK_EXT_subgroup_size_control` on **14.12% of Android**, and its *feature flag* is `VK_FALSE` on all of macOS/iOS. **Ruling (§7.2–§7.5): both are dropped from the hard requirement.** `synchronization2` becomes a probed capability selecting one of two barrier backends behind a single seam (`vk/barrier.rs`); `subgroup_size_control` is consulted as a *properties query* only and never as a required feature. Link's layer-shim option is **rejected** — the AOSP loader cannot discover a layer we ship from a plugin `.so`, and the cited wgpu/Dawn/Godot precedent turned out to be legacy-barrier-only in all three. | Link investigated → **Morpheus decided** | — (§7 is frozen) |
 | **OQ-2** | ~~Do llama.cpp and ExecuTorch's stated version floors survive verification?~~ **RESOLVED 2026-07-28T17:59:54-07:00.** Fact Checker claims 1–2: both "requires 1.3" claims **contradicted**. llama.cpp base shaders target `vulkan1.2` (only `_cm2` variants target 1.3); ExecuTorch hardcodes `VK_API_VERSION_1_1`. Claim 4 (Android share) remains *unverified but plausible*. | **Fact Checker** (done) | — |
-| **OQ-3** | The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair. **A genuine two-way choice:** (a) an **opaque-handle registry** — a monotonic token cast to `*mut c_void`, resolved through a side table (provisional); (b) `VK_KHR_buffer_device_address`. Note that under the frozen §7.2 **BDA is probed, not required**, so a BDA-based design needs the registry as a fallback anyway — which is a strong argument that (a) is the primary design and (b) is at most an optimization on devices that expose it. **Correction, 2026-07-28T19:16:08-07:00:** an earlier revision of this row listed ORT's external-resource importer as a third candidate whose cost was "moves our ABI floor to 1.28". **Both halves of that were wrong** and the row is withdrawn — see OQ-13. | Tank proposes → **Morpheus decides** | M2 |
+| **OQ-3** | ~~The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair.~~ **RESOLVED 2026-07-28T22:28:08-07:00 — see §6.4.** `Alloc` returns a span of **reserved, never-dereferenceable virtual address space** (`VirtualAlloc(MEM_RESERVE, PAGE_NOACCESS)` / `mmap(PROT_NONE, MAP_NORESERVE)`), resolved to `(VkBuffer, offset)` through an opaque-handle registry once per descriptor binding. **`VK_KHR_buffer_device_address` is not carried at all** — Tank's argument that BDA is a second *shader architecture* rather than an optimization is correct and superseded my "registry primary, BDA on top" framing. Reserved VA makes ORT's pointer arithmetic correct by construction and turns a stray dereference into an MMU fault instead of silent corruption. Android's narrower address space is handled by **probe-and-halve at construction**, not by a platform constant — a tuning parameter, not a blocking dependency on Link. | Tank proposed → **Morpheus decided** | — |
 | **OQ-13** | **Zero-copy IO binding via `OrtEpFactory::CreateExternalResourceImporterForDevice`.** *New, 2026-07-28T19:16:08-07:00.* Verified by Fact Checker: the public vtable member is `CreateExternalResourceImporterForDevice` (the `…Impl` suffix is a local static in test code, not API), it landed in **ORT 1.24** — not 1.28 — and Tank has already set `ORT_API_VERSION_MIN = 24` with version negotiation, so **it costs us no ABI floor movement.** It is **orthogonal to OQ-3**: it is an OS-handle external-memory path in which the *caller* exports their `VkDeviceMemory` via `vkGetMemoryWin32HandleKHR` / `vkGetMemoryFdKHR` and we re-import it, answering "how does an external caller hand us their buffer as a graph input/output", not "what does our `Alloc()` return". Tank and Fact Checker independently reached this and Tank has recorded it as evaluated-and-rejected for OQ-3; **it is not to be re-proposed there.** Tracked here on its own merits: it is real, supported upstream, has an in-tree reference (`onnxruntime/test/providers/nv_tensorrt_rtx/nv_vulkan_test.cc`), and is the complete answer to zero-copy IO binding. **Scope: post-M2**, because it presupposes the device-memory tensor path exists. Known constraint to design around: the caller's memory must have been allocated with `VkExportMemoryAllocateInfo` up front — it cannot be retrofitted onto an ordinary allocation, so this is an integration contract we must document, not a transparent optimization. | **Tank** designs → Morpheus reviews | post-M2 |
 | **OQ-14** | **What fraction of target devices support `shaderFloat16` + `storageBuffer16BitAccess`?** *Escalated from Mouse's OQ-M2, 2026-07-28T19:16:08-07:00.* Under the frozen §7.2 both are probed, not required. An fp32-upcast LLM path is a memory-footprint failure, not a slow path (§8.4 A4), so a low Android number means the LLM story is **desktop-first as a product boundary**, regardless of op coverage. This decides a product scope, which is why it is not a shader-variant detail. | **Link** measures → **Morpheus** rules on scope | tier 3 / M3 |
 | **OQ-15** | **Indirect dispatch.** *New, 2026-07-28T19:16:08-07:00.* Shape-agnostic push-constant kernel parameters (§8.4 A5) make the *shader* length-agnostic but not the **workgroup count**, which still depends on sequence length — so either we re-record per shape bucket anyway, or we use `vkCmdDispatchIndirect` with a device-computed count. The same mechanism is what `QMoE`'s data-dependent expert routing needs on a pre-recorded command buffer. One evaluation should serve both. Evaluate, do not assume. | **Switch** evaluates → Morpheus decides | tier 3, tier 5b |
-| **OQ-4** | Shader compilation: build-time `glslc` from the Vulkan SDK (SDK becomes a build dependency) vs checked-in pre-generated SPIR-V (reviewable diffs, but binary artifacts in git) vs both with SDK preferred. Provisionally: build-time with checked-in fallback. | **Switch** proposes → Link validates on all CI lanes → Morpheus decides | M0 |
+| **OQ-4** | ~~Shader compilation: build-time `glslc` vs checked-in pre-generated SPIR-V vs both with SDK preferred. Provisionally: build-time with checked-in fallback.~~ **RESOLVED 2026-07-28T22:28:08-07:00 — §7.8. The provisional decision is *changed*, not implemented: the Vulkan SDK is a hard build prerequisite and there is no checked-in SPIR-V fallback.** Found by the coordinator building on a machine without the SDK — `build.rs` panics with an escape hatch, which contradicted this row. The doc was wrong, not the code: a checked-in `.spv` that drifts from its `.comp` changes what runs with no signal, "reviewable diffs" is not true of SPIR-V binaries, and the variant table already generates 168 modules. Five binding conditions in §7.8, of which one is new work for Switch: **a shader-less artifact must advertise zero devices and claim nothing**. If the prerequisite ever proves to block contribution, the remedy is vendoring `shaderc`/`naga`, not checked-in binaries. | Switch proposed → coordinator found the divergence → **Morpheus decided** | — |
 | **OQ-5** | `gpu-allocator` vs a hand-rolled suballocator. `ENGINE.md` §3.1 picks `gpu-allocator`; I concur provisionally. Confirm it cross-compiles cleanly for Android and works under MoltenVK. | **Switch** owns → Link validates | M0/M3 |
 | **OQ-6** | What vendor ID does the factory report when it advertises zero devices, or before a device is bound? ORT calls `GetVendorId` on the factory, not per device. | **Tank** proposes → Morpheus decides | M0 |
 | **OQ-7** | Do we need a real GPU CI runner for M2's exit criteria, and if so, self-hosted or a cloud GPU lane? Software rasterizers cannot validate a speedup claim. | **Link** proposes → Justin decides (cost) | M2 |
@@ -1447,6 +1849,8 @@ person's deep work — and §1.5's months-scale claim rests on them.
 | **OQ-10** | Tolerance policy for accumulation-order-sensitive ops (GEMM, reductions) across vendors, where fp32 associativity differs. Needs a stated, derived rule before M2's ops land, not after. | **Trinity** proposes → Morpheus ratifies | M2 |
 | **OQ-11** | ~~Ratification of `OP_COVERAGE.md` (§8.1).~~ **RESOLVED 2026-07-28T19:16:08-07:00: ratified with five amendments** (§8.4). It supersedes §8.2/§8.3; §8.1's seven principles stand. **Its central question — whether to admit `com.microsoft` — was then settled above my level by Justin's ruling of 2026-07-28T20:54:42-07:00** (see OQ-8); A1 is revised accordingly and survives as the *discipline* rather than as the permission. | Mouse proposed → **Morpheus ratified** → **Justin ruled on the domain** | — |
 | **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for some other reason? **The 31.43% figure is a database claim, not a usability claim, and until the experiment in §11.1 runs, that is exactly how much of it is unverified: all of it.** *Concurrence noted 2026-07-28T21:01:56-07:00: Link's `PLATFORMS.md` §8 rewrite now states the same position in his own words — the gpuinfo data proves those devices lack `VK_KHR_synchronization2`, not that a legacy barrier path makes them usable. The two documents agree on the honest position rather than each implying the other verified it.* The experiment, its pass/fail bar, and what would reverse the decision are specified in §11.1. Needs real hardware, which we do not have. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
+
+| **OQ-16** | **When do `LinearAttention` and `CausalConvWithState` appear in a *released* ORT, and does their schema change between our main-branch fingerprint and that release?** *New, 2026-07-28T22:28:08-07:00.* Four of the eleven admitted contrib rows (`LinearAttention`, `CausalConvWithState`, `QMoE`, `MoE`) carry `MAIN_BASELINE` — they exist only on ORT main. All four are `Staged`, so nothing is claimed against an unreleased schema, and C2 item 6 now makes that structural rather than intentional. But `LinearAttention` and `CausalConvWithState` gate **T5a, the named Qwen3.5 target**, so we are partly gated on an *upstream schema stabilizing* — a different risk from "the Vulkan kernel is hard", with different mitigations, and it must be reported as such rather than folded into a Vulkan schedule slip. Practically: the T5a kernels may be written twice, and every main-baseline fingerprint needs re-verification the moment its release exists. | **Fact Checker** watches upstream → Mouse re-verifies → **Morpheus** rules on T5a scope | T5a |
 
 ### 11.1 OQ-12 — the minimum decisive experiment
 
@@ -1534,7 +1938,7 @@ reference.
 | D5 | **Weight prepacking is a first-class `Compile` step**, not a first-`Run` cache fill. | Vulkan uploads are explicit and expensive; ORT gives us initializer bytes at compile time; doing it lazily would put a staging copy on the first inference for no benefit. |
 | D6 | **`shaders/` directory and a SPIR-V build step.** MLX explicitly *deleted* its `.metal` kernels. | We are the backend. This is the one place where the MLX project's history is an anti-pattern for us — its lesson was "don't hand-write kernels when a good backend exists", and for Vulkan no such backend exists. |
 | D7 | **fp32-only v0; fp16 as a per-family gated variant.** MLX is dtype-generic for free. | MLX carries dtype through its ops with no per-dtype code. Every Vulkan dtype is a separate SPIR-V variant plus a device feature probe. |
-| D8 | **`com.microsoft` contrib ops in scope; nine named ops are the v1 admitted set (tiers 3–5).** MLX's highest-value ops are contrib ops. | *Revised 2026-07-28T20:54:42-07:00.* Originally "no contrib ops in v1"; reversed by the OQ-11 ratification and then settled directly by Justin's ruling that the domain is in scope — the ORT GenAI model builder emits them, so declining means no Qwen graph runs at all. The remaining divergence from MLX is *how*: we register ops **by name with a hand-written claim predicate each and no domain-wide opt-in in the code**, plus a graph census in CI as the drift alarm for a surface that has no opset number (§1.4 C1–C7). |
+| D8 | **`com.microsoft` contrib ops in scope; eleven named ops are the v1 admitted set (tiers 3–5).** MLX's highest-value ops are contrib ops. | *Revised 2026-07-28T20:54:42-07:00.* Originally "no contrib ops in v1"; reversed by the OQ-11 ratification and then settled directly by Justin's ruling that the domain is in scope — the ORT GenAI model builder emits them, so declining means no Qwen graph runs at all. The remaining divergence from MLX is *how*: we register ops **by name with a hand-written claim predicate each and no domain-wide opt-in in the code**, plus a graph census in CI as the drift alarm for a surface that has no opset number (§1.4 C1–C7). |
 | D9 | **Vendor ID is read from the bound device**, not hardcoded to one vendor. | Cross-platform mandate. |
 | D10 | **Validation layers are part of the definition of done.** No MLX equivalent. | Vulkan's error surface is enormous and mostly silent without layers; MLX's C API validates for us. |
 | D11 | **`ash` (safe-ish Rust Vulkan bindings) rather than bindgen over `vulkan.h`.** MLX bindgens `mlx-c` directly. | `ash` is the ecosystem standard, handles the loader/extension-function-pointer problem correctly, and removes a large class of hand-written FFI bugs. The ORT side still uses bindgen, matching the reference. |
