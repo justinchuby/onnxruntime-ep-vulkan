@@ -787,6 +787,7 @@ mod tests {
         let caps = crate::vk::caps::Capabilities {
             synchronization2: true, // device reports sync2 — must be overridden
             subgroup_size: 32,
+            subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             subgroup_size_range: Some(crate::vk::caps::SubgroupSizeRange { min: 32, max: 32 }),
             can_require_subgroup_size: false,
@@ -804,6 +805,7 @@ mod tests {
         let caps = crate::vk::caps::Capabilities {
             synchronization2: false,
             subgroup_size: 64,
+            subgroup_basic_in_compute: false,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             subgroup_size_range: None,
             can_require_subgroup_size: false,
@@ -821,6 +823,7 @@ mod tests {
         let caps = crate::vk::caps::Capabilities {
             synchronization2: true,
             subgroup_size: 32,
+            subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             subgroup_size_range: None,
             can_require_subgroup_size: false,

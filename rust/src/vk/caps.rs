@@ -71,8 +71,17 @@ pub(crate) struct Capabilities {
     /// (Vulkan 1.1 core, always available after the device gate).
     pub subgroup_size: u32,
 
-    /// Subgroup operations supported in the `COMPUTE` stage.
-    /// `BASIC` is guaranteed by the device gate (R5); everything else is optional.
+    /// True when the subgroup `BASIC` feature is supported in the `COMPUTE` shader stage.
+    ///
+    /// This was formerly gate criterion R5, but was demoted here per Morpheus's §7.0 principle:
+    /// "capability shortfalls degrade op coverage, not device availability." Software renderers
+    /// (lavapipe/llvmpipe) and some integrated GPUs lack subgroup support in compute; they are
+    /// still admitted as capable devices. Ops that use subgroup intrinsics must check this flag
+    /// before claiming the op.
+    pub subgroup_basic_in_compute: bool,
+
+    /// Subgroup operations supported across all stages.
+    /// Check [`subgroup_basic_in_compute`] for compute-stage BASIC support specifically.
     pub subgroup_supported_ops: vk::SubgroupFeatureFlags,
 
     /// Subgroup size range, present only when `VK_EXT_subgroup_size_control` or Vulkan 1.3 core
@@ -259,6 +268,16 @@ pub(crate) unsafe fn probe(
     // `subgroupSizeControl == VK_FALSE` — Metal cannot set SIMD width per pipeline.
     let can_require_subgroup_size = query_ssc && ssc_features.subgroup_size_control == vk::TRUE;
 
+    // subgroup_basic_in_compute: formerly gate R5 — now a capability field so that
+    // software renderers (lavapipe/llvmpipe) are admitted to the device roster even when
+    // subgroup support is limited. Ops that use subgroup intrinsics gate on this field.
+    let subgroup_basic_in_compute = subgroup_props
+        .supported_stages
+        .contains(vk::ShaderStageFlags::COMPUTE)
+        && subgroup_props
+            .supported_operations
+            .contains(vk::SubgroupFeatureFlags::BASIC);
+
     // fp16: shaderFloat16 = arithmetic is available.
     // TODO: probe VkPhysicalDevice{Float16Int8,16BitStorage}FeaturesKHR on 1.1 devices.
     let shader_float16 = vk12_features.shader_float16 == vk::TRUE;
@@ -269,6 +288,7 @@ pub(crate) unsafe fn probe(
     Capabilities {
         synchronization2,
         subgroup_size: subgroup_props.subgroup_size,
+        subgroup_basic_in_compute,
         subgroup_supported_ops: subgroup_props.supported_operations,
         subgroup_size_range,
         can_require_subgroup_size,
@@ -326,6 +346,7 @@ pub(crate) fn test_caps(sync2: bool) -> Capabilities {
     Capabilities {
         synchronization2: sync2,
         subgroup_size: 32,
+        subgroup_basic_in_compute: true,
         subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
         subgroup_size_range: None,
         can_require_subgroup_size: false,
@@ -346,6 +367,7 @@ mod tests {
         Capabilities {
             synchronization2: sync2,
             subgroup_size: 32,
+            subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             subgroup_size_range: None,
             can_require_subgroup_size: false,
@@ -397,6 +419,7 @@ mod tests {
         let caps = Capabilities {
             synchronization2: true, // 1.3 core
             subgroup_size: 32,      // Apple GPU fixed wave = 32
+            subgroup_basic_in_compute: true,
             subgroup_size_range: Some(SubgroupSizeRange { min: 32, max: 32 }),
             can_require_subgroup_size: false, // <── the MoltenVK distinction
             shader_float16: true,

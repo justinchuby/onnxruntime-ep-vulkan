@@ -1,17 +1,17 @@
 # Vulkan Runtime & Shader Architecture
 
 **Status:** In progress — core modules landed
-**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T05:17:03-07:00)
+**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-28T22:28:08-07:00)
 **Author:** Switch (Vulkan Compute Engineer)
 **Scope:** `rust/src/engine.rs` and the Vulkan abstraction layer; does NOT cover ONNX graph
 partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESIGN.md (Morpheus).
 
-## Implementation Status (2026-07-29T05:17:03-07:00)
+## Implementation Status (2026-07-28T22:28:08-07:00)
 
 | Module | Status | Notes |
 |---|---|---|
-| `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate, 15 unit tests |
-| `vk/caps.rs` | ✅ Real | Capability probe, MoltenVK trap, `test_caps()` helper |
+| `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate (R1–R4, R6), `assess_gate` verbose output, 19 unit tests |
+| `vk/caps.rs` | ✅ Real | Capability probe, MoltenVK trap, `subgroup_basic_in_compute` field, `test_caps()` helper |
 | `vk/barrier.rs` | ✅ Real | Dual-backend, mapping tables, probe write, 20 unit tests |
 | `vk/device.rs` | ✅ Real | Logical device creation, queue retrieval, `Barriers::select`, Drop |
 | `vk/alloc.rs` | ✅ Real | `gpu-allocator` backed, 4 memory classes, staging helpers, 6 unit tests |
@@ -20,14 +20,14 @@ partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESI
 | `engine.rs` seams | ✅ Stubbed | Vocabulary types, `Plan`, `CompileContext`, `DispatchContext`; real dispatch pending |
 | Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. `shaders::has_any()`. 3 unit tests. |
 | Loader diagnostics | ✅ Real | `loader_state_lines()` always emitted on `vkCreateInstance` failure; INFO-gated pre-creation on `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`. `apiVersion` capped to loader version. |
-| `epctl --probe-loader` | ✅ Real | Standalone loader probe: library presence, loader version, ICD env vars, layers/extensions, `vkCreateInstance`, device gate. Exits 1 when no capable device found. |
+| `epctl --probe-loader` | ✅ Real | Per-device per-criterion gate assessment via `assess_gate`; shows measured values and PASS/FAIL verdict for every criterion. |
 | Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute |
 | Real `DispatchContext` | 🔲 Pending | Concrete implementor over `VkCommandBuffer` using `cmd.rs` + `pipeline.rs` |
 | `alloc` integration | 🔲 Pending | Tank's `BufferView` handle table ↔ `GpuBuffer` side-table |
 | Prepack hook (real) | 🔲 Pending | Seam 1 vocab is real; actual staging upload behind it pending |
 | KV-cache aliasing | 🔲 Pending | Seam 2 default impl correct for stubs; real aliasing pending |
 
-Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **272** (238 lib + 6 dump-capabilities + 26 layering).
+Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **283** (241 lib + 6 dump-capabilities + 26 layering + 7 portability + 3 doc-tests ignored).
 
 ---
 
@@ -639,17 +639,30 @@ already embeds ORT.
 
 **Capability shortfalls degrade op coverage, not device availability** (`DESIGN.md` §7.0).
 
-The device gate is six hard requirements — no optional extensions:
+The device gate is **five** hard requirements (R1–R4, R6) — no optional extensions:
 
 1. Vulkan ≥ 1.1
 2. At least one compute queue
 3. `maxComputeWorkGroupInvocations ≥ 256`
 4. `maxComputeSharedMemorySize ≥ 16384`
-5. Subgroup BASIC operations in COMPUTE stage
-6. At least one DEVICE_LOCAL and one HOST_VISIBLE memory type
+5. At least one DEVICE_LOCAL memory heap and one HOST_VISIBLE memory type
 
-No extension is required. Capability shortfalls (no sync2, no fp16, no subgroup size control)
-mean fewer ops are available, not that the device is rejected.
+**R5 (subgroup BASIC in COMPUTE stage) was removed from the gate in session 10.**
+
+Lavapipe/llvmpipe — the only device available on CI — reported `supportedStages = 0` for
+subgroup operations on the Mesa version present in Ubuntu 22.04. The old R5 check rejected
+it, violating Morpheus's §7.0 governing principle verbatim: *"capability shortfalls degrade
+op coverage, not device availability."* Subgroup support is now recorded in
+`Capabilities::subgroup_basic_in_compute`; ops that use subgroup intrinsics check that field
+in their claim predicates instead of requiring it at device admission.
+
+`passes_gate` is a thin wrapper over `assess_gate`, which evaluates **every** criterion and
+records its measured value — no early exit. This lets `epctl --probe-loader` show the exact
+criterion and value that rejected a device, and lets `enumerate_capable_devices` log the full
+assessment at DEBUG when a device fails the gate.
+
+No extension is required. Capability shortfalls (no sync2, no fp16, no subgroup size control,
+no subgroup BASIC in compute) mean fewer ops are available, not that the device is rejected.
 
 ### 8.1 Why `synchronization2` Is Not Required
 

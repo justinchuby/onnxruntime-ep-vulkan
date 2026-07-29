@@ -48,6 +48,22 @@ log = { version = "0.4", features = ["std"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
 
+# --- Observability (Niobe; mirrors `onnxruntime-mlx/rust/Cargo.toml`) -----------------------
+#
+# Pure-Rust Chrome/Perfetto tracer, from crates.io — Justin's own crate, the same one the MLX EP
+# uses. `default-features = false` drops the `perfetto` (prost) feature: we export Chrome Trace
+# JSON only, which keeps a plugin dylib free of a protobuf codegen dependency.
+#
+# Pinned to a release with the **absolute UNIX-microsecond clock**, and the pin is the point.
+# A plugin cdylib has its own statically linked copy of this crate and its own statics, so it
+# could never share a process-global epoch with the host's copy. Because the clock is absolute
+# rather than process-relative, both copies report the same instant as the same number — which is
+# what lets a trace emitted from inside this plugin be laid directly over a host trace (or over
+# the MLX EP's trace) with no offset to negotiate. Moving off this pin without re-checking that
+# property silently breaks trace overlay, and the breakage looks like "the GPU work happened at a
+# different time", not like a version bump.
+onnx-runtime-tracer = { version = "0.1.0-dev.5", default-features = false }
+
 [dev-dependencies]
 # `tests/cdylib_load.rs` loads the *shipped* cdylib by path and resolves `CreateEpFactories` /
 # `ReleaseEpFactory` by name, exactly as ONNX Runtime does. Test-only: the plugin itself is never

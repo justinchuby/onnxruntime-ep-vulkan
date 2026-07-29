@@ -243,16 +243,6 @@ impl Instance {
             // SAFETY: handle and pdev are live.
             let props = unsafe { self.handle.get_physical_device_properties(pdev) };
 
-            // Chain in the subgroup properties — Vulkan 1.1 core.
-            let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
-            let mut props2 = vk::PhysicalDeviceProperties2::default();
-            let _ = props2.push_next(&mut subgroup_props);
-            // SAFETY: handle and pdev are live; chain structs on the stack, no dangling refs.
-            unsafe {
-                self.handle
-                    .get_physical_device_properties2(pdev, &mut props2)
-            };
-
             // ── Memory properties ─────────────────────────────────────────────
             // SAFETY: handle and pdev are live.
             let mem_props = unsafe { self.handle.get_physical_device_memory_properties(pdev) };
@@ -270,15 +260,16 @@ impl Instance {
                 .map(|i| i as u32);
 
             // ── Apply the gate ────────────────────────────────────────────────
-            if let Err(reason) = passes_gate(
-                &props,
-                &props.limits,
-                &mem_props,
-                compute_family,
-                &subgroup_props,
-            ) {
+            if let Err(reason) = passes_gate(&props, &props.limits, &mem_props, compute_family) {
                 let name = device_name_str(&props);
                 log::debug!("Physical device {idx} ({name}): gate failed: {reason}");
+                // Emit per-criterion breakdown at DEBUG so a user who sets RUST_LOG=debug
+                // gets the full measured values without any runtime overhead in production.
+                if log::log_enabled!(log::Level::Debug) {
+                    for c in assess_gate(&props, &props.limits, &mem_props, compute_family) {
+                        log::debug!("{}", c.row());
+                    }
+                }
                 continue;
             }
 
@@ -347,79 +338,171 @@ pub(crate) struct CapableDevice {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Capability gate (§7.2 R1–R6)
+// Capability gate (§7.2 R1–R4, R6)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Apply the §7.2 hard capability requirements to a physical device.
+/// One evaluated criterion in the §7.2 device gate.
 ///
-/// Returns `Ok(())` if all six requirements pass, or `Err(reason)` describing the first
-/// failure. The reason strings are stable diagnostic messages; they appear in debug logs and
-/// in Trinity's gate-failure assertions.
+/// Holds the human-readable description, measured value, pass/fail verdict, and the stable
+/// error string that [`passes_gate`] returns on failure (Trinity's tests assert on those
+/// strings).
+pub(crate) struct GateCriterion {
+    /// Short display label, e.g. `"R1  Vulkan API version"`.
+    pub label: &'static str,
+    /// Requirement in human-readable form, e.g. `">= 1.1"`.
+    pub requirement: &'static str,
+    /// Measured value from the device, e.g. `"1.3.255"`.
+    pub measured: String,
+    /// `true` when the criterion is satisfied.
+    pub passed: bool,
+    /// The error string returned by [`passes_gate`] when this criterion fails.
+    /// **Stable** — Trinity's gate-failure assertions match these strings exactly.
+    failure_reason: &'static str,
+}
+
+impl GateCriterion {
+    /// Format one row for probe/diagnostic output.
+    pub fn row(&self) -> String {
+        let verdict = if self.passed { "PASS" } else { "FAIL ←" };
+        format!(
+            "  {:<44} {:<22} {}",
+            format!("{} (req. {})", self.label, self.requirement),
+            self.measured,
+            verdict,
+        )
+    }
+}
+
+/// Evaluate all §7.2 gate criteria (R1–R4, R6) against a device's reported properties.
+///
+/// Unlike [`passes_gate`], this **does not short-circuit**: every criterion is evaluated and
+/// its measured value is recorded regardless of earlier failures. Use this for diagnostic and
+/// probe output; use [`passes_gate`] in the hot-path device enumeration loop.
+///
+/// **R5 is absent.** Subgroup BASIC in COMPUTE was demoted from the hard gate to
+/// [`Capabilities::subgroup_basic_in_compute`] per Morpheus's §7.0 governing principle:
+/// *"capability shortfalls degrade op coverage, not device availability."* Software renderers
+/// (lavapipe/llvmpipe) lack subgroup support in compute but are still valid EP devices — ops
+/// that use subgroup intrinsics gate on the capability field instead.
+///
+/// All parameters are plain structs (no Vulkan handles), so this function is fully unit-testable
+/// without a live ICD.
+pub(crate) fn assess_gate(
+    props: &vk::PhysicalDeviceProperties,
+    limits: &vk::PhysicalDeviceLimits,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    compute_queue_family: Option<u32>,
+) -> Vec<GateCriterion> {
+    let mut criteria = Vec::with_capacity(6);
+
+    // R1 — Vulkan API version >= 1.1
+    let api_v = props.api_version;
+    criteria.push(GateCriterion {
+        label: "R1  Vulkan API version",
+        requirement: ">= 1.1",
+        measured: format!(
+            "{}.{}.{}",
+            vk::api_version_major(api_v),
+            vk::api_version_minor(api_v),
+            vk::api_version_patch(api_v),
+        ),
+        passed: api_v >= vk::make_api_version(0, 1, 1, 0),
+        failure_reason: "R1: Vulkan API version < 1.1",
+    });
+
+    // R2 — At least one compute queue family
+    criteria.push(GateCriterion {
+        label: "R2  compute queue family",
+        requirement: "present",
+        measured: compute_queue_family
+            .map(|f| format!("family {f}"))
+            .unwrap_or_else(|| "absent".to_string()),
+        passed: compute_queue_family.is_some(),
+        failure_reason: "R2: no compute queue family",
+    });
+
+    // R3 — Minimum compute workgroup invocations
+    let inv = limits.max_compute_work_group_invocations;
+    criteria.push(GateCriterion {
+        label: "R3  maxComputeWorkGroupInvocations",
+        requirement: ">= 256",
+        measured: inv.to_string(),
+        passed: inv >= 256,
+        failure_reason: "R3: maxComputeWorkGroupInvocations < 256",
+    });
+
+    // R4 — Minimum shared memory
+    let shm = limits.max_compute_shared_memory_size;
+    criteria.push(GateCriterion {
+        label: "R4  maxComputeSharedMemorySize",
+        requirement: ">= 16384 B",
+        measured: format!("{shm} B ({} KiB)", shm / 1024),
+        passed: shm >= 16384,
+        failure_reason: "R4: maxComputeSharedMemorySize < 16384",
+    });
+
+    // R6a — At least one DEVICE_LOCAL heap
+    let heap_count = mem_props.memory_heap_count as usize;
+    let dl_heap = (0..heap_count).find(|&i| {
+        mem_props.memory_heaps[i]
+            .flags
+            .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
+    });
+    criteria.push(GateCriterion {
+        label: "R6a DEVICE_LOCAL memory heap",
+        requirement: "at least 1",
+        measured: dl_heap
+            .map(|i| format!("heap {i}"))
+            .unwrap_or_else(|| "none".to_string()),
+        passed: dl_heap.is_some(),
+        failure_reason: "R6a: no DEVICE_LOCAL memory heap",
+    });
+
+    // R6b — At least one HOST_VISIBLE memory type
+    let type_count = mem_props.memory_type_count as usize;
+    let hv_type = (0..type_count).find(|&i| {
+        mem_props.memory_types[i]
+            .property_flags
+            .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
+    });
+    criteria.push(GateCriterion {
+        label: "R6b HOST_VISIBLE memory type",
+        requirement: "at least 1",
+        measured: hv_type
+            .map(|i| format!("type {i}"))
+            .unwrap_or_else(|| "none".to_string()),
+        passed: hv_type.is_some(),
+        failure_reason: "R6b: no HOST_VISIBLE memory type",
+    });
+
+    criteria
+}
+
+/// Apply the §7.2 hard capability requirements (R1–R4, R6) to a physical device.
+///
+/// Returns `Ok(())` if all requirements pass, or `Err(reason)` describing the first failure.
+/// The reason strings are stable diagnostic messages; they appear in debug logs and in
+/// Trinity's gate-failure assertions.
+///
+/// This is a thin wrapper around [`assess_gate`] that short-circuits on the first failure.
+/// For full verbose output with measured values, call [`assess_gate`] directly.
 ///
 /// **All parameters are plain structs (no Vulkan handles)** so this function can be
 /// exhaustively unit-tested without a Vulkan ICD. See the `tests` module below.
+///
+/// Note: R5 (subgroup BASIC in COMPUTE) is **not** checked here — it is recorded in
+/// [`Capabilities::subgroup_basic_in_compute`] per Morpheus's §7.0 principle.
 pub(crate) fn passes_gate(
     props: &vk::PhysicalDeviceProperties,
     limits: &vk::PhysicalDeviceLimits,
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     compute_queue_family: Option<u32>,
-    subgroup_props: &vk::PhysicalDeviceSubgroupProperties<'_>,
 ) -> Result<(), &'static str> {
-    // R1 — Vulkan API version ≥ 1.1.
-    if props.api_version < vk::make_api_version(0, 1, 1, 0) {
-        return Err("R1: Vulkan API version < 1.1");
+    for criterion in assess_gate(props, limits, mem_props, compute_queue_family) {
+        if !criterion.passed {
+            return Err(criterion.failure_reason);
+        }
     }
-
-    // R2 — At least one compute queue family.
-    if compute_queue_family.is_none() {
-        return Err("R2: no compute queue family");
-    }
-
-    // R3 — Minimum compute workgroup invocations.
-    if limits.max_compute_work_group_invocations < 256 {
-        return Err("R3: maxComputeWorkGroupInvocations < 256");
-    }
-
-    // R4 — Minimum shared memory.
-    if limits.max_compute_shared_memory_size < 16384 {
-        return Err("R4: maxComputeSharedMemorySize < 16384");
-    }
-
-    // R5 — Subgroup BASIC operations in the COMPUTE stage.
-    if !subgroup_props
-        .supported_stages
-        .contains(vk::ShaderStageFlags::COMPUTE)
-    {
-        return Err("R5a: subgroup not supported in the COMPUTE stage");
-    }
-    if !subgroup_props
-        .supported_operations
-        .contains(vk::SubgroupFeatureFlags::BASIC)
-    {
-        return Err("R5b: BASIC subgroup operations not supported");
-    }
-
-    // R6 — At least one DEVICE_LOCAL heap and at least one HOST_VISIBLE memory type.
-    let heap_count = mem_props.memory_heap_count as usize;
-    let has_device_local = (0..heap_count).any(|i| {
-        mem_props.memory_heaps[i]
-            .flags
-            .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
-    });
-    if !has_device_local {
-        return Err("R6a: no DEVICE_LOCAL memory heap");
-    }
-
-    let type_count = mem_props.memory_type_count as usize;
-    let has_host_visible = (0..type_count).any(|i| {
-        mem_props.memory_types[i]
-            .property_flags
-            .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
-    });
-    if !has_host_visible {
-        return Err("R6b: no HOST_VISIBLE memory type");
-    }
-
     Ok(())
 }
 
@@ -610,21 +693,66 @@ pub(crate) fn probe_loader_report() -> String {
         handle: inst_handle,
     };
 
-    // Step 4: enumerate devices and apply the §7.2 gate.
-    let devices = inst.enumerate_capable_devices();
-    out.push(format!(
-        "{} device(s) passed the §7.2 capability gate:",
-        devices.len()
-    ));
-    for (i, d) in devices.iter().enumerate() {
+    // Step 4: enumerate all physical devices and run the §7.2 gate assessment.
+    // We query physical devices directly here (rather than calling enumerate_capable_devices)
+    // so we can show the full per-criterion breakdown for *every* device, including those
+    // that fail the gate — that is exactly the output needed to diagnose gate rejections.
+    //
+    // SAFETY: inst_handle is live; we pass no invalid pointers.
+    let raw_devices = unsafe { inst.handle.enumerate_physical_devices() }.unwrap_or_default();
+    out.push(format!("{} physical device(s) found:", raw_devices.len()));
+
+    let mut n_passed = 0usize;
+    for (idx, &pdev) in raw_devices.iter().enumerate() {
+        // SAFETY: inst.handle and pdev are live for the duration of this loop.
+        let props = unsafe { inst.handle.get_physical_device_properties(pdev) };
+        // SAFETY: same as above.
+        let mem_props = unsafe { inst.handle.get_physical_device_memory_properties(pdev) };
+        // SAFETY: same as above.
+        let queue_families = unsafe {
+            inst.handle
+                .get_physical_device_queue_family_properties(pdev)
+        };
+        let compute_family = queue_families
+            .iter()
+            .position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE))
+            .map(|i| i as u32);
+
+        let api_v = props.api_version;
+        let name = device_name_str(&props);
+        let criteria = assess_gate(&props, &props.limits, &mem_props, compute_family);
+        let all_pass = criteria.iter().all(|c| c.passed);
+        let verdict = if all_pass { "PASS" } else { "FAIL" };
+
         out.push(format!(
-            "  [{i}] {:?}: {} (driver {}, Vulkan {})",
-            d.info.kind, d.info.name, d.info.driver_version, d.info.api_version
+            "Device {idx}: {} [Vulkan {}.{}.{}]  — gate {}",
+            name,
+            vk::api_version_major(api_v),
+            vk::api_version_minor(api_v),
+            vk::api_version_patch(api_v),
+            verdict,
         ));
+        for c in &criteria {
+            out.push(c.row());
+        }
+
+        if all_pass {
+            n_passed += 1;
+        }
     }
-    if devices.is_empty() {
+
+    out.push(format!(
+        "{n_passed} device(s) passed the §7.2 capability gate."
+    ));
+    if raw_devices.is_empty() {
         out.push(
-            "  (no devices — either there is no ICD or all devices failed the gate)".to_string(),
+            "  → No physical devices found (ICD installed but no device present or usable)."
+                .to_string(),
+        );
+    } else if n_passed == 0 {
+        out.push(
+            "  → All devices rejected; see the FAIL criterion above for the specific reason."
+                .to_string(),
         );
     }
 
@@ -705,27 +833,11 @@ mod tests {
         m
     }
 
-    fn good_subgroup_props() -> vk::PhysicalDeviceSubgroupProperties<'static> {
-        vk::PhysicalDeviceSubgroupProperties {
-            subgroup_size: 32,
-            supported_stages: vk::ShaderStageFlags::COMPUTE,
-            supported_operations: vk::SubgroupFeatureFlags::BASIC,
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn good_device_passes_gate() {
         let props = good_props();
         assert!(
-            passes_gate(
-                &props,
-                good_limits(&props),
-                &good_mem_props(),
-                Some(0),
-                &good_subgroup_props()
-            )
-            .is_ok(),
+            passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0)).is_ok(),
             "a fully capable device must pass all requirements"
         );
     }
@@ -734,26 +846,14 @@ mod tests {
     fn r1_rejects_vulkan_1_0() {
         let mut props = good_props();
         props.api_version = vk::make_api_version(0, 1, 0, 0);
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &good_mem_props(),
-            Some(0),
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0));
         assert_eq!(r, Err("R1: Vulkan API version < 1.1"));
     }
 
     #[test]
     fn r2_rejects_no_compute_queue() {
         let props = good_props();
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &good_mem_props(),
-            None,
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), None);
         assert_eq!(r, Err("R2: no compute queue family"));
     }
 
@@ -761,13 +861,7 @@ mod tests {
     fn r3_rejects_low_invocation_count() {
         let mut props = good_props();
         props.limits.max_compute_work_group_invocations = 128;
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &good_mem_props(),
-            Some(0),
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0));
         assert_eq!(r, Err("R3: maxComputeWorkGroupInvocations < 256"));
     }
 
@@ -775,29 +869,14 @@ mod tests {
     fn r3_accepts_exactly_256_invocations() {
         let mut props = good_props();
         props.limits.max_compute_work_group_invocations = 256;
-        assert!(
-            passes_gate(
-                &props,
-                good_limits(&props),
-                &good_mem_props(),
-                Some(0),
-                &good_subgroup_props()
-            )
-            .is_ok()
-        );
+        assert!(passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0)).is_ok());
     }
 
     #[test]
     fn r4_rejects_small_shared_memory() {
         let mut props = good_props();
         props.limits.max_compute_shared_memory_size = 8192;
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &good_mem_props(),
-            Some(0),
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0));
         assert_eq!(r, Err("R4: maxComputeSharedMemorySize < 16384"));
     }
 
@@ -805,34 +884,23 @@ mod tests {
     fn r4_accepts_exactly_16384_shared_memory() {
         let mut props = good_props();
         props.limits.max_compute_shared_memory_size = 16384;
+        assert!(passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0)).is_ok());
+    }
+
+    // R5 is no longer in the gate — it was demoted to Capabilities::subgroup_basic_in_compute
+    // per Morpheus's §7.0 principle. Devices lacking subgroup support in compute (e.g.
+    // lavapipe/llvmpipe) still pass the gate; the capability field gates individual ops.
+
+    #[test]
+    fn device_without_subgroup_compute_passes_gate() {
+        // This test pins the R5-removal fix. If R5 is re-added to passes_gate, this fails.
+        // The good_props() fixture has no subgroup properties set — zero-valued fields
+        // correspond to a device with no subgroup support in any stage.
+        let props = good_props();
         assert!(
-            passes_gate(
-                &props,
-                good_limits(&props),
-                &good_mem_props(),
-                Some(0),
-                &good_subgroup_props()
-            )
-            .is_ok()
+            passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0)).is_ok(),
+            "subgroup support is a capability flag, not a gate criterion (§7.0)"
         );
-    }
-
-    #[test]
-    fn r5a_rejects_subgroup_not_in_compute_stage() {
-        let mut sg = good_subgroup_props();
-        sg.supported_stages = vk::ShaderStageFlags::FRAGMENT; // not COMPUTE
-        let props = good_props();
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &sg);
-        assert_eq!(r, Err("R5a: subgroup not supported in the COMPUTE stage"));
-    }
-
-    #[test]
-    fn r5b_rejects_missing_basic_subgroup_ops() {
-        let mut sg = good_subgroup_props();
-        sg.supported_operations = vk::SubgroupFeatureFlags::empty();
-        let props = good_props();
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &sg);
-        assert_eq!(r, Err("R5b: BASIC subgroup operations not supported"));
     }
 
     #[test]
@@ -843,13 +911,7 @@ mod tests {
             m.memory_heaps[i].flags = vk::MemoryHeapFlags::empty();
         }
         let props = good_props();
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &m,
-            Some(0),
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &m, Some(0));
         assert_eq!(r, Err("R6a: no DEVICE_LOCAL memory heap"));
     }
 
@@ -861,13 +923,7 @@ mod tests {
             m.memory_types[i].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
         }
         let props = good_props();
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &m,
-            Some(0),
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &m, Some(0));
         assert_eq!(r, Err("R6b: no HOST_VISIBLE memory type"));
     }
 
@@ -876,14 +932,157 @@ mod tests {
         // R1 is checked before R2: version failure is reported first.
         let mut props = good_props();
         props.api_version = vk::make_api_version(0, 1, 0, 0);
-        let r = passes_gate(
-            &props,
-            good_limits(&props),
-            &good_mem_props(),
-            None,
-            &good_subgroup_props(),
-        );
+        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), None);
         assert_eq!(r, Err("R1: Vulkan API version < 1.1"));
+    }
+
+    // ── Realistic device-profile tests ────────────────────────────────────────
+    // Modelled on real hardware to pin that the gate makes correct decisions for the device
+    // classes the EP will actually run on.
+
+    /// Memory layout typical of Mesa lavapipe (llvmpipe): a single heap flagged
+    /// DEVICE_LOCAL containing HOST_VISIBLE+HOST_COHERENT types (all CPU RAM).
+    #[allow(clippy::field_reassign_with_default)]
+    fn lavapipe_mem_props() -> vk::PhysicalDeviceMemoryProperties {
+        let mut m = vk::PhysicalDeviceMemoryProperties::default();
+        m.memory_heap_count = 1;
+        m.memory_heaps[0].flags = vk::MemoryHeapFlags::DEVICE_LOCAL;
+        m.memory_heaps[0].size = 4 * 1024 * 1024 * 1024; // Mesa default: 4 GiB
+        m.memory_type_count = 2;
+        m.memory_types[0].heap_index = 0;
+        m.memory_types[0].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL
+            | vk::MemoryPropertyFlags::HOST_VISIBLE
+            | vk::MemoryPropertyFlags::HOST_COHERENT;
+        m.memory_types[1].heap_index = 0;
+        m.memory_types[1].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL
+            | vk::MemoryPropertyFlags::HOST_VISIBLE
+            | vk::MemoryPropertyFlags::HOST_COHERENT
+            | vk::MemoryPropertyFlags::HOST_CACHED;
+        m
+    }
+
+    #[test]
+    fn lavapipe_profile_passes_gate() {
+        // Synthesised from `vulkaninfo --summary` on Ubuntu 22.04 with Mesa lavapipe:
+        //   deviceName = llvmpipe (LLVM 15.0.7, 256 bits)
+        //   apiVersion = 1.3.255, deviceType = CPU
+        //   1 heap: DEVICE_LOCAL, 4 GiB
+        //   subgroupSize = 4, supportedStages = 0 (no stage support on this Mesa version)
+        // The old R5 gate rejected this device. R5 is now a capability field → must PASS.
+        let mut props = good_props();
+        props.api_version = vk::make_api_version(0, 1, 3, 255);
+        props.limits.max_compute_work_group_invocations = 1024;
+        props.limits.max_compute_shared_memory_size = 32768; // 32 KiB typical for Mesa
+
+        let mem = lavapipe_mem_props();
+
+        assert!(
+            passes_gate(&props, &props.limits, &mem, Some(0)).is_ok(),
+            "lavapipe/llvmpipe must pass the §7.2 gate (R5 removed)"
+        );
+
+        // Full assessment must agree — no criterion should fail.
+        let criteria = assess_gate(&props, &props.limits, &mem, Some(0));
+        let failed: Vec<&str> = criteria
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.label)
+            .collect();
+        assert!(
+            failed.is_empty(),
+            "all criteria should pass for lavapipe profile; failed: {failed:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn uma_integrated_gpu_passes_gate() {
+        // UMA device (Intel integrated / Apple M-series / Adreno): single heap that is
+        // both DEVICE_LOCAL and HOST_VISIBLE. R6 must accept combined heaps.
+        let mut props = good_props();
+        props.api_version = vk::make_api_version(0, 1, 3, 0);
+        props.limits.max_compute_work_group_invocations = 512;
+        props.limits.max_compute_shared_memory_size = 65536; // 64 KiB
+
+        let mut mem = vk::PhysicalDeviceMemoryProperties::default();
+        mem.memory_heap_count = 1;
+        mem.memory_heaps[0].flags = vk::MemoryHeapFlags::DEVICE_LOCAL;
+        mem.memory_heaps[0].size = 8 * 1024 * 1024 * 1024;
+        mem.memory_type_count = 2;
+        mem.memory_types[0].heap_index = 0;
+        mem.memory_types[0].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL
+            | vk::MemoryPropertyFlags::HOST_VISIBLE
+            | vk::MemoryPropertyFlags::HOST_COHERENT;
+        mem.memory_types[1].heap_index = 0;
+        mem.memory_types[1].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL
+            | vk::MemoryPropertyFlags::HOST_VISIBLE
+            | vk::MemoryPropertyFlags::HOST_CACHED;
+
+        assert!(
+            passes_gate(&props, &props.limits, &mem, Some(0)).is_ok(),
+            "UMA device with combined DEVICE_LOCAL|HOST_VISIBLE heap must pass R6"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn discrete_gpu_passes_gate() {
+        // Standard discrete GPU: two heaps (VRAM + system RAM), three memory types
+        // including a resizable-BAR type (DEVICE_LOCAL|HOST_VISIBLE on the VRAM heap).
+        let mut props = good_props();
+        props.api_version = vk::make_api_version(0, 1, 3, 0);
+        props.limits.max_compute_work_group_invocations = 1024;
+        props.limits.max_compute_shared_memory_size = 49152; // 48 KiB
+
+        let mut mem = vk::PhysicalDeviceMemoryProperties::default();
+        mem.memory_heap_count = 2;
+        mem.memory_heaps[0].flags = vk::MemoryHeapFlags::DEVICE_LOCAL;
+        mem.memory_heaps[0].size = 8 * 1024 * 1024 * 1024; // 8 GiB VRAM
+        mem.memory_heaps[1].size = 32 * 1024 * 1024 * 1024; // 32 GiB system RAM
+        mem.memory_type_count = 3;
+        mem.memory_types[0].heap_index = 0;
+        mem.memory_types[0].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+        mem.memory_types[1].heap_index = 1;
+        mem.memory_types[1].property_flags =
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        mem.memory_types[2].heap_index = 0;
+        // Resizable BAR: VRAM directly mapped to the host address space.
+        mem.memory_types[2].property_flags =
+            vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE;
+
+        assert!(
+            passes_gate(&props, &props.limits, &mem, Some(0)).is_ok(),
+            "standard discrete GPU profile must pass the §7.2 gate"
+        );
+    }
+
+    #[test]
+    fn assess_gate_reports_measured_values_and_identifies_failure() {
+        // Verify that assess_gate returns measured values (not just verdicts) and pinpoints
+        // the exact failing criterion without hiding others.
+        let mut props = good_props();
+        props.limits.max_compute_work_group_invocations = 64; // below R3 minimum
+
+        let criteria = assess_gate(&props, &props.limits, &good_mem_props(), Some(0));
+
+        let fail_labels: Vec<&str> = criteria
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.label)
+            .collect();
+
+        assert!(
+            fail_labels == ["R3  maxComputeWorkGroupInvocations"],
+            "only R3 should fail; got failures: {fail_labels:?}"
+        );
+
+        // Measured value must contain the actual number.
+        let r3 = criteria.iter().find(|c| c.label.starts_with("R3")).unwrap();
+        assert!(
+            r3.measured.contains("64"),
+            "R3 measured value should contain '64'; got: {:?}",
+            r3.measured
+        );
     }
 
     #[test]

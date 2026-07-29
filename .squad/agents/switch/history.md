@@ -161,3 +161,81 @@ the ICD issue is resolved.
 
 **Final state:** `cargo ci` green (rustfmt + clippy + build + test). **272 tests** (238 lib + 6
 dump-capabilities + 26 layering).
+
+---
+
+### Session 10: R5 gate removal, `assess_gate`, and realistic device-profile tests (2026-07-28T22:28:08-07:00)
+
+**CI run:** `30456272132` (headSha `c615f17`)  
+**Problem:** `vkCreateInstance` now succeeds (session 9 `apiVersion` fix worked). But
+`epctl --probe-loader` reported `0 device(s) passed the §7.2 capability gate`. `vulkaninfo`
+confirmed a real Vulkan 1.3.255 lavapipe device (`llvmpipe (LLVM 15.0.7, 256 bits)`) exists.
+Our own gate is rejecting lavapipe.
+
+**Root cause:** R5 (`subgroup_props.supported_stages.contains(COMPUTE) &&
+supported_operations.contains(BASIC)`) was the culprit. Mesa llvmpipe on Ubuntu 22.04 reports
+`supportedStages = 0` — no stage is listed as supporting subgroup operations in this Mesa build.
+R5a fails immediately.
+
+This violates Morpheus's §7.0 governing principle verbatim: *"capability shortfalls degrade
+op coverage, not device availability."* R5 is not a correctness requirement for device admission;
+it is a capability that gates individual ops.
+
+**Code changes (session 10):**
+
+1. **`vk/instance.rs` — R5 removed from `passes_gate`:**
+   - Gate now checks R1–R4, R6 only.
+   - `passes_gate` signature drops the `subgroup_props` parameter.
+   - `enumerate_capable_devices` no longer queries subgroup properties via `props2` chain
+     (that query happens in `caps::probe` which runs after the gate).
+   - Decision recorded in `switch-engine-seams.md` D-S10-01.
+
+2. **`vk/instance.rs` — `GateCriterion` struct and `assess_gate` function:**
+   - `GateCriterion` holds `label`, `requirement`, `measured` value, `passed`, and `failure_reason`.
+   - `assess_gate` evaluates all five criteria without early exit, returning the full breakdown.
+   - `passes_gate` is now a thin wrapper: calls `assess_gate`, returns `Err(failure_reason)` on
+     first failure. Error strings are unchanged — Trinity's tests still assert on them.
+   - `probe_loader_report` now iterates physical devices directly and calls `assess_gate` per
+     device, showing label / requirement / measured / verdict for each criterion.
+   - `enumerate_capable_devices` calls `assess_gate` at DEBUG on gate failure.
+
+3. **`vk/caps.rs` — `subgroup_basic_in_compute: bool` added to `Capabilities`:**
+   - Replaces the old R5 gate semantics.
+   - Set in `caps::probe` from `subgroup_props.supported_stages.contains(COMPUTE) &&
+     supported_operations.contains(BASIC)`.
+   - Updated comment on `subgroup_supported_ops` (removed "BASIC is guaranteed by R5").
+   - `test_caps()` and `caps_with_synchronization2()` updated.
+
+4. **`vk/instance.rs` — test updates:**
+   - Removed: `r5a_rejects_subgroup_not_in_compute_stage`, `r5b_rejects_missing_basic_subgroup_ops`
+   - Removed: `good_subgroup_props()` helper (no longer needed by gate tests)
+   - Added: `device_without_subgroup_compute_passes_gate` — pins R5 removal explicitly
+   - Added: `lavapipe_profile_passes_gate` — synthesised from Ubuntu 22.04 Mesa properties
+   - Added: `uma_integrated_gpu_passes_gate` — UMA combined DEVICE_LOCAL+HOST_VISIBLE heap
+   - Added: `discrete_gpu_passes_gate` — two-heap discrete GPU with resizable-BAR type
+   - Added: `assess_gate_reports_measured_values_and_identifies_failure` — verifies measured
+     values are present and only the failing criterion is reported as failed
+
+**Key technical note:**
+- `subgroup_props` was queried in `enumerate_capable_devices` only for R5. After R5 removal,
+  that chain is gone from the gate loop. Subgroup properties are still queried in `caps::probe`
+  (which runs per-device after the gate passes), so no information is lost.
+- The `probe_loader_report` verbose output now answers "which criterion rejected this device
+  and what did it measure?" in a single tool invocation. This was the missing diagnostic that
+  made session 9 and 10 hard to triage.
+
+**What is verified vs written-but-unexercised:**
+- VERIFIED by unit tests (no ICD needed): 283 total (up from 272). All gate logic is exercised
+  including realistic lavapipe, UMA, and discrete profiles.
+- WRITTEN BUT NOT EXERCISED on real hardware: `assess_gate` verbose output in
+  `probe_loader_report` (will show on next CI run with lavapipe once the gate passes).
+- UNBLOCKED: `enumerate_capable_devices` will now return lavapipe as a capable device on CI.
+  The next milestone is Device::new becoming real.
+
+**ash 0.38 lesson (confirmed this session):**
+- `get_physical_device_properties2` and `get_physical_device_memory_properties` are both unsafe.
+  Clippy's `undocumented_unsafe_blocks` lint requires a SAFETY comment on the immediately
+  preceding line for each `unsafe {}` block in a loop body — a single comment before the
+  first block does not cover subsequent ones.
+
+**Final state:** `cargo ci` green. **283 tests** (241 lib + 6 dump-capabilities + 26 layering + 7 portability).
