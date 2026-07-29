@@ -23,6 +23,9 @@ on:
 env:
   ORT_VERSION: "1.28.0"
   MESA_VERSION: "26.1.3"
+  # LunarG SDK version used on both Linux (apt repo) and Windows (installer).
+  # The Linux apt repo uses a three-part version (strip the trailing .0).
+  VULKAN_SDK_VERSION: "1.3.296.0"
 
 # ------------------------------------------------------------------
 # CI lanes:
@@ -87,19 +90,43 @@ jobs:
           rustc --version && cargo --version
 
       # -------------------------------------------------------
+      # LunarG Vulkan SDK apt repository — provides glslc (shaderc).
+      #
+      # Ubuntu 22.04's own repos do NOT contain shaderc or glslc.
+      # The LunarG apt repository for Jammy does, via the 'shaderc'
+      # package which installs /usr/bin/glslc.
+      #
+      # Version pin: the list file URL includes the SDK minor version
+      # (e.g. 1.3.296) so this does not silently pick up a new SDK.
+      # To bump: update VULKAN_SDK_VERSION at the workflow level.
+      # -------------------------------------------------------
+      - name: Add LunarG Vulkan SDK apt repository
+        run: |
+          set -euo pipefail
+          # Strip trailing .0 for the versioned list URL (1.3.296.0 → 1.3.296)
+          SDK_SHORT="${VULKAN_SDK_VERSION%.*}"
+          # Modern GPG approach (avoids deprecated apt-key)
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/lunarg-signing-key.gpg
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            "https://packages.lunarg.com/vulkan/${SDK_SHORT}/lunarg-vulkan-${SDK_SHORT}-jammy.list"
+          sudo apt-get update -q
+          echo "LunarG apt repo added (SDK ${SDK_SHORT})"
+
+      # -------------------------------------------------------
       # Vulkan SDK: lavapipe (Mesa CPU rasterizer), validation
       # layers, GLSL compiler (glslc), spirv-tools.
       #
-      # IMPORTANT: glslc ships in the 'shaderc' package on Ubuntu
-      # 22.04, NOT in 'glslang-tools' (which provides glslangValidator
-      # only). This was the source of a CI red-streak: 'glslang-tools'
-      # was installed but the build.rs looked for 'glslc' and failed
-      # with "glslc not found but 168 shader(s) exist".
+      # glslc comes from the LunarG repo (added above) via the
+      # 'shaderc' package — NOT from Ubuntu's own repos, which
+      # do not ship shaderc. Previous rounds tried 'glslang-tools'
+      # (provides glslangValidator only) and then 'shaderc' from
+      # Ubuntu repos (package does not exist). The LunarG repo
+      # is the definitive source for glslc on Ubuntu 22.04.
       #
-      # 'shaderc' → /usr/bin/glslc (Google's GLSL→SPIR-V frontend)
-      # 'glslang-tools' → /usr/bin/glslangValidator (kept for completeness)
-      # Ubuntu 22.04 ships Mesa 22.0 which reports Vulkan 1.3
-      # and passes the capability gate required by this EP.
+      # 'shaderc' (LunarG repo) → /usr/bin/glslc
+      # 'glslang-tools' (Ubuntu) → /usr/bin/glslangValidator (kept)
+      # Ubuntu 22.04 ships Mesa 22.0, Vulkan 1.3.
       # -------------------------------------------------------
       - name: Install Vulkan SDK (lavapipe + validation layers)
         run: |
@@ -257,7 +284,6 @@ jobs:
     name: Build + op tests (Windows, lavapipe via mesa-dist-win)
     runs-on: windows-latest
     env:
-      VULKAN_SDK_VERSION: "1.3.296.0"
       # Set by the lavapipe install step below; declared here for visibility.
       # VK_ICD_FILENAMES: (set in step)
       ONNXRUNTIME_EP_VULKAN_VALIDATE: "1"

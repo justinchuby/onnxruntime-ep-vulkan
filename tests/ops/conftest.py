@@ -50,14 +50,58 @@ def register_vulkan_ep() -> bool:
     (e.g., NumPy oracle checks, per-layer capture unit tests) can still run without the EP.
     Tests that DO require the EP use ``vulkan_device_available`` or ``require_vulkan``,
     both of which depend on this fixture and skip appropriately.
+
+    Diagnostic protocol (helps Tank when the EP crashes during registration):
+    1. Probe with ctypes.CDLL first — tests OS-level DLL dependency resolution without
+       ORT involvement. If this fails, the cause is a missing runtime DLL (e.g.
+       onnxruntime.dll, Vulkan loader, MSVC runtime), NOT an EP code bug.
+    2. If ctypes load succeeds, call ort.register_execution_provider_library. If THAT
+       crashes with a hard access violation, the ctypes-OK message will have been
+       flushed to stderr before the crash, telling the diagnoser that DLL resolution
+       was not the problem — the fault is in EP initialization code.
+    All messages go to stderr with flush=True so they survive a hard process crash.
     """
+    import ctypes
+
     lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
     if not lib:
         return False
     lib_path = Path(lib).resolve()
     if not lib_path.is_file():
+        print(
+            f"\n[EP smoke] ONNXRUNTIME_VULKAN_EP_LIB set but file not found: {lib_path}",
+            file=sys.stderr, flush=True,
+        )
         return False
+
+    # Step 1: ctypes load — DLL dependency check, no ORT involvement.
+    try:
+        ctypes.CDLL(str(lib_path))
+        print(
+            f"\n[EP smoke] ctypes.CDLL({lib_path.name}): OK — DLL dependencies resolved.",
+            file=sys.stderr, flush=True,
+        )
+    except OSError as exc:
+        print(
+            f"\n[EP smoke] ctypes.CDLL FAILED: {exc}\n"
+            f"[EP smoke] Cause: missing DLL dependency (onnxruntime.dll, Vulkan loader,\n"
+            f"[EP smoke] or MSVC runtime). On Windows ensure $ORT_HOME\\lib is on PATH.\n"
+            f"[EP smoke] EP registration skipped.",
+            file=sys.stderr, flush=True,
+        )
+        return False
+
+    # Step 2: ORT registration. A hard crash here means EP initialization code,
+    # not DLL resolution (step 1 above already ruled that out).
+    print(
+        f"[EP smoke] Calling ort.register_execution_provider_library({EP_NAME!r}) ...",
+        file=sys.stderr, flush=True,
+    )
     ort.register_execution_provider_library(EP_NAME, str(lib_path))
+    print(
+        f"[EP smoke] ort.register_execution_provider_library: OK.",
+        file=sys.stderr, flush=True,
+    )
     return True
 
 

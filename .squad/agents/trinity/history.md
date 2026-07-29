@@ -121,30 +121,35 @@
 
 📌 **Claim diagnostic records (Mouse turn-5):** Per-event JSON, one self-contained line per event, append-and-flush (no lifecycle hook). Hooks `claim_decision` not the ep.rs aggregator. Trinity's C1 test (`test_domain_regression.py`) can parse the JSON file directly rather than asserting "zero nodes claimed" — upgrade when Mouse's format is stable.
 
-📌 Trinity round-5: CI red-streak remediation (2026-07-28T22:28:08-07:00):
+📌 Trinity round-5 (superseded by round-6): initial glslc fix attempt:
 
-  **Root cause of ≥4 consecutive red runs:** `glslang-tools` provides `glslangValidator`, not
-  `glslc`. Switch's `build.rs` looks for `glslc`. The step was named "Install Vulkan SDK
-  (lavapipe + validation layers + glslc)" — it promised a tool it did not install. Fixed by
-  adding `shaderc` package (provides `/usr/bin/glslc` on Ubuntu 22.04). Added "Verify GLSL
-  compiler (glslc)" precondition step that fails with `::error::` before the build rather than
-  a cryptic build.rs panic 40s later.
+  **glslang-tools** provides `glslangValidator`, not `glslc`. Attempted to fix with `shaderc`
+  from Ubuntu 22.04 repos — that package does not exist there. Two consecutive unverified
+  claims. CI remained red.
 
-  **Lesson learned:** A CI step name that promises a tool is a contract. Verify with `which`/
-  `--version` in the step itself; don't assume from the package description.
+📌 Trinity round-6: glslc properly fixed + Windows diagnostics (2026-07-28T22:28:08-07:00):
 
-  **Windows DLL load crash fix:** `$ORT_HOME\lib` added to PATH before pytest on Windows so
-  `LoadLibraryEx` can find `onnxruntime.dll` when loading the EP cdylib.
+  **glslc root cause:** Ubuntu 22.04 does not package glslc in any of its own repos.
+  The LunarG Vulkan SDK apt repository for Jammy does, via `shaderc`. Added step "Add
+  LunarG Vulkan SDK apt repository" using the versioned list file and modern GPG keyring:
+  key: `https://packages.lunarg.com/lunarg-signing-key-pub.asc`
+  list: `https://packages.lunarg.com/vulkan/1.3.296/lunarg-vulkan-1.3.296-jammy.list`
+  After `apt-get update`, `shaderc` installs `/usr/bin/glslc`. The "Verify GLSL compiler"
+  precondition step runs `glslc --version` — the CI run is the proof.
 
-  **CI visibility fix:** README badge + `.github/CI_POLICY.md`. Badge is passive signal that
-  beats a discipline rule; CI_POLICY.md documents lane structure and investigation commands.
-  Branch protection remains a TODO requiring GitHub admin.
+  **VULKAN_SDK_VERSION:** Promoted to workflow-level env. Previously only in Windows job.
 
-  **CLAIM_LOG integration:** `read_claim_log()` added to `_models.py`. `test_domain_regression.py`
-  updated to assert `code == "not-registered"` via Mouse's JSON Lines API. Both domain
-  regression tests pass without Vulkan EP (`8 passed, 198 skipped` clean run verified
-  post-recreation).
+  **Windows crash:** PATH fix (round-5) did not resolve the access violation. DLL resolution
+  is not the cause. Diagnostic improvements added:
+  - conftest.py `register_vulkan_ep`: ctypes.CDLL pre-probe flushes to stderr before ORT
+    call. "ctypes OK" in crash output → fault is EP initialization code, not dependencies.
+  - `tests/ops/test_a_ep_smoke.py`: isolated ctypes + ORT-register tests, collected first.
 
-  **Open:** Mouse should confirm `"not-registered"` is the canonical code string (not
-  `"not_registered"` with underscore). First green run with real EP expected to surface EP
-  initialization behavior — observe and report rather than assume green.
+  **Rule cemented (twice violated, now internalized):** A claim about an external package's
+  contents is not usable until `package_binary --version` has run in the target environment.
+  The "Verify GLSL compiler" step is that verification; it is not optional.
+
+  **Test count:** 210 collected; 8 pass unconditionally, 200 skip cleanly, 0 failures.
+
+  **README ownership note:** README changes must go through the coordinator (Morpheus owns
+  the file). CI badge was committed by the coordinator without conflict this time.
