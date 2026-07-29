@@ -7,7 +7,11 @@ recognisably siblings; the differences are the ones a GPU with explicit transfer
 
 **Read `docs/DESIGN.md` §9.1.2 first.** No shader in this repository has ever executed on any
 device. Nothing in this directory contains a performance number, and none may be added until the
-corresponding op is green in `tests/ops/` on a real GPU (`DESIGN.md` §9.2, last bullet).
+corresponding op is green in `tests/ops/` on a real GPU (`DESIGN.md` §9.2, last bullet). The
+device *facts* below are properties of the hardware read from the driver, not measurements of
+our code.
+
+Pin `onnxruntime>=1.28`. This is enforced: see the refusals below.
 
 ## Files
 
@@ -15,6 +19,7 @@ corresponding op is green in `tests/ops/` on a real GPU (`DESIGN.md` §9.2, last
 |---|---|
 | `bench.py` | The runner. Vulkan vs the ORT CPU EP on the same machine, same process, same ORT build. |
 | `cases.py` | The cases, built from `tests/ops/_models.py` so the benchmark cannot drift from what is tested. |
+| `producers.py` | Who built the graph. Makes it impossible to name a case after a model family its producer did not export, and refuses base-vs-PR comparisons across producers. |
 | `devices.py` | Per-device facts (`timestampPeriod`, `timestampValidBits`, UMA vs discrete, shared memory, subgroup size) read from `vulkaninfo`. Decides whether two numbers may be compared at all. |
 | `stats.py` | Median + robust spread (MAD, IQR, p05/p95, `rsd`) and the noise gate for comparisons. |
 | `environment.py` | Device / driver / OS / CPU / ORT / build-flags record stamped onto every result. |
@@ -79,8 +84,9 @@ python bench/compare.py --base pr-xe.json --pr pr-4060.json --cross-device-study
 ```
 
 Pin `onnxruntime>=1.28` (Tank + Fact Checker's version policy; 1.27 has the null-allocator
-`PrePack` bug that produces NaN/Inf on fp16). The harness records the ORT version it ran under,
-so a result taken on the wrong one is identifiable after the fact rather than silently wrong.
+`PrePack` bug that produces NaN/Inf on fp16, and its loader rejects the plugin's API version 28
+outright). The harness refuses to produce a Vulkan column under an older ORT rather than
+recording a CPU run under our provider's name.
 
 ## What the numbers are
 
@@ -126,6 +132,15 @@ Refusals built into the harness:
 * **A result file that does not name its device cannot be compared to anything.** "We forgot to
   record it" must not degrade into "assume it is the same device".
 * **Rows with different tile configs are not compared.** Two unknowns are *unknown*, not equal.
+* **A case cannot be named after a model family its producer did not export.** Building a case
+  called `qwen3_decoder_layer` out of hand-written ops raises `ProducerProvenanceError` at
+  construction, before any timing exists. Op coverage is relative to a producer
+  (`OP_COVERAGE.md` §4.18); so is a benchmark artefact. Justin's `mobius` builder emits
+  `ai.onnx::Attention`@23 / `RMSNormalization` / `RotaryEmbedding`; the ORT GenAI builder emits
+  the `com.microsoft` contrib graph. `MatMulNBits` is the only op they agree on.
+* **Two runs built by different producers are not compared.** Refused, exit 2, no table.
+  `--cross-producer-study` prints a labelled side-by-side with no verdict. A file with no
+  recorded producer is refused for the same reason a file with no recorded device is.
 * **Nothing is extrapolated.** A number that was not measured is `null`.
 
 ### The 1.70× that wasn't
@@ -155,15 +170,21 @@ work it should take, or taking work it should decline.
 ## Calibrating the partition cost model
 
 ```sh
-python bench/transfer_calibration.py --out calib.json
+python bench/transfer_calibration.py --out calib-4060.json --device 1
+python bench/transfer_calibration.py --out calib-xe.json   --device 0
 ```
 
 Sweeps a doubling byte staircase and fits `fixed_ns + bytes / bytes_per_ns` — the same estimator
-as `TransferModel::fit` — then prints a Rust literal. The constants in `partition.rs`
-(`SAFETY = 3.0`, `min_nodes = 4`, the 64 KiB floor) are placeholders set at 3× because the cost
-model is crude; they are replaced by measurement, per device, behind review, with the device
-named in the comment. Calibrate per device: a UMA integrated GPU and a discrete GPU do not share
-an affine model.
+as `TransferModel::fit` — then prints a Rust literal stamped with the device, the driver and the
+**transfer class** it came from. `--device` is required on this machine: the Iris Xe is UMA (an
+"upload" may be a mapping, so `fixed_ns` dominates and `bytes_per_ns` looks enormous — a real
+property of the part, not a fast link) while the 4060 crosses PCIe. Applying one model to the
+other is worse than the placeholder it replaces.
+
+The constants in `partition.rs` (`SAFETY = 3.0`, `min_nodes = 4`, the 64 KiB floor) are
+placeholders set at 3× because the cost model is crude; they are replaced by measurement, per
+device, behind review, with the device named in the comment. A fit with R² < 0.9 prints a
+warning and should not be pasted anywhere.
 
 ## CI
 

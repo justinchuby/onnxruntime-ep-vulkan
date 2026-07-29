@@ -16,7 +16,12 @@ Case groups
 
 ``gemm``
     ``MatMulNBits``, the GEMM-anchored case OQ-12's ≥1.5×-over-CPU bar is defined on
-    (``DESIGN.md`` §11.1). The oracle knob ``accuracy_level`` is pinned to 1 by the builder's
+    (``DESIGN.md`` §11.1). It is also, per ``OP_COVERAGE.md`` §4.18, **the only op both LLM
+    toolchains agree on** — mobius and the ORT GenAI builder emit different attention and
+    normalisation ops but the same ``MatMulNBits``. That makes it the one case whose cost carries
+    across producers, which is a good reason for the bar to sit here and a bad reason to assume
+    anything else does.
+    The oracle knob ``accuracy_level`` is pinned to 1 by the builder's
     default — see Trinity's rule: any knob ORT selects by sniffing the host CPU must be pinned,
     or the reference drifts across machines and the drift looks like our bug.
 
@@ -25,6 +30,19 @@ Case groups
     ``TransferModel::fit`` in ``rust/src/ops/partition.rs`` and replace the placeholder MVS
     constants (``SAFETY = 3.0``, 64 KiB output floor) with measured ones. See
     ``transfer_calibration.py``.
+
+Producer provenance
+-------------------
+
+Every case carries a :class:`producers.Producer`. Today that is always the synthetic op builder,
+which is an ``op``-kind producer and therefore **cannot** name a model family: constructing a case
+called ``qwen3_decoder_layer`` from it raises :class:`producers.ProducerProvenanceError` before any
+timing happens. See ``producers.py`` for why — a benchmark artefact is relative to its producer in
+exactly the way op coverage is (``OP_COVERAGE.md`` §4.18), and the two producers we care about
+(Justin's ``mobius`` and the ORT GenAI builder) emit *different op sets* for the same architecture.
+
+When a real model case is added it must be added **per producer** — ``qwen3_decoder_mobius`` and
+``qwen3_decoder_ortgenai`` are two cases, not one case run two ways, because they are two graphs.
 
 Nothing in this file has ever run on a GPU. See ``DESIGN.md`` §9.1.2.
 """
@@ -46,6 +64,8 @@ import onnx_ir as ir  # noqa: E402  (import after sys.path fix-up)
 
 import _models  # noqa: E402
 
+import producers  # noqa: E402
+
 
 @dataclass
 class Case:
@@ -55,6 +75,9 @@ class Case:
     group: str
     model: bytes
     feeds: "dict[str, np.ndarray]"
+    #: Who built the graph. Not optional: a timing whose graph has no known origin is not
+    #: reproducible, and a case cannot be named after a model family its producer did not export.
+    producer: "producers.Producer | None" = None
     #: Free-form note printed with the result — e.g. why a case is expected to lose to CPU.
     note: str = ""
     #: FLOPs per inference, when the case has a defensible count. Used to report achieved
@@ -66,6 +89,13 @@ class Case:
     #: True for the case OQ-12's ≥1.5× bar is measured on.
     oq12_anchor: bool = False
     tags: "list[str]" = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.producer is None:
+            self.producer = producers.op_builder()
+        # Fatal, at construction time, before any timing exists to be mislabelled.
+        producers.assert_family_label_is_earned(self.name, self.tags, self.producer)
+
 
 
 def _fp32(shape: "tuple[int, ...]", seed: int) -> np.ndarray:
@@ -142,6 +172,21 @@ def build_cases(groups: "list[str] | None" = None) -> "list[Case]":
     return cases
 
 
+def case_producers(cases: "list[Case]") -> "list[producers.Producer]":
+    """Distinct producers across ``cases``, in first-seen order.
+
+    Recorded in the result file next to device, driver, OS and build flags, because a graph's
+    origin is part of the environment a number was taken in.
+    """
+    seen: "list[producers.Producer]" = []
+    for c in cases:
+        if c.producer is not None and all(
+            p.fingerprint != c.producer.fingerprint for p in seen
+        ):
+            seen.append(c.producer)
+    return seen
+
+
 def transfer_staircase(max_log2: int = 24) -> "list[int]":
     """Byte sizes for the transfer calibration staircase: 1 KiB … 16 MiB, doubling.
 
@@ -154,5 +199,8 @@ def transfer_staircase(max_log2: int = 24) -> "list[int]":
 
 
 if __name__ == "__main__":  # pragma: no cover - manual use
-    for c in build_cases():
+    built = build_cases()
+    for p in case_producers(built):
+        print(f"producer     {p.summary()}")
+    for c in built:
         print(f"{c.group:12s} {c.name:36s} flops={c.flops} boundary_bytes={c.boundary_bytes}")

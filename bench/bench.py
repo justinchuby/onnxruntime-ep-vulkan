@@ -63,6 +63,7 @@ if str(_HERE) not in sys.path:
 import cases as case_mod  # noqa: E402
 import devices as device_mod  # noqa: E402
 import environment  # noqa: E402
+import portability  # noqa: E402
 from stats import Sample  # noqa: E402
 
 EP_NAME = "VulkanExecutionProvider"
@@ -250,6 +251,32 @@ def select_device(facts: "list[device_mod.DeviceFacts]", requested: "int | None"
     )
 
 
+def _print_portability_headroom(dev: "device_mod.DeviceFacts") -> None:
+    """Say out loud how far above the §7.2 admission floor this device sits.
+
+    Justin's standing directive is cross-platform generality at all times. Both GPUs on this desk
+    are comfortably above the floor the EP promises to run on (16 KiB shared memory, 256
+    invocations — `DESIGN.md` §7.2 R3/R4), so a tile that works here proves nothing about a device
+    sitting on it. Printing the headroom on every run keeps that from being a thing we remember to
+    check.
+    """
+    shared = dev.max_compute_shared_memory or 0
+    floor = portability.FLOOR_SHARED_MEMORY_BYTES
+    ratio = f"{shared / floor:.1f}x" if floor and shared else "?"
+    print(
+        f"[bench] portability floor (§7.2 R3/R4): {floor} B shared, "
+        f"{portability.FLOOR_WORKGROUP_INVOCATIONS} invocations. This device has {shared} B "
+        f"({ratio} the floor) and reports subgroupSize={dev.subgroup_size}. A configuration that "
+        f"fits here is not thereby portable."
+    )
+    if dev.transfer_class == "uma":
+        print(
+            "[bench] this device is UMA — the closest proxy on this desk for the Adreno/Mali "
+            "memory model. It is NOT a proxy for the mobile shared-memory budget."
+        )
+    print()
+
+
 def run(args: argparse.Namespace) -> dict:
     ep_available = register_ep()
     env_record = environment.capture()
@@ -267,6 +294,7 @@ def run(args: argparse.Namespace) -> dict:
         if selected is not None:
             print(selected.summary())
             print()
+            _print_portability_headroom(selected)
 
     if args.gpu_timestamps:
         os.environ[TRACE_GPU_ENV] = "1"
@@ -286,8 +314,16 @@ def run(args: argparse.Namespace) -> dict:
 
     device_index = selected.index if selected is not None else args.device
 
+    built_cases = case_mod.build_cases(args.groups)
+    case_producer_list = case_mod.case_producers(built_cases)
+    # The graph's origin belongs in the environment record, next to the device and the driver.
+    env_record["producers"] = [p.to_dict() for p in case_producer_list]
+    for p in case_producer_list:
+        print(f"producer: {p.summary()}")
+    print()
+
     results = []
-    for c in case_mod.build_cases(args.groups):
+    for c in built_cases:
         claim = (
             _claim_metrics(c.model, _HERE, c.name, device_index, args.force_legacy_barriers)
             if ep_available
@@ -324,6 +360,10 @@ def run(args: argparse.Namespace) -> dict:
             "oq12_anchor": c.oq12_anchor,
             "flops": c.flops,
             "boundary_bytes_per_inference": c.boundary_bytes,
+            # Who built the graph. Two results for the same case name from different producers
+            # are results about different graphs; `compare.py` refuses to put them in one table.
+            "producer": c.producer.to_dict() if c.producer else None,
+            "producer_fingerprint": c.producer.fingerprint if c.producer else None,
             "cpu": cpu_sample.to_dict(raw=args.raw),
             "vulkan": vk_sample.to_dict(raw=args.raw) if vk_sample else None,
             # Speedup is None unless the EP actually claimed the graph — a CPU-fallback
@@ -334,6 +374,13 @@ def run(args: argparse.Namespace) -> dict:
             # Until the engine reports it, this stays null and `compare.py` treats two nulls as
             # "unknown", never as "the same".
             "tile_config": None,
+            # Whether the configuration that produced this number is selectable on every device
+            # the EP admits (DESIGN.md §7.2 floor: 16 KiB shared, 256 invocations). Both GPUs on
+            # this desk are well above that floor, so "it worked here" is not portability
+            # evidence. Unknown until the engine reports a config — and unknown is not quotable.
+            "portability": portability.evaluate(
+                portability.Configuration(name=None)
+            ).to_dict(),
             "claim": claim,
             "measurement": "end-to-end host latency (upload+record/replay+submit+fence+readback)",
         }
@@ -361,6 +408,22 @@ def run(args: argparse.Namespace) -> dict:
         "device_fingerprint": selected.fingerprint if selected is not None else None,
         "device_note": device_note,
         "all_devices": [d.to_dict() for d in device_facts],
+        "producers": [p.to_dict() for p in case_producer_list],
+        "portability_floor": {
+            "shared_memory_bytes": portability.FLOOR_SHARED_MEMORY_BYTES,
+            "workgroup_invocations": portability.FLOOR_WORKGROUP_INVOCATIONS,
+            "source": "DESIGN.md §7.2 R3/R4",
+            "device_shared_memory_bytes": (
+                selected.max_compute_shared_memory if selected is not None else None
+            ),
+            "device_subgroup_size": selected.subgroup_size if selected is not None else None,
+            "device_transfer_class": selected.transfer_class if selected is not None else None,
+            "note": (
+                "Both local GPUs sit well above this floor. A configuration that fits here is "
+                "not thereby selectable on every device the EP admits (§7.0: shortfalls degrade "
+                "op coverage, not device availability)."
+            ),
+        },
         "cases": results,
         "disclaimer": (
             "Vulkan numbers are end-to-end host latency, not GPU kernel time. Cases marked "

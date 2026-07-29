@@ -14,6 +14,10 @@ JSON-serialisable dict:
   might disagree with it.
 * **env** — the ``ONNXRUNTIME_EP_VULKAN_*`` variables in effect, because several of them change
   what is measured (validation layers on is a different machine, for benchmarking purposes).
+* **producers** — who built the graphs. A benchmark artefact is relative to its producer in
+  exactly the way op coverage is (``OP_COVERAGE.md`` §4.18): two exporters emit different op sets
+  for the same architecture, so the graph's origin belongs next to the device and the driver.
+  See ``producers.py``.
 
 Nothing here fails a run. A missing ``epctl`` yields ``devices: []`` and a recorded reason.
 """
@@ -213,6 +217,8 @@ def describe(record: dict) -> str:
         )
     if record.get("device_note"):
         lines.append(f"          note: {record['device_note']}")
+    for p in record.get("producers", []):
+        lines.append(f"producer: {p.get('fingerprint')}")
     if record.get("env"):
         lines.append(f"env     : {json.dumps(record['env'])}")
     return "\n".join(lines)

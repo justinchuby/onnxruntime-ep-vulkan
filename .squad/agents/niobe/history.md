@@ -10,120 +10,129 @@
 
 ## Learnings
 
-<!-- Append new learnings below. Each entry is something lasting about the project. -->
+<!-- SUMMARIZED by Scribe 2026-07-29T09:00:39-07:00 — full session details in decisions.md -->
 
-📌 Team update (2026-07-28T17:59:54-07:00): Vulkan API baseline is a capability-set: ≥1.1 core + compute queue + `synchronization2` + `subgroup_size_control` + subgroup BASIC+ARITHMETIC + `maxComputeWorkGroupInvocations ≥ 256` + `maxComputeSharedMemorySize ≥ 16 KiB`. Benchmark device coverage will vary by tier (desktop 2022+ / software rasterizer / Android 2022+ mid-high / pre-2022 Android that reports these extensions). — decided by Morpheus, Switch, Link, Fact Checker
+### [SUMMARY] Turns 1–2: tracing integration, benchmark harness, first hardware facts (2026-07-28–2026-07-29)
 
-📌 Team update (2026-07-28T17:59:54-07:00): Record-once / replay-many — `Compute` hashes input shapes and replays a cached `VkCommandBuffer`; re-records only on a cache miss. Benchmarks must distinguish first-inference latency (recording path) from steady-state latency (replay path). — decided by Morpheus
+**Foundational decisions from team (rounds 1–2):**
+- `largest_island_flops` is the metric of record (NOT `claimed_node_fraction`). Required per run: `island_count`, `largest_island_nodes`, `largest_island_flops`, `boundary_bytes_per_inference`, `boundary_time_fraction`, `declined_nodes` histogram.
+- OQ-12 pass bar: ≥1.5× over the device's own ORT CPU EP on a GEMM-anchored subgraph, zero numerical failures.
+- MVS constants are provisional (`SAFETY=3.0`, `node_count≥4`, `64 KiB` floor) — must be re-derived from M2 measurements via `TransferModel::fit`.
+- Record-once / replay-many: benchmarks must distinguish first-inference latency (recording path) from steady-state (replay path).
 
-📌 Team update (2026-07-28T17:59:54-07:00): Barrier model is per-edge (`vkCmdPipelineBarrier2` or `vkCmdPipelineBarrier` fallback), not global. This enables driver-side parallel dispatch scheduling. Benchmarks should profile this on real hardware to confirm the driver exploits parallelism. — decided by Switch
+**`onnx-runtime-tracer` adoption (D-N1):** Pin `0.1.0-dev.5, default-features = false`. Absolute UNIX-microsecond epoch — plugin cdylib spans overlay host timeline with no offset negotiation. Re-verify before bumping. `default-features = false` keeps prost/protobuf out.
 
-📌 Team update (2026-07-28T17:59:54-07:00): Benchmark reporting requirements — report island count and largest fused region alongside wall time. A change that increases claim rate but shrinks fused region size is a regression. These metrics must appear in every benchmark run. — decided by Morpheus
+**Seven Vulkan span phases (D-N2):** `compile`, `prepack`, `upload`, `record`, `submit`, `fence_wait`, `readback`. `Phase::Submit::observes_gpu_work() == false` (unit test asserts this). `fence_wait` is UPPER BOUND. `vkQueueSubmit` wall time measures almost nothing — driver bookkeeping only.
 
-📌 Team update (2026-07-28T17:59:54-07:00): VkBuffer handle registry (opaque 64-bit tag → `(VkBuffer, offset)` map) — OQ-3 tracks whether the hash lookup is ever a bottleneck. Niobe's profiling will answer this; it is not expected to be hot. — decided by Morpheus
+**GPU timing rules (D-N4/D-N5):**
+- `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` required to activate GPU spans.
+- `timestampValidBits == 0` = no timestamps on that queue family — skip entirely, record reason, never emit zeros.
+- `timestampPeriod` is NOT 1.0 on real hardware (Intel Iris Xe = 52.08 ns/tick, AMD ~20–83). Assuming 1.0 = up to 80× under-reporting. Conversion owned by `trace.rs`; Switch hands over raw ticks via `GpuTimestampReport`.
+- Never call `vkGetQueryPoolResults` with `WAIT_BIT` on possibly-in-flight submissions — stalls host. Read after fence signals; prefer `WITH_AVAILABILITY`.
+- `VK_EXT_calibrated_timestamps`: returns `maxDeviation`, pass as `anchor_uncertainty_us`. Fallback: half-round-trip bracket.
+- GPU spans on synthetic lane (`0x7600_0000 + queue_family`), never the submitting thread's.
+- `trace.rs` names NO Vulkan type (enforced by layering lint). Switch owns the call sites.
 
-📌 Team update (2026-07-28T17:59:54-07:00): M0 benchmark — single `Add` node, software rasterizer. Numbers are not meaningful at M0; the goal is establishing the measurement infrastructure. — decided by Morpheus
+**Benchmark harness (D-N7–D-N11):** Claim gate + noise gate (MAD/IQR/p05/p95, robust RSD). Environment stamped on every result. OQ-12 anchor: `matmulnbits_q4_b32_K4096_N4096`. `TransferModel` calibration script. `bench/test_harness.py` tests the gates. 27 tests at end of turn 1.
+
+**Local GPU facts (turn 2, 2026-07-29):**
+
+| | Intel Iris Xe | NVIDIA RTX 4060 Laptop |
+|---|---|---|
+| `timestampPeriod` | 52.0833 ns/tick | 1.0 ns/tick |
+| `timestampValidBits` | 36 | 64 |
+| shared memory | 32 KiB | 48 KiB |
+| memory | 1 heap, all DEVICE_LOCAL (UMA) | discrete + host |
+| API / driver | 1.4.309 / 101.6737 | 1.4.325 / 591.55 |
+
+Both expose `VK_EXT_calibrated_timestamps` and `VK_EXT_host_query_reset`. Intel = spec-conformance oracle. SDK at `C:\VulkanSDK\1.4.350.0` — not on default PATH.
+
+**The 1.70× that wasn't:** ORT 1.27 was installed; `register_execution_provider_library` printed a rejection but didn't raise; session ran on CPU EP; `matmulnbits_q4_b32_K4096_N4096` reported 1.70× on what appeared to be a discrete GPU — entirely fictional, rsd 38–63%. Lesson: check the *effect* (which EP actually ran), not the return of the registration call. `MIN_ORT = (1, 28)` now prevents the column from existing.
+
+**UMA classifier bug caught:** "Does any type carry DEVICE_LOCAL|HOST_VISIBLE" reports a discrete resizable-BAR window as UMA. Correct: UMA iff no heap lacks DEVICE_LOCAL. Rule: be suspicious of a classifier whose answer lets you delete work.
+
+**rustfmt note:** `rustfmt --edition 2021` silently no-ops on this edition-2024 crate. Use `cargo fmt --all`. The xtask `cargo ci` does this correctly.
+
+**Status as of turn 2:** No performance numbers. One `add_f32_dispatches_end_to_end` dispatched on NVIDIA RTX 4060 — a smoke test, not a speedup. A result obtained only on this desk is not a result this project has.
 
 ---
 
-## Cross-agent context appended (2026-07-28T22:28:08-07:00) — implementation-round decisions constraining Niobe
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
 
-📌 **Baseline is now frozen (Morpheus OQ-1):** Device gate = Vulkan ≥1.1 + compute queue + `maxComputeWorkGroupInvocations ≥ 256` + `maxComputeSharedMemorySize ≥ 16384` + subgroup BASIC + one DEVICE_LOCAL + one HOST_VISIBLE memory type. No required extensions. `synchronization2` and `subgroup_size_control` are probed, not required. Capability shortfalls degrade op coverage, not device availability. Benchmark device tiers will vary accordingly.
+📌 **Local GPU facts (2026-07-29):** **Intel Iris Xe Graphics** (Vulkan 1.4.309, UMA, 32 KiB shared) and **NVIDIA GeForce RTX 4060 Laptop GPU** (Vulkan 1.4.325, discrete, 48 KiB shared). Both pass §7.2 gate. Intel is the stricter implementation — treat as spec-conformance oracle. Vulkan SDK at `C:\VulkanSDK\1.4.350.0` — not on default PATH.
 
-📌 **`largest_island_flops` is the metric of record (Mouse OP_COVERAGE.md + Morpheus ratification).** Do NOT use `claimed_node_fraction` as a target. Required benchmark reporting fields per run: `island_count`, `largest_island_nodes`, `largest_island_flops`, `boundary_bytes_per_inference`, `boundary_time_fraction`, `declined_nodes` histogram keyed by `deny!` reason. A change that increases claim rate but shrinks fused region size is a regression.
+📌 **T3 sequencing: `ai.onnx::Attention` first, GQA second (2026-07-29, Morpheus D23):** Mouse's standard-domain rows (`ai.onnx::Attention`, `RMSNormalization`, `RotaryEmbedding`) are registered and constrain Niobe's benchmark anchor — `matmulnbits_q4_b32_K4096_N4096` is the OQ-12 anchor op, not `ai.onnx::Attention`. Niobe's OQ-12 pass bar: ≥1.5× over the device's own CPU EP measured at the same device.
 
-📌 **OQ-12 pass bar (Morpheus §11.1): ≥ 1.5× over the device's own ORT CPU EP on a GEMM-anchored subgraph, zero numerical failures.** This is what §7.3's Android claim rests on. M3 Android tuning budget unlocks only if Android A+B class devices pass all three OQ-12 stages. Niobe owns stage 3 (execution timing measurement). Morpheus pre-committed reversal conditions: if ≥ 1.5× not met on the median Android tier, §7.3 is retracted.
+📌 **`bind_aliased_output` seam (2026-07-29, Mouse + Switch outstanding):** GQA implementation requires an output aliasing mechanism. Niobe needs this confirmed before designing the GQA benchmark timing breakdown (the KV outputs are aliased to the KV inputs; separate upload/readback spans are not applicable).
 
-📌 **MVS constants are provisional and must be re-derived by Niobe from M2 measurements.** Current values: `SAFETY = 3.0`, `node_count ≥ 4`, `64 KiB` output floor. These are placeholders set at 3× because the cost model is crude; they are not settled. `TransferModel::fit` (least squares over `(bytes, ns)` calibration samples) is the calibration hook in Mouse's partition code — Niobe replaces placeholder constants with real measurements. Do not treat these constants as fixed.
+📌 **`largest_island_flops` metric (2026-07-29, Morpheus D21):** The metric of record for performance progress is largest fused region compute volume (`largest_island_flops`), not claim rate or `claimed_node_fraction`. Every benchmark run must report this alongside wall time. Niobe's benchmark harness already tracks this; report its value in all perf-tracking artefacts.
 
-📌 **Trinity's oracle pinning rule (trinity-test-foundation):** For `MatMulNBits`, `accuracy_level` must be pinned at 1 (fp32 accumulator). Level 4 (int8 VNNI) diverges ~3.6e-3 max_abs at K=1024, N=512 — would present as a GPU kernel bug. Pin via `MATMULNBITS_ORACLE_ACCURACY_LEVEL=1`. Gate fp16 oracle on ORT ≥ 1.28 (1.27 produces NaN/Inf via null-allocator PrePack bug). When writing benchmark oracles: any knob ORT selects by sniffing host CPU must be pinned or expected values drift across runners.
-
-📌 **ORT version policy (Tank + Fact Checker):** Compile against ORT 1.28 (`ORT_API_VERSION = 28`), minimum host 1.24, refuse 1.27. Three-number version negotiation: ship=28, min=24, negotiated version stamped into every `ort_version_supported` vtable field we hand ORT. Benchmark suite must pin `onnxruntime>=1.28`.
-
-📌 **Engine: dual-backend barrier abstraction (Switch).** `synchronization2` probed at device init; legacy `vkCmdPipelineBarrier` backend required for devices without it. `ep.force_legacy_barriers=1` session option forces legacy backend in CI parity testing. If benchmarks show different performance between backends, report which backend was active.
-
-📌 **OQ-3: reserved-VA opaque-handle registry (Tank proposal, Morpheus ruling).** No BDA. The handle table lookup may appear in profiling; it is not expected to be hot. If it shows up as a hotspot in Niobe's measurements, that is the signal to optimize the table.
-
-📌 **Hard Vulkan SDK build dependency (Morpheus OQ-4).** Shader-less artifact advertises zero devices. Set `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'` on machines without the SDK (produces inert build, not suitable for benchmarking).
-
-📌 **llama.cpp accelerant (Rai 🟢 Green, Switch D-S4-10).** Tiling strategy, subgroup reduction shape, dequant-in-register patterns transfer as algorithmic reference. No code copying. Budget algorithm study time for GQA and MatMulNBits tiling specifically before implementing Niobe's GEMM benchmarks.
-
-📌 **`concentration()` metric (Mouse registry).** `largest_island_flops ÷ total_claimed_flops`. Report this alongside `node_coverage`. Two graphs can have identical node coverage and wildly different concentration; concentration is the honest performance predictor.
-
+📌 **No performance numbers exist yet (2026-07-29):** A shader dispatched on hardware this round (one `add_f32_dispatches_end_to_end` on NVIDIA RTX 4060). No MatMulNBits, no attention variant, no profiling-JSON timing artefact has been collected. The 1.70× figure referenced in coordinator discussions was a CPU-only measurement artefact — it is not a GPU speedup claim.
 ---
 
-## 2026-07-29 — Tracing integration + benchmark harness (first turn)
+## 2026-07-29 — turn 3: producer provenance, and a bug report for a bug I had already fixed
 
-Task: bring Justin's own `onnx-runtime-tracer` crate here from `onnxruntime-mlx`, adapted to a
-Vulkan backend, and build the `bench/` harness.
+### The clippy error routed to me was already fixed
 
-**Shipped:** `rust/src/trace.rs` (new, 12 unit tests, all green), `docs/PERF.md` (new),
-`bench/{bench,cases,stats,environment,compare,transfer_calibration,test_harness}.py` +
-`bench/README.md` (new; 11 harness self-tests green), decisions at
-`.squad/decisions/inbox/niobe-tracing-integration.md`. Flagged minimal edits to Tank's
-`rust/Cargo.toml` (one dep line + pin comment) and `rust/src/lib.rs` (`pub mod trace;`).
+`trace.rs:1412 assert!(GPU_LANE_BASE > 1 << 24)` — I hit that lint in turn 1 and it has been
+`const { assert!(..) }` ever since. Clippy emits nothing for `trace.rs`. The red Mouse saw was
+Switch's `vk/instance.rs` and `vk/dispatch_integration.rs`, mid-flight; it cleared as he landed.
 
-📌 **`onnx-runtime-tracer` pin `0.1.0-dev.5` is load-bearing, not cosmetic.** That release's clock
-reports an absolute machine-domain timestamp, so a trace emitted from inside our plugin `cdylib`
-(own statics, no shared process-global epoch) overlays the host's trace with **no offset
-negotiation**. A release that moved the epoch to "first call into the library" would break overlay
-*silently* — traces still load, still look plausible, wrong by an unknowable constant. Re-verify
-before ever bumping. `default-features = false` keeps prost/protobuf out of the host process.
+Lesson: when the tree is red across several people's files at once, "clippy said X near your
+file" is a weak signal. Check `--message-format=short` filtered to your own paths before touching
+anything. I nearly edited a correct line.
 
-📌 **MLX's span vocabulary does not transfer.** MLX = lazy graph + unified memory, so host wall
-time around `mlx_eval` is a defensible compute proxy and there are no transfers to instrument.
-We have explicit command buffers, explicit staging, async queues. Our phases: `compile`,
-`prepack`, `upload`, `record`, `submit`, `fence_wait`, `readback`.
+Also worth knowing: `cargo ci` results are **not stable while other agents are mid-edit**. I got
+green, then 2 lib-test failures, then green again within ten minutes, without touching a Rust
+file. Confirm with a re-run before believing either colour.
 
-📌 **`vkQueueSubmit` wall time measures almost nothing** — driver bookkeeping, essentially
-independent of the work submitted. `Phase::Submit` is the only phase with
-`observes_gpu_work() == false` and there is a test asserting that so a refactor cannot lose it.
-`fence_wait` is the honest host-observable bound and is labelled UPPER BOUND (queue contention,
-other clients). Kernel time comes from the device or it does not come at all.
+### The finding that actually mattered
 
-📌 **`timestampPeriod` is NOT 1.0 on real hardware.** NVIDIA typically reports 1.0; AMD ~20-83,
-Adreno large. Assuming 1.0 under-reports GPU time by up to ~80x — i.e. produces an implausibly
-excellent speedup on exactly the vendors we most need to be honest about.
+Mouse read Justin's `onnx-genai-models` (`mobius`) and found it emits a *different op set* from
+the ORT GenAI builder for the same architecture: `ai.onnx::Attention`@23, `RMSNormalization`,
+`RotaryEmbedding` versus the `com.microsoft` contrib equivalents. `MatMulNBits` is the only op
+both agree on. His generalisation is `OP_COVERAGE.md` §4.18: **op coverage is relative to a
+producer, not to a model architecture.**
 
-📌 **`timestampValidBits == 0` means that queue family supports no timestamps at all.** Not "badly"
-— none. Skip GPU tracing and record why; never emit zeros. Otherwise mask to the low valid bits
-before any arithmetic (a 32-valid-bit / 1 ns device wraps in ~4.3 s, so wrap recovery is routine,
-not theoretical). Never shift by 64.
+The version of that I have to hold: **a benchmark artefact is relative to its producer too, and
+it is easier to be fooled by**, because a timing has no shape to disagree about. A wrong-shaped
+graph fails a correctness test loudly. A wrong-provenance graph produces a perfectly plausible
+millisecond figure with a model's name on it.
 
-📌 **Never call `vkGetQueryPoolResults` with `WAIT_BIT` on a possibly-in-flight submission** — that
-stalls the host on the GPU and turns the instrument into the thing it is measuring. Read after the
-fence signals; prefer `WITH_AVAILABILITY`.
+Two consequences I had not thought about before writing it down:
 
-📌 **Host<->device correlation:** prefer `VK_EXT_calibrated_timestamps` (returns `maxDeviation`,
-pass it straight through as `anchor_uncertainty_us`); fallback is bracketing a timestamp-only
-submission between two host clock reads and reporting half the round-trip. Re-anchor per session
-at minimum — clocks drift and a stale anchor slides GPU spans off the host timeline in a way that
-reads as a scheduling anomaly.
+1. The two graphs **partition differently**. "The EP claimed 40% of the graph" is a statement
+   about the exporter as much as about us.
+2. `largest_island_flops` — our metric of record — is computed on a specific graph. An island
+   size without a producer is not reproducible.
 
-📌 **GPU spans go on a synthetic lane (`0x7600_0000 + queue_family`), never the submitting
-thread's.** Drawing async GPU work inside the host call that submitted it is the most effective
-way to make a trace lie, and it hides CPU/GPU overlap, which is the thing we tune.
+### What I built
 
-📌 **`trace.rs` names no Vulkan type by design.** `vk/` hands over raw unconverted ticks
-(`GpuTimestampReport`); `trace.rs` owns masking / period conversion / wrap recovery / axis
-placement *and the tests for them*. Keeps us on the right side of the `layering.rs` lint and puts
-the interesting failure modes in the module that can be tested without a GPU.
+`bench/producers.py`: `Producer{name, kind, version, digest, opsets, model_family}` with
+fingerprint `name@version#digest`; `digest` is a SHA-256 of the builder's own source, so a silent
+edit to the builder shows up as a different producer rather than as a performance change. Same
+instinct as putting the driver version in the device fingerprint.
 
-📌 **Harness gates that matter more than the numbers:** (a) claim gate — a case the EP did not
-actually claim yields `null`, read from `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`, not stderr, because CPU
-fallback is numerically correct and therefore hides in a wall-clock table; (b) noise gate — a delta
-must exceed both the threshold and 2x the worse sample's robust spread; (c) environment stamped on
-every result. `bench/test_harness.py` tests the gates themselves.
+Two refusals, both structural rather than conventional:
 
-📌 **Repo mechanics learned:** crate edition is **2024** — `rustfmt --edition 2021 src/trace.rs`
-silently leaves the file unformatted and `cargo ci` stays red; use `--edition 2024`. `cargo ci`
-runs rustfmt -> clippy (`-D warnings`, incl. `undocumented_unsafe_blocks`) -> build -> test.
-`ONNXRUNTIME_VULKAN_EP_LIB` (word order differs from the `ONNXRUNTIME_EP_VULKAN_*` behaviour-flag
-prefix) is the Python-side lib path var. crates.io's JSON API refuses `curl`; use `cargo fetch`
-plus the local registry cache to inspect a dependency's source.
+* **A case cannot be named after a model family its producer did not export.** Enforced in
+  `Case.__post_init__`, so `qwen3_decoder_layer` built from hand-written ops cannot be
+  *constructed*. Earning the label needs kind=`model` **and** a family **and** a version.
+* **`compare.py` refuses across producers** — exit 2, no table, `--cross-producer-study` to
+  relabel with no verdict. Unrecorded producer refuses too.
 
-📌 **Still true, and the whole reason for the discipline above: no shader in this repo has ever
-executed on any device** (`DESIGN.md` §9.1.2). 280+ green host-side tests are evidence about
-partitioning and plumbing, not about GPU behaviour. Both local GPUs pass the §7.2 gate (Intel Iris
-Xe 1.4.309, NVIDIA RTX 4060 Laptop 1.4.325), so local measurement becomes possible once the SDK
-lands — that is a *possibility*, not a measurement. OQ-12 remains unanswered.
+Verified both on real result files, not just in unit tests. 39 bench tests pass (was 27).
+
+### The design rule I want to remember
+
+Every gate I have added this week has the same shape: *the wrong answer and the right answer look
+equally reasonable in a table, so make the wrong one unconstructible.* Phase::Submit not observing
+GPU work. UMA being "no heap lacks DEVICE_LOCAL" rather than the obvious flag test. Cross-device
+comparison as exit 2 rather than a banner. Now: a model-family name being a claim that must be
+earned. When I next add a metric, the question to ask first is not "is this right?" but "what is
+the plausible misreading, and can I make it impossible?"
+
+### Green at end of turn
+
+`cargo ci` — 300 tests, fmt + clippy clean. `pytest bench/` — 39 passed.
+Still no performance number. No kernel has executed.

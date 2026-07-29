@@ -32,6 +32,8 @@ if str(_HERE) not in sys.path:
 
 from stats import Sample, relative_delta, significant  # noqa: E402
 
+import portability  # noqa: E402
+
 MARKER = "<!-- vulkan-ep-bench -->"
 
 
@@ -111,6 +113,65 @@ def cross_device_refusal(base: dict, pr: dict) -> "str | None":
     return None
 
 
+def producer_identity(record: dict) -> "tuple[tuple[str, ...], str]":
+    """Return ``(fingerprints, human)`` describing who built the graphs in ``record``.
+
+    Falls back to scanning the case rows, so a result file written before ``producers`` existed
+    still reports honestly (as unrecorded) rather than silently comparing as if it matched.
+    """
+    fps = [p.get("fingerprint") for p in record.get("producers", []) if p.get("fingerprint")]
+    if not fps:
+        fps = [
+            c["producer_fingerprint"]
+            for c in record.get("cases", [])
+            if c.get("producer_fingerprint")
+        ]
+    uniq = tuple(sorted(set(fps)))
+    return uniq, (", ".join(uniq) if uniq else "unrecorded producer")
+
+
+def producer_refusal(base: dict, pr: dict) -> "str | None":
+    """Return a refusal message when the two runs did not benchmark the same graphs.
+
+    Mouse's ``OP_COVERAGE.md`` §4.18 rule — op coverage is relative to a producer, not to a model
+    architecture — applies to timings with more force, because a timing has no shape to disagree
+    about and so nothing fails loudly. Justin's ``mobius`` emits ``ai.onnx::Attention`` @ 23,
+    ``RMSNormalization`` and ``RotaryEmbedding``; the ORT GenAI builder emits the
+    ``com.microsoft`` contrib equivalents. Those graphs partition differently, claim differently
+    and run differently. A delta between them is a fact about two exporters, and reading it as a
+    regression in this repository would be wrong in a way that looks entirely reasonable.
+
+    Unrecorded producers refuse too. "We do not know what built these" is not evidence that the
+    same thing built both.
+    """
+    b_fps, b_human = producer_identity(base)
+    p_fps, p_human = producer_identity(pr)
+    if not b_fps or not p_fps:
+        return (
+            f"producer not recorded (base: {b_human}; pr: {p_human}). A benchmark artefact is "
+            f"relative to its producer (OP_COVERAGE.md §4.18); two runs whose graph origin is "
+            f"unknown cannot be assumed to have benchmarked the same graph. Re-run with a "
+            f"harness that records producers."
+        )
+    if b_fps != p_fps:
+        return (
+            f"different producers: base built by [{b_human}], pr built by [{p_human}]. Different "
+            f"exporters emit different op sets for the same architecture, so this delta is a "
+            f"property of the exporters, not of the change under review — pass "
+            f"--cross-producer-study, which labels the columns and prints no verdict."
+        )
+    return None
+
+
+def producer_mismatch(b: dict, p: dict) -> bool:
+    """True when two rows with the same case name were built by different producers.
+
+    As with ``tile_config``, two unrecorded producers mean *unknown*, never *equal*.
+    """
+    bp, pp = b.get("producer_fingerprint"), p.get("producer_fingerprint")
+    return bp is not None and pp is not None and bp != pp
+
+
 def tile_mismatch(b: dict, p: dict) -> bool:
     """True when two rows were produced by demonstrably different kernels.
 
@@ -120,6 +181,38 @@ def tile_mismatch(b: dict, p: dict) -> bool:
     """
     bt, pt = b.get("tile_config"), p.get("tile_config")
     return bt is not None and pt is not None and bt != pt
+
+
+def portability_banner(pr: dict) -> "list[str]":
+    """Warn when the PR's numbers came from configurations no floor device could select.
+
+    Not a refusal: measuring a 48 KiB tile on the 4060 is legitimate and useful. But a reader
+    scanning a table has no way to tell a number that describes the EP from one that describes
+    this desk, and Justin's standing directive (cross-platform generality at all times) is exactly
+    that this must be structural rather than remembered. So the table says which it is.
+    """
+    rows = pr.get("cases", [])
+    verdicts = [c.get("portability", {}).get("verdict") for c in rows]
+    needs = sum(1 for v in verdicts if v == portability.NEEDS_FALLBACK)
+    unknown = sum(1 for v in verdicts if v == portability.UNKNOWN or v is None)
+    if not needs and not unknown:
+        return []
+    out = []
+    if needs:
+        out.append(
+            f"> 🌍 **{needs} of {len(rows)} rows used a configuration above the §7.2 admission "
+            f"floor** ({portability.FLOOR_SHARED_MEMORY_BYTES} B shared, "
+            f"{portability.FLOOR_WORKGROUP_INVOCATIONS} invocations). Those numbers describe a "
+            f"path a device sitting on the floor cannot take; the floor-compliant fallback must "
+            f"be measured before any of this is quoted as the EP's behaviour."
+        )
+    if unknown:
+        out.append(
+            f"> 🌍 **{unknown} of {len(rows)} rows do not record the configuration that produced "
+            f"them.** The engine does not report tile shape or workgroup size yet. Unknown is not "
+            f"portable and is not quotable — it is just unknown."
+        )
+    return out + [""]
 
 
 def main() -> int:
@@ -133,6 +226,10 @@ def main() -> int:
     ap.add_argument("--cross-device-study", action="store_true",
                     help="the two files are deliberately from different devices; print a "
                          "labelled side-by-side with no regression verdict")
+    ap.add_argument("--cross-producer-study", action="store_true",
+                    help="the two files were deliberately built by different model producers "
+                         "(e.g. mobius vs the ORT GenAI builder); print a labelled side-by-side "
+                         "with no regression verdict")
     args = ap.parse_args()
 
     base, pr = _load(args.base), _load(args.pr)
@@ -142,6 +239,13 @@ def main() -> int:
         print(f"{MARKER}\n## 🏎️ Vulkan EP benchmark\n\n⛔ **Comparison refused.**\n\n"
               f"```\n{refusal}\n```")
         print(f"⛔ comparison refused: {refusal}", file=sys.stderr)
+        return 2
+
+    prod_refusal = producer_refusal(base, pr)
+    if prod_refusal and not args.cross_producer_study:
+        print(f"{MARKER}\n## 🏎️ Vulkan EP benchmark\n\n⛔ **Comparison refused.**\n\n"
+              f"```\n{prod_refusal}\n```")
+        print(f"⛔ comparison refused: {prod_refusal}", file=sys.stderr)
         return 2
 
     bi = {c["name"]: c for c in base.get("cases", [])}
@@ -164,6 +268,25 @@ def main() -> int:
     else:
         _, dh = device_identity(base)
         out += [f"Device: **{dh}**", ""]
+
+    if args.cross_producer_study:
+        _, bph = producer_identity(base)
+        _, pph = producer_identity(pr)
+        out += [
+            "> 🏭 **Producer study, not a regression check.** The two columns were built by "
+            "different exporters, which emit different op sets for the same architecture "
+            "(`OP_COVERAGE.md` §4.18). A delta here is a property of the exporters. No verdict "
+            "is issued.",
+            "",
+            f"* left  — built by {bph}",
+            f"* right — built by {pph}",
+            "",
+        ]
+    else:
+        _, ph = producer_identity(base)
+        out += [f"Producer: **{ph}**", ""]
+
+    out += portability_banner(pr)
 
     if base.get("barrier_backend") != pr.get("barrier_backend"):
         out += [
@@ -202,7 +325,10 @@ def main() -> int:
         p_claimed = p.get("claim", {}).get("claimed")
 
         note, delta = "", float("nan")
-        if tile_mismatch(b, p):
+        if producer_mismatch(b, p):
+            note = "🏭 different producer — different graph, not comparable"
+            delta = float("nan")
+        elif tile_mismatch(b, p):
             note = "🧩 different tile config — different kernel, not comparable"
             delta = float("nan")
         elif b_claimed and not p_claimed:
@@ -245,7 +371,7 @@ def main() -> int:
     if noisy:
         parts.append(f"{noisy} change(s) inside the noise ◻️")
     out.append(f"Median `session.run` (Vulkan EP, end-to-end host latency) — "
-               f"{'side-by-side; no verdict' if args.cross_device_study else (' · '.join(parts) if parts else 'no significant change')} "
+               f"{'side-by-side; no verdict' if (args.cross_device_study or args.cross_producer_study) else (' · '.join(parts) if parts else 'no significant change')} "
                f"(threshold ±{args.threshold * 100:.0f}%, noise-gated).")
     out += ["", "| Case | base ms | PR ms | Δ% | note |", "|------|--------:|------:|---:|------|"]
     for name, bms, pms, delta, note, _ in rows:
@@ -263,7 +389,7 @@ def main() -> int:
     ]
     print("\n".join(out))
 
-    if args.fail_on_regression and not args.cross_device_study and (regressions or fallbacks):
+    if args.fail_on_regression and not (args.cross_device_study or args.cross_producer_study) and (regressions or fallbacks):
         return 1
     return 0
 

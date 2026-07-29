@@ -25,6 +25,8 @@ import pytest  # noqa: E402
 
 import compare  # noqa: E402
 import devices as D  # noqa: E402
+import portability as P  # noqa: E402
+import producers  # noqa: E402
 from stats import Sample  # noqa: E402
 
 # Measured with vulkaninfo on this machine, 2026-07-29. Not invented, not rounded.
@@ -185,16 +187,19 @@ def test_a_resizable_bar_window_is_not_unified_memory():
 
 
 def _result(dev: D.DeviceFacts, median: float, **kw) -> dict:
+    producer = kw.get("producer", "tests/ops/_models.py@-#abc123def456")
     return {
         "label": "x",
         "device": dev.to_dict(),
         "device_fingerprint": dev.fingerprint,
         "barrier_backend": kw.get("backend", "device default"),
+        "producers": [{"fingerprint": producer}] if producer else [],
         "cases": [
             {
                 "name": "case",
                 "claim": {"claimed": True},
                 "tile_config": kw.get("tile"),
+                "producer_fingerprint": producer,
                 "vulkan": {"name": "case", "median_ms": median, "mad_ms": 0.01},
                 "cpu": {"name": "case", "median_ms": 10.0, "mad_ms": 0.01},
             }
@@ -340,3 +345,238 @@ def test_the_version_gate_lets_a_supported_ort_through(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "onnxruntime", _FakeOrt)
     assert bench_mod.register_ep() is True
     assert called["name"] == bench_mod.EP_NAME
+
+
+# ---------------------------------------------------------------------------------------------
+# Producer provenance. Mouse's OP_COVERAGE.md §4.18: op coverage is relative to a producer, not
+# to a model architecture. A *timing* is worse, because it has no shape to disagree about and so
+# nothing fails loudly — the number just quietly describes a different graph.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_a_synthetic_op_graph_cannot_be_named_after_a_model_family():
+    """The wrong reading: "qwen3_decoder_layer: 1.4x" means something about Qwen3.
+
+    It does not, if the graph was three hand-built ops. This must fail at construction, not be
+    caught in review.
+    """
+    with pytest.raises(producers.ProducerProvenanceError) as e:
+        producers.assert_family_label_is_earned(
+            "qwen3_decoder_layer", [], producers.op_builder()
+        )
+    assert "qwen3" in str(e.value)
+
+
+def test_a_family_word_hidden_in_a_tag_is_caught_too():
+    with pytest.raises(producers.ProducerProvenanceError):
+        producers.assert_family_label_is_earned("decoder_layer", ["llama"], producers.op_builder())
+
+
+def test_an_ordinary_op_case_name_is_not_flagged():
+    """The gate must not be so eager that it makes honest names unusable."""
+    producers.assert_family_label_is_earned("matmulnbits_q4_b32_K4096_N4096", ["gemm"],
+                                            producers.op_builder())
+    producers.assert_family_label_is_earned("add_fp32_1024x1024", ["dispatch-bound"],
+                                            producers.op_builder())
+    assert producers.family_words_in("matmulnbits_q4_b32_K4096_N4096") == []
+
+
+def test_a_versioned_model_exporter_earns_the_label():
+    producers.assert_family_label_is_earned(
+        "qwen3_decoder_mobius", [], producers.mobius("0.3.1")
+    )
+
+
+def test_an_unversioned_exporter_does_not_earn_the_label():
+    """A family label from an exporter whose version is unknown is not reproducible."""
+    anon = producers.Producer(name="somebuilder", kind=producers.KIND_MODEL,
+                              version=None, model_family="qwen3")
+    assert anon.can_claim_model_family is False
+    with pytest.raises(producers.ProducerProvenanceError):
+        producers.assert_family_label_is_earned("qwen3_decoder", [], anon)
+
+
+def test_a_case_must_be_named_after_the_family_actually_built():
+    with pytest.raises(producers.ProducerProvenanceError):
+        producers.assert_family_label_is_earned(
+            "llama_decoder", [], producers.mobius("0.3.1", model_family="qwen3")
+        )
+
+
+def test_mobius_and_the_ort_genai_builder_are_different_producers():
+    """The finding itself: the same architecture, two op sets.
+
+    mobius emits ai.onnx::Attention @ 23; the ORT GenAI builder emits the com.microsoft contrib
+    graph. MatMulNBits is the only op both agree on, so it is the only case whose cost carries
+    across them.
+    """
+    m, g = producers.mobius("0.3.1"), producers.ort_genai_builder("0.9.2")
+    assert m.fingerprint != g.fingerprint
+    assert m.opsets != g.opsets
+    assert "com.microsoft" in g.opsets and "com.microsoft" not in m.opsets
+
+
+def test_a_builder_edit_makes_a_different_producer():
+    """Same instinct as the driver version in the device fingerprint.
+
+    If the builder changed between base and PR, the graph changed, and attributing the delta to
+    the EP would be wrong in a way that looks entirely reasonable.
+    """
+    a = producers.Producer(name="b", kind=producers.KIND_OP, digest="a" * 64)
+    b = producers.Producer(name="b", kind=producers.KIND_OP, digest="b" * 64)
+    assert a.fingerprint != b.fingerprint
+
+
+def test_comparing_across_producers_is_refused_not_warned():
+    base = _result(_facts(**RTX_4060), 10.0, producer="onnx-genai-models/mobius@0.3.1#aaaaaaaaaaaa")
+    pr = _result(_facts(**RTX_4060), 4.0,
+                 producer="onnxruntime-genai/builder.py@0.9.2#bbbbbbbbbbbb")
+    refusal = compare.producer_refusal(base, pr)
+    assert refusal is not None
+    assert "different producers" in refusal
+    # A 2.5x "improvement" that is entirely an exporter difference.
+
+
+def test_same_producer_compares_normally():
+    base = _result(_facts(**RTX_4060), 10.0)
+    pr = _result(_facts(**RTX_4060), 10.1)
+    assert compare.producer_refusal(base, pr) is None
+
+
+def test_an_unrecorded_producer_is_refused_too():
+    """"We do not know what built these" is not evidence that the same thing built both."""
+    base = _result(_facts(**RTX_4060), 10.0)
+    anon = _result(_facts(**RTX_4060), 10.0, producer=None)
+    anon["cases"][0]["producer_fingerprint"] = None
+    assert compare.producer_refusal(base, anon) is not None
+
+
+def test_every_shipped_case_carries_a_producer():
+    """Nothing may reach a result file without provenance."""
+    import cases as case_mod
+
+    built = case_mod.build_cases()
+    assert built
+    assert all(c.producer is not None for c in built)
+    assert all(c.producer.fingerprint for c in built)
+    # Today there is exactly one producer, and it is an op builder that can name no family.
+    prods = case_mod.case_producers(built)
+    assert len(prods) == 1
+    assert prods[0].kind == producers.KIND_OP
+    assert prods[0].can_claim_model_family is False
+
+
+# ---------------------------------------------------------------------------------------------
+# Portability. Justin's standing directive: 要时刻注意跨平台通用性 — cross-platform generality at
+# all times. A Vulkan EP that is really a desktop-NVIDIA EP has no reason to exist. The wrong
+# reading these guard against: "it ran fast on the hardware we own, therefore it is fast".
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_floor_is_the_admission_floor_not_this_desk():
+    """The wrong reading: 32 KiB is the budget, because the *smaller* local GPU has 32 KiB.
+
+    DESIGN.md §7.2 R4 admits devices with 16 KiB. §7.0 says shortfalls degrade op coverage, not
+    device availability — so a 16 KiB device is one we promised to run on.
+    """
+    assert P.FLOOR_SHARED_MEMORY_BYTES == 16384
+    assert P.FLOOR_WORKGROUP_INVOCATIONS == 256
+    assert P.FLOOR_SHARED_MEMORY_BYTES < IRIS_XE["max_compute_shared_memory"]
+    assert P.FLOOR_SHARED_MEMORY_BYTES < RTX_4060["max_compute_shared_memory"]
+
+
+def test_a_tile_that_fits_the_smaller_local_gpu_is_still_not_portable():
+    """The Iris Xe is our UMA proxy. It is not a shared-memory proxy."""
+    xe_tuned = P.Configuration(name="xe", shared_memory_bytes=32768, workgroup_invocations=256)
+    assert P.fits_device(xe_tuned, IRIS_XE["max_compute_shared_memory"], 1024) is True
+    v = P.evaluate(xe_tuned)
+    assert v.verdict == P.NEEDS_FALLBACK
+    assert v.quotable_as_ep_behaviour is False
+
+
+def test_a_floor_compliant_config_is_portable():
+    v = P.evaluate(P.Configuration(name="floor", shared_memory_bytes=16384,
+                                   workgroup_invocations=256))
+    assert v.verdict == P.PORTABLE
+    assert v.quotable_as_ep_behaviour is True
+
+
+def test_an_unrecorded_config_is_not_portable_it_is_unknown():
+    """"We did not record the tile" must not degrade into "the tile was fine"."""
+    v = P.evaluate(P.Configuration(name=None))
+    assert v.verdict == P.UNKNOWN
+    assert v.quotable_as_ep_behaviour is False
+    assert P.fits_device(P.Configuration(), 49152, 1024) is False
+
+
+def test_a_4060_tile_does_not_fit_the_iris_xe_by_reported_limits():
+    """Answered from the device's *reported* limits, never from a constant that happens to fit."""
+    tuned = P.Configuration(name="4060", shared_memory_bytes=49152, workgroup_invocations=256)
+    assert P.fits_device(tuned, RTX_4060["max_compute_shared_memory"], 1024) is True
+    assert P.fits_device(tuned, IRIS_XE["max_compute_shared_memory"], 1024) is False
+
+
+def test_a_subgroup_size_dependency_must_be_declared_and_is_never_assumed():
+    """Both local GPUs report 32 — the coincidence most likely to bake a 32 into a kernel.
+
+    Vulkan 1.1 guarantees subgroup BASIC in compute and nothing about the size.
+    """
+    assert P.SUBGROUP_SIZE_IS_GUARANTEED is False
+    assert IRIS_XE["subgroup_size"] == RTX_4060["subgroup_size"] == 32
+    undeclared = P.Configuration(name="x", shared_memory_bytes=16384, workgroup_invocations=256,
+                                 depends_on_subgroup_size=True)
+    assert P.evaluate(undeclared).verdict == P.UNKNOWN
+    declared = P.Configuration(name="x", shared_memory_bytes=16384, workgroup_invocations=256,
+                               depends_on_subgroup_size=True, subgroup_size=32)
+    assert P.evaluate(declared).verdict == P.NEEDS_FALLBACK
+
+
+def test_assuming_unified_memory_is_never_portable():
+    """UMA on Iris Xe/Adreno/Mali, not on the 4060. A staging path must still exist."""
+    v = P.evaluate(P.Configuration(name="uma-shortcut", shared_memory_bytes=16384,
+                                   workgroup_invocations=256, assumes_unified_memory=True))
+    assert v.verdict == P.NEEDS_FALLBACK
+    assert any("staging" in r for r in v.reasons)
+
+
+def test_transfer_models_may_not_be_blended_across_transfer_classes():
+    """The coordinator's directive: a single blended model describes neither device.
+
+    The blended constant would land plausibly *between* the two, which is why this is a refusal
+    and not a warning.
+    """
+    refusal = P.transfer_model_merge_refusal(
+        [{"transfer_class": "uma"}, {"transfer_class": "discrete"}]
+    )
+    assert refusal is not None and "describes neither" in refusal
+    assert P.transfer_model_merge_refusal([{"transfer_class": "discrete"}]) is None
+
+
+def test_a_transfer_fit_without_a_class_cannot_be_combined_with_anything():
+    assert P.transfer_model_merge_refusal(
+        [{"transfer_class": "discrete"}, {"r2": 0.99}]
+    ) is not None
+
+
+def test_the_comparison_table_says_when_its_numbers_are_desk_specific():
+    """A reader scanning a table cannot otherwise tell EP behaviour from local behaviour."""
+    pr = _result(_facts(**RTX_4060), 1.0)
+    pr["cases"][0]["portability"] = P.evaluate(
+        P.Configuration(name="4060", shared_memory_bytes=49152, workgroup_invocations=256)
+    ).to_dict()
+    banner = "\n".join(compare.portability_banner(pr))
+    assert "above the §7.2 admission floor" in banner
+
+    portable = _result(_facts(**RTX_4060), 1.0)
+    portable["cases"][0]["portability"] = P.evaluate(
+        P.Configuration(name="floor", shared_memory_bytes=16384, workgroup_invocations=256)
+    ).to_dict()
+    assert compare.portability_banner(portable) == []
+
+
+def test_unrecorded_configs_are_called_out_rather_than_passing_silently():
+    """Today every row is in this state, and the table must say so."""
+    pr = _result(_facts(**RTX_4060), 1.0)
+    pr["cases"][0]["portability"] = P.evaluate(P.Configuration()).to_dict()
+    banner = "\n".join(compare.portability_banner(pr))
+    assert "do not record the configuration" in banner

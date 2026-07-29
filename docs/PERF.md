@@ -161,6 +161,47 @@ query pools created, no command-buffer instrumentation. The check is a relaxed a
 behind an already-resolved `OnceLock` — a predictable branch on a path that is already doing
 descriptor writes.
 
+### 2.1 The producer is part of the environment
+
+Mouse established for correctness (`OP_COVERAGE.md` §4.18) that **op coverage is relative to a
+producer, not to a model architecture**. Justin's own `onnx-genai-models` builder (`mobius`)
+emits, per Qwen3 decoder layer, `ai.onnx::Attention` @ opset 23, `ai.onnx::RMSNormalization` and
+`ai.onnx::RotaryEmbedding`. The ORT GenAI builder emits the `com.microsoft` contrib equivalents —
+`GroupQueryAttention`, `SimplifiedLayerNormalization`, contrib-domain `RotaryEmbedding`, with
+`seqlens_k` indirection and in-place KV-cache aliasing. **`MatMulNBits` is the only op both
+toolchains agree on.**
+
+The same is true of a benchmark artefact, and it is easier to be fooled by, because a timing has
+no shape to disagree about. If `bench/cases.py` builds a graph with one exporter and the table
+says "Qwen3", the number describes that exporter's graph — its op set, its fusions, its cache
+layout — not the architecture. Two further consequences specific to us:
+
+* The two graphs **partition differently**. "The EP claimed 40% of the graph" is as much a
+  statement about the producer as about the EP; the standard-domain graph may be largely
+  claimable while the contrib graph is not, or vice versa.
+* The `largest_island_flops` metric (`OP_COVERAGE.md` §5) is computed on a specific graph. An
+  island size quoted without its producer is not reproducible.
+
+So the producer is recorded next to device, driver, OS and build flags:
+
+| Field | Where |
+|---|---|
+| `producers[]` — name, kind, version, digest, opsets, model family | result JSON top level and `environment.producers` |
+| `producer_fingerprint` — `name@version#digest` | every case row |
+
+`digest` is a SHA-256 of the builder's own source (for the in-repo op builder) or of its versioned
+identity (for an external exporter). It is there for the same reason the driver version is in the
+device fingerprint: an edit to the builder changes the graph, and a graph change attributed to the
+EP would be wrong in a way that looks entirely reasonable.
+
+**Two structural refusals follow** (see §4.0): a case cannot be *named* after a model family its
+producer did not export, and two results built by different producers cannot be compared as a
+regression. When a real model case does arrive, it must be added **per producer** —
+`qwen3_decoder_mobius` and `qwen3_decoder_ortgenai` are two cases, not one case run two ways.
+Mouse notes the `mobius` path avoids `seqlens_k` indirection and KV-cache aliasing entirely, so it
+is the likelier of the two to give us a model we can build and iterate on **on this machine**;
+that is a reason to represent both, not a reason to assume one.
+
 ---
 
 ## 3. Requirement: Vulkan timestamp queries (routed to Switch)
@@ -352,6 +393,11 @@ in a hurry.
 | Delta smaller than 2× the worse sample's robust spread | Reported as "within noise", not as a regression. |
 | `--gpu-timestamps` on a queue with `timestampValidBits == 0` | GPU tracing is switched off with a printed reason, because zeros are indistinguishable from instant kernels. |
 | Transfer calibration on a multi-device machine without `--device` | Refuses. A UMA and a discrete part do not share an affine model; the emitted Rust literal is stamped with the transfer class and the driver it came from. |
+| A case named after a model family its producer did not export | **Cannot be constructed.** `producers.assert_family_label_is_earned()` raises during case construction, before any timing exists to be mislabelled. A synthetic op graph called `qwen3_decoder_layer` is a `ProducerProvenanceError`, not a review comment. |
+| A model-family label from an *unversioned* exporter | Same refusal. `can_claim_model_family` requires kind=`model`, a named family **and** a version; an unversioned exporter's graph is not reproducible. |
+| `compare.py` given two files built by different producers | **Refuses**, exit 2, prints no table. `--cross-producer-study` relabels it as an exporter study with no verdict. |
+| `compare.py` given a file with no recorded producer | Same refusal. "We do not know what built these" is not evidence that the same thing built both. |
+| Two rows with different `producer_fingerprint` | Marked `🏭 different producer — different graph, not comparable`; the delta is suppressed. |
 
 `bench/test_plausible_but_wrong.py` tests each of these against the shape of the wrong answer it
 prevents, using the real device values from §1.4 as fixtures.
