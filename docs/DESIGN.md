@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T22:28:08-07:00 (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T22:28:08-07:00 (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -186,6 +186,30 @@ generally, on **op #1 of the eleven**:
    it is the contrib-specific restatement of §1.3.
 6. **A contrib row whose baseline is not a released ORT version may not be flipped from `Staged` to
    `Live`.** *Added 2026-07-28T22:28:08-07:00 — see below.*
+7. **The fingerprints themselves are re-verified against the pinned schema, on a schedule — they are
+   not trusted inputs.** *Added 2026-07-28T22:28:08-07:00.* Items 3 and 4 check *observed nodes
+   against the fingerprints*. Nothing was checking *the fingerprints against the schema*, which
+   means the baseline of the drift alarm was itself unaudited. Mouse's own arity self-audit proved
+   this is not hypothetical: he found two errors in the `GroupQueryAttention` fingerprint —
+   `min_inputs` recorded as 3 when the true minimum is 7 (optional contrib inputs are *positional*,
+   so `seqlens_k` and `total_sequence_length` occupy slots 5 and 6), and a recorded note asserting a
+   1.28-vs-main difference that did not exist. **Both errors were in the permissive direction, and
+   that is the part that matters.** A drift detector whose baseline is too permissive does not fire
+   late — it fails *silently*, in the one direction where silence is expensive: it will accept a
+   node it should have rejected and report nothing, because from its point of view nothing drifted.
+   A too-strict fingerprint, by contrast, shows up immediately as a claim-rate drop that someone
+   investigates. The asymmetry means fingerprint errors cannot be left to be discovered by their
+   consequences.
+
+   Concretely: a CI job re-derives arity, attribute names and type constraints for all eleven rows
+   from the pinned ORT release's schema — from the ORT Python API's registered schemas where it can,
+   from the pinned `defs.cc` otherwise — and fails on any disagreement with the recorded
+   fingerprint. It runs on the ORT version bump (item 4) *and* on a schedule, because a fingerprint
+   can be wrong on the day it is written, which is exactly what happened here. Where the derivation
+   cannot be automated for a row, that row carries an explicit `hand_verified` marker with a date,
+   so "not automatically checked" is visible rather than indistinguishable from "checked and
+   agreed". Owner: Mouse, with Fact Checker as second reader on any row a bump changes. This is a
+   T3 precondition, not an M0 one — but it lands before the first contrib row goes `Live`.
 
 **C2's implemented shape is confirmed** (Mouse, `registry.rs`; Tank, `sys.rs`; both in `5ae991a`).
 `SchemaBaseline` is nested *inside* `ContribSchema` and surfaced through `OpSpec::schema_baseline()`,
@@ -251,6 +275,20 @@ place we look when something is already wrong; and the whole value of a uniform 
 is that a user debugging a Qwen graph and a user debugging a ResNet read the same output. Any new
 decline reason a contrib op needs (`UnsupportedAttributeValue`, `UnverifiedSchemaVersion`) is added
 to the shared enum for everyone.
+
+**The claim log is live, and it is append-and-flush per decision, not written at teardown**
+(Mouse, 2026-07-28). Ratified, and the reasoning is worth keeping because it generalizes: the
+plugin-EP lifecycle gives us **no point at which we are reliably told the session ended**, so any
+report-at-exit design is a flaky test waiting to happen — and a diagnostic that is unreliable
+exactly when something went badly wrong is worse than none, because it will be trusted anyway. JSON
+Lines appended per decision survives an abort, a crash, and a process that simply never tears down.
+
+This also sharpens C1's runtime half. Trinity's assertion can now check `code == "not-registered"`
+directly rather than inferring from a zero-node count — and a zero-node assertion cannot distinguish
+"declined for the right reason" from "declined for the wrong reason" from "crashed before it ever
+reached claiming". All three produce zero claimed nodes and only one of them is the property we
+meant to test. **General rule: assert the reason, not the absence.** An absence is consistent with
+too many different worlds.
 
 #### C4 — Every one of the eleven gets a hand-written claim predicate
 
@@ -1718,7 +1756,76 @@ with op count is a milestone report that is hiding something. Every milestone fr
 Qwen artifacts, where for most of M1 and M2 it will be near zero and *should* be, because that
 number going up is the only thing that means the named target is getting closer.
 
-### M0 — "It loads, it runs, it matches"
+### 10.0.1 Milestone risk register — "op works" ≠ "model works"
+
+*Added 2026-07-28T22:28:08-07:00.* §10.0 warns that op count and target progress are different
+kinds of progress. This is the register of *specific* places where a milestone could be declared
+complete while the named target remains out of reach. Each entry names the cheap check that
+resolves it and when it must run.
+
+**R1 — `GroupQueryAttention` may arrive with fused Q/K normalisation, and that is a different
+kernel.** Mouse found while verifying arity against the pinned 1.28 schema that GQA inputs 14/15
+(`q_norm_weight` / `k_norm_weight`) fuse **per-head RMS normalisation of Q and K into the attention
+kernel itself**, and that the ORT GenAI model builder sets `q_norm`/`k_norm` for **every
+Qwen3-family decoder** (`builders/qwen.py`), emitting a 16-input GQA node when its fused-QK-norm
+path is enabled. ORT's schema documentation states that an EP without support for that input must
+reject the node when it is set, so Mouse's predicate declines inputs 10–15. **That is conformance
+with the schema, not caution, and I ratify it as written** — the alternative is claiming a node
+whose semantics we do not implement, which is C6's forbidden failure mode in its purest form.
+
+The risk is not the decline. The risk is what the decline *means for the milestone*: the builder
+emits separate `SimplifiedLayerNormalization` nodes for EPs that lack support, which is the form we
+want — **but that is the builder's decision, not ours, and it is not a decision we control or have
+observed.** If the fused form is what actually lands in front of us, then **"GQA works" and "Qwen3
+works" are separated by a Q/K-norm variant of the hardest kernel in the project**, and T3 contains
+either one XL kernel or two depending on an answer nobody has looked up. A T3 that silently doubles
+is exactly the surprise §10.0 exists to prevent.
+
+**RULING — this is an M1 verification item, not M2, and not a T3 precondition.** Three reasons:
+
+1. **The artifact already exists.** Trinity built a GenAI Qwen3-0.6B graph for the oracle work
+   (§9.1.1). The check is: load it, find the `com.microsoft::GroupQueryAttention` nodes, count their
+   inputs, and record whether slots 14/15 are populated or whether `SimplifiedLayerNormalization`
+   appears separately around each attention block. That is minutes of work today.
+2. **The tooling it belongs in is already scheduled for M1.** `tools/graph_census.py` lands in M1
+   (§10 M1 work table) and already walks pinned corpus artifacts producing node histograms. Node
+   *arity* and populated-optional-input presence are a small extension of what it already extracts,
+   and putting the check there means it is re-run on every artifact refresh and every ORT bump
+   rather than being a one-time investigation someone remembers doing.
+3. **Cheap now, expensive at T3.** Deferring it to when the kernel is being written means
+   discovering a second XL kernel at the moment the schedule has the least slack. A precondition
+   that can be checked before the work starts should be checked before the work starts — the entire
+   value of Mouse's VERIFIED/UNVERIFIED discipline is refusing to plan against unobserved forms.
+
+**Owner: Trinity produces the artifact fact; Mouse interprets it and records the consequence in
+`OP_COVERAGE.md`.** Deliberately split that way — Trinity owns "what is in the file", Mouse owns
+"what that means for T3" — because the failure mode here is an inference about a schema dressed up
+as an observation about a graph.
+
+**M1 exit criterion (added):** the census reports, for every corpus artifact containing GQA, the
+input count of each GQA node and which optional slots are populated. Not "we looked once".
+
+**What each outcome means, pre-committed so the result is not re-litigated:**
+
+- **Separate `SimplifiedLayerNormalization` nodes.** Best case. T3 is one XL kernel; the norm is a
+  T2 op we already have. Record the builder flag and version that produced this form, because it is
+  a builder default we are now depending on — and a dependency on someone else's default is a
+  tracked assumption, not a fact.
+- **16-input fused nodes.** T3 contains a second variant of the hardest kernel and **T3 widens; I
+  will say so rather than absorb it.** The mitigation to evaluate first is whether the fused Q/K
+  norm can be handled as a prologue within our own attention kernel — it is per-head RMS over the
+  head dimension, which is structurally the T2 RMSNorm we will already have written — rather than as
+  a genuinely separate kernel. That is a real possibility and it is why this is a schedule risk to
+  size rather than a certainty to fear.
+- **Both forms in the corpus.** Then the decline predicate is load-bearing for correctness on real
+  user models and the fused variant is required for T5a, not optional. This is the outcome that
+  moves the item from "risk" to "scope".
+
+**R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
+Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
+first contrib row goes `Live`.
+
+
 
 > **A stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a single
 > `Add` node on that device, and the output matches the ORT CPU EP within tolerance — on both
@@ -1775,13 +1882,14 @@ coverage table as the authoritative contract.
 | Per-family differential tests, tolerance policy, `tests/backend/` node tests | Trinity |
 | `bench/` harness + first published baselines with island counts | Niobe |
 | macOS/MoltenVK lane; first real-GPU lane if a runner is available; driver quirk log | Link |
-| `tools/graph_census.py` + node histograms for all 7 corpus artifacts (`OP_COVERAGE.md` §2.2) | Mouse + Trinity |
+| `tools/graph_census.py` + node histograms for all 7 corpus artifacts (`OP_COVERAGE.md` §2.2), **including GQA node arity and populated-optional-input reporting (§10.0.1 R1)** | Mouse + Trinity |
 
 **Exit criteria.** Every T1 op green vs CPU on ≥2 platforms; **a pure-elementwise graph of ≥20 nodes
 compiles to one island, one submission**; a shape change re-records once and then replays;
 `OP_SUPPORT.md` is generated from the registry and matches it by construction; `graph_census.py`
-exists and has produced histograms for the full corpus; and **the ops-per-hand-written-kernel ratio
-is reported and is ≥ 8** (§8.4 A2).
+exists and has produced histograms for the full corpus; **the census reports GQA input counts and
+populated optional slots for every corpus artifact containing GQA, resolving §10.0.1 R1**; and
+**the ops-per-hand-written-kernel ratio is reported and is ≥ 8** (§8.4 A2).
 
 ### M2 — "Real memory, real compute" (`OP_COVERAGE.md` tier T2 — 33 ops, cum. 121)
 

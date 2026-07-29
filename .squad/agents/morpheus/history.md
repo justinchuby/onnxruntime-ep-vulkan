@@ -426,3 +426,61 @@ Worth asking of every hard rule I write: which end is unguarded?
 **A harness change can change what a green run means, and then it belongs in the design record.**
 Dropping the autouse EP fixture turned "skipped" into "executed" for 8 tests with no EP built.
 That is not housekeeping — it is the reason the runtime half of C1 has any force at all.
+
+---
+
+## 2026-07-28T22:28:08-07:00 — "the op works" is not "the model works", and unaudited baselines
+
+**The gap between a working kernel and a working model is where a coverage project deceives itself,
+and it is made of *variants*, not missing ops.** Mouse found that `GroupQueryAttention` inputs 14/15
+fuse per-head Q/K RMS normalisation into the attention kernel, and that the GenAI builder sets
+`q_norm`/`k_norm` for every Qwen3 decoder. Nothing is missing from our op list. The op is on the
+list, planned, sized. But if the fused form is what lands in front of us, T3 contains *two* variants
+of the hardest kernel in the project instead of one — and every artefact of our planning (op count,
+tier table, coverage percentage) would read identically either way. §10.0's `largest_island_flops`
+guard catches the general version of this; it does not catch a kernel that quietly doubles. Hence a
+named risk register (§10.0.1) with entries that each carry a *cheap check* and a *date*.
+
+**A precondition that can be checked before the work starts must be checked before the work
+starts.** The artefact existed. Trinity built it for the oracle experiment. Answering "16 inputs or
+separate norm nodes?" is minutes today and a schedule shock at T3. I put it in `graph_census.py`
+rather than making it an investigation, because a one-time investigation is not re-run when the
+artefact refreshes or ORT bumps — it decays into folklore that someone eventually contradicts.
+
+**Pre-commit the meaning of each outcome before you have it.** I wrote down what "unfused" implies,
+what "fused" implies (T3 widens, and I say so), and what "both" implies (it stops being a risk and
+becomes scope). This is the same device as §11.1's reversal conditions. Deciding what a result means
+after seeing it is how a bad result gets talked down.
+
+**When a dependency is on someone else's default, that is an assumption, not a fact.** Even the good
+outcome — the builder emitting separate `SimplifiedLayerNormalization` nodes — is the *builder's*
+decision about EPs that lack support, not ours. It must be recorded with the flag and version that
+produced it, because defaults change and nobody will tell us.
+
+**A drift detector's baseline needs its own auditor, and the direction of error decides how badly.**
+Mouse's self-audit found two errors in his own GQA fingerprint, both permissive: `min_inputs` 3
+against a true minimum of 7 (contrib optional inputs are positional, so `seqlens_k` and
+`total_sequence_length` occupy slots 5 and 6), and a false claim that 1.28 and main differ. The
+asymmetry is the whole lesson — a **too-strict** fingerprint announces itself as a claim-rate drop
+someone investigates within the hour, whereas a **too-permissive** one is silent by construction: it
+accepts what it should reject and reports that nothing drifted. Any error class that cannot be
+discovered by its consequences must be discovered by audit. I had designed C2 as "check observed
+nodes against fingerprints" and never asked what checks the fingerprints; item 7 fixes it. Worth
+asking of every checking mechanism I design: **what audits the thing doing the checking?**
+
+**A fingerprint can be wrong on the day it is written** — which is why a bump-triggered audit is
+insufficient and a scheduled one is required. Verification tied only to *change* assumes the initial
+state was correct.
+
+**Assert the reason, not the absence.** Trinity's C1 check was "zero nodes claimed", which is
+equally consistent with declined-correctly, declined-for-the-wrong-reason, and crashed-before-
+claiming. Three worlds, one observation, one of them the property under test. Mouse's per-decision
+claim log makes `code == "not-registered"` assertable directly. Generalize: every negative-property
+test I ask for should name the mechanism it expects, because an absence is cheap to produce by
+accident.
+
+**Diagnostics must survive the failure they exist to explain.** Mouse chose append-and-flush per
+decision over report-at-teardown because the plugin-EP lifecycle never reliably tells us a session
+ended. Right call, and the sharper form of the argument is this: a diagnostic that is unreliable
+exactly when something went badly wrong is *worse* than no diagnostic, because it will be trusted
+anyway.
