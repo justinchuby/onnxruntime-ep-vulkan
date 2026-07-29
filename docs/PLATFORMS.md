@@ -1,10 +1,12 @@
 # Platform Support Matrix — onnxruntime-ep-vulkan
 
 > **Document owner:** Link (Platform & Hardware Support Engineer)
-> **Last updated:** 2026-07-28T17:59:54-07:00
-> **Status:** Active — Fact Checker review pending
+> **Last updated:** 2026-07-28T19:16:08-07:00
+> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00)
 
-This document answers the API-baseline question the team must resolve before writing a single line of capability-detection code: **what Vulkan version should the project require at minimum?** The final call is Morpheus's; this document provides the evidence and a defensible recommendation.
+This document is the evidence base for the project's platform support decisions. §1–§7 record the investigation and reasoning leading to the frozen capability set. §8 records what was decided, the data behind it, and the outstanding experiment needed to validate the Android half of that decision. §9 specifies the CI requirement for the dual barrier-backend parity lane. §10 documents the OQ-12 hardware validation experiment.
+
+> **CI coverage status (RAI-003):** All physical hardware rows in §5 are marked **untested**. Every verified CI lane today runs either a software rasterizer (lavapipe on Linux, SwiftShader on Windows) or a desktop GPU build. No Android device or Apple hardware has been tested in CI. This is not hidden: it is stated explicitly here and should be reflected in the README. See §9 for the CI lanes that exist and §10 for the hardware that needs to exist.
 
 ---
 
@@ -17,7 +19,9 @@ This document answers the API-baseline question the team must resolve before wri
 5. [Platform Support Matrix Table](#5-platform-support-matrix-table)
 6. [Feature & Extension Detection Strategy](#6-feature--extension-detection-strategy)
 7. [Toolchain & CI Notes](#7-toolchain--ci-notes)
-8. [OQ-1: Extension Availability for Morpheus's Capability Set](#8-oq-1-extension-availability-for-morpheuss-capability-set)
+8. [OQ-1: Extension Coverage Data and the Frozen Decision](#8-oq-1-extension-coverage-data-and-the-frozen-decision)
+9. [CI Requirement: Dual Barrier-Backend Parity Lane](#9-ci-requirement-dual-barrier-backend-parity-lane)
+10. [OQ-12: Hardware Validation Experiment](#10-oq-12-hardware-validation-experiment)
 
 ---
 
@@ -380,9 +384,212 @@ For anything in the matrix column labeled **untested**, the project must either 
 
 ---
 
-## 8. OQ-1: Extension Availability for Morpheus's Capability Set
+## 8. OQ-1: Extension Coverage Data and the Frozen Decision
 
-> **Context:** Morpheus's provisional capability-set design (docs/DESIGN.md §7, 2026-07-28) requires devices to expose either Vulkan 1.3 core (which promotes both extensions) or the standalone extensions `VK_KHR_synchronization2` and `VK_EXT_subgroup_size_control`. The question is whether this is a safe hard requirement, or whether a legacy fallback is needed. All figures below are primary-source data from **[vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/)** (Sascha Willems, CC-BY 4.0), pulled **2026-07-28**. The database is biased toward developer-submitted reports from newer/higher-end hardware; real installed-base fractions for budget/legacy Android devices are likely worse than shown.
+> **Status: RESOLVED** — `docs/DESIGN.md` §7 frozen 2026-07-28T19:16:08-07:00 by Morpheus. The evidence below drove the decision. The data and sources are preserved here because DESIGN.md cites them and they remain the authoritative measurement basis.
+
+### 8.1 What was being measured and why
+
+The pre-decision capability-set proposal required devices to expose either Vulkan 1.3 core or the standalone extensions `VK_KHR_synchronization2` and `VK_EXT_subgroup_size_control`. The question was whether that requirement was safe — i.e., whether those extensions are "near-universally available on 1.1/1.2 drivers", or whether requiring them would exclude a meaningful device population.
+
+All figures below are primary-source data from **[vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/)** (Sascha Willems, CC-BY 4.0), pulled **2026-07-28** directly from the page HTML. The database skews toward developer-submitted reports from newer/higher-end hardware; real installed-base fractions for budget/legacy Android are likely **worse** than shown.
+
+### 8.2 Extension coverage data (vulkan.gpuinfo.org, 2026-07-28)
+
+#### VK_KHR_synchronization2
+
+Coverage = devices that expose the extension string **or** report Vulkan 1.3 (where it is core).
+
+| Platform | Coverage | Gap |
+|---|---|---|
+| Windows | 87.78% | **12.22%** |
+| Linux | 99.05% | 0.95% |
+| Android | 68.57% | **31.43%** ← decisive |
+| macOS (MoltenVK) | 97.5% | 2.5% |
+| iOS (MoltenVK) | 100% | 0% |
+
+*Source: [vulkan.gpuinfo.org — VK_KHR_synchronization2](https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_KHR_synchronization2), pulled 2026-07-28*
+
+#### VK_EXT_subgroup_size_control
+
+Coverage = devices that expose the extension string **or** report Vulkan 1.3.
+
+| Platform | Coverage | Gap |
+|---|---|---|
+| Windows | 93.33% | 6.67% |
+| Linux | 98.81% | 1.19% |
+| Android | 85.88% | **14.12%** |
+| macOS (MoltenVK) | 100% | 0% |
+| iOS (MoltenVK) | 100% | 0% |
+
+*Source: [vulkan.gpuinfo.org — VK_EXT_subgroup_size_control](https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_EXT_subgroup_size_control), pulled 2026-07-28*
+
+**macOS 100% caveat — extension string ≠ feature flag.** The 100% macOS/iOS figure means the extension *string* is present in every MoltenVK 1.3+ report (Vulkan 1.3 promotes the extension to core, and MoltenVK reports ≥ 1.3). It does **not** mean `VkPhysicalDeviceSubgroupSizeControlFeatures::subgroupSizeControl = VK_TRUE`. Metal does not allow per-pipeline SIMD-group size control, so MoltenVK sets `subgroupSizeControl = VK_FALSE` while still advertising the struct for querying `minSubgroupSize`/`maxSubgroupSize`. The frozen decision (§8.3 below) requires only properties querying, not feature control — so macOS/iOS are fully in scope.
+*Source: [wgpu issue #5551](https://github.com/gfx-rs/wgpu/issues/5551); [MoltenVK Runtime User Guide](https://github.com/KhronosGroup/MoltenVK/blob/main/Docs/MoltenVK_Runtime_UserGuide.md)*
+
+#### Other capability-set limits: safety check
+
+| Limit | Vulkan spec minimum | Android (gpuinfo.org, 2026-07-28) | Assessment |
+|---|---|---|---|
+| `maxComputeWorkGroupInvocations ≥ 256` | 128 | 80/8206 reports (≈ 1%) show 128; 74 show exactly 256 | **Safe.** < 2% of database reports 128; those are pre-2018 era devices. Database skew toward newer hardware means the real fraction is probably under 5%, concentrated on obsolete hardware. |
+| `maxComputeSharedMemorySize ≥ 16 384 bytes` | 16 384 bytes | Guaranteed by VP_ANDROID_baseline_2022 | **Safe.** 16 KiB is the Vulkan spec floor; any conformant device passes by definition. |
+| Subgroup BASIC in COMPUTE | Guaranteed by 1.1 spec | >99% | **Safe.** VK spec §34.1 mandates BASIC in all compute queues on Vulkan 1.1+. |
+
+*Source: [gpuinfo.org — maxComputeWorkGroupInvocations Android](https://vulkan.gpuinfo.org/displaydevicelimit.php?name=maxComputeWorkGroupInvocations&platform=android), 2026-07-28; [Khronos Vulkan-Profiles VP_ANDROID_baseline_2022.json](https://github.com/KhronosGroup/Vulkan-Profiles/blob/main/profiles/VP_ANDROID_baseline_2022.json)*
+
+---
+
+### 8.3 What the data showed and what was decided
+
+The measurement **disproved** the "near-universal" assumption for Android sync2: a **31.43-point Android gap** and a **12.22-point Windows gap** were measured from the database. The Windows number matters as much as the Android one — nearly one Windows device in eight would be declined.
+
+The Android gap is *structurally* missing, not stochastically missing:
+- **Adreno 500-series** (Snapdragon 625/630/636/660, Adreno 506/508/509/512): frozen OEM blobs predate the extension (published 2021); no update path exists.
+- **Adreno 600-series on unupdated Android 10/11 OEM drivers**: some Samsung/Xiaomi/OPPO devices froze drivers at Android 10 launch; those drivers will not change.
+- **Mali Bifrost (G52/G57/G72/G76) on MediaTek**: OEM driver update cadence is poor; the extension simply was not backported.
+
+**⚠ Unverified per-model specifics.** The characterization above is based on gpuinfo.org database patterns and community driver changelogs. Exact minimum driver blob version strings at which sync2 appears have not been confirmed by official Qualcomm or ARM documentation. The *usability* of these devices — whether they can actually run a correct compute workload — is separately unverified; see §10.
+
+**The frozen decision (DESIGN.md §7.2, 2026-07-28T19:16:08-07:00):**
+
+> *Governing principle: capability shortfalls degrade op coverage, not device availability.*
+>
+> The device gate is six items and **no required extensions**:
+> 1. Vulkan ≥ 1.1 core (instance and device)
+> 2. A queue family with `VK_QUEUE_COMPUTE_BIT`
+> 3. `maxComputeWorkGroupInvocations >= 256`
+> 4. `maxComputeSharedMemorySize >= 16384`
+> 5. Subgroup `BASIC` in the `COMPUTE` stage
+> 6. At least one `DEVICE_LOCAL` and one `HOST_VISIBLE` memory type
+>
+> `synchronization2` and `subgroup_size_control` are probed into `vk::caps::Capabilities` and used to select an engine strategy. Neither may block device advertisement. `subgroup_size_control` is consulted as a *properties query* only — `subgroupSizeControl = VK_TRUE` is never required.
+
+Consequences for this document:
+- **`synchronization2` gap:** Switch implements a two-backend barrier abstraction (`vk/barrier.rs`). The legacy `vkCmdPipelineBarrier` path covers the 31.43% of Android and 12.22% of Windows that lack the extension. See §9 for the CI requirement.
+- **`subgroup_size_control` gap:** `VkPhysicalDeviceSubgroupSizeControlProperties` is queried where available to inform workgroup size selection. No device is excluded.
+- **macOS:** Fully in scope. MoltenVK reports the extension string; `subgroupSizeControl = VK_FALSE` is acceptable because we require only the properties query.
+
+---
+
+### 8.4 What was considered and rejected
+
+**Requiring `VK_KHR_synchronization2` (the pre-decision proposal):** Excludes 31.43% of Android and 12.22% of Windows by measurement. Under the compatibility-first directive, indefensible.
+
+**Option B — bundling `VK_LAYER_KHRONOS_synchronization2`:** Proposed by Link as a way to avoid a dual code path; rejected by Morpheus on two grounds, both verified from primary sources.
+
+First, it cannot work for a plugin on retail Android: the AOSP Vulkan loader ignores `VK_LAYER_PATH`, uses no JSON manifests, and enumerates layers only from the host application's `nativeLibraryDir` (set by the framework from the installed APK via `GraphicsEnv::getAppNamespace()`) plus `/data/local/debug/vulkan`, which requires a debuggable app or a userdebug build. We do not own the APK. The Khronos `synchronization2_layer.md` states the `.so` "needs to be packaged inside the APK". Android was 100% of the motivation for proposing Option B; it is the one platform where a plugin cannot do it.
+*Source: [KhronosGroup/Vulkan-Loader — LoaderLayerInterface.md](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md) ("The Android loader does not use manifest files"; "There is No Support For Implicit Layers on Android"); [KhronosGroup/Vulkan-ExtensionLayer — synchronization2_layer.md](https://github.com/KhronosGroup/Vulkan-ExtensionLayer/blob/main/docs/synchronization2_layer.md)*
+
+Second, the cited prior art — that wgpu, Dawn, and Godot ship this layer — was **incorrect**. All three use legacy `vkCmdPipelineBarrier` exclusively and none ships the layer. The actual source inspection showed the precedent supports Option A, not Option B.
+*Source: [wgpu-hal/src/vulkan/command.rs](https://github.com/gfx-rs/wgpu/blob/trunk/wgpu-hal/src/vulkan/command.rs); [dawn/src/dawn/native/vulkan/CommandBufferVk.cpp](https://github.com/google/dawn/blob/main/src/dawn/native/vulkan/CommandBufferVk.cpp); [godot/drivers/vulkan/rendering_device_driver_vulkan.cpp](https://github.com/godotengine/godot/blob/master/drivers/vulkan/rendering_device_driver_vulkan.cpp)*
+
+> **Working-practice note.** The layer-shim Option B claim was asserted (wgpu/Dawn/Godot do X) rather than verified from source. It pointed the team toward a mechanism that does not work for the platform it was proposed for. Qualitative precedent claims must be verified from primary source before they are cited — the same standard applied to the gpuinfo.org measurements. This is recorded so it sticks.
+
+**Optional integrator-side deployment note (NOT a mechanism we ship or depend on):** An Android application integrator who packages `libVkLayer_khronos_synchronization2.so` inside their own APK and enables it at `vkCreateInstance` time can cause our sync2 backend to light up automatically on otherwise sync2-missing devices, because we probe the extension at device initialization and the layer advertises it (disabling itself when native support is present). This is documented for integrators as an *optional* deployment choice. We do not ship the layer, do not depend on it, and do not test this configuration. The legacy barrier backend runs correctly without it.
+*Source: [KhronosGroup/Vulkan-ExtensionLayer — synchronization2_layer.md](https://github.com/KhronosGroup/Vulkan-ExtensionLayer/blob/main/docs/synchronization2_layer.md)*
+
+---
+
+## 9. CI Requirement: Dual Barrier-Backend Parity Lane
+
+**Requirement owner:** Link (specification). **Implementation owner:** Trinity (`.github/workflows/`).
+
+**Background:** Because lavapipe and desktop hardware expose `synchronization2` (Linux 99%, Windows 88%), the legacy `vkCmdPipelineBarrier` backend — which covers 31% of Android and 12% of Windows — would never execute in any test we own without deliberate forcing. DESIGN.md §7.5 mandates a forced-legacy lane as an **M0 exit criterion** (item 8 of 8).
+
+**What Trinity must implement:**
+
+Every CI lane that runs the test suite must run it **twice**:
+
+1. **Default run:** `cargo test --all-targets` (or the equivalent invocation per lane). The EP uses whichever barrier backend the device capability dictates — sync2 where available, legacy where not.
+2. **Forced-legacy run:** the same invocation with the session option `ep.force_legacy_barriers=1` set (exact mechanism: set via ORT session option `"ep.force_legacy_barriers"` = `"1"` at session creation, or via env var `ONNXRUNTIME_VULKAN_EP_FORCE_LEGACY_BARRIERS=1` if Tank exposes one). This forces `vk/barrier.rs` to select `Barriers::Legacy` even on a device that has sync2.
+
+**What both runs must assert:**
+- All tests pass.
+- Numerical outputs are **bitwise identical** between the default run and the forced-legacy run for every test that produces tensor output.
+- Zero validation-layer errors in both runs.
+
+**Lanes covered:** at minimum, the Linux lavapipe lane and the Windows SwiftShader lane. Both already expose sync2, so forced-legacy on these lanes is the only way the legacy `vkCmdPipelineBarrier` code path is exercised before real Android hardware is available.
+
+**Failure mode this detects:** a bug in `LegacyBackend` — a mismatched stage mask, a missing barrier, an access flag not translated — that causes a different numerical result under the legacy path. This is the most valuable possible failure mode to catch, and it is the failure mode the parity lane was specifically designed for.
+
+**When real Android hardware is available:** the parity run must also be executed on physical devices, including those in the sync2-missing population (see §10). At that point the "forced-legacy = bitwise identical" assertion is retired and replaced by "sync2 backend and legacy backend agree to within the op's tolerance", since the two backends may diverge at the floating-point rounding level on different hardware.
+
+---
+
+## 10. OQ-12: Hardware Validation Experiment
+
+**Status: Pending hardware.** The experiment is fully specified; it can be executed the hour a device exists.
+
+**The question:** Does carrying the legacy barrier backend (DESIGN.md §7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for reasons unrelated to barriers — driver bugs, unsupported memory limits, missing fp16, known Adreno quirks on the watchlist?
+
+**How much of the 31.43% claim is currently unverified:** All of it, as a *usability* claim. The gpuinfo.org data proves those devices lack `VK_KHR_synchronization2`. It says nothing about whether they can run correct compute at all, whether they pass the §7.2 device gate, or whether Vulkan inference on them outperforms their own CPU. Until the experiment runs, every statement about "the legacy backend benefits the 31% Android population" is a database extrapolation, not a measurement.
+
+**Can any of it be de-risked without physical devices?**
+
+Cloud device farms offer real Android hardware at API level, which is better than an emulator but not free:
+
+- **Firebase Test Lab** (Google): Provides real Android devices for automated test runs via `gcloud firebase test android`. Supports ADB-level test invocation; does NOT expose `VkQueueSubmit` or Vulkan compute dispatch from a `.so` plugin because tests run via Instrumentation APK or Robo, not via a native plugin call chain. **Not suitable for Vulkan compute validation** without wrapping the EP in an Android app.
+- **AWS Device Farm**: Similar model. Real devices, JUnit/Appium test runner. Same limitation: compute validation requires an APK wrapper, not a raw plugin `.so`. Would work for end-to-end integration once an Android integration test APK exists.
+- **Browserstack App Automate / LambdaTest**: Same architecture as AWS Device Farm.
+
+**Verdict on cloud farms:** Cloud farms can de-risk *build and link* on real Android hardware (does `cargo-ndk` produce a loadable `.so`?), and with an APK wrapper they can run functional tests. They cannot replace physical devices for the gate-check + correctness + performance stages below without additional tooling investment. The minimum-cost path is two second-hand devices.
+
+**⚠ Unverified:** Whether Firebase Test Lab or AWS Device Farm currently expose Vulkan 1.3 or even Vulkan 1.1 with compute on their device inventory, and whether sync2-missing devices (Adreno 5xx, MediaTek Mali Bifrost) are represented in their fleets, is **unconfirmed** and must be verified before committing to a cloud-farm-only strategy.
+
+### 10.1 Devices — decisive, not representative
+
+Two physical units of A and B are worth more than four of C and D. If only two devices can be obtained, take A and C.
+
+| Slot | Device class | Rationale |
+|---|---|---|
+| A | **Adreno 5xx** — e.g. Snapdragon 660 (Adreno 512) or 636 (Adreno 509), Android 8–10, stock OEM blob | The largest sync2-missing bloc. Frozen pre-2021 drivers. If any class fails for non-barrier reasons, it is this one. |
+| B | **Mali Bifrost on MediaTek** — e.g. G52 (Helio G85) or G76 (Helio G90T), stock ROM | Second bloc, second vendor. MediaTek specifically — same Mali IP on a Samsung/Exynos ROM has a different update history. |
+| C | **Adreno 6xx on Android 12+** — e.g. Snapdragon 865/888 | Control: *has* sync2. Isolates "is the legacy backend correct" from "is this device usable". |
+| D | **Mali Valhall on Android 12+** — e.g. G78 or G710 | Second control, second vendor. |
+
+### 10.2 Three-stage workload
+
+Each stage can independently fail the experiment:
+
+**Stage 1 — Gate check (minutes).** Run the `vk/caps.rs` probe on the device and record:
+- `vkEnumerateInstanceVersion` result
+- `maxComputeWorkGroupInvocations`, `maxComputeSharedMemorySize`, memory types
+- `VkPhysicalDeviceSubgroupProperties::supportedOperations` and `subgroupSize`
+- `shaderFloat16`, `storageBuffer16BitAccess` (OQ-14 data point, separately tracked)
+- `VK_KHR_synchronization2` presence in extension list
+
+A device that fails the §7.2 gate outright (fails items 1–6 of the device gate) is the cleanest possible negative result and narrows any follow-on decision to the remaining population.
+
+**Stage 2 — Correctness (hours).** The full M1 differential suite (elementwise/shape floor) run against ORT CPU EP reference, plus M2 set (reduction/GEMM/softmax/norm) if it exists. Run twice: once normally, once with `ep.force_legacy_barriers=1` on devices C and D. Validation layers on throughout. Record every failure with op, dtype, shape, and driver version.
+
+**Stage 3 — Usability (hours).** One bandwidth-bound elementwise chain and one GEMM-anchored subgraph, timed against *that device's own ORT CPU EP* — not against a desktop GPU. Report wall time and Mouse's `boundary_time_fraction` (OP_COVERAGE.md §7.3).
+
+### 10.3 Pass bar and reversal conditions
+
+For the legacy backend to be vindicated on Android, devices A **and** B must:
+1. Pass the §7.2 device gate (stage 1 green)
+2. Pass the full differential suite with **zero** numerical failures and zero validation-layer errors (stage 2 green)
+3. Beat their own device's ORT CPU EP by **≥ 1.5×** on the GEMM-anchored subgraph (stage 3 green)
+
+**What reverses the DESIGN.md §7.3 decision, stated in advance:**
+
+- **If A and B both fail stage 1 or 2:** the Android half of §7.3's justification is void. The legacy backend stays (12.22% Windows gap is independent and unchanged), but the Android §7.2 gate should be tightened by device class, and M3's Android scope narrows to the Adreno 6xx / Valhall tier. This is a scope decision recorded here, not quietly absorbed.
+- **If A and B pass stages 1–2 but fail stage 3 (< 1.5×):** they are correct but not worth using. Legacy backend stays; devices remain supported (correctness is free once written); they are documented "runs, not recommended" with no tuning budget.
+- **If A and B pass all three stages:** §7.3 is fully vindicated and the Android tier gets a real tuning budget in M3.
+- **If C or D fail only under `ep.force_legacy_barriers=1`:** that is a `LegacyBackend` bug, not a device finding. It is the most valuable possible outcome and is exactly what the §9 parity lane exists to catch.
+
+### 10.4 Owners and blocking
+
+- **Link:** device acquisition, gate-check harness, PLATFORMS.md rows.
+- **Trinity:** differential suite execution on-device.
+- **Niobe:** stage 3, `boundary_time_fraction` numbers.
+- **Morpheus:** rules on the outcome.
+
+Blocked only on hardware, not on any other milestone. Stages 1 and 2 can run the day M1 is green.
+
+---
+
+*This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ### 8.1 Extension Coverage: Primary Data (vulkan.gpuinfo.org, pulled 2026-07-28)
 
@@ -413,123 +620,4 @@ Coverage = devices that expose the extension string OR report Vulkan 1.3.
 | iOS (MoltenVK) | **100%** | 0% |
 
 *Source: [vulkan.gpuinfo.org — VK_EXT_subgroup_size_control device coverage](https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_EXT_subgroup_size_control), data pulled 2026-07-28*
-
-> **Important caveat — MoltenVK and `VK_EXT_subgroup_size_control`:** The 100% macOS/iOS figure means the *extension string* is present in every MoltenVK 1.3+ report (because Vulkan 1.3 core promotes this extension, and MoltenVK reports ≥ 1.3). It does **not** mean the `subgroupSizeControl` feature bit is `VK_TRUE`. Metal does not allow applications to specify a wavefront/SIMD-group size per-pipeline, so MoltenVK exposes the struct for querying `minSubgroupSize`/`maxSubgroupSize` but sets `subgroupSizeControl = VK_FALSE`. If Morpheus's capability set means "the device must be able to **request** a specific subgroup size for a compute pipeline", MoltenVK/macOS fails regardless of the 100% extension-string coverage. If it means "the device exposes subgroup size range for querying", MoltenVK passes. This needs explicit clarification in the capability-set spec.
-> *Source: [wgpu issue #5551 — MoltenVK subgroup size error](https://github.com/gfx-rs/wgpu/issues/5551); [MoltenVK Runtime User Guide](https://github.com/KhronosGroup/MoltenVK/blob/main/Docs/MoltenVK_Runtime_UserGuide.md)*
-
----
-
-### 8.2 Android Breakdown: Which Devices Are in the 31% Without sync2?
-
-The 31.43% gap on Android is not random. Based on available community data and driver history, the devices lacking `VK_KHR_synchronization2` (and not on Vulkan 1.3 core) are:
-
-**Adreno (Qualcomm):**
-- Adreno 500-series (Snapdragon 625/630/636/660 era, 2017–2019): Report Vulkan 1.1, no backport of sync2 extension to frozen OEM driver blobs.
-- Adreno 600-series on Android 10–11 with unupdated OEM drivers: Some Samsung/Xiaomi/OPPO devices froze drivers at Android 10 launch; the extension was published in 2021, after their driver cadence ended.
-- Adreno 6xx on Snapdragon 865+ with Android 12+ drivers: **generally DO** expose sync2.
-
-**Mali (ARM):**
-- Mali Bifrost (G52/G57/G72/G76): Very fragmented. Many OEM blobs from 2019–2021 don't backport sync2. OEM driver update cadence on MediaTek-based devices is especially poor.
-- Mali Valhall (G77/G78/G710+) on Android 12+: Generally DO expose sync2 or Vulkan 1.3.
-- Pre-Bifrost Mali (T8xx): No Vulkan 1.1; out of scope.
-
-**⚠ Unverified per-model specifics:** Exact minimum Qualcomm driver blob version and exact minimum Mali driver revision at which sync2 appears are not confirmed by official vendor documentation and vary by OEM. The characterization above is based on community database patterns and published driver changelogs.
-
-*Sources: [Vulkan-ExtensionLayer synchronization2 layer docs](https://github.com/KhronosGroup/Vulkan-ExtensionLayer/blob/main/docs/synchronization2_layer.md); [Devices — vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/listdevices.php?platform=android&extension=VK_KHR_synchronization2)*
-
----
-
-### 8.3 Other Capability-Set Requirements: Safety Check
-
-#### maxComputeWorkGroupInvocations ≥ 256
-
-**Vulkan spec minimum:** 128 (not 256).
-**Android database distribution** (vulkan.gpuinfo.org, 2026-07-28, 8,206 reports):
-
-| Reported value | Reports | % of database |
-|---|---|---|
-| 1024 | 4,895 | 59.7% |
-| 512 | 1,891 | 23.0% |
-| 384 | 799 | 9.7% |
-| 2048 | 341 | 4.2% |
-| 1536 | 106 | 1.3% |
-| **128** | **80** | **1.0%** |
-| 256 | 74 | 0.9% |
-| ≤ 256 total | 154 | 1.9% |
-| Other (≥ 672) | 20 | 0.2% |
-
-*Source: [vulkan.gpuinfo.org — maxComputeWorkGroupInvocations, Android platform](https://vulkan.gpuinfo.org/displaydevicelimit.php?name=maxComputeWorkGroupInvocations&platform=android), data pulled 2026-07-28*
-
-**Assessment: SAFE.** Only ~1% of submitted Android reports show 128. These are very old devices (pre-2018 era). The ≥ 256 requirement is not a spec guarantee, but it is safe in practice for any device that a user is actively running software on today. Database bias toward newer hardware means the actual installed-base fraction reporting 128 is likely under 3–5%, all on obsolete hardware.
-
-#### maxComputeSharedMemorySize ≥ 16 KiB
-
-**Vulkan spec minimum:** 16,384 bytes (16 KiB) for all conformant implementations.
-**Android Baseline 2021** (`VP_ANDROID_baseline_2022`): guarantees exactly 16,384 bytes.
-**Android Baseline 2022/Android 16** (`VP_ANDROID_16_minimums`): guarantees 32,768 bytes (32 KiB).
-*Source: [Khronos Vulkan-Profiles — VP_ANDROID_16_minimums.json](https://github.com/KhronosGroup/Vulkan-Profiles/blob/main/profiles/VP_ANDROID_16_minimums.json)*
-
-**Assessment: SAFE.** 16 KiB is the Vulkan spec minimum. Any conformant Vulkan device passes this. No separate query needed for this particular limit — it's guaranteed by spec.
-
-#### Subgroup BASIC + ARITHMETIC Operations in COMPUTE Stage
-
-The Vulkan 1.1 spec (§34.1) guarantees that `VK_SUBGROUP_FEATURE_BASIC_BIT` is supported in all queue types that support `VK_QUEUE_COMPUTE_BIT`, on any device reporting Vulkan 1.1+. `VK_SUBGROUP_FEATURE_ARITHMETIC_BIT` is not guaranteed by the spec but is reported by >95% of Vulkan 1.1+ compute devices in practice.
-
-**Assessment: SAFE for BASIC. Effectively safe for ARITHMETIC.** Always query `VkPhysicalDeviceSubgroupProperties.supportedOperations` at runtime (as the DeviceCapabilities struct already specifies) and do not assume ARITHMETIC without checking.
-
----
-
-### 8.4 CI Software Rasterizers: Extension Support
-
-| Requirement | lavapipe (Mesa 22.0+) | SwiftShader (Vulkan 1.3) |
-|---|---|---|
-| `VK_KHR_synchronization2` | **Yes** — Vulkan 1.3 core; present as extension string and core API | **Yes** — Vulkan 1.3 core |
-| `VK_EXT_subgroup_size_control` | **Yes** — Vulkan 1.3 core; `subgroupSizeControl` may be VK_FALSE (single fixed SIMD width on CPU) | **Yes** — Vulkan 1.3 core; `subgroupSizeControl` likely VK_FALSE (CPU reports single width) |
-| `maxComputeWorkGroupInvocations ≥ 256` | Yes (CPU-unlimited; reports spec max) | Yes |
-| `maxComputeSharedMemorySize ≥ 16 KiB` | Yes | Yes |
-| Subgroup BASIC + ARITHMETIC | Yes (emulated in software) | Yes (emulated in software) |
-
-**Both lavapipe and SwiftShader satisfy Morpheus's capability set** at the extension-string level. Both support Vulkan 1.3, so sync2 and subgroup_size_control are in core. The `subgroupSizeControl` feature bit may be VK_FALSE on both (CPU has a single fixed SIMD width), but this does not affect device advertisement if the spec requirement is only "extension/core present for querying".
-
-*Sources: [Mesa 25.0 release notes — lavapipe Vulkan 1.4](https://lists.freedesktop.org/archives/mesa-dev/2025-February/226464.html); [SwiftShader GitHub](https://github.com/google/swiftshader)*
-
----
-
-### 8.5 Verdict: Is the Two-Extension Hard Requirement Safe?
-
-#### Per-platform verdict
-
-| Platform | sync2 hard requirement | subgroup_size_control hard requirement |
-|---|---|---|
-| Windows (2022+ drivers) | ✅ Safe (87.78%) | ✅ Safe (93.33%) |
-| Linux (Mesa 22.0+) | ✅ Safe (99.05%) | ✅ Safe (98.81%) |
-| Android (all 1.1 devices) | ❌ **NOT SAFE (31.43% lack it)** | ⚠ Marginal (14.12% lack it) |
-| Android (1.3 devices only) | ✅ Safe (in core) | ✅ Safe (in core) |
-| macOS (MoltenVK 1.3+) | ✅ Safe (extension present) | ⚠ **Feature VK_FALSE** (see §8.1 caveat) |
-| lavapipe (Mesa 22.0+) | ✅ Safe | ✅ Safe |
-| SwiftShader | ✅ Safe | ✅ Safe (with above caveat) |
-
-#### Overall verdict
-
-**The two-extension hard requirement is NOT SAFE for broad Android coverage.** Roughly 31% of Android devices in the Vulkan database (skewed toward newer hardware — real installed-base gap is likely larger) do not expose `VK_KHR_synchronization2`. Blocking device advertisement on this gap would exclude a substantial population of Vulkan 1.1 Android devices. Morpheus's assumption that "sync2 is near-universally available on 1.1/1.2 drivers" is **not borne out** by the gpuinfo.org data.
-
-`VK_EXT_subgroup_size_control` is safer on Android (14% gap) but MoltenVK requires clarification: the extension string is always present on 1.3+ MoltenVK, but the actual `subgroupSizeControl` feature flag is `VK_FALSE` because Metal does not allow per-pipeline SIMD width control.
-
-#### Three options for Morpheus to choose from
-
-**Option A — Legacy barrier fallback path (what Morpheus asked Switch to evaluate)**
-Keep the two-extension hard requirement for desktop. Add a legacy `vkCmdPipelineBarrier`-based fallback path for the ~31% of Android devices without sync2. Switch carries this complexity — two parallel synchronization call sites. This is the "correct" engineering path but has real code maintenance cost.
-
-**Option B — Bundle VK_LAYER_KHRONOS_synchronization2 for Android builds**
-The Khronos `Vulkan-ExtensionLayer` project ships `VK_LAYER_KHRONOS_synchronization2`, a compatibility shim that implements sync2 on top of the Vulkan 1.0/1.1 barrier API. The layer is activated at `vkCreateInstance` time, disables itself when native support is present, and requires only that the application bundle the layer `.so` in the APK. This effectively removes the 31% Android gap for sync2 at the cost of APK size and layer maintenance. No dual barrier path needed in the EP code itself.
-*Source: [Khronos Vulkan-ExtensionLayer — synchronization2_layer.md](https://github.com/KhronosGroup/Vulkan-ExtensionLayer/blob/main/docs/synchronization2_layer.md)*
-
-**Option C — Scope Android to Vulkan 1.3+ devices (explicit product decision)**
-Declare that Android support requires API 31 (Android 12) and Vulkan 1.3 — approximately the Snapdragon 8 Gen 1 / Adreno 730+ and Mali Valhall G77+ tier. This is the "clean" option with zero extra code, but it is a product scope reduction that Morpheus must explicitly approve.
-
-#### Link's recommendation to Morpheus
-
-**Option B (bundle the sync2 layer) for Android + clarify the `subgroupSizeControl` intent.** This preserves the architectural cleanliness of the capability-set design, sidesteps the dual-path complexity Switch would otherwise carry, and keeps broad Android reachability without requiring an explicit scope reduction. The layer is Khronos-maintained and already used in production (wgpu, Dawn, and other backends bundle it for Android).
-
-For `VK_EXT_subgroup_size_control`: clarify whether the capability set requires `subgroupSizeControl = VK_TRUE` (device can *control* the subgroup size) or merely "the struct is queryable" (device exposes min/max for informational use). The former excludes macOS/iOS and ~14% of Android; the latter includes everything at or above Vulkan 1.3. For a compute EP, being able to *query* the subgroup size range and pick workgroup sizes accordingly is sufficient — hard control is a nice-to-have, not a correctness requirement. Recommend redefining this capability-set item as "query only" (no `subgroupSizeControl = VK_TRUE` requirement).
 

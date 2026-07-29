@@ -38,3 +38,30 @@
 - **Mesa 22.0 is the minimum for Vulkan 1.3 on RADV (AMD) and ANV (Intel) on Linux.** Ubuntu 22.04 LTS satisfies this.
 - **Desktop Windows Vulkan 1.3 minimum drivers:** NVIDIA 472.12, AMD Adrenalin 22.1.2, Intel 30.0.101.1325. All released in early 2022; any 2022+ driver is sufficient.
 - **`VP_ANDROID_baseline_2022` (Khronos) requires only Vulkan 1.1.** There is no official Khronos Android profile yet that mandates 1.3. The CTS-passing Android floor remains 1.1 as of this writing.
+
+### 2026-07-28T19:16:08-07:00 — Frozen capability set, Option B rejected, OQ-12 specified
+
+**CORRECTION — Option B (bundle Khronos sync2 shim layer) recommendation was wrong and the cited precedent did not exist:**
+- The Khronos `VK_LAYER_KHRONOS_synchronization2` shim cannot be enabled by a plugin `.so` on retail Android. The AOSP Vulkan loader ignores `VK_LAYER_PATH`, uses no JSON manifests, and enumerates implicit layers only from the host application's `nativeLibraryDir` (set by the framework at process launch) plus `/data/local/debug/vulkan` (debuggable/userdebug builds only). We are a plugin `.so` inside someone else's process; we do not own the APK.
+  - *Source: KhronosGroup/Vulkan-Loader LoaderLayerInterface.md: "The Android loader does not use manifest files"; "There is No Support For Implicit Layers on Android"*
+- The claim "wgpu, Dawn, and Godot ship VK_LAYER_KHRONOS_synchronization2" was asserted without source verification and was **wrong**. All three use legacy `vkCmdPipelineBarrier` exclusively. None ships the layer.
+  - Primary sources: `wgpu-hal/src/vulkan/command.rs`, `dawn/src/dawn/native/vulkan/CommandBufferVk.cpp`, `godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+- **Working-practice rule (permanent):** Qualitative precedent claims ("project X does Y") must be verified from primary source before being cited in a recommendation. The empirical gpuinfo.org measurements were excellent because they were sourced and dated. Hold qualitative claims to that same standard. Assert then check is the failure mode; check then assert is the rule.
+
+**Frozen capability set (DESIGN.md §7.2 — Morpheus, 2026-07-28):**
+- Vulkan ≥ 1.1 core + compute queue + `maxComputeWorkGroupInvocations ≥ 256` + `maxComputeSharedMemorySize ≥ 16384` + subgroup BASIC in COMPUTE + one DEVICE_LOCAL + one HOST_VISIBLE memory type.
+- **No required extensions.** Governing principle: capability shortfalls degrade op coverage, not device availability.
+- `synchronization2` and `subgroup_size_control` are probed into Capabilities at device-init; they drive engine strategy only.
+- Switch carries a two-backend barrier abstraction (`vk/barrier.rs`). `ep.force_legacy_barriers=1` forces the legacy path. Trinity runs full suite twice per lane with bitwise-identical numerical results required.
+
+**OQ-12 status:**
+- The 31.43% Android gap is a database claim (device lacks sync2 extension), not a usability claim (device can run correct compute). Four inferences remain entirely unverified: gate pass, shader correctness, legacy-barrier backend correctness, and performance vs. own CPU.
+- Decisive devices: Adreno 5xx (e.g., Snapdragon 660 on Android 8–10, no blob updates) and Mali Bifrost on MediaTek (e.g., Helio G85/G90T).
+- Experiment fully specified in PLATFORMS.md §10 and `.squad/decisions/inbox/link-oq12-experiment.md`.
+- Cloud device farms (Firebase Test Lab, AWS Device Farm): provide real hardware, but require APK wrapper; whether they stock the needed sync2-missing device tiers is unverified.
+
+**Integrator note correctly placed:**
+- `VK_LAYER_KHRONOS_synchronization2` is a valid deployment note for integrators who package their own APK — if they bundle the layer `.so`, our sync2 backend lights up automatically. This is an *integrator* option, not a mechanism we ship or depend on. Documented in PLATFORMS.md §8.4 with explicit scope caveat.
+
+**RAI-003:**
+- PLATFORMS.md preamble now explicitly states all physical hardware rows are untested; all verified CI is software rasterizer or desktop. README wording proposed to Morpheus per RAI-003 requirement.
