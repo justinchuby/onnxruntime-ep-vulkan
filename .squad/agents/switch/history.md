@@ -10,190 +10,72 @@
 
 ## Learnings
 
-<!-- Append new learnings below. Each entry is something lasting about the project. -->
+<!-- SUMMARIZED by Scribe 2026-07-28T22:28:08-07:00 — full session details in decisions.md -->
 
-### 2026-07-28T17:59:54-07:00 — ENGINE.md authored; reference implementation study complete
+### [SUMMARY] Sessions 1–6+: ENGINE.md, barrier abstraction, seams, device/memory/pipeline (2026-07-28)
 
-**Produced:** `docs/ENGINE.md` — full Vulkan runtime and shader architecture design (9 sections,
-~550 lines). Decisions inbox: `.squad/decisions/inbox/switch-engine-design.md`.
+**ENGINE.md authored (session 1):**
+- Reference study: llama.cpp (build-time GLSL→SPIR-V, specialization constants, per-vendor tuning, lazy pipeline creation). ExecuTorch (VK_API_VERSION_1_1, buffer-only, one-time record, weight prepacking at compile phase, yaml variant tables).
+- Chosen stack: `ash` + `gpu-allocator` (not vulkano, not wgpu).
+- Buffer-only tensor storage for v0. One command buffer per subgraph (no per-op submissions).
+- Per data-edge barriers (`vkCmdPipelineBarrier2`), not global. GLSL→SPIR-V at build time.
+- `synchronization2` and `subgroup_size_control` structurally simplify engine; baseline decision delegated to Morpheus.
 
-**Reference study findings:**
+**Barrier abstraction (session 2) — `rust/src/vk/barrier.rs`:**
+- Dual-backend `Barriers` enum: `Sync2Backend`, `LegacyBackend`. `Access`/`Stage` closed enums (no None). Single mapping table.
+- Backend selected once at `Device::new`. `ep.force_legacy_barriers` session option forces legacy.
+- `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` env var: EP writes "sync2" or "legacy" to a file during `Barriers::select`. Used by Trinity's parity test.
+- Layering lint: `barrier.rs` is the ONLY file allowed to name barrier types; `BARRIER_RULES` + `SYNC2_FIELD_RULES` in `tests/layering.rs`.
+- ash 0.38 notes: `push_next` is safe but `#[must_use]`; extension paths are `ash::khr::*`; `vk::DependencyInfo` uses `vk::MemoryBarrier2` for execution-only sync2 barriers.
+- Rust 2024: `#![deny(unsafe_op_in_unsafe_fn)]` — unsafe fn calls inside unsafe fn still need explicit `unsafe {}` + SAFETY comment. `const { assert!(...) }` preferred form.
 
-- **llama.cpp ggml-vulkan:** `vk_device_struct` holds compute + transfer queues, vendor ID,
-  UMA flag, pinned memory list, subgroup size. Build-time `vulkan-shaders-gen` compiles GLSL
-  `.comp` files into SPIR-V and embeds them as C++ headers. Specialization constants tune
-  workgroup/tile sizes per vendor; push constants carry per-dispatch matrix dims. Cooperative
-  matrix variants (`flash_attn_cm1.comp`, `flash_attn_cm2.comp`) are behind
-  `VK_KHR_cooperative_matrix` / `VK_NV_cooperative_matrix2` capability probes. Lazy pipeline
-  creation with mutex-deduplication.
+**Backend probe + force_legacy wiring (session 3) — `rust/src/vk/device.rs`:**
+- `Device` struct owns `ash_device`, `physical_device`, `caps`, `barriers`. `Device::new` is sole call site of `Barriers::select`.
+- `should_use_sync2(caps, force_legacy) -> bool` extracted for testability (ash::Device cannot be zeroed — non-nullable fn pointers → UB).
+- `caps::test_caps(sync2: bool)` defined outside `mod tests` so `device.rs` tests import without touching `synchronization2` token (layering compliance).
+- Total: 185 tests after session.
 
-- **ExecuTorch ET-VK:** Vulkan 1.1 baseline. `Context` owns device, queues, command pools,
-  descriptor pool, VMA allocator. `Adapter` wraps the physical device + feature detection.
-  `vTensor` supports buffer or image backing; buffer-only recommended for linear ops. GLSL
-  shaders compiled offline by `glslc`; yaml variant tables drive dtype/layout specialization.
-  Weight prepacking at lowering time (ExecuTorch's equivalent of our Compile phase). Descriptor
-  pool per context, freed and reallocated per inference graph execution.
+**Engine seams for XL kernels (session 4) — `rust/src/engine.rs`:**
+- Seam 1 (prepack): `TileConfig`, `PackKey`, `PackInput`, `PackOutput`, `PrepackRequest`, `PrepackResult`, `CompileContext` trait.
+- Seam 2 (KV-cache aliasing): `bind_aliased_output` default method on `DispatchContext` (returns resolved input by default).
+- Seam 3 (build.rs variant table): `VariantRow`, `parse_shader_variants`, two-path compile in `build.rs`. `cargo:rerun-if-changed` for `shader_variants.txt`.
+- Seam 4 (indirect dispatch): `IndirectKernelRequest`, `dispatch_indirect` default method.
+- llama.cpp assessment: block format mismatch = no code copying. Tiling strategy, subgroup reduction shape, dequant-in-register patterns **do transfer**. (D-S4-10 correction of Mouse's "useless" claim.)
+- Rust trait default methods returning `Err(...)` = correct pattern for stubs that concrete engine impls override. All new methods have defaults; no existing implementors broken.
+- Total: 195 tests after session.
 
-**Key decisions made:**
-- `ash` + `gpu-allocator` as Vulkan crate stack (not vulkano, not wgpu).
-- Buffer-only tensor storage for v0.
-- One command buffer per subgraph (no per-op submissions).
-- Per data-edge barriers (`vkCmdPipelineBarrier2`), not global barriers.
-- GLSL → SPIR-V at build time, embedded in cdylib; no runtime shader compiler.
-- `synchronization2` and `VK_EXT_subgroup_size_control` are the only 1.3 features that
-  structurally simplify engine code. Morpheus decides the final baseline.
+**Real device enumeration (session 5) — `rust/src/vk/instance.rs`:**
+- `Instance` struct: `_entry` declared first (dropped last); `ash::Entry::new()` returns None gracefully when no loader.
+- `Instance::enumerate_capable_devices()` applies R1–R6 gate (pure `passes_gate` function, 15 unit tests).
+- `Capabilities::required_device_extensions(api_version)` lives in `caps.rs` (keeps `synchronization2` token out of `instance.rs`).
+- `Device::create(instance, capable, force_legacy)` — logical device creation, compute queue retrieval.
+- `probe_devices()` sorts discrete-first.
+- glslc fallback: Switch recommended hard SDK dep + escape hatch (168 SPIR-V blobs ≈ 1–3 MiB binary weight + staleness hazard). Morpheus ruled for hard SDK dep (OQ-4 resolved).
+- Total: 245 tests after session.
 
-**Unverified / follow-up:**
-- MoltenVK 1.3 feature coverage completeness — Link is analyzing.
-- `bufferDeviceAddress` on MoltenVK: assessed as partial; do not rely on in v0.
-- `VK_KHR_cooperative_matrix` on Android: rare as of 2024–2026; capability-gated path only.
-- vulkano advanced-feature gap (bindless, subgroup extensions) — assessed from issue tracker
-  history, not verified against current vulkano HEAD.
+**Memory / command / pipeline (session 6) — `alloc.rs`, `cmd.rs`, `pipeline.rs`:**
+- `MemClass`: `DeviceLocal`, `Upload`, `Download`, `PackedWeights` (maps to `GpuOnly` — enforces "no dequantized weight in VRAM" at type level).
+- `CommandPool` + `CommandRecorder<'pool>`: lifetime prevents use-after-pool-drop at compile time. `Drop` logs warning if `finish()` not called.
+- `submit_and_wait()`: fence-based blocking submit. V0: one submission per subgraph.
+- `PipelineCache`: lazy build+cache `(shader_stem, spec_constants) → (VkPipeline, VkPipelineLayout, VkDescriptorSetLayout)`. Shader module destroyed after pipeline creation.
+- `DispatchDescriptorPool`: per-dispatch pool-and-reset. V0 simple model; M2+ replaces with persistent.
+- `vk::SpecializationInfo` borrows both map_entries and data — return the storage from a helper, construct in caller scope.
+- Total: 265 tests after session.
 
----
+**Shader-less guard (session 7+):**
+- `shaders::has_any()` = `SHADER_MODULES.is_empty()`. `probe_devices()` returns `vec![]` + logs warn. `get_capability_impl()` early-returns null + logs `[built-without-shaders]`.
+- Belt-and-suspenders: `probe_devices` (factory init) + `get_capability_impl` (per-session). Future refactor can skip either; both together prevent claiming.
+- OQ-4 condition 3 implemented: shader-less artifact advertises zero devices, claims nothing.
+- Total: 268 tests.
 
-### 2026-07-28T19:16:08-07:00 — Barrier abstraction implemented; ENGINE.md §6.2/6.3/§8 updated
+**Key ash 0.38 / Rust 2024 facts (permanent reference):**
+- All `ash::Instance` methods are `unsafe`. `ash::khr::synchronization2::Device::new` is safe.
+- `push_next` is `#[must_use]`; use `let _ = props2.push_next(...)`.
+- Extension paths: `ash::khr::*` (not `ash::extensions::khr::*`).
+- `ash::Device::clone()` is cheap (Arc internally).
+- `gpu_allocator::vulkan::Allocator::new()` is safe.
+- `c"main"` is the modern c-string literal (Rust 1.77+).
+- `bytes.len().div_ceil(4)` — clippy `manual_div_ceil` enforces this.
+- `ash::Device` / `ash::Instance` cannot be zeroed (non-nullable fn pointers).
 
-**Context:** Morpheus froze `DESIGN.md §7` after Link found `VK_KHR_synchronization2` present
-on only 68.57% of Android devices. The Khronos emulation layer was rejected (AOSP loader only
-searches the APK owner's `nativeLibraryDir`; we are a plugin, not an APK owner). Device gate
-becomes 6 hard requirements, no required extensions.
-
-**Produced:**
-- `rust/src/vk/barrier.rs` — dual-backend `Barriers` enum (`Sync2Backend`, `LegacyBackend`),
-  `Access`/`Stage` closed enums (no `None`), `BufferDep`, single mapping table, 10 unit tests.
-- `rust/src/vk/caps.rs` — `Capabilities` struct, `SubgroupSizeRange`, `probe()`, `detect_uma()`,
-  7 unit tests.
-- `rust/src/vk/mod.rs` — module root with `#![allow(dead_code)]`.
-- `rust/src/ep.rs` — `force_legacy_barriers: bool` added to `EpOptions`.
-- `rust/tests/layering.rs` — 6 new barrier boundary tests; `BARRIER_RULES`, `SYNC2_FIELD_RULES`.
-- `rust/src/ops/common/mod.rs` — created (Mouse had not created it; crate failed to compile).
-- `rust/src/ops/shader_variants.txt` — generated via `MOUSE_BLESS_VARIANTS=1 cargo test`.
-- `docs/ENGINE.md` §6.2 — rewritten to use `buffer_deps(&[BufferDep { ... }])` API.
-- `docs/ENGINE.md` §6.3 — sync table updated to reference `DESIGN.md §7.5` and `barrier.rs`.
-- `docs/ENGINE.md` §8 — fully rewritten to reflect frozen §7: Vulkan 1.1 baseline, dual-backend
-  replaces 1.3-required sync2, subgroup_size_control MoltenVK quirk documented.
-- `.squad/decisions/inbox/switch-barrier-abstraction.md` — 7 binding design decisions recorded.
-
-**ash 0.38 API notes (for future reference):**
-- All `ash::Instance` methods are `unsafe` in ash 0.38.
-- `ash::khr::synchronization2::Device::new(instance, device)` is **safe** (not `unsafe`).
-- `push_next` on structs is safe but `#[must_use]`; use `let _ = props2.push_next(...)`.
-- Extension paths are `ash::khr::*` not `ash::extensions::khr::*` (old ash <0.37 API).
-- `vk::DependencyInfo` has no `src_stage_mask`/`dst_stage_mask`; execution-only sync2 barriers
-  use `vk::MemoryBarrier2` in the `p_memory_barriers` slot.
-
-**Rust 2024 edition notes:**
-- `#![deny(unsafe_op_in_unsafe_fn)]` — inside an `unsafe fn`, calls to other `unsafe fn`s still
-  need explicit `unsafe {}` blocks with `// SAFETY:` comments.
-- Raw pointer value assignments (not dereferences) are SAFE; no `unsafe {}` needed.
-- `const { assert!(...) }` is the clippy-preferred form when the operand is a `const bool`.
-
-**Layering lint notes:**
-- `contains_token` uses whole-word matching: adjacent chars must be non-alphanumeric/underscore.
-- `cmd_pipeline_barrier` does NOT match `cmd_pipeline_barrier2`; both must be listed explicitly.
-- Clippy `large_enum_variant`: box both `Barriers` variants to avoid the warning.
-
-**Mouse coordination:**
-- Mouse modified `registry.rs` and `ops/mod.rs` but did not create `ops/common/mod.rs`.
-- Mouse's `shape_plan.rs` had a scalar-input broadcast stride bug (stride loop started at 0
-  instead of `off`); fixed in the same session.
-- Mouse's `claim.rs` had a clippy error: `assert!(REQUIRE_STATIC_SHAPES)` → `const { assert! }`.
-
-**Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
-clean. 156 tests pass (141 lib + 15 integration).
-
----
-
-### 2026-07-28T22:28:08-07:00 — Backend probe + force_legacy wiring; device.rs; ENGINE.md §3.5.1
-
-**Task:** Wire `force_legacy_barriers` through to `Barriers::select`; add Trinity's backend probe;
-confirm legacy mapping table coverage; address prepacking impact on memory model.
-
-**Produced:**
-- `rust/src/vk/barrier.rs` — added `write_backend_probe(is_sync2: bool)` helper called from
-  `Barriers::select`; extracted `should_use_sync2(caps, force_legacy) -> bool` for testability;
-  added 5 new tests: `stage_to_legacy_exact_values`, `stage_to_sync2_exact_values`,
-  `backend_probe_writes_legacy_token`, `backend_probe_writes_sync2_token`,
-  `backend_probe_noop_when_env_unset`, `force_legacy_overrides_sync2_capability`,
-  `no_force_legacy_and_no_sync2_selects_legacy`, `sync2_capable_without_force_selects_sync2`.
-- `rust/src/vk/device.rs` — new stub `Device` struct (ash_device, physical_device, caps,
-  barriers). `Device::new` is the sole call site of `Barriers::select`. 4 unit tests via
-  `should_use_sync2` (no null-ash-handle UB). Wiring diagram in module doc.
-- `rust/src/vk/caps.rs` — added `pub(crate) fn test_caps(sync2: bool) -> Capabilities`
-  outside `mod tests` so `device.rs` tests import it without referencing `synchronization2`
-  directly (layering rule compliance).
-- `rust/src/vk/mod.rs` — added `pub(crate) mod device;`.
-- `docs/ENGINE.md` §3.5.1 — Weight prepacking impact: new `PackedWeights` memory class with
-  Compile-time lifetime, bulk staging path, barrier impact (none — existing API is correct).
-- `.squad/decisions/inbox/switch-barrier-abstraction.md` — Decisions 8–11 appended.
-
-**`ash::Device` / `ash::Instance` cannot be zeroed (lesson):**
-These types contain non-nullable function pointers (`fn` pointers are UB when null in Rust).
-`std::mem::zeroed()` is rejected at compile time with `the type does not permit zero-initialization`.
-The correct solution: extract pure boolean logic from `Barriers::select` into `should_use_sync2`
-and unit-test that. The Vulkan-touching path is covered by integration tests only.
-
-**Layering lint coordination (lesson):**
-The `SYNC2_FIELD_RULES` lint catches `synchronization2` token in ALL non-permitted files,
-including test code. Any module that needs test `Capabilities` values must use
-`caps::test_caps()` (defined in `caps.rs`, a permitted file) rather than constructing
-`Capabilities` literals directly.
-
-**Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
-clean. 185 tests pass (29 new since last session).
-
----
-
-### 2026-07-28T22:28:08-07:00 — Engine seams for XL kernels (Mouse's four seams)
-
-**Task:** Implement four engine seams blocking Mouse's XL-kernel work: (1) prepack hook,
-(2) KV-cache aliasing, (3) build.rs variant table, (4) indirect dispatch.
-
-**Produced:**
-
-- `rust/src/engine.rs`:
-  - Added `Plan` struct with `prepack_requests: Vec<PrepackRequest>` and
-    `prepacked: HashMap<PackKey, PrepackResult>` fields.
-  - Added Seam 1 vocabulary: `TileConfig`, `PackKey`, `PackInput<'a>`, `PackOutput`,
-    `PrepackRequest`, `PrepackResult`, `CompileContext` trait.
-  - Added Seam 4 vocabulary: `IndirectKernelRequest`.
-  - Extended `DispatchContext` trait with default methods for Seams 1, 2, 4:
-    `resolve_prepacked` (default: Err), `bind_aliased_output` (default: resolve input),
-    `dispatch_indirect` (default: Err).
-  - Added 13 new unit tests covering all new vocabulary types.
-
-- `rust/src/registry.rs`:
-  - Added `CompileHook` type alias.
-  - Added `compile_hook_for(&NodeDesc) -> Option<CompileHook>` stub (always returns `None`;
-    Mouse fills in per-op hooks).
-
-- `rust/build.rs` (Tank's file — minimal necessary edit for Seam 3):
-  - Added `VariantRow` struct and `parse_shader_variants(path) -> Vec<VariantRow>`.
-  - Added `run_glslc(glslc, cmd, label)` helper.
-  - `compile_shaders` now has two paths: direct `.comp` files + variant rows from table.
-  - `cargo:rerun-if-changed` added for `src/ops/shader_variants.txt`.
-
-- `docs/ENGINE.md`:
-  - §4.2 rewritten to describe the two-path build pipeline (Seam 3).
-  - §4.3 rewritten to describe `shader_variants.txt` format and XL-kernel direct sources.
-  - §9.5 added: all four seams documented.
-
-- `.squad/decisions/inbox/switch-engine-seams.md`: 10 decisions, including the llama.cpp
-  adaptation assessment (D-S4-10).
-
-**llama.cpp adaptation judgment:**
-Mouse's "useless" claim is too strong. Block format mismatch is real (nibble layout differs),
-so no direct code copying. But tiling strategy, subgroup reduction shape, and dequant-in-register
-patterns are directly applicable as algorithmic reference under Rai's green light. Budget
-algorithm study time for items 1–2 specifically.
-
-**`DispatchContext` default methods lesson:**
-Rust trait default methods can return `Err(...)` as defaults — this is the correct pattern for
-"stub methods that must be overridden by concrete engine implementations" while not breaking
-existing test stubs (like `Recorder`). All new methods have defaults so no existing
-implementor needs to change.
-
-**Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
-clean. 195 tests pass (10 new since last session).
-
+**Current test count: 268 (233 lib + 6 dump-capabilities + 26 layering + 3 shader-guard). All passing.**

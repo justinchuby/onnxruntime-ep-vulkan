@@ -1,0 +1,68 @@
+// The ternary elementwise template — `Where` and the three-input `Clip`, 10 compiled variants.
+//
+// The two ops differ only in the type of binding 0: `Where` selects on a boolean tensor (stored
+// as packed bytes), `Clip` takes a value tensor. Everything else — broadcasting, addressing,
+// dtype handling — is shared with the unary and binary templates.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define EW_ARITY 3
+#include "op_codes.glsl"
+#include "indexing.glsl"
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+// -- bindings ---------------------------------------------------------------------------------
+
+#if EW_OP == OP_WHERE
+// Binding 0 is the condition: an ONNX bool tensor, one byte per element, regardless of the dtype
+// the variant is otherwise compiled for.
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_BYTE(load_cond, in0)
+#else
+layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
+EW_DEFINE_LOAD(load0, in0)
+#endif
+
+#ifdef EW_PACKED_BYTES
+layout(set = 0, binding = 1) readonly buffer In1 { uint data[]; } in1;
+layout(set = 0, binding = 2) readonly buffer In2 { uint data[]; } in2;
+EW_DEFINE_LOAD_BYTE(load1, in1)
+EW_DEFINE_LOAD_BYTE(load2, in2)
+
+layout(set = 0, binding = 3) buffer Out { uint data[]; } outb;
+EW_DEFINE_STORE_BYTE(store_out, outb)
+#else
+layout(set = 0, binding = 1) readonly buffer In1 { SCALAR_T data[]; } in1;
+layout(set = 0, binding = 2) readonly buffer In2 { SCALAR_T data[]; } in2;
+EW_DEFINE_LOAD(load1, in1)
+EW_DEFINE_LOAD(load2, in2)
+
+layout(set = 0, binding = 3) writeonly buffer Out { SCALAR_T data[]; } outb;
+EW_DEFINE_STORE(store_out, outb)
+#endif
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.elem_count) {
+        return;
+    }
+
+#if EW_OP == OP_WHERE
+    uint cond = load_cond(ew_index(0u, gid));
+    COMPUTE_T x = load1(ew_index(1u, gid));
+    COMPUTE_T y = load2(ew_index(2u, gid));
+    store_out(gid, cond != 0u ? x : y);
+#elif EW_OP == OP_CLIP
+    // The three-input form: min and max are tensors, not attributes. The row is still staged —
+    // `Clip` may omit either bound, and an omitted bound is a different dispatch shape, not a
+    // different value, so it needs the parameterised template rather than this one.
+    COMPUTE_T v = load0(ew_index(0u, gid));
+    COMPUTE_T lo = load1(ew_index(1u, gid));
+    COMPUTE_T hi = load2(ew_index(2u, gid));
+    store_out(gid, v < lo ? lo : (v > hi ? hi : v));
+#else
+#error "ew_select.comp has no case for this EW_OP"
+#endif
+}

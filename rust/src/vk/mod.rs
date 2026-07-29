@@ -10,13 +10,33 @@
 //!
 //! | Module | Contents |
 //! |---|---|
+//! | [`instance`] | Vulkan instance, library loader, physical device enumeration and capability gate |
 //! | [`caps`] | Device capability discovery — the single capability oracle |
 //! | [`barrier`] | Buffer memory barriers — the ONLY module that names Vulkan barrier types |
 //! | [`device`] | Logical device wrapper — the ONLY call site for [`barrier::Barriers::select`] |
+//! | [`alloc`] | Buffer allocator (`gpu-allocator` backed), memory classes, staging helpers |
+//! | [`cmd`] | Command pool and command buffer recording; `submit_and_wait` |
+//! | [`pipeline`] | Pipeline cache, descriptor-set layout, push constants, `DispatchDescriptorPool` |
+//!
+//! # Object creation order
+//!
+//! ```text
+//! ash::Entry::load()           (instance.rs)
+//!   └─► vkCreateInstance       (instance.rs — Instance::create)
+//!         └─► enumerate + gate (instance.rs — Instance::enumerate_capable_devices)
+//!               └─► caps::probe (caps.rs)
+//!                     └─► vkCreateDevice (device.rs — Device::create)
+//!                           ├─► Barriers::select (barrier.rs — Device::new)
+//!                           └─► Allocator::new   (alloc.rs)
+//! ```
 
 // Items are built out ahead of engine integration; dead_code is expected at this stage.
 #![allow(dead_code)]
 
+pub(crate) mod alloc;
 pub(crate) mod barrier;
 pub(crate) mod caps;
+pub(crate) mod cmd;
 pub(crate) mod device;
+pub(crate) mod instance;
+pub(crate) mod pipeline;

@@ -34,6 +34,7 @@ use ash::vk;
 use super::{
     barrier::Barriers,
     caps::Capabilities,
+    instance::CapableDevice,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -59,10 +60,92 @@ pub(crate) struct Device {
     /// **Call sites use `self.barriers.buffer_deps(…)` / `self.barriers.execution_only(…)`.
     /// No call site reads `caps.synchronization2` to decide anything.**
     barriers: Barriers,
+    /// The compute queue, retrieved after logical-device creation.
+    compute_queue: vk::Queue,
+    /// The queue family index for `compute_queue`.
+    compute_queue_family: u32,
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        // SAFETY: ash_device was created by Device::create or Device::new. We are the sole owner.
+        // compute_queue is a borrowed handle from the device — it must not be explicitly destroyed.
+        unsafe { self.ash_device.destroy_device(None) };
+    }
 }
 
 impl Device {
-    /// Create a new device wrapper.
+    /// Create a logical device from a physical device that passed the capability gate.
+    ///
+    /// This is the primary constructor for production use. It:
+    /// 1. Creates the `VkDevice` with a single compute queue and the extensions declared in
+    ///    `capable.device_extensions`.
+    /// 2. Retrieves the compute queue handle.
+    /// 3. Calls [`Device::new`] (the barrier-wiring constructor) with the probed capabilities.
+    ///
+    /// Returns `None` if `vkCreateDevice` fails (broken driver, permissions, etc.) — this is
+    /// logged as a warning, not returned as an error, so session creation can fall back to the
+    /// CPU EP rather than failing hard.
+    ///
+    /// # Safety
+    /// - `instance` must be the same `ash::Instance` that `capable.physical_device` was
+    ///   enumerated from and must remain live at least as long as the returned `Device`.
+    /// - `capable` must have been produced by [`Instance::enumerate_capable_devices`] on that
+    ///   same instance.
+    pub(crate) unsafe fn create(
+        instance: &ash::Instance,
+        capable: &CapableDevice,
+        force_legacy: bool,
+    ) -> Option<Self> {
+        let queue_priority = [1.0f32];
+        let queue_info = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(capable.compute_queue_family)
+            .queue_priorities(&queue_priority)];
+
+        // Build the extension name pointer list.
+        let ext_ptrs: Vec<*const std::os::raw::c_char> =
+            capable.device_extensions.iter().map(|s| s.as_ptr()).collect();
+
+        let device_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_info)
+            .enabled_extension_names(&ext_ptrs);
+
+        // SAFETY: instance is live per the caller's contract. capable.physical_device was
+        // enumerated from instance and is still valid. device_info borrows queue_info and
+        // ext_ptrs which both outlive this call.
+        let ash_device = match unsafe { instance.create_device(capable.physical_device, &device_info, None) } {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!(
+                    "vkCreateDevice failed for device '{}' ({e:?}). Skipping this device.",
+                    capable.info.name
+                );
+                return None;
+            }
+        };
+
+        // Retrieve the compute queue (queue index 0 within the family).
+        // SAFETY: ash_device is live; queue family and index are valid per the DeviceQueueCreateInfo above.
+        let compute_queue =
+            unsafe { ash_device.get_device_queue(capable.compute_queue_family, 0) };
+
+        // SAFETY: instance is live per the caller's contract; ash_device was created from
+        // capable.physical_device which was enumerated from instance.
+        let mut dev = unsafe {
+            Self::new(
+                instance,
+                capable.physical_device,
+                ash_device,
+                capable.caps.clone(),
+                force_legacy,
+            )
+        };
+        dev.compute_queue = compute_queue;
+        dev.compute_queue_family = capable.compute_queue_family;
+        Some(dev)
+    }
+
+    /// Barrier-wiring constructor. Prefer [`Device::create`] for production code.
     ///
     /// `Barriers::select` is called here and nowhere else. `force_legacy` comes from
     /// `EpOptions::force_legacy_barriers` and is passed straight through; the option's sole
@@ -90,6 +173,8 @@ impl Device {
             physical_device,
             caps,
             barriers,
+            compute_queue: vk::Queue::null(),
+            compute_queue_family: 0,
         }
     }
 
@@ -120,6 +205,18 @@ impl Device {
     #[inline]
     pub(crate) fn physical_device(&self) -> vk::PhysicalDevice {
         self.physical_device
+    }
+
+    /// The compute queue handle. Null until [`Device::create`] is used.
+    #[inline]
+    pub(crate) fn compute_queue(&self) -> vk::Queue {
+        self.compute_queue
+    }
+
+    /// The compute queue family index.
+    #[inline]
+    pub(crate) fn compute_queue_family(&self) -> u32 {
+        self.compute_queue_family
     }
 }
 

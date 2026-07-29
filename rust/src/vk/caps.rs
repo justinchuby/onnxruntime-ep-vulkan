@@ -139,6 +139,33 @@ impl Capabilities {
         self.subgroup_supported_ops
             .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
     }
+
+    /// Compute the device extensions that must be explicitly enabled when calling
+    /// `vkCreateDevice` for a physical device with this capability set.
+    ///
+    /// Called from `instance::enumerate_capable_devices` at probe time so that the extension
+    /// list is precomputed before `Device::create` is called. The extension list is stored on
+    /// [`super::instance::CapableDevice::device_extensions`].
+    ///
+    /// **Why this lives in caps.rs:** it branches on `synchronization2`, which the layering
+    /// lint (`DESIGN.md §7.5`) restricts to `vk/barrier.rs` and `vk/caps.rs`. Device-creation
+    /// code in `instance.rs` calls this method to stay clean of the restricted token.
+    ///
+    /// `api_version` is `VkPhysicalDeviceProperties::apiVersion` for the device. Extensions
+    /// that were promoted to Vulkan core at version V must NOT be passed in the extension list
+    /// when `api_version >= V`, because some drivers reject them as unknown names.
+    pub(crate) fn required_device_extensions(
+        &self,
+        api_version: u32,
+    ) -> Vec<&'static std::ffi::CStr> {
+        let mut exts: Vec<&'static std::ffi::CStr> = Vec::new();
+        // `VK_KHR_synchronization2` was promoted to Vulkan 1.3 core. Enable it explicitly only
+        // when the feature is available (as a non-core extension) on a pre-1.3 device.
+        if self.synchronization2 && api_version < vk::make_api_version(0, 1, 3, 0) {
+            exts.push(ash::khr::synchronization2::NAME);
+        }
+        exts
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

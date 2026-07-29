@@ -1,14 +1,34 @@
 # Vulkan Runtime & Shader Architecture
 
-**Status:** Design — v0 baseline
-**Date:** 2026-07-28T17:59:54-07:00
+**Status:** In progress — core modules landed
+**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T01:51:01-07:00)
 **Author:** Switch (Vulkan Compute Engineer)
 **Scope:** `rust/src/engine.rs` and the Vulkan abstraction layer; does NOT cover ONNX graph
 partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESIGN.md (Morpheus).
 
----
+## Implementation Status (2026-07-29T01:51:01-07:00)
 
-## 0. Document Purpose
+| Module | Status | Notes |
+|---|---|---|
+| `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate, 15 unit tests |
+| `vk/caps.rs` | ✅ Real | Capability probe, MoltenVK trap, `test_caps()` helper |
+| `vk/barrier.rs` | ✅ Real | Dual-backend, mapping tables, probe write, 20 unit tests |
+| `vk/device.rs` | ✅ Real | Logical device creation, queue retrieval, `Barriers::select`, Drop |
+| `vk/alloc.rs` | ✅ Real | `gpu-allocator` backed, 4 memory classes, staging helpers, 6 unit tests |
+| `vk/cmd.rs` | ✅ Real | Command pool, `CommandRecorder`, `submit_and_wait` |
+| `vk/pipeline.rs` | ✅ Real | Pipeline cache, `DispatchDescriptorPool`, spec constants, push constants, 8 unit tests |
+| `engine.rs` seams | ✅ Stubbed | Vocabulary types, `Plan`, `CompileContext`, `DispatchContext`; real dispatch pending |
+| Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. `shaders::has_any()`. 3 unit tests. |
+| Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute |
+| Real `DispatchContext` | 🔲 Pending | Concrete implementor over `VkCommandBuffer` using `cmd.rs` + `pipeline.rs` |
+| `alloc` integration | 🔲 Pending | Tank's `BufferView` handle table ↔ `GpuBuffer` side-table |
+| Prepack hook (real) | 🔲 Pending | Seam 1 vocab is real; actual staging upload behind it pending |
+| KV-cache aliasing | 🔲 Pending | Seam 2 default impl correct for stubs; real aliasing pending |
+
+Build status: `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all green.
+Test count: **268** (236 lib + 6 dump-capabilities + 26 layering).
+
+---
 
 This document specifies the Vulkan runtime and shader architecture for the
 `onnxruntime-ep-vulkan` plugin Execution Provider. It covers nine topics: layering contract,
@@ -308,6 +328,43 @@ embedded in cdylib — zero runtime compiler dependency
 
 **No runtime `glslc` invocation.** The compiled cdylib is self-contained; the build machine
 needs the Vulkan SDK (or `ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` for lint-only lanes).
+
+**Current build-machine requirement vs. Morpheus's OQ-4 provisional decision (open):**
+
+Morpheus's provisional OQ-4 decision was "build-time glslc with a checked-in SPIR-V fallback
+so that a plain `cargo build` works". The current implementation does NOT have checked-in
+SPIR-V; a machine without glslc on PATH sees:
+```
+glslc not found but 168 shader(s) exist. Set ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1.
+```
+
+Switch's position for Morpheus's ruling:
+
+- **Checked-in SPIR-V is a real cost:** 168 SPIR-V modules × ≈8–20 KB each ≈ 1–3 MiB of
+  binary in the repo. Every shader edit forces a re-checked-in blob. Binary diffs are
+  unreadable and staleness is invisible (a `git clone` that misses the latest blob will build
+  silently but run old shaders).
+- **The escape hatch plus clear documentation is the better engineering answer:** Require the
+  Vulkan SDK on any machine that touches shader source, just as any shader-writing project does.
+  Document it clearly in `README.md` and `rust/README.md`. The `ALLOW_MISSING_GLSLC=1` flag
+  satisfies the "doc/lint-only lane" case without a checked-in binary burden.
+- **Precedent:** Dawn, llama.cpp, ExecuTorch all require the Vulkan SDK on build machines that
+  compile shaders. None ship checked-in SPIR-V as a universal fallback.
+
+**OQ-4 RESOLVED (2026-07-29T01:51:01-07:00 — `DESIGN.md §7.8`)**: Morpheus ruled in favour of
+the hard SDK dependency, changing the provisional decision rather than the code. The escape hatch
+stays. The ruling comes with five binding conditions, of which condition 3 is Switch's:
+
+> **A shader-less artifact must advertise zero devices and claim nothing** (`DESIGN.md §7.8` cond. 3).
+
+Implementation (`engine.rs`, `ep.rs`):
+- `shaders::has_any()` — returns `SHADER_MODULES.is_empty()`. Used by both guards below.
+- `probe_devices()` — if `!shaders::has_any()`, logs a `WARN` with reason `"built without shaders"` and returns `vec![]` immediately. ORT sees no devices → no session is created with this EP.
+- `get_capability_impl()` — belt-and-suspenders: if `!shaders::has_any()`, logs `[built-without-shaders]` at DEBUG and returns `null_mut()` (zero claims). A shader-less artefact can never claim a node, dispatch to a pipeline that doesn't exist, and fail silently.
+
+Both guards produce the same outcome: zero devices, zero claims, clean CPU fallback. This is the same property as Trinity's no-ICD assertion, one level up in the build.
+
+This decision is tracked at `.squad/decisions/inbox/switch-engine-seams.md` (D-S-I-04, now resolved).
 
 llama.cpp's `vulkan-shaders-gen` (verified: [vulkan-shaders-gen.cpp lines 33–75](https://github.com/ggml-org/llama.cpp/blob/0cea3622/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp#L33-L75)) takes a similar approach but generates C++ header literals; we embed SPIR-V bytes directly via Rust's `include_bytes!`, which is simpler and removes the C++ toolchain dependency.
 

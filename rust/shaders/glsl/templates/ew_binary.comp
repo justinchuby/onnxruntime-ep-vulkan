@@ -1,0 +1,143 @@
+// The binary elementwise template — 22 op selectors, 66 compiled variants, one file.
+//
+// Broadcasting is not implemented here. `indexing.glsl` turns a linear output index into a
+// per-input element offset using host-computed strides, so this file contains exactly one
+// expression per op and no shape logic at all.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define EW_ARITY 2
+#include "op_codes.glsl"
+#include "indexing.glsl"
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+// -- bindings ---------------------------------------------------------------------------------
+
+#ifdef EW_PACKED_BYTES
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+layout(set = 0, binding = 1) readonly buffer In1 { uint data[]; } in1;
+EW_DEFINE_LOAD_BYTE(load0, in0)
+EW_DEFINE_LOAD_BYTE(load1, in1)
+#else
+layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
+layout(set = 0, binding = 1) readonly buffer In1 { SCALAR_T data[]; } in1;
+EW_DEFINE_LOAD(load0, in0)
+EW_DEFINE_LOAD(load1, in1)
+#endif
+
+#if defined(EW_BOOL_RESULT) || defined(EW_PACKED_BYTES)
+layout(set = 0, binding = 2) buffer Out { uint data[]; } outb;
+EW_DEFINE_STORE_BYTE(store_out, outb)
+#else
+layout(set = 0, binding = 2) writeonly buffer Out { SCALAR_T data[]; } outb;
+EW_DEFINE_STORE(store_out, outb)
+#endif
+
+// -- helpers ----------------------------------------------------------------------------------
+
+#if defined(EW_FLOAT) && EW_OP == OP_POW
+// GLSL's `pow` is undefined for a negative base; ONNX's `Pow` is not — a negative base with an
+// integral exponent is well defined and does occur. Handle the sign explicitly.
+float ew_pow(float a, float b) {
+    float m = pow(abs(a), b);
+    bool integral = (b == floor(b));
+    bool odd = integral && (mod(abs(b), 2.0) == 1.0);
+    if (a < 0.0) {
+        return integral ? (odd ? -m : m) : (0.0 / 0.0);
+    }
+    return m;
+}
+#endif
+
+// -- the op ------------------------------------------------------------------------------------
+
+#ifdef EW_BOOL_RESULT
+uint apply_bool(COMPUTE_T a, COMPUTE_T b) {
+#if EW_OP == OP_EQ
+    return a == b ? 1u : 0u;
+#elif EW_OP == OP_GT
+    return a > b ? 1u : 0u;
+#elif EW_OP == OP_GE
+    return a >= b ? 1u : 0u;
+#elif EW_OP == OP_LT
+    return a < b ? 1u : 0u;
+#elif EW_OP == OP_LE
+    return a <= b ? 1u : 0u;
+#elif EW_OP == OP_AND
+    return (a != COMPUTE_T(0) && b != COMPUTE_T(0)) ? 1u : 0u;
+#elif EW_OP == OP_OR
+    return (a != COMPUTE_T(0) || b != COMPUTE_T(0)) ? 1u : 0u;
+#elif EW_OP == OP_XOR
+    return ((a != COMPUTE_T(0)) != (b != COMPUTE_T(0))) ? 1u : 0u;
+#else
+#error "EW_OP claims a boolean result but ew_binary.comp has no case for it"
+#endif
+}
+#else
+COMPUTE_T apply(COMPUTE_T a, COMPUTE_T b) {
+#if EW_OP == OP_ADD
+    return a + b;
+#elif EW_OP == OP_SUB
+    return a - b;
+#elif EW_OP == OP_MUL
+    return a * b;
+#elif EW_OP == OP_DIV
+    // Integer division truncates toward zero in both GLSL and ONNX.
+    return a / b;
+#elif EW_OP == OP_MAX
+    return a > b ? a : b;
+#elif EW_OP == OP_MIN
+    return a < b ? a : b;
+#elif EW_OP == OP_MOD
+    // fmod=0, the ONNX default: the result takes the sign of the divisor (numpy semantics).
+    // The row is staged behind NEEDS_PARAMS because fmod=1 needs the other rule.
+#ifdef EW_FLOAT
+    return a - floor(a / b) * b;
+#else
+    return ((a % b) + b) % b;
+#endif
+
+// ---- float-only ----
+#elif EW_OP == OP_POW
+    return ew_pow(a, b);
+#elif EW_OP == OP_MEAN
+    // Correct only for the two-input case. The variadic lowering must divide by N once at the
+    // end rather than chaining this pairwise — see `templates::ew_variadic`, which refuses
+    // three-or-more inputs for exactly this reason.
+    return (a + b) * 0.5;
+#elif EW_OP == OP_PRELU
+    // b is the slope tensor, broadcast against a.
+    return a < 0.0 ? a * b : a;
+
+// ---- integer-only ----
+#elif EW_OP == OP_BITAND
+    return a & b;
+#elif EW_OP == OP_BITOR
+    return a | b;
+#elif EW_OP == OP_BITXOR
+    return a ^ b;
+#elif EW_OP == OP_BITSHIFT
+    // direction="LEFT". The row is staged behind NEEDS_PARAMS: "RIGHT" is a different expression
+    // and the attribute is required, so nothing may be claimed until it is carried.
+    return a << b;
+#else
+#error "ew_binary.comp has no case for this EW_OP"
+#endif
+}
+#endif
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.elem_count) {
+        return;
+    }
+    COMPUTE_T a = load0(ew_index(0u, gid));
+    COMPUTE_T b = load1(ew_index(1u, gid));
+#ifdef EW_BOOL_RESULT
+    store_out(gid, apply_bool(a, b));
+#else
+    store_out(gid, apply(a, b));
+#endif
+}

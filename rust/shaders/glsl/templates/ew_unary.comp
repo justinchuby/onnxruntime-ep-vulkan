@@ -1,0 +1,210 @@
+// The unary elementwise template — 42 op selectors, 92 compiled variants, one file.
+//
+// Nothing here knows what op it is compiling: `EW_OP` selects an expression, `SCALAR_T`/`DTYPE_*`
+// select the element type, and `indexing.glsl` supplies the addressing. Adding a unary op is a row
+// in `src/ops/elementwise.rs` plus a case below — never a new file.
+//
+// Numerical note: f16 tensors are *stored* as `float16_t` and *computed* in `float`. That is a
+// deliberate accuracy gain over computing in half, and it removes any dependency on f16 overloads
+// of the transcendental builtins.
+//
+// Ops carrying attributes (LeakyRelu's alpha, Elu's alpha, Shrink's bias/lambd, ...) are compiled
+// here with their **ONNX default** attribute values. Their registry rows stay `Staged(NEEDS_PARAMS)`
+// and claim nothing until the parameterised template can carry real values in push constants —
+// `OP_COVERAGE.md` §7.1: an op is claimed only when the attribute combination is genuinely handled,
+// and a default is not a handled value, it is a guess.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define EW_ARITY 1
+#include "op_codes.glsl"
+#include "indexing.glsl"
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+// -- bindings ---------------------------------------------------------------------------------
+
+#ifdef EW_PACKED_BYTES
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_BYTE(load0, in0)
+#else
+layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
+EW_DEFINE_LOAD(load0, in0)
+#endif
+
+#if defined(EW_BOOL_RESULT) || defined(EW_PACKED_BYTES)
+layout(set = 0, binding = 1) buffer Out { uint data[]; } outb;
+EW_DEFINE_STORE_BYTE(store_out, outb)
+#else
+layout(set = 0, binding = 1) writeonly buffer Out { SCALAR_T data[]; } outb;
+EW_DEFINE_STORE(store_out, outb)
+#endif
+
+// -- helpers ----------------------------------------------------------------------------------
+
+#ifdef EW_FLOAT
+// Abramowitz & Stegun 7.1.26. Max absolute error ~1.5e-7, which is inside the f32 conformance
+// tolerance and far inside f16's. `Erf` is on the LLM path via the exact `Gelu`, so this is the
+// one approximation in this file whose accuracy is load-bearing.
+float ew_erf(float x) {
+    const float p  =  0.3275911;
+    const float a1 =  0.254829592;
+    const float a2 = -0.284496736;
+    const float a3 =  1.421413741;
+    const float a4 = -1.453152027;
+    const float a5 =  1.061405429;
+    float s = sign(x);
+    float ax = abs(x);
+    float t = 1.0 / (1.0 + p * ax);
+    float poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t;
+    return s * (1.0 - poly * exp(-ax * ax));
+}
+
+// Branch-selected rather than `1/(1+exp(-x))` so neither tail overflows.
+float ew_sigmoid(float x) {
+    if (x >= 0.0) {
+        return 1.0 / (1.0 + exp(-x));
+    }
+    float e = exp(x);
+    return e / (1.0 + e);
+}
+
+// log(1 + exp(x)), evaluated so the positive tail does not overflow.
+float ew_softplus(float x) {
+    return max(x, 0.0) + log(1.0 + exp(-abs(x)));
+}
+#endif
+
+// -- the op ------------------------------------------------------------------------------------
+
+#ifdef EW_BOOL_RESULT
+uint apply_bool(COMPUTE_T x) {
+#if EW_OP == OP_NOT
+    return x != COMPUTE_T(0) ? 0u : 1u;
+#elif EW_OP == OP_ISNAN
+    return isnan(x) ? 1u : 0u;
+#elif EW_OP == OP_ISINF
+    // ONNX `IsInf` has detect_negative/detect_positive attributes; the row is staged behind
+    // NEEDS_PARAMS, so this compiles the both-detected default.
+    return isinf(x) ? 1u : 0u;
+#else
+#error "EW_OP claims a boolean result but ew_unary.comp has no case for it"
+#endif
+}
+#else
+COMPUTE_T apply(COMPUTE_T x) {
+#if EW_OP == OP_IDENTITY
+    return x;
+
+// ---- sign-symmetric arithmetic, defined for ints as well as floats ----
+#elif EW_OP == OP_ABS
+#ifdef EW_FLOAT
+    return abs(x);
+#else
+    return x < COMPUTE_T(0) ? -x : x;
+#endif
+#elif EW_OP == OP_NEG
+    return -x;
+#elif EW_OP == OP_SIGN
+#ifdef EW_FLOAT
+    return sign(x);
+#else
+    return x > COMPUTE_T(0) ? COMPUTE_T(1) : (x < COMPUTE_T(0) ? COMPUTE_T(-1) : COMPUTE_T(0));
+#endif
+
+// ---- integer-only ----
+#elif EW_OP == OP_BITNOT
+    return ~x;
+
+// ---- floating point ----
+#elif EW_OP == OP_RECIP
+    return 1.0 / x;
+#elif EW_OP == OP_SQRT
+    return sqrt(x);
+#elif EW_OP == OP_EXP
+    return exp(x);
+#elif EW_OP == OP_LOG
+    return log(x);
+#elif EW_OP == OP_SIN
+    return sin(x);
+#elif EW_OP == OP_COS
+    return cos(x);
+#elif EW_OP == OP_TAN
+    return tan(x);
+#elif EW_OP == OP_ASIN
+    return asin(x);
+#elif EW_OP == OP_ACOS
+    return acos(x);
+#elif EW_OP == OP_ATAN
+    return atan(x);
+#elif EW_OP == OP_SINH
+    return sinh(x);
+#elif EW_OP == OP_COSH
+    return cosh(x);
+#elif EW_OP == OP_TANH
+    return tanh(x);
+#elif EW_OP == OP_ASINH
+    return asinh(x);
+#elif EW_OP == OP_ACOSH
+    return acosh(x);
+#elif EW_OP == OP_ATANH
+    return atanh(x);
+#elif EW_OP == OP_CEIL
+    return ceil(x);
+#elif EW_OP == OP_FLOOR
+    return floor(x);
+#elif EW_OP == OP_ROUND
+    // ONNX `Round` is round-half-to-even, which is `roundEven`, not `round`.
+    return roundEven(x);
+#elif EW_OP == OP_ERF
+    return ew_erf(x);
+
+// ---- activations ----
+#elif EW_OP == OP_RELU
+    return max(x, 0.0);
+#elif EW_OP == OP_SIGMOID
+    return ew_sigmoid(x);
+#elif EW_OP == OP_HARDSWISH
+    return x * clamp(x / 6.0 + 0.5, 0.0, 1.0);
+#elif EW_OP == OP_SOFTPLUS
+    return ew_softplus(x);
+#elif EW_OP == OP_SOFTSIGN
+    return x / (1.0 + abs(x));
+#elif EW_OP == OP_MISH
+    return x * tanh(ew_softplus(x));
+#elif EW_OP == OP_GELU
+    // approximate="none" (the default): the exact erf form.
+    return 0.5 * x * (1.0 + ew_erf(x * 0.70710678118654752));
+#elif EW_OP == OP_HARDSIGMOID
+    return clamp(0.2 * x + 0.5, 0.0, 1.0);          // alpha=0.2, beta=0.5
+#elif EW_OP == OP_LEAKYRELU
+    return x < 0.0 ? 0.01 * x : x;                  // alpha=0.01
+#elif EW_OP == OP_ELU
+    return x < 0.0 ? (exp(x) - 1.0) : x;            // alpha=1.0
+#elif EW_OP == OP_SELU
+    return 1.05070102 * (x > 0.0 ? x : 1.67326319 * (exp(x) - 1.0));
+#elif EW_OP == OP_CELU
+    return max(0.0, x) + min(0.0, exp(x) - 1.0);    // alpha=1.0
+#elif EW_OP == OP_TRELU
+    return x > 1.0 ? x : 0.0;                       // alpha=1.0
+#elif EW_OP == OP_SHRINK
+    return x < -0.5 ? x : (x > 0.5 ? x : 0.0);      // bias=0.0, lambd=0.5
+#else
+#error "ew_unary.comp has no case for this EW_OP"
+#endif
+}
+#endif
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.elem_count) {
+        return;
+    }
+    COMPUTE_T x = load0(ew_index(0u, gid));
+#ifdef EW_BOOL_RESULT
+    store_out(gid, apply_bool(x));
+#else
+    store_out(gid, apply(x));
+#endif
+}
