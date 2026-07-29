@@ -1,4 +1,33 @@
 {
-  "universe_usage_history": [],
-  "assignment_cast_snapshots": {}
+  "universe_usage_history": [
+    {
+      "universe": "The Matrix",
+      "assigned_at": "2026-07-28T17:52:04-07:00",
+      "assignment_id": "onnxruntime-ep-vulkan-2026-07-28"
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "onnxruntime-ep-vulkan-2026-07-28": {
+      "universe": "The Matrix",
+      "agent_count": 7,
+      "shape": "medium, sci-fi, systems",
+      "resonance": [
+        "systems",
+        "low-level",
+        "cross-platform",
+        "GPU",
+        "runtime"
+      ],
+      "cast": [
+        "Morpheus",
+        "Tank",
+        "Switch",
+        "Mouse",
+        "Trinity",
+        "Niobe",
+        "Link"
+      ],
+      "assigned_at": "2026-07-28T17:52:04-07:00"
+    }
+  }
 }

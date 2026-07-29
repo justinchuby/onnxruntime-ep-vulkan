@@ -12,7 +12,17 @@
 
 | Name | Role | Charter | Status |
 |------|------|---------|--------|
-
+| Morpheus | Lead / EP Architect | .squad/agents/morpheus/charter.md | 🏗️ Active |
+| Tank | Runtime & FFI Engineer | .squad/agents/tank/charter.md | 🔧 Active |
+| Switch | Vulkan Compute Engineer | .squad/agents/switch/charter.md | ⚡ Active |
+| Mouse | Op Coverage Engineer | .squad/agents/mouse/charter.md | 🧩 Active |
+| Trinity | Test & Conformance Engineer | .squad/agents/trinity/charter.md | 🧪 Active |
+| Niobe | Performance Engineer | .squad/agents/niobe/charter.md | 📊 Active |
+| Link | Platform & Hardware Support Engineer | .squad/agents/link/charter.md | 🌐 Active |
+| Scribe | Session Logger | .squad/agents/scribe/charter.md | 📋 Built-in |
+| Ralph | Work Monitor | .squad/agents/ralph/charter.md | 🔄 Built-in |
+| Rai | RAI Reviewer | .squad/agents/Rai/charter.md | 🛡️ RAI |
+| Fact Checker | Fact Checker | .squad/agents/fact-checker/charter.md | 🔍 Verifier |
 
 ## Coding Agent
 
@@ -49,5 +59,10 @@
 
 ## Project Context
 
-- **Project:** onnxruntime-ep-vulkan
+- **Owner:** Justin Chu
+- **Project:** onnxruntime-ep-vulkan — cross-platform Vulkan plugin execution provider for ONNX Runtime, in Rust
+- **Reference architecture:** `C:\Users\justinchu\dev\onnxruntime-mlx` (mirror its `rust/`, `tests/conformance/`, `bench/`, `python/`, `docs/` layout)
+- **Stack:** Rust cdylib plugin EP · Vulkan 1.1+ compute · SPIR-V/GLSL · ONNX Runtime C API · Python bindings · GitHub Actions
+- **Target platforms:** Windows, Linux, Android, macOS (MoltenVK); NVIDIA / AMD / Intel / Adreno / Mali; lavapipe & SwiftShader for GPU-less CI
 - **Created:** 2026-07-29
+- **Cast universe:** assigned 2026-07-28

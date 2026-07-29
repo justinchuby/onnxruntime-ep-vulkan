@@ -6,14 +6,28 @@ How to decide who handles what.
 
 | Work Type | Route To | Examples |
 |-----------|----------|----------|
-| {domain 1} | {Name} | {example tasks} |
-| {domain 2} | {Name} | {example tasks} |
-| {domain 3} | {Name} | {example tasks} |
-| Code review | {Name} | Review PRs, check quality, suggest improvements |
-| Testing | {Name} | Write tests, find edge cases, verify fixes |
-| Scope & priorities | {Name} | What to build next, trade-offs, decisions |
+| Architecture, scope, design docs | Morpheus | Crate layout, `docs/DESIGN.md`, EP design, opset scope, milestone calls |
+| ORT plugin EP ABI, FFI, build | Tank | `sys.rs`/`ep.rs`/`factory.rs`, C ABI vtables, `build.rs`, cdylib export, EP registration |
+| Vulkan device, memory, shaders | Switch | `engine.rs`, SPIR-V/GLSL kernels, descriptor sets, barriers, command buffers, allocators |
+| ONNX operators, registry, partitioning | Mouse | `ops/*`, `registry.rs`, capability reporting, shape/dtype validation, CPU fallback rules |
+| Correctness testing, conformance | Trinity | Differential tests vs ORT CPU EP, tolerances, `tests/conformance/`, regression suites |
+| Benchmarks, profiling, perf regressions | Niobe | `bench/`, timestamp queries, roofline analysis, speedup claims, perf CI |
+| Platform/hardware support, toolchains, CI matrix | Link | Capability detection, driver quirks, MoltenVK/Android/NDK, Vulkan SDK, runner matrix, packaging |
+| Code review | Morpheus | Review PRs, enforce layering, quality gates |
+| Scope & priorities | Morpheus | What to build next, trade-offs, decisions |
 | Session logging | Scribe | Automatic — never needs routing |
-| RAI review | Rai | Content safety, bias checks, credential detection, ethical review |
+| RAI review | Rai | Content safety, credential detection, ethical review |
+| Claim verification / devil's advocate | Fact Checker | Verify API/extension/version claims, challenge design assumptions |
+
+## Domain Overlaps — Tie-Breakers
+
+| Situation | Primary | Why |
+|-----------|---------|-----|
+| A new op needs a new shader | Mouse specs the semantics, Switch writes the shader | Semantics vs GPU implementation |
+| A kernel is slow | Niobe diagnoses, Switch or Mouse changes the code | Measure ≠ optimize |
+| An op fails on one vendor only | Link triages the driver quirk, then hands the fix to Switch or Mouse | Quirk ownership |
+| Test fails only in CI | Trinity owns the test, Link owns the runner/environment | Test vs platform |
+| Should we require a Vulkan extension? | Link proposes, Morpheus decides | Baseline is an architecture call |
 
 ## Issue Routing
 
