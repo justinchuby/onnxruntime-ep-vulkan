@@ -72,3 +72,6 @@ pub mod ssm;
 
 /// The minimum-viable-subgraph rule and the partitioning metrics.
 pub mod partition;
+
+/// The machine-readable record of claim decisions that tests and measurement read.
+pub mod claim_log;

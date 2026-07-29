@@ -385,6 +385,34 @@ compile time when the shape is static; when it is not, they are declined.
 | `FastGelu` `QuickGelu` `BiasGelu` `BiasSplitGelu` | **ms** | V | fused bias+activation | S | EW-B/EW-U |
 | `BiasAdd` | **ms** | V | — | S | EW-B |
 
+**GQA arity, verified 2026-07-28** against `docs/ContribOperators.md` @ `v1.28.0` and
+`onnxruntime/core/graph/contrib_ops/bert_defs.cc` on main (the two are identical for this op):
+**7–16 inputs, 1–4 outputs.**
+
+```
+in : 0 query*  1 key  2 value  3 past_key  4 past_value  5 seqlens_k*  6 total_sequence_length*
+     7 cos_cache  8 sin_cache  9 position_ids  10 attention_bias  11 head_sink
+     12 k_scale  13 v_scale  14 q_norm_weight  15 k_norm_weight              (* = required)
+out: 0 output*  1 present_key  2 present_value  3 output_qk
+```
+
+Optional inputs are positional, so a node that uses input 15 has 16 slots with empty names in the
+unused ones — the minimum of 7 comes from `seqlens_k` and `total_sequence_length` sitting at
+indices 5 and 6, not from three required inputs. For scale: v1.21 was 7–9 inputs and exactly 3
+outputs. This schema moves, which is why §9.4's fingerprint machinery exists.
+
+**One finding here changes the T3 plan and I want it visible.** Inputs 14/15
+(`q_norm_weight`/`k_norm_weight`) fuse a per-head RMS norm on Q and K into the attention kernel, and
+the ORT GenAI model builder sets `q_norm`/`k_norm` for **every Qwen3-family decoder**
+(`builders/qwen.py`: `Qwen3Model.make_attention_init` sets both), emitting a 16-input GQA node
+whenever its fused-QK-norm path is enabled. ORT's own schema documentation states that an EP not
+implementing this "must reject the node when this input is set", so our claim predicate declines it
+— that is conformance, not caution. The builder takes a non-fused path for EPs without support,
+emitting separate `SimplifiedLayerNormalization` nodes instead, which is the form we want; **whether
+we get that form is a builder decision, not ours.** Confirm empirically before T3 is scheduled:
+if the fused form is what lands, "GQA works" and "Qwen3 works" are separated by a Q/K-norm variant
+of the hardest kernel in the project. Marked as a T3 precondition rather than an assumption.
+
 ### 4.11 Quantization — 12 ops
 
 | Op | Dom | Families | Notes | Diff | Tmpl |
@@ -553,6 +581,42 @@ about as much as 3.
 > semantics. `Clip` has optional inputs that ORT reports as **null interior `OrtValueInfo`s** — a
 > real bug class the MLX project hit and fixed. `Round` is banker's rounding. Budget one careful
 > hour per op for semantics even when the kernel is free.
+
+#### Status 2026-07-28 — the templates exist, and what "exist" means
+
+The three templates landed as `rust/shaders/glsl/templates/ew_{unary,binary,select}.comp` with the
+shared header `rust/shaders/include/indexing.glsl` and the op-selector header `op_codes.glsl`.
+**All 168 variants in `src/ops/shader_variants.txt` compile to SPIR-V**, validated locally with a
+standalone Khronos `glslangValidator` (fetched outside the repo — this machine has no Vulkan SDK)
+using the same flags `build.rs` passes. The design above survived contact with the compiler with
+three changes worth recording:
+
+1. **Templates live one directory down**, in `shaders/glsl/templates/`, because `build.rs` compiles
+   every `*.comp` directly in `shaders/glsl/` with no `-D` defines — that is the path for
+   hand-written XL kernels, which need none. A template compiled with no `EW_OP` and no `DTYPE_*`
+   fails on purpose, so the two populations must not share a directory. (Cleaner alternative for
+   Tank if he wants it: have the direct scan skip any file named by the variant table.)
+2. **`bool` and `uint8` are byte-packed into `uint` words**, since `storageBuffer8BitAccess` is not
+   in the baseline capability set. Loads shift and mask. Stores use `atomicAnd` + `atomicOr` on the
+   shared word, which is race-free *because the bit lanes are disjoint* — each invocation only ever
+   clears and sets the eight bits of its own element, and disjoint-lane bit operations commute in
+   any interleaving. This imposes one requirement on the allocator: **a buffer holding a byte-typed
+   tensor must be allocated rounded up to a multiple of 4 bytes**, because the last word is written
+   whole. Stated here because it is invisible from the Rust side.
+3. **f16 is stored as `float16_t` and computed in `float`.** That is an accuracy gain rather than a
+   loss, and it removes any dependency on f16 overloads of the transcendental builtins.
+
+Two semantics the caveat above predicted, both now handled: ONNX `Round` compiles to `roundEven`,
+not `round`; and GLSL's `pow` is undefined for a negative base while ONNX's is defined for integral
+exponents, so `Pow` carries an explicit sign path.
+
+**What has *not* happened: none of these have executed.** The engine has no pipeline or dispatch
+path yet, so no variant has run on any device, on any vendor, including lavapipe. Every elementwise
+row is therefore staged behind the new `UNEXERCISED` reason — a deliberately different blocker from
+`NO_SHADER`, because "the compiler accepted it" and "it computes the right answer" are different
+claims and the gap between them is exactly where a coverage project lies to itself. Claiming these
+rows today would also simply fail: with no dispatch path a claimed node cannot execute, so
+declining is not merely conservative, it is the only correct answer available.
 
 ### 5.3 Template `RED` — 15 ops, one kernel family
 
@@ -1186,11 +1250,13 @@ table token and keys are always qualified. **C2** — every contrib row states t
 predicate was verified against and surfaces it, via `OpSpec::schema_baseline()` and the
 `epctl --dump-capabilities` "schema baseline" column.
 
-**Known reconciliation item.** `sys::CONTRIB_SCHEMA_BASELINES` (Tank's) records the pinned release
-for all 11 contrib rows, while the `LinearAttention` / `CausalConvWithState` / `QMoE` fingerprints
-carry a main-branch baseline because those schemas are not in 1.28. A registry test asserts the two
-records agree on the verification *date* and deliberately does not compare release strings. Fixing
-that properly is a change in `sys.rs`, which is not mine.
+**Reconciliation, resolved 2026-07-28.** An earlier revision noted that `sys::CONTRIB_SCHEMA_BASELINES`
+(Tank's) duplicated the pinned-release record that the contrib rows also carry, and that a registry
+test papered over the disagreement by comparing only verification *dates*. Tank resolved it in the
+direction I would have chosen but could not reach from my own files: he **deleted the `sys` table**,
+making `ContribSchema.baseline` on the row the single source of the C2 baseline, and replaced the
+cross-check with a test asserting exactly that. Reviewed and approved — one record, owned by whoever
+writes the predicate it describes.
 
 ### 9.5 Engine seams the XL kernels need that do not exist yet
 
@@ -1239,20 +1305,76 @@ kernel or fails a correct one, and both are expensive to discover late.
 | **End-to-end logits** (decode step) | **Top-1 token agreement over ≥ 64 greedy steps**, plus KL divergence of the softmax distribution below a fixed bound. Not per-element tolerance. | Per-element logit tolerance on a 150k vocab is meaningless — it either passes trivially or fails on one outlier. Token agreement is the property users care about and it is the only end-to-end assertion that survives a legitimate reassociation. |
 | **Per-layer intermediates** | Same rtol as the op-level row, captured layer-by-layer. | §6.1 item 5: on a 1.7B model, final-logit comparison cannot localize a fault. The harness needs intermediate capture or T4 debugging becomes bisection by hand. |
 
-**The oracle — please confirm before building on it.** The obvious reference is **ORT CPU EP running
-the identical quantized graph**, so that dequantization semantics come from ORT rather than from our
-reading of them. My understanding is that `MatMulNBits` **is** implemented in the ORT CPU EP (it is
-how GenAI int4 models run on CPU today), which would make this oracle work directly, and that
-`accuracy_level` selects the CPU accumulator type — meaning the oracle's own precision is
-configurable and should be pinned in the test config. **Both points need empirical confirmation, not
-my say-so:** run one GenAI-built int4 Qwen3-0.6B graph on CPU EP and check it executes without
-falling back or erroring. If `MatMulNBits` on CPU EP turns out to be unusable as an oracle, the
-fallback is a NumPy reference implementation of the ONNX contrib spec — strictly worse, because then
-both sides of the comparison encode *our* reading of the schema, and a schema misreading passes.
+**The oracle — CONFIRMED, with two constraints (Trinity, 2026-07-28).** The obvious reference was
+**ORT CPU EP running the identical quantized graph**, so that dequantization semantics come from ORT
+rather than from our reading of them, and I asked for that to be verified empirically rather than
+assumed. Trinity ran the check and the answer is **yes, the CPU EP is usable as a `MatMulNBits`
+oracle**. Two findings attach, and both are exactly the class of thing that would have silently
+poisoned reference values if we had assumed instead:
+
+1. **`accuracy_level` must be pinned, and is pinned at 1.** Level 4 (int8 VNNI) diverges from levels
+   0–3 by ~3.6e-3 at K=1024, N=512. That is above the `rtol = 1e-3` this table asks for on fp32
+   activations, so an unpinned oracle would have produced reference values that changed with the
+   *runner's CPU*, and the resulting failures would have looked like GPU bugs. The oracle's
+   accumulator type is part of the test configuration, not an implementation detail.
+2. **The fp16 oracle is version-conditional.** fp16 activations produce NaN/Inf on ORT **1.27** —
+   the same null-allocator `PrePack` defect that forced the version pin in the first place. The fp16
+   oracle test is therefore gated on ORT ≥ 1.28 and runs in CI. So the fp16 row of this table is
+   real but conditional, and any future support window widening below 1.28 removes it.
+
+The bit-exact dequant row is compared against **NumPy, not the CPU EP**, and deliberately so: the
+whole point of that row is to catch a misreading of the block layout, and comparing ORT against ORT
+would let a shared misreading pass unnoticed. The CPU EP is the right oracle for the *arithmetic*;
+it is the wrong oracle for the *schema*. Both are implemented.
 
 Secondary asks: the bit-exact dequant test should run the *same* helper the blocked
 `DequantizeLinear` path uses (§8.3), so the two cannot drift; and quantized tests need their own
 tolerance config knob rather than inheriting the fp32 harness default.
+
+### 10.2 The decline reason is an output, not a log line
+
+Trinity's C1 regression test could originally only assert *structurally* — that the EP claimed zero
+nodes — because `DeclineCode` was invisible outside the process. A zero-node assertion cannot tell
+apart "declined because nothing is registered for it" (what C1 is actually about), "declined for
+some unrelated reason" and "crashed before reaching the claim predicate". The distinction between
+`[contrib-schema]` and `[attribute]` that §9.4 rests on has the same problem: it is only worth
+drawing if something outside the process can read it.
+
+So the record is now a real output. Set `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` to a file path and every
+call to `registry::claim_decision` appends one self-contained JSON object per line:
+
+```jsonc
+{"op":"com.microsoft::NotARealOp","node":"n0","opset":1,"claimed":false,
+ "code":"not-registered","reason":"[not-registered] no Vulkan handler is registered for ..."}
+```
+
+`op` is the domain-qualified type, `node` the graph node name (`""` if unnamed), `opset` the
+resolved `since_version` (`0` if unresolved), `claimed` a bool, and `code` the `DeclineCode` tag —
+`null` when the node was claimed, or when the reason did not originate in the registry. That makes
+both of the assertions Trinity needs one lookup each:
+
+```python
+assert claims["com.microsoft::NotARealOp"].code == "not-registered"   # declined, and *why*
+assert claims["Add"].claimed                                          # and the positive case
+```
+
+Three design points worth defending:
+
+- **JSON Lines appended and flushed per decision, not a report written at teardown.** There is no
+  point in the plugin-EP lifecycle where we are reliably told "the session is over, write your
+  diagnostics". A test that reads a report the EP has not flushed is a flaky test; a file that is
+  complete after every single decision cannot be read too early.
+- **Recorded inside `claim_decision`, not in `ep.rs`.** The boundary layer aggregates declines to
+  one reason per op *type*, which is right for a human reading claim-debug output and wrong for a
+  test asserting about a specific node. Recording below the aggregation also means `epctl` and a
+  future measurement harness get the same record with no further work.
+- **Two declines never appear**, by construction: nodes inside a control-flow body and nodes
+  excluded by `ep.max_claim_ops` are short-circuited *before* the registry is asked. Neither is a
+  statement about op support. The record answers "what did the registry decide", not "what did the
+  EP do", and a test that sets `max_claim_ops` must not expect lines for the excluded nodes.
+
+Nothing in this path can fail a run: every I/O error is dropped. A diagnostic that can break
+inference is worse than no diagnostic, and this runs inside a C ABI callback.
 
 ---
 
@@ -1378,7 +1500,7 @@ header, the `THIRD_PARTY_NOTICES.md` entry and the commit note.
 |---|---|---|---|
 | `GroupQueryAttention` | `ops/attention.rs` | **Independent implementation.** Read llama.cpp's flash-attention Vulkan shaders for tiling and subgroup-reduction strategy; write our own against our `DispatchContext` and our KV-cache layout. | None. |
 | `RotaryEmbedding` | `ops/attention.rs` | **Independent implementation.** The algorithm is a page of arithmetic; no reference needed. | None. |
-| `MatMulNBits` | `ops/quant.rs` | **Independent implementation.** Read llama.cpp's `mul_mat_vec_q*` for the memory-access strategy; the nibble layout is dictated by the ONNX contrib schema, not by llama.cpp's block formats — which are *different formats*, so adaptation would not even work. | None. |
+| `MatMulNBits` | `ops/quant.rs` | **Independent implementation.** Read llama.cpp's `mul_mat_vec_q*` for the memory-access strategy — see the note below on what does and does not transfer. | None. |
 | `GatherBlockQuantized`, `DequantizeLinear`/`QuantizeLinear` (blocked) | `ops/quant.rs` | **Independent implementation.** Shares our own unpack helper. | None. |
 | `LinearAttention` (`gated_delta`) | `ops/ssm.rs` | **Independent implementation.** No open reference Vulkan implementation exists to adapt even if we wanted one. | None. |
 | `CausalConvWithState` | `ops/ssm.rs` | **Independent implementation.** | None. |
@@ -1388,6 +1510,28 @@ header, the `THIRD_PARTY_NOTICES.md` entry and the commit note.
 If any kernel later needs substantial adaptation of third-party shader source, the procedure is in
 `docs/THIRD_PARTY.md` (Rai's) and must be followed **before** the adapted code lands, because our
 build embeds SPIR-V into the cdylib and the compiled artifact is a derived work of the GLSL.
+
+#### 13.2.1 Correction, 2026-07-28: "no obligation" is not "nothing to learn"
+
+An earlier revision of the row above argued that llama.cpp's block formats are incompatible with
+the ONNX `MatMulNBits` nibble layout, "so adaptation would not even work". Switch reviewed that for
+`ENGINE.md` (D-S4-10) and is right that it was **too strong**, and I am withdrawing it. The two
+claims it ran together are separate:
+
+- *Licensing.* Unchanged, and Switch and I agree: we write our own code, nothing attaches. The data
+  layout being incompatible is one more reason the answer is "independent implementation", but it
+  was never the reason.
+- *Value of reference reading.* This is Switch's domain, not mine, and he says the leverage is
+  real. The data **layout** does not transfer, but the **algorithmic strategy** does: GEMV-vs-GEMM
+  tile-size specialisation constants, subgroup reduction shape (per-lane partial dot →
+  `subgroupAdd`), and dequantise-in-register patterns are all portable conclusions that took that
+  project years of multi-vendor tuning to reach. Under Rai's green light we may read them.
+
+So the accelerant stands at full strength and the estimates in §11.1 continue to assume it is used.
+Morpheus is ruling on what that means for the T3/T4/T5a numbers, since he priced it in.
+
+The general lesson, recorded because it will recur: *"we cannot copy this"* and *"there is nothing
+here to learn"* are different sentences. A licensing record should only ever assert the first.
 
 **Operational rule for this document's §6 tiers:** before touching T3's `GroupQueryAttention`, T2's
 `MatMulNBits`, or T4's `LinearAttention`, read `docs/THIRD_PARTY.md` for the mechanics. Algorithm

@@ -41,16 +41,20 @@ use crate::require;
 
 /// `com.microsoft.GroupQueryAttention`.
 ///
-/// **Fingerprint confidence: medium.** The contrib schema has grown repeatedly (KV-cache
-/// quantization, head sink, QK output, Q/K norm) and differs between the 1.28 release and main.
-/// The set below is written wide enough to admit the attributes the GenAI builder writes and
-/// narrow enough that a genuinely new one trips the drift check. A wrong entry here costs a
-/// `[contrib-schema]` decline and a CPU fallback, never a wrong answer — which is the direction
-/// this has to fail in, and the `[contrib-schema]` histogram bucket is how we find out.
+/// **Fingerprint confidence: high, re-verified 2026-07-28.** Read from `docs/ContribOperators.md`
+/// at tag `v1.28.0` and cross-checked against `onnxruntime/core/graph/contrib_ops/bert_defs.cc`
+/// on main; the two are byte-identical for this operator, so the "1.28 and main differ" worry the
+/// earlier note carried does not apply. The bounds below are the schema's own: **7–16 inputs,
+/// 1–4 outputs**. (For contrast, v1.21 was 7–9 inputs and exactly 3 outputs — this schema moves,
+/// which is the whole reason `[contrib-schema]` exists as a decline bucket.)
+///
+/// A wrong entry here costs a `[contrib-schema]` decline and a CPU fallback, never a wrong
+/// answer — which is the direction this has to fail in, and the `[contrib-schema]` histogram
+/// bucket is how we find out.
 pub static GROUP_QUERY_ATTENTION: ContribSchema = ContribSchema {
     baseline: PINNED_BASELINE,
-    notes: "read from ContribOperators.md; the 1.28 and main forms differ, this admits both",
-    min_inputs: 3,
+    notes: "ContribOperators.md @ v1.28.0, cross-checked against bert_defs.cc on main; identical",
+    min_inputs: 7,
     max_inputs: 16,
     min_outputs: 1,
     max_outputs: 4,
@@ -138,6 +142,32 @@ fn group_query_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // first kernel does not, and claiming what the kernel does not do is the one prohibited move.
     claim::attr_int_is(view, spec, "do_rotary", 0)?;
 
+    // Optional inputs that change the numerics. Each must be *absent*, and each is a real trap:
+    //
+    // * 10 `attention_bias` — added to QK before the softmax. Ignoring it is a silent wrong answer.
+    // * 11 `head_sink` — an extra term in the softmax denominator (the `smooth_softmax` path).
+    // * 12/13 `k_scale`/`v_scale` — present exactly when the KV cache is quantized.
+    // * 14/15 `q_norm_weight`/`k_norm_weight` — per-head RMS norm on Q and K, fused into the
+    //   kernel. **This is not a hypothetical for us**: the ORT GenAI model builder sets
+    //   `q_norm`/`k_norm` for every Qwen3-family decoder, and emits a 16-input GQA node whenever
+    //   its fused-QK-norm path is enabled. ORT's own schema documentation is explicit that an EP
+    //   which does not implement it "must reject the node when this input is set", so declining
+    //   here is conformance, not conservatism.
+    //
+    // The consequence worth stating plainly: on the exact model this project exists to run, the
+    // GQA node may arrive in a form the first kernel must refuse. Whether it does depends on
+    // whether the builder's fused path is taken for our EP — see `OP_COVERAGE.md` §4.10.
+    for (i, what) in [
+        (10, "attention_bias"),
+        (11, "head_sink"),
+        (12, "k_scale"),
+        (13, "v_scale"),
+        (14, "q_norm_weight"),
+        (15, "k_norm_weight"),
+    ] {
+        claim::input_absent(view, spec, i, what)?;
+    }
+
     Ok(())
 }
 
@@ -191,6 +221,26 @@ mod tests {
         ] {
             assert!(GROUP_QUERY_ATTENTION.knows(attr), "`{attr}` is emitted");
         }
+    }
+
+    #[test]
+    fn the_gqa_arity_is_the_schema_arity() {
+        // The answer Trinity's test table needs, pinned as an assertion so it cannot rot
+        // silently. `com.microsoft::GroupQueryAttention` @ ORT 1.28 and main:
+        //
+        //   inputs  (7 – 16): 0 query*, 1 key, 2 value, 3 past_key, 4 past_value, 5 seqlens_k*,
+        //                     6 total_sequence_length*, 7 cos_cache, 8 sin_cache, 9 position_ids,
+        //                     10 attention_bias, 11 head_sink, 12 k_scale, 13 v_scale,
+        //                     14 q_norm_weight, 15 k_norm_weight        (* = required)
+        //   outputs (1 –  4): 0 output*, 1 present_key, 2 present_value, 3 output_qk
+        //
+        // Only three inputs are required, but the optional ones are positional, so a node using
+        // input 15 has 16 input slots with empty names in the unused positions — which is why the
+        // minimum is 7 rather than 3: `seqlens_k` and `total_sequence_length` sit at 5 and 6.
+        assert_eq!(GROUP_QUERY_ATTENTION.min_inputs, 7);
+        assert_eq!(GROUP_QUERY_ATTENTION.max_inputs, 16);
+        assert_eq!(GROUP_QUERY_ATTENTION.min_outputs, 1);
+        assert_eq!(GROUP_QUERY_ATTENTION.max_outputs, 4);
     }
 
     #[test]

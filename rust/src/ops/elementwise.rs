@@ -7,26 +7,32 @@
 //!
 //! # Everything here is [`Staged`]
 //!
-//! No shader exists yet, so no row is claimable and the CPU EP runs every one of these nodes,
-//! which is always correct. What *does* exist is the full description — opset window, dtype
-//! capabilities, template, variant stems, claim predicate, translate handler — all of it unit
-//! tested. Flipping a row live once its variant compiles is a one-word diff.
+//! The three GLSL templates now exist (`shaders/glsl/ew_{unary,binary,select}.comp`) and all 168
+//! variants compile, but the engine has no dispatch path yet and nothing has run one of them on a
+//! device. So every row still declines and the CPU EP runs every one of these nodes, which is
+//! always correct. What *does* exist is the full description — opset window, dtype capabilities,
+//! template, variant stems, claim predicate, translate handler, and now the shader itself — all of
+//! it unit tested. Flipping a row live once a differential test has executed its variant is a
+//! one-word diff.
 //!
-//! Two staging reasons appear below and they mean different things:
+//! Three staging reasons appear below and they mean different things:
 //!
-//! * [`NO_SHADER`] — the row is complete; only the compiled variant is missing.
+//! * [`UNEXERCISED`] — the row and its shader are complete; nothing has executed it yet.
 //! * [`NEEDS_PARAMS`] — the op carries attributes (`alpha`, `beta`, `fmod`, `direction`,
 //!   `approximate`) that the plain unary/binary template has nowhere to put. Claiming it with
 //!   [`claim::never`] is the honest answer: `OP_COVERAGE.md` §7's rule is that an op is claimed
 //!   only when the *attribute* combination is genuinely handled, and here it is not. These become
-//!   a parameterised template variant, not a bespoke kernel each.
+//!   a parameterised template variant, not a bespoke kernel each. Their shader variants are
+//!   compiled with the ONNX **default** attribute values so the template stays uniform — a default
+//!   is not a handled value, which is precisely why the row stays staged.
+//! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
 
 use crate::kernel;
 use crate::ops::common::claim;
 use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC};
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{NO_SHADER, OPSET_ANY};
+use crate::registry::{OPSET_ANY, UNEXERCISED};
 
 /// `Equal` compares booleans as well as numbers.
 const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
@@ -47,68 +53,68 @@ crate::op_table! {
     //
     //  op            domain  opset window        caps      kernel                       claim               translate               status
     // ---------------------------------------------------------------------------------------
-    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
     "Mod",            Ai,     10 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "mod"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Xor",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "xor"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "BitwiseAnd",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitand"), claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "BitwiseOr",      Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitor"),  claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "BitwiseXor",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitxor"), claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Xor",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "xor"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "BitwiseAnd",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitand"), claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "BitwiseOr",      Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitor"),  claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "BitwiseXor",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitxor"), claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
     "BitShift",       Ai,     11 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitshift"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Equal",          Ai,     7 ..= OPSET_ANY,    EQ_CAPS,  kernel!(EwBinary, "eq"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Greater",        Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "gt"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "GreaterOrEqual", Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "ge"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "Less",           Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "lt"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "LessOrEqual",    Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "le"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
-    "PRelu",          Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "prelu"),  claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Equal",          Ai,     7 ..= OPSET_ANY,    EQ_CAPS,  kernel!(EwBinary, "eq"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Greater",        Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "gt"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "GreaterOrEqual", Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "ge"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Less",           Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "lt"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "LessOrEqual",    Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "le"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "PRelu",          Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "prelu"),  claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
 
     // ---------------------------------------------------------------------------------------
     // Unary maths — the longest run of pure table rows in the crate.
     // ---------------------------------------------------------------------------------------
-    "Abs",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "abs"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Neg",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "neg"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Reciprocal",     Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "recip"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Sqrt",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sqrt"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Exp",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "exp"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Log",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "log"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Sin",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sin"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Cos",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cos"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Tan",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tan"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Asin",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asin"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Acos",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acos"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Atan",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atan"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Sinh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sinh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Cosh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cosh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Tanh",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tanh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Asinh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asinh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Acosh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acosh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Atanh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atanh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Ceil",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "ceil"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Floor",          Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "floor"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Abs",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "abs"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Neg",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "neg"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Reciprocal",     Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "recip"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Sqrt",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sqrt"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Exp",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "exp"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Log",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "log"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Sin",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sin"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Cos",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cos"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Tan",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tan"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Asin",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asin"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Acos",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acos"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Atan",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atan"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Sinh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sinh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Cosh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cosh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Tanh",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tanh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Asinh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asinh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Acosh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acosh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Atanh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atanh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Ceil",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "ceil"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Floor",          Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "floor"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
     "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
+    "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
 
     // ---------------------------------------------------------------------------------------
     // Activations. Attribute-free ones ride the unary template; parameterised ones are staged
     // behind NEEDS_PARAMS rather than claimed with attributes we would silently ignore.
     // ---------------------------------------------------------------------------------------
-    "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
-    "HardSwish",      Ai,     14 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "hardswish"), claim::ew_unary,  templates::ew_unary,    Staged(NO_SHADER);
-    "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
-    "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
-    "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "HardSwish",      Ai,     14 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "hardswish"), claim::ew_unary,  templates::ew_unary,    Staged(UNEXERCISED);
+    "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
+    "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
+    "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
     "HardSigmoid",    Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "hardsigmoid"), claim::never,   templates::unimplemented, Staged(NEEDS_PARAMS);
     "LeakyRelu",      Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "leakyrelu"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
     "Elu",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "elu"),     claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
@@ -121,15 +127,15 @@ crate::op_table! {
     // ---------------------------------------------------------------------------------------
     // Variadic elementwise — composed from the binary template, never an N-input shader.
     // ---------------------------------------------------------------------------------------
-    "Sum",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
-    "Mean",           Ai,     8 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "mean"),   claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
-    "Max",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "max"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
-    "Min",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "min"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
+    "Sum",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
+    "Mean",           Ai,     8 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "mean"),   claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
+    "Max",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "max"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
+    "Min",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "min"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
 
     // ---------------------------------------------------------------------------------------
     // Selection and type conversion.
     // ---------------------------------------------------------------------------------------
-    "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Staged(NO_SHADER);
+    "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Staged(UNEXERCISED);
     "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
     "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(None),               claim::cast,        templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
     "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_CAST_MATRIX);

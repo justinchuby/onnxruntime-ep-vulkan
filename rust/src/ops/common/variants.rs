@@ -57,11 +57,18 @@ impl Template {
         }
     }
 
-    /// The GLSL source file this template compiles from, relative to `shaders/glsl/`.
+    /// The GLSL source this template compiles from, relative to `shaders/glsl/`.
+    ///
+    /// Templates live in `shaders/glsl/templates/` rather than directly in `shaders/glsl/`, and
+    /// the subdirectory is load-bearing: `build.rs` compiles every `*.comp` it finds *directly* in
+    /// `shaders/glsl/` with no `-D` defines (that is the path for hand-written XL kernels, which
+    /// need none). A template compiled with no defines has no `EW_OP` and no `DTYPE_*` and fails
+    /// on purpose. Keeping templates one level down means the direct scan does not see them and
+    /// only the variant table drives their compilation.
     pub fn source_file(self) -> Option<String> {
         match self {
             Template::None => None,
-            other => Some(format!("{}.comp", other.prefix())),
+            other => Some(format!("templates/{}.comp", other.prefix())),
         }
     }
 
@@ -364,5 +371,79 @@ mod tests {
             want,
             "{MANIFEST_PATH} is stale; regenerate with MOUSE_BLESS_VARIANTS=1"
         );
+    }
+
+    fn shaders_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders")
+    }
+
+    /// Every template the registry names must have a source file `build.rs` can find.
+    ///
+    /// Without this, a row can reference a template that does not exist and the failure surfaces
+    /// as a `build.rs` panic on someone else's machine — probably in CI, probably at the worst
+    /// time. Here it is a unit-test failure in the change that caused it.
+    #[test]
+    fn every_template_has_its_glsl_source_on_disk() {
+        let glsl = shaders_dir().join("glsl");
+        for t in Template::ALL {
+            let file = t.source_file().expect("templates in ALL have a source");
+            assert!(
+                glsl.join(&file).is_file(),
+                "template {t:?} names `{file}`, which does not exist in shaders/glsl/"
+            );
+        }
+    }
+
+    /// Every op selector in the registry must have an `OP_<NAME>` code in the GLSL header.
+    ///
+    /// This is the seam that a table-driven design makes easy to break: a new row's `op` string
+    /// only becomes `-DEW_OP=OP_FOO`, and if the header has no `OP_FOO` the shader fails to
+    /// compile with a preprocessor error that names neither the op nor the row. Checking it here
+    /// turns that into a message that names both, without needing a shader compiler.
+    #[test]
+    fn every_op_selector_has_a_glsl_code() {
+        let header = std::fs::read_to_string(shaders_dir().join("include").join("op_codes.glsl"))
+            .expect("shaders/include/op_codes.glsl must exist");
+        for spec in crate::registry::all_specs() {
+            if spec.kernel.template == Template::None {
+                continue;
+            }
+            let symbol = format!("OP_{}", spec.kernel.op.to_uppercase());
+            assert!(
+                header.contains(&format!("#define {symbol} ")),
+                "`{}` dispatches -DEW_OP={symbol}, which op_codes.glsl does not define",
+                spec.op_type
+            );
+        }
+    }
+
+    /// The templates must handle every `(op, dtype)` pair the manifest asks them to compile.
+    ///
+    /// A cheap structural proxy for "it compiles": the template source has to mention the op code
+    /// at all. It does not prove the expression is right — only a differential run on a device
+    /// does that — but it catches the common case of adding a row and forgetting the shader case,
+    /// and it runs on a machine with no Vulkan SDK, which is every machine in this project today.
+    #[test]
+    fn every_template_mentions_every_op_it_must_compile() {
+        let glsl = shaders_dir().join("glsl");
+        let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for v in manifest() {
+            let src = sources.entry(v.source.clone()).or_insert_with(|| {
+                std::fs::read_to_string(glsl.join(&v.source))
+                    .unwrap_or_else(|e| panic!("cannot read shaders/glsl/{}: {e}", v.source))
+            });
+            let symbol = v
+                .defines
+                .iter()
+                .find(|d| d.starts_with("EW_OP="))
+                .map(|d| d.trim_start_matches("EW_OP=").to_string())
+                .expect("every variant carries an EW_OP define");
+            assert!(
+                src.contains(&format!("EW_OP == {symbol}")),
+                "{} must handle {symbol} (variant `{}`) and does not",
+                v.source,
+                v.stem
+            );
+        }
     }
 }

@@ -262,3 +262,87 @@ Tank's baseline).
 
 📌 Clippy gotcha, again worth remembering: `for x in iter.filter(..) { return Err(..) }` trips
 `clippy::never_loop`. Use `if let Some(x) = iter.find(..)`.
+
+---
+
+## Turn 4 — 2026-07-28T22:28:08-07:00 — first real kernels
+
+📌 **`build.rs` compiles every `*.comp` sitting *directly* in `shaders/glsl/` with no `-D` defines**,
+separately from the variant-table rows. A parameterised template placed there is compiled twice, the
+second time with no `EW_OP`/`DTYPE_*`, and breaks the build on any machine that *has* `glslc` — i.e.
+it would have passed locally and failed only in CI. Templates therefore live in
+`shaders/glsl/templates/` (the scan is non-recursive). Read the build script before adding a file
+type it has never seen.
+
+📌 **You can validate shaders with no Vulkan SDK.** The Khronos glslang release ships a standalone
+`glslangValidator.exe`; unzip it outside the repo and run it with the same flags `build.rs` passes
+(`-V --target-env vulkan1.1 -S comp -I<include> -D...`). Caught every syntax error in one pass. Do
+not commit the tool.
+
+📌 **Compiled ≠ executed, and the difference deserves a status word.** 168 variants compile; zero
+have run, because `rust/src/vk/` has no pipeline or dispatch path yet. Hence `UNEXERCISED` as a
+staging reason distinct from `NO_SHADER`. Report the two separately, always — this is the same
+discipline as `largest_island_flops`, applied one level down.
+
+📌 **ONNX scalar semantics that bite:** `Round` is round-half-to-even (`roundEven`, not `round`);
+`Mod` with the default `fmod=0` takes the sign of the *divisor* (numpy), `a - floor(a/b)*b`; GLSL
+`pow` is undefined for a negative base but ONNX `Pow` is not; `Mean` in a binary template is only
+correct for two inputs, so the variadic lowering must divide by N once at the end. `Erf` is
+load-bearing far beyond itself, because exact `Gelu` decomposes through it.
+
+📌 **Byte-typed tensors force an allocator requirement.** Packed-byte stores write a whole `uint`
+word, so a `bool`/`uint8` buffer must be allocated rounded up to 4 bytes. This is invisible from the
+Rust side and must be told to whoever owns the allocator, not assumed.
+
+📌 **Correction taken (D-S4-10, Switch).** I wrote that llama.cpp's incompatible block layouts made
+reference reading pointless. Wrong, and instructively so: I had bundled a *licensing* conclusion
+("we cannot copy this") with a *technical* one ("there is nothing to learn"), and only the first was
+mine to make. Keep licensing records to licensing claims.
+
+📌 Verify commands, all green on Windows (needs `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`
+on any machine without the Vulkan SDK — which is everyone's today): `cargo build`;
+`cargo clippy --all-targets -- -D warnings`; `cargo test` → **213 lib + 26 layering + 6
+dump_capabilities = 245 passed**, 7 ignored, 0 failed.
+
+📌 Regenerate the variant manifest with `MOUSE_BLESS_VARIANTS=1 cargo test --lib variants`.
+
+---
+
+## Turn 5 — 2026-07-28T22:28:08-07:00 — making the decline reason readable
+
+📌 **A closed set of diagnostic codes is worth nothing if it stops at the FFI boundary.** I spent a
+whole turn separating `[contrib-schema]` from `[attribute]` so drift would be distinguishable from a
+deliberate limitation — and then nobody outside the process could read either one, so Trinity's C1
+test had to assert "zero nodes claimed", which cannot tell a correct decline from a crash. When you
+design a diagnostic, design its *reader* in the same breath.
+
+📌 **Diagnostics that need a lifecycle hook to flush are diagnostics that flake.** There is no point
+in the plugin-EP ABI where we are told "the session is over". Append-and-flush one self-contained
+JSON line per event; the file is then valid and complete after every event and the reader needs to
+know nothing about EP teardown. This beat a teardown-written report on every axis.
+
+📌 **Record below the aggregation, not above it.** `ep.rs` collapses declines to one reason per op
+type, which is right for a human and wrong for a test. Hooking `claim_decision` instead meant zero
+changes to Tank's boundary layer and gave every future caller the same record for free.
+
+📌 **Check arities against the schema source, not against your memory of it.** My
+`GroupQueryAttention` fingerprint had `min_inputs: 3` (a guess from "three required inputs") when the
+schema says 7, because optional inputs are positional and `seqlens_k`/`total_sequence_length` sit at
+indices 5 and 6. My note that "the 1.28 and main forms differ" was also wrong — they are identical.
+Both errors were in the *permissive* direction, which is the failure mode a drift detector can least
+afford.
+
+📌 **The GenAI builder sets `q_norm`/`k_norm` for every Qwen3 decoder**, emitting a 16-input GQA node
+when its fused path is on, and ORT's schema doc says an EP without support "must reject the node when
+this input is set". So the shape of the op we receive is decided by someone else's builder, and "the
+kernel works" may not imply "the model runs". Verify the exported graph before scheduling a kernel
+against an assumed signature.
+
+📌 **Ask for empirical confirmation of an oracle before designing tests on it — it pays.** Trinity's
+check confirmed the CPU EP works for `MatMulNBits`, and turned up two things no amount of reasoning
+would have: `accuracy_level` 4 diverges ~3.6e-3 (so the reference would have drifted with the
+runner's CPU and looked like a GPU bug), and fp16 activations NaN on 1.27 via the same
+null-allocator `PrePack` defect that forced the version pin.
+
+📌 Verify commands, all green: `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`; `cargo build`;
+`cargo clippy --all-targets -- -D warnings`; `cargo test` → **265 passed**, 7 ignored, 0 failed.

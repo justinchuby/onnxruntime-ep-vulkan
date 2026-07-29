@@ -859,8 +859,24 @@ pub enum OpStatus {
     Staged(&'static str),
 }
 
-/// The blocker every tier-1 row is staged behind today.
+/// The blocker for a row whose shader does not exist yet.
 pub const NO_SHADER: &str = "its compute shader has not been written yet";
+
+/// The blocker for a row whose shader exists and compiles, but has never executed.
+///
+/// This is a deliberately separate reason from [`NO_SHADER`], and the distinction is the honest
+/// half of the coverage claim. A variant that `glslc` accepts is not a variant that computes the
+/// right answer: nothing in the repository has yet run one of these on a device, because the
+/// engine's pipeline and dispatch path is still being built. Claiming a node here would mean
+/// betting a user's output on unexecuted code, which is exactly what `OP_COVERAGE.md` §7.1
+/// forbids.
+///
+/// The exit is mechanical, not editorial: when the dispatch path exists and a differential test
+/// runs the variant against the CPU EP on a real device, the row's status becomes `Live` in a
+/// one-word diff. Until then the CPU EP runs these nodes and is always right.
+pub const UNEXERCISED: &str =
+    "its compute shader compiles but has never executed on a device, so claiming it would be a \
+     bet rather than a capability";
 
 /// The blocker for the XL kernels: committed work, no template leverage, not written yet.
 ///
@@ -1054,6 +1070,13 @@ pub struct OpSpec {
     /// The contrib schema this row was written against. Required for every [`Domain::Ms`] row and
     /// meaningless for an [`Domain::Ai`] one; a test enforces both halves.
     pub schema: Option<&'static ContribSchema>,
+    /// The `Compile`-time hook, if this op has work to do before its first dispatch.
+    ///
+    /// Today that means weight prepacking (`OP_COVERAGE.md` §8.2.1): `MatMulNBits` must repack its
+    /// quantized weight into the tile-friendly layout its GEMM wants, once, after device selection.
+    /// Almost every row leaves this `None`, which is why it is an optional column rather than a
+    /// required one.
+    pub compile: Option<CompileHook>,
 }
 
 impl OpSpec {
@@ -1115,6 +1138,7 @@ macro_rules! op_table {
         $op:literal, $domain:ident, $min:literal ..= $max:expr, $caps:expr,
         $kernel:expr, $claim:path, $translate:path, $status:expr
         $(, schema: $schema:expr)?
+        $(, compile: $compile:expr)?
     );* $(;)?) => {
         /// Registry rows declared by this module.
         pub static OPS: &[$crate::registry::OpSpec] = &[
@@ -1130,9 +1154,22 @@ macro_rules! op_table {
                     translate: $translate,
                     status: $status,
                     schema: $crate::opt_schema!($($schema)?),
+                    compile: $crate::opt_hook!($($compile)?),
                 }
             ),*
         ];
+    };
+}
+
+/// `Some(hook)` when a row declares a compile hook, `None` when it does not.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! opt_hook {
+    () => {
+        None
+    };
+    ($hook:expr) => {
+        Some($hook)
     };
 }
 
@@ -1180,13 +1217,36 @@ fn lookup(qualified: &str) -> Option<&'static OpSpec> {
 /// `Ok(())` means claim it. `Err(reason)` means leave it to the CPU EP and report `reason` under
 /// claim-debug. There is no third answer and no per-op logic anywhere above this function.
 ///
+/// Every decision also goes to [`crate::ops::claim_log`] when
+/// `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` names a file, which is how a test outside the process asserts
+/// *why* a node was declined rather than merely that it was. That is recorded here rather than in
+/// `ep.rs` so that the reason survives `ep.rs`'s per-op-type aggregation, which keeps only the
+/// first reason per op type.
+pub fn claim_decision(view: &NodeView<'_>) -> Result<(), DeclineReason> {
+    let decision = claim_decision_uninstrumented(view);
+    if crate::ops::claim_log::enabled() {
+        crate::ops::claim_log::record(
+            &view.qualified_name(),
+            &view.name(),
+            view.since_version(),
+            decision.as_ref().map(|_| ()),
+        );
+    }
+    decision
+}
+
+/// The decision itself.
+///
+/// Separated from [`claim_decision`] only so that the record is impossible to forget: there is one
+/// place that answers the question and one place that observes the answer.
+///
 /// The order of checks is deliberate — key, then opset, then contrib schema, then status, then the
 /// predicate — so the decline histogram attributes a node to the *first* thing that is wrong with
 /// it rather than to whichever check happened to run first. The schema check runs *before* the
 /// staged check on purpose: "the contrib schema moved under us" is a signal we want visible even
 /// while the kernel behind the row is still being written, because it invalidates the row itself
 /// rather than merely deferring it.
-pub fn claim_decision(view: &NodeView<'_>) -> Result<(), DeclineReason> {
+fn claim_decision_uninstrumented(view: &NodeView<'_>) -> Result<(), DeclineReason> {
     let qualified = view.qualified_name();
     let Some(spec) = lookup(&qualified) else {
         return Err(decline(
@@ -1269,11 +1329,15 @@ pub type CompileHook = fn(
 /// `None` means "nothing to do at Compile time for this op" — the engine can skip the call.
 /// `Some(hook)` means the engine must call `hook(spec, desc, ctx)` before the first `Compute`.
 ///
-/// **STUB:** Mouse fills in the per-op hooks when writing `MatMulNBits`, `GroupQueryAttention`,
-/// etc. For now the function always returns `None`, which is correct: no op currently calls
-/// `CompileContext::request_prepack`.
-pub fn compile_hook_for(_desc: &NodeDesc) -> Option<CompileHook> {
-    None
+/// Resolved **through the op table**, not through a match here. Switch's original stub was a free
+/// function keyed on the node, which works but would become a second dispatch surface that a new
+/// op has to be added to — and the whole argument of `OP_COVERAGE.md` §5.7 is that there must be
+/// exactly one. So the hook is the row's optional `compile:` column and this function is a lookup.
+/// The engine-facing signature is unchanged.
+///
+/// Only live rows are consulted: a staged op is never claimed, so nothing of it reaches `Compile`.
+pub fn compile_hook_for(desc: &NodeDesc) -> Option<CompileHook> {
+    spec_for(desc).and_then(|s| s.compile)
 }
 
 #[cfg(test)]
