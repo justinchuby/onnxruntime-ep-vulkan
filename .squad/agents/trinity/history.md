@@ -179,3 +179,28 @@
     mapping key, not a continuation string.
   - Safe alternatives: single long line, or split with a shell variable:
     `URL="...long..."; echo "deb $URL" | sudo tee ...`
+
+📌 Trinity round-9: Windows elevation fix + epctl probe + lane hardening (2026-07-28T22:28:08-07:00):
+
+  **Windows root cause (Link §7.4.1):** LunarG loader 1.3+ silently ignores VK_ICD_FILENAMES,
+  VK_DRIVER_FILES, and VK_ADD_DRIVER_FILES when the process is elevated (Administrator with
+  UAC disabled). GitHub Actions Windows runners are `runneradmin`. The ICD path was correct;
+  the loader never read it. Fix: register the Mesa lavapipe ICD under
+  HKLM:\SOFTWARE\Khronos\Vulkan\Drivers via PowerShell. Registry-based discovery works under
+  elevation.
+
+  **VK_INSTANCE_LAYERS moved to pytest step (both lanes):** At job level it can cause
+  vkCreateInstance to fail if the layer path isn't configured yet, masking lavapipe as the
+  apparent problem. Now set only in the test step env.
+
+  **VK_LOADER_DEBUG: warn added at job level (both lanes):** Previously loader failures were
+  silent. Now all Vulkan-related steps emit loader diagnostics.
+
+  **Vulkaninfo smoke-checks hardened:** Both lanes now grep for "llvmpipe" (lavapipe's device
+  name) and exit 1 if not found. Linux: also added `sudo ldconfig` after package install.
+
+  **epctl --probe-loader step added (both lanes):** Switch's standalone Vulkan probe, before
+  pytest, exits non-zero if no capable device found. Turns "tests all skipped" into a named
+  red step with a diagnostic.
+
+  **YAML parse verified:** Both workflow files pass `yaml.safe_load` — checklist followed.

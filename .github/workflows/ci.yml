@@ -74,10 +74,12 @@ jobs:
     env:
       # Force Vulkan loader to use lavapipe exclusively.
       VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-      # Enable Vulkan validation layers in all test sessions.
-      # The EP panics (→ ORT error → test failure) on any validation error.
       ONNXRUNTIME_EP_VULKAN_VALIDATE: "1"
-      VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+      # VK_INSTANCE_LAYERS moved to the pytest step so the lavapipe smoke-check
+      # gets a clean baseline enumeration (per docs/PLATFORMS.md §7.4.2 Fix 2:
+      # setting it at job level can cause vkCreateInstance to fail if the layer
+      # path is not yet configured, masking lavapipe as the real problem).
+      VK_LOADER_DEBUG: warn
 
     steps:
       - uses: actions/checkout@v4
@@ -143,10 +145,19 @@ jobs:
             glslang-tools \
             spirv-tools \
             vulkan-tools
-          # Smoke-check: verify lavapipe is usable
-          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-            vulkaninfo --summary 2>&1 | grep -i "GPU id" || \
-            echo "::warning::vulkaninfo did not report a GPU — lavapipe may not be installed correctly"
+            # Refresh linker cache — LunarG packages may install SOs to a path
+            # not yet visible to the dynamic linker.
+            sudo ldconfig
+            # Smoke-check: lavapipe must enumerate cleanly before we waste build time.
+            # VK_INSTANCE_LAYERS is intentionally absent here (moved to test step)
+            # to get a clean baseline that reflects Mesa installation, not layer config.
+            # 'llvmpipe' is lavapipe's reported device name. Hard failure if absent.
+            VK_LOADER_DEBUG=warn VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+              vulkaninfo --summary 2>&1 | tee /dev/stderr | grep -qi "llvmpipe" || {
+              echo "::error::lavapipe not enumerated by vulkaninfo — mesa-vulkan-drivers may not be installed or the LunarG loader upgrade broke the ICD path. Check above loader debug output."
+              exit 1
+            }
+            echo "lavapipe smoke-check: OK (llvmpipe enumerated)"
 
       # -------------------------------------------------------
       # Precondition check: verify the GLSL compiler is actually
@@ -233,6 +244,17 @@ jobs:
             cargo test --test layering --manifest-path rust/Cargo.toml
 
       # -------------------------------------------------------
+      # Probe Vulkan loader — hard failure if no capable device.
+      # Switch built epctl for exactly this purpose: a standalone
+      # Vulkan probe that needs no ONNX Runtime and exits non-zero
+      # when no capable device is found. This turns "tests all
+      # skipped for some reason" into a named red step that says why.
+      # -------------------------------------------------------
+      - name: Probe Vulkan loader (epctl --probe-loader)
+        if: env.BUILD_SKIPPED != '1'
+        run: rust/target/release/epctl --probe-loader
+
+      # -------------------------------------------------------
       # Op-correctness tests (pytest, Vulkan vs ORT CPU oracle).
       # Includes:
       #   - test_op_table.py    : claim + CPU oracle (124 cases)
@@ -240,16 +262,14 @@ jobs:
       #   - test_elementwise.py : edge-case structural tests
       #   - test_fallback.py    : permanent CPU fallback and mixed session
       #   - test_claim_diagnostics.py : M0 claim assertion + no-ICD fallback
-      # Barrier parity is wired here automatically — test_barrier_parity.py lives in
-      # tests/ops/ and is collected by the same pytest invocation (DESIGN.md §7.5 item 5).
-      # Skips cleanly if the crate wasn't built yet.
+      # VK_INSTANCE_LAYERS set here (not job level) so the smoke-check above
+      # ran without it and got a clean lavapipe baseline.
       # -------------------------------------------------------
       - name: Op-correctness + barrier-parity tests (pytest, lavapipe)
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
-          if [ "${BUILD_SKIPPED:-}" = "1" ]; then
-            echo "::notice::Build was skipped — op tests not run"
-            exit 0
-          fi
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           python -m pytest tests/ops -q --tb=short -p no:randomly --strict-markers
 
@@ -274,10 +294,13 @@ jobs:
     name: Build + op tests (Windows, lavapipe via mesa-dist-win)
     runs-on: windows-latest
     env:
-      # Set by the lavapipe install step below; declared here for visibility.
-      # VK_ICD_FILENAMES: (set in step)
+      # VK_ICD_FILENAMES set in the lavapipe step (for non-elevated sub-processes).
+      # For the elevated runner itself, ICD is registered via HKLM registry —
+      # loader 1.3+ ignores VK_ICD_FILENAMES/VK_DRIVER_FILES on elevated processes.
+      # Source: docs/PLATFORMS.md §7.4.1 root cause analysis (Link).
       ONNXRUNTIME_EP_VULKAN_VALIDATE: "1"
-      VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+      # VK_INSTANCE_LAYERS moved to the pytest step (same rationale as Linux).
+      VK_LOADER_DEBUG: warn
 
     steps:
       - uses: actions/checkout@v4
@@ -385,6 +408,34 @@ jobs:
           # Validation layers live in the LunarG SDK Bin folder
           echo "VK_LAYER_PATH=$env:VULKAN_SDK\Bin" >> $env:GITHUB_ENV
 
+          # -------------------------------------------------------
+          # Register ICD in Windows registry.
+          # The LunarG loader 1.3+ silently ignores VK_ICD_FILENAMES and
+          # VK_DRIVER_FILES on elevated processes (Administrator / runneradmin
+          # with UAC disabled). Registry-based ICD discovery under
+          # HKLM:\SOFTWARE\Khronos\Vulkan\Drivers works regardless of elevation.
+          # Source: docs/PLATFORMS.md §7.4.1 root cause analysis (Link).
+          # -------------------------------------------------------
+          $icdPath = $icdJson.FullName
+          $driverKey = "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers"
+          New-Item -Path $driverKey -Force | Out-Null
+          New-ItemProperty -Path $driverKey -Name $icdPath -Value 0 -PropertyType DWord -Force | Out-Null
+          Write-Host "Registered Mesa lavapipe ICD in registry: $icdPath"
+
+          # -------------------------------------------------------
+          # Smoke-check: lavapipe must enumerate before we waste build time.
+          # Use vulkaninfoSDK.exe (from LunarG SDK) with VK_LOADER_DEBUG=warn.
+          # Hard failure if 'llvmpipe' is not in the output.
+          # -------------------------------------------------------
+          $env:MESA_LOG_LEVEL = "error"
+          $vulkInfo = & "$env:VULKAN_SDK\Bin\vulkaninfoSDK.exe" --summary 2>&1
+          Write-Host $vulkInfo
+          if ($vulkInfo -notmatch "llvmpipe") {
+            Write-Error "lavapipe (llvmpipe) not found in vulkaninfo output after registry registration. Check HKLM:\SOFTWARE\Khronos\Vulkan\Drivers and mesa3d\x64\ DLL path."
+            exit 1
+          }
+          Write-Host "lavapipe smoke-check: OK (llvmpipe enumerated)"
+
       # -------------------------------------------------------
       # Python test environment
       # -------------------------------------------------------
@@ -397,24 +448,24 @@ jobs:
         run: pip install -r tests/requirements.txt
 
       # -------------------------------------------------------
+      # Probe Vulkan loader — same as Linux lane.
+      # Hard failure if no capable device after registry registration.
+      # -------------------------------------------------------
+      - name: Probe Vulkan loader (epctl --probe-loader)
+        if: env.BUILD_SKIPPED != '1'
+        run: rust\target\release\epctl.exe --probe-loader
+
+      # -------------------------------------------------------
       # Op-correctness + barrier-parity tests (pytest, lavapipe).
-      # test_barrier_parity.py is collected automatically (same dir).
-      # Barrier parity runs the full claimed-op suite twice —
-      # once with the natural backend, once with force_legacy_barriers=1
-      # — asserting bit-identical outputs (DESIGN.md §7.5 item 5).
-      #
-      # NOTE: ORT DLL directory must be on PATH so that the EP DLL
-      # can find its onnxruntime.dll dependency at load time.
-      # Without this, LoadLibraryEx fails with "module not found"
-      # (Windows error 126/127) when register_execution_provider_library
-      # tries to load the EP cdylib.
+      # VK_INSTANCE_LAYERS set here (not job level) — same rationale as Linux.
+      # ORT DLL on PATH so the EP DLL resolves onnxruntime.dll at load time.
       # -------------------------------------------------------
       - name: Run op-correctness + barrier-parity tests (lavapipe)
         if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
-          # Add ORT DLL directory to PATH so EP DLL finds onnxruntime.dll on load.
           $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
           python -m pytest tests\ops -q --tb=short `
             -p no:randomly --strict-markers
