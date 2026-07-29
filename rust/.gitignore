@@ -1,0 +1,6 @@
+# Cargo build output.
+/target
+
+# NOTE: Cargo.lock is deliberately NOT ignored. This crate ships a cdylib artifact (a plugin
+# loaded into someone else's process), so builds must be byte-reproducible across dev machines
+# and CI lanes.

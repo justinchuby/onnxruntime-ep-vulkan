@@ -23,3 +23,133 @@
 📌 Team update (2026-07-28T17:59:54-07:00): M0 definition — stock ORT loads the plugin, enumerates a Vulkan device, runs a graph with a single `Add` node, matches ORT CPU EP within tolerance, on Windows and Linux, on a software rasterizer, in CI. Tank wires the ORT FFI boundary for this milestone. — decided by Morpheus
 
 📌 Team update (2026-07-28T17:59:54-07:00): No existing Vulkan EP for ORT and no Rust crate for ORT plugin-EP bindings. We write raw FFI from scratch. — decided by Fact Checker
+
+---
+
+### M0 foundation — the `rust/` crate landed (2026-07-28T19:16:08-07:00)
+
+**`onnxruntime_ep_c_api.h` has no include guard.** Including it explicitly in a bindgen wrapper
+header alongside `onnxruntime_c_api.h` (which already includes it) produces ~20 clang
+"redefinition of `OrtDataTransferImpl`" errors. `rust/wrapper_ort.h` must include **only**
+`onnxruntime_c_api.h`. Cost an hour; will recur on every ORT re-vendor if forgotten.
+
+**Bindings are bindgen over vendored headers, not hand-written.** The plugin-EP types are `repr(C)`
+vtables — `OrtApi` has several hundred function-pointer fields, and `OrtEp`/`OrtEpFactory` each
+gained fields in 1.23, 1.24 and 1.28. Wrong field *order* compiles, loads, and then calls the wrong
+function pointer: silent UB. Vendoring the headers (`third_party/onnxruntime/`, tag `v1.28.0`,
+commit `da9b5e364c465de65c49d91e696cd6485270757f`, MIT) keeps builds reproducible and offline while
+bindgen guarantees layout fidelity. **Consequence for CI: every runner needs LLVM/libclang**
+(`LIBCLANG_PATH=C:\Program Files\LLVM\bin` on Windows).
+
+**ORT pinned at 1.28.0 / `ORT_API_VERSION` 28; crate version `0.28.0`.** Two compile-time
+assertions in `sys.rs` (header version, and crate minor version) plus a runtime `GetApi(28)` that
+**refuses to load** on null. Never fall back to a lower API version — a lower `n` returns a
+differently-shaped vtable and calling through it is UB.
+
+**ORT 1.28 vtable field order, verified from the headers** (write it down; it is the thing bindgen
+protects us from getting wrong):
+`OrtEp` = ort_version_supported, GetName, GetCapability, Compile, ReleaseNodeComputeInfos,
+GetPreferredDataLayout, ShouldConvertDataLayoutForOp, SetDynamicOptions, OnRunStart, OnRunEnd,
+CreateAllocator, CreateSyncStreamForDevice, GetCompiledModelCompatibilityInfo, GetKernelRegistry,
+IsConcurrentRunSupported, Sync, CreateProfiler, IsGraphCaptureEnabled, IsGraphCaptured, ReplayGraph,
+GetGraphCaptureNodeAssignmentPolicy, GetAvailableResource, OnSessionInitializationEnd,
+GetDefaultMemoryDevice, ReleaseCapturedGraph.
+`OrtEpFactory` = ort_version_supported, GetName, GetVendor, GetSupportedDevices, CreateEp, ReleaseEp,
+GetVendorId, GetVersion, ValidateCompiledModelCompatibilityInfo, CreateAllocator, ReleaseAllocator,
+CreateDataTransfer, IsStreamAware, CreateSyncStreamForDevice,
+GetHardwareDeviceIncompatibilityDetails, CreateExternalResourceImporterForDevice,
+GetNumCustomOpDomains, GetCustomOpDomains, InitGraphicsInterop, DeinitGraphicsInterop,
+SelectBestModelCandidate.
+`OrtNodeComputeInfo` = ort_version_supported, CreateState, Compute, ReleaseState.
+
+**`OrtEp::Compile` takes `*mut *const OrtGraph` / `*mut *const OrtNode`**, not `*const *const`.
+The mutability is on the outer pointer. Cost a compile error; bindgen caught it, which is the whole
+argument for bindgen in one line.
+
+**`Logger_LogMessage` takes `file_path: *const wchar_t`** — `u16` on Windows, `u32` on Unix. We pass
+null (ORT reads that as "no source location") rather than write cfg-gated wide-string conversion.
+
+**`GetSessionConfigEntry` is a two-call protocol.** First call with a null buffer and `size = 0` to
+query the length — it returns a status you must release *even on the success path*. Then call again
+with a buffer of that size. Getting this wrong leaks an `OrtStatus` per option per session.
+
+**`clippy::undocumented_unsafe_blocks` is positional.** The `// SAFETY:` comment must be on the line
+immediately preceding `unsafe {`, not merely above the statement. Two clean-looking blocks failed
+`-D warnings` for this. The generated bindings need the lint allowed at the `mod ort` level.
+
+**Layering rules are enforced by `rust/tests/layering.rs`, not by an attribute.** No `deny` can
+express "this directory may not name this crate" — `ash` is a legitimate dependency. A test cannot
+be forgotten, since `cargo test` already runs it. The comment/string stripper is load-bearing:
+`src/ops/mod.rs` documents the rules by naming every forbidden token. Verified live — a planted
+`src/ops/planted_violation.rs` produced 7 findings across both rules before removal.
+
+**`GetSupportedDevices` with no Vulkan returns success + zero devices, never an error.** An error
+fails session creation, turning "no GPU here" into "your model does not load". Same reflex in
+`GetCapability`: decline every node inside a control-flow subgraph body (non-null
+`Graph_GetParentNode`), or ORT raises `INVALID_GRAPH` "no opset import for domain" — our bug
+presenting as the user's model bug.
+
+**`CreateExternalResourceImporterForDevice` does not answer OQ-3.** It is caller-driven (the app
+exports a `VkDeviceMemory`, we import it); OQ-3 is EP-driven (what `void*` do *we* hand ORT for
+memory *we* allocated?). Different directions, no overlap. The opaque-handle registry stands. The
+importer slot is left `None`, which ORT reads as "cannot import external memory".
+
+**Status:** `cargo build`, `cargo clippy --all-targets -- -D warnings` and `cargo test` all clean on
+Windows. 37 tests pass. `onnxruntime_vulkan_ep.dll` exports exactly `CreateEpFactories` and
+`ReleaseEpFactory`.
+
+### Correction + version policy (2026-07-28T19:48:05-07:00)
+
+**Supersedes the "never fall back to a lower API version" line above.** That was right about the
+danger and wrong about the remedy. `OrtApi`, `OrtEp` and `OrtEpFactory` are **append-only**, so
+version *v*'s layout is a prefix of 28's — running on an older host is safe *if and only if* we
+never touch a field added after *v*. That is an obligation, not a property, and it needs two
+mechanisms to be real:
+
+1. Write the **negotiated** version (not the compiled-against one) into every
+   `ort_version_supported` field we hand ORT — `OrtEpFactory`, `OrtEp`, `OrtNodeComputeInfo`,
+   `OrtNodeFusionOptions`. That is how ORT knows where to stop reading our vtables.
+2. Gate every optional entry point on `NegotiatedApi::supports(since::*)`, one named constant per
+   feature. A gate that only ever returns true is theatre, so there is a test asserting it returns
+   **false** at version 23.
+
+With both in place, negotiating down is a supported configuration rather than the silent-UB trap.
+Policy now: **compile and ship against 1.28, minimum supported host 1.24, refuse below that.**
+Excluding 1.27 is deliberate — it has a null-allocator bug in plugin-EP `PrePack` plus a deleter
+lifetime bug. 1.24 as the floor because that is where the surface settled, and ORT's own
+`ep_factory_provider_bridge.h` uses `ort_version_supported < 24` as its compatibility line.
+
+**Two of Justin's premises were wrong; the Fact Checker caught both.**
+`CreateExternalResourceImporterForDeviceImpl` does **not** exist as public API — it is only a local
+static in ORT example/test code. The real symbols are
+`OrtEpFactory::CreateExternalResourceImporterForDevice` (EP side, ours, returns an
+`OrtExternalResourceImporterImpl*`) and `OrtInteropApi::CreateExternalResourceImporterForDevice`
+(caller side, `core/session/interop_api.h`). And it shipped in **1.24**, not 1.28. Lesson for the
+team: version claims about this API are worth verifying against the `\since` annotations and the
+bridge guards before designing around them.
+
+**What the importer actually does** (write it down; it gets misremembered): the *caller* allocates
+`VkDeviceMemory` with `VkExportMemoryAllocateInfo` — exportability must be chosen at allocation
+time, memory not allocated as exportable can never be imported — exports it via
+`vkGetMemoryWin32HandleKHR` / `vkGetMemoryFdKHR`, and passes the OS handle to `ImportMemory`. The
+EP re-imports into its own `VkDeviceMemory` and wraps it as a zero-copy tensor. Timeline-semaphore
+import for GPU↔GPU sync uses the same interface. ORT already defines the Vulkan enum values:
+`ORT_EXTERNAL_MEMORY_HANDLE_TYPE_VK_MEMORY_WIN32` / `..._OPAQUE_FD` and two
+`ORT_EXTERNAL_SEMAPHORE_VK_TIMELINE_SEMAPHORE_*`. **Working in-tree reference:
+`onnxruntime/test/providers/nv_tensorrt_rtx/nv_vulkan_test.cc`** — the NV TensorRT RTX EP doing
+exactly our case, Vulkan on both sides. Match its contract; do not invent one.
+
+**"Bound but not implemented" needs teeth.** Claiming a seam is correctly shaped is worthless if
+nothing checks it. `sys::importer_seam` names `OrtExternalResourceImporterImpl`, the two handle
+base structs, `OrtInteropApi` and the four Vulkan enum values explicitly, so an upstream rename is
+a build failure at the moment of the ORT bump rather than a discovery months later when someone
+tries to implement it. Generalise this: for any deferred seam, name the types in code.
+
+**OQ-3 is still open and the importer does not close it.** Caller-driven, caller's memory (the
+importer) vs EP-driven, our memory (OQ-3: what does our `Alloc()` return to a pointer-based API
+when a Vulkan allocation is `VkBuffer` + offset). Recorded as "evaluated and rejected as
+orthogonal" in the decision inbox so nobody re-litigates it. Opaque-handle registry vs
+`VK_KHR_buffer_device_address` is mine to propose, Morpheus's to decide.
+
+**Status after the corrections:** `cargo build`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test` all clean. 45 tests (36 unit + 9 layering).

@@ -1,0 +1,56 @@
+[package]
+name = "onnxruntime-ep-vulkan"
+version = "0.28.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Cross-platform Vulkan compute execution provider (plugin EP) for ONNX Runtime."
+license = "MIT"
+repository = "https://github.com/justinchuby/onnxruntime-ep-vulkan"
+readme = "README.md"
+keywords = ["onnx", "onnxruntime", "vulkan", "gpu", "compute"]
+categories = ["science", "api-bindings", "hardware-support"]
+
+[lib]
+# Pin the lib (and therefore cdylib) base name so the artifact is always
+# `onnxruntime_vulkan_ep.dll` / `libonnxruntime_vulkan_ep.so` / `.dylib` regardless of the crate
+# name -- the Python package, the pytest suite, CI and any downstream host load the plugin by that
+# exact filename (DESIGN.md 3.1).
+#
+# `rlib` is present alongside `cdylib` on purpose: without it, `cargo test` cannot link the crate
+# into an integration-test binary, and the layering lint plus the sys-binding assertions are
+# integration tests. It costs a second codegen pass and nothing at runtime.
+name = "onnxruntime_vulkan_ep"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Logging facade only. The in-crate `logging` module installs the (tiny) subscriber. A cdylib has
+# its own statically linked copy of `log`, so installing a logger here can never conflict with
+# whatever the host process uses.
+log = { version = "0.4", features = ["std"] }
+
+# --- Vulkan stack (decisions.md: "Rust Vulkan crate: ash + gpu-allocator") ------------------
+#
+# Declared now so the dependency decision is recorded in the manifest and the lockfile from M0.
+# `engine.rs` currently only names them (`use ash as _;`) -- Switch wires the real engine in.
+#
+# `ash` is loaded dynamically at runtime via `ash::Entry::load()`; there is NO build-time or
+# link-time dependency on the Vulkan SDK or on `vulkan-1.lib`. A machine with no Vulkan loader
+# gets an `Err` from `Entry::load()`, which the EP turns into "zero devices advertised", not a
+# link error and not a crash (DESIGN.md 2.3).
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+
+[build-dependencies]
+# Generates the ORT plugin-EP C ABI bindings from the vendored headers in
+# `third_party/onnxruntime/include`. See `rust/README.md` for the bindgen-vs-handwritten rationale.
+bindgen = "0.72"
+
+[profile.release]
+# Unwind (NOT abort) so a Rust panic can be caught at every C-ABI boundary and converted into an
+# `OrtStatus` (see `guard_ffi_status` in lib.rs). A plugin loaded into someone else's process must
+# degrade to an error status, never take the host down, and must never unwind into ORT's C++
+# (which is undefined behaviour). `panic = "abort"` would make the guards unable to do their job.
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"
