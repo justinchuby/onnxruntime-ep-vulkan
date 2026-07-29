@@ -80,3 +80,77 @@ Primary source: `include/onnxruntime/core/session/onnxruntime_ep_c_api.h` (micro
 - WebGPU EP (preview) uses Vulkan internally on Linux/Android, but is NOT a selectable "Vulkan EP"
 - No mature community/third-party Vulkan EP plugin library found
 - Rust bindings: `ort` crate wraps built-in EPs only; `onnxruntime-sys` has raw FFI but no plugin-EP glue. Plugin EP would require manual FFI via `libloading` + raw C ABI. No crate for `OrtEpFactory` as of mid-2026.
+
+---
+
+## Audit Entry — ORT 1.28 API Verification (CreateExternalResourceImporter)
+**Date:** 2026-07-28T18:51:35-07:00
+**Requested by:** Justin Chu / Coordinator (second pass)
+**Scope:** ORT 1.28 release existence + `CreateExternalResourceImporterForDeviceImpl` symbol + implications for OQ-3
+
+### Claim 1 — ORT 1.28 exists and is a stable release
+**Verdict:** ✅ Verified
+
+ORT v1.28.0 released **2026-07-24** as a stable release. Confirmed from GitHub releases page and PyPI. Not a pre-release. Major breaking changes: ONNX 1.22.0 and protobuf 6.33.5 upgrade.
+
+### Claim 2 — `CreateExternalResourceImporterForDeviceImpl` exists as a public API
+**Verdict:** ❌ Contradicted (name is wrong; API exists under a different, corrected name)
+
+The exact symbol `CreateExternalResourceImporterForDeviceImpl` does NOT exist as a public API. It appears only as a local implementation function name in test/example code (`onnxruntime/test/autoep/library/example_plugin_ep/ep_factory.h`).
+
+Real public names — two sides of the same feature:
+
+EP side (OrtEpFactory, since ORT 1.24):
+  `ORT_API2_STATUS(CreateExternalResourceImporterForDevice, _In_ OrtEpFactory* this_ptr, _In_ const OrtEpDevice* ep_device, _Outptr_result_maybenull_ OrtExternalResourceImporterImpl** out_importer);`
+
+Caller side (OrtInteropApi, since ORT 1.24):
+  `ORT_API_STATUS_IMPL(CreateExternalResourceImporterForDevice, _In_ const OrtEpDevice* ep_device, _Outptr_result_maybenull_ OrtExternalResourceImporter** out_importer);`
+
+Sources: include/onnxruntime/core/session/onnxruntime_ep_c_api.h (SHA 6835283, `\since Version 1.24.`); onnxruntime/core/session/interop_api.h (SHA 92c8873); ep_factory_internal.cc (SHA fb8a90f, code comment "added in ORT 1.24").
+
+**Added in ORT 1.24, NOT 1.28.**
+
+### Claim 3 — What does it do?
+**Verdict:** ✅ Verified (fully characterized)
+
+(a) API surface: Part of plugin EP C API. OrtEpFactory implements it; callers use OrtInteropApi. Full pipeline (all since 1.24):
+  CreateExternalResourceImporterForDevice → CanImportMemory → ImportMemory → CreateTensorFromMemory
+  CanImportSemaphore → ImportSemaphore → WaitSemaphore / SignalSemaphore
+  ReleaseExternalMemoryHandle / ReleaseExternalSemaphoreHandle / ReleaseExternalResourceImporter
+
+(b) Imports externally-allocated device resources without host round-trip:
+Vulkan memory handle types confirmed in nv_vulkan_test.cc (SHA 918e137):
+  ORT_EXTERNAL_MEMORY_HANDLE_TYPE_VK_MEMORY_WIN32 (Windows, HANDLE from vkGetMemoryWin32HandleKHR)
+  ORT_EXTERNAL_MEMORY_HANDLE_TYPE_VK_MEMORY_OPAQUE_FD (Linux, fd from vkGetMemoryFdKHR)
+  ORT_EXTERNAL_MEMORY_HANDLE_TYPE_DMABUF_FD (Linux DMA-BUF)
+  ORT_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE / _D3D12_HEAP (from NV TRT-RTX EP)
+No host copy occurs.
+
+(c) Ownership: Caller allocates VkDeviceMemory with VkExportMemoryAllocateInfo, exports via OS handle, hands it to ImportMemory. EP creates derived OrtExternalMemoryHandle. Caller calls ReleaseExternalMemoryHandle when done. CreateTensorFromMemory creates a view — does not take ownership of the memory handle.
+
+(d) In-tree users: NV TensorRT RTX EP (nv_provider_factory.cc SHA 23a5378) is the primary user — supports D3D12 + Vulkan memory import on Windows/Linux. Example plugin EP has a minimal D3D12-only demo.
+
+### Claim 4 — Relevance to OQ-3 and zero-copy IO binding
+**Verdict:** Nuanced
+
+OQ-3 (allocator pointer problem): NOT resolved. OrtExternalResourceImporter is caller-driven, not EP-allocator-driven. Our provisional answer (opaque-handle registry or BDA) remains correct for ORT-managed tensor allocation.
+
+Zero-copy IO binding (caller-owned Vulkan buffers): FULLY ADDRESSED. Callers who allocated VkDeviceMemory with export flags can: export → ImportMemory → CreateTensorFromMemory → bind as graph I/O with no host copy. This is tested by the NV Vulkan test. Critical constraint: VkDeviceMemory MUST have been allocated with VkExportMemoryAllocateInfo (export flags set at allocation time). Cannot retrofit existing non-exported allocations.
+
+Our EP must implement OrtEpFactory::CreateExternalResourceImporterForDevice to enable this path. The importer then does: OS handle → vkImportMemoryWin32HandleKHR / vkImportMemoryFdKHR → VkDeviceMemory → our internal buffer wrapper.
+
+### Claim 5 — ORT 1.28 changes affecting plugin EPs
+**Verdict:** ✅ Verified
+
+Critical bug fix: "Fixed a null allocator passed to plugin EP kernel PrePack, and plugin EP allocator deleter lifetime" — would have hit us in 1.27.
+New features: Model Package Phase 2 (schema versioning), crypto/IO callbacks for EPs, name-based partitioning, Linux NPU sysfs discovery.
+OrtModelPackageApi moved to experimental C API — experimental surface growing.
+Plugin EP API status: STILL experimental as of 1.28. No graduation from experimental noted in release notes.
+OrtEpFactory vtable: no breaking signature changes noted in 1.28.
+
+### Claim 6 — ORT version to pin
+**Verdict:** Advisory
+
+Minimum for CreateExternalResourceImporter: ORT 1.24.
+Minimum to avoid known plugin EP allocator bugs: ORT 1.28.
+Recommendation: compile and ship against ORT 1.28; declare minimum ORT 1.24+ in documentation; use ort_version_supported field for capability gating; isolate FFI behind abstraction layer to contain future vtable additions.
