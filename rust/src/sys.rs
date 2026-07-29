@@ -423,6 +423,106 @@ mod importer_seam {
 }
 
 // -------------------------------------------------------------------------------------------
+// C2: schema baselines for contrib ops.
+// -------------------------------------------------------------------------------------------
+
+/// A released ONNX Runtime version, as a human-readable release string plus its ABI number.
+///
+/// The two numbers answer different questions and are not interchangeable. The ABI number (28) is
+/// what the C API negotiates and is all the linker cares about; the release string ("1.28.0") is
+/// what a bug report, a header re-vendor and a contrib-op schema are all pinned to. `OrtRelease`
+/// carries both so a diagnostic never has to reconstruct one from the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrtRelease {
+    /// e.g. `"1.28.0"`.
+    pub release: &'static str,
+    /// e.g. `28` — the value of `ORT_API_VERSION` in that release's headers.
+    pub api_version: u32,
+}
+
+impl std::fmt::Display for OrtRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ort-{} (api {})", self.release, self.api_version)
+    }
+}
+
+/// The ORT release whose headers are vendored in `third_party/onnxruntime/include`.
+pub const ORT_PINNED: OrtRelease = OrtRelease {
+    release: "1.28.0",
+    api_version: ORT_API_VERSION_EXPECTED,
+};
+
+/// The oldest ORT release this EP will load against.
+pub const ORT_FLOOR: OrtRelease = OrtRelease {
+    release: "1.24.0",
+    api_version: ORT_API_VERSION_MIN,
+};
+
+/// The ORT release a contrib op's claim predicate was written and verified against (`DESIGN.md`
+/// §1.4, constraint C2).
+///
+/// Contrib operators — the `com.microsoft` domain — have no opset. Their schemas live in the ORT
+/// source tree and can change between releases with nothing in the model to signal it. A predicate
+/// that was correct against 1.28 may silently mis-claim against 1.31. C2's answer is that every
+/// contrib registry row states, on the record, which release it was written against, and that this
+/// is surfaced to users via `--dump-capabilities` rather than buried in a comment.
+///
+/// `ai.onnx` rows do not need this and should leave it `None`: their compatibility story is the
+/// opset range, which the registry already carries. The asymmetry is deliberate — a baseline on a
+/// standard op would be noise that dilutes the signal on the rows where it matters.
+///
+/// The intended registry shape (Mouse owns `registry.rs`; this is the one-line addition to
+/// `OpSpec`):
+///
+/// ```ignore
+/// pub struct OpSpec {
+///     // ...
+///     /// `Some` for every `Domain::Ms` row, `None` for `Domain::Ai`. See `sys::SchemaBaseline`.
+///     pub schema_baseline: Option<SchemaBaseline>,
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaBaseline {
+    /// The release the predicate was written against.
+    pub verified_against: OrtRelease,
+    /// ISO-8601 date of that verification, e.g. `"2026-07-28"`. A baseline without a date cannot
+    /// be audited, because "1.28.0" alone does not say whether anyone actually looked.
+    pub verified_on: &'static str,
+}
+
+impl SchemaBaseline {
+    /// A baseline verified against the currently pinned release.
+    #[must_use]
+    pub const fn pinned(verified_on: &'static str) -> Self {
+        Self {
+            verified_against: ORT_PINNED,
+            verified_on,
+        }
+    }
+
+    /// Is this baseline older than the release we compile against?
+    ///
+    /// True means the predicate has not been re-checked since an ORT bump, which is exactly the
+    /// condition C2 exists to make visible. It is a warning, not an error: a stale baseline is a
+    /// review prompt, and failing the build on it would only encourage rubber-stamp bumps.
+    #[must_use]
+    pub const fn is_stale(&self) -> bool {
+        self.verified_against.api_version < ORT_PINNED.api_version
+    }
+
+    /// The `--dump-capabilities` rendering, e.g.
+    /// `ort-1.28.0 (api 28), verified 2026-07-28`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let stale = if self.is_stale() { " [STALE]" } else { "" };
+        format!(
+            "{}, verified {}{stale}",
+            self.verified_against, self.verified_on
+        )
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -516,5 +616,51 @@ mod tests {
     fn releasing_a_status_with_null_arguments_is_a_noop() {
         // SAFETY: both null arguments are explicitly supported and short-circuit.
         unsafe { release_status(std::ptr::null(), std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn pinned_and_floor_releases_agree_with_the_abi_constants() {
+        assert_eq!(ORT_PINNED.api_version, ORT_API_VERSION_EXPECTED);
+        assert_eq!(ORT_FLOOR.api_version, ORT_API_VERSION_MIN);
+        assert!(ORT_PINNED.release.starts_with("1.28."));
+        assert!(ORT_FLOOR.release.starts_with("1.24."));
+    }
+
+    #[test]
+    fn schema_baseline_renders_for_dump_capabilities() {
+        let fresh = SchemaBaseline::pinned("2026-07-28");
+        assert!(!fresh.is_stale());
+        assert_eq!(fresh.describe(), "ort-1.28.0 (api 28), verified 2026-07-28");
+    }
+
+    #[test]
+    fn a_baseline_from_an_older_release_reads_as_stale() {
+        // C2's whole point: an ORT bump must make un-rechecked contrib predicates visible.
+        let old = SchemaBaseline {
+            verified_against: ORT_FLOOR,
+            verified_on: "2025-01-01",
+        };
+        assert!(old.is_stale());
+        assert!(old.describe().ends_with("[STALE]"), "{}", old.describe());
+    }
+
+    #[test]
+    fn contrib_baseline_data_lives_in_the_registry_not_here() {
+        // `sys` owns the *type* and the pinned/floor releases; `registry.rs` owns which release
+        // each contrib row was verified against, because that value belongs beside the schema
+        // fingerprint it describes (a shape without a provenance is unauditable). The join is
+        // enforced by `tests/layering.rs`. This test exists so the split is stated somewhere a
+        // future reader will look.
+        let b = SchemaBaseline::pinned("2026-07-28");
+        assert_eq!(b.verified_against, ORT_PINNED);
+    }
+
+    #[test]
+    fn every_recorded_baseline_is_no_newer_than_the_pinned_release() {
+        // After an ORT bump baselines go stale, `epctl` marks them `[STALE]`, and that stays a
+        // review prompt rather than a build break. What is never acceptable is a baseline
+        // claiming a *newer* release than the one we compile against.
+        let b = SchemaBaseline::pinned("2026-07-28");
+        assert!(b.verified_against.api_version <= ORT_PINNED.api_version);
     }
 }

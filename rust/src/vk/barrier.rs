@@ -208,6 +208,28 @@ pub(crate) struct LegacyBackend {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Backend probe — Trinity CI harness support
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Write the selected backend token (`"sync2"` or `"legacy"`) to the path named by
+/// `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`, if that environment variable is set.
+///
+/// Trinity's parity harness sets this variable before spawning an inference session. The
+/// harness reads the file after session creation to assert which backend was selected — this is
+/// what makes the `backend_legacy == "legacy"` assertion real rather than a false-green that
+/// silently ran sync2 twice.
+///
+/// Uses plain `std::fs::write`. No ORT API, no logging-format dependency, no other side
+/// effects. Errors are silently swallowed (`let _ = ...`) because a broken probe path must
+/// not fail session creation.
+fn write_backend_probe(is_sync2: bool) {
+    if let Ok(path) = std::env::var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") {
+        let token = if is_sync2 { "sync2" } else { "legacy" };
+        let _ = std::fs::write(&path, token);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Barriers — the public API
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -222,6 +244,15 @@ pub(crate) enum Barriers {
     Legacy(Box<LegacyBackend>),
 }
 
+/// Returns `true` when the sync2 backend should be selected given capabilities and the
+/// force-legacy override.
+///
+/// Extracted from [`Barriers::select`] so the pure decision logic is unit-testable without
+/// requiring live Vulkan handles.
+pub(crate) fn should_use_sync2(caps: &Capabilities, force_legacy: bool) -> bool {
+    !force_legacy && caps.synchronization2
+}
+
 impl Barriers {
     /// Select and construct the barrier backend.
     ///
@@ -231,6 +262,10 @@ impl Barriers {
     /// `force_legacy` overrides the selection to `Legacy` even when sync2 is available. Set
     /// from `ep.force_legacy_barriers` so CI exercises both paths on the same hardware
     /// (DESIGN.md §7.5 item 5).
+    ///
+    /// When `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` is set to a file path, writes `"sync2"` or
+    /// `"legacy"` to that file so the test harness can assert which backend ran. Plain
+    /// `std::fs::write`; no ORT API involvement.
     ///
     /// # Safety
     /// `instance` and `device` must be live and related. When `caps.synchronization2 == true`,
@@ -242,7 +277,9 @@ impl Barriers {
         device: &ash::Device,
         force_legacy: bool,
     ) -> Self {
-        if !force_legacy && caps.synchronization2 {
+        let use_sync2 = should_use_sync2(caps, force_legacy);
+        write_backend_probe(use_sync2);
+        if use_sync2 {
             // `Device::new` is safe in ash 0.38; the unsafe contract lives at device-creation time.
             let fns = ash::khr::synchronization2::Device::new(instance, device);
             Barriers::Sync2(Box::new(Sync2Backend { fns }))
@@ -651,5 +688,143 @@ mod tests {
         // dst should cover TRANSFER (TransferRead) and HOST (HostRead).
         assert!(dst_stages.contains(vk::PipelineStageFlags::TRANSFER));
         assert!(dst_stages.contains(vk::PipelineStageFlags::HOST));
+    }
+
+    // ── Stage → exact flag values ─────────────────────────────────────────────
+
+    #[test]
+    fn stage_to_legacy_exact_values() {
+        // Assert exact mapping table values so a typo or wrong-flag mistake fails a unit test
+        // rather than silently producing a too-permissive barrier at runtime.
+        assert_eq!(stage_to_legacy(Stage::ComputeShader), vk::PipelineStageFlags::COMPUTE_SHADER);
+        assert_eq!(stage_to_legacy(Stage::Transfer), vk::PipelineStageFlags::TRANSFER);
+        assert_eq!(stage_to_legacy(Stage::Host), vk::PipelineStageFlags::HOST);
+        assert_eq!(stage_to_legacy(Stage::AllCommands), vk::PipelineStageFlags::ALL_COMMANDS);
+    }
+
+    #[test]
+    fn stage_to_sync2_exact_values() {
+        assert_eq!(stage_to_sync2(Stage::ComputeShader), vk::PipelineStageFlags2::COMPUTE_SHADER);
+        // Transfer maps to ALL_TRANSFER in sync2, not TRANSFER — this covers both copy and blit.
+        assert_eq!(stage_to_sync2(Stage::Transfer), vk::PipelineStageFlags2::ALL_TRANSFER);
+        assert_eq!(stage_to_sync2(Stage::Host), vk::PipelineStageFlags2::HOST);
+        assert_eq!(stage_to_sync2(Stage::AllCommands), vk::PipelineStageFlags2::ALL_COMMANDS);
+    }
+
+    // ── Backend probe ─────────────────────────────────────────────────────────
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    /// Unique counter so parallel tests do not share a probe file path.
+    static PROBE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn probe_path(n: u32) -> std::path::PathBuf {
+        // target/ is always present when tests run and is .gitignored.
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("barrier_probe_test_{n}.txt"))
+    }
+
+    #[test]
+    fn backend_probe_writes_legacy_token() {
+        let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let p = probe_path(n);
+        let path_str = p.to_str().expect("ASCII path");
+
+        // SAFETY: env-var mutation is safe provided no other thread reads the same var
+        // concurrently. This var is unique to our test harness; cargo test runs unit tests
+        // in the same process but on separate threads. To be safe we use a unique path per
+        // invocation (PROBE_COUNTER) and read the env var immediately after writing it.
+        unsafe {
+            std::env::set_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", path_str);
+        }
+        write_backend_probe(false /* legacy */);
+        // SAFETY: removing the var we just set.
+        unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
+
+        let content = std::fs::read_to_string(&p).expect("probe file written");
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(content, "legacy");
+    }
+
+    #[test]
+    fn backend_probe_writes_sync2_token() {
+        let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let p = probe_path(n);
+        let path_str = p.to_str().expect("ASCII path");
+
+        // SAFETY: see backend_probe_writes_legacy_token.
+        unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", path_str) };
+        write_backend_probe(true /* sync2 */);
+        // SAFETY: removing the var we just set.
+        unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
+
+        let content = std::fs::read_to_string(&p).expect("probe file written");
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(content, "sync2");
+    }
+
+    #[test]
+    fn backend_probe_noop_when_env_unset() {
+        let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let p = probe_path(n);
+        // Env var is NOT set.
+        // SAFETY: removing a var.
+        unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
+        write_backend_probe(false);
+        assert!(!p.exists(), "probe must not create a file when env var is absent");
+    }
+
+    // ── force_legacy overrides synchronization2 capability ───────────────────
+
+    #[test]
+    fn force_legacy_overrides_sync2_capability() {
+        // The pure selection logic: force_legacy=true must produce "not sync2" regardless of caps.
+        let caps = crate::vk::caps::Capabilities {
+            synchronization2: true, // device reports sync2 — must be overridden
+            subgroup_size: 32,
+            subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
+            subgroup_size_range: Some(crate::vk::caps::SubgroupSizeRange { min: 32, max: 32 }),
+            can_require_subgroup_size: false,
+            shader_float16: false,
+            is_uma: false,
+        };
+        assert!(
+            !should_use_sync2(&caps, true /* force_legacy */),
+            "force_legacy must override synchronization2 capability"
+        );
+    }
+
+    #[test]
+    fn no_force_legacy_and_no_sync2_selects_legacy() {
+        let caps = crate::vk::caps::Capabilities {
+            synchronization2: false,
+            subgroup_size: 64,
+            subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
+            subgroup_size_range: None,
+            can_require_subgroup_size: false,
+            shader_float16: false,
+            is_uma: false,
+        };
+        assert!(
+            !should_use_sync2(&caps, false),
+            "absent sync2 capability must produce Legacy backend"
+        );
+    }
+
+    #[test]
+    fn sync2_capable_without_force_selects_sync2() {
+        let caps = crate::vk::caps::Capabilities {
+            synchronization2: true,
+            subgroup_size: 32,
+            subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
+            subgroup_size_range: None,
+            can_require_subgroup_size: false,
+            shader_float16: false,
+            is_uma: false,
+        };
+        assert!(
+            should_use_sync2(&caps, false),
+            "sync2 capable device without force_legacy must select sync2"
+        );
     }
 }

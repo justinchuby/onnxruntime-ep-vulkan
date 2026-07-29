@@ -170,6 +170,48 @@ This does **not** answer OQ-3 (what our `Alloc()` returns to ORT's pointer-based
 a Vulkan allocation is a `VkBuffer` + offset). Different direction, different memory, different
 owner. That one is still open.
 
+#### Integration contract for callers
+
+Zero-copy import is **not a transparent optimization**. It imposes a precondition on the caller,
+and a caller who did not plan for it cannot opt in after the fact:
+
+* The buffer must be created with `VkExternalMemoryBufferCreateInfo` in its `pNext`, **and** its
+  memory allocated with `VkExportMemoryAllocateInfo` in `pNext`. Both. Memory that was not
+  allocated as exportable cannot be imported — there is no retrofit.
+* Handle types are `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT` on Windows and
+  `..._OPAQUE_FD_BIT` on Linux. **DMA-BUF is not supported**: ORT defines no
+  `ORT_EXTERNAL_MEMORY_HANDLE_TYPE_DMABUF_FD`, and its own reference test asserts as much.
+* Call `CanImportMemory` (and `CanImportSemaphore`) before committing. A device whose driver lacks
+  `VK_KHR_external_memory_win32` / `_fd` answers `false`, and that is the caller's cue to fall
+  back — not a bug.
+* **OS handle ownership is asymmetric.** On Linux, importing takes ownership of the fd; the caller
+  must not close it. On Windows the `HANDLE` is *not* transferred; the caller retains it and must
+  `CloseHandle` after import.
+* **Teardown order is fixed**: release every ORT handle (`ReleaseExternalMemoryHandle`,
+  `ReleaseExternalSemaphoreHandle`), then the importer, then `DeinitGraphicsInteropForEpDevice`,
+  then `vkDeviceWaitIdle`, and only then destroy Vulkan objects (buffer views → buffers → memory
+  → semaphores → queue → device → instance).
+
+---
+
+## Inspecting a build: `epctl`
+
+```console
+$ cargo run --bin epctl -- --dump-capabilities
+$ cargo run --bin epctl -- --dump-capabilities --json   # for CI diffing
+```
+
+Prints every registered op with its opset window, dtypes, live/staged status, backing shader
+template, and — for contrib (`com.microsoft`) rows — the ORT release its claim predicate was
+written and verified against (`DESIGN.md` §1.4 constraint **C2**), followed by a grouped list of
+the reasons rows are staged.
+
+It creates no Vulkan instance, loads no ORT, and touches no device: the output is a property of
+the *binary*, so it can be captured in CI, diffed across commits, and attached to a bug report
+from a machine that cannot run the EP at all. Default-domain rows report `n/a (opset-versioned)`
+in the baseline column on purpose — their compatibility contract is the opset window, and a
+baseline there would dilute the signal on the rows that need one.
+
 ---
 
 ## Loading the plugin
@@ -241,6 +283,23 @@ mirror-image check keeps `ash`/`vk::` out of the ORT boundary modules.
 The lint is itself tested: several cases run the scanner over deliberately planted violations and
 assert it catches each one, so a refactor that neuters the detector fails too. It was also verified
 against a real planted file under `src/ops/`, which produced seven findings before being removed.
+
+### Contrib domain (constraint C1)
+
+`DESIGN.md` §1.4 **C1** forbids any domain-wide contrib opt-in: the registry key *is* the
+allowlist. The same lint enforces it by banning the contrib domain as a **value** in non-test
+code — both `"com.microsoft"` as a bare string and `Domain::Ms` as a variant — with exactly one
+exemption, the `Domain::Ms => "com.microsoft"` arm of `Domain::as_str` that defines the spelling.
+
+Banning the value rather than enumerating comparison forms is what makes it airtight: `==`, `!=`,
+`matches!`, `if let` and `starts_with` all become unwritable at once, and there is no third
+spelling to forget. Fully-qualified names such as `"com.microsoft::MatMulNBits"` remain
+permitted — they name one op, which is precisely what C1 asks for instead of a domain predicate.
+
+Test modules are out of scope on purpose: C1's own regression test has to fabricate a contrib
+node, and a lint that forbade that would forbid the proof. The runtime half — fabricate
+`com.microsoft::NotARealOp`, assert an ordinary `not-registered` decline plus a correct CPU
+fallback run — is an M-tier regression test in Trinity's harness.
 
 **Why a test rather than a `deny` attribute or an xtask.** A lint attribute cannot express "this
 identifier must not appear in this directory"; `ash` is a legitimate dependency of the crate, and

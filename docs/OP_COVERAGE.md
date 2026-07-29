@@ -1,7 +1,8 @@
 # onnxruntime-ep-vulkan — Op Coverage Plan
 
 **Owner:** Mouse (Op Coverage Engineer)
-**Status:** Proposed — 2026-07-28T18:51:35-07:00
+**Status:** Ratified in part — 2026-07-28T21:01:56-07:00 (contrib domain and the XL kernels are
+funded by direct user ruling; the remaining supersession rows await Morpheus)
 **Supersedes:** `docs/DESIGN.md` §8.2 (the v0 op set) and the op-related rows of §1.2 (v1
 non-goals). Morpheus ratifies; see §12 for the exact supersession list.
 **Reads against:** `docs/DESIGN.md` (architecture of record), `docs/ENGINE.md` (engine contract),
@@ -32,6 +33,13 @@ non-goals). Morpheus ratifies; see §12 for the exact supersession list.
   genuinely days-to-weeks. `GroupQueryAttention` + `MatMulNBits` + `LinearAttention` — the three ops
   that actually decide whether a Qwen3.5 runs — are **not**; each is an XL hand-written Vulkan
   kernel with a nontrivial numerical-correctness surface. See §11.
+- **User ruling 2026-07-28: the contrib domain is admitted and the XL kernels are committed
+  deliverables** (`contrib op 要做`, `matmulnbits那些 都要做`). They move from the risk register into
+  §6.0 with per-kernel exit criteria and owners. This does not make them cheap — an int4-quantized
+  LLM is now a *functional requirement*, so weight prepacking (§8.2.1) is on the critical path and
+  "Qwen3.5 end-to-end" remains a months-scale item. **Report the schedule as two numbers: tier-1
+  breadth (weeks) and end-to-end LLM (months). Averaging them is how a coverage project deceives
+  itself.**
 
 ---
 
@@ -611,9 +619,33 @@ capability** — that would violate the layering rule in `decisions.md`.
 Cost control: the product is large. Gate it — f16 variants are only generated for ops on the
 `f16_relevant` list (everything on the LLM path), not for `Atanh`.
 
+**Status 2026-07-28: the table half has landed; the `build.rs` half is a request to Switch.**
+`rust/src/ops/common/variants.rs` now owns the naming rule and generates every stem at compile
+time with `concat!`, because `engine::KernelRequest::shader` is a `&'static str` and a stem may
+never be formatted at runtime. The gating above is automatic and needs no `f16_relevant` list: a
+row's `caps` column *is* the variant set, so `Atanh` declaring `FLOAT` and `BitwiseAnd` declaring
+`INT` produce exactly the variants each op can actually use, and nothing else. 69 tier-1 rows
+currently imply **168 SPIR-V modules**.
+
+`variants::manifest()` walks the registry and emits one line per module, checked in at
+`rust/src/ops/shader_variants.txt`:
+
+```
+ew_binary_add_f16   ew_binary.comp   EW_OP=OP_ADD,SCALAR_T=float16_t,DTYPE_F16
+ew_binary_add_f32   ew_binary.comp   EW_OP=OP_ADD,SCALAR_T=float,DTYPE_F32
+ew_unary_sqrt_f32   ew_unary.comp    EW_OP=OP_SQRT,SCALAR_T=float,DTYPE_F32
+```
+
+Tab-separated and deliberately boring, so `build.rs` can parse it without depending on the crate.
+A unit test regenerates it (`MOUSE_BLESS_VARIANTS=1`) and fails when it drifts, so the build's view
+of what shaders exist and the registry's view of what it will dispatch cannot silently diverge.
+**The ask to Switch:** have `build.rs` read this file and, for each line, compile
+`shaders/glsl/<source>` with the listed `-D` defines to `<stem>.spv`. That is the only change the
+shader pipeline needs to go from one-module-per-`.comp` to full variant expansion.
+
 ### 5.6 The compose-before-bespoke rule
 
-**Rule: an op is implemented by composing existing templates unless it is on the fusion whitelist.
+**Rule: an op is implemented by composing existing templates unless it is on the fusion allowlist.
 Adding a bespoke kernel requires a benchmark showing the composed form is the bottleneck.**
 
 Composition means the op handler emits *multiple dispatches* into the same command buffer. That is
@@ -632,7 +664,7 @@ buffer per subgraph, so N dispatches cost N barriers, not N submissions.
 | `DynamicQuantizeLinear` | min/max reduce → scale compute → quantize | compose |
 | `GroupQueryAttention` | ~15 primitive dispatches | **Bespoke, no question.** A composed attention materializes the `[B,H,S,S]` score matrix in VRAM; at S=4096 that is gigabytes. Flash-style tiling is the *point* of the op. |
 
-The whitelist is short on purpose: **Softmax, LayerNorm/RMSNorm(+skip), attention, quantized
+The allowlist is short on purpose: **Softmax, LayerNorm/RMSNorm(+skip), attention, quantized
 GEMM.** Everything else composes until proven otherwise.
 
 ### 5.7 Table-driven registry and generated capability reporting
@@ -704,6 +736,9 @@ question for an EP is "why didn't it take my node."
 The unit of progress is **"model family X runs end-to-end on the EP"**, never op count. Each tier's
 exit criterion names a model, an artifact, and a measurement.
 
+Tiers T3–T5b were previously written as "if we get there". As of the 2026-07-28 ruling they are
+funded work; see §6.0 for the per-kernel exit criteria and the honest two-number timeline.
+
 | Tier | Milestone | Ops added (cum.) | Exit criterion |
 |---|---|---|---|
 | **T0** | M0 | 1 (1) | `Add`, f32, equal shapes, static. Stock ORT loads the plugin, runs one `Add` on a Vulkan device, matches ORT CPU, on Windows + Linux + lavapipe in CI. **Unchanged from `DESIGN.md` §8.2 — I am not touching this.** |
@@ -715,6 +750,41 @@ exit criterion names a model, an artifact, and a measurement.
 | **T5b** | M3 | 2 (142) | `QMoE`, then `MoE`. **Exit: a Qwen3-MoE int4 graph runs end-to-end with the expert block on Vulkan, not CPU.** |
 | **T5c** | M3 | 12 (154) | `Conv` (patch-embed/1×1 form), `LayerNormalization`, `MultiHeadAttention`, `Erf`/`Gelu`, `Resize`, `Pad`, `Einsum` (restricted). **Exit: a Qwen-VL vision tower + projector runs end-to-end and feeds the T3/T4 decoder in one session.** |
 | **T6** | post-M3 | 20 (174) | General `Conv`/`ConvTranspose`/pooling/`BatchNormalization`, `CumSum`, `TopK`, scatter family, control flow, recurrent, vision long tail. **Exit: ResNet-50 and MobileNetV3 run end-to-end and beat ORT CPU.** |
+
+### 6.0 The XL kernels are committed work, not stretch goals (user ruling, 2026-07-28)
+
+Justin ruled directly: *"matmulnbits那些 都要做"* and *"contrib op 要做"*
+(`.squad/decisions/inbox/copilot-directive-xl-kernels.md`,
+`.squad/decisions/inbox/copilot-directive-contrib-ops.md`). The earlier revision of this document
+listed the following as the kernels with **no template leverage** and parked them in the risk
+register (§11). They are now scheduled deliverables with named exit criteria:
+
+| Kernel | Tier | Owner | Exit criterion (binary, measurable) |
+|---|---|---|---|
+| `MatMulNBits` | T4 | Mouse (kernel), Switch (prepack seam) | GEMV (`M=1`) and GEMM (`M>1`) variants, `bits=4/8`, `block_size ∈ {16,32,64,128}`, symmetric and zero-point forms, match ORT CPU EP on the *same quantized graph* within §10.1 tolerance. No dequantized weight tensor is ever allocated in device memory (asserted by an allocator high-water test). |
+| `DequantizeLinear` / `QuantizeLinear` (block-wise) | T4 | Mouse | Per-tensor, per-axis and blocked (opset 21) scale/zero-point modes; blocked path shares the `MatMulNBits` block-index math bit-for-bit (same helper, proven by a unit test that runs both against one input). |
+| `GatherBlockQuantized` | T4 | Mouse | Quantized embedding lookup matches CPU EP; reuses `IDX` gather math + the unpack helper — no third copy of either. |
+| `RotaryEmbedding` | T3 | Mouse | Interleaved and non-interleaved, partial-rotary (`rotary_embedding_dim < head_size`), `is_packed_batching`; matches CPU EP on a Qwen3 GenAI graph's actual attribute set. |
+| `GroupQueryAttention` | T3 | Mouse | Prefill and decode paths, KV-cache in/out as the *same buffer* (in-place update, no copy), GQA head grouping, causal mask. Declines `local_window_size ≠ -1`, `softcap ≠ 0`, `smooth_softmax`, quantized KV — cleanly, with a `[attribute]` reason. |
+| `LinearAttention` (`gated_delta`) + `CausalConvWithState` | T5a | Mouse | Qwen3.5 hybrid layers run on Vulkan with conv-state and recurrent-state cache I/O. **Schema is main-branch-only and unverified — see §9.4; the fingerprint must be re-verified against the shipping release before the kernel is trusted.** |
+| `QMoE` (then `MoE`) | T5b | Mouse | Qwen3-MoE int4 expert block runs on Vulkan, not CPU. Masked-dense first (correct, wasteful); indirect dispatch only after it is proven correct and only if Switch adds the seam (§9.5). |
+
+**The honest timeline, restated in the same breath as the commitment.** These seven kernels are
+roughly 60–70% of the total *kernel-writing* effort in this document while being 8 of 174 rows. The
+template machinery makes 87 tier-1 ops a table; it does nothing for these. They are each a
+multi-day-to-multi-week kernel with a numerics debugging tail, and they gate the only metric that
+matters. So:
+
+- **Tier-1 breadth (87 ops) is a days-to-two-weeks item.** That claim stands.
+- **"Qwen3.5 runs end-to-end on Vulkan" is a months-scale item**, and would be even with a perfect
+  op plan, because it is gated on M2's device allocator, f16 storage+arithmetic, a shape-bucketing
+  decision, and six bespoke kernels — four of which have no reference semantics we can diff against
+  other than ORT's own CPU implementation.
+- The gap between those two sentences is the thing to watch, and `largest_island_flops` (§7.3) is
+  the metric that makes it visible instead of letting op count paper over it.
+
+Nothing here asks for the commitment to be reconsidered. It asks that the schedule be reported as
+two numbers rather than one.
 
 ### 6.1 What "Qwen3.5 runs end-to-end on Vulkan" concretely requires
 
@@ -845,6 +915,30 @@ time** (`DESIGN.md` §8.3 already requires the first two):
 I will open this as a request to Niobe. The `declined_nodes` histogram is the one I care most about
 — it turns "what should Mouse do next" from a judgement call into a sorted list.
 
+**Status 2026-07-28: the metric definitions are now code, not prose.** `rust/src/ops/partition.rs`
+implements every row of the table above as `Island`, `CoverageReport` and `TransferModel`, so Niobe
+can adopt the definitions rather than re-derive them:
+
+* `CoverageReport::{island_count, largest_island_nodes, largest_island_flops, node_coverage,
+  concentration, boundary_bytes_per_inference, boundary_time_fraction}`.
+* `TransferModel { fixed_ns, bytes_per_ns }` with `UMA` and `DISCRETE` starting points and
+  **`TransferModel::fit(&[(bytes, ns)])`** — a least-squares calibration hook. That is the
+  measurement handoff: Niobe times a staircase of transfer sizes on the target device, hands the
+  samples to `fit`, and the MVS rule stops being a guess. The provisional constants are explicitly
+  labelled as placeholders in the source.
+* `Policy { min_nodes: 4, margin: 3.0, flops_per_ns }` and `evaluate(island, model, policy) ->
+  Verdict`, plus `retain_viable` for the whole set. A rejection renders through `decline_for` as a
+  `[partition]` reason, so partitioning rejections land in the *same* histogram as dtype and rank
+  rejections instead of disappearing into a log line.
+* `concentration()` — claimed FLOPs in the largest island ÷ total claimed FLOPs — is the single
+  number that separates "80% of nodes across 40 islands" from "80% of nodes in one island". The
+  unit tests assert those two cases have identical `node_coverage` and wildly different honest
+  metrics, which is the whole argument in executable form.
+
+The margin is 3×, not 1×. A cost model this crude, calibrated on a different device, under a driver
+that schedules differently, is easily wrong by 2×; requiring a margin means the rule fails towards
+"run it on the CPU", which is always correct.
+
 ---
 
 ## 8. Quantization
@@ -883,6 +977,11 @@ int4 exists so a 1.7B model fits in 1 GB. This must be stated in the kernel spec
 
 ### 8.2 Prepacking and the memory model
 
+**Status 2026-07-28 — prepacking is on the critical path, not a tuning pass.** The XL-kernel ruling
+makes an int4-quantized LLM a *functional* requirement, and an int4 LLM whose weights are repacked
+per dispatch is not a working LLM. Prepacking is therefore a T4 blocker with the same standing as
+the kernel itself, and it needs an engine seam that does not exist yet.
+
 `DESIGN.md` §5.5/§6.3: weights are uploaded once at `Compile` time in all phases. Quantization
 interacts with this in three ways:
 
@@ -904,7 +1003,29 @@ interacts with this in three ways:
    GPU with a KV cache this is tight** — Link should have a row for "minimum device memory for the
    LLM path."
 
+#### 8.2.1 The prepack seam — precise requirement for Switch
+
+This is the engine change T4 depends on. Stated as a contract, not a design:
+
+| # | Requirement | Why it is load-bearing |
+|---|---|---|
+| P1 | A host-side hook that runs **during `Compile`, after device selection and after tile/specialization-constant choice**, and can transform an initializer's bytes before upload. | The repack layout is a function of the tile config, which is a function of the device. Repacking before device selection produces the wrong layout; repacking at first dispatch produces a stall and a mutable-weight lifetime problem. |
+| P2 | The packed result is cached keyed by **`(initializer identity, device, tile_config, kernel variant)`** and uploaded once. | Two nodes sharing a weight (rare) or one weight used by both the prefill and decode variant (common) must not repack twice, and a variant change must not silently reuse a stale layout. |
+| P3 | `scales` and `zero_points` upload as **separate device buffers with their own descriptor bindings**, not interleaved into `B`. | Interleaving saves one binding and costs the ability to stream `B` as a dense `uvec4`, which is the entire GEMV bandwidth argument. |
+| P4 | The original ONNX-layout weight must be **droppable** after repack — the engine must not keep both resident. | Otherwise int4 costs 2× and the memory argument for int4 evaporates. |
+| P5 | A way for a kernel to declare "my weight input is prepacked, do not bind the raw initializer" so `DispatchContext` binds the packed buffer instead. | The op code must not learn about the difference; the binding table does. |
+| P6 | The prepack function itself is **op-owned code** (`ops::quant::prepack`), called by the engine. Pure `&[u8] -> Vec<u8>` plus a shape/config struct — no Vulkan handles, so it stays inside the `src/ops/**` layering rules. | Keeps the nibble-unpack/interleave logic next to the kernel that consumes it, which is the only way the two stay in sync. |
+
+**ORT version note.** ORT's own `PrePack` hook is the natural place for P1. ORT **1.27's plugin-EP
+`PrePack` passes a null allocator**, which makes it unusable from a plugin EP — this is one of the
+reasons the team pinned **ORT 1.28**, and `sys.rs` already encodes the version window
+(`ORT_PINNED` 1.28.0 / `ORT_FLOOR` 1.24.0). If we cannot use `PrePack` for any reason on a given
+release, the fallback is to do the transform inside our own `Compile` when we walk initializers —
+strictly worse only in that ORT cannot then share the packed buffer across sessions. **The claim
+predicate must not depend on which of the two paths is used.**
+
 ### 8.3 The other quant ops
+
 
 - `DequantizeLinear` / `QuantizeLinear` — `EW-B` variants with a per-tensor / per-axis / blocked
   scale-index mode. Claim per-tensor and per-axis at T4; blocked (opset 21) at T4 as well since it
@@ -959,22 +1080,51 @@ rust/src/ops/
 
 ### 9.2 Registry entry format
 
-See §5.7 for the `ops!` macro. The expanded entry:
+**Status 2026-07-28: landed.** The machinery below is implemented in `rust/src/registry.rs` and
+`rust/src/ops/`; the shipped shape differs from the sketch in two ways, both improvements, and
+this section now documents the real thing.
 
 ```rust
-pub struct OpRegistration {
+pub struct OpSpec {
     pub domain:    Domain,          // Ai | Ms  (typed, not a &str — prevents "" vs "ai.onnx" bugs)
     pub op_type:   &'static str,
-    pub min_opset: i32,             // ANY_OPSET sentinel
+    pub min_opset: i32,             // OPSET_ANY sentinel
     pub max_opset: i32,
-    pub handler:   OpHandler,       // fn(&mut DispatchContext, &NodeDesc) -> Result<(), EpError>
-    pub claim:     ClaimPredicate,  // fn(&NodeView) -> Result<(), Cow<'static, str>>
-    pub caps:      DtypeSet,        // generates: claim check, shader variants, support matrix
+    pub caps:      DTypeSet,        // generates: claim check, shader variants, support matrix
+    pub kernel:    Kernel,          // template + template-op + the &'static str variant stems
+    pub claim:     ClaimPredicate,  // fn(&NodeView, &OpSpec) -> Result<(), DeclineReason>
+    pub translate: TranslateHandler,// fn(&OpSpec, &NodeDesc, &mut dyn DispatchContext) -> EpResult<()>
+    pub status:    OpStatus,        // Live | Staged(&'static str)
 }
 ```
 
-`OpHandler` takes `&mut DispatchContext` — the typed engine trait from `ENGINE.md`. Per the CI-lint
-layering rule, nothing in this directory may name `sys::`, `Ort`, `ash`, `vk::`, or `unsafe`.
+Change 1 — **both function pointers take their own row.** That is what lets *one* predicate serve
+sixty ops: it reads `spec.caps`, `spec.op_type` and `spec.kernel` instead of hard-coding them.
+Without it, "adding an op is a row" is false, because every row needs a bespoke closure.
+
+Change 2 — **`OpStatus::Staged`.** The claim/translate invariant is absolute, but the table is
+worth landing before the shaders are. A staged row is fully described and fully claim-tested, and
+`claim_decision` declines it with `[staged] …`. Flipping an op live is a one-word diff. This is
+what makes it possible to build the machinery before op #1 without ever claiming a node we cannot
+translate.
+
+Adding `Add` is exactly this line:
+
+```rust
+"Add", Ai, 7 ..= OPSET_ANY, NUMERIC, kernel!(EwBinary, "add"),
+       claim::ew_binary, templates::ew_binary, Staged(NO_SHADER);
+```
+
+### 9.2.1 Decline reasons are machine-readable by construction
+
+`ep.rs` owns the `DeclineReason = Cow<'static, str>` seam, so widening it to a struct would be a
+cross-owner ABI change for no benefit. Instead every reason is built by `registry::decline` and
+rendered as `"[tag] sentence"`, where the tag is a `DeclineCode` from a closed set
+(`not-registered`, `staged`, `opset`, `arity`, `missing-input`, `dtype`, `rank`, `shape`,
+`dynamic-shape`, `attribute`, `partition`, `internal`). `DeclineCode::of_reason` parses it back.
+One construction, three consumers: `CLAIM_DEBUG` prints the sentence, Trinity's harness asserts the
+code, Niobe histograms it. A reason that did not come from `decline` returns `None` and buckets as
+"other", which is why the histogram needs that bucket.
 
 ### 9.3 Capability reporting
 
@@ -987,6 +1137,75 @@ Generated, not written. `cargo xtask op-matrix` walks the registry table and emi
 
 CI fails if the checked-in file differs from the generated one. Same table backs
 `--dump-capabilities` for Trinity's assertions and Link's `PLATFORMS.md` rows.
+
+### 9.4 Contrib schema versioning — the hazard that comes with the domain
+
+Admitting `com.microsoft` (user ruling, 2026-07-28) buys the Qwen3.5 path and imports one liability:
+**contrib ops have no opset guarantee.** For an `ai.onnx` op, `min_opset ..= max_opset` is a complete
+compatibility statement, because ONNX freezes a schema once published and issues a new version for
+changes. Every `com.microsoft` op is `since_version = 1` forever; it is versioned by *ORT release*,
+and inputs and attributes are added **in place**. `LinearAttention` and `CausalConvWithState` do not
+exist in the pinned 1.28 release at all — they are main-branch ops.
+
+The failure mode that matters is not "the op disappears" (that is a clean miss). It is: the schema
+gains an attribute whose default changes the math, ORT materializes it on every node, our predicate
+does not know the name, and we claim the node and compute a **confidently wrong answer**.
+
+**Mechanism, implemented in `rust/src/registry.rs` (landed 2026-07-28):**
+
+```rust
+pub struct ContribSchema {
+    pub baseline: sys::SchemaBaseline, // which ORT release, and when a human checked
+    pub notes: &'static str,           // confidence, and what to re-verify
+    pub min_inputs: usize, pub max_inputs: usize,
+    pub min_outputs: usize, pub max_outputs: usize,
+    pub required_attrs: &'static [&'static str],
+    pub known_attrs: &'static [&'static str],
+}
+```
+
+- Every `Domain::Ms` row **must** carry one — enforced by a unit test, not by review.
+- `ContribSchema::check` runs **before** the staged check and before the claim predicate, so a
+  schema that has moved declines even for an op we would otherwise have claimed.
+- The load-bearing detector is **attribute-name enumeration** via `Node_GetNumAttributes` /
+  `Node_GetAttributes` / `OpAttr_GetName`. ORT materializes defaulted optional attributes, so the
+  observed name set is the *effective* schema. A name outside `known_attrs` ⇒ decline
+  `[contrib-schema]`.
+- `DeclineCode::ContribSchema` is a distinct bucket from `DeclineCode::Attribute` on purpose.
+  `[attribute]` means *a value we chose not to support*; `[contrib-schema]` means **the schema moved
+  under us**. The first is a backlog item; the second is an alarm. Conflating them would hide the
+  alarm inside the backlog.
+- **Failure direction is deliberate.** A too-narrow fingerprint costs a decline and a CPU fallback,
+  which is always correct. A too-wide one produces a wrong answer. Fingerprints are therefore
+  written narrow, their confidence is recorded in `notes`, and the `[contrib-schema]` histogram
+  bucket is the evidence used to widen them.
+
+**Layering constraints this satisfies** (`DESIGN.md` §1.4): **C1** — no domain-wide contrib opt-in;
+the bare string `"com.microsoft"` appears only at its definition site, rows name the domain as a
+table token and keys are always qualified. **C2** — every contrib row states the ORT release its
+predicate was verified against and surfaces it, via `OpSpec::schema_baseline()` and the
+`epctl --dump-capabilities` "schema baseline" column.
+
+**Known reconciliation item.** `sys::CONTRIB_SCHEMA_BASELINES` (Tank's) records the pinned release
+for all 11 contrib rows, while the `LinearAttention` / `CausalConvWithState` / `QMoE` fingerprints
+carry a main-branch baseline because those schemas are not in 1.28. A registry test asserts the two
+records agree on the verification *date* and deliberately does not compare release strings. Fixing
+that properly is a change in `sys.rs`, which is not mine.
+
+### 9.5 Engine seams the XL kernels need that do not exist yet
+
+Recorded here so they are routed rather than discovered late:
+
+1. **Prepack seam** — §8.2.1, P1–P6. Blocks T4.
+2. **Indirect dispatch** — `QMoE` with device-computed workgroup counts needs a `KernelRequest`
+   variant whose group count comes from a device buffer (`vkCmdDispatchIndirect`). Not needed for
+   the masked-dense first implementation; needed before MoE is *fast*. Blocks T5b performance, not
+   T5b correctness.
+3. **In-place KV-cache aliasing** — `GroupQueryAttention` must write `present` into the same
+   allocation it read `past` from, or every token pays a full cache copy. Needs the engine to allow
+   an output binding to alias an input binding for a declared-safe op. Blocks T3 usefulness.
+4. **`build.rs` consumes `src/ops/shader_variants.txt`** — §5.5. Blocks nothing today (the table and
+   manifest are checked in and tested); blocks the first real shader.
 
 ---
 
@@ -1007,6 +1226,34 @@ Not my document (Trinity's), but three requirements fall out of this plan and I 
    Vulkan dispatch can hang or reset the GPU. **Design the harness for crash containment from day
    one, not after the first hang.**
 
+### 10.1 Quantized paths need a different test story than fp32 — requirement for Trinity
+
+int4/int8 block-quantized math is not "fp32 with a looser epsilon". It has two regimes and they need
+two policies. Stating them as a requirement because the wrong policy here either passes a broken
+kernel or fails a correct one, and both are expensive to discover late.
+
+| Layer under test | Policy | Rationale |
+|---|---|---|
+| **Unpack + dequantize** (`b_packed`, `scales`, `zero_points` → dequantized block) | **Bit-exact.** `assert_array_equal` against a NumPy reference, no tolerance. | Nibble extraction, block indexing and zero-point subtraction are *integer* operations followed by one exact multiply. Any difference is a bug — an off-by-one in block indexing, a nibble-order swap, or a signed/unsigned mistake. A tolerance here hides exactly the bugs that are hardest to find downstream. This is also where a wrong answer looks *almost* right. |
+| **`MatMulNBits` output** vs ORT CPU EP on the same graph | **Relative tolerance, accumulation-order aware:** `rtol = 2e-2`, `atol = 1e-3` for fp16 activations; `rtol = 1e-3` for fp32 activations. | Our GEMM's reduction order differs from CPU's by construction (tiles + subgroup reductions), and fp16 accumulation is not associative. The tolerance must cover reassociation, *not* cover a wrong dequant — which is why the layer above is bit-exact and this one is not the only check. |
+| **End-to-end logits** (decode step) | **Top-1 token agreement over ≥ 64 greedy steps**, plus KL divergence of the softmax distribution below a fixed bound. Not per-element tolerance. | Per-element logit tolerance on a 150k vocab is meaningless — it either passes trivially or fails on one outlier. Token agreement is the property users care about and it is the only end-to-end assertion that survives a legitimate reassociation. |
+| **Per-layer intermediates** | Same rtol as the op-level row, captured layer-by-layer. | §6.1 item 5: on a 1.7B model, final-logit comparison cannot localize a fault. The harness needs intermediate capture or T4 debugging becomes bisection by hand. |
+
+**The oracle — please confirm before building on it.** The obvious reference is **ORT CPU EP running
+the identical quantized graph**, so that dequantization semantics come from ORT rather than from our
+reading of them. My understanding is that `MatMulNBits` **is** implemented in the ORT CPU EP (it is
+how GenAI int4 models run on CPU today), which would make this oracle work directly, and that
+`accuracy_level` selects the CPU accumulator type — meaning the oracle's own precision is
+configurable and should be pinned in the test config. **Both points need empirical confirmation, not
+my say-so:** run one GenAI-built int4 Qwen3-0.6B graph on CPU EP and check it executes without
+falling back or erroring. If `MatMulNBits` on CPU EP turns out to be unusable as an oracle, the
+fallback is a NumPy reference implementation of the ONNX contrib spec — strictly worse, because then
+both sides of the comparison encode *our* reading of the schema, and a schema misreading passes.
+
+Secondary asks: the bit-exact dequant test should run the *same* helper the blocked
+`DequantizeLinear` path uses (§8.3), so the two cannot drift; and quantized tests need their own
+tolerance config knob rather than inheriting the fp32 harness default.
+
 ---
 
 ## 11. Risks — where this is slower than the MLX project, honestly
@@ -1015,12 +1262,12 @@ Ordered by how much I expect each to hurt.
 
 | # | Risk | Assessment |
 |---|---|---|
-| 1 | **Three XL ops decide everything.** `GroupQueryAttention`, `MatMulNBits`, `LinearAttention` gate T3/T4/T5a. There is no template leverage for any of them. Each is a multi-week, multi-vendor, numerically-delicate kernel that the MLX project got *for free from MLX*. | **The single biggest schedule risk.** The 174-op inventory is genuinely cheap; these three are genuinely expensive, and they are the ones the directive actually cares about. |
+| 1 | **Three XL ops decide everything.** `GroupQueryAttention`, `MatMulNBits`, `LinearAttention` gate T3/T4/T5a. There is no template leverage for any of them. Each is a multi-week, multi-vendor, numerically-delicate kernel that the MLX project got *for free from MLX*. | **The single biggest schedule risk — and as of the 2026-07-28 ruling it is a scheduled risk, not an optional one** (§6.0). The 174-op inventory is genuinely cheap; these are genuinely expensive, and they are the ones the directive actually cares about. Mitigation is the OQ-M6 accelerant (§13.1), not descoping. |
 | 2 | **Perf per op, not just correctness.** MLX handlers inherited Apple-tuned kernels. Ours are as fast as we write them, on 5 vendor architectures with different subgroup sizes, shared-memory sizes, and cache behaviour. "Correct on lavapipe" is not "useful on Adreno." | High. Budget a tuning pass per kernel family per vendor tier, not per op. |
 | 3 | **The device-allocator dependency (M2).** LLM coverage is worthless without it (§6.1). It is the highest-uncertainty part of the plugin-EP ABI per `DESIGN.md` §6.3, and it is not on my critical path to fix. | High, and **not mine**. Flagging loudly. |
 | 4 | **Dynamic shapes vs. record-once/replay-many.** Decode/prefill/growing-KV means the recorded command buffer must be shape-agnostic or bucketed. Deciding this late means rewriting every LLM kernel's parameter passing. | Medium-high. **Decide now** (§6.1 item 3). |
 | 5 | **f16 is an optional capability.** If a meaningful fraction of target devices lack `shaderFloat16`/16-bit storage, the LLM story is desktop-only regardless of op coverage. | Medium. Depends on Link's OQ-1 follow-up. |
-| 6 | **Contrib-op schema churn.** `com.microsoft` ops are versioned by ORT release, not by an opset, and `LinearAttention`/`CausalConvWithState`/`MatMulNBitsQkv` are *new*. A schema change silently changes what our claim predicate should accept. | Medium. Mitigation: pin the ORT version per release (already a decision), and make the census tool part of CI so a schema drift shows up as a claim-rate regression. |
+| 6 | **Contrib-op schema churn.** `com.microsoft` ops are versioned by ORT release, not by an opset, and `LinearAttention`/`CausalConvWithState`/`MatMulNBitsQkv` are *new*. A schema change silently changes what our claim predicate should accept. | Medium, and now **owned rather than noted** — the contrib domain is admitted, so this hazard is ours. Mitigation is mechanical (§9.4): a `ContribSchema` fingerprint per contrib row, checked before the predicate, with a dedicated `[contrib-schema]` decline bucket so drift is an alarm rather than a wrong answer. Plus the pinned ORT version and the census tool in CI. |
 | 7 | **int64 and zero-size edge cases.** The MLX project found 16 crash classes by fuzzing. We will find our own set, and ours can hang a GPU rather than raise a Python exception. | Medium. Mitigated by §10.3. |
 | 8 | **`MoE`/`QMoE` are genuinely hard.** Data-dependent routing on a *pre-recorded* command buffer means either masked-dense execution (wastes ~7/8 of the FLOPs at top-2-of-8) or indirect dispatch with device-computed workgroup counts. Neither is a template. | Medium. But note this is an area where we are better positioned than MLX (§3.3). |
 | 9 | **`Conv` breadth.** Full ONNX `Conv` (groups, dilation, asymmetric pad, autopad, 1-D/3-D) is a large surface. | Low priority by directive, so acceptable — stage it (§4.15). |
@@ -1051,7 +1298,14 @@ reference for the three XL kernels** (they are MIT-licensed and solve exactly th
 flash-attention, and RMSNorm problems on exactly our platform matrix). Not copying — reading, for
 the tiling and subgroup strategies that took that project years to tune. That is a legitimate and
 large accelerant and I recommend we plan for it explicitly, with license review, rather than
-rediscovering their conclusions.
+rediscovering their conclusions. **This was authorized on 2026-07-28 — see §13.1 and §13.2.**
+
+**Post-ruling restatement (2026-07-28).** The XL kernels are now committed (§6.0), which does not
+change any of the four estimates above — it removes the option of not paying them. The estimates
+assume the OQ-M6 accelerant is used and that the four engine seams in §9.5 land on schedule; without
+the prepack seam, item 3 does not start, and without M2's allocator, item 2 does not finish. If both
+slip, the correct report upward is that op coverage is on schedule and "Qwen3.5 end-to-end" is not,
+and those must not be averaged into one percentage.
 
 ---
 
@@ -1061,9 +1315,9 @@ I propose, Morpheus ratifies. These conflict with the architecture of record:
 
 | Doc | Current | Proposed | Rationale |
 |---|---|---|---|
-| `DESIGN.md` §1.2 non-goals | "quantized ops" out of scope for v1 | **In scope, tier 4** | `MatMulNBits` is the entry ticket for real LLM graphs (§3.2). Without it an int4 Qwen graph shatters into ~200 islands. |
-| `DESIGN.md` §1.2 non-goals | "all `com.microsoft` contrib ops" out of scope for v1 | **9 contrib ops in scope, tiers 3–5** | The GenAI builder *emits* them (VERIFIED). Declining `com.microsoft` = cannot run a Qwen graph at all. |
-| `DESIGN.md` §1.2 non-goals | "attention fusion" out of scope | **`GroupQueryAttention` in scope, tier 3** | It is not a fusion we perform; it arrives as a single node from the exporter. Decomposing it would materialize `[B,H,S,S]` scores in VRAM. |
+| `DESIGN.md` §1.2 non-goals | "quantized ops" out of scope for v1 | **RATIFIED BY USER RULING 2026-07-28 — in scope, tier 4** ("matmulnbits那些 都要做") | `MatMulNBits` is the entry ticket for real LLM graphs (§3.2). Without it an int4 Qwen graph shatters into ~200 islands. An int4 LLM is now a *functional requirement*, not an optimization. |
+| `DESIGN.md` §1.2 non-goals | "all `com.microsoft` contrib ops" out of scope for v1 | **RATIFIED BY USER RULING 2026-07-28 — 11 contrib ops in scope, tiers 3–5** ("contrib op 要做") | The GenAI builder *emits* them (VERIFIED). Declining `com.microsoft` = cannot run a Qwen graph at all. Morpheus no longer decides *whether*; the remaining question is only which constraints attach (§9.4, and `DESIGN.md` §1.4 C1/C2, which are already satisfied). |
+| `DESIGN.md` §1.2 non-goals | "attention fusion" out of scope | **RATIFIED BY USER RULING 2026-07-28 — `GroupQueryAttention` in scope, tier 3** | It is not a fusion we perform; it arrives as a single node from the exporter. Decomposing it would materialize `[B,H,S,S]` scores in VRAM. |
 | `DESIGN.md` §1.2 non-goals | "dynamic-shape fast paths" out of scope M0–M2 | **Shape-agnostic push-constant kernel parameters from tier 3** | LLM decode/prefill/growing-KV makes this structural, not an optimization (§6.1). Needs Switch. |
 | `DESIGN.md` §8.2 | v0 op set ends at M2 with ~25 ops | **174-op inventory, 6 tiers, model-family exit criteria** | The directive. §8.1's *principles* are unchanged and I endorse all 7. |
 | `DESIGN.md` §8.3 | fragmentation rule stated qualitatively | **MVS rule with a measured transfer-cost calibration (§7.2)** | "Does this merge two islands" needs a number to be enforceable. |
@@ -1073,6 +1327,12 @@ I propose, Morpheus ratifies. These conflict with the architecture of record:
 Nothing here contradicts the two hard layering rules, the claim-conservatism rule, the ORT-CPU
 oracle, the capability-set Vulkan baseline, or the record-once/replay-many decision. Those are load
 -bearing and this plan is built on them.
+
+**OQ-11 (Morpheus's ratification of this plan) is closed for the two rows above by user ruling on
+2026-07-28.** The remaining rows — shape-agnostic push-constant parameters, the 174-op inventory
+superseding §8.2, the MVS rule superseding §8.3, and the `ENGINE.md` §3.6 image-storage trigger —
+are still Morpheus's to ratify and are not blocked on him to *start*, because none of the machinery
+landed so far depends on their outcome.
 
 ---
 
@@ -1085,8 +1345,56 @@ oracle, the capability-set Vulkan baseline, or the record-once/replay-many decis
 | OQ-M3 | Does the prepacked `MatMulNBits` layout need to be keyed on a per-device tile config? (§8.2) | Mouse + Switch |
 | OQ-M4 | Benchmark metric contract — `boundary_bytes_per_inference`, `boundary_time_fraction`, `declined_nodes` histogram. | Niobe |
 | OQ-M5 | Conformance harness crash containment (per-op subprocess) and GPU-hang recovery. | Trinity |
-| OQ-M6 | License review for reading llama.cpp Vulkan shaders as a reference for the 3 XL kernels. | Coordinator |
+| ~~OQ-M6~~ | ~~License review for reading llama.cpp Vulkan shaders as a reference for the 3 XL kernels.~~ **RESOLVED 🟢 GREEN 2026-07-28 (Rai).** See below. | ~~Coordinator~~ |
 | OQ-M7 | Does ORT 1.28's `CreateExternalResourceImporterForDeviceImpl` remove the KV-cache round-trip before M2 lands? | Tank / Morpheus |
+
+### 13.1 OQ-M6 resolution — reading llama.cpp's Vulkan shaders is authorized
+
+Rai's ruling (`docs/THIRD_PARTY.md`, `.squad/rai/audit-trail.md`) closes OQ-M6 **🟢 GREEN**. Reading
+llama.cpp's MIT-licensed Vulkan compute shaders as a *reference* for the three XL kernels —
+`GroupQueryAttention`, `MatMulNBits`, `LinearAttention` — is fully permitted, with **no attribution
+obligation for reading and learning**. The operative test, verbatim:
+
+> *"could you write this code without looking at the original?"*
+
+If the answer is yes, it is our code and nothing attaches. Obligations — MIT file header, a
+`THIRD_PARTY_NOTICES.md` entry, a commit note, and shipping the notices file — trigger **only** if
+we substantially adapt shader source rather than independently write our own after understanding
+the algorithm. Rai addressed our specific build shape: **SPIR-V compiled from adapted GLSL is a
+derived work**, and our build embeds SPIR-V into the cdylib, so an adapted shader would carry its
+obligations all the way into the shipped binary. ExecuTorch (BSD-3), ORT (MIT) and gpuinfo.org
+(CC-BY 4.0) are compatible on the same terms.
+
+### 13.2 Per-kernel licensing record — which side of the line each kernel is on
+
+Rai requires that the choice is recorded *per kernel*, before the kernel is written, so that the
+answer to "could you write this without looking at the original?" is a decision rather than a
+retrospective justification. The same record appears in each module's header doc comment; this table
+is the index. It is updated when a kernel is written, not when it is planned — a row saying
+"independent implementation" that later adapts source **must** be changed and must pick up the MIT
+header, the `THIRD_PARTY_NOTICES.md` entry and the commit note.
+
+| Kernel | Module | Choice | Obligation |
+|---|---|---|---|
+| `GroupQueryAttention` | `ops/attention.rs` | **Independent implementation.** Read llama.cpp's flash-attention Vulkan shaders for tiling and subgroup-reduction strategy; write our own against our `DispatchContext` and our KV-cache layout. | None. |
+| `RotaryEmbedding` | `ops/attention.rs` | **Independent implementation.** The algorithm is a page of arithmetic; no reference needed. | None. |
+| `MatMulNBits` | `ops/quant.rs` | **Independent implementation.** Read llama.cpp's `mul_mat_vec_q*` for the memory-access strategy; the nibble layout is dictated by the ONNX contrib schema, not by llama.cpp's block formats — which are *different formats*, so adaptation would not even work. | None. |
+| `GatherBlockQuantized`, `DequantizeLinear`/`QuantizeLinear` (blocked) | `ops/quant.rs` | **Independent implementation.** Shares our own unpack helper. | None. |
+| `LinearAttention` (`gated_delta`) | `ops/ssm.rs` | **Independent implementation.** No open reference Vulkan implementation exists to adapt even if we wanted one. | None. |
+| `CausalConvWithState` | `ops/ssm.rs` | **Independent implementation.** | None. |
+| `QMoE` / `MoE` | `ops/moe.rs` | **Independent implementation.** Masked-dense first; the routing math is ours. | None. |
+| `SimplifiedLayerNormalization` / `Skip*` | `ops/norm.rs` | **Independent implementation.** RMSNorm is four lines; our reduction template supplies the rest. | None. |
+
+If any kernel later needs substantial adaptation of third-party shader source, the procedure is in
+`docs/THIRD_PARTY.md` (Rai's) and must be followed **before** the adapted code lands, because our
+build embeds SPIR-V into the cdylib and the compiled artifact is a derived work of the GLSL.
+
+**Operational rule for this document's §6 tiers:** before touching T3's `GroupQueryAttention`, T2's
+`MatMulNBits`, or T4's `LinearAttention`, read `docs/THIRD_PARTY.md` for the mechanics. Algorithm
+study is unrestricted; source adaptation is a licensing event that must be declared. This removes
+the largest single unknown from the XL-kernel estimates in §11 — the *algorithms* for flash-attention
+tiling and int4 block dequant-in-register are no longer things we have to rediscover, which is worth
+more to the schedule than any single template.
 
 ---
 

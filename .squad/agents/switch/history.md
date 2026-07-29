@@ -102,3 +102,44 @@ becomes 6 hard requirements, no required extensions.
 
 **Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
 clean. 156 tests pass (141 lib + 15 integration).
+
+---
+
+### 2026-07-28T22:28:08-07:00 — Backend probe + force_legacy wiring; device.rs; ENGINE.md §3.5.1
+
+**Task:** Wire `force_legacy_barriers` through to `Barriers::select`; add Trinity's backend probe;
+confirm legacy mapping table coverage; address prepacking impact on memory model.
+
+**Produced:**
+- `rust/src/vk/barrier.rs` — added `write_backend_probe(is_sync2: bool)` helper called from
+  `Barriers::select`; extracted `should_use_sync2(caps, force_legacy) -> bool` for testability;
+  added 5 new tests: `stage_to_legacy_exact_values`, `stage_to_sync2_exact_values`,
+  `backend_probe_writes_legacy_token`, `backend_probe_writes_sync2_token`,
+  `backend_probe_noop_when_env_unset`, `force_legacy_overrides_sync2_capability`,
+  `no_force_legacy_and_no_sync2_selects_legacy`, `sync2_capable_without_force_selects_sync2`.
+- `rust/src/vk/device.rs` — new stub `Device` struct (ash_device, physical_device, caps,
+  barriers). `Device::new` is the sole call site of `Barriers::select`. 4 unit tests via
+  `should_use_sync2` (no null-ash-handle UB). Wiring diagram in module doc.
+- `rust/src/vk/caps.rs` — added `pub(crate) fn test_caps(sync2: bool) -> Capabilities`
+  outside `mod tests` so `device.rs` tests import it without referencing `synchronization2`
+  directly (layering rule compliance).
+- `rust/src/vk/mod.rs` — added `pub(crate) mod device;`.
+- `docs/ENGINE.md` §3.5.1 — Weight prepacking impact: new `PackedWeights` memory class with
+  Compile-time lifetime, bulk staging path, barrier impact (none — existing API is correct).
+- `.squad/decisions/inbox/switch-barrier-abstraction.md` — Decisions 8–11 appended.
+
+**`ash::Device` / `ash::Instance` cannot be zeroed (lesson):**
+These types contain non-nullable function pointers (`fn` pointers are UB when null in Rust).
+`std::mem::zeroed()` is rejected at compile time with `the type does not permit zero-initialization`.
+The correct solution: extract pure boolean logic from `Barriers::select` into `should_use_sync2`
+and unit-test that. The Vulkan-touching path is covered by integration tests only.
+
+**Layering lint coordination (lesson):**
+The `SYNC2_FIELD_RULES` lint catches `synchronization2` token in ALL non-permitted files,
+including test code. Any module that needs test `Capabilities` values must use
+`caps::test_caps()` (defined in `caps.rs`, a permitted file) rather than constructing
+`Capabilities` literals directly.
+
+**Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
+clean. 185 tests pass (29 new since last session).
+

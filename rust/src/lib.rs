@@ -53,6 +53,7 @@ pub mod logging;
 pub mod ops;
 pub mod registry;
 pub mod sys;
+pub(crate) mod vk;
 
 use std::ffi::c_char;
 use std::ptr;

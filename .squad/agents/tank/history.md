@@ -153,3 +153,81 @@ orthogonal" in the decision inbox so nobody re-litigates it. Opaque-handle regis
 
 **Status after the corrections:** `cargo build`, `cargo clippy --all-targets -- -D warnings` and
 `cargo test` all clean. 45 tests (36 unit + 9 layering).
+
+---
+
+## 2026-07-28T21:01:56-07:00 — OQ-3 proposal, OQ-13 design, and the C1/C2 code obligations
+
+**Ban the value, not the comparison.** C1 (no domain-wide contrib opt-in) could have been linted
+by enumerating predicate shapes — `== Domain::Ms`, `!=`, `matches!`, `if let`, `starts_with`. That
+list is never finished. Banning the contrib domain as a *value* in non-test code, with one
+exemption for the arm that defines its spelling, forbids every shape at once and leaves no third
+spelling to forget. Generalise: when linting "you must not decide on X", ban naming X, not the
+comparisons against it.
+
+**A grep-based tripwire on macro-generated data can never fire.** My first C2 tripwire looked for
+`domain: Domain::Ms` in `registry.rs`. Rows are declared through `op_table!`, so that string
+appears only inside the macro body — the test would have passed forever while proving nothing.
+Rewrote it to read the *linked registry* via `all_specs()`, which an integration test can do
+because it links the crate. Lesson: if the data is generated, assert against the data, not the
+source text.
+
+**ORT does pointer arithmetic on allocator return values, and that decides OQ-3's encoding.** The
+memory-pattern planner allocates one block and constructs tensors at `base + offset`. Any
+synthetic token scheme breaks under `ptr + n`. Reserving real virtual address space
+(`VirtualAlloc(MEM_RESERVE, PAGE_NOACCESS)` / `mmap(PROT_NONE, MAP_NORESERVE)`) and handing out
+real, unique, never-dereferenceable addresses makes arithmetic, alignment and uniqueness correct
+*by construction* — and turns a stray dereference from silent corruption into an immediate fault
+at an address we recognise. Making an invariant MMU-enforced beats documenting it.
+
+**BDA is not an optimization, it is a second shader architecture.** I nearly wrote "registry
+primary, BDA optional" to agree with Morpheus. Costing it out properly changed the answer: a
+`VkDeviceAddress` is unusable by a descriptor-bound shader, so adopting BDA means a whole second
+shader family — and it does not even remove the side table, because building a descriptor set
+still needs a `VkBuffer`. Combined with MoltenVK's Apple-Silicon-only support and §7.2 making it
+probed-not-required, the honest recommendation is *no BDA at all*. Lesson: when the lead narrows
+the ground for you, cost the remaining option out anyway; sometimes the answer is further than
+they went, not nearer.
+
+**Read the upstream reference before designing the contract.** `nv_vulkan_test.cc` gave me five
+things I would have got wrong: both `VkExternalMemoryBufferCreateInfo` *and*
+`VkExportMemoryAllocateInfo` are required; DMA-BUF has no ORT enum and is explicitly unsupported;
+`OrtExternalTensorDescriptor` carries `offset_bytes`, so several tensors can live in one import;
+teardown order is ORT handles → importer → deinit → `vkDeviceWaitIdle` → Vulkan objects; and the
+test calls `DisableMemPattern()`, which is a warning not a licence — an EP cannot force a caller's
+session options.
+
+**OS handle ownership is asymmetric across platforms.** `vkImportMemoryFdKHR` takes ownership of
+the fd on Linux; the Win32 `HANDLE` is not transferred and the caller must close it. The reference
+test simply leaks it at process exit. Documented both rather than copying the leak.
+
+**Three agents in one crate means the tree is red through no fault of yours.** Mouse landed
+`registry.rs` references to `ops::{attention,quant,moe,ssm}` before the modules existed. Nothing
+to fix on my side — verify, wait, re-verify — but worth knowing that "cargo build fails" is no
+longer evidence about my own changes. Check `git status` and the error's file before reacting.
+
+**Shipped this turn:** `sys::{OrtRelease, ORT_PINNED, ORT_FLOOR, SchemaBaseline}` (C2 machinery);
+C1 contrib-domain rules plus five planted-violation and three false-positive tests in
+`tests/layering.rs`; `src/bin/epctl.rs` with `--dump-capabilities [--json]` and
+`tests/dump_capabilities.rs`; README sections for the zero-copy integration contract, `epctl`, and
+C1. Owed by Mouse: one line, `pub schema_baseline: Option<SchemaBaseline>` on `OpSpec`.
+
+**C2 arrived from both ends at once, and the other end was better.** Mouse and I independently
+implemented the contrib schema baseline within the same hour — me as a keyed side table in
+`sys.rs`, him as a field inside `ContribSchema` in `registry.rs`. His placement wins for a reason
+worth keeping: nesting the baseline inside the schema fingerprint makes it *impossible to record a
+shape without recording where the shape came from*, whereas a parallel table can be half-filled.
+It also carried information mine could not — two ops exist only on ORT main, so `1.28.0` would
+have been a lie for them. Deleted my table. Generalise: when two implementations collide, do not
+split the difference and do not defer on seniority; ask which one makes the wrong state
+unrepresentable.
+
+**Two places recording the same fact should be deleted, not cross-checked.** Mouse's instinct was
+a test asserting the two agreed. That test is real work forever and buys nothing a single source
+would not. Deleting one side is the cheaper and stronger fix.
+
+**Own the type, let the domain own the data.** `sys.rs` owns `OrtRelease`/`SchemaBaseline`/
+`ORT_PINNED` because ORT version tracking is mine; `registry.rs` owns which release each row was
+read from because that belongs beside the schema it describes. This split also kept the layering
+clean — a `sys` → `registry` lookup helper would have inverted the dependency direction of the
+lowest layer in the crate, which was the tell that my design was in the wrong place.

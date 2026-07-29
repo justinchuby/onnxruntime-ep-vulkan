@@ -291,6 +291,29 @@ unsafe fn detect_uma(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Test helpers (accessible outside this file via cfg(test))
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Build a minimal [`Capabilities`] for unit tests.
+///
+/// `sync2` controls `synchronization2`. All other optional capabilities default to absent.
+/// Live only in `#[cfg(test)]` builds; other modules must import this helper rather than
+/// constructing `Capabilities` directly, so field names like `synchronization2` do not
+/// appear in non-permitted files and the layering lint stays clean.
+#[cfg(test)]
+pub(crate) fn test_caps(sync2: bool) -> Capabilities {
+    Capabilities {
+        synchronization2: sync2,
+        subgroup_size: 32,
+        subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
+        subgroup_size_range: None,
+        can_require_subgroup_size: false,
+        shader_float16: false,
+        is_uma: false,
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────
 

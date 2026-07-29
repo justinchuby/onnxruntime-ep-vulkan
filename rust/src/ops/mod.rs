@@ -1,63 +1,74 @@
-//! **STUB — Mouse owns the contents of this directory.**
+//! Per-family ONNX op handlers, and the machinery that makes adding one a table row.
 //!
-//! Per-family ONNX op handlers. One op = one claim predicate + one translate handler + one row in
-//! [`crate::registry::REGISTRY`]. Adding an op must never require an edit to `ep.rs`,
-//! `factory.rs`, `sys.rs`, or the engine.
+//! **Mouse owns this directory.**
 //!
-//! # The two rules that apply to everything under this directory
+//! # The two rules that apply to everything under here
 //!
 //! Both are enforced by `rust/tests/layering.rs`, which fails the build (not the review) on a
 //! violation. See `DESIGN.md` §4.2.
 //!
-//! 1. **No ORT ABI.** Nothing here may name `crate::sys`, an `Ort*` type, or an `OrtApi` function
-//!    pointer. Handlers see [`crate::engine::NodeDesc`], [`crate::engine::TensorRef`],
-//!    [`crate::engine::OutRef`] and [`crate::registry::NodeView`] — never `OrtNode`, `OrtValue`,
-//!    `OrtKernelContext` or `OrtStatus`.
+//! 1. **No ORT ABI.** Nothing here may name the raw graph types or an ABI function pointer.
+//!    Handlers see [`crate::engine::NodeDesc`], [`crate::engine::TensorRef`],
+//!    [`crate::engine::OutRef`] and [`crate::registry::NodeView`].
 //!
-//! 2. **No raw Vulkan.** Nothing here may name `ash`, `vk::`, or a Vulkan handle, and nothing here
-//!    may contain the token `unsafe`. Handlers express intent through
-//!    [`crate::engine::DispatchContext`] and [`crate::engine::KernelRequest`]; the engine owns
-//!    descriptor sets, barriers, pipelines and submission.
+//! 2. **No raw Vulkan.** Nothing here may name a Vulkan handle or contain the token for an
+//!    unchecked block. Handlers express intent through [`crate::engine::DispatchContext`] and
+//!    [`crate::engine::KernelRequest`]; the engine owns descriptor sets, barriers, pipelines and
+//!    submission.
 //!
-//! Why this is worth rejecting a working PR over: the MLX reference inherited a backend that
+//! Why this is worth rejecting a working change over: the MLX reference inherited a backend that
 //! already handled memory, scheduling and dtypes. We do not — every op here is a shader, a
 //! descriptor layout, a barrier and a workgroup calculation. If those details bleed into sixty op
 //! modules, the first driver quirk becomes a sixty-file change instead of a one-file change.
 //!
-//! # Shape of a handler (M0, Mouse)
+//! # How an op is added
+//!
+//! Not by writing a module. By writing **one row**:
 //!
 //! ```ignore
-//! use crate::engine::{DispatchContext, EpResult, KernelRequest, NodeDesc};
-//! use crate::registry::{DeclineReason, NodeView};
-//!
-//! pub fn claim_add(view: &NodeView<'_>) -> Result<(), DeclineReason> {
-//!     if view.num_inputs() != 2 {
-//!         return Err("Add: expected exactly 2 inputs".into());
-//!     }
-//!     Ok(())
-//! }
-//!
-//! pub fn translate_add(node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
-//!     let a = ctx.resolve(&node.inputs[0])?;
-//!     let b = ctx.resolve(&node.inputs[1])?;
-//!     let out = ctx.bind_output(&node.outputs[0], /* desc */ todo!())?;
-//!     ctx.dispatch(KernelRequest {
-//!         shader: "elementwise_binary",
-//!         spec_constants: vec![],
-//!         push_constants: vec![],
-//!         bindings: vec![a, b, out],
-//!         workgroups: [1, 1, 1],
-//!     })
-//! }
+//! //  op    domain  opset window     caps     kernel                    claim             translate             status
+//! "Add",    Ai,     7 ..= OPSET_ANY, NUMERIC, kernel!(EwBinary, "add"), claim::ew_binary, templates::ew_binary, Staged(NO_SHADER);
 //! ```
 //!
-//! Then one row in `registry::REGISTRY`: `("Add", crate::ops::elementwise::claim_add)`.
+//! That row simultaneously:
+//!
+//! * registers the op under its domain-qualified name and opset window;
+//! * tells the shared claim predicate which dtypes to accept — and therefore which to decline,
+//!   with a machine-readable reason;
+//! * names the GLSL template and generates the `ew_binary_add_{f32,f16,i64,i32}` variant stems;
+//! * puts those variants into the build manifest [`common::variants::manifest`] that the shader
+//!   build consumes;
+//! * and points at the shared handler that does the broadcasting, binding and dispatch.
+//!
+//! Nothing in the boundary layer or the engine changes. That property is the entire schedule
+//! argument in `OP_COVERAGE.md` §5.6.
+//!
+//! # Ordering
+//!
+//! The machinery lands before op #1 on purpose. Hand-writing the first twenty ops and refactoring
+//! afterwards costs the leverage *and* the schedule, because the refactor never happens once
+//! twenty conformance tests depend on twenty bespoke shapes.
 
-// M0 op families, per DESIGN.md §8.2. Mouse creates these files:
-//
-// pub mod elementwise;   // Add, Sub, Mul, Div, ... (M0 starts here, with Add)
-// pub mod math;
-// pub mod reduction;
-// pub mod shape;
-// pub mod matmul;
-// pub mod norm;
+/// Shared helpers: dtype sets, claim predicates, shape planning, shader variants, templates.
+pub mod common;
+
+/// Tier-1 elementwise ops — the table that exercises the machinery.
+pub mod elementwise;
+
+/// Fused attention: `GroupQueryAttention`, `RotaryEmbedding`, `MultiHeadAttention`.
+pub mod attention;
+
+/// The RMSNorm family the LLM path runs on.
+pub mod norm;
+
+/// Weight-only quantization: `MatMulNBits` and the block-quantized dequant path.
+pub mod quant;
+
+/// Mixture of experts: `QMoE`, then `MoE`.
+pub mod moe;
+
+/// Linear attention and SSM state — the Qwen3.5 hybrid path.
+pub mod ssm;
+
+/// The minimum-viable-subgraph rule and the partitioning metrics.
+pub mod partition;

@@ -39,6 +39,10 @@ pub struct EpOptions {
     pub max_claim_ops: Option<Vec<String>>,
     /// `ep.disable_device_memory` — force the host-memory I/O path.
     pub disable_device_memory: bool,
+    /// `ep.force_legacy_barriers` — force the legacy `vkCmdPipelineBarrier` backend even on a
+    /// device that supports `VK_KHR_synchronization2` (DESIGN.md §7.5 item 5). Used by Trinity
+    /// to run the differential suite twice per lane, ensuring the legacy path is never untested.
+    pub force_legacy_barriers: bool,
 }
 
 impl EpOptions {
@@ -84,6 +88,12 @@ impl EpOptions {
         if let Some(v) = read("ep.disable_device_memory") {
             out.disable_device_memory = parse_bool(&v).unwrap_or_else(|| {
                 log::warn!("ep.disable_device_memory: `{v}` is not a boolean; ignoring");
+                false
+            });
+        }
+        if let Some(v) = read("ep.force_legacy_barriers") {
+            out.force_legacy_barriers = parse_bool(&v).unwrap_or_else(|| {
+                log::warn!("ep.force_legacy_barriers: `{v}` is not a boolean; ignoring");
                 false
             });
         }

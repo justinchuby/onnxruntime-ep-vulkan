@@ -1,0 +1,245 @@
+//! Tier-1 elementwise ops — the table that proves the machinery.
+//!
+//! Every row here is an entry in `OP_COVERAGE.md` §4's inventory, and every row is one line. That
+//! is the whole claim of §5: three GLSL templates and one shared broadcasting helper cover roughly
+//! a third of the op inventory, so the schedule is decided by how fast rows can be added, not by
+//! how fast kernels can be written.
+//!
+//! # Everything here is [`Staged`]
+//!
+//! No shader exists yet, so no row is claimable and the CPU EP runs every one of these nodes,
+//! which is always correct. What *does* exist is the full description — opset window, dtype
+//! capabilities, template, variant stems, claim predicate, translate handler — all of it unit
+//! tested. Flipping a row live once its variant compiles is a one-word diff.
+//!
+//! Two staging reasons appear below and they mean different things:
+//!
+//! * [`NO_SHADER`] — the row is complete; only the compiled variant is missing.
+//! * [`NEEDS_PARAMS`] — the op carries attributes (`alpha`, `beta`, `fmod`, `direction`,
+//!   `approximate`) that the plain unary/binary template has nowhere to put. Claiming it with
+//!   [`claim::never`] is the honest answer: `OP_COVERAGE.md` §7's rule is that an op is claimed
+//!   only when the *attribute* combination is genuinely handled, and here it is not. These become
+//!   a parameterised template variant, not a bespoke kernel each.
+
+use crate::kernel;
+use crate::ops::common::claim;
+use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC};
+use crate::ops::common::templates;
+use crate::registry::OpStatus::Staged;
+use crate::registry::{NO_SHADER, OPSET_ANY};
+
+/// `Equal` compares booleans as well as numbers.
+const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
+
+/// Staging reason for ops whose attributes the plain template cannot carry.
+pub const NEEDS_PARAMS: &str =
+    "it carries attributes the plain elementwise template has no push-constant slot for; it needs \
+     the parameterised template variant";
+
+/// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
+pub const NEEDS_CAST_MATRIX: &str =
+    "its shader variant space is keyed on a source/destination dtype pair rather than a single \
+     dtype, so it needs its own template and manifest column";
+
+crate::op_table! {
+    // ---------------------------------------------------------------------------------------
+    // Binary arithmetic, logic and comparison — one template, numpy broadcasting for free.
+    //
+    //  op            domain  opset window        caps      kernel                       claim               translate               status
+    // ---------------------------------------------------------------------------------------
+    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Mod",            Ai,     10 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "mod"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Xor",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "xor"),    claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "BitwiseAnd",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitand"), claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "BitwiseOr",      Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitor"),  claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "BitwiseXor",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitxor"), claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "BitShift",       Ai,     11 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitshift"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Equal",          Ai,     7 ..= OPSET_ANY,    EQ_CAPS,  kernel!(EwBinary, "eq"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Greater",        Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "gt"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "GreaterOrEqual", Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "ge"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "Less",           Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "lt"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "LessOrEqual",    Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "le"),     claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+    "PRelu",          Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "prelu"),  claim::ew_binary,   templates::ew_binary,   Staged(NO_SHADER);
+
+    // ---------------------------------------------------------------------------------------
+    // Unary maths — the longest run of pure table rows in the crate.
+    // ---------------------------------------------------------------------------------------
+    "Abs",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "abs"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Neg",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "neg"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Reciprocal",     Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "recip"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Sqrt",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sqrt"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Exp",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "exp"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Log",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "log"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Sin",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sin"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Cos",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cos"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Tan",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tan"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Asin",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asin"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Acos",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acos"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Atan",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atan"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Sinh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sinh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Cosh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cosh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Tanh",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tanh"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Asinh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asinh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Acosh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acosh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Atanh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atanh"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Ceil",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "ceil"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Floor",          Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "floor"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
+
+    // ---------------------------------------------------------------------------------------
+    // Activations. Attribute-free ones ride the unary template; parameterised ones are staged
+    // behind NEEDS_PARAMS rather than claimed with attributes we would silently ignore.
+    // ---------------------------------------------------------------------------------------
+    "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "HardSwish",      Ai,     14 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "hardswish"), claim::ew_unary,  templates::ew_unary,    Staged(NO_SHADER);
+    "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
+    "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), claim::ew_unary,   templates::ew_unary,    Staged(NO_SHADER);
+    "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    claim::ew_unary,    templates::ew_unary,    Staged(NO_SHADER);
+    "HardSigmoid",    Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "hardsigmoid"), claim::never,   templates::unimplemented, Staged(NEEDS_PARAMS);
+    "LeakyRelu",      Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "leakyrelu"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Elu",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "elu"),     claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Selu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "selu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Celu",           Ai,     12 ..= OPSET_ANY,   F32,      kernel!(EwUnary, "celu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "ThresholdedRelu", Ai,    10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "trelu"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Shrink",         Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "shrink"),  claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Gelu",           Ai,     20 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "gelu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+
+    // ---------------------------------------------------------------------------------------
+    // Variadic elementwise — composed from the binary template, never an N-input shader.
+    // ---------------------------------------------------------------------------------------
+    "Sum",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
+    "Mean",           Ai,     8 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "mean"),   claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
+    "Max",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "max"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
+    "Min",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "min"),    claim::ew_variadic, templates::ew_variadic, Staged(NO_SHADER);
+
+    // ---------------------------------------------------------------------------------------
+    // Selection and type conversion.
+    // ---------------------------------------------------------------------------------------
+    "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Staged(NO_SHADER);
+    "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(None),               claim::cast,        templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
+    "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{Domain, OpStatus};
+
+    #[test]
+    fn the_table_is_the_size_op_coverage_promises_for_tier_1() {
+        // §4's tier-1 elementwise inventory. If this shrinks, coverage regressed; if it grows,
+        // update OP_COVERAGE.md §4 in the same change.
+        assert!(
+            OPS.len() >= 65,
+            "tier-1 elementwise table has only {} rows",
+            OPS.len()
+        );
+    }
+
+    #[test]
+    fn every_row_is_staged_and_says_why() {
+        for s in OPS {
+            match s.status {
+                OpStatus::Staged(reason) => assert!(
+                    !reason.is_empty(),
+                    "{} is staged with no reason",
+                    s.op_type
+                ),
+                OpStatus::Live => panic!(
+                    "{} is live but no shader exists; flip it only with its variant and \
+                     conformance test",
+                    s.op_type
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn every_row_is_in_the_default_domain() {
+        // OQ-11 is unratified: contrib rows are not ours to add yet.
+        assert!(OPS.iter().all(|s| s.domain == Domain::Ai));
+    }
+
+    #[test]
+    fn shader_rows_have_an_arity_their_predicate_agrees_with() {
+        use crate::ops::common::variants::Template;
+        for s in OPS {
+            let arity = s.kernel.template.input_arity();
+            match s.kernel.template {
+                Template::None => assert_eq!(arity, 0),
+                Template::EwUnary => assert_eq!(arity, 1),
+                Template::EwBinary => assert_eq!(arity, 2),
+                Template::EwSelect => assert_eq!(arity, 3),
+            }
+        }
+    }
+
+    #[test]
+    fn variant_stems_are_lowercase_and_underscored() {
+        for s in OPS {
+            for d in s.caps.iter() {
+                if let Some(stem) = s.kernel.stem(d) {
+                    assert!(
+                        stem.chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                        "`{stem}` is not a clean file stem"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parameterised_ops_are_staged_behind_their_own_reason() {
+        // The honest-claiming rule in table form: an op whose attributes the template cannot
+        // carry is staged with a *different* blocker from one that is merely waiting on a shader,
+        // so "what is left to do" is readable straight off the table.
+        for op in ["LeakyRelu", "Elu", "Selu", "Clip", "Mod", "BitShift", "Gelu"] {
+            let s = OPS.iter().find(|s| s.op_type == op).unwrap();
+            assert_eq!(
+                s.status,
+                OpStatus::Staged(NEEDS_PARAMS),
+                "{op} should be staged behind the parameterised template"
+            );
+        }
+        for op in ["Cast", "CastLike"] {
+            let s = OPS.iter().find(|s| s.op_type == op).unwrap();
+            assert_eq!(s.status, OpStatus::Staged(NEEDS_CAST_MATRIX), "{op}");
+        }
+    }
+
+    #[test]
+    fn known_llm_hot_ops_are_present() {
+        // OP_COVERAGE.md §3: these are what a Qwen decoder block is made of outside attention.
+        for op in ["Add", "Mul", "Sigmoid", "Sqrt", "Where", "Cast", "Pow"] {
+            assert!(
+                OPS.iter().any(|s| s.op_type == op),
+                "`{op}` is missing from the tier-1 table"
+            );
+        }
+    }
+
+    #[test]
+    fn boolean_ops_do_not_claim_floats() {
+        for op in ["And", "Or", "Xor", "Not"] {
+            let s = OPS.iter().find(|s| s.op_type == op).unwrap();
+            assert!(!s.caps.contains(crate::engine::DType::F32), "{op}");
+            assert!(s.caps.contains(crate::engine::DType::Bool), "{op}");
+        }
+    }
+}
