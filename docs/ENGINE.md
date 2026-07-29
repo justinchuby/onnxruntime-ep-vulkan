@@ -198,6 +198,43 @@ keyed by the ORT tensor pointer. Outputs are written to device-local buffers dur
 then downloaded to ORT-provided output pointers after the fence fires. Weight initializers that
 survive across `Run` calls are uploaded once at `Compile` time and reused.
 
+### 3.5.1 Weight Prepacking (Block-Quantized Kernels)
+
+Mouse's quantized kernels (`MatMulNBits`, `BlockDequant`, `GroupQueryAttention`, `QMoE`,
+`LinearAttention`) are on the critical path and require weight prepacking at subgraph-compile
+time (`Plan::compile`). This changes the memory model in the following ways:
+
+**New buffer class: `PackedWeights`**
+
+Prepacked weight buffers are device-local, written once (at `Compile` time), and read-only for
+the lifetime of the `Plan`. They are distinct from activation buffers in three ways:
+- *Lifetime:* allocated in `compile()`, freed in `Drop` of the `Plan` — not at subgraph end.
+- *Access pattern:* read-only from shader; never a barrier destination after initial upload.
+- *Layout:* block-quantized weights require interleaved or separated scale/zero-point layout
+  matching the GLSL kernel's expected memory layout; the packing kernel must run once at
+  `Compile` time, not at every `Compute` call.
+
+The allocator design needs a `PackedWeights` memory class separate from `TempBuffer`. Both use
+`gpu-allocator`'s TLSF strategy, but the lifetime difference matters for eviction heuristics
+and for the `#[must_use]` invariants we will enforce on deallocation.
+
+**Staging for bulk uploads**
+
+Model weights can be multi-GB. The existing `StagingPool` (a fixed ring of buffers sized for
+activation upload at inference time) is not suitable for one-shot GiB-sized transfers. The
+`Compile`-time path needs a separate "bulk staging" mechanism: either a temporary dedicated
+host-visible allocation (`gpu-allocator`'s `LinearAllocator` is ideal here — allocate, upload,
+copy, free), or a configurable max-upload-size option in the staging pool.
+
+This does not change the current allocator stub's interface — it adds a new entry point.
+
+**Impact on barrier design:** none. A `vkCmdCopyBuffer` from staging to the packed-weights
+buffer at compile time is `TransferWrite`. The first shader read at `Compute` time is
+`ShaderRead`. The existing `Barriers::buffer_deps` with
+`src: Access::TransferWrite, dst: Access::ShaderRead` is the correct barrier for the
+staging-to-shader transition. The `PackedWeights` buffers then have no further src-side
+barriers (they are never written again).
+
 ### 3.6 Buffer-Only vs. Buffer + Image Storage — v0 Recommendation
 
 **Recommendation: buffer-only for v0.**
@@ -241,54 +278,73 @@ Rationale:
 
 ### 4.2 Build-Time SPIR-V Compilation and Embedding
 
-Shaders live under `shaders/glsl/` in the repo. The build pipeline (coordinated with Tank, who
-owns `build.rs`) is:
+Shaders live under `shaders/glsl/` in the repo. The build pipeline (owned by Tank, whose
+`build.rs` now consumes both sources and the variant table) is:
 
 ```
-shaders/glsl/<op>_<dtype>.comp
-    │
-    ▼ glslc (Vulkan SDK) — run by build.rs
-shaders/spv/<op>_<dtype>.spv
-    │
-    ▼ include_bytes! (emitted by build.rs into OUT_DIR/shader_modules.rs)
+shaders/glsl/<source>.comp             src/ops/shader_variants.txt
+       │                                        │
+       │           ┌────────────────────────────┘
+       ▼           ▼
+  build.rs  (parses variant table, runs glslc with -D defines per row)
+       │
+       ▼  glslc → OUT_DIR/spv/<stem>.spv
+       │
+       ▼  include_bytes! (emitted into OUT_DIR/shader_modules.rs)
 embedded in cdylib — zero runtime compiler dependency
 ```
 
-**Requirements for `build.rs` (Tank's file — Switch describes, Tank implements):**
+**Two compilation paths in `build.rs` (Seam 3, implemented):**
 
-1. Locate `glslc` via `$VULKAN_SDK/bin/glslc`, or fall back to `glslc` on `$PATH`. Fail the
-   build with a clear error if absent.
-2. Iterate over `shaders/glsl/*.comp`, compile each to `OUT_DIR/spv/<stem>.spv` with
-   `-O` (optimization) and `-fshader-stage=compute`.
-3. Generate `OUT_DIR/shader_modules.rs` containing one `pub const <STEM>_SPV: &[u8] =
-   include_bytes!("spv/<stem>.spv");` per shader.
-4. Emit `cargo:rerun-if-changed=shaders/glsl/` so Cargo re-runs only when shaders change.
-5. **No runtime `glslc` invocation.** The compiled cdylib is self-contained.
+1. **Direct sources:** every `shaders/glsl/*.comp` file is compiled once with no `-D` flags.
+   Used for hand-written XL kernels (`matmul_nbits.comp`, etc.) where the variant logic is
+   internal to the shader.
+
+2. **Variant rows from `src/ops/shader_variants.txt`:** tab-separated `<stem>\t<source>\t<defines>`.
+   Each row produces one SPIR-V module named `<stem>.spv`. `build.rs` compiles the shared
+   template (`<source>`) with the per-row `-D` flags, generating all dtype/layout variants from
+   one source file. `cargo:rerun-if-changed` tracks the variant table so Cargo re-runs only when
+   it changes.
+
+**No runtime `glslc` invocation.** The compiled cdylib is self-contained; the build machine
+needs the Vulkan SDK (or `ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` for lint-only lanes).
 
 llama.cpp's `vulkan-shaders-gen` (verified: [vulkan-shaders-gen.cpp lines 33–75](https://github.com/ggml-org/llama.cpp/blob/0cea3622/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp#L33-L75)) takes a similar approach but generates C++ header literals; we embed SPIR-V bytes directly via Rust's `include_bytes!`, which is simpler and removes the C++ toolchain dependency.
 
 ### 4.3 Shader Variant Generation for dtype / Layout Combinations
 
-Each op requires variants for supported dtypes (f32, f16). We generate variants by passing
-`-D` preprocessor defines to `glslc`:
+Mouse's `src/ops/shader_variants.txt` (69 rows, 168 modules, already committed) is the single
+source of truth for variant generation. Format per row:
 
-```glsl
-// elementwise_add.comp
-#extension GL_EXT_shader_16bit_storage : require   // guarded by variant
-#ifdef DTYPE_F16
-layout(set=0, binding=0) buffer In0  { float16_t data[]; };
-#else
-layout(set=0, binding=0) buffer In0  { float    data[]; };
-#endif
+```
+<stem>TAB<glsl_source>TAB<comma-separated -D defines>
 ```
 
-The build script instantiates one `glslc` invocation per `(op, dtype)` pair, naming outputs
-`elementwise_add_f32.spv`, `elementwise_add_f16.spv`, etc. ExecuTorch's `gen_vulkan_spv.py`
-uses a yaml-driven variant table for this; we use a Rust struct in `build.rs` — same concept.
+Example:
+```
+ew_binary_add_f32    ew_binary.comp    EW_OP=OP_ADD,SCALAR_T=float,DTYPE_F32
+ew_binary_add_f16    ew_binary.comp    EW_OP=OP_ADD,SCALAR_T=float16_t,DTYPE_F16
+```
+
+`build.rs` compiles each row with `-D<define>` for each comma-separated entry. The template
+shader guards code paths:
+
+```glsl
+// ew_binary.comp
+#ifdef DTYPE_F16
+layout(set=0, binding=0) buffer In0 { float16_t data[]; };
+#else
+layout(set=0, binding=0) buffer In0 { float data[]; };
+#endif
+```
 
 At runtime, the engine selects the variant matching the tensor dtype reported by ORT. If the
 device does not support `shaderFloat16`, the f16 pipeline is never created and ops on f16
 tensors fall back to f32 upcasting (tracked as a capability flag on the device handle).
+
+XL kernels (`matmul_nbits.comp`, etc.) are direct sources compiled without a variant-table row:
+their variant branching is internal to the GLSL file, and they carry their own tile-config
+specialization-constant paths.
 
 ### 4.4 Specialization Constants vs. Push Constants
 
@@ -665,6 +721,58 @@ ORT output (CPU ptr written)
 - Weight prepacking
 - Pipeline cache persistence (file I/O can be added without touching the core path)
 - Per-vendor workgroup tuning
+
+### 9.5 Engine Seams for XL Kernels (post-v0, implemented)
+
+These four seams are vocabulary additions to `rust/src/engine.rs` and `rust/src/registry.rs`.
+They do not require a running Vulkan device and are therefore implemented now, before the
+shaders exist, so Mouse can build XL-kernel claim predicates and translate handlers against
+a stable contract.
+
+**Seam 1 — Prepack hook (`OP_COVERAGE.md` §8.2.1)**
+
+Weight prepacking for block-quantized kernels (`MatMulNBits`, `GroupQueryAttention`,
+`GatherBlockQuantized`). Contract: `CompileContext::request_prepack(PrepackRequest)` emits a
+pack request at Compile time; the engine calls `req.pack_fn(PackInput)` once per unique
+`PackKey`, uploads the result, and stores `PrepackResult` in `Plan::prepacked`.
+At Compute time, `DispatchContext::resolve_prepacked(&PackKey)` returns the handles.
+
+Key invariants (P1–P6):
+- Runs **after** device selection and tile-config choice, because the packed layout depends on
+  `TileConfig` (`tile_n`, `tile_m`, `block_size`).
+- Cached on `PackKey(initializer, config, variant)` — one upload per unique key regardless of
+  how many ops reference the weight.
+- Scales and zero-points are **separate `Vec<u8>` outputs** and separate `BufferView` bindings.
+- The ONNX-layout weight is droppable after packing (engine clears the staging buffer).
+- `pack_fn: fn(PackInput) -> PackOutput` is pure (no Vulkan); lives in `ops::quant::prepack`.
+- The claim predicate does not depend on the prepack path (claiming and prepacking are decoupled).
+
+`compile_hook_for(&NodeDesc) -> Option<CompileHook>` in `registry.rs` is the stub dispatch
+point; Mouse fills in the per-op hooks.
+
+**Seam 2 — KV-cache aliasing (`GroupQueryAttention`)**
+
+`DispatchContext::bind_aliased_output(&TensorRef, &OutRef)` declares that `present` should
+write into the `past` allocation. Default impl returns `resolve(input)`, which is correct
+for test stubs and trivially correct when KV cache is not needed.
+
+**Coordination note for Tank:** the handle-based allocator must not trigger its generation-stamped
+quarantine-on-free between the aliased input read and the aliased output write. The engine's
+alias table marks the handle as both input and output within the same Compute pass. Tank should
+confirm or propose an alternative before the real GQA kernel lands.
+
+**Seam 3 — `build.rs` consuming `src/ops/shader_variants.txt`**
+
+Implemented in `build.rs`. Mouse's 69-row, 168-module variant table is now the authoritative
+source for all template-based shader compilation. See §4.2–§4.3 above.
+
+**Seam 4 — Indirect dispatch for `QMoE`**
+
+`DispatchContext::dispatch_indirect(IndirectKernelRequest)` issues `vkCmdDispatchIndirect`
+from `k.dispatch_buffer` at `k.dispatch_offset`. A prior dispatch writes the `[u32; 3]`
+workgroup counts; the engine inserts a `ShaderWrite → ShaderRead` barrier automatically on
+`dispatch_buffer`. Default impl returns `Err(EpError::Internal(...))` — concrete engine
+implementation required before QMoE's fast path is usable.
 
 ---
 

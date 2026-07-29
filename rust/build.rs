@@ -166,8 +166,10 @@ fn compile_shaders(out_dir: &Path) {
     let glsl_dir = manifest.join("shaders").join("glsl");
     let include_dir = manifest.join("shaders").join("include");
     let spv_dir = out_dir.join("spv");
+    let variant_table = manifest.join("src").join("ops").join("shader_variants.txt");
 
-    let mut sources: Vec<PathBuf> = Vec::new();
+    // ── Collect direct .comp sources (hand-written XL kernels, utils, etc.) ────────────
+    let mut direct_sources: Vec<PathBuf> = Vec::new();
     if glsl_dir.is_dir() {
         let entries = fs::read_dir(&glsl_dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", glsl_dir.display()));
@@ -175,20 +177,28 @@ fn compile_shaders(out_dir: &Path) {
             let path = entry.expect("cannot read a shaders/glsl directory entry").path();
             if path.is_file() && path.extension() == Some(OsStr::new("comp")) {
                 println!("cargo:rerun-if-changed={}", path.display());
-                sources.push(path);
+                direct_sources.push(path);
             }
         }
     }
-    // Deterministic order → deterministic generated module → reproducible builds.
-    sources.sort();
+    direct_sources.sort();
+
+    // ── Collect variant rows from shader_variants.txt (Seam 3) ───────────────────────
+    // Format per row: <stem>\t<glsl_source>\t<comma-separated -D defines>
+    // The stem is the output module name; glsl_source is a path relative to shaders/glsl/.
+    println!("cargo:rerun-if-changed={}", variant_table.display());
+    let variants: Vec<VariantRow> = if variant_table.is_file() {
+        parse_shader_variants(&variant_table)
+    } else {
+        Vec::new()
+    };
 
     if include_dir.is_dir() {
         println!("cargo:rerun-if-changed={}", include_dir.display());
     }
 
-    // Nothing to compile (the M0 state, before Switch lands the first `.comp`): emit an empty
-    // module and do not require a Vulkan SDK on the build machine.
-    if sources.is_empty() {
+    // Nothing to compile: emit an empty module.
+    if direct_sources.is_empty() && variants.is_empty() {
         write_shader_modules(out_dir, &[]);
         return;
     }
@@ -197,28 +207,32 @@ fn compile_shaders(out_dir: &Path) {
         Some(g) => g,
         None if env::var(ENV_ALLOW_MISSING_GLSLC).as_deref() == Ok("1") => {
             println!(
-                "cargo:warning=glslc not found and {ENV_ALLOW_MISSING_GLSLC}=1: {} shader(s) were \
-                 NOT compiled. The resulting artifact cannot create any compute pipeline and must \
-                 not be shipped.",
-                sources.len()
+                "cargo:warning=glslc not found and {ENV_ALLOW_MISSING_GLSLC}=1: {} direct + {} \
+                 variant shader(s) were NOT compiled. The resulting artifact cannot create any \
+                 compute pipeline and must not be shipped.",
+                direct_sources.len(),
+                variants.len()
             );
             write_shader_modules(out_dir, &[]);
             return;
         }
-        None => panic!(
-            "glslc not found but {} shader(s) exist in {}. Install the Vulkan SDK (glslc is at \
-             $VULKAN_SDK/bin/glslc) or put glslc on PATH. Set {ENV_ALLOW_MISSING_GLSLC}=1 to build \
-             a shader-less artifact for lint-only lanes.",
-            sources.len(),
-            glsl_dir.display()
-        ),
+        None => {
+            let total = direct_sources.len() + variants.len();
+            panic!(
+                "glslc not found but {total} shader(s) exist. Install the Vulkan SDK or put glslc \
+                 on PATH. Set {ENV_ALLOW_MISSING_GLSLC}=1 to build a shader-less artifact for \
+                 lint-only lanes."
+            );
+        }
     };
 
     fs::create_dir_all(&spv_dir)
         .unwrap_or_else(|e| panic!("cannot create {}: {e}", spv_dir.display()));
 
     let mut compiled: Vec<(String, PathBuf)> = Vec::new();
-    for src in &sources {
+
+    // ── Compile direct .comp sources ─────────────────────────────────────────────────
+    for src in &direct_sources {
         let stem = src
             .file_stem()
             .and_then(OsStr::to_str)
@@ -228,28 +242,121 @@ fn compile_shaders(out_dir: &Path) {
 
         let mut cmd = Command::new(&glslc);
         cmd.arg("-fshader-stage=compute")
-            .arg("--target-env=vulkan1.1") // DESIGN.md §7.4: default SPIR-V target.
+            .arg("--target-env=vulkan1.1")
             .arg("-O")
             .arg(format!("-I{}", include_dir.display()))
             .arg("-o")
             .arg(&spv)
             .arg(src);
 
-        let out = cmd
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run {}: {e}", glslc.display()));
-        if !out.status.success() {
-            panic!(
-                "glslc failed for {}:\n{}\n{}",
-                src.display(),
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
+        run_glslc(&glslc, cmd, src.display().to_string().as_str());
         compiled.push((stem, spv));
     }
 
+    // ── Compile variant rows ─────────────────────────────────────────────────────────
+    for row in &variants {
+        let src = glsl_dir.join(&row.glsl_source);
+        if !src.is_file() {
+            panic!(
+                "shader_variants.txt row '{}': source '{}' not found at '{}'",
+                row.stem,
+                row.glsl_source,
+                src.display()
+            );
+        }
+        let spv = spv_dir.join(format!("{}.spv", row.stem));
+
+        let mut cmd = Command::new(&glslc);
+        cmd.arg("-fshader-stage=compute")
+            .arg("--target-env=vulkan1.1")
+            .arg("-O")
+            .arg(format!("-I{}", include_dir.display()));
+        for define in &row.defines {
+            cmd.arg(format!("-D{define}"));
+        }
+        cmd.arg("-o").arg(&spv).arg(&src);
+
+        run_glslc(&glslc, cmd, &format!("{}@{}", row.glsl_source, row.stem));
+        compiled.push((row.stem.clone(), spv));
+    }
+
+    // Deterministic order → reproducible builds.
+    compiled.sort_by(|a, b| a.0.cmp(&b.0));
+
     write_shader_modules(out_dir, &compiled);
+}
+
+/// One parsed row from `shader_variants.txt`.
+struct VariantRow {
+    /// Output SPIR-V module stem (also the name key in the shader-modules table).
+    stem: String,
+    /// Source `.comp` filename relative to `shaders/glsl/`.
+    glsl_source: String,
+    /// `-D` defines, e.g. `["EW_OP=OP_ADD", "SCALAR_T=float", "DTYPE_F32"]`.
+    defines: Vec<String>,
+}
+
+/// Parse `shader_variants.txt`.
+///
+/// Format per non-blank, non-comment line:
+/// ```
+/// <stem>\t<glsl_source>\t<comma-separated defines>
+/// ```
+/// Blank lines and lines starting with `#` are ignored. Panics if any data line is malformed.
+fn parse_shader_variants(path: &Path) -> Vec<VariantRow> {
+    let content =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let mut rows = Vec::new();
+    for (lineno, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        if parts.len() < 2 {
+            panic!(
+                "{}:{}: malformed row (expected at least 2 tab-separated fields): '{line}'",
+                path.display(),
+                lineno + 1
+            );
+        }
+        let stem = parts[0].trim().to_string();
+        let glsl_source = parts[1].trim().to_string();
+        let defines = if parts.len() >= 3 && !parts[2].trim().is_empty() {
+            parts[2]
+                .split(',')
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if stem.is_empty() || glsl_source.is_empty() {
+            panic!(
+                "{}:{}: stem or glsl_source is empty: '{line}'",
+                path.display(),
+                lineno + 1
+            );
+        }
+        rows.push(VariantRow { stem, glsl_source, defines });
+    }
+    rows
+}
+
+/// Run a glslc command, panicking with human-readable output on failure.
+fn run_glslc(glslc: &Path, cmd: Command, source_label: &str) {
+    let mut cmd = cmd;
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", glslc.display()));
+    if !out.status.success() {
+        panic!(
+            "glslc failed for {}:\n{}\n{}",
+            source_label,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 /// Emit `$OUT_DIR/shader_modules.rs`: one `pub const <STEM_UPPER>_SPV: &[u8]` per shader plus a

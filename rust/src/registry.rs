@@ -1250,6 +1250,32 @@ pub fn spec_for(desc: &NodeDesc) -> Option<&'static OpSpec> {
     lookup(&desc.qualified_name()).filter(|s| s.is_live())
 }
 
+/// A compile hook: a pure function from op spec and node to zero or more prepack requests.
+///
+/// Returned by [`compile_hook_for`]; called once per live node during `Compile`, after device
+/// selection. Ops that do not need weight prepacking return `None` from `compile_hook_for`; the
+/// engine skips the call entirely.
+///
+/// **Mouse fills in the non-`None` paths.** Switch owns the dispatch machinery. The types here
+/// must match [`crate::engine::CompileContext`].
+pub type CompileHook = fn(
+    spec: &OpSpec,
+    desc: &NodeDesc,
+    ctx: &mut dyn crate::engine::CompileContext,
+) -> EpResult<()>;
+
+/// Return the compile hook for this node, if any.
+///
+/// `None` means "nothing to do at Compile time for this op" — the engine can skip the call.
+/// `Some(hook)` means the engine must call `hook(spec, desc, ctx)` before the first `Compute`.
+///
+/// **STUB:** Mouse fills in the per-op hooks when writing `MatMulNBits`, `GroupQueryAttention`,
+/// etc. For now the function always returns `None`, which is correct: no op currently calls
+/// `CompileContext::request_prepack`.
+pub fn compile_hook_for(_desc: &NodeDesc) -> Option<CompileHook> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -221,16 +221,188 @@ impl NodeDesc {
     }
 }
 
-/// A compiled fused subgraph: topologically ordered nodes plus the I/O binding table.
+/// Compiled fused subgraph: topologically ordered nodes, I/O binding table, and any
+/// prepack requests emitted by op handlers at Compile time.
 ///
-/// Owned by the `OrtNodeComputeInfo` that `ep.rs` hands back to ORT, and dropped when ORT releases
-/// it. Prepacked weights and cached command-buffer recordings hang off this once Switch lands
-/// them.
-#[derive(Debug, Clone, Default)]
+/// Owned by the `OrtNodeComputeInfo` that `ep.rs` hands back to ORT, and dropped when ORT
+/// releases it. Prepacked weight buffers and any cached command-buffer recordings hang off
+/// this struct for the lifetime of the compiled subgraph.
+#[derive(Default)]
 pub struct Plan {
     pub nodes: Vec<NodeDesc>,
     pub inputs: Vec<TensorRef>,
     pub outputs: Vec<OutRef>,
+    /// Prepack requests collected from op handlers during the Compile pass.
+    ///
+    /// The engine processes these after all nodes are visited: for each request it calls
+    /// `pack_fn`, uploads the result to device memory, and moves the handles into `prepacked`.
+    /// Callers of the engine's compile logic should drain this vec and populate `prepacked`
+    /// before the Plan is handed to ORT.
+    pub prepack_requests: Vec<PrepackRequest>,
+    /// Results of processed prepack requests, keyed by [`PackKey`].
+    ///
+    /// Populated by the engine during Compile; empty until the engine processes
+    /// `prepack_requests`. At Compute time, [`DispatchContext::resolve_prepacked`] looks up
+    /// packed buffers here.
+    pub prepacked: std::collections::HashMap<PackKey, PrepackResult>,
+}
+
+// -------------------------------------------------------------------------------------------
+// Prepack seam — weight prepacking for block-quantized kernels (OP_COVERAGE.md §8.2.1)
+// -------------------------------------------------------------------------------------------
+
+/// Tile/variant configuration that determines packed weight memory layout.
+///
+/// Part of the [`PackKey`] cache key (`OP_COVERAGE.md` §8.2.1 P2). Distinct from
+/// specialization constants because it affects *memory layout*, not just shader execution:
+/// two dispatches with different tile configs would consume data in incompatible formats.
+///
+/// Chosen by the engine once per device during `Compile`, then fixed for the lifetime of the
+/// `Plan`. This is what makes "prepack must run after device selection" true (P1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TileConfig {
+    /// Tile width for the B matrix (N-dimension, output columns).
+    pub tile_n: u32,
+    /// Tile height for the A matrix (M-dimension, output rows).
+    pub tile_m: u32,
+    /// Quantization block size; must match the `block_size` attribute of the op.
+    pub block_size: u32,
+}
+
+/// Cache key for a prepacked weight result (P2).
+///
+/// The engine stores exactly one [`PrepackResult`] per `PackKey` in [`Plan::prepacked`].
+/// An initializer shared by two nodes (e.g., a weight matrix used in both prefill and decode
+/// variants) must produce the same key so it is uploaded once, not twice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PackKey {
+    /// ONNX graph value name of the initializer. Stable across `Run` calls for the same model.
+    pub initializer: String,
+    /// Tile/variant config that determines the packed layout.
+    pub config: TileConfig,
+    /// Shader variant stem (e.g. `"matmul_nbits_q4_b32_gemv"`).
+    pub variant: &'static str,
+}
+
+/// Input to a pack function (P6 — pure, no Vulkan handles).
+///
+/// All fields are views into the original initializer bytes from ORT. The pack function reads
+/// these and writes [`PackOutput`]; it never allocates device memory and never calls Vulkan.
+/// This is what keeps the nibble-unpack/interleave logic inside `src/ops/**` layering rules.
+pub struct PackInput<'a> {
+    /// The quantized weight bytes, in ONNX layout (input 1 of `MatMulNBits`).
+    pub weight: &'a [u8],
+    /// Scale bytes, in ONNX layout (input 2 of `MatMulNBits`).
+    pub scales: &'a [u8],
+    /// Zero-point bytes, if present in the graph (input 3 of `MatMulNBits`).
+    pub zero_points: Option<&'a [u8]>,
+    /// The tile config that determines the packed layout.
+    pub config: &'a TileConfig,
+}
+
+/// Output of a pack function (P3 — scales and zero-points as separate allocations).
+///
+/// Separate `Vec<u8>` for each logical tensor (P3). Interleaving would save one descriptor
+/// binding but destroy the dense `uvec4` streaming that is the entire GEMV bandwidth argument.
+pub struct PackOutput {
+    /// The repacked weight bytes in GPU-friendly layout.
+    pub packed_weight: Vec<u8>,
+    /// The repacked scale bytes.
+    pub packed_scales: Vec<u8>,
+    /// The repacked zero-point bytes; `None` for symmetric quantization (no zero-points input).
+    pub packed_zero_points: Option<Vec<u8>>,
+}
+
+/// A prepack request emitted by a kernel handler at Compile time (P1).
+///
+/// The engine collects these from [`CompileContext::request_prepack`] during `Compile`, then
+/// — after all nodes have been visited — calls `pack_fn(input)`, uploads the result to device
+/// memory, and stores the buffer handles in [`Plan::prepacked`]. The original ONNX-layout
+/// initializer bytes are then droppable (P4).
+///
+/// `pack_fn` must live in `ops::quant::prepack` (P6): it is a pure `PackInput → PackOutput`
+/// function with no Vulkan handles, keeping the nibble-unpack/interleave logic next to the
+/// kernel that consumes it.
+pub struct PrepackRequest {
+    /// Cache key. If a matching entry already exists in `Plan::prepacked`, this request is a
+    /// no-op (P2) and `pack_fn` is never called for this initializer again.
+    pub key: PackKey,
+    /// The quantized weight tensor (input 1 of `MatMulNBits`, etc.).
+    pub weight: TensorRef,
+    /// The scales tensor (input 2).
+    pub scales: TensorRef,
+    /// The zero-points tensor (input 3), if present. `None` for symmetric quantization.
+    pub zero_points: Option<TensorRef>,
+    /// The pure byte-layout transform (P6). Called exactly once per unique [`PackKey`].
+    ///
+    /// The function pointer type `fn(PackInput<'_>) -> PackOutput` uses an implicit HRTB:
+    /// `for<'a> fn(PackInput<'a>) -> PackOutput`. Any concrete function with this signature
+    /// (e.g., `ops::quant::prepack_matmul_nbits`) satisfies this type.
+    pub pack_fn: fn(PackInput<'_>) -> PackOutput,
+}
+
+/// Device-buffer handles produced by processing one [`PrepackRequest`].
+///
+/// Stored in [`Plan::prepacked`] keyed by [`PackKey`]. At Compute time,
+/// [`DispatchContext::resolve_prepacked`] looks up packed buffers here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrepackResult {
+    /// The packed weight buffer (binding 0 of the quantized kernel).
+    pub weight: BufferView,
+    /// The scales buffer (binding 1 — separate from weight, per P3).
+    pub scales: BufferView,
+    /// The zero-points buffer (binding 2); `None` for symmetric quantization.
+    pub zero_points: Option<BufferView>,
+}
+
+/// Context available to op handlers during the Compile phase.
+///
+/// Called once per claimed node, during the Compile pass, before any Compute call. Handlers
+/// that need weight prepacking emit [`PrepackRequest`]s here; all other ops leave Compile
+/// as a no-op via the `None` path in the registry's `compile_hook_for`.
+///
+/// Separate from [`DispatchContext`] because Compile and Compute are different phases:
+/// Compile has access to initializer bytes and device tile-config; Compute has command-buffer
+/// recording state. The two phases must not be conflated (see `ENGINE.md` §3.5.1).
+pub trait CompileContext {
+    /// Emit a prepack request.
+    ///
+    /// If a result for `req.key` already exists in `Plan::prepacked`, this is a no-op (P2).
+    /// The engine processes all requests after visiting all nodes, so the emission order does
+    /// not matter and emitting the same key twice is safe.
+    fn request_prepack(&mut self, req: PrepackRequest) -> EpResult<()>;
+}
+
+// -------------------------------------------------------------------------------------------
+// Indirect dispatch seam — QMoE / device-computed workgroup counts (OP_COVERAGE.md §9.5 #4)
+// -------------------------------------------------------------------------------------------
+
+/// A request to run a compute shader with device-computed workgroup counts.
+///
+/// Used by `QMoE`: a prior dispatch writes `[workgroups_x, workgroups_y, workgroups_z]`
+/// (as `[u32; 3]`) into `dispatch_buffer` at `dispatch_offset`, then `dispatch_indirect`
+/// issues `vkCmdDispatchIndirect` from that buffer. The engine inserts a
+/// `ShaderWrite → ShaderRead` barrier automatically on `dispatch_buffer` between the
+/// write dispatch and this call.
+///
+/// Defined as a separate struct (rather than a `workgroups` enum inside [`KernelRequest`])
+/// to avoid changing `KernelRequest` and all existing call sites. Unification can happen later
+/// once the design stabilises.
+#[derive(Debug, Clone)]
+pub struct IndirectKernelRequest {
+    /// Shader stem as embedded by `build.rs`.
+    pub shader: &'static str,
+    /// Specialization constants, in binding order.
+    pub spec_constants: Vec<u32>,
+    /// Push-constant payload.
+    pub push_constants: Vec<u8>,
+    /// Storage-buffer bindings, in set-0 binding order.
+    pub bindings: Vec<BufferView>,
+    /// Buffer holding the workgroup counts. Written by a prior dispatch.
+    pub dispatch_buffer: BufferView,
+    /// Byte offset within `dispatch_buffer` where the `[u32; 3]` counts start.
+    /// Must be a multiple of 4.
+    pub dispatch_offset: u64,
 }
 
 // -------------------------------------------------------------------------------------------
@@ -278,6 +450,69 @@ pub trait DispatchContext {
     /// constant input (`Reshape`'s shape input, `Slice`'s starts/ends). Returns `None` when the
     /// input is not a constant.
     fn read_const_i64(&self, r: &TensorRef) -> Option<Vec<i64>>;
+
+    // ── Seam 1: prepacked weight resolution (OP_COVERAGE.md §8.2.1 P5) ──────────────────
+
+    /// Resolve a prepacked weight buffer at Compute time (P5).
+    ///
+    /// Called by handlers that use block-quantized weights, in place of `resolve` for the
+    /// weight, scales, and zero-points inputs. The engine automatically returns the handles
+    /// uploaded during `Compile` from `Plan::prepacked`.
+    ///
+    /// Returns `Err(EpError::Internal)` if no prepack result exists for `key` — this indicates
+    /// a programming error: the `CompileContext::request_prepack` call should have run during
+    /// `Compile` before this is called during `Compute`.
+    ///
+    /// **Default:** returns an internal error. Concrete engine implementations must override.
+    fn resolve_prepacked(&self, key: &PackKey) -> EpResult<PrepackResult> {
+        let _ = key;
+        Err(EpError::Internal(
+            "resolve_prepacked not implemented in this DispatchContext (stub)".into(),
+        ))
+    }
+
+    // ── Seam 2: KV-cache in-place aliasing (OP_COVERAGE.md §9.5 #3) ─────────────────────
+
+    /// Declare that output `out` aliases input `input` — they use the same device allocation.
+    ///
+    /// Used by `GroupQueryAttention` to update the KV cache in-place: `present_key` writes
+    /// into the `past_key` allocation, eliminating a full-cache copy per decode step.
+    ///
+    /// The engine validates that the op's claim predicate guarantees no read-after-write hazard
+    /// through the alias. The returned `BufferView` is the same handle as `resolve(input)` but
+    /// typed as an output binding.
+    ///
+    /// **Coordination note for Tank (M2):** the handle-based allocator uses generation-stamped
+    /// quarantine on free. An aliased output must NOT trigger a free-and-reallocate cycle — the
+    /// existing handle must stay live for the entire Compute pass of this Plan. The engine's
+    /// alias table must mark the handle as both input and output so the allocator's quarantine
+    /// is not triggered between the input read and the output write. Please confirm this is
+    /// compatible with the quarantine protocol or propose an alternative.
+    ///
+    /// **Default:** calls `self.resolve(input)` — this returns the input buffer as the output
+    /// handle, which is correct semantics for implementations that do not track aliasing
+    /// separately (e.g., the `Recorder` test stub).
+    fn bind_aliased_output(&mut self, input: &TensorRef, out: &OutRef) -> EpResult<BufferView> {
+        let _ = out;
+        self.resolve(input)
+    }
+
+    // ── Seam 4: indirect dispatch for QMoE (OP_COVERAGE.md §9.5 #2) ─────────────────────
+
+    /// Record a dispatch with device-computed workgroup counts.
+    ///
+    /// Used by `QMoE` (masked-dense first pass is not this; this is the fast MoE path where a
+    /// prior dispatch writes the workgroup counts into `k.dispatch_buffer`). The engine
+    /// inserts a `ShaderWrite → ShaderRead` barrier on `k.dispatch_buffer` automatically.
+    ///
+    /// **Default:** returns an internal error. Concrete engine implementations must override
+    /// when the QMoE fast path is enabled.
+    fn dispatch_indirect(&mut self, k: IndirectKernelRequest) -> EpResult<()> {
+        let _ = k;
+        Err(EpError::Internal(
+            "dispatch_indirect not implemented in this DispatchContext (stub)".into(),
+        ))
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -432,5 +667,204 @@ mod tests {
     fn no_shaders_are_embedded_yet() {
         assert!(shaders::SHADER_MODULES.is_empty());
         assert!(shaders::find("elementwise_binary").is_none());
+    }
+
+    // ── Seam 1: prepack vocabulary ────────────────────────────────────────────────────────
+
+    fn dummy_pack_fn(input: PackInput<'_>) -> PackOutput {
+        PackOutput {
+            packed_weight: input.weight.to_vec(),
+            packed_scales: input.scales.to_vec(),
+            packed_zero_points: input.zero_points.map(|zp| zp.to_vec()),
+        }
+    }
+
+    #[test]
+    fn pack_key_hash_equality() {
+        let config = TileConfig {
+            tile_n: 8,
+            tile_m: 4,
+            block_size: 32,
+        };
+        let k1 = PackKey {
+            initializer: "weight0".into(),
+            config: config.clone(),
+            variant: "matmul_nbits_q4_b32_gemv",
+        };
+        let k2 = PackKey {
+            initializer: "weight0".into(),
+            config: config.clone(),
+            variant: "matmul_nbits_q4_b32_gemv",
+        };
+        let k3 = PackKey {
+            initializer: "weight1".into(),
+            config,
+            variant: "matmul_nbits_q4_b32_gemv",
+        };
+        assert_eq!(k1, k2, "same initializer+config+variant must be equal");
+        assert_ne!(k1, k3, "different initializer must differ");
+
+        use std::collections::HashMap;
+        let mut m = HashMap::new();
+        m.insert(k1, 42u32);
+        assert_eq!(m[&k2], 42, "equal keys must hit same map entry");
+    }
+
+    #[test]
+    fn pack_key_different_tile_config_differs() {
+        let k1 = PackKey {
+            initializer: "w".into(),
+            config: TileConfig { tile_n: 8, tile_m: 4, block_size: 32 },
+            variant: "v",
+        };
+        let k2 = PackKey {
+            initializer: "w".into(),
+            config: TileConfig { tile_n: 16, tile_m: 4, block_size: 32 },
+            variant: "v",
+        };
+        assert_ne!(k1, k2, "different tile_n must differ");
+    }
+
+    #[test]
+    fn prepack_result_construction() {
+        let bv = BufferView::from_raw(42);
+        let r = PrepackResult {
+            weight: bv,
+            scales: bv,
+            zero_points: None,
+        };
+        assert_eq!(r.weight, bv);
+        assert!(r.zero_points.is_none());
+    }
+
+    #[test]
+    fn prepack_result_with_zero_points() {
+        let bv = BufferView::from_raw(1);
+        let bv2 = BufferView::from_raw(2);
+        let r = PrepackResult {
+            weight: bv,
+            scales: bv,
+            zero_points: Some(bv2),
+        };
+        assert_eq!(r.zero_points.unwrap().as_raw(), 2);
+    }
+
+    #[test]
+    fn plan_default_empty() {
+        let p = Plan::default();
+        assert!(p.nodes.is_empty());
+        assert!(p.prepack_requests.is_empty());
+        assert!(p.prepacked.is_empty());
+    }
+
+    #[test]
+    fn prepack_request_stores_pack_fn() {
+        let config = TileConfig { tile_n: 8, tile_m: 4, block_size: 32 };
+        let req = PrepackRequest {
+            key: PackKey {
+                initializer: "w".into(),
+                config: config.clone(),
+                variant: "v",
+            },
+            weight: TensorRef { name: "weight".into(), desc: None, is_initializer: true },
+            scales: TensorRef { name: "scales".into(), desc: None, is_initializer: true },
+            zero_points: None,
+            pack_fn: dummy_pack_fn,
+        };
+        let weight_data: &[u8] = &[1, 2, 3, 4];
+        let scale_data: &[u8] = &[5, 6];
+        let out = (req.pack_fn)(PackInput {
+            weight: weight_data,
+            scales: scale_data,
+            zero_points: None,
+            config: &config,
+        });
+        assert_eq!(out.packed_weight, &[1, 2, 3, 4]);
+        assert_eq!(out.packed_scales, &[5, 6]);
+        assert!(out.packed_zero_points.is_none());
+    }
+
+    // ── Seam 4: indirect dispatch vocab ──────────────────────────────────────────────────
+
+    #[test]
+    fn indirect_kernel_request_construction() {
+        let bv = BufferView::from_raw(5);
+        let req = IndirectKernelRequest {
+            shader: "qmoe_dispatch",
+            spec_constants: vec![64],
+            push_constants: vec![],
+            bindings: vec![bv],
+            dispatch_buffer: bv,
+            dispatch_offset: 0,
+        };
+        assert_eq!(req.shader, "qmoe_dispatch");
+        assert_eq!(req.dispatch_buffer.as_raw(), 5);
+        assert_eq!(req.dispatch_offset, 0);
+    }
+
+    // ── Default DispatchContext method smoke tests ────────────────────────────────────────
+
+    struct StubCtx;
+    impl DispatchContext for StubCtx {
+        fn resolve(&mut self, _r: &TensorRef) -> EpResult<BufferView> {
+            Ok(BufferView::from_raw(0))
+        }
+        fn bind_output(&mut self, _o: &OutRef, _d: TensorDesc) -> EpResult<BufferView> {
+            Ok(BufferView::from_raw(0))
+        }
+        fn alloc_temp(&mut self, _d: TensorDesc) -> EpResult<BufferView> {
+            Ok(BufferView::from_raw(0))
+        }
+        fn dispatch(&mut self, _k: KernelRequest) -> EpResult<()> {
+            Ok(())
+        }
+        fn read_const_i64(&self, _r: &TensorRef) -> Option<Vec<i64>> {
+            None
+        }
+    }
+
+    #[test]
+    fn default_resolve_prepacked_returns_err() {
+        let ctx = StubCtx;
+        let key = PackKey {
+            initializer: "w".into(),
+            config: TileConfig { tile_n: 8, tile_m: 4, block_size: 32 },
+            variant: "v",
+        };
+        let result = ctx.resolve_prepacked(&key);
+        assert!(result.is_err(), "default should return Err");
+        match result {
+            Err(EpError::Internal(_)) => {}
+            other => panic!("expected Internal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn default_bind_aliased_output_resolves_input() {
+        let mut ctx = StubCtx;
+        let input = TensorRef { name: "past_key".into(), desc: None, is_initializer: false };
+        let out = OutRef { name: "present_key".into(), desc: None };
+        let result = ctx.bind_aliased_output(&input, &out);
+        assert!(result.is_ok(), "default aliased should return resolve result");
+    }
+
+    #[test]
+    fn default_dispatch_indirect_returns_err() {
+        let mut ctx = StubCtx;
+        let bv = BufferView::from_raw(0);
+        let req = IndirectKernelRequest {
+            shader: "s",
+            spec_constants: vec![],
+            push_constants: vec![],
+            bindings: vec![],
+            dispatch_buffer: bv,
+            dispatch_offset: 0,
+        };
+        let result = ctx.dispatch_indirect(req);
+        assert!(result.is_err(), "default dispatch_indirect should return Err");
+        match result {
+            Err(EpError::Internal(_)) => {}
+            other => panic!("expected Internal, got {:?}", other),
+        }
     }
 }

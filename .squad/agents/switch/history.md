@@ -143,3 +143,57 @@ including test code. Any module that needs test `Capabilities` values must use
 **Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
 clean. 185 tests pass (29 new since last session).
 
+---
+
+### 2026-07-28T22:28:08-07:00 — Engine seams for XL kernels (Mouse's four seams)
+
+**Task:** Implement four engine seams blocking Mouse's XL-kernel work: (1) prepack hook,
+(2) KV-cache aliasing, (3) build.rs variant table, (4) indirect dispatch.
+
+**Produced:**
+
+- `rust/src/engine.rs`:
+  - Added `Plan` struct with `prepack_requests: Vec<PrepackRequest>` and
+    `prepacked: HashMap<PackKey, PrepackResult>` fields.
+  - Added Seam 1 vocabulary: `TileConfig`, `PackKey`, `PackInput<'a>`, `PackOutput`,
+    `PrepackRequest`, `PrepackResult`, `CompileContext` trait.
+  - Added Seam 4 vocabulary: `IndirectKernelRequest`.
+  - Extended `DispatchContext` trait with default methods for Seams 1, 2, 4:
+    `resolve_prepacked` (default: Err), `bind_aliased_output` (default: resolve input),
+    `dispatch_indirect` (default: Err).
+  - Added 13 new unit tests covering all new vocabulary types.
+
+- `rust/src/registry.rs`:
+  - Added `CompileHook` type alias.
+  - Added `compile_hook_for(&NodeDesc) -> Option<CompileHook>` stub (always returns `None`;
+    Mouse fills in per-op hooks).
+
+- `rust/build.rs` (Tank's file — minimal necessary edit for Seam 3):
+  - Added `VariantRow` struct and `parse_shader_variants(path) -> Vec<VariantRow>`.
+  - Added `run_glslc(glslc, cmd, label)` helper.
+  - `compile_shaders` now has two paths: direct `.comp` files + variant rows from table.
+  - `cargo:rerun-if-changed` added for `src/ops/shader_variants.txt`.
+
+- `docs/ENGINE.md`:
+  - §4.2 rewritten to describe the two-path build pipeline (Seam 3).
+  - §4.3 rewritten to describe `shader_variants.txt` format and XL-kernel direct sources.
+  - §9.5 added: all four seams documented.
+
+- `.squad/decisions/inbox/switch-engine-seams.md`: 10 decisions, including the llama.cpp
+  adaptation assessment (D-S4-10).
+
+**llama.cpp adaptation judgment:**
+Mouse's "useless" claim is too strong. Block format mismatch is real (nibble layout differs),
+so no direct code copying. But tiling strategy, subgroup reduction shape, and dequant-in-register
+patterns are directly applicable as algorithmic reference under Rai's green light. Budget
+algorithm study time for items 1–2 specifically.
+
+**`DispatchContext` default methods lesson:**
+Rust trait default methods can return `Err(...)` as defaults — this is the correct pattern for
+"stub methods that must be overridden by concrete engine implementations" while not breaking
+existing test stubs (like `Recorder`). All new methods have defaults so no existing
+implementor needs to change.
+
+**Final state:** `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all
+clean. 195 tests pass (10 new since last session).
+
