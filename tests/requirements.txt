@@ -3,17 +3,43 @@
 
 # ONNX Runtime — must match the ORT_API_VERSION the EP was compiled against.
 # The EP is built against ORT_API_VERSION 27 (ORT 1.27.x) and will refuse to
-# load on an older onnxruntime.
+# load on an older onnxruntime. ORT 1.27 also has a null-allocator PrePack bug
+# (fp16 MatMulNBits → NaN/Inf) and a deleter lifetime issue in the plugin-EP path;
+# both fixed in 1.28.
 onnxruntime>=1.28
 
 # ONNX IR — used to construct single-node test models without onnx.helper boilerplate.
 onnx_ir>=0.1
 
-# ONNX — for protobuf serialization (onnx_ir depends on this).
-onnx>=1.17
+# ONNX — for protobuf serialization and oracle reference semantics.
+#
+# MINIMUM: 1.22.0 (current latest as of 2026-07-29)
+# This is an explicit pin, not a transitive dependency. Pinning ensures the
+# differential oracle uses a known, reproducible version of ONNX op semantics.
+#
+# KNOWN LIMITATION — Attention at opset 24:
+#   onnx 1.22 contains a WRONG reference implementation for ai.onnx::Attention
+#   at opset 24 (Justin Chu, ONNX owner, directive 2026-07-29: fix correct
+#   semantics, no opset bump). The same Attention-24 graph produces DIFFERENT
+#   expected outputs under 1.22 vs the forthcoming fixed release.
+#   TODO(Fact Checker): confirm the exact release containing the fix, then update
+#   this floor to that version. Attention tests in the suite must xfail until then.
+#   See: .squad/decisions/inbox/copilot-directive-attention24-no-bump.md
+#
+# DO NOT rely on onnx_ir or onnx-shape-inference to pull in a safe version
+# transitively. Pin explicitly here and in CI (ONNX_MIN_VERSION in ci.yml env).
+onnx>=1.22.0
 
 # NumPy — tensor feed construction and tolerance comparisons.
 numpy>=1.24
 
 # pytest — test runner.
 pytest>=8.0
+
+# onnx-shape-inference — pure-Python symbolic shape inference (Justin Chu, MIT).
+# Used as an opt-in preprocessing step: infer_symbolic_shapes() fills in output
+# shapes that were left None/dynamic in exported models, turning dynamic-shape
+# declines into claims without any kernel changes.
+# Source: https://github.com/justinchuby/onnx-shape-inference
+onnx-shape-inference>=0.1
+

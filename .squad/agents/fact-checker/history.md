@@ -76,3 +76,61 @@ Initial setup complete.
 **Output files:**
 - `.squad/fact-checker/audit-trail.md` — appended
 - `.squad/decisions/inbox/fact-checker-vulkan-baseline-verification.md` — created
+
+---
+
+## Audit: ONNX Attention-24 Errata Verification — 2026-07-29T09:47:45-07:00
+
+**Task:** Verify Mouse's finding that the ONNX reference implementation of `ai.onnx::Attention`-24 was wrong for `nonpad_kv_seqlen`, and characterise it for Trinity (oracle pin) and Justin (upstream reporting).
+
+**Key learnings:**
+
+1. **ONNX 1.22.0 (June 15, 2026) introduced Attention-24 with the bug — not a hypothetical.** The bug exists in every released stable version of the onnx package that contains Attention-24. Onnx 1.23.0 is the fix, but it is unreleased (dev builds only as of 2026-07-29).
+
+2. **Three distinct bugs, not one.** Wrong causal alignment (top-left instead of bottom-right), NaN for fully-masked rows, and mode-3 qk_matmul_output precision + zeroing. Only the causal alignment bug requires nonpad_kv_seqlen != q_sequence_length; the NaN and mode-3 bugs can manifest even with nonpad_kv_seqlen == q_sequence_length if fully-masked rows occur.
+
+3. **ORT 1.28 is already fixed; the disagreement period is NOW.** ORT 1.28 (July 24, 2026) has correct kernels via PR #28958, but onnx 1.22.0 reference is still wrong. If Trinity runs conformance tests using the onnx Python reference against ORT 1.28 for the affected inputs, she will see false failures. This is time-sensitive.
+
+4. **The oracle pin lower bound suffices, but the pinned version is unreleased.** `onnx >= 1.23` is correct, but 1.23 is not out yet. Immediate workaround: use onnx-weekly dev build (available), or implement expected outputs directly from the spec formula to bypass the library entirely.
+
+5. **No-opset-bump decision is correct per ONNX policy.** The spec text was unambiguous; the reference was simply buggy. Justin (as ONNX owner) has also independently confirmed the no-bump decision.
+
+6. **This is the leading cited example of in-place behavioral correction in ONNX history.** Web research found no comparable precedents of prior scope. The Attention-24 errata note is itself the canonical reference for this class of correction.
+
+7. **opset-based version checks cannot detect this class of defect by construction.** The opset stays 24; the model carries no signal. The only reliable detection is a pinned onnx library version in the test environment. This is a known limitation of C2 fingerprinting that should be documented explicitly.
+
+**Methodology notes:**
+- Primary source for errata text: `defs.cc` SHA 424bd61 via GitHub code search (fragment indexing).
+- ONNX version timeline confirmed via: web search (LF AI Data blog, June 30 2026 for 1.22.0 release date), ORT 1.28 release notes referencing onnx 1.22.0, PyPI onnx-weekly dev build timestamps.
+- ORT PR #28958 merge in 1.28 confirmed via web search.
+- Fixed reference implementation (`op_attention.py` SHA 48e988e) confirmed via GitHub code search from earlier pass.
+- GitHub releases page showed pagination artifacts (only v1.20.0 visible in first fetch) — resolved via targeted web searches for release dates.
+
+**Output files:**
+- `.squad/fact-checker/audit-trail.md` — Claims 1-5 appended
+- `.squad/decisions/inbox/fact-checker-onnx-attention24-oracle.md` — created (Section A: Trinity/Mouse oracle pin; Section B: Justin upstream-ready summary)
+---
+
+## Audit: ONNX Attention Errata — Pass 4 (Focused) — 2026-07-29T10:34:41-07:00
+
+**Task:** Pin, blast radius, C2 blind spot, and ORT divergence — upstream summary dropped per coordinator directive.
+
+**Key learnings:**
+
+1. **The fix commit (2816da65) is dated June 20, 2026 — five days after ONNX 1.22.0 released June 15.** The GitHub commit API gives precise merge dates. Always check the commit timestamp against the release date to establish exactly which release contains a fix.
+
+2. **`onnx >= 1.23` is a lower bound, not an exact pin.** The oracle drifts in one direction. An exact pin would block future onnx upgrades unnecessarily.
+
+3. **The class of no-bump behavioral corrections recurs.** The PR commit message itself cites #7297 (Resize) and #7867 (Attention softcap) as precedents. When evaluating whether a given fix is a one-off, check the PR's own "Why no opset bump" rationale — if it cites prior cases, the class is confirmed recurring.
+
+4. **The PR also patches opset-23 (old.cc).** Checking `old.cc` is mandatory when a fix touches `defs.cc` — the same bug often exists in the previous version's frozen function body.
+
+5. **ORT hard-rejected the path before 1.28.** The wrong kernel existed in ORT 1.22–1.27 but never triggered in production. The active false-failure window is test-harness-specific, not model-execution-specific.
+
+6. **The commit message "Why no opset bump" section is the best primary source for the policy rationale.** It cites specific prior PRs and explains the exact condition under which ONNX allows in-place corrections. Always read this section when evaluating errata.
+
+**Methodology:** Fetched commit SHA via GitHub commits API (path=onnx/reference/ops/op_attention.py, per_page=5). Full commit message retrieved via SHA lookup. old.cc SHA from initial GitHub code search. PR precedents #7297 and #7867 confirmed via web search.
+
+**Output files:**
+- `.squad/fact-checker/audit-trail.md` — Pass 4 entry appended
+- `.squad/decisions/inbox/fact-checker-onnx-attention24-oracle.md` — overwritten with focused content (upstream summary removed; C2 blind-spot section added)

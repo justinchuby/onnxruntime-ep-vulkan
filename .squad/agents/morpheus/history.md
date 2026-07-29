@@ -162,3 +162,67 @@ structure after any edit anchored on a heading.
 📌 **T3 sequencing fixed: `ai.onnx::Attention` first (2026-07-29, Morpheus D23):** GQA sequenced after. The `bind_aliased_output` seam must be designed for both consumers' requirements (Switch + Mouse must coordinate).
 
 📌 **`rustfmt --edition 2021` silently no-ops on edition-2024 crate (2026-07-29, Tank D-T12):** Always use `cargo fmt --all`.
+
+---
+
+## 2026-07-29T09:47:45-07:00 — the first dispatch, and a disclosure whose failure mode inverted
+
+**A disclosure section has to be rewritten when the good news arrives, and that is the hardest time
+to write it well.** §9.1.2 existed to stop us overclaiming execution. On 2026-07-29 a kernel
+actually ran — one elementwise shader, 1024 elements, on Intel Iris Xe and NVIDIA RTX 4060, zero
+validation errors on both. The temptation is to relax the section. The correct move was to notice
+that **the failure mode inverted**: yesterday's risk was claiming execution we had not done;
+today's is letting "we dispatch on two GPUs" stand in for "the EP works", and the gap between those
+two sentences is the entire project. So the section now carries three qualifiers that must travel
+with any citation of the result — **one kernel, no ORT, one OS** — and the line about a result
+obtained only on this desk is more load-bearing than it was, not less. A disclosure that relaxes on
+good news is one nobody should trust on bad news.
+
+**Do not declare a milestone on evidence that bypasses what the milestone is about.** M0 says *a
+stock ORT loads the plugin, enumerates a device, runs a graph containing an `Add` on that device,
+and matches the CPU EP*. The dispatch came from a Rust integration test — no ORT, no graph, no
+claim path. Every clause after "enumerates" is still open. Six criteria met, one partial, two unmet,
+and **the two unmet are the two that define M0**. Assessing criterion by criterion rather than in
+aggregate is what made that visible; an aggregate report would have read "mostly there". The
+dispatch retired the risk that the innermost step was wrong. That was a real risk and it is not the
+milestone.
+
+**A failed capability probe is indistinguishable from a device with no capabilities.** This is the
+sharpest thing I learned this turn. `let _ = props2.push_next(..)` silently discarded the whole
+`pNext` chain — `ash`'s builders are `#[must_use]` and return rather than mutate — so every chained
+capability read zero and subgroup size looked like 0. Nothing was wrong with the device, the driver
+or our reading of the spec: **we never asked the question**, and "no answer" and "answer is zero"
+were the same bytes. Worse, the ambiguity had already bitten: lavapipe's `supportedStages = 0` was
+recorded as a device fact and we can no longer tell from the record which class of error it was.
+Hence §7.9: a probe reports **three** states, the third being *not determined*, never silently
+coerced to "not supported"; an all-zero chain on a ≥1.1 device is treated as probe failure until
+proven otherwise; and `--dump-capabilities` prints the raw values, because a derived boolean cannot
+be audited but the number behind it can.
+
+**When two people independently reach the same wrong answer, it is the natural mistake and needs
+structural prevention, not review.** `detect_uma` returned true for a *discrete* RTX 4060 because
+ReBAR maps VRAM `HOST_VISIBLE`; the correct predicate is that **every** heap is `DEVICE_LOCAL`.
+Niobe hit the identical trap in the benchmark harness at the same time. Two people, one intuition,
+one wrong answer — that is a design defect in the predicate's phrasing, not two lapses. The general
+rule I extracted: **where a predicate's two plausible readings differ in which direction they fail,
+choose the one that fails toward the extra copy.** Staging is the safe default; skipping it is the
+optimisation; the burden of proof sits on the optimisation.
+
+**Neither bug was visible on one device or on lavapipe.** So capability-derived behaviour is not
+trusted until it has run on one integrated *and* one discrete device. The Intel half is the more
+valuable one — it is the stricter implementation, which makes it a conformance oracle rather than a
+second sample. Justin said this before we had evidence for it and he was right.
+
+**Amend a rule the moment the evidence arrives, rather than waiting to be asked.** Mouse was going
+to raise whether §8.5's producer rule needs a version. It does — he is re-deriving against
+`onnxruntime/mobius` at default **opset 24**, and the same builder at a different opset changes the
+op set we must serve, which is §8.5's own failure one level finer. I amended it to *producer at
+version* immediately. Waiting to be formally asked, when the evidence is already in hand, is
+ceremony.
+
+**A deferral recorded as a structural fact survives the collapse of the reason people thought it
+had.** Justin withdrew the trust objection to `onnx-runtime-ir`. The deferral is untouched, because
+it never rested on trust: it rests on our being a guest in ORT's address space, handed
+`OrtGraph`/`OrtNode` across a C ABI and never seeing a protobuf. A reversal must defeat *that* or
+meet the named trigger. "The original objection has weakened" is a third thing and is not a reason.
+D24's insistence on triggered deferrals paid off on its first test.

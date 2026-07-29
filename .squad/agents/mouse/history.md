@@ -212,3 +212,30 @@ clean, in the verify worktree (HEAD + my files).
 📌 A device dispatch test now passes: `vk::dispatch_integration::add_f32_dispatches_end_to_end`.
 Switch's path is real. My kernels are still `UNEXERCISED` — none of mine has executed — but the
 seam to exercise them exists now, and that is the T1 unblock.
+
+### Turn 8 addendum — the `Attention`-24 ruling and what it taught about C2
+
+📌 **Justin: no opset bump, implement the corrected semantics.** R4 closed. The lesson is not about
+attention — it is that my two drift detectors are *both* version-based and therefore share one
+blind spot: a semantic correction applied without a version change moves behaviour while every
+number stays put. `ContribSchema` cannot fire. The opset window cannot fire. I had been treating
+`ai.onnx` as the safe domain and `com.microsoft` as the risky one; that framing is wrong. **An
+opset window is a strong guarantee about interface and no guarantee about behaviour.**
+
+📌 There is no fix to write. That was the uncomfortable part — the honest output is a documented
+limitation plus a routed dependency (Trinity pins `onnx`), not a mechanism. Recording a gap so the
+machinery stops *looking* more complete than it is, is a legitimate deliverable.
+
+📌 Generalisable: **write the limitation where the reader finds the mechanism.** I put §9.4.1 in the
+doc, a "what this does not detect" section in the `ContribSchema` doc comment, and a line at the
+decline site. Anyone reaching for the fingerprint struct now learns its boundary in the same breath
+as its purpose.
+
+📌 On how it surfaced: nothing detected it. Following §7.1 literally — narrow and decline, never
+guess — meant going to *read* the 23→24 diff instead of assuming an open-ended window was harmless.
+The errata was sitting next to the interface change in the same source file. Rules that force you
+to go and look pay off on things they were not aimed at.
+
+📌 Still true and worth repeating: **zero of my kernels have executed.** `add_f32` executing on both
+local GPUs with validation layers clean is Switch's path working, not mine. The seam exists now;
+the honest statement about my rows is unchanged.

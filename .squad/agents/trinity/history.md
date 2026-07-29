@@ -158,3 +158,43 @@ reason to exist.
   UMA (Intel, device 0) and discrete (NVIDIA, device 1) memory models in one pytest run.
   Any test that passes on device 1 and fails on device 0 is a staging-path assumption.
 
+---
+
+## Round 13 (2026-07-29T10:34:41-07:00): onnx oracle pin + Attention-24 limitation
+
+**Coordinator directive:** onnx was arriving transitively with `>=1.17` floor — an unpinned
+oracle that drifts with the library. Niobe's precedent: refuse rather than warn when the oracle
+is wrong (bench refused ORT < 1.28 column; every node silently ran on CPU, producing a 1.70x
+"speedup" that was pure noise).
+
+**Discovery during implementation:** `onnx>=1.23.0` does NOT exist (latest = 1.22.0). The
+Attention-24 fix has not yet shipped in any released onnx version. This matters because
+1.22.0 has the WRONG reference implementation for Attention-24.
+
+**Changes:**
+1. `tests/requirements.txt` — onnx floor changed from `>=1.17` to `>=1.22.0` with a full
+   comment explaining the known limitation. NOT 1.23.0 (does not exist yet).
+2. `ci.yml` — added `ONNX_MIN_VERSION: "1.22.0"` to workflow-level env block alongside
+   `ORT_VERSION`. Linux lane updated to `"onnx>=${ONNX_MIN_VERSION}"` explicitly.
+   Windows lane uses `pip install -r tests/requirements.txt` — already picks up the floor.
+3. `conftest.py` — added to `pytest_configure`:
+   - `_ORT_MIN_VERSION = "1.28.0"` — hard lower bound
+   - `_ONNX_MIN_VERSION = "1.22.0"` — hard lower bound (current known predictable version)
+   - `_ONNX_ATTENTION24_FIXED_VERSION = None` — placeholder; set when Fact Checker confirms
+   - `_assert_oracle_versions()` — refuses (`pytest.exit(returncode=3)`) if either is below
+     minimum. Tested: with onnx 1.22.0 installed, assertion passes cleanly.
+   - KNOWN ORACLE LIMITATION documented in the function docstring: Attention tests MUST use
+     `pytest.mark.xfail(strict=True)` until `_ONNX_ATTENTION24_FIXED_VERSION` is set.
+
+**What stays the same:** General op tests (Add, Relu, etc.) are unaffected — onnx 1.22.0
+gives a correct oracle for all non-Attention ops. The pin is about predictability (no silent
+transitive drift), not about having a fully-correct Attention oracle today.
+
+**TODO(Fact Checker):** Once the exact onnx release with the Attention-24 fix is confirmed:
+  1. Update `_ONNX_ATTENTION24_FIXED_VERSION` in conftest.py
+  2. Update `_ONNX_MIN_VERSION` to that version
+  3. Update `tests/requirements.txt` floor to match
+  4. Update `ONNX_MIN_VERSION` in ci.yml
+  5. Remove xfail from Attention tests (or add them if they weren't added yet)
+
+

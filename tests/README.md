@@ -76,7 +76,34 @@ See `tests/ops/_models.py` — `TOLERANCE_POLICY` module docstring. Short versio
 **Widening a tolerance** requires Trinity's code-review sign-off **and** an in-test comment
 explaining which driver exhibits the wider error and why it is acceptable.
 
-## Install test dependencies
+## Portability policy (standing directive 2026-07-29)
+
+**Intel is the spec-conformance oracle.** Intel Iris Xe (Vulkan 1.4.309, UMA) is the
+strictest Vulkan implementation available locally. A test that passes on NVIDIA and fails on
+Intel means the EP or the test relied on undefined behavior — Intel is correct.
+
+**Never vendor-special-case.** Adding a vendor-conditional skip or a wider tolerance for
+one GPU hides a real bug. The permitted exception is a filed driver bug marked
+`pytest.mark.xfail(reason="vendor bug: <URL>", strict=True)`.
+
+**UMA awareness.** Iris Xe exposes memory that is both `DEVICE_LOCAL` and `HOST_VISIBLE`,
+exactly as Adreno and Mali do. Running `--vulkan-devices 0,1` exercises both memory models
+(UMA vs discrete) and catches staging-path assumptions.
+
+**Local results are development loops.** A coverage number or timing measured only on
+Justin's desk is not a project result. CI proves portability. Always state the source when
+reporting a number.
+
+To run against both local devices:
+```bash
+ONNXRUNTIME_VULKAN_EP_LIB=rust/target/release/libonnxruntime_vulkan_ep.so \
+  pytest tests/ops/ --vulkan-devices 0,1 -v
+# Device 0 = Intel Iris Xe (UMA, strictest)
+# Device 1 = NVIDIA RTX 4060 (discrete)
+# TODO(Switch): requires ep.device_index session option in rust/src/ep.rs
+```
+
+---
 
 ```bash
 pip install -r tests/requirements.txt

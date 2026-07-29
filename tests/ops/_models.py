@@ -104,6 +104,119 @@ FP32_EXACT = {"rtol": 0, "atol": 0}
 FP16_ANY = {"rtol": 1e-3, "atol": 1e-3}
 
 # ---------------------------------------------------------------------------
+# Shape inference helpers (DESIGN.md §8.6 — coverage work, not harness polish)
+# ---------------------------------------------------------------------------
+
+
+def apply_shape_inference(model_bytes: bytes, *, warn_on_missing: bool = False) -> bytes:
+    """Apply onnx_shape_inference.infer_symbolic_shapes to serialised model bytes.
+
+    Converts bytes → ir.Model, runs infer_symbolic_shapes (in-place), serialises
+    back to bytes. This fills in output shapes that were left None/unspecified in
+    the exported model, turning dynamic-shape declines into potential claims without
+    any kernel changes.
+
+    IMPORTANT CAVEAT: A node claimed only *after* this step is claimable exclusively
+    in a pipeline that includes this preprocessing. Report coverage as two separate
+    numbers — "without preprocessing" and "additionally after preprocessing" — and
+    never add them without noting the precondition. Coordinate with Mouse on whether
+    the registry should distinguish "declined for dynamic shape (always)" from
+    "claimable if shapes were known" for correct RESULTS.md entries.
+
+    Parameters
+    ----------
+    model_bytes :
+        Serialised ONNX proto (any builder in this module, or a real exported model).
+    warn_on_missing :
+        Forwarded to infer_symbolic_shapes. False (default) keeps test output clean.
+    """
+    try:
+        from onnx_shape_inference import infer_symbolic_shapes
+    except ImportError as exc:
+        raise ImportError(
+            "onnx-shape-inference is required for shape-inference preprocessing.\n"
+            "Install: pip install onnx-shape-inference\n"
+            "Or: pip install -r tests/requirements.txt"
+        ) from exc
+
+    import onnx as _onnx  # noqa: PLC0415 — onnx is already a transitive dep (onnx_ir)
+    try:
+        onnx_proto = _onnx.ModelProto.FromString(model_bytes)
+    except Exception as exc:
+        raise ValueError(f"apply_shape_inference: could not deserialise model bytes: {exc}") from exc
+
+    ir_model = ir.from_proto(onnx_proto)
+    infer_symbolic_shapes(ir_model, warn_on_missing=warn_on_missing)
+    return ir.to_proto(ir_model).SerializeToString()
+
+
+def make_model_dynamic_output(
+    op_type: str,
+    inputs: list[ir.Value],
+    *,
+    domain: str = "",
+    attributes: dict[str, object] | None = None,
+    opset: int = 21,
+    n_outputs: int = 1,
+    output_dtype: ir.DataType = ir.DataType.FLOAT,
+    output_names: list[str] | None = None,
+) -> bytes:
+    """Build a single-node model where output shapes are intentionally left unspecified.
+
+    Unlike make_model, this function does NOT annotate output shapes. This replicates
+    the common case of models exported from frameworks that do not fully annotate
+    intermediate shapes. The EP declines such nodes with code="dynamic-shape".
+
+    After calling apply_shape_inference(), the output shapes will be propagated from
+    the (concrete-shaped) input values, turning declines into claims.
+
+    Parameters
+    ----------
+    op_type :
+        ONNX op type, e.g. "Add", "Relu".
+    inputs :
+        Input values with explicit shapes. Shapes must be concrete integers or named
+        symbolic dims; the inferred output shapes derive from them.
+    domain :
+        Op domain. Default "" = ai.onnx.
+    attributes :
+        Op attributes, if any.
+    opset :
+        Opset version.
+    n_outputs :
+        Number of outputs (default 1).
+    output_dtype :
+        Data type for all outputs. Default FLOAT.
+    output_names :
+        Output value names. If omitted, uses "out0", "out1", ...
+    """
+    names = output_names or [f"out{i}" for i in range(n_outputs)]
+    outputs = [
+        ir.Value(name=n, type=ir.TensorType(output_dtype), shape=None)
+        for n in names
+    ]
+    node = ir.node(
+        op_type,
+        inputs,
+        attributes=attributes or {},
+        domain=domain,
+        outputs=outputs,
+    )
+    opset_imports: dict[str, int] = {"": opset}
+    if domain:
+        opset_imports[domain] = 1
+    graph_inputs = [v for v in inputs if v.name]
+    graph = ir.Graph(
+        graph_inputs,
+        outputs,
+        nodes=[node],
+        name=f"dyn_{op_type}",
+        opset_imports=opset_imports,
+    )
+    return ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+
+
+# ---------------------------------------------------------------------------
 # Machine-readable claim log helpers (Mouse's OP_COVERAGE.md §10.2)
 # ---------------------------------------------------------------------------
 

@@ -136,3 +136,60 @@ the plausible misreading, and can I make it impossible?"
 
 `cargo ci` — 300 tests, fmt + clippy clean. `pytest bench/` — 39 passed.
 Still no performance number. No kernel has executed.
+
+---
+
+## 2026-07-29 — turn 4: the portability floor is not the smaller GPU on my desk
+
+### The mistake I was about to make
+
+Asked to make performance numbers portable, my first instinct was to treat **32 KiB** as the
+shared-memory budget, because that is what the *smaller* of the two local GPUs has. Wrong, and
+wrong in the flattering direction: `DESIGN.md` §7.2 R4 admits devices at **16 KiB**, and §7.0 says
+shortfalls degrade op coverage, not device availability — so a 16 KiB device is one we *promised*
+to run on. The floor is a decision this project already made, not a property of my desk.
+
+The Iris Xe is our proxy for the mobile **memory model** (UMA, as Adreno and Mali are). It is not
+a proxy for the mobile **shared-memory budget**. Those are different things and the same device
+being both tempting answers is exactly why this needed writing down.
+
+Related coincidence, now a named constant rather than an assumption: **both local GPUs report
+`subgroupSize == 32`.** Vulkan 1.1 guarantees subgroup `BASIC` in compute and nothing about the
+size. Two devices agreeing is the strongest possible invitation to bake in a 32 and pass every
+local test.
+
+### The general shape, now four for four
+
+Every gate I have built this week is the same move: *the wrong answer and the right answer look
+equally reasonable in a table, so make the wrong one unconstructible.*
+
+1. `Phase::Submit` does not observe GPU work.
+2. UMA is "no heap lacks DEVICE_LOCAL", not the obvious flag test (the BAR window).
+3. Cross-device and cross-producer comparison exit 2 rather than warn.
+4. A configuration above the admission floor is `needs-fallback`, not "fine, it ran here".
+
+And the same escape hatch each time: **`unknown` is never `equal` and never `fine`.** Today every
+portability verdict is `unknown`, and the table says so.
+
+### The EP loaded, and lied to me within about ninety seconds
+
+ORT 1.28 got installed mid-turn, so `MIN_ORT` passed and the plugin loaded for the first time
+ever: registration succeeded, both devices enumerated, claim predicates ran on real graphs. Every
+op declined honestly (`Add`: "its compute shader compiles but has never executed on a device, so
+claiming it would be a bet").
+
+Which means every "vulkan" column is still the CPU EP — and `add_fp32_4096x1024` promptly reported
+0.858 ms "vulkan" vs 1.247 ms "cpu" = **1.45×**. Second fabricated speedup of the day, second one
+caught by the claim gate. §5.1 was 1.70× via an unloadable EP; this one is via a loadable EP that
+declines everything. **Two different routes to the same false number.** The lesson is that the
+claim gate — not the version gate, not the device gate — is the one doing the real work, because
+it checks the *effect* rather than any precondition.
+
+Also: the producer digest changed mid-session (`120b3983c341` → `a8c67afee5f9`) because someone
+edited `tests/ops/_models.py`. That is the feature working. If I had compared across that edit
+without the digest, a graph change would have looked like a performance change.
+
+### Green at end of turn
+
+`cargo ci` — 300 tests, fmt + clippy clean. `pytest bench/` — 50 passed.
+Still no performance number. No shader has executed.
