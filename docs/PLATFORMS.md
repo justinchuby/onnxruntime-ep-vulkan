@@ -1,12 +1,19 @@
 # Platform Support Matrix — onnxruntime-ep-vulkan
 
 > **Document owner:** Link (Platform & Hardware Support Engineer)
-> **Last updated:** 2026-07-28T22:28:08-07:00
-> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); §7.4 updated 2026-07-28T22:28:08-07:00 with CI failure root causes and Trinity fix specification
+> **Last updated:** 2026-07-29T09:39:59-07:00
+> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); both CI lanes working as of 2026-07-29T09:19:35-07:00.
 
 This document is the evidence base for the project's platform support decisions. §1–§7 record the investigation and reasoning leading to the frozen capability set. §8 records what was decided, the data behind it, and the outstanding experiment needed to validate the Android half of that decision. §9 specifies the CI requirement for the dual barrier-backend parity lane. §10 documents the OQ-12 hardware validation experiment.
 
-> **CI coverage status (RAI-003):** All physical hardware rows in §5 are marked **untested**. Every verified CI lane today runs either a software rasterizer (lavapipe on Linux, SwiftShader on Windows) or a desktop GPU build. No Android device or Apple hardware has been tested in CI. This is not hidden: it is stated explicitly here and should be reflected in the README. See §9 for the CI lanes that exist and §10 for the hardware that needs to exist.
+> **Standing directive — cross-platform generality (2026-07-29T09:39:59-07:00):** Cross-platform is the premise of this EP, not a porting phase. A Vulkan EP that works only on desktop NVIDIA has no reason to exist — better-supported vendor backends already do that job. Recorded at `.squad/decisions/inbox/copilot-directive-cross-platform.md`. The structural rules that enforce this:
+> - **Derive workgroup sizes and memory budgets from reported device limits, never from observed constants.** A constant that fits 48 KiB on an RTX 4060 does not fit 32 KiB on an Iris Xe or ~16 KiB on Adreno 5xx.
+> - **UMA is the mobile case, and we have one on this desk.** Intel Iris Xe and every Adreno/Mali are UMA — `DEVICE_LOCAL` and `HOST_VISIBLE` share the same physical memory. A staging path that assumes a discrete upload heap silently skips on half our targets.
+> - **Intel is the spec oracle.** Correct on NVIDIA and wrong on Intel = EP relying on undefined behavior. Never fix this by special-casing Intel.
+> - **`cfg`-gated definitions are mandatory for platform-conditional types.** The `ort::wchar_t` incident broke the Linux lane silently; `tests/portability.rs` enforces this structurally.
+> - **§9.1.2 discipline:** a result on this desk is not a result this project has. CI proves portability; physical Android and macOS coverage is absent (OQ-12).
+
+> **CI coverage status (RAI-003):** All physical hardware rows in §5 are marked **untested**. Both verified CI lanes today run lavapipe (a CPU software rasterizer) on Linux and Windows. No physical GPU, Android device, or Apple hardware has been tested in CI. This is stated explicitly here and must be reflected in the README. See §9 for the CI lanes that exist and §10 for the hardware that needs to exist.
 
 ---
 
@@ -221,27 +228,64 @@ Vulkan 1.3 as a baseline is **acceptable** if the project explicitly targets des
 
 ## 5. Platform Support Matrix Table
 
-> **Legend:** CI coverage column: `lavapipe` = CPU software rasterizer on Linux CI, `SwiftShader` = CPU software rasterizer on Windows CI or Android emulator, `real GPU` = a CI runner with physical GPU (not yet provisioned), `untested` = no CI lane covers this path.
+> **Verification tiers — three distinct claims, kept separate throughout this table:**
+> - **CI-verified** — a reproducible result from a CI runner; anyone who re-runs the workflow sees the same thing. This is the project's portability proof.
+> - **Local-dev-verified** — observed on a developer's machine with `epctl --probe-loader`; confirms the device passes the gate and the EP loads correctly, but is not a portable result. Noted as local-dev (2026-07-29) in the CI Coverage column.
+> - **untested** — no execution has occurred on this path, in CI or otherwise. All physical mobile hardware is in this category. Do not read rows added on 2026-07-29 as improving OQ-12 coverage — they do not.
+>
+> **Other column notes:** Vulkan version reported = what `apiVersion` the driver surfaces; minimum driver = first known version to pass the §7.2 device gate; required features = what the §7.2 gate checks plus what ops need for fp16/int8 paths.
 
-| OS | GPU Vendor/Driver | Minimum Driver/Version | Vulkan Version Reported | Required Features | CI Coverage |
-|---|---|---|---|---|---|
-| Windows 10/11 | NVIDIA (GeForce/RTX/Quadro, Maxwell 2nd gen+) | 472.12 | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Windows 10/11 | AMD (RDNA1/2/3, Vega, Polaris) | Adrenalin 22.1.2 | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Windows 10/11 | Intel (Arc, 11th-gen iGPU+) | 30.0.101.1325 | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Windows 10/11 | Software (SwiftShader) | Any recent build | 1.3 | fp16/int8 arith: ⚠ check per-build; storage: yes | **SwiftShader** |
-| Linux (Ubuntu 22.04+) | NVIDIA proprietary (470+ LTS) | Driver 470.x | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Linux (Ubuntu 22.04+) | AMD (Mesa RADV, Mesa 22.0+) | Mesa 22.0 | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Linux (Ubuntu 22.04+) | Intel (Mesa ANV, Mesa 22.0+, Gen11+) | Mesa 22.0 | 1.3 | fp16/int8 arith + storage, timeline semaphore, subgroups | untested (no GPU runner) |
-| Linux (any distro, Mesa 22.0+) | CPU (lavapipe) | Mesa 22.0 | 1.3 (Mesa 25.0: 1.4) | All required features present | **lavapipe** |
-| macOS 12+ | Apple Silicon (MoltenVK 1.3+) | MoltenVK 1.3.x | 1.3 (1.4 with MoltenVK 1.4) | portability_subset query required; no int64 atomics; buffer_device_address: Apple Silicon M1+ only | untested |
-| macOS 12+ | Intel Mac (MoltenVK 1.3+) | MoltenVK 1.3.x | 1.3 | portability_subset query required; shaderFloat16 on Intel Mac: **unverified** | untested |
-| iOS 15+ | Apple (MoltenVK) | MoltenVK 1.3.x | 1.3 | portability_subset query required | untested |
-| Android 12+ (API 31+) | Qualcomm Adreno 730/740/750/8xx | OEM driver | 1.3 | fp16/int8 arith + storage, subgroups; ⚠ see Adreno quirks | untested |
-| Android 12+ (API 31+) | ARM Mali Valhall (G77/G78/G710+) | OEM driver | 1.3 | fp16/int8 arith + storage, subgroups; ⚠ see Mali quirks | untested |
-| Android 12+ (API 31+) | Samsung Xclipse (RDNA2) | OEM driver | 1.3 | fp16/int8 arith + storage, subgroups | untested |
-| Android 10–11 (API 29–30) | Adreno 6xx (Snapdragon 865+) | OEM driver | 1.1–1.3 (varies) | extension paths; shaderFloat16 usually present | untested |
-| Android 10–11 (API 29–30) | Adreno 5xx / Mali Bifrost (budget) | OEM driver | 1.1 | shaderFloat16: device-optional; storage: device-optional | untested |
-| Android (emulator, CI) | Software (SwiftShader via AVD) | Android emulator | 1.3 | Partial extension coverage | untested (no Android CI lane) |
+| OS | GPU Vendor / Driver | Min Driver / Version | Vulkan Reported | **Memory** | Gate criteria (R1–R6) | fp16/int8 capability | CI Coverage |
+|---|---|---|---|---|---|---|---|
+| Windows 11 | Intel Iris Xe Graphics (Alder/Tiger Lake iGPU, **UMA**) | driver observed 31.0.101.5590 | **1.4.309** | **UMA** (observed) | R1–R6 all PASS (observed) | fp16 arith + storage: present (observed) | **local-dev 2026-07-29** |
+| Windows 11 | NVIDIA GeForce RTX 4060 Laptop (**discrete**) | driver observed 572.x | **1.4.325** | **Discrete** (observed) | R1–R6 all PASS (observed) | fp16 arith + storage: present (observed) | **local-dev 2026-07-29** |
+| Windows 10/11 | NVIDIA (GeForce/RTX/Quadro, Maxwell 2nd gen+) | 472.12 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| Windows 10/11 | AMD (RDNA1/2/3, Vega, Polaris) | Adrenalin 22.1.2 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| Windows 10/11 | Intel (Arc discrete) | 30.0.101.1325 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| Windows 10/11 | Intel (iGPU, 11th gen+) | 30.0.101.1325 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| Windows Server 2025 | CPU (lavapipe, mesa-dist-win 26.1.3, **ICD registered in registry**) | mesa-dist-win 26.1.3 | 1.3 (llvmpipe, driverID MESA_LLVMPIPE) | N/A (software) | R1–R6 PASS; subgroup `supportedStages = 0` (**see LVP2**) | fp16/int8: absent (software) | **CI-verified (lavapipe)** |
+| Linux Ubuntu 22.04 | CPU (lavapipe, Mesa 23.2.1 / LLVM 15.0.7) | Mesa 23.2.1 | **1.3.255** (apiVersion observed) | N/A (software) | R1–R6 PASS; `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`; subgroup `supportedStages = 0` (**see LVP2**) | fp16/int8: absent (software) | **CI-verified (lavapipe)** |
+| Linux (Ubuntu 22.04+) | NVIDIA proprietary (470+ LTS or 535+) | Driver 470.x | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: generally present | untested (no CI GPU runner) |
+| Linux (Ubuntu 22.04+) | AMD (Mesa RADV, Mesa 22.0+) | Mesa 22.0 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| Linux (Ubuntu 22.04+) | Intel iGPU (Mesa ANV, Mesa 22.0+, Gen11+) | Mesa 22.0 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
+| macOS 12+ | Apple Silicon (MoltenVK 1.3+) | MoltenVK 1.3.x | 1.3+ (1.4 with MoltenVK 1.4) | **UMA** | portability_subset required; no int64 atomics; buffer_device_address M1+ only | shaderFloat16: present on Apple Silicon | untested |
+| macOS 12+ | Intel Mac (MoltenVK 1.3+) | MoltenVK 1.3.x | 1.3 | Discrete | portability_subset required | shaderFloat16: **unverified** | untested |
+| iOS 15+ | Apple (MoltenVK) | MoltenVK 1.3.x | 1.3+ | **UMA** | portability_subset required | shaderFloat16: present on modern Apple | untested |
+| Android 12+ (API 31+) | Qualcomm Adreno 730/740/750/8xx | OEM driver | 1.3 | **UMA** (SoC) | R1–R6 expected PASS; ⚠ Adreno quirks A1/A2/A3 | fp16 arith + storage: generally present | **untested (OQ-12 pending)** |
+| Android 12+ (API 31+) | ARM Mali Valhall (G77/G78/G710+) | OEM driver | 1.3 | **UMA** (SoC) | R1–R6 expected PASS; ⚠ Mali quirks M1/M2 | fp16 arith + storage: generally present | **untested (OQ-12 pending)** |
+| Android 12+ (API 31+) | Samsung Xclipse (RDNA2, SoC) | OEM driver | 1.3 | **UMA** (SoC) | R1–R6 expected PASS | fp16/int8: generally present | **untested (OQ-12 pending)** |
+| Android 10–11 (API 29–30) | Adreno 6xx (Snapdragon 865+, with sync2) | OEM driver | 1.1–1.3 | **UMA** (SoC) | R1–R6 expected PASS; sync2 path probable | fp16 storage: generally present | **untested (OQ-12 pending)** |
+| Android 10–11 (API 29–30) | Adreno 5xx / Mali Bifrost (sync2 missing) | OEM driver | 1.1 | **UMA** (SoC) | R1–R6 gate unknown; legacy barrier path; OQ-12 decisive devices | fp16/int8: device-optional | **untested (OQ-12 pending — decisive)** |
+| Android (emulator, CI) | Software (SwiftShader via AVD) | Android emulator | 1.3 | N/A (software) | Partial; emulator not representative of real driver | fp16/int8: partial | untested (no Android CI lane) |
+
+### 5.1 Memory architecture: UMA vs discrete — column interpretation
+
+The **Memory** column in the table above is a first-class property, not an annotation. It determines which code paths execute:
+
+| Architecture | Physical model | Who has it |
+|---|---|---|
+| **UMA** | CPU and GPU share the same DRAM. A memory type may be both `DEVICE_LOCAL` and `HOST_VISIBLE`. Zero-copy tensor mapping is possible; there is no separate upload heap. | Intel iGPU (all), Apple Silicon, **every Adreno, every Mali, every Xclipse on a mobile SoC** |
+| **Discrete** | GPU has on-device VRAM (`DEVICE_LOCAL`). System RAM is `HOST_VISIBLE` only. Uploads cross PCIe / interconnect. Staging buffers are the default path. | NVIDIA desktop/laptop dGPU, AMD Radeon dGPU, Intel Arc, Intel Mac |
+| **N/A (software)** | No GPU heap; lavapipe/SwiftShader present all memory as host memory. | CI software rasterizers |
+
+**Why this matters structurally:** any upload/download path that assumes a discrete staging buffer **silently does nothing** on a UMA device — the buffer is already accessible to the GPU with the same bandwidth. An optimized UMA path that skips staging must be explicitly coded and explicitly tested. The Intel Iris Xe on Justin's desk is **the only local device that exercises the UMA path** — the RTX 4060 does not. Since all Android targets are UMA, an EP that has only been tested on the RTX 4060 has never exercised the memory model used by its primary mobile targets.
+
+**Proposed `DeviceCapabilities` field:** `uma_memory: bool` — `true` when any reported memory type has both `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`.
+
+### 5.2 Intel Iris Xe as spec-conformance oracle
+
+Intel's Windows Vulkan driver is widely regarded as the most strictly specification-conformant of the major desktop implementations. This has a specific asymmetry that must be written down explicitly:
+
+> **If a compute shader or barrier sequence is correct on the RTX 4060 but fails or produces wrong results on the Iris Xe, the overwhelmingly likely explanation is that our code is relying on behavior the Vulkan specification does not guarantee — not that Intel has a bug.**
+
+Consequences:
+- **Do not special-case Intel.** If a test fails only on Intel, treat it as a spec-compliance bug in the EP, not a driver quirk. Special-casing Intel masks real portability problems that will surface on other strict implementations (MoltenVK, Mali strict conformance builds).
+- **Intel failures are the best proxy we have for MoltenVK failures** before an Apple device is in CI. MoltenVK (Metal backend) is similarly strict about undefined Vulkan behavior.
+- **Test on both devices during every local development loop.** Two gate-passing devices with different architectures (UMA vs discrete, Intel strict vs NVIDIA permissive) exercise more of the spec than running on a single GPU.
+
+*Source for Intel strictness characterization: Justin Chu (project owner), 2026-07-29T09:19:35-07:00: "我听说 intel 的 vulkan 实现是最严格的，你可以在我们设备两个 device 都试试" — "I heard that Intel's Vulkan implementation is the strictest; try both devices on our machine."*
+
+> **OQ-12 scope is unchanged.** The two local-dev GPU entries above do not touch the Adreno 5xx / Mali Bifrost usability question. All **untested (OQ-12 pending)** rows remain unresolved. See §10.
 
 ---
 
@@ -320,10 +364,12 @@ This is a living list. Each entry must have: symptom → affected hardware → d
 
 #### Older Mesa (lavapipe / ANV)
 
-| # | Symptom | Version | Notes |
-|---|---|---|---|
-| LVP1 | `subgroupSize` reports 1 (subgroups not emulated in software) | lavapipe < Mesa 22.0 | CI must pin Mesa ≥ 22.0. Ubuntu 22.04 minimum. |
-| ANV1 | Some specialization constant + `LocalSizeId` combos mis-handled | Mesa ANV < 23.x | Avoid `LocalSizeId` on ANV; use push constant for workgroup size on pre-23.x |
+| # | Symptom | Version | Source | Notes |
+|---|---|---|---|---|
+| LVP1 | `subgroupSize` reports 1 (subgroups not emulated in software) | lavapipe < Mesa 22.0 | documentation | CI must pin Mesa ≥ 22.0. Ubuntu 22.04 minimum. |
+| LVP2 | `VkPhysicalDeviceSubgroupProperties::supportedStages = 0` — **no subgroup support in any stage** | lavapipe (all versions, by design) | **observed in CI, 2026-07-29** | lavapipe is a scalar software rasterizer; subgroups are not emulated. Any capability derived from `VkPhysicalDeviceSubgroupProperties::supportedOperations` must degrade gracefully rather than refusing the device — this is the reason §7.2 removed subgroup BASIC from the device gate. Consequence: shader variants that use subgroup arithmetic (`subgroupAdd`, `subgroupBroadcast`, etc.) must have a scalar fallback path that activates when `supportedStages` does not include `VK_SHADER_STAGE_COMPUTE_BIT`. CI validates the scalar path; subgroup arithmetic paths are validated on local-dev hardware only until a real GPU CI runner exists. |
+
+*Sources: LVP1 — Mesa documentation; LVP2 — **CI-observed** from `epctl --probe-loader` on Linux lavapipe lane, 2026-07-29T09:19:35-07:00*
 
 ---
 
@@ -352,155 +398,61 @@ Enable `VK_LAYER_KHRONOS_validation` unconditionally in debug builds. In CI, tre
 
 ### 7.4 GPU-less CI Lane
 
-> **Status as of run `30450284838` (2026-07-28T22:28:08-07:00): BOTH LANES BROKEN.** Neither lane can create a Vulkan instance. Root causes are confirmed below, along with the fix specification for Trinity. **No shader has ever executed in CI.** This is the highest-priority unresolved item.
+> **Status as of 2026-07-29T09:19:35-07:00: BOTH LANES WORKING.** The root causes documented in the previous revision are resolved. Both CI lanes now enumerate lavapipe and can create a Vulkan instance. The lavapipe `supportedStages = 0` quirk (LVP2, §6.3) caused the initial gate failure; Switch moved subgroup BASIC out of the device gate per §7.0 and the lanes now pass. Shaders that require subgroup arithmetic will degrade to scalar paths on lavapipe.
 
-#### 7.4.1 Current failure analysis (run 30450284838, headSha 486c268)
+#### 7.4.1 Confirmed working state (as of 2026-07-29T09:19:35-07:00)
 
-##### Linux / Ubuntu 22.04 — `lavapipe`
+##### Linux / Ubuntu 22.04 — lavapipe (CI-verified working)
 
-**Primary failure (CONFIRMED):** Clippy compilation error — `cargo clippy` exits with code 101. This prevents the Vulkan tests from running at all. The error is in Tank's code:
+**Status: CI-verified working.** Lavapipe enumerates successfully. Observed device data:
+- `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`
+- `apiVersion = 1.3.255`
+- `driverID = DRIVER_ID_MESA_LLVMPIPE`
 
-```
-error[E0425]: cannot find type `wchar_t` in module `ort`
-   --> tests/mock_ort/mod.rs:150:38
-    |
-150 | fn check_in_z_ortchar(p: *const ort::wchar_t, who: &str, param: &str) -> String {
-    |                                      ^^^^^^^ not found in `ort`
+The earlier Linux lane failure was a Rust compile error in `tests/mock_ort/mod.rs` (`ort::wchar_t` not found on Linux — fixed by Tank: `OrtChar` conditionalized to `c_char` on Linux). Once resolved, lavapipe works correctly under LunarG loader 1.3.296 + Mesa 23.2.1. `glslc` is available from LunarG's `shaderc` apt package (not from Ubuntu's repos).
 
-error[E0425]: cannot find type `wchar_t` in module `ort`
-   --> tests/mock_ort/mod.rs:241:28
-```
+**Known limitation — LVP2:** lavapipe reports `supportedStages = 0` for subgroup operations. See §6.3. Switch removed subgroup BASIC from the §7.2 device gate; lavapipe passes all remaining gate criteria. Shader variants that use subgroup arithmetic must have a scalar fallback that activates when `supportedStages` does not include `VK_SHADER_STAGE_COMPUTE_BIT`.
 
-`ort::wchar_t` is generated by bindgen from `OrtChar = wchar_t` on Windows only. On Linux, `OrtChar = char`; bindgen emits `c_char`, not `wchar_t`. **This is Tank's fix, not Trinity's.** The mock must use `#[cfg(target_os = "windows")]` conditional compilation or abstract `OrtChar` into a type alias in the shared bindings.
+##### Windows / Windows Server 2025 — lavapipe (mesa-dist-win 26.1.3, CI-verified working)
 
-**Secondary failure (CONFIRMED, non-blocking for Clippy):** The lavapipe smoke-check fires a warning:
-```
-##[warning]vulkaninfo did not report a GPU — lavapipe may not be installed correctly
-```
+**Status: CI-verified working.** After Trinity registered the Mesa lavapipe ICD in the Windows registry, the loader enumerates it correctly:
+- `driverUUID` decoded = `llvmpipe` (confirmed from CI log)
+- `apiVersion = 1.3.x` (lavapipe MSVC build, mesa-dist-win 26.1.3)
 
-Root cause: The LunarG apt repo upgrades `libvulkan1` from Ubuntu 1.3.204 to LunarG 1.3.296.0~rc1. The smoke-check runs `vulkaninfo --summary | grep "GPU id"` with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` set at job level. Whether `vkCreateInstance` succeeds under the upgraded loader + validation layer combination is **unverified** until Tank's compile error is fixed and tests actually run. The secondary failure does not block Clippy and is currently masked by the primary failure. It must be re-evaluated once the compile error is resolved.
+**Root cause of prior failure (archived):** LunarG loader 1.3+ silently ignores `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` / `VK_ADD_DRIVER_FILES` when the process runs with elevated privileges. GitHub Actions Windows runners are elevated (`runneradmin`, Administrators group, UAC disabled). **The fix is registry registration — env var override cannot work on elevated processes.** This is a permanent constraint for any new Windows ICD setup on GitHub Actions.
+*Source: [KhronosGroup/Vulkan-Loader LoaderDriverInterface.md v1.3.274](https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Loader/+/refs/tags/v1.3.274/docs/LoaderDriverInterface.md); [actions/runner-images discussions #6557](https://github.com/actions/runner-images/discussions/6557)*
 
-Confirmed package versions from the run:
-- `mesa-vulkan-drivers 23.2.1-1ubuntu3.1~22.04.4` (Ubuntu updates, NOT the LunarG repo — verified from apt output)
-- `libvulkan1` upgraded to `1.3.296.0~rc1-1lunarg22.04-1` (LunarG repo)
-- `vulkan-validationlayers 1.3.296.0~rc2` (LunarG repo)
-- `vulkan-tools 1.3.296.0~rc2` (LunarG repo)
-- `shaderc 2024.3~rc1` — `glslc` is present ✓
-
-##### Windows / Windows Server 2025 — `lavapipe (mesa-dist-win 26.1.3)`
-
-**Primary failure (CONFIRMED):** `vkCreateInstance` returns `VK_ERROR_INCOMPATIBLE_DRIVER` despite the Mesa ICD JSON being found at the correct path.
-
-```
-Found lavapipe ICD: D:\a\...\mesa3d\x64\lvp_icd.x86_64.json
-VK_ICD_FILENAMES=D:\a\...\mesa3d\x64\lvp_icd.x86_64.json  ✓
-...
-[vulkan-ep] WARN: vkCreateInstance failed (ERROR_INCOMPATIBLE_DRIVER).
-```
-
-**Root cause (CONFIRMED from primary source):** The LunarG Vulkan loader 1.3+ enforces a security restriction: `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, and `VK_ADD_DRIVER_FILES` are **all silently ignored when the process is running with elevated privileges** (Administrator / root), to prevent DLL injection into privileged processes.
-
-> *"For security reasons, VK_ICD_FILENAMES, VK_DRIVER_FILES, and VK_ADD_DRIVER_FILES are all ignored if running the Vulkan application with elevated privileges. This is because they may insert new libraries into the executable process that are not normally found by the loader."*
-> — [KhronosGroup/Vulkan-Loader — LoaderDriverInterface.md (v1.3.274)](https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Loader/+/refs/tags/v1.3.274/docs/LoaderDriverInterface.md)
-
-GitHub Actions Windows runners run as `runneradmin`, which is a member of the Administrators group with UAC disabled.
-*Source: [actions/runner-images discussions #6557](https://github.com/actions/runner-images/discussions/6557)*
-
-When the loader ignores these env vars, it falls back to registry-based ICD discovery (`HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\Vulkan\Drivers`). Mesa lavapipe is not registered there — only GPU vendor ICDs that the LunarG SDK installer itself registers. No ICD → `ERROR_INCOMPATIBLE_DRIVER`.
-
-Note: `VK_LAYER_PATH` is also ignored for elevated processes. The LunarG SDK installer writes the validation layer into the registry during installation (`HKLM:\SOFTWARE\Khronos\Vulkan\ExplicitLayers`), so layers work correctly despite this restriction. ICDs must be registered the same way.
-
----
-
-#### 7.4.2 Fix specification for Trinity
-
-This specification is complete and directly implementable. Trinity owns `.github/workflows/` — the changes below must be made there.
-
-##### Fix 1 — Windows: register Mesa lavapipe ICD in the Windows registry
-
-Add the following immediately after the Mesa 7z extraction step. It requires Administrator rights (which the runner has).
-
+**Permanent fix (applied by Trinity):**
 ```powershell
-# Register Mesa lavapipe ICD in the Vulkan system registry so the LunarG
-# loader finds it when running as Administrator (env vars VK_ICD_FILENAMES /
-# VK_DRIVER_FILES are silently ignored by loader 1.3+ on elevated processes).
 $icdPath = (Resolve-Path "$env:GITHUB_WORKSPACE\mesa3d\x64\lvp_icd.x86_64.json").Path
-$driverKey = "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers"
-New-Item -Path $driverKey -Force | Out-Null
-New-ItemProperty -Path $driverKey -Name $icdPath -Value 0 -PropertyType DWord -Force | Out-Null
-Write-Host "Registered Mesa lavapipe ICD: $icdPath"
+New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
+New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdPath -Value 0 -PropertyType DWord -Force | Out-Null
 ```
 
-After this step, add a verification step so the next failure is self-diagnosing:
-
-```powershell
-# Verify the Vulkan loader can instantiate lavapipe before running tests.
-# Set VK_LOADER_DEBUG=warn so any loader-level problem appears in the log.
-$env:VK_LOADER_DEBUG = "warn"
-$env:MESA_LOG_LEVEL = "error"
-$result = & "C:\VulkanSDK\$env:VULKAN_SDK_VERSION\Bin\vulkaninfoSDK.exe" --summary 2>&1
-Write-Host $result
-if ($result -notmatch "llvmpipe") {
-    Write-Warning "lavapipe (llvmpipe) not found in vulkaninfo output — check registry entry and mesa3d\x64\ path"
-}
-```
-
-Keep `VK_ICD_FILENAMES` set as well for non-elevated sub-processes and tools that may invoke `vulkaninfo` outside the runner's own process elevation.
-
-##### Fix 2 — Linux: unblock the secondary lavapipe issue (deferred pending Tank's fix)
-
-After Tank resolves the `ort::wchar_t` compile error and tests actually run, re-evaluate whether `vkCreateInstance` succeeds under LunarG loader 1.3.296 + Mesa 23.2.1 lavapipe. The following adjustments should be made regardless:
-
-1. **Do not set `VK_INSTANCE_LAYERS` at job level.** Set it only in the test step where validation is wanted. The smoke-check should run without it to get a baseline lavapipe enumeration result.
-2. **Add `VK_LOADER_DEBUG=warn` to the smoke-check step** so loader-level errors appear in the log rather than a silent empty grep.
-3. **Use `|| true` on the smoke-check grep** so the warning is emitted but the step is non-fatal. The smoke-check is diagnostic; it must not gate a build that was set up correctly.
-4. **Add `sudo ldconfig` after package installation** (if not already present) in case the LunarG packages install SOs to a path not yet in the linker cache.
-
-Revised smoke-check form:
-```bash
-# Check lavapipe is enumerable — warning only, non-fatal.
-VK_LOADER_DEBUG=warn VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-  vulkaninfo --summary 2>&1 | tee /dev/stderr | grep -i "llvmpipe" \
-  || echo "::warning::lavapipe not enumerated — tests will still run but may fail"
-```
-
-##### Fix 3 — Linux: escalate `ort::wchar_t` to Tank
-
-This is recorded here for routing completeness. The fix is in `rust/tests/mock_ort/mod.rs`. On Linux, `OrtChar` is `std::os::raw::c_char`, so:
-
-```rust
-// mock_ort/mod.rs — replace ort::wchar_t references with a platform alias:
-#[cfg(target_os = "windows")]
-type OrtChar = ort::wchar_t;
-#[cfg(not(target_os = "windows"))]
-type OrtChar = std::os::raw::c_char;
-```
-
-All `*const ort::wchar_t` and `*mut ort::wchar_t` usages in the mock must use `*const OrtChar` / `*mut OrtChar`. The UTF-16 decode logic in `check_in_z_ortchar` must also be conditionalized: on Linux, ORT treats the file-path argument as UTF-8 (a `const char*`), not UTF-16. Until this is fixed the Linux lane cannot build and Vulkan tests will not run.
+**Known limitation — LVP2:** Same `supportedStages = 0` as Linux; scalar fallback paths active.
 
 ---
 
-#### 7.4.3 Expected state after fixes
+#### 7.4.2 Current CI lane state
 
-| Lane | Primary ICD | Vulkan reported version | Validation layers | parity lane |
-|---|---|---|---|---|
-| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | 1.3 | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) |
-| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC / `vulkan_lvp.dll`) | 1.3 | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) |
+| Lane | Primary ICD | Vulkan version | Validation layers | Parity lane | Subgroup |
+|---|---|---|---|---|---|
+| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | **1.3.255** (observed) | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) | `supportedStages = 0` — scalar fallback only |
+| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC, **registry-registered**) | 1.3 (observed) | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) | `supportedStages = 0` — scalar fallback only |
 
-Both lanes expose `VK_KHR_synchronization2` (lavapipe is a full Vulkan 1.3 implementation). The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available.
+Both lanes expose `VK_KHR_synchronization2`. The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available.
 
-**What GPU-less CI does NOT cover (unchanged):**
+**What GPU-less CI does NOT cover:**
+- Hardware subgroup semantics (`supportedStages = 0` — subgroup arithmetic paths not exercised in CI)
 - Vendor-specific shader compilation paths
-- Hardware subgroup semantics (lavapipe `subgroupSize` = 1 by design — subgroup operations are emulated at scalar)
-- Driver-specific quirk workarounds (Adreno A1/A2, Mali M1/M2 — see §6.5)
+- Driver-specific quirk workarounds (Adreno A1/A2, Mali M1/M2 — see §6.3)
 - Real fp16 throughput and memory bandwidth
 
 For anything in the matrix column labeled **untested**, the project must either acquire CI access to that hardware or document the platform as "community-supported" with no CI guarantee.
 
-#### 7.4.4 Where Tank's diagnostics fit
+#### 7.4.3 Where Tank's diagnostics fit
 
-Once Fix 3 lands and Fix 1 is applied:
-- Run `epctl --dump-capabilities` (Tank's tool) in both Windows and Linux lanes immediately after the smoke-check step. This reports device state without ORT and makes the next instance-creation failure self-diagnosing.
+- Run `epctl --dump-capabilities` in both Windows and Linux lanes immediately after the smoke-check step. This reports device state without ORT and makes the next instance-creation failure self-diagnosing.
 - Switch's EP diagnostic (`ONNXRUNTIME_VULKAN_EP_VALIDATE=1`) already logs what the loader sees before instance creation — ensure this log appears in the CI step output, not only in the test harness stderr.
 
 ---
