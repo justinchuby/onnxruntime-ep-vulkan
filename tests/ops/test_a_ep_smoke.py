@@ -96,40 +96,89 @@ def test_ep_dll_loads_via_ctypes(ep_lib_path: Path) -> None:
 
 
 def test_ep_ort_registers(ep_lib_path: Path) -> None:
-    """Can ORT register the EP without crashing?
+    """Can ORT register the EP without crashing, and does it advertise a device?
 
-    This test calls ``ort.register_execution_provider_library`` and nothing else.
-    It is placed AFTER the ctypes test so that if test_ep_dll_loads_via_ctypes
-    passed (DLL loads OK) and this test crashes, Tank knows the fault is inside
-    the EP's OrtEpFactory / device-enumeration initialization code.
+    This test calls ``ort.register_execution_provider_library`` and then probes
+    ``ort.get_ep_devices()`` to determine whether a device was enumerated.
 
-    NOTE: If this test causes a hard process crash (Windows access violation /
-    Linux SIGSEGV), pytest will report it as an error rather than a failure.
-    The ctypes-OK line printed to stderr in conftest.register_vulkan_ep will
-    appear in the crash output, confirming DLL resolution was not the cause.
+    IMPORTANT — API distinction:
+      ``ort.get_available_providers()`` lists only ORT's compiled-in (built-in) EPs.
+      Plugin EPs registered via ``register_execution_provider_library`` are NOT included
+      there. They appear in ``ort.get_ep_devices()`` if they enumerate at least one device.
+      Asserting ``EP_NAME in get_available_providers()`` is the WRONG check for a plugin EP.
+
+    This test determines case 1 vs case 2:
+      Case 1 (correct): EP in get_ep_devices() → the EP works; wrong API was used before.
+      Case 2 (problem): EP not in get_ep_devices() → EP advertises zero devices.
+                        Possible causes: capability gate rejects lavapipe, or
+                        probe_devices() fails silently. Owner: Switch.
+
+    Ordering note: this test may run before OR after the session-scoped
+    ``register_vulkan_ep`` conftest fixture. If the conftest ran first, ORT will
+    raise "already registered" here — that is idempotent and treated as success.
     """
     import onnxruntime as ort
 
     try:
         ort.register_execution_provider_library(EP_NAME, str(ep_lib_path))
     except Exception as exc:
-        pytest.fail(
-            f"ort.register_execution_provider_library raised an exception.\n"
-            f"\n"
-            f"  EP  : {EP_NAME}\n"
-            f"  File: {ep_lib_path}\n"
-            f"  Type: {type(exc).__name__}\n"
-            f"  Msg : {exc}\n"
-            f"\n"
-            f"  ctypes load succeeded (test_ep_dll_loads_via_ctypes passed), so DLL\n"
-            f"  dependencies are resolved. The fault is in EP initialization code\n"
-            f"  (OrtEpFactory, Vulkan instance creation, or device enumeration).\n"
-            f"  Owner: Tank / Switch."
-        )
-    # Registration succeeded — verify the EP name appears in available providers.
-    available = ort.get_available_providers()
-    assert EP_NAME in available, (
-        f"ort.register_execution_provider_library returned without error, "
-        f"but {EP_NAME!r} is not in ort.get_available_providers().\n"
-        f"Available: {available}"
+        if "already registered" in str(exc):
+            # Conftest session fixture ran first. Registration is process-scoped;
+            # one call is sufficient. Proceed to the device check.
+            pass
+        else:
+            pytest.fail(
+                f"ort.register_execution_provider_library raised an unexpected exception.\n"
+                f"\n"
+                f"  EP  : {EP_NAME}\n"
+                f"  File: {ep_lib_path}\n"
+                f"  Type: {type(exc).__name__}\n"
+                f"  Msg : {exc}\n"
+                f"\n"
+                f"  ctypes load succeeded (test_ep_dll_loads_via_ctypes passed), so DLL\n"
+                f"  dependencies are resolved. The fault is in EP initialization code\n"
+                f"  (OrtEpFactory, Vulkan instance creation, or device enumeration).\n"
+                f"  Owner: Tank / Switch."
+            )
+
+    # -----------------------------------------------------------------------
+    # Device check via get_ep_devices() — the correct API for plugin EPs.
+    # -----------------------------------------------------------------------
+    all_devices = ort.get_ep_devices()
+    vulkan_devices = [d for d in all_devices if d.ep_name == EP_NAME]
+    all_ep_names = sorted({d.ep_name for d in all_devices})
+
+    print(
+        f"\n[EP smoke] get_ep_devices() → {len(all_devices)} device(s): {all_ep_names}",
+        file=sys.stderr, flush=True,
     )
+    for d in vulkan_devices:
+        print(
+            f"[EP smoke] VulkanEP device: ep_vendor={d.ep_vendor!r}",
+            file=sys.stderr, flush=True,
+        )
+
+    if not vulkan_devices:
+        # ---------------------------------------------------------------
+        # CASE 2: EP registered but advertises zero devices.
+        # This is a real finding — it means the capability gate rejected
+        # lavapipe, or probe_devices() failed silently. This would mean
+        # our only software-rasterizer CI lane has no Vulkan EP coverage.
+        # Owner: Switch — check capability gate vs lavapipe feature flags.
+        # ---------------------------------------------------------------
+        pytest.fail(
+            f"CASE 2: VulkanExecutionProvider registered but advertises ZERO devices.\n"
+            f"\n"
+            f"  All EP devices seen: {all_ep_names}\n"
+            f"\n"
+            f"  Possible causes:\n"
+            f"    - Capability gate rejects lavapipe (check Vulkan feature flag queries)\n"
+            f"    - probe_devices() returns Ok(vec![]) silently\n"
+            f"    - Shader-less safety guard active (M0 exit criterion 5) — but glslc\n"
+            f"      was present and 168 shaders should have been compiled\n"
+            f"\n"
+            f"  Owner: Switch — diagnose probe_devices() path for lavapipe.\n"
+            f"  Impact: lavapipe (our only GPU-less lane) would have no Vulkan EP coverage."
+        )
+    # Case 1: EP appears in get_ep_devices(). get_available_providers() was wrong API.
+    # Presence in the device list is the success condition; no further assertion needed.

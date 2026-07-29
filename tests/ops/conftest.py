@@ -97,11 +97,27 @@ def register_vulkan_ep() -> bool:
         f"[EP smoke] Calling ort.register_execution_provider_library({EP_NAME!r}) ...",
         file=sys.stderr, flush=True,
     )
-    ort.register_execution_provider_library(EP_NAME, str(lib_path))
-    print(
-        f"[EP smoke] ort.register_execution_provider_library: OK.",
-        file=sys.stderr, flush=True,
-    )
+    try:
+        ort.register_execution_provider_library(EP_NAME, str(lib_path))
+        print(
+            f"[EP smoke] ort.register_execution_provider_library: OK.",
+            file=sys.stderr, flush=True,
+        )
+    except Exception as exc:
+        if "already registered" in str(exc):
+            # test_a_ep_smoke.py::test_ep_ort_registers runs before this fixture
+            # and may have registered the EP first. That is fine — ORT's registration
+            # is process-scoped, one call is enough.
+            print(
+                f"[EP smoke] ort.register_execution_provider_library: already registered (OK).",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            print(
+                f"[EP smoke] ort.register_execution_provider_library FAILED: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return False
     return True
 
 

@@ -103,15 +103,20 @@ jobs:
       - name: Add LunarG Vulkan SDK apt repository
         run: |
           set -euo pipefail
-          # Strip trailing .0 for the versioned list URL (1.3.296.0 → 1.3.296)
+          # Strip trailing .0 for the versioned repo URL (1.3.296.0 → 1.3.296)
           SDK_SHORT="${VULKAN_SDK_VERSION%.*}"
-          # Modern GPG approach (avoids deprecated apt-key)
+          # Fetch the LunarG signing key into the modern keyring location.
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
             | sudo gpg --dearmor -o /usr/share/keyrings/lunarg-signing-key.gpg
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
-            "https://packages.lunarg.com/vulkan/${SDK_SHORT}/lunarg-vulkan-${SDK_SHORT}-jammy.list"
+          # Write our OWN .list entry referencing that keyring.
+          # We do NOT use LunarG's versioned .list file verbatim because it
+          # does not contain a signed-by= clause, so apt can't verify it —
+          # that is the root cause of the NO_PUBKEY AA8452080E383F7E error.
+          echo "deb [signed-by=/usr/share/keyrings/lunarg-signing-key.gpg] \
+https://packages.lunarg.com/vulkan/${SDK_SHORT} jammy main" \
+            | sudo tee /etc/apt/sources.list.d/lunarg-vulkan-jammy.list > /dev/null
           sudo apt-get update -q
-          echo "LunarG apt repo added (SDK ${SDK_SHORT})"
+          echo "LunarG apt repo added (SDK ${SDK_SHORT}, signed-by= set)"
 
       # -------------------------------------------------------
       # Vulkan SDK: lavapipe (Mesa CPU rasterizer), validation
@@ -214,33 +219,19 @@ jobs:
             --all-targets -- -D warnings
 
       # -------------------------------------------------------
-      # Layering lint — Tank owns the check entry point.
-      # Trinity wires it into CI here. If the entry point doesn't
-      # exist yet, emit a warning (not an error) and show what
-      # the rule is, so the first PR that plants a violation is
-      # caught even before Tank's tool lands.
+      # Layering lint — Tank's integration test (cargo test --test layering).
+      # Tests are in rust/tests/layering.rs and verify that ops code never
+      # imports from sys::, ORT C ABI, ash::, vk::, or uses unsafe.
       # -------------------------------------------------------
-      - name: Layering lint (rust/src/ops/ boundary check)
+      - name: Layering lint (cargo test --test layering)
+        if: env.BUILD_SKIPPED != '1'
         run: |
-          if [ ! -d "rust/src/ops" ]; then
-            echo "::notice::rust/src/ops/ not found — layering lint will run once Tank's crate lands"
+          if [ ! -f rust/Cargo.toml ]; then
+            echo "::notice::rust/Cargo.toml not found — layering lint skipped"
             exit 0
           fi
-          # TODO(Tank): Replace the grep below with:
-          #   cargo run --manifest-path rust/Cargo.toml --bin layering-lint
-          # once Tank's lint binary is defined. The grep below is a correct
-          # implementation of the rule from .squad/decisions.md and will catch
-          # real violations even before the binary exists.
-          echo "Checking layering rule: ops code must not import sys::, Ort, ash::, vk::, or use unsafe"
-          if grep -rn '\bsys::\|OrtApi\|ash::\|vk::\b' rust/src/ops/ 2>/dev/null; then
-            echo "::error::Layering violation in rust/src/ops/ — ORT C ABI or raw Vulkan handles must not appear in op code. See .squad/decisions.md"
-            exit 1
-          fi
-          if grep -rn '\bunsafe\b' rust/src/ops/ 2>/dev/null; then
-            echo "::error::Layering violation in rust/src/ops/: unsafe code must not appear in op handlers. See .squad/decisions.md"
-            exit 1
-          fi
-          echo "Layering lint: PASS"
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo test --test layering --manifest-path rust/Cargo.toml
 
       # -------------------------------------------------------
       # Op-correctness tests (pytest, Vulkan vs ORT CPU oracle).

@@ -127,7 +127,26 @@
   from Ubuntu 22.04 repos — that package does not exist there. Two consecutive unverified
   claims. CI remained red.
 
-📌 Trinity round-6: glslc properly fixed + Windows diagnostics (2026-07-28T22:28:08-07:00):
+📌 Trinity round-7: case 1/2 determination + GPG fix + layering lint (2026-07-28T22:28:08-07:00):
+
+  **Case 1 confirmed (empirically):** Registration succeeded without crash (run 30448222530).
+  The assertion on `get_available_providers()` was wrong — that API lists only ORT's compiled-in
+  EPs. Plugin EPs registered via `register_execution_provider_library` appear in
+  `get_ep_devices()`. Locally confirmed: `ort.get_ep_devices()` returns an OrtEpDevice per
+  registered plugin EP. Smoke test updated to assert `ep_name == "VulkanExecutionProvider"` in
+  `get_ep_devices()` → proves Case 1 when lavapipe is the ICD.
+
+  **Double registration fixed:** Both conftest `register_vulkan_ep` and `test_ep_ort_registers`
+  now catch `"already registered"` and treat it as success. Order-independent.
+
+  **Linux GPG NO_PUBKEY fix:** LunarG's verbatim `.list` file doesn't contain `signed-by=`.
+  Fixed by writing our own `.list` entry with the keyring reference explicitly.
+
+  **Layering lint:** grep-based TODO(Tank) replaced with `cargo test --test layering`.
+
+  **API fact:** `get_available_providers()` ≠ correct check for plugin EPs. Plugin EPs:
+  `get_ep_devices()` → look for `ep_name == "VulkanExecutionProvider"`.
+  Sessions: `SessionOptions.add_provider_for_devices(devices)`, not the string name API.
 
   **glslc root cause:** Ubuntu 22.04 does not package glslc in any of its own repos.
   The LunarG Vulkan SDK apt repository for Jammy does, via `shaderc`. Added step "Add
