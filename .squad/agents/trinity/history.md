@@ -40,6 +40,44 @@
 
   **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
 
+📌 Trinity round-3: barrier parity layer (2026-07-28T19:16:08-07:00) — see decision record §8.
+
+📌 Trinity round-4: quantization oracle + tolerance policy + domain regression (2026-07-28T22:28:08-07:00):
+
+  **Backend probe confirmed live (commit 255f2db):** Switch's `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`
+  is in `rust/src/vk/barrier.rs`. Updated `test_barrier_parity.py` to demote the `unknown` branch
+  from "TODO(Switch)" to "EP not yet built" messaging. Hard assert still fires for `legacy` value.
+
+  **conftest.py refactor — non-Vulkan tests now run without EP:**
+  `register_vulkan_ep` changed from `autouse=True` (session-wide skip) to a non-autouse fixture
+  that returns bool. `vulkan_device_available` gains it as a dependency and skips if not registered.
+  Result: Vulkan-independent tests (oracle pinning, layer capture, domain regression) run and pass
+  without `ONNXRUNTIME_VULKAN_EP_LIB` set. 8 tests now pass unconditionally; 198 skip cleanly.
+
+  **Quantization oracle investigation finding:**
+  - MatMulNBits fp32 activations: ORT CPU EP works as differential oracle on ORT 1.28. ✓
+  - MatMulNBits fp16 activations: ORT 1.27 produces NaN/Inf (PrePack bug); gated on ORT>=1.28.
+  - accuracy_level pinned to 1 (fp32 accumulator) via `MATMULNBITS_ORACLE_ACCURACY_LEVEL=1`.
+    Level 4 (int8 VNNI) diverges ~3.6e-3 max_abs at K=1024, N=512.
+  - SimplifiedLayerNormalization not on CPU EP in 1.27; use standard LayerNormalization opset 17.
+
+  **Three-regime tolerance policy implemented (Mouse OP_COVERAGE §10.1):**
+  - `DEQUANT_EXACT = {rtol:0, atol:0}` — bit-exact vs NumPy (not CPU EP).
+  - `MATMULNBITS_FP32 = {rtol:1e-3, atol:1e-4}` — fp32 vs CPU EP oracle.
+  - `MATMULNBITS_FP16 = {rtol:2e-2, atol:1e-3}` — fp16 vs CPU EP oracle (ORT>=1.28).
+  - Policy + justification in `_models.py` module docstring. Tests in `test_matmulnbits.py`.
+
+  **Per-layer capture mechanism built:**
+  - `with_captured_outputs(model_bytes, names)` — appends intermediates as graph outputs.
+  - `compare_layers(model_bytes, feeds, names)` — runs both EPs, returns per-layer diff list.
+  - Unit test `test_layer_capture_mechanism` passes without Vulkan device.
+
+  **Morpheus C1 — domain regression test (runtime half):**
+  - `tests/ops/test_domain_regression.py`: `com.microsoft::NotARealOp` → ORT raises `Fail`
+    (not SystemError / EP crash). Both tests pass without Vulkan device.
+  - TODO(Mouse): upgrade to machine-readable reason code once Mouse's registry API is confirmed.
+
+  **Final test count:** 206 collected; 8 pass unconditionally, 198 skip cleanly. 0 failures.
 📌 Trinity round-3: barrier-backend parity layer (2026-07-28T19:16:08-07:00):
 
   **New test layer:** Created `tests/ops/test_barrier_parity.py`. Reads `_CASES` from `test_op_table.py`, filters to `claim=True` (~74 cases), runs each case twice with both barrier backends, asserts bit-identical outputs.

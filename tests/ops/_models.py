@@ -44,6 +44,38 @@ Reductions, GEMM, MatMul (M2+, OQ-10 in DESIGN.md §11):
     TBD — tolerance is accumulation-order-dependent and MUST be derived from test data
     per vendor (NVIDIA/AMD/lavapipe). A placeholder will be set when M2 ops land, with an
     explicit derivation comment. Do not guess; do not copy from fp32 elementwise.
+
+Quantized ops — three-regime policy (Mouse's spec, OP_COVERAGE.md §10.1):
+
+  Regime 1 — Unpack / dequantize (DequantizeLinear, int4→fp):
+    rtol=0, atol=0 (bit-exact against NumPy reference)
+    Justification: dequantize is purely deterministic arithmetic — (x - zp) * scale — with
+    no accumulation. Any bit difference is a correctness bug, not a precision issue.
+    Reference: NumPy (NOT ORT CPU EP, because a shared misreading of the schema would let
+    both sides of the comparison encode the same wrong answer).
+
+  Regime 2 — MatMulNBits output vs ORT CPU EP:
+    fp32 activations: rtol=1e-3, atol=1e-4
+    fp16 activations: rtol=2e-2, atol=1e-3
+    Justification: the GPU unpack and accumulate in a different order from ORT's CPU int8
+    VNNI path. The differences are accumulation-order-only, not correctness failures.
+    Empirically measured (2026-07-28, Justin's dev machine, K=1024, N=512):
+      accuracy_level=4 (int8 accumulator) vs accuracy_level=1 (fp32):
+        max_abs=3.6e-3, mean_abs=7.5e-4, rtol_max=4.6e-3
+    Oracle is pinned at accuracy_level=MATMULNBITS_ORACLE_ACCURACY_LEVEL (1, fp32 accumulator).
+    The 2e-2 rtol for fp16 accommodates fp16 mantissa truncation on top of accumulation order.
+    Source: Mouse's OP_COVERAGE.md §10.1; derived from measurement, not guessed.
+
+    IMPORTANT: fp16 activations require ORT 1.28+ for a usable oracle. ORT 1.27 produces
+    NaN/Inf for fp16 MatMulNBits on x86 (empirically confirmed 2026-07-28; suspected null-
+    allocator PrePack bug, fixed in 1.28). Tests gated on ORT >= 1.28 for fp16 paths.
+
+  Regime 3 — End-to-end LLM: top-1 token agreement over 64 greedy steps + KL bound.
+    Tolerance: per-model, derived at M3+ when actual LLM tests land.
+    Justification: final logit per-element comparison on a 150k-vocab model is meaningless —
+    a broken kernel can maintain top-1 accuracy for many tokens before divergence is visible
+    (Morpheus C6, DESIGN.md §9.1). Per-layer intermediate capture (compare_layers() below)
+    is the correct fault-localisation mechanism.
 """
 
 from __future__ import annotations
@@ -70,6 +102,25 @@ FP32_TRANSCENDENTAL = {"rtol": 1e-5, "atol": 1e-5}
 FP32_ACTIVATION = {"rtol": 1e-5, "atol": 1e-5}
 FP32_EXACT = {"rtol": 0, "atol": 0}
 FP16_ANY = {"rtol": 1e-3, "atol": 1e-3}
+
+# ---------------------------------------------------------------------------
+# Quantization tolerance constants (Mouse's three-regime policy, OP_COVERAGE §10.1)
+# ---------------------------------------------------------------------------
+
+# Regime 1: Unpack / dequantize — must be bit-exact vs NumPy.
+# Reference: NumPy (not ORT CPU EP — see module docstring for why).
+DEQUANT_EXACT = {"rtol": 0, "atol": 0}
+
+# Regime 2: MatMulNBits output vs ORT CPU EP oracle.
+# Empirically derived 2026-07-28 (see module docstring for measurement details).
+MATMULNBITS_FP32 = {"rtol": 1e-3, "atol": 1e-4}   # fp32 activations
+MATMULNBITS_FP16 = {"rtol": 2e-2, "atol": 1e-3}   # fp16 activations
+
+# Oracle pinning: always use accuracy_level=1 (fp32 accumulator) for the CPU EP oracle.
+# Levels 0-3 are identical on x86 (all use fp32 path) but level 4 (int8 VNNI) diverges
+# by ~4.6e-3 rtol — larger than MATMULNBITS_FP32.rtol. Pinning makes the reference
+# deterministic and reproducible across runner hardware generations.
+MATMULNBITS_ORACLE_ACCURACY_LEVEL: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +455,236 @@ def run_with_backend(
 
     return outputs, active_backend
 
+
+# ---------------------------------------------------------------------------
+# MatMulNBits model builder
+# ---------------------------------------------------------------------------
+
+
+def make_matmulnbits_model(
+    K: int,
+    N: int,
+    *,
+    bits: int = 4,
+    block_size: int = 32,
+    accuracy_level: int = MATMULNBITS_ORACLE_ACCURACY_LEVEL,
+    activation_dtype: ir.DataType = ir.DataType.FLOAT,
+) -> tuple[bytes, dict[str, np.ndarray]]:
+    """Build a minimal MatMulNBits ONNX graph and return (model_bytes, feeds).
+
+    The packed weights and zero-points are random but deterministically seeded so that
+    test results are reproducible across runs and machines.
+
+    Parameters
+    ----------
+    K, N :
+        Input/output feature dimensions (activations shape is [1, K]).
+    bits :
+        Quantization bit-width (4 or 8). Default 4.
+    block_size :
+        Quantization block size. Must be a multiple of 32.
+    accuracy_level :
+        CPU EP oracle accumulator precision (0=default, 1=fp32, 2=fp16, 3=bf16, 4=int8).
+        Pin this to MATMULNBITS_ORACLE_ACCURACY_LEVEL in oracle comparisons.
+    activation_dtype :
+        ORT data type for the activations input (FLOAT or FLOAT16).
+
+    Returns
+    -------
+    (model_bytes, feeds) — model_bytes is a serialized ONNX proto; feeds contains only the
+    activation array (packed weights are baked in as initializers).
+    """
+    import onnx
+    import onnx.helper as oh
+    import onnx.numpy_helper as onh
+    from onnx import TensorProto as tp
+
+    rng = np.random.default_rng(42)
+
+    # --- Packed weight tensor ---
+    # Shape: [N, ceil(K / block_size), block_size * bits / 8]
+    blocks_per_col = -(-K // block_size)  # ceil division
+    packed_bytes = block_size * bits // 8
+    packed_shape = [N, blocks_per_col, packed_bytes]
+    packed_data = rng.integers(0, 256, size=packed_shape, dtype=np.uint8)
+
+    # --- Scale tensor ---
+    # Shape: [N * blocks_per_col] as float32
+    scale_shape = [N * blocks_per_col]
+    scale_data = rng.uniform(0.001, 0.1, size=scale_shape).astype(np.float32)
+
+    # --- Zero-point tensor (optional, pack two 4-bit zp per byte) ---
+    zp_bytes_per_col = -(-blocks_per_col // 2)  # ceil(blocks_per_col / 2) bytes for 4-bit
+    zp_shape = [N, zp_bytes_per_col]
+    zp_data = rng.integers(0, 256, size=zp_shape, dtype=np.uint8)
+
+    # --- Activation (the only dynamic input) ---
+    np_dtype = np.float32 if activation_dtype == ir.DataType.FLOAT else np.float16
+    act = rng.standard_normal((1, K)).astype(np_dtype)
+    feeds = {"X": act}
+
+    # Map ir.DataType → ONNX TensorProto type for the graph input declaration.
+    _dtype_to_tp = {ir.DataType.FLOAT: tp.FLOAT, ir.DataType.FLOAT16: tp.FLOAT16}
+    act_tp_dtype = _dtype_to_tp[activation_dtype]
+
+    # Build initializers.
+    b_tensor = onh.from_array(packed_data, name="B")
+    scale_tensor = onh.from_array(scale_data, name="scale")
+    zp_tensor = onh.from_array(zp_data, name="zero_points")
+
+    # Build node.
+    node = oh.make_node(
+        "MatMulNBits",
+        inputs=["X", "B", "scale", "zero_points"],
+        outputs=["Y"],
+        domain="com.microsoft",
+        K=K,
+        N=N,
+        bits=bits,
+        block_size=block_size,
+        accuracy_level=accuracy_level,
+    )
+
+    # Build graph.
+    x_info = oh.make_tensor_value_info("X", act_tp_dtype, [1, K])
+    y_info = oh.make_tensor_value_info("Y", tp.FLOAT, [1, N])
+
+    graph = oh.make_graph(
+        [node],
+        "matmulnbits_test",
+        [x_info],
+        [y_info],
+        initializer=[b_tensor, scale_tensor, zp_tensor],
+    )
+    model = oh.make_model(
+        graph,
+        opset_imports=[
+            oh.make_opsetid("", 18),
+            oh.make_opsetid("com.microsoft", 1),
+        ],
+    )
+    model.ir_version = 8
+    return model.SerializeToString(), feeds
+
+
+# ---------------------------------------------------------------------------
+# Per-layer intermediate capture — fault localisation for multi-layer models
+# ---------------------------------------------------------------------------
+
+
+def with_captured_outputs(model_bytes: bytes, extra_output_names: list[str]) -> bytes:
+    """Return a copy of *model_bytes* with *extra_output_names* added as graph outputs.
+
+    Use this to expose intermediate activations as outputs so that compare_layers() can
+    check each layer independently instead of comparing only the final logits.
+
+    Rationale (Morpheus C6, DESIGN.md §9.1): a broken kernel in a deep model can maintain
+    correct top-1 token accuracy for many steps before divergence becomes visible. Per-layer
+    capture makes a fault localisable in minutes rather than days.
+
+    Only adds outputs that are not already graph outputs; silently skips unknown names
+    (so callers can pass a superset list and let the graph answer what it has).
+
+    Parameters
+    ----------
+    model_bytes :
+        Serialised ONNX model bytes (not mutated; a modified copy is returned).
+    extra_output_names :
+        Names of internal nodes whose outputs should be exposed. Each name must match a
+        value_info entry or a node output in the model.
+
+    Returns
+    -------
+    Modified model bytes with the requested outputs appended to the graph's output list.
+    """
+    import onnx
+
+    model = onnx.load_from_string(model_bytes)
+    graph = model.graph
+
+    existing_outputs = {vi.name for vi in graph.output}
+    all_values: dict[str, onnx.TypeProto] = {}
+
+    # Collect type information from value_info, initializers, and node outputs.
+    for vi in graph.value_info:
+        all_values[vi.name] = vi.type
+    for init in graph.initializer:
+        all_values.setdefault(init.name, onnx.TypeProto())
+    for node in graph.node:
+        for out in node.output:
+            all_values.setdefault(out, onnx.TypeProto())
+
+    for name in extra_output_names:
+        if name in existing_outputs:
+            continue
+        tp = onnx.TypeProto()
+        if name in all_values:
+            tp.CopyFrom(all_values[name])
+        vi = onnx.ValueInfoProto()
+        vi.name = name
+        vi.type.CopyFrom(tp)
+        graph.output.append(vi)
+
+    return model.SerializeToString()
+
+
+def compare_layers(
+    model_bytes: bytes,
+    feeds: dict[str, np.ndarray],
+    layer_names: list[str],
+) -> list[dict]:
+    """Run *model_bytes* on both the Vulkan EP and CPU EP, returning per-layer diffs.
+
+    This is the primary fault-localisation tool: pass in the names of intermediate output
+    nodes (obtained from model inspection or with_captured_outputs) and get back a sorted
+    list showing which layers diverge most.
+
+    Parameters
+    ----------
+    model_bytes :
+        Serialised ONNX model bytes.  The model should already have the desired intermediate
+        outputs exposed (e.g., via with_captured_outputs).
+    feeds :
+        Input feeds.
+    layer_names :
+        Intermediate output names to compare.  Names that are not present in the model
+        output list are silently ignored.
+
+    Returns
+    -------
+    A list of dicts (one per layer), sorted by max_abs_diff descending:
+        {
+            "name": str,          # layer name
+            "max_abs_diff": float,
+            "mean_abs_diff": float,
+            "rtol_max": float,    # max(abs(a-b) / (atol + abs(b))) for elementwise comparison
+        }
+    The list is sorted by max_abs_diff descending so the worst-diverging layer is first.
+    """
+    expanded = with_captured_outputs(model_bytes, layer_names)
+
+    vulkan_outputs = run_vulkan(expanded, feeds)
+    cpu_outputs = run_cpu(expanded, feeds)
+
+    # The graph outputs are the original outputs + layer_names (in that order).
+    import onnx
+    model = onnx.load_from_string(expanded)
+    output_names = [vi.name for vi in model.graph.output]
+
+    results = []
+    for name, vulkan_val, cpu_val in zip(output_names, vulkan_outputs, cpu_outputs):
+        if name not in layer_names:
+            continue
+        v = np.asarray(vulkan_val, dtype=float)
+        c = np.asarray(cpu_val, dtype=float)
+        abs_diff = np.abs(v - c)
+        denom = 1e-8 + np.abs(c)
+        results.append({
+            "name": name,
+            "max_abs_diff": float(abs_diff.max()),
+            "mean_abs_diff": float(abs_diff.mean()),
+            "rtol_max": float((abs_diff / denom).max()),
+        })
+
+    results.sort(key=lambda d: d["max_abs_diff"], reverse=True)
+    return results

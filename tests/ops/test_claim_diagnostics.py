@@ -229,6 +229,10 @@ def test_build_no_icd_session() -> None:
     os.environ.get(_CHILD_ENV) == "1",
     reason="child process: must not spawn another child",
 )
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set — no EP to test no-ICD path with",
+)
 def test_no_vulkan_icd_falls_back_to_cpu() -> None:
     """A machine with no Vulkan ICD must run the session on CPU without crashing.
 
@@ -251,7 +255,7 @@ def test_no_vulkan_icd_falls_back_to_cpu() -> None:
         [
             sys.executable, "-m", "pytest",
             f"{HERE / 'test_claim_diagnostics.py'}::test_build_no_icd_session",
-            "-q", "-p", "no:cacheprovider",
+            "-q", "-s", "-p", "no:cacheprovider",
         ],
         capture_output=True,
         text=True,

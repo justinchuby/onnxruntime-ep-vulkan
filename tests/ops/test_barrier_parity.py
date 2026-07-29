@@ -92,29 +92,28 @@ def test_barrier_parity(case: CaseSpec, require_vulkan) -> None:
 
     # ---------------------------------------------------------------
     # Backend verification — guards against "ran sync2 twice" false green.
-    # TODO(Switch): ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE must be implemented
-    # in rust/src/vk/barrier.rs before this check becomes a hard assertion.
-    # See _models.run_with_backend docstring for the exact contract.
+    # Switch's ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE landed in rust/src/vk/barrier.rs
+    # (commit 255f2db). The probe writes "sync2" or "legacy" to the probe file during
+    # Barriers::select in Device::new. "unknown" should no longer occur with the EP built.
     # ---------------------------------------------------------------
     if backend_legacy == "unknown":
-        # Probe not yet implemented.  Emit a warning rather than failing: the output
-        # comparison below is still meaningful and will catch computation bugs.
-        # This warning should disappear once Switch lands the probe.
+        # Probe file not written — EP is not built yet (scaffolding state).
+        # Warn rather than fail: the output comparison still catches computation bugs.
         warnings.warn(
-            f"[{case.id}] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE not implemented — "
-            "cannot verify the legacy barrier backend ran. "
-            "The parity comparison proceeds but is not a full false-green guard. "
-            "See TODO(Switch) in tests/ops/_models.py run_with_backend.",
+            f"[{case.id}] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — "
+            "EP is likely not built yet. The parity comparison proceeds but cannot verify "
+            "which barrier backend ran. Once the EP crate is linked, this should always "
+            "return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).",
             UserWarning,
             stacklevel=2,
         )
     else:
-        # Probe is active: assert the backends are what we asked for.
+        # Probe active: assert the backends are what we asked for.
         assert backend_legacy == "legacy", (
             f"[{case.id}] ep.force_legacy_barriers=1 was set but EP reported "
             f"barrier backend {backend_legacy!r}. "
-            "Check that ep.force_legacy_barriers is connected to Barriers::select in "
-            "rust/src/vk/barrier.rs (DESIGN.md §7.5)."
+            "Check that ep.force_legacy_barriers is wired to Barriers::select in "
+            "rust/src/vk/barrier.rs (DESIGN.md §7.5, commit 255f2db)."
         )
         if backend_default != "unknown":
             assert backend_default in ("sync2", "legacy"), (

@@ -42,28 +42,23 @@ EP_NAME = "VulkanExecutionProvider"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session", autouse=True)
-def register_vulkan_ep() -> None:
-    """Register the Vulkan EP plugin exactly once for the whole test session."""
+@pytest.fixture(scope="session")
+def register_vulkan_ep() -> bool:
+    """Register the Vulkan EP plugin once per session; return True iff registration succeeded.
+
+    Returns False (rather than skipping immediately) so that tests not requiring Vulkan
+    (e.g., NumPy oracle checks, per-layer capture unit tests) can still run without the EP.
+    Tests that DO require the EP use ``vulkan_device_available`` or ``require_vulkan``,
+    both of which depend on this fixture and skip appropriately.
+    """
     lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
     if not lib:
-        pytest.skip(
-            "ONNXRUNTIME_VULKAN_EP_LIB is not set. "
-            "Set it to the absolute path of the built EP cdylib:\n"
-            "  Linux:   rust/target/release/libonnxruntime_vulkan_ep.so\n"
-            "  macOS:   rust/target/release/libonnxruntime_vulkan_ep.dylib\n"
-            "  Windows: rust\\target\\release\\onnxruntime_vulkan_ep.dll\n"
-            "If the crate has not been built yet, run: cargo build --release",
-            allow_module_level=True,
-        )
+        return False
     lib_path = Path(lib).resolve()
     if not lib_path.is_file():
-        pytest.skip(
-            f"EP library not found at {lib_path}. "
-            "Build the crate first: cargo build --release",
-            allow_module_level=True,
-        )
+        return False
     ort.register_execution_provider_library(EP_NAME, str(lib_path))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +121,16 @@ _DEVICE_AVAILABLE: bool | None = None  # cached per session
 
 
 @pytest.fixture(scope="session")
-def vulkan_device_available() -> bool:
-    """Session-scoped fixture: True iff a Vulkan device passed the capability gate."""
+def vulkan_device_available(register_vulkan_ep: bool) -> bool:
+    """Session-scoped fixture: skip if EP not registered; return True iff a device is present."""
+    if not register_vulkan_ep:
+        pytest.skip(
+            "ONNXRUNTIME_VULKAN_EP_LIB is not set or not found — EP not registered. "
+            "Set it to the built EP cdylib path:\n"
+            "  Linux:   rust/target/release/libonnxruntime_vulkan_ep.so\n"
+            "  Windows: rust\\target\\release\\onnxruntime_vulkan_ep.dll\n"
+            "Run: cargo build --release",
+        )
     global _DEVICE_AVAILABLE
     if _DEVICE_AVAILABLE is None:
         _DEVICE_AVAILABLE = _probe_vulkan_device()
