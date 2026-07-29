@@ -13,12 +13,14 @@ shipped as an out-of-tree **plugin EP**. It is loaded by a stock, unmodified ONN
 the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxruntime`.
 
 > **Status: early implementation.** The architecture is settled and written down; the crate
-> scaffolding, the test harness and CI have landed and M0 is in progress. **No shader in this
-> repository has executed on a GPU yet** — the tests that pass today exercise host-side logic
-> (node claiming, registry invariants, decline paths, layering), not GPU numerics, and the only
-> lanes that execute anything on a device use the lavapipe software rasterizer. See
-> [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the full execution status and §10 for the milestone
-> plan.
+> scaffolding, the test harness and CI have landed and M0 is in progress. **M0 is not met.** As of
+> 2026-07-29 a single elementwise kernel has executed on two desktop GPUs (Intel Iris Xe, NVIDIA
+> RTX 4060) with zero validation errors — but from a Rust integration test, **not through ONNX
+> Runtime, not through a graph, and not through the EP's claim path**, which is what M0 actually
+> requires. Everything else — every other kernel, every contrib op, all quantized paths, the whole
+> ORT-mediated route — is unexecuted, and CI has no GPU hardware. See
+> [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the full execution status and §10 for the
+> criterion-by-criterion M0 assessment.
 
 | | |
 |---|---|

@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T08:13:58-07:00 (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added; census indexed by producer) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T09:47:45-07:00 (**first shader dispatch — §9.1.2 rewritten**, one kernel on two desktop GPUs, not via ORT; **M0 assessed criterion by criterion — NOT met**, §10 M0; **§7.9 capability probing must distinguish "not supported" from "not asked correctly"**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added; census indexed by producer) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -1321,6 +1321,60 @@ then is **not** checked-in SPIR-V; it is vendoring a compiler (`shaderc` as a Ca
 `naga`), which removes the prerequisite without introducing a second source of truth. That is the
 right escape route and it stays open.
 
+### 7.9 Capability probing must distinguish "not supported" from "not asked correctly"
+
+*Added 2026-07-29T09:47:45-07:00, from two bugs found by running on two vendors for the first time.*
+
+§7.2 makes the capability probe load-bearing: it decides which devices we accept, which shader
+variants are legal, and which ops may be claimed. That gives it a failure mode nothing else in the
+system has — **a probe that fails returns the same answer as a device with no capabilities**, and
+that answer is silently conservative, so nothing alarms.
+
+**Bug 1 — the chain that was never sent.** `let _ = props2.push_next(..)` discarded the entire
+`VkPhysicalDeviceProperties2` `pNext` chain (`ash`'s builders are `#[must_use]` and return the
+modified value rather than mutating in place). Every chained capability therefore read as zero, and
+subgroup size appeared to be 0. Nothing was wrong with the device, the driver, or our understanding
+of the spec: we never asked the question. **This exact ambiguity had already misled us once** —
+lavapipe's `supportedStages = 0` was read as a device fact when it may have been the same class of
+error, and we cannot now tell from the record which it was.
+
+**Bug 2 — the plausible-but-wrong UMA predicate.** `detect_uma` returned `true` for the *discrete*
+RTX 4060, because ReBAR maps the VRAM heap `HOST_VISIBLE`. The correct predicate is that **every**
+heap is `DEVICE_LOCAL`, not that some heap is host-visible. This one is worse than a mistake — it
+is the *natural* mistake: Niobe hit it independently in the benchmark harness, two people reaching
+the same wrong answer from the same reasonable intuition. It would have skipped the staging copy on
+discrete hardware, which §6 depends on, and it would have been fast and wrong rather than slow and
+wrong.
+
+**The rules, binding on `vk/caps.rs` (Switch) and on anything that reads a device property:**
+
+1. **A capability probe reports three states, not two: supported, not supported, and *not
+   determined*.** "Not determined" is a distinct value in `Capabilities`, it is never silently
+   coerced to "not supported", and reaching it is an error condition worth logging loudly even
+   though it degrades safely.
+2. **Every chained query is validated after the call, not assumed.** A `pNext` chain that comes back
+   entirely zeroed on a device that reports Vulkan ≥1.1 is treated as *probe failure* until proven
+   otherwise, because a modern conformant device returning zeros for everything is far less likely
+   than our having mis-built the chain.
+3. **`--dump-capabilities` prints the raw values it read, not only the derived booleans.** A derived
+   boolean cannot be audited; the number it came from can. This is the mechanism that would have
+   caught both bugs in minutes.
+4. **Predicates over heaps and memory types are stated positively and universally where the safe
+   answer is universal.** UMA is "every heap is `DEVICE_LOCAL`", not "a heap is `HOST_VISIBLE`".
+   Where a predicate's two plausible readings differ in *which direction they fail*, the one that
+   fails toward the extra copy wins — §6's staging path is the safe default and skipping it is the
+   optimisation, so the burden of proof sits on skipping.
+5. **Capability-derived behaviour is tested on at least one integrated and one discrete device
+   before it is trusted.** Both bugs were invisible on a single device and on lavapipe. The local
+   Intel + NVIDIA pair is now the minimum bar for any change to `caps.rs`, and the Intel part is the
+   more valuable half — it is the stricter implementation, which makes it a conformance oracle
+   rather than a second sample.
+
+**Why this is in the design document and not only in `ENGINE.md`.** The capability probe is where a
+*silent* wrong answer propagates furthest: into device acceptance, into variant selection, into
+claim predicates, and finally into numbers. It is the same failure class as C2 item 7's permissive
+fingerprint and as §9.1's shared-misreading hazard — an error that cannot announce itself and must
+therefore be designed against rather than tested for after the fact.
 
 ---
 
@@ -1635,6 +1689,21 @@ than trusting the version — if a future opset revises `Attention`'s attribute 
 predicate declines on the attribute, not on the number. That is a load-bearing assumption and it is
 worth stating so it can be attacked.
 
+**Producer *and version* — amendment, 2026-07-29T09:47:45-07:00.** Mouse is re-deriving the
+producer analysis against `onnxruntime/mobius` (the authoritative repo; Justin corrected the earlier
+reference) at its default **opset 24**, and he has been asked to raise with me whether §8.5's rule
+needs a version alongside the producer name. **It does, and I am amending it now rather than
+waiting**: the rule is *producer **at version***. The evidence is already in hand — the same builder
+at a different default opset changes the op set we must serve, which is the identical failure the
+rule was written for, one level finer. Concretely: every corpus artifact records producer **and**
+producer version **and** the graph's opset imports; the census reports on that triple; and a tier
+exit criterion naming a model names all three. A producer name alone would have let an opset-24
+`mobius` graph decline against rows windowed for what an earlier `mobius` emitted, and the diagnosis
+would again have looked like a missing kernel. Note this also stress-tests the open upper bound
+above: opset 24 is exactly the case `OPSET_STD_LLM(23)..=OPSET_ANY` is claiming to handle by
+validating shape rather than trusting the number, so it is the first real test of that assumption
+and should be treated as such rather than as a formality.
+
 ### 8.6 External crate evaluations — deferred, with named triggers
 
 *Added 2026-07-29T08:13:58-07:00.* Justin directed the team to evaluate his own crates
@@ -1647,6 +1716,14 @@ every quarter.**
 | `onnx-ir-rust` | **Deferred, no expected revisit** | 20% complete by its own status file; use-def tracking commented out in source; no protobuf deserialisation. | None set. Re-evaluate only if its status file changes materially. |
 | `onnx-shape-inference` | **Adopted — as an oracle, not a dependency** | Pure Python, so the dependency question does not arise. Run as a preprocessing step in Trinity's harness it resolves symbolic dims, converting `[dynamic-shape]` declines into claims **with zero Rust changes**. | Adopted now. |
 | `onnx-genai` / `onnx-runtime-ir` | **Deferred on structural grounds** | Genuinely good, and that is not the issue: **ORT hands us `OrtGraph`/`OrtNode` across a C ABI and we never see a protobuf**, so any external IR means copying the entire graph into a second representation inside someone else's process. | **Adopt the day we need a graph representation that outlives a single `GetCapability` call.** |
+
+*Amendment, 2026-07-29T09:47:45-07:00:* Justin has withdrawn the trust objection to
+`onnx-runtime-ir` and Mouse is re-evaluating. **The structural objection is unaffected and stands on
+its own merits** — it was never a judgement about the crate's quality or provenance, which is
+exactly why it was recorded as a structural fact with a named trigger rather than as a preference.
+If the re-evaluation reverses the deferral it must do so by defeating the structural argument or by
+meeting the trigger, not by noting that the original objection has weakened; those are different
+arguments and only two of the three are reasons.
 
 Two things worth extracting. First, **`onnx-shape-inference` is the cheapest coverage in the whole
 plan** — it converts declines into claims without touching a kernel, a predicate or a line of Rust,
@@ -1752,36 +1829,50 @@ runtime assertion that an unregistered contrib op declines like any other unregi
 constraint checked only statically can be satisfied by code that never runs; a constraint checked
 only at runtime can be reintroduced in a path no test reaches. C1 now has neither hole.
 
-#### 9.1.2 Execution status — what has actually run, as of 2026-07-29T08:13:58-07:00
+#### 9.1.2 Execution status — what has actually run, as of 2026-07-29T09:47:45-07:00
 
 This document describes a design and a partially-implemented crate. It must not be read as
 describing a working GPU pipeline, and the following is stated here so that no reader has to infer
-it:
+it. **This section changed materially on 2026-07-29 and the change is small — read the boundaries,
+not the headline.**
 
-- **No shader in this repository has ever been executed on any device.** The shader corpus now
-  *compiles* — as of 2026-07-29 the development machine has the Vulkan SDK installed, two GPUs that
-  pass the §7.2 capability gate, and all 168 shader variants build locally — but compiling a shader
-  and dispatching one are different facts, and only the first has occurred. Switch's dispatch path
-  is under implementation; until it lands, no SPIR-V module in this tree has been submitted to a
-  queue. *(This bullet previously recorded that the machine had no ICD and no `glslc`; that changed
-  on 2026-07-29 and the conclusion did not.)*
-- **Trinity's lavapipe lanes remain the only *CI* place anything will execute on a device**, on a
-  software rasterizer, which §9.1 already qualifies as a smoke test rather than a correctness claim.
-  The two local GPUs are a development loop, not coverage: nothing they run is recorded, gated, or
-  reproducible by anyone else, and a result obtained only on this desk is not a result this project
-  has.
+- **A shader has executed. One shader.** `add_f32_dispatches_end_to_end` — 1024 f32 elements,
+  checked against a CPU reference — ran on two desktop GPUs on 2026-07-29, verified by the
+  coordinator running it twice rather than by report: **Intel Iris Xe (integrated, Vulkan 1.4.309)**
+  and **NVIDIA RTX 4060 (discrete, Vulkan 1.4.325)**, with `VK_LAYER_KHRONOS_validation` enabled and
+  **zero validation errors on either device**. The Intel result is the more informative half: it is
+  the stricter implementation, which makes it a spec-conformance oracle rather than a second sample.
+- **What that execution was not.** It ran from a **Rust integration test** — **not** through ONNX
+  Runtime, **not** through a graph, **not** through the EP's claim path. Every layer this project
+  exists to build sits between that dispatch and a working EP: `GetCapability`, fusion, `Compile`,
+  the plan, the allocator, and ORT's own session machinery. A kernel that computes the right numbers
+  when called directly is a necessary result and a small one.
+- **Still entirely unexecuted:** every other kernel, every contrib op, all quantized paths, and the
+  whole ORT-mediated route. **Trinity's differential suite has never run against a real device.** CI
+  has no hardware.
+- **Trinity's lavapipe lanes remain the only *CI* place anything executes on a device**, on a
+  software rasterizer, which §9.1 qualifies as a smoke test rather than a correctness claim. The two
+  local GPUs are a development loop, not coverage: nothing they run is recorded, gated, or
+  reproducible by anyone else, and **a result obtained only on this desk is not a result this
+  project has.** That line is now *more* load-bearing, not less — two desktop GPUs say nothing about
+  Adreno, Mali or MoltenVK, and **OQ-12 is completely untouched by this result** (§11.1).
 - Every "green" count reported to date — 227 at the `cbb1a0d` level, ~300 at the 2026-07-29 level,
-  206 collected / 8 passing in the no-EP configuration — measures **host-side logic**: claim
-  predicates, registry invariants,
-  the layering lint, decline paths, and the harness itself. That is real work and it is exactly what
-  has to be right before a kernel is worth writing, but it is not evidence about numerics on a GPU.
-- The first genuine execution evidence is M0's exit criteria (§10); the first evidence about
-  *vendor* hardware is §11.1's on-device experiment, which has no hardware yet.
+  206 collected / 8 passing in the no-EP configuration — still measures **host-side logic**: claim
+  predicates, registry invariants, the layering lint, decline paths, and the harness itself. One of
+  those tests now dispatches; the rest do not.
+
+**The failure mode has inverted, and this section's job with it.** Until 2026-07-29 the risk this
+disclosure guarded against was **overclaiming execution we had not performed**. From 2026-07-29 the
+risk is the opposite shape: letting *"we dispatch on two GPUs"* quietly stand in for *"the EP
+works"*. The gap between those two statements is the entire project. Anyone citing the dispatch
+result must state the three qualifiers with it — one kernel, no ORT, one OS — or they are citing
+something else.
 
 The rule this encodes, and it applies to every document in `docs/`: **a test count is a claim about
 what was executed, and it must not be allowed to imply more execution than occurred.** The same
 discipline that produced the RAI-003 platform disclosure in `README.md` and Link's
-unverified-usability statement in `PLATFORMS.md` §8 applies to our own test numbers.
+unverified-usability statement in `PLATFORMS.md` §8 applies to our own test numbers, and it applies
+hardest to good news.
 
 ### 9.2 Benchmarking — Niobe
 
@@ -1932,6 +2023,13 @@ The pre-committed outcomes above stand, read as being about the ORT GenAI column
 external users hit, so the widening exposure is undiminished — what has changed is that we now have
 a producer we can iterate against while that answer is outstanding.
 
+**R4 — a silent capability-probe failure is indistinguishable from an incapable device.** Recorded
+in full as §7.9 rather than duplicated here, because the mechanism belongs with the baseline. The
+milestone consequence: **no capability-derived behaviour is trusted until it has run on one
+integrated and one discrete device**, and `caps.rs` changes carry that as a review requirement from
+M0 onward. Both bugs that produced this rule were invisible on a single device and on lavapipe, so
+CI would not have caught either.
+
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
@@ -2030,6 +2128,37 @@ form were the riskier one I would have ruled the other way and eaten the CI late
 8. **The full test suite passes twice per lane — once with the default barrier backend and once
    with `ep.force_legacy_barriers=1` — with identical numerical results** (§7.5 item 5).
 9. Both sibling docs and this one are consistent; §12 lists every divergence.
+
+**M0 STATUS ASSESSMENT — 2026-07-29T09:47:45-07:00. M0 is NOT met.**
+
+Assessed criterion by criterion, because a milestone reported in aggregate is a milestone reported
+dishonestly. The first dispatch (§9.1.2) is real and it moves exactly one criterion, partially.
+
+| # | Criterion | Status | What remains |
+|---|---|---|---|
+| 1 | build + clippy clean, Windows & Linux | **Met** on Windows; Linux via CI | Nothing; hold it |
+| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **Not met** | This is M0's actual subject. A kernel executes from a Rust integration test; it has never been reached *through ORT*, through a graph, or through `GetCapability`. The claim assertion has never observed a real claimed node on a device. |
+| 3 | Validation layers clean in the debug lane | **Partially met** | Zero errors on both local GPUs for the one dispatch — genuinely good, and the Intel result is the informative half. Not yet "clean in the debug lane" for the ORT-mediated path, which does not exist. |
+| 4 | No-ICD machine advertises zero devices, session runs on CPU | **Met** — enforced and tested | Nothing |
+| 5 | Shader-less build advertises zero devices and claims nothing (§7.8 condition 3) | **Met** — enforced and tested | Nothing |
+| 6 | `CLAIM_DEBUG=1` prints per-op decline reasons | **Met** | Nothing |
+| 7 | Layering lint in CI, fails a planted violation incl. a planted `cmd_pipeline_barrier` | **Met** | Nothing |
+| 8 | Full suite passes twice per lane, default and `force_legacy_barriers=1`, identical results | **Not met** | Requires the suite to run against a device at all |
+| 9 | Sibling docs consistent; §12 lists every divergence | **Met** as of this revision | Re-check at declaration |
+
+**Six met, one partial, two not met — and the two not met are the two that define M0.** M0's
+sentence is *"a stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a
+single `Add` node on that device, and the output matches the ORT CPU EP"*. Every clause after
+"enumerates" is still open. **I will not declare M0 on the strength of an integration test that
+bypasses the very integration M0 is about** — that would be the §1.5 error committed against our own
+milestone plan, and it would spend the credibility of every later milestone report.
+
+**What specifically remains, in order:** the compiled subgraph must be reachable from `Compile`
+through `Compute` with ORT-owned tensors (Tank + Switch); `tests/ops` must run against a real device
+and the claim assertion must observe `Add` on `VulkanExecutionProvider` in the profiling JSON
+(Trinity); and the suite must pass twice per lane under both barrier backends. The dispatch result
+retires none of these — it removes the risk that the *innermost* step was wrong, which was a real
+risk and is not the milestone.
 
 ### M1 — "A useful elementwise EP" (`OP_COVERAGE.md` tier T1 — 87 ops)
 
