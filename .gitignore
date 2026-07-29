@@ -46,3 +46,6 @@ dist/
 .squad/.cache/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
+
+# Bench: transient Vulkan device-probe scratch dirs
+bench/vkfacts-*/
