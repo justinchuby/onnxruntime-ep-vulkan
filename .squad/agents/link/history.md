@@ -12,7 +12,20 @@
 
 <!-- Append new learnings below. Each entry is something lasting about the project. -->
 
-### 2026-07-28T17:59:54-07:00 — Vulkan baseline research
+### 2026-07-28T17:59:54-07:00 — OQ-1: Extension availability for Morpheus's capability set
+
+**Primary-source data from vulkan.gpuinfo.org (pulled 2026-07-28):**
+- `VK_KHR_synchronization2` Android coverage: **68.57%** (gap: 31.43%). Morpheus's assumption of "near-universal" is WRONG for Android.
+- `VK_EXT_subgroup_size_control` Android coverage: **85.88%** (gap: 14.12%).
+- `VK_KHR_synchronization2` Linux: 99.05%. Windows: 87.78%. macOS: 97.5%. iOS: 100%.
+- `VK_EXT_subgroup_size_control` Linux: 98.81%. Windows: 93.33%. macOS: **100%**. iOS: **100%**.
+- **macOS 100% for subgroup_size_control = extension string present, NOT feature VK_TRUE.** MoltenVK reports Vulkan 1.3 (so the extension is in core), but `subgroupSizeControl` feature is VK_FALSE because Metal cannot control SIMD group size per pipeline. The `gpuinfo.org` number counts extension string presence, not feature flag truthiness.
+- `maxComputeWorkGroupInvocations` on Android: only ~1% of database reports 128. The ≥ 256 requirement is safe in practice even though the Vulkan spec minimum is 128.
+- `maxComputeSharedMemorySize ≥ 16 KiB`: safe. 16,384 is the Vulkan spec minimum; universal on conformant devices.
+- Subgroup BASIC: spec-guaranteed in compute on Vulkan 1.1+. Subgroup ARITHMETIC: not spec-required but >95% coverage; always query.
+- `VK_LAYER_KHRONOS_synchronization2` exists (Khronos Vulkan-ExtensionLayer) and can be bundled in Android APK to provide sync2 emulation on Vulkan 1.0/1.1 devices with no dual code path in the EP. Already used by wgpu, Dawn, Godot.
+- **gpuinfo.org database skews toward developer/enthusiast hardware.** Real installed-base gaps for budget Android are likely larger than shown. Always caveat database figures accordingly.
+- The missing 31% of Android sync2 support is primarily: Adreno 5xx (frozen pre-2021 OEM blobs), Mali Bifrost on MediaTek with no driver update cadence, and Adreno 6xx on frozen Android 10/11 OEM drivers.
 
 - **llama.cpp ggml-vulkan requires Vulkan 1.1, not 1.3.** The user's initial proposal cited llama.cpp as a reason to target 1.3; this is incorrect. Always verify reference-project requirements before accepting user-stated baseline claims.
 - **ExecuTorch Vulkan backend requires Vulkan 1.1.** Both major Vulkan ML inference references use 1.1 + extension paths.
