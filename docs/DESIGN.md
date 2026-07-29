@@ -1,11 +1,11 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T19:16:08-07:00 (§7 frozen, OQ-1 resolved)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T20:54:42-07:00 (`com.microsoft` in scope by user ruling — §1.4 constraints, §10.0 milestone reconciliation; §7 frozen; OQ-1, OQ-8 and OQ-11 resolved)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
-**Sibling documents:** [`ENGINE.md`](./ENGINE.md) (Switch — Vulkan runtime & shaders), [`PLATFORMS.md`](./PLATFORMS.md) (Link — platform & hardware matrix), [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse — op coverage plan)
+**Sibling documents:** [`ENGINE.md`](./ENGINE.md) (Switch — Vulkan runtime & shaders), [`PLATFORMS.md`](./PLATFORMS.md) (Link — platform & hardware matrix), [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse — **authoritative op-coverage plan**, ratified), `THIRD_PARTY.md` (Rai — licence compliance)
 
 ---
 
@@ -23,8 +23,8 @@ build through the plugin-EP C ABI. No ORT fork, no ORT rebuild, no link against
 | Library artifact | `libonnxruntime_vulkan_ep.so` / `onnxruntime_vulkan_ep.dll` / `libonnxruntime_vulkan_ep.dylib` |
 | Registered EP / device name | **`VulkanExecutionProvider`** |
 | Crate type | `cdylib` |
-| ORT ABI | plugin-EP C ABI, `ORT_API_VERSION 27` (ORT 1.27.x) |
-| Version scheme | `0.<ORT_API_VERSION>.<patch>` → `0.27.0` |
+| ORT ABI | plugin-EP C ABI. **Built against ORT 1.28** (`ORT_API_VERSION`); **minimum runtime API 1.24** (`ORT_API_VERSION_MIN = 24`) with version negotiation. ORT 1.28 fixes a null-allocator PrePack crash that would have hit us on 1.27; 1.24 is where the `OrtEpFactory` surface we rely on stabilized. |
+| Version scheme | `0.<ORT_API_VERSION>.<patch>` → `0.28.0` |
 | Backend | Vulkan compute, GLSL → SPIR-V, `ash` bindings |
 | **Device requirement** | **Vulkan 1.1 core + a compute queue + four limits (§7.2).** No required extensions. Everything else is probed and degrades op coverage, never device availability. |
 
@@ -67,21 +67,38 @@ find-and-replace of the MLX design.
 These are **out of scope**. Each is a decision, not an oversight. Re-opening any of them requires
 a decision record.
 
+> **SUPERSEDED IN PART BY USER RULING, 2026-07-28T20:54:42-07:00.** Justin ruled directly:
+> **「contrib op 要做」 — the `com.microsoft` contrib operator domain is in scope.** That decision is
+> settled and is not mine to re-open; the `ai.onnx`-only position originally stated in this section
+> is void. Record: `.squad/decisions/inbox/copilot-directive-contrib-ops.md`. What remains mine, and
+> what §1.4 now contains, is **how we admit it safely** — claim-predicate discipline, the schema-drift
+> protocol, and clean CPU fallback. Admission settled; constraints binding.
+
+> **Amended 2026-07-28T19:16:08-07:00 by the ratification of [`OP_COVERAGE.md`](./OP_COVERAGE.md)
+> (OQ-11).** Four rows below were reversed. The reversal is not a loosening of ambition-control; it
+> is a correction of a factual error on my part. I wrote these rows believing that "run a Qwen
+> graph" and "support the `com.microsoft` domain" were separable. Mouse verified from the ONNX
+> Runtime GenAI model builder source that they are not: the builder **emits** contrib ops directly,
+> so an EP that declines `com.microsoft` cannot run a Qwen graph at all — not slowly, not partially,
+> at all. A non-goal that makes the project's named target unreachable is not ruthless, it is wrong.
+> The reversed rows are marked **REVERSED** below and the constraints that now attach to them are in
+> §1.4.
+
 | Non-goal | Why |
 |---|---|
 | **Training / gradients** | ORT training EPs are a different ABI surface and a different correctness problem. Inference only. |
-| **ONNX opset completeness** | `onnxruntime-mlx` reached 184/202 ops *after* two years and a mature backend that supplies op semantics for free. Vulkan supplies nothing — every op is a shader we write. Broad coverage in v1 would mean broad, shallow, wrong. |
-| **Dynamic shapes in the fast path (M0–M2)** | Static/shape-keyed subgraphs only. A shape change re-records the command buffer. Truly shapeless execution (the analog of MLX's shapeless decode compile) is M3+. |
-| **Data-dependent output shapes** | `NonZero`, `Unique`, value-dependent `Reshape` targets. These need a mid-graph host readback that a recorded command buffer cannot express. Permanent CPU fallback. |
+| **ONNX opset completeness** | Still a non-goal *as stated* — we do not chase the spec index. But see §8: coverage is now driven to ~174 inventoried ops by model family, and the reason the original row gave ("Vulkan supplies nothing — every op is a shader we write") is answered by kernel-template leverage, not by refusing breadth. What remains a non-goal is claiming ops **no target graph contains**. |
+| **Dynamic shapes in the fast path (M0–M2)** | **PARTIALLY REVERSED.** Still a non-goal for M0–M2 generally. But **LLM-path kernels take their dimensions in push constants from tier 3 onward**, so a recorded command buffer is length-agnostic for the decode loop. This is structural, not an optimization: KV length grows every token. See OQ-M1 / §1.4. |
+| **Data-dependent output shapes** | `NonZero`, `Unique`, value-dependent `Reshape` targets, `NonMaxSuppression`. These need a mid-graph host readback that a recorded command buffer cannot express. Permanent CPU fallback. Mouse inventoried and permanently declined these. |
 | **fp64** | Most consumer GPUs have no usable double precision and Vulkan makes `shaderFloat64` optional. Permanent CPU fallback. |
-| **Quantized ops (int4/int8 matmul, MatMulNBits, GatherBlockQuantized)** | The highest-value target eventually, and the reason llama.cpp's Vulkan backend exists — but each is a hand-written packed-format shader. Not in v1. |
-| **Attention fusion (GQA / MHA / SDPA / flash attention)** | Same reason, one level harder. M3+ at the earliest. |
-| **Graph-level op fusion** | llama.cpp fuses `MUL_MAT+ADD`, `RMS_NORM+MUL`, etc. Real wins, but fusion patterns are a perf optimization layered on a correct per-node dispatcher. Not v1. |
+| **Quantized ops (int4/int8 matmul, `MatMulNBits`, `GatherBlockQuantized`)** | **REVERSED — in scope, tier 4 (M3).** An int4 Qwen graph is the variant people actually run; without `MatMulNBits` it shatters into hundreds of islands and the EP is worse than useless on it. Constraints in §1.4. |
+| **Attention fusion (GQA / MHA / SDPA / flash attention)** | **REVERSED for `GroupQueryAttention` — in scope, tier 3 (M2/M3).** My original row conflated two things. Performing a fusion is out of scope. `GroupQueryAttention` is not a fusion we perform: it **arrives as a single node from the exporter**, and decomposing it would materialize a `[B,H,S,S]` score matrix in VRAM — gigabytes at S=4096. Implementing it is the *conservative* choice. Fusion patterns we would have to *detect* remain out of scope. |
+| **Graph-level op fusion** | Unchanged non-goal for patterns we must *detect* (llama.cpp's `MUL_MAT+ADD`, `RMS_NORM+MUL`). Note this is distinct from a single ONNX node whose semantics are internally fused (`Softmax`, `LayerNormalization`, `SkipSimplifiedLayerNormalization`, GQA) — implementing those as one kernel is not graph fusion, it is implementing the op. |
 | **Mobile-first tuning** | Android must *work* (M3) and must not be architecturally excluded (§7). Tile sizes, memory budgets, and Adreno/Mali-specific tuning are not v1. |
-| **Images / texture-backed tensors** | ExecuTorch defaults to 3D image textures for mobile bandwidth. Buffers only in v1 (see `ENGINE.md` §3.6). Revisit when Niobe shows a bandwidth-bound case. |
+| **Images / texture-backed tensors** | Buffers only in v1 (see `ENGINE.md` §3.6). Named trigger for re-evaluation: `Conv` at tier 5c/6. |
 | **Multi-GPU / multi-queue overlap** | One `VkDevice`, one compute queue, one submission per subgraph execution. |
 | **Cooperative matrix / tensor-core paths** | Optional extension on every baseline. Capability-probed later, never required. |
-| **Custom / contrib domain ops (`com.microsoft`)** | v1 is `ai.onnx` only. |
+| **Custom / contrib domain ops (`com.microsoft`)** | **REVERSED — NO LONGER A NON-GOAL. `com.microsoft` is in scope by user ruling, 2026-07-28T20:54:42-07:00.** The nine ops needed for the Qwen3.5 target are enumerated in §1.4 and are the *admitted set for v1*; admitting a tenth is now a scoping decision within an in-scope domain (a decision record, not a re-opened non-goal). The engineering discipline of §1.4 — per-op claim predicates, no domain-wide opt-in in code, census-in-CI — is unchanged and binding, because it was never about whether the domain was permitted; it is about not claiming a schema we have not read. |
 | **Shipping wheels on PyPI in v1** | The Python package exists for testing from M0. Publishing is a release decision, not an architecture one. |
 
 ### 1.3 Why "conservative claiming" is a hard requirement, not a preference
@@ -90,6 +107,128 @@ Because the fallback is not free but it *is* always correct. The failure mode we
 against is not "we didn't claim enough ops" — it is "we claimed a node form our shader gets
 subtly wrong on one driver, and a user gets silently wrong logits." Every claim predicate is a
 promise. The rule from the MLX reference stands verbatim: **when in doubt, do not claim.**
+
+Nothing in the ratified coverage plan relaxes this. A faster schedule changes *how many* ops land
+and *in what order*; it does not change what claiming means. If anything, the higher the op
+throughput, the more load-bearing this rule becomes.
+
+### 1.4 `com.microsoft` contrib ops — in scope; the constraints that attach
+
+**Scope status: settled by user ruling, 2026-07-28T20:54:42-07:00.** The `com.microsoft` domain is
+in scope. The deciding fact, verified by Mouse from the ORT GenAI model builder source, is that the
+builder *emits* contrib ops directly, so an EP that declines the domain cannot run a Qwen graph at
+all — and Qwen3.5 is a named target. I am not re-litigating that here.
+
+**The admitted set for v1 is these nine**, which are the ops a Qwen3.5-class GenAI-built graph
+actually contains:
+
+`GroupQueryAttention`, `RotaryEmbedding`, `SimplifiedLayerNormalization`,
+`SkipSimplifiedLayerNormalization`, `MatMulNBits`, `LinearAttention`, `CausalConvWithState`,
+`QMoE`, `GatherBlockQuantized`.
+
+Adding a tenth is a scoping decision inside an in-scope domain — a decision record and a tier
+assignment, not a re-opened non-goal. What follows is what I still own, and it matters *more* now
+that the domain is admitted, not less. Contrib ops are a genuinely more dangerous surface than
+`ai.onnx` and the discipline below is the whole reason admitting them is safe.
+
+#### C1 — No domain-wide opt-in exists anywhere in the code
+
+`com.microsoft` being in scope as a *product* decision must not become "we accept
+`node.domain == "com.microsoft"`" as a *code* decision. There is no such predicate and there must
+never be one. The registry is keyed by `(domain, op_type)` and an unregistered contrib op declines
+through exactly the same path as an unregistered `ai.onnx` op. **The test that enforces this**: a
+graph containing a fabricated `com.microsoft::NotARealOp` node must be declined with the ordinary
+`NoHandler` reason and must run correctly on CPU — Trinity, as an M-tier regression test from the
+first contrib op onward.
+
+#### C2 — Contrib ops have no opset, so version-gating is by ORT release plus a drift alarm
+
+This is the substantive difference from `ai.onnx` and the constraint everything else hangs off.
+`ai.onnx` gives us a monotonic opset number we can range-check in the claim predicate; a schema
+change is *visible* as a number we did not accept. Contrib schemas carry no such number — they are
+versioned by ORT *release*, and several of the nine (`LinearAttention`, `CausalConvWithState`,
+`QMoE`) are new and still moving. A contrib schema change therefore does not bump anything we can
+test against: it silently changes what our claim predicate *should* accept, while our predicate goes
+on accepting what it always did.
+
+The protocol, and it is a hard precondition on the first contrib op landing — not on tier 3
+generally, on **op #1 of the nine**:
+
+1. **The ORT version is pinned per release** and recorded in `Cargo.toml`, `docs/`, and the CI
+   matrix. Trinity has pinned 1.28. A contrib claim predicate is only ever validated against a
+   pinned version.
+2. **Each of the nine records the ORT version its predicate was written against**, in the registry
+   entry, next to the predicate. Not in a comment in a design document — in the table, where it can
+   be printed by `--dump-capabilities` and diffed.
+3. **`tools/graph_census.py` runs in CI against pinned `.onnx` artifacts** and reports per-op claim
+   rate. This is the drift alarm: when a schema shifts under us, the census claim rate for that op
+   moves, and CI fails on the delta rather than on a numerical comparison months later.
+4. **On an ORT version bump, the census delta is a review gate.** A bump that changes any contrib
+   claim rate does not merge until the owning op's predicate has been re-read against the new
+   schema. The failure we are buying insurance against is the quiet one: a new optional attribute
+   appears, our predicate does not know to reject it, and we claim a node whose semantics changed.
+5. **When a schema changes shape under us, the correct response is to narrow the predicate and
+   decline, not to guess.** Declining is a performance regression that CI reports as a claim-rate
+   drop; guessing is wrong logits that nothing reports at all. This ordering is not negotiable and
+   it is the contrib-specific restatement of §1.3.
+
+#### C3 — Contrib declines use the ordinary machine-readable decline path, never a special case
+
+Every decline — contrib or not — emits Mouse's machine-readable reason through the same mechanism
+(`ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1`, and the profiling-JSON claim assertion Trinity landed). No
+contrib-specific logging path, no contrib-specific decline enum, no `if domain == "com.microsoft"`
+anywhere in the diagnostics. Two reasons: a bespoke path is one more thing that can be wrong in the
+place we look when something is already wrong; and the whole value of a uniform decline vocabulary
+is that a user debugging a Qwen graph and a user debugging a ResNet read the same output. Any new
+decline reason a contrib op needs (`UnsupportedAttributeValue`, `UnverifiedSchemaVersion`) is added
+to the shared enum for everyone.
+
+#### C4 — Every one of the nine gets a hand-written claim predicate
+
+Not the shared `caps`-column helper. Their attribute surface — `num_heads`, `kv_num_heads`,
+`do_rotary`, `rotary_interleaved`, `scale`, `softcap`, `bits`, `block_size`, `accuracy_level`,
+`g_idx`, the `LinearAttention` recurrence rule — is exactly where a silently-accepted-but-
+unimplemented variant produces wrong output rather than a decline. The generated table still owns
+their dtype/capability gating; the *semantic* gate is written by hand and reviewed by hand.
+
+#### C5 — Claim only the configuration Trinity has a real artifact for
+
+No claiming a `LinearAttention` recurrence rule we have never seen emitted. Mouse's UNVERIFIED-row
+discipline (`OP_COVERAGE.md` §2.1) is ratified and extended: **an UNVERIFIED contrib-op row may not
+be claimed at all**, not merely kept off exit criteria. An op moves from UNVERIFIED to VERIFIED by
+`graph_census.py` finding it in a pinned artifact, at which point its real attribute values are
+known and the predicate can be written against them instead of against the schema docs.
+
+#### C6 — CPU fallback is the safety net and it must stay intact
+
+ORT's own CPU implementation of every one of the nine is the reference and the fallback. **A contrib
+op we claim but get subtly wrong is strictly worse than one we decline** — the decline costs a
+transfer boundary and shows up in `largest_island_flops`; the wrong claim costs correctness and
+shows up nowhere. Concretely: the nine are claimed incrementally, one at a time, each landing with
+its differential test before the next begins; and **numerical verification for contrib ops is
+per-layer, not final-logits**. Comparing final tokens on a 1.7B model against ORT CPU will pass with
+a broken kernel far more often than anyone expects — sampling hides a great deal. Trinity owns the
+per-layer mechanism; this is a binding constraint on the coverage plan, not a suggestion.
+
+#### C7 — The nine are budgeted as XL work, not as coverage
+
+Three of them (`GroupQueryAttention`, `MatMulNBits`, `LinearAttention`) have no kernel-template
+leverage and each gates a separate tier. They must never be counted in an op-coverage number as if
+they were nine of the 174. §10.0 and §1.5 state the schedule consequence honestly.
+
+### 1.5 Two different claims, deliberately kept apart
+
+Ratified from `OP_COVERAGE.md` §11.1 because it is the single most important thing in that document
+for expectation-setting:
+
+- **"High op coverage" — the ~121-op elementwise/shape/indexing/reduction/GEMM surface — is a
+  weeks-scale goal**, contingent on the kernel-template infrastructure being built *before* op #1.
+- **"Qwen3.5 runs end-to-end on Vulkan" is a months-scale goal**, gated on three XL kernels and on
+  M2's device allocator.
+
+The op count will look excellent long before any LLM runs. That gap is precisely where a coverage
+project deceives itself, which is why the metric of record is `largest_island_flops`, not op count
+(§9.2).
 
 ---
 
@@ -901,37 +1040,33 @@ host-side API, not a SPIR-V capability. Nothing in `shaders/` changes because of
 
 ### 8.1 Strategy
 
-> **Authoritative coverage plan: [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse).** Justin has raised
-> the ambition sharply — *"mlx 达到这样的 op coverage 只用了几天，不是两年，我们要 target 高 op
-> coverage。当然 focus on llm，moe，multi modal，linear attention，qwen3.5，conv 这些类型的模型
-> 优先。"* Coverage is therefore driven by **model families** (LLM/Qwen3.5 → MoE → multimodal →
-> linear attention/SSM → conv), not by the incremental family list in §8.2. Mouse proposes;
-> **Morpheus ratifies.** When `OP_COVERAGE.md` is ratified it **supersedes §8.2 and §8.3** as the
-> sequencing plan, and §8.2 below is retained only as the M0/M1 floor — the minimum that must exist
-> for the pipeline to be provable.
+> **RATIFIED 2026-07-28T19:16:08-07:00 — OQ-11 closed. [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse)
+> is the authoritative op-coverage plan and supersedes §8.2 and §8.3 of this document.** Verdict:
+> **ratify with five amendments** (§8.4). §8.1's seven principles below are unchanged and Mouse
+> endorses all seven; §8.2 is retained only as the M0/M1 floor; §8.3's qualitative fragmentation
+> rule is **replaced** by Mouse's quantitative Minimum Viable Subgraph rule (`OP_COVERAGE.md` §7.2),
+> which is a strict improvement — it converts a principle I could only state into a rule the
+> partitioner can enforce, with a transfer cost *measured at device-init time* rather than a
+> hardcoded constant that would be wrong on half our platform matrix.
 >
-> **The constraints §8.1 imposes on `OP_COVERAGE.md` are not negotiable by the coverage plan.** An
-> aggressive schedule changes *what order* ops land in and *how many* land per week. It does not
-> change the claiming discipline, the fallback guarantee, or the fragmentation rule. Specifically,
-> the coverage plan must honour:
+> **Why I ratify.** Three things earn it. (1) The op list is derived from **emitted graphs** — the
+> GenAI model builder source, contrib schemas, the ORT WebGPU EP registries — not from the ONNX spec
+> index, which is the difference between a coverage plan and a wish list. (2) Every row carries a
+> VERIFIED/UNVERIFIED mark and no UNVERIFIED row may be load-bearing for a tier exit criterion; that
+> is the discipline I would have had to impose, arriving pre-imposed. (3) The central thesis —
+> **87 tier-1 ops served by ~5 kernel templates, and the template infrastructure must exist before
+> op #1** — is correct and is the only honest answer to "MLX did this in days". MLX did it in days
+> because MLX already owned the kernels. Our leverage has to be manufactured, and §5 of that
+> document is a credible manufacturing plan.
 >
-> 1. **Conservative claiming (§1.3, §8.1 items 2–3).** Every claim predicate validates domain, op
->    type, opset range, arity, dtypes, attributes, static-shape availability, and broadcast form.
->    A partially-implemented op is an unclaimed op. Speed of coverage is never a reason to claim
->    something we cannot translate correctly for every input we accepted.
-> 2. **Clean CPU fallback (§2.6, §5).** Declining must be free and silent. No op may be claimed
->    whose failure mode is an error at `Compile` or `Compute` time rather than a decline at
->    `GetCapability` time.
-> 3. **A minimum viable subgraph size.** A claimed region must be large enough that its compute
->    outweighs the device round-trip at its boundary (§8.3). High op *count* that shreds a graph
->    into transfer-dominated fragments is a regression wearing a coverage badge. The metric of
->    record is Niobe's island count and largest fused region (§9.2), not the number of ops in the
->    registry.
-> 4. **Every claimed op ships with its differential test and its platform row on the same PR**
->    (items 4–5 below). This is what makes a fast schedule survivable rather than a debt pile.
+> **The part I most want on the record** is `OP_COVERAGE.md` §11.1's refusal to collapse two
+> different claims into one: ~121 ops is weeks-scale; Qwen3.5 end-to-end is months-scale. A lead who
+> lets those merge gets a project that reports 90% op coverage while running nothing. See §1.5.
 >
-> A model-family-driven plan is the right instinct and I expect to ratify it. These four constraints
-> are what I will check it against.
+> Constraints from the prior brief are all honoured: conservative claiming (§7.1 of that doc,
+> restated verbatim), clean CPU fallback (unchanged), minimum viable subgraph size (§7.2, now
+> quantified), and test-plus-platform-row on the same PR (§10). Ratification does not license
+> shortcuts on any of them.
 
 Mouse owns `docs/OP_COVERAGE.md`, `docs/OP_ARCHITECTURE.md` and the registry. The architectural
 constraints on that work:
@@ -952,11 +1087,14 @@ constraints on that work:
    descriptor layout, and a test file, so families amortize; scattered ops do not.
 7. **fp32 first.** fp16 is a variant per family, gated on `shaderFloat16` +
    `storageBuffer16BitAccess`, added family by family once fp32 is green. No fp64, ever.
+   *Amended:* this holds through tier 2. From tier 3 the LLM path is **fp16-native** — an fp32 KV
+   cache for a real model is a memory-footprint failure, not a slow path. See §8.4 amendment A4.
 
 ### 8.2 The M0/M1 op floor
 
-> Superseded as a *plan* by [`OP_COVERAGE.md`](./OP_COVERAGE.md) once ratified (§8.1). Retained as
-> the minimum that must exist for the pipeline to be provable; nothing here is a ceiling.
+> Superseded as a *plan* by [`OP_COVERAGE.md`](./OP_COVERAGE.md), ratified 2026-07-28T19:16:08-07:00
+> (§8.1). Retained as the minimum that must exist for the pipeline to be provable; nothing here is
+> a ceiling. `OP_COVERAGE.md` T0/T1 subsume this and Mouse explicitly left T0 unchanged.
 
 **M0 — one op, end to end.** `Add`, fp32, identical shapes, 2 inputs, 1 output, static shape.
 That is the whole M0 claim set. It exists to prove the ABI, the device, the memory path, the
@@ -984,13 +1122,91 @@ fp16/fp64, anything with a data-dependent shape, `Resize`, `Pad` with non-consta
 This is the first milestone where a real model (a small MLP, then a small CNN once `Conv` lands)
 has a fused region big enough for a speedup to be meaningful rather than dispatch-bound.
 
-### 8.3 The fragmentation rule
+### 8.3 The fragmentation rule (superseded — see `OP_COVERAGE.md` §7.2)
+
+> Retained for its reasoning. The enforceable form is Mouse's Minimum Viable Subgraph rule.
 
 A new op is worth claiming when it **connects** existing claimed regions or **extends** one at the
 edge. An op claimed in isolation, in the middle of a graph of unclaimed ops, makes the graph
 *slower* — two extra device round-trips for one dispatch. Mouse prioritizes by "does this merge
 two islands", not by "is this op easy." Niobe's benchmark must report island count and largest
 fused region, not just wall time, so this is measurable rather than folklore.
+
+### 8.4 OQ-11 ratification — the five amendments
+
+Ratified **with amendments**. Each amendment is binding on `OP_COVERAGE.md` at its next revision;
+none of them requires a respin of the document.
+
+**A1 — Contrib ops: in scope, with per-op discipline.** *Revised 2026-07-28T20:54:42-07:00 by user
+ruling.* The domain question is settled above my level: `com.microsoft` is in scope. My amendment
+survives the ruling intact because it was never about permission — it is about **how**. The three
+parts that bind: an **UNVERIFIED contrib-op row may not be claimed at all** (Mouse's rule kept them
+off *exit criteria*; I extend it to claiming, because a contrib op has no opset number to
+range-check and a wrong claim there produces wrong logits rather than a decline); **there is no
+domain-wide opt-in predicate in the code**, only per-op registry entries with hand-written semantic
+gates; and **`tools/graph_census.py` running in CI against pinned artifacts is a precondition on
+contrib op #1**, not on tier 3 — it is the only drift alarm we have for a surface with no version
+number. The full protocol, including what to do when a schema changes shape under us, is §1.4
+C1–C7. Contrib declines flow through the ordinary machine-readable decline path (§1.4 C3); no
+special-casing.
+
+**A2 — The template infrastructure is a milestone deliverable with its own exit criterion, not a
+preamble.** `OP_COVERAGE.md` §11.1 is explicit that the schedule dies if ops #1–#20 are hand-written
+before `indexing.glsl`, the `build.rs` variant generation, the `ops!` macro and the shared claim
+helpers exist. I am making that structural rather than advisory: **M1 does not begin until the
+template infrastructure is merged, and M1's exit criterion includes the ops-per-hand-written-kernel
+ratio (≥ 8 in tiers 1–2) as a reported number.** A ratio that collapses is the earliest possible
+signal that the thesis is failing, and it is measurable in week one rather than month three.
+
+**A3 — `OP_COVERAGE.md` §7.2's MVS rule is adopted, with one addition.** The measured transfer-cost
+calibration at device init is right, and the ~2 ms cost is acceptable. The addition: **the
+calibration result and the MVS decision for every rejected candidate subgraph must be dumpable**
+(`ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1`). A partitioning heuristic that silently declines a region is
+indistinguishable from a missing op at the console, and we will otherwise spend real time
+mis-diagnosing one as the other. Also: the SAFETY factor 3.0 and the `node_count >= 4` /
+`64 KiB` floors are **provisional constants that must be re-derived from Niobe's measurements at the
+M2 retrospective**, not settled values.
+
+**A4 — fp16 is promoted from "a variant per family" to a tier-3 precondition, and its coverage risk
+is escalated.** `OP_COVERAGE.md` §6.1 item 2 is correct that an fp32-upcast LLM path is a
+memory-footprint failure, not a slow path. Under the frozen §7.2, `shaderFloat16` and
+`storageBuffer16BitAccess` are **probed, not required** — so this is a live product question, not a
+detail: if a meaningful fraction of Android lacks 16-bit storage, the LLM story is desktop-first no
+matter what the op plan says. This is Mouse's OQ-M2 and I am escalating it to **OQ-14** in §11 with
+Link as owner, because it decides a product boundary and not just a shader variant.
+
+**A5 — Shape-agnostic push-constant kernel parameters are authorized for the LLM path from tier 3,
+and this is a contract on Switch, not a request.** `OP_COVERAGE.md` §6.1 item 3 / OQ-M1 is right
+that KV length growing every token makes this structural. It is also much cheaper to decide now
+than to retrofit through every LLM kernel. Ruling: **from tier 3, every LLM-path kernel takes its
+dimensions in push constants; the recorded command buffer is length-agnostic for the decode loop.**
+The §1.2 non-goal on dynamic shapes is amended accordingly and narrowed to "no dynamic-shape *fast
+paths* outside the LLM decode path in M0–M2". Switch must reflect this in `ENGINE.md`'s recording
+model alongside the barrier seam. Note the interaction the coverage plan did not call out: a
+push-constant-parameterized dispatch still needs a **workgroup count** that depends on the sequence
+length, so either the recording is re-issued per shape bucket anyway or we need
+`vkCmdDispatchIndirect` with a device-computed count. **I want indirect dispatch evaluated, not
+assumed** — it is the same mechanism `QMoE`'s data-dependent routing will need (`OP_COVERAGE.md`
+§11 risk 8), so one answer serves both. Assigned to Switch as OQ-15.
+
+**Not amended, explicitly.** Mouse's `ops!` macro with the machine-readable `caps` column
+(`OP_COVERAGE.md` §5.7) is a genuine improvement on the MLX reference and I endorse it without
+qualification — a hand-maintained support matrix across five vendors, two dtypes and
+optional-capability shader variants *is* the "claims support but silently gets it wrong" failure
+mode my §8.1 item 2 exists to prevent. Generating `OP_SUPPORT.md` and `--dump-capabilities` from the
+same table is exactly right. Likewise the compose-before-bespoke rule (§5.6) with its short fusion
+allowlist, the three claim-policy traps inherited from the MLX project's scars (§7.1), and the
+metric contract with Niobe (§7.3) are adopted as written.
+
+**Licence dependency, now closed.** Mouse names reading llama.cpp's MIT-licensed Vulkan shaders as
+the single largest available accelerant for the three XL kernels. **Rai ruled OQ-M6 🟢 Green on
+2026-07-28T19:16:08-07:00** (`.squad/decisions/inbox/rai-oq-m6-license-ruling.md`,
+`docs/THIRD_PARTY.md`): reading is permitted with no attribution obligation; substantial adaptation
+triggers a file header, a `THIRD_PARTY_NOTICES.md` entry, a commit-message note, and distribution of
+the notices file with any binary containing the adapted SPIR-V. My timeline view in §1.5 assumes
+this accelerant is used — **read the tiling and subgroup strategies, do not port the code**, and
+treat any shader that ends up substantially adapted as triggering Rai's conditions. Without it I
+would widen the tier-3/4/5a estimates rather than hold them.
 
 ---
 
@@ -1022,10 +1238,15 @@ elementwise. Reductions and GEMM get looser tolerances tied to accumulation orde
 tolerance is *derived and documented*, never widened to make a red test green. Widening a
 tolerance requires Trinity's sign-off and a note in the test.
 
-**Cross-platform.** The same suite runs on every CI lane: lavapipe (Linux), SwiftShader (Windows),
-and any GPU runner we acquire. A pass on lavapipe alone is a smoke test, not a correctness claim —
-software rasterizers do not reproduce driver-specific subgroup, denorm, or precision behaviour.
-Link owns which lanes exist; Trinity owns what runs on them.
+**Cross-platform.** The same suite runs on every CI lane. As landed by Trinity
+(2026-07-28): a **Linux lavapipe lane** and a **real Windows Vulkan lane** — she found lavapipe
+Windows prebuilts via mesa-dist-win, so our primary development platform has genuine correctness
+coverage rather than build-only coverage, which materially raises the value of a green CI run. ORT
+is pinned to 1.28 across lanes (§1.4 C2 depends on that pin). Claims are asserted from the
+profiling JSON, so "it ran on Vulkan" is proven rather than assumed. A pass on a software
+rasterizer alone remains a smoke test, not a correctness claim — lavapipe does not reproduce
+driver-specific subgroup, denorm, or precision behaviour, and §11.1's on-device work is what closes
+that gap. Link owns which lanes exist; Trinity owns what runs on them.
 
 ### 9.2 Benchmarking — Niobe
 
@@ -1049,6 +1270,49 @@ Link owns which lanes exist; Trinity owns what runs on them.
 ## 10. Milestones
 
 Each milestone's exit criteria are verifiable by a command, not by an opinion.
+
+### 10.0 What admitting contrib ops does to the milestones — stated without smoothing
+
+M0–M3 were originally written under an `ai.onnx`-only assumption. The user ruling of
+2026-07-28T20:54:42-07:00 changes that assumption, and the honest accounting is:
+
+**M0 and M1 are unaffected.** Neither contains a contrib op. M0 is one `Add`; M1 is the 87-op T1
+elementwise/shape/indexing surface, all `ai.onnx`. Nothing about the contrib ruling accelerates or
+delays them, and nothing about it should be allowed to *reprioritize* them — the kernel-template
+infrastructure that M1 gates on is what makes tiers 1–2 weeks-scale, and skipping ahead to a contrib
+kernel because it is closer to the visible goal is the single most expensive mistake available to
+this project.
+
+**M2 gains one obligation and remains the critical path.** Its exit criterion is deliberately
+BERT-base with *primitive* attention and no contrib ops, because M2's job is to prove the device
+allocator and the transfer path, not to prove an attention kernel. The added obligation is §1.4 C2's
+drift alarm: `graph_census.py` in CI, with pinned artifacts and per-op claim rates, must exist
+before the first contrib op lands — which means it is built in M1/M2, not in M3 when it is needed.
+M2 remains the critical path for everything after it, because a KV cache that round-trips to host
+every token is not an inference engine.
+
+**M3+ is where the whole cost lands, and it does not compress.** Tiers T3–T5c are gated on three XL
+kernels with no template leverage — `GroupQueryAttention`, `MatMulNBits`, `LinearAttention` — plus
+`CausalConvWithState`, `QMoE` and the vision path. These are each one person's deep work and they
+are **not parallelizable away**; three people on three kernels is the maximum useful parallelism and
+we do not have three people free. Rai's 🟢 on OQ-M6 (§8.4) is the one real accelerant: reading
+llama.cpp's MIT-licensed Vulkan shaders for tiling and subgroup strategy is authorized, and my
+estimates assume it is used. Without it I would widen T3/T4/T5a rather than hold them.
+
+**The reconciliation with the ambition, stated plainly.** Justin's target is high coverage on a
+weeks-to-months horizon with Qwen3.5 end-to-end as the real goal. Mouse's split is honest and I
+ratify it unchanged: **tiers 0–2 (121 ops) are weeks-scale; Qwen3.5 end-to-end is months-scale.**
+Admitting contrib ops does not shorten the second number — it is what makes the second number
+*reachable at all*, which is a different and more important thing. Before the ruling, "Qwen3.5
+end-to-end" had no completion path; now it has a long one. I am not going to present those as the
+same kind of progress.
+
+The guard against presenting them as the same kind of progress is `largest_island_flops` (§9.2).
+The op count will look excellent for weeks before any LLM runs, and a milestone report that leads
+with op count is a milestone report that is hiding something. Every milestone from M1 onward reports
+`largest_island_flops` on the corpus artifacts alongside whatever else it reports — including on the
+Qwen artifacts, where for most of M1 and M2 it will be near zero and *should* be, because that
+number going up is the only thing that means the named target is getting closer.
 
 ### M0 — "It loads, it runs, it matches"
 
@@ -1085,52 +1349,77 @@ Each milestone's exit criteria are verifiable by a command, not by an opinion.
    with `ep.force_legacy_barriers=1` — with identical numerical results** (§7.5 item 5).
 8. Both sibling docs and this one are consistent; §12 lists every divergence.
 
-### M1 — "A useful elementwise EP"
+### M1 — "A useful elementwise EP" (`OP_COVERAGE.md` tier T1 — 87 ops)
 
-The §8.2 M1 op set, claimed, tested, and documented; shape-keyed command-buffer recording cache
-(`recorded.rs`); convex clustering with multi-node fused subgraphs; the `OP_ARCHITECTURE.md`
+**Gate: M1 does not begin until the kernel-template infrastructure is merged** (§8.4 A2) —
+`indexing.glsl`, the `build.rs` dtype/capability variant generation, the `ops!` table macro, and the
+shared claim helpers. Hand-writing ops #1–#20 before the templates exist forfeits the entire
+leverage thesis and, with it, the schedule.
+
+The T1 op set, claimed, tested, and documented; shape-keyed command-buffer recording cache
+(`recorded.rs`); convex clustering with multi-node fused subgraphs; the generated `OP_SUPPORT.md`
 coverage table as the authoritative contract.
 
 | Work | Owner |
 |---|---|
-| Op families + claim predicates + coverage table | Mouse |
+| **Kernel-template infrastructure (gate), then** op families + claim predicates + the `ops!` table | Mouse |
 | Shader variants, spec constants, broadcast indexing, descriptor layout per family | Switch |
 | Convex clustering, `recorded.rs`, arena-based temporaries | Tank |
 | Per-family differential tests, tolerance policy, `tests/backend/` node tests | Trinity |
 | `bench/` harness + first published baselines with island counts | Niobe |
 | macOS/MoltenVK lane; first real-GPU lane if a runner is available; driver quirk log | Link |
+| `tools/graph_census.py` + node histograms for all 7 corpus artifacts (`OP_COVERAGE.md` §2.2) | Mouse + Trinity |
 
-**Exit criteria.** Every M1 op green vs CPU on ≥2 platforms; a 10-node elementwise chain fuses into
-**one** subgraph and **one** submission; a shape change re-records once and then replays;
-`OP_ARCHITECTURE.md` matches the registry exactly (checked by a test that diffs them).
+**Exit criteria.** Every T1 op green vs CPU on ≥2 platforms; **a pure-elementwise graph of ≥20 nodes
+compiles to one island, one submission**; a shape change re-records once and then replays;
+`OP_SUPPORT.md` is generated from the registry and matches it by construction; `graph_census.py`
+exists and has produced histograms for the full corpus; and **the ops-per-hand-written-kernel ratio
+is reported and is ≥ 8** (§8.4 A2).
 
-### M2 — "Real memory, real compute"
+### M2 — "Real memory, real compute" (`OP_COVERAGE.md` tier T2 — 33 ops, cum. 121)
 
-Device allocator + data transfer (§6.3), `GetDefaultMemoryDevice` returning a real device, and the
-compute families from §8.2 M2. This is the first milestone that can honestly claim a speedup.
+Device allocator + data transfer (§6.3), `GetDefaultMemoryDevice` returning a real device, and T2's
+reductions / `MatMul` / `Gemm` / norms / softmax. This is the first milestone that can honestly
+claim a speedup. **It is also the critical path for everything after it** — the LLM tiers are
+worthless without the device allocator, because a KV cache that round-trips to host every token is
+not an inference engine (`OP_COVERAGE.md` §6.1 precondition 1). That dependency is Tank's and
+Switch's, not Mouse's, and it should be resourced accordingly.
 
 | Work | Owner |
 |---|---|
-| `allocator.rs`, `transfer.rs`, handle registry, `OrtMemoryDevice` wiring | Tank |
+| `allocator.rs`, `transfer.rs`, handle registry (OQ-3), `OrtMemoryDevice` wiring | Tank |
 | Device-local arena, staging ring, coherence handling, barrier batching | Switch |
-| `MatMul`/`Gemm`/reductions/`Softmax`/norms — semantics, claim, tiling requirements | Mouse + Switch |
+| Reductions / `MatMul` / `Gemm` / `Softmax` / norms — semantics, claim, tiling; the fused Softmax and RMSNorm kernels from the §5.6 allowlist | Mouse + Switch |
+| MVS transfer-cost calibration at device init + its claim-debug dump (§8.4 A3) | Mouse + Switch |
 | Timestamp queries and the trace exporter | Switch + Niobe |
-| Numerical tolerance policy for accumulation-order-sensitive ops | Trinity |
+| Numerical tolerance policy for accumulation-order-sensitive ops (OQ-10) | Trinity |
 | GPU CI lane; per-vendor result matrix | Link |
 | First published speedup table, with island counts and CPU baseline | Niobe |
 
-**Exit criteria.** A small MLP and a small CNN-shaped graph run majority-on-Vulkan; with
-`IoBinding`, per-inference host↔device traffic is **zero** for a fully-claimed graph; a measured
-speedup vs the ORT CPU EP on at least one real GPU, published with methodology.
+**Exit criteria.** A small MLP **and a BERT-base encoder using primitive attention (no contrib
+ops)** run end-to-end on Vulkan; with `IoBinding`, per-inference host↔device traffic is **zero** for
+a fully-claimed graph; a measured speedup vs the ORT CPU EP on at least one real discrete GPU,
+published with methodology; and the MVS constants are re-derived from Niobe's measurements rather
+than left at their provisional values (§8.4 A3).
 
-### M3+ — "Breadth and platforms"
+### M3+ — "Breadth and platforms" (`OP_COVERAGE.md` tiers T3–T6)
 
-Android (NDK cross-compile, Adreno + Mali validation — **including deliberate validation on the
-Adreno 5xx / Mali Bifrost population that §7.3 bought us, which is the whole point of carrying the
-legacy barrier backend**), fp16 variants across families, `Conv` and pooling, persistent activation
-buffers, shapeless recording for dynamic dimensions, graph-level fusion patterns, quantized ops,
-attention. Sequencing is decided at the M2 retrospective, informed by what Niobe's numbers,
-Link's matrix, and the ratified `OP_COVERAGE.md` actually say — not scheduled now.
+Sequenced by `OP_COVERAGE.md` §6, not re-sequenced here. **Entry precondition for the whole of M3:**
+`tools/graph_census.py` runs in CI against pinned `.onnx` artifacts and reports per-op claim rates
+(§1.4 C2). No contrib op is claimed before that alarm exists. The shape of M3+:
+
+| Tier | Target | Gating item |
+|---|---|---|
+| T3 | Qwen3-0.6B fp16, GenAI-built, KV cache, correct tokens end-to-end, ≤2 islands | `GroupQueryAttention` (XL); M2's allocator; fp16 (OQ-14); push-constant shapes + OQ-15 |
+| T4 | Qwen3-1.7B int4, correct tokens, ≤2 islands, beats ORT CPU on ≥2 vendors | `MatMulNBits` (XL) + weight prepacking |
+| T5a | **Qwen3.5 hybrid end-to-end — the named target of the directive** | `LinearAttention` `gated_delta` (XL) + `CausalConvWithState` |
+| T5b | Qwen3-MoE int4 with the expert block on Vulkan | `QMoE`; likely needs indirect dispatch (OQ-15) |
+| T5c | Qwen-VL vision tower + projector feeding the decoder in one session | `Conv` (patch-embed form), `MultiHeadAttention` |
+| T6 | ResNet-50 / MobileNetV3 end-to-end, beating ORT CPU | General `Conv`/pooling breadth |
+
+Android hardware validation (§11.1's OQ-12 experiment) runs in parallel with T3–T4 and is gated only
+on devices, not on op coverage. The three XL kernels are **not parallelizable away** — each is one
+person's deep work — and §1.5's months-scale claim rests on them.
 
 ---
 
@@ -1140,16 +1429,89 @@ Link's matrix, and the ratified `OP_COVERAGE.md` actually say — not scheduled 
 |---|---|---|---|
 | **OQ-1** | ~~How many real devices report Vulkan 1.1/1.2 **without** `VK_KHR_synchronization2` or `VK_EXT_subgroup_size_control`?~~ **RESOLVED 2026-07-28T19:16:08-07:00.** Link measured it (`PLATFORMS.md` §8, vulkan.gpuinfo.org 2026-07-28): `VK_KHR_synchronization2` is missing on **31.43% of Android** and **12.22% of Windows**; `VK_EXT_subgroup_size_control` on **14.12% of Android**, and its *feature flag* is `VK_FALSE` on all of macOS/iOS. **Ruling (§7.2–§7.5): both are dropped from the hard requirement.** `synchronization2` becomes a probed capability selecting one of two barrier backends behind a single seam (`vk/barrier.rs`); `subgroup_size_control` is consulted as a *properties query* only and never as a required feature. Link's layer-shim option is **rejected** — the AOSP loader cannot discover a layer we ship from a plugin `.so`, and the cited wgpu/Dawn/Godot precedent turned out to be legacy-barrier-only in all three. | Link investigated → **Morpheus decided** | — (§7 is frozen) |
 | **OQ-2** | ~~Do llama.cpp and ExecuTorch's stated version floors survive verification?~~ **RESOLVED 2026-07-28T17:59:54-07:00.** Fact Checker claims 1–2: both "requires 1.3" claims **contradicted**. llama.cpp base shaders target `vulkan1.2` (only `_cm2` variants target 1.3); ExecuTorch hardcodes `VK_API_VERSION_1_1`. Claim 4 (Android share) remains *unverified but plausible*. | **Fact Checker** (done) | — |
-| **OQ-3** | The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair. Three candidates now: (a) an **opaque-handle registry** — a monotonic token cast to `*mut c_void`, resolved through a side table (provisional); (b) `VK_KHR_buffer_device_address`; (c) **ORT 1.28's `CreateExternalResourceImporterForDeviceImpl`** — *live alternative, added 2026-07-28T19:16:08-07:00*. If it does what its name suggests — importing an externally-allocated device resource such as a `VkBuffer` into ORT without a host round-trip — it is a **better answer than (a)**, because it makes the mapping ORT's contract rather than our side table, and it removes the "a pointer we hand out must never be dereferenced" hazard entirely. **Not resolved:** Fact Checker is verifying the exact symbol and semantics; Tank is building `sys.rs` against the 1.28 headers in parallel. Note this also reopens the ORT ABI version pinned in §0 (currently `ORT_API_VERSION 27`) — adopting (c) means a 1.28 floor, which is its main cost. | Fact Checker verifies → Tank proposes → **Morpheus decides** | M2 |
+| **OQ-3** | The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair. **A genuine two-way choice:** (a) an **opaque-handle registry** — a monotonic token cast to `*mut c_void`, resolved through a side table (provisional); (b) `VK_KHR_buffer_device_address`. Note that under the frozen §7.2 **BDA is probed, not required**, so a BDA-based design needs the registry as a fallback anyway — which is a strong argument that (a) is the primary design and (b) is at most an optimization on devices that expose it. **Correction, 2026-07-28T19:16:08-07:00:** an earlier revision of this row listed ORT's external-resource importer as a third candidate whose cost was "moves our ABI floor to 1.28". **Both halves of that were wrong** and the row is withdrawn — see OQ-13. | Tank proposes → **Morpheus decides** | M2 |
+| **OQ-13** | **Zero-copy IO binding via `OrtEpFactory::CreateExternalResourceImporterForDevice`.** *New, 2026-07-28T19:16:08-07:00.* Verified by Fact Checker: the public vtable member is `CreateExternalResourceImporterForDevice` (the `…Impl` suffix is a local static in test code, not API), it landed in **ORT 1.24** — not 1.28 — and Tank has already set `ORT_API_VERSION_MIN = 24` with version negotiation, so **it costs us no ABI floor movement.** It is **orthogonal to OQ-3**: it is an OS-handle external-memory path in which the *caller* exports their `VkDeviceMemory` via `vkGetMemoryWin32HandleKHR` / `vkGetMemoryFdKHR` and we re-import it, answering "how does an external caller hand us their buffer as a graph input/output", not "what does our `Alloc()` return". Tank and Fact Checker independently reached this and Tank has recorded it as evaluated-and-rejected for OQ-3; **it is not to be re-proposed there.** Tracked here on its own merits: it is real, supported upstream, has an in-tree reference (`onnxruntime/test/providers/nv_tensorrt_rtx/nv_vulkan_test.cc`), and is the complete answer to zero-copy IO binding. **Scope: post-M2**, because it presupposes the device-memory tensor path exists. Known constraint to design around: the caller's memory must have been allocated with `VkExportMemoryAllocateInfo` up front — it cannot be retrofitted onto an ordinary allocation, so this is an integration contract we must document, not a transparent optimization. | **Tank** designs → Morpheus reviews | post-M2 |
+| **OQ-14** | **What fraction of target devices support `shaderFloat16` + `storageBuffer16BitAccess`?** *Escalated from Mouse's OQ-M2, 2026-07-28T19:16:08-07:00.* Under the frozen §7.2 both are probed, not required. An fp32-upcast LLM path is a memory-footprint failure, not a slow path (§8.4 A4), so a low Android number means the LLM story is **desktop-first as a product boundary**, regardless of op coverage. This decides a product scope, which is why it is not a shader-variant detail. | **Link** measures → **Morpheus** rules on scope | tier 3 / M3 |
+| **OQ-15** | **Indirect dispatch.** *New, 2026-07-28T19:16:08-07:00.* Shape-agnostic push-constant kernel parameters (§8.4 A5) make the *shader* length-agnostic but not the **workgroup count**, which still depends on sequence length — so either we re-record per shape bucket anyway, or we use `vkCmdDispatchIndirect` with a device-computed count. The same mechanism is what `QMoE`'s data-dependent expert routing needs on a pre-recorded command buffer. One evaluation should serve both. Evaluate, do not assume. | **Switch** evaluates → Morpheus decides | tier 3, tier 5b |
 | **OQ-4** | Shader compilation: build-time `glslc` from the Vulkan SDK (SDK becomes a build dependency) vs checked-in pre-generated SPIR-V (reviewable diffs, but binary artifacts in git) vs both with SDK preferred. Provisionally: build-time with checked-in fallback. | **Switch** proposes → Link validates on all CI lanes → Morpheus decides | M0 |
 | **OQ-5** | `gpu-allocator` vs a hand-rolled suballocator. `ENGINE.md` §3.1 picks `gpu-allocator`; I concur provisionally. Confirm it cross-compiles cleanly for Android and works under MoltenVK. | **Switch** owns → Link validates | M0/M3 |
 | **OQ-6** | What vendor ID does the factory report when it advertises zero devices, or before a device is bound? ORT calls `GetVendorId` on the factory, not per device. | **Tank** proposes → Morpheus decides | M0 |
 | **OQ-7** | Do we need a real GPU CI runner for M2's exit criteria, and if so, self-hosted or a cloud GPU lane? Software rasterizers cannot validate a speedup claim. | **Link** proposes → Justin decides (cost) | M2 |
-| **OQ-8** | Is `com.microsoft` contrib-op support ever in scope? It is where the MLX EP's value concentrated (MatMulNBits, GQA), but it is a much larger surface. | **Morpheus**, at the M2 retrospective | M3+ scope |
+| **OQ-8** | ~~Is `com.microsoft` contrib-op support ever in scope?~~ **RESOLVED — and re-resolved at a higher level. 2026-07-28T20:54:42-07:00: Justin ruled directly that the `com.microsoft` domain is in scope** (`.squad/decisions/inbox/copilot-directive-contrib-ops.md`), superseding both the original `ai.onnx`-only non-goal and my narrower 2026-07-28T19:16:08 formulation of "nine named ops, never the domain". The admitted v1 set is still those nine; what changed is that a tenth is now a scoping decision inside an in-scope domain rather than a re-opened non-goal. The engineering constraints (§1.4 C1–C7) are unaffected by the elevation — they were always about safe claiming, not about permission. The deciding fact, verified by Mouse from the ORT GenAI model builder source: the builder *emits* these ops directly, so declining `com.microsoft` means a Qwen graph cannot run at all. | **Justin** (domain) / **Morpheus** (constraints) | — |
 | **OQ-9** | Threading model: one `VkDevice` per session (chosen) vs a process-shared device with a mutex. Sharing saves memory and pipeline-cache warmth for multi-session hosts. | **Tank + Switch** propose → Morpheus decides | post-M2 |
 | **OQ-10** | Tolerance policy for accumulation-order-sensitive ops (GEMM, reductions) across vendors, where fp32 associativity differs. Needs a stated, derived rule before M2's ops land, not after. | **Trinity** proposes → Morpheus ratifies | M2 |
-| **OQ-11** | Ratification of `OP_COVERAGE.md` (§8.1) — does the model-family-driven, high-ambition coverage plan honour conservative claiming, clean CPU fallback, and the minimum-viable-subgraph rule? Raised 2026-07-28T19:16:08-07:00. | **Mouse** proposes → **Morpheus ratifies** | §8 supersession; M1 sequencing |
-| **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy usable devices, or does the Adreno 5xx / Mali Bifrost population fail us for some *other* reason (driver bugs, `maxComputeWorkGroupInvocations`, absent subgroup ARITHMETIC, unusably slow)? If the answer is "these devices are unusable anyway", the legacy backend is still correct for the 12.22% Windows gap, but the Android argument weakens. Must be answered with a real device, not a database. Raised 2026-07-28T19:16:08-07:00. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
+| **OQ-11** | ~~Ratification of `OP_COVERAGE.md` (§8.1).~~ **RESOLVED 2026-07-28T19:16:08-07:00: ratified with five amendments** (§8.4). It supersedes §8.2/§8.3; §8.1's seven principles stand. **Its central question — whether to admit `com.microsoft` — was then settled above my level by Justin's ruling of 2026-07-28T20:54:42-07:00** (see OQ-8); A1 is revised accordingly and survives as the *discipline* rather than as the permission. | Mouse proposed → **Morpheus ratified** → **Justin ruled on the domain** | — |
+| **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for some other reason? **The 31.43% figure is a database claim, not a usability claim, and until the experiment in §11.1 runs, that is exactly how much of it is unverified: all of it.** The experiment, its pass/fail bar, and what would reverse the decision are specified in §11.1. Needs real hardware, which we do not have. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
+
+### 11.1 OQ-12 — the minimum decisive experiment
+
+Written now, so it can be executed the hour hardware exists rather than designed then. Until it
+runs, **the entire 31.43% Android claim behind §7.3 is unverified as a *usability* claim** — Link's
+data proves those devices lack `VK_KHR_synchronization2`, not that they can run a model. §7.3's
+Windows argument (12.22%) is unaffected and stands on its own; this experiment is only about how
+much of the Android half is real.
+
+**Devices — four, chosen to be decisive rather than representative.** Two must be from the
+sync2-missing population and two are controls:
+
+| Slot | Device class | Why this one |
+|---|---|---|
+| A | **Adreno 5xx** — e.g. Snapdragon 660 (Adreno 512) or 636 (Adreno 509), Android 8–10, stock OEM blob | The single largest sync2-missing bloc. Frozen pre-2021 drivers. If any class fails for other reasons, it is this one. |
+| B | **Mali Bifrost on MediaTek** — e.g. G52 (Helio G85) or G76 (Helio G90T), stock ROM | The second bloc, and a different vendor's driver bugs. MediaTek specifically, because the same Mali IP on a Samsung/Exynos ROM has a different update history. |
+| C | **Adreno 6xx on Android 12+** — e.g. Snapdragon 865/888 | Control: *has* sync2. Isolates "is the legacy backend correct" from "is this device usable". |
+| D | **Mali Valhall on Android 12+** — e.g. G78 / G710 | Second control, second vendor. |
+
+Two physical units of A and B are worth more than four of C and D. If only two devices can be
+obtained, take **A and C**.
+
+**Workload — three stages, each of which can independently fail the experiment.**
+
+1. **Gate check (minutes).** Does the device pass §7.2? Report `vkEnumerateInstanceVersion`,
+   `maxComputeWorkGroupInvocations`, `maxComputeSharedMemorySize`, memory types, subgroup
+   `supportedOperations` and `subgroupSize`, and — separately tracked, this is OQ-14's data point —
+   `shaderFloat16` and `storageBuffer16BitAccess`. A device that fails §7.2 outright is the
+   cleanest possible negative result.
+2. **Correctness (hours).** The **full M1 differential suite** — the §8.2 elementwise/shape floor —
+   run on device against ORT CPU, plus the M2 reduction/GEMM/softmax/norm set if it exists by then.
+   Run it **twice**: once normally, once with `ep.force_legacy_barriers=1` on devices C and D, so
+   any failure can be attributed to the legacy barrier backend rather than to the device. This is
+   the same parity harness §9.1 already requires; no new test infrastructure is needed.
+   Validation layers on. Record every failure with its op, dtype, shape and driver version.
+3. **Usability (hours).** One bandwidth-bound elementwise chain and one GEMM-anchored subgraph,
+   sized realistically, timed against **that device's own CPU** through the ORT CPU EP. Not against
+   a desktop GPU — the question is whether the Vulkan path beats the CPU already in the phone.
+   Report Mouse's `boundary_time_fraction` alongside wall time (`OP_COVERAGE.md` §7.3).
+
+**Pass bar.** For the legacy backend to be vindicated on Android, devices A **and** B must:
+(i) pass the §7.2 gate; (ii) pass the full differential suite with **zero** numerical failures and
+zero validation-layer errors; and (iii) beat their own device's ORT CPU EP by **≥ 1.5×** on the
+GEMM-anchored subgraph. 1.5× is the threshold below which the integration cost, the memory
+footprint and the thermal cost are not worth a user's trouble.
+
+**What reverses the decision, stated in advance so it is not rationalized afterwards.**
+
+- **If A and B both fail stage 1 or stage 2** — i.e. the sync2-missing population cannot run correct
+  compute at all, for reasons unrelated to barriers — then the Android half of §7.3's justification
+  is void. The legacy backend **still stays**, on the strength of the 12.22% Windows gap alone, but
+  Android's §7.2 gate should then be tightened per device class in `PLATFORMS.md`, and M3's Android
+  scope narrows to the Adreno 6xx / Valhall tier. I would record that as a scope decision, not
+  quietly.
+- **If A and B pass stages 1–2 but fail stage 3 (< 1.5×)** — they are correct but not worth using.
+  The legacy backend stays and the devices remain supported (correctness is free once written), but
+  they are documented as "runs, not recommended" and get **no tuning budget**. This is the outcome I
+  consider most likely.
+- **If A and B pass all three stages** — §7.3 is fully vindicated and the Android tier gets a real
+  tuning budget in M3.
+- **If devices C or D fail the differential suite only under `ep.force_legacy_barriers=1`** — that
+  is a bug in `LegacyBackend`, not a finding about devices, and it is the most valuable possible
+  result of the whole experiment because it is the failure mode §7.5's parity lane exists to catch.
+
+**Cost and owners.** Two to four used mid-range Android phones, obtainable second-hand for a modest
+sum — this is the cheapest decisive experiment in the entire project and it retires the largest
+unverified assumption in §7. **Link** owns device acquisition, the gate-check harness and the
+`PLATFORMS.md` rows; **Trinity** owns running the differential suite on-device; **Niobe** owns
+stage 3 and the `boundary_time_fraction` numbers; **Morpheus** rules on the outcome. Blocked only
+on hardware, not on any other milestone — stages 1 and 2 can run the day M1 is green.
 
 ---
 
@@ -1167,7 +1529,7 @@ reference.
 | D5 | **Weight prepacking is a first-class `Compile` step**, not a first-`Run` cache fill. | Vulkan uploads are explicit and expensive; ORT gives us initializer bytes at compile time; doing it lazily would put a staging copy on the first inference for no benefit. |
 | D6 | **`shaders/` directory and a SPIR-V build step.** MLX explicitly *deleted* its `.metal` kernels. | We are the backend. This is the one place where the MLX project's history is an anti-pattern for us — its lesson was "don't hand-write kernels when a good backend exists", and for Vulkan no such backend exists. |
 | D7 | **fp32-only v0; fp16 as a per-family gated variant.** MLX is dtype-generic for free. | MLX carries dtype through its ops with no per-dtype code. Every Vulkan dtype is a separate SPIR-V variant plus a device feature probe. |
-| D8 | **No contrib-domain (`com.microsoft`) ops in v1.** MLX's highest-value ops are contrib ops. | Those are the *hardest* ops to write from scratch (int4 packing, GQA/KV-cache). Doing them first would mean a year before anything is verifiable. OQ-8. |
+| D8 | **`com.microsoft` contrib ops in scope; nine named ops are the v1 admitted set (tiers 3–5).** MLX's highest-value ops are contrib ops. | *Revised 2026-07-28T20:54:42-07:00.* Originally "no contrib ops in v1"; reversed by the OQ-11 ratification and then settled directly by Justin's ruling that the domain is in scope — the ORT GenAI model builder emits them, so declining means no Qwen graph runs at all. The remaining divergence from MLX is *how*: we register ops **by name with a hand-written claim predicate each and no domain-wide opt-in in the code**, plus a graph census in CI as the drift alarm for a surface that has no opset number (§1.4 C1–C7). |
 | D9 | **Vendor ID is read from the bound device**, not hardcoded to one vendor. | Cross-platform mandate. |
 | D10 | **Validation layers are part of the definition of done.** No MLX equivalent. | Vulkan's error surface is enormous and mostly silent without layers; MLX's C API validates for us. |
 | D11 | **`ash` (safe-ish Rust Vulkan bindings) rather than bindgen over `vulkan.h`.** MLX bindgens `mlx-c` directly. | `ash` is the ecosystem standard, handles the loader/extension-function-pointer problem correctly, and removes a large class of hand-written FFI bugs. The ORT side still uses bindgen, matching the reference. |
@@ -1207,4 +1569,9 @@ reference.
   Vulkan 1.1.
 - **Decision records:** `.squad/decisions/inbox/morpheus-architecture-v0.md`,
   `.squad/decisions/inbox/morpheus-oq1-resolution.md`,
-  `.squad/decisions/inbox/link-oq1-extension-availability.md`.
+  `.squad/decisions/inbox/morpheus-oq11-ratification.md`,
+  `.squad/decisions/inbox/link-oq1-extension-availability.md`,
+  `.squad/decisions/inbox/mouse-op-coverage-plan.md`,
+  `.squad/decisions/inbox/fact-checker-ort-1.28-api.md`,
+  `.squad/decisions/inbox/rai-oq-m6-license-ruling.md`,
+  `.squad/decisions/inbox/tank-m0-foundation.md`.
