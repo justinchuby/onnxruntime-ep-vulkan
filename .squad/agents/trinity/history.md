@@ -129,25 +129,6 @@
 
 📌 Trinity round-7: case 1/2 determination + GPG fix + layering lint (2026-07-28T22:28:08-07:00):
 
-  **Case 1 confirmed (empirically):** Registration succeeded without crash (run 30448222530).
-  The assertion on `get_available_providers()` was wrong — that API lists only ORT's compiled-in
-  EPs. Plugin EPs registered via `register_execution_provider_library` appear in
-  `get_ep_devices()`. Locally confirmed: `ort.get_ep_devices()` returns an OrtEpDevice per
-  registered plugin EP. Smoke test updated to assert `ep_name == "VulkanExecutionProvider"` in
-  `get_ep_devices()` → proves Case 1 when lavapipe is the ICD.
-
-  **Double registration fixed:** Both conftest `register_vulkan_ep` and `test_ep_ort_registers`
-  now catch `"already registered"` and treat it as success. Order-independent.
-
-  **Linux GPG NO_PUBKEY fix:** LunarG's verbatim `.list` file doesn't contain `signed-by=`.
-  Fixed by writing our own `.list` entry with the keyring reference explicitly.
-
-  **Layering lint:** grep-based TODO(Tank) replaced with `cargo test --test layering`.
-
-  **API fact:** `get_available_providers()` ≠ correct check for plugin EPs. Plugin EPs:
-  `get_ep_devices()` → look for `ep_name == "VulkanExecutionProvider"`.
-  Sessions: `SessionOptions.add_provider_for_devices(devices)`, not the string name API.
-
   **glslc root cause:** Ubuntu 22.04 does not package glslc in any of its own repos.
   The LunarG Vulkan SDK apt repository for Jammy does, via `shaderc`. Added step "Add
   LunarG Vulkan SDK apt repository" using the versioned list file and modern GPG keyring:
@@ -172,3 +153,29 @@
 
   **README ownership note:** README changes must go through the coordinator (Morpheus owns
   the file). CI badge was committed by the coordinator without conflict this time.
+
+📌 Trinity round-8: YAML syntax error + permanent parse check (2026-07-28T22:28:08-07:00):
+
+  **Failure:** ci.yml broke YAML parsing (run 30449585950 never started). Root cause: a
+  shell line continuation (`\`) inside the `run:` block scalar placed the second line at
+  column 1. YAML requires all content in a block scalar to be indented past the block's
+  indicator column — column 1 exits the block and breaks the document.
+
+  **Fix:** collapsed the two-line `echo "deb ..." \ <continuation>` into a single line.
+  Content (signed-by=, LunarG URL) was correct; only the YAML-breaking line split was wrong.
+
+  **Permanent check added to `.github/CI_POLICY.md` pre-finish checklist:**
+  ```
+  python -c "import yaml, sys; [yaml.safe_load(open(f)) or print('OK:', f)
+    for f in ['.github/workflows/ci.yml', '.github/workflows/conformance.yml']]"
+  ```
+  This runs locally before ending any turn that edits a workflow file. The yaml parse is
+  syntax verification; `glslc --version` in-lane is tool availability verification. Both
+  are now documented as non-optional pre-finish steps in CI_POLICY.md.
+
+  **Working-practice note for YAML block scalars (`run: |`):**
+  - Shell `\` continuation is fine if the next line is indented at or past the block level.
+  - A continuation that outdents to column 1 exits the YAML block — the parser sees a new
+    mapping key, not a continuation string.
+  - Safe alternatives: single long line, or split with a shell variable:
+    `URL="...long..."; echo "deb $URL" | sudo tee ...`

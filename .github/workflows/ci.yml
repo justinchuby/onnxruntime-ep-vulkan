@@ -112,8 +112,7 @@ jobs:
           # We do NOT use LunarG's versioned .list file verbatim because it
           # does not contain a signed-by= clause, so apt can't verify it —
           # that is the root cause of the NO_PUBKEY AA8452080E383F7E error.
-          echo "deb [signed-by=/usr/share/keyrings/lunarg-signing-key.gpg] \
-https://packages.lunarg.com/vulkan/${SDK_SHORT} jammy main" \
+          echo "deb [signed-by=/usr/share/keyrings/lunarg-signing-key.gpg] https://packages.lunarg.com/vulkan/${SDK_SHORT} jammy main" \
             | sudo tee /etc/apt/sources.list.d/lunarg-vulkan-jammy.list > /dev/null
           sudo apt-get update -q
           echo "LunarG apt repo added (SDK ${SDK_SHORT}, signed-by= set)"
