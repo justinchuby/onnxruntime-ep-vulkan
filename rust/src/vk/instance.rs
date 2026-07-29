@@ -813,7 +813,52 @@ pub(crate) fn probe_loader_report() -> String {
             out.push(c.row());
         }
 
+        // §7.9: show raw capability values so derived booleans can be audited.
+        // Only probe when the device passes the gate (has a compute queue family and ≥1.1),
+        // which are the preconditions caps::probe assumes.
         if all_pass {
+            // SAFETY: inst.handle is live; pdev came from enumerate_physical_devices against it.
+            let caps = unsafe { crate::vk::caps::probe(&inst.handle, pdev) };
+            let probe_note = if caps.subgroup_probe_valid {
+                String::new()
+            } else {
+                "  ⚠ NOT DETERMINED — probe returned all-zeros (§7.9 rule 1)".to_string()
+            };
+            out.push("  --- Capability probe (raw values) ---".to_string());
+            out.push(format!(
+                "  subgroup_size         : {}{}",
+                caps.subgroup_size, probe_note
+            ));
+            out.push(format!(
+                "  subgroup_probe_valid  : {}",
+                caps.subgroup_probe_valid
+            ));
+            out.push(format!(
+                "  subgroup_stages_raw   : {:?}",
+                caps.subgroup_supported_stages
+            ));
+            out.push(format!(
+                "  subgroup_basic_in_compute: {}{}",
+                caps.subgroup_basic_in_compute,
+                if !caps.subgroup_probe_valid {
+                    " (NOT DETERMINED)"
+                } else {
+                    ""
+                }
+            ));
+            out.push(format!(
+                "  subgroup_ops          : {:?}",
+                caps.subgroup_supported_ops
+            ));
+            out.push(format!("  is_uma                : {}", caps.is_uma));
+            out.push(format!(
+                "  timestamp_period_ns   : {:.4} ns/tick",
+                caps.timestamp_period_ns
+            ));
+            out.push(format!(
+                "  timestamp_valid_bits  : {}",
+                caps.timestamp_valid_bits
+            ));
             n_passed += 1;
         }
     }
@@ -1045,8 +1090,17 @@ mod tests {
     }
 
     // R5 is no longer in the gate — it was demoted to Capabilities::subgroup_basic_in_compute
-    // per Morpheus's §7.0 principle. Devices lacking subgroup support in compute (e.g.
-    // lavapipe/llvmpipe) still pass the gate; the capability field gates individual ops.
+    // per Morpheus's §7.0 principle. The *policy* (capability degrades op coverage, not device
+    // availability) remains correct.
+    //
+    // IMPORTANT — D-S14-01: The original premise for the demotion was lavapipe reporting
+    // `supportedStages = 0`. That reading was almost certainly the push_next probe bug (§7.9
+    // Bug 1 / D-S12-01): with a zeroed pNext chain, every chained capability reads zero.
+    // Mesa 26.1 lavapipe (llvmpipe) does support subgroup BASIC in compute — the zero was the
+    // probe, not the device. The policy is still correct for other reasons:
+    //  • Future unknown devices may genuinely lack subgroup support in compute.
+    //  • §7.0 keeps the device roster stable when non-critical capabilities are absent.
+    // See the `lavapipe_profile_passes_gate` test and the CI probe output for confirmation.
 
     #[test]
     fn device_without_subgroup_compute_passes_gate() {
@@ -1120,14 +1174,15 @@ mod tests {
 
     #[test]
     fn lavapipe_profile_passes_gate() {
-        // Synthesised from `vulkaninfo --summary` on Ubuntu 22.04 with Mesa lavapipe:
-        //   deviceName = llvmpipe (LLVM 15.0.7, 256 bits)
-        //   apiVersion = 1.3.255, deviceType = CPU
-        //   1 heap: DEVICE_LOCAL, 4 GiB
-        //   subgroupSize = 4, supportedStages = 0 (no stage support on this Mesa version)
-        // The old R5 gate rejected this device. R5 is now a capability field → must PASS.
+        // Synthesised from vulkaninfo on Mesa lavapipe (llvmpipe).
+        // Mesa 26.1.3 (Windows CI): deviceName = llvmpipe (LLVM 22.1.8, 256 bits),
+        //   apiVersion = 1.4.348, deviceType = CPU.
+        // The old Mesa 22.x reading of `supportedStages = 0` was a probe bug (§7.9 Bug 1 /
+        // D-S12-01 / D-S14-01) — Mesa 26.1 lavapipe DOES support subgroup BASIC in compute.
+        // This test validates the *gate policy* (R5 removed per §7.0), not the device profile.
+        // The gate does not query subgroup properties → profile values here are not exercised.
         let mut props = good_props();
-        props.api_version = vk::make_api_version(0, 1, 3, 255);
+        props.api_version = vk::make_api_version(0, 1, 4, 348);
         props.limits.max_compute_work_group_invocations = 1024;
         props.limits.max_compute_shared_memory_size = 32768; // 32 KiB typical for Mesa
 
@@ -1135,7 +1190,7 @@ mod tests {
 
         assert!(
             passes_gate(&props, &props.limits, &mem, Some(0)).is_ok(),
-            "lavapipe/llvmpipe must pass the §7.2 gate (R5 removed)"
+            "lavapipe/llvmpipe must pass the §7.2 gate (R5 removed per §7.0)"
         );
 
         // Full assessment must agree — no criterion should fail.

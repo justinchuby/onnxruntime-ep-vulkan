@@ -1704,6 +1704,45 @@ above: opset 24 is exactly the case `OPSET_STD_LLM(23)..=OPSET_ANY` is claiming 
 validating shape rather than trusting the number, so it is the first real test of that assumption
 and should be treated as such rather than as a formality.
 
+**THE THIRD STRENGTHENING — the rule of record, 2026-07-29T15:02:55-07:00.** Adopting Mouse's
+formulation verbatim, because he earned it and because it is stronger than anything above:
+
+> **A claim about what a producer emits is not evidence until it has been read off a graph that
+> producer actually produced. Builder source is intent; the model file is the fact.**
+
+**The recurrence is the finding, and I want it on the record as such.** This lesson has now arrived
+three times at successively finer grain, and each time we correctly narrowed the claim and still
+landed one level short of the evidence:
+
+| Pass | What we corrected | What was still wrong |
+|---|---|---|
+| §4.18 | We had inventoried against the **wrong producer** (ORT GenAI only) | The new producer was still read from *builder source* |
+| §4.19/§4.20 | We were reading the **wrong repository/revision** of the right producer | Still builder source, now at the right revision |
+| §4.21 | We pinned the **right producer at the right revision** | **Its output had never been read.** Source is a statement of what a builder means to emit under conditions we were also inferring |
+
+Three iterations of narrowing a claim without once closing the gap between *intent* and *artifact*
+is not three mistakes; it is one mistake with a stable shape. Builder source describes a decision
+tree; the flags, defaults and model-specific branches that select a path through it are exactly the
+part we were guessing at. **The model file is downstream of every one of those guesses.**
+
+Practically, this supersedes rather than extends the two amendments above:
+
+1. **A registry row, a tier criterion, or a coverage figure may cite builder source as
+   *motivation*, never as *evidence*.** Where only source has been read, the row is UNVERIFIED
+   under Mouse's existing discipline and may not be claimed (C5) or be load-bearing for an exit
+   criterion.
+2. **The corpus is graphs, not builders.** Every artifact records producer, producer version, opset
+   imports, **and the file it was read from**. `graph_census.py` reports over files.
+3. **Where no artifact exists for a target, that is stated as the gap it is** — "we have not read a
+   graph from this producer" is a specific, closeable status, and it is not the same as "this
+   producer emits X".
+
+This is the same epistemics as §9.1's CPU-EP oracle, C2 item 7's fingerprint audit, and §7.9's
+capability probe: in each case we had a plausible derived answer and no check against the thing
+itself. That is now four instances, which makes it the project's characteristic failure and not a
+run of bad luck. **The general form: when a claim can be checked against an artifact, checking it
+against a description of the artifact is not checking it.**
+
 ### 8.6 External crate evaluations — deferred, with named triggers
 
 *Added 2026-07-29T08:13:58-07:00.* Justin directed the team to evaluate his own crates
@@ -1882,7 +1921,9 @@ hardest to good news.
   tested.
 - Reported per case: median wall time on Vulkan, median on CPU, ratio, **and** the claim
   diagnostics — island count, largest fused region, node count claimed. A speedup number without
-  those three is not accepted.
+  those three is not accepted. **From 2026-07-29 the metric of record is the triple
+  `(claimed_op_coverage, island_count, largest_island_flops)`, reported together and per producer at
+  version** (§10.0) — no member of it may appear alone.
 - GPU-side timing uses `VkQueryPool` timestamp queries once the engine exposes them, so we can
   separate submit overhead from actual GPU time. Sub-millisecond cases are dispatch-bound and will
   be slower than CPU; that is expected, must be labelled, and must not be hidden.
@@ -1939,6 +1980,44 @@ with op count is a milestone report that is hiding something. Every milestone fr
 `largest_island_flops` on the corpus artifacts alongside whatever else it reports — including on the
 Qwen artifacts, where for most of M1 and M2 it will be near zero and *should* be, because that
 number going up is the only thing that means the named target is getting closer.
+
+**METRIC AMENDMENT — 2026-07-29T15:02:55-07:00. `largest_island_flops` alone is insufficient; the
+metric of record is now a triple.** Mouse's partition simulation against two real Foundry Local
+graphs settled this empirically rather than by argument, and I am changing my own metric on the
+evidence:
+
+- **Phi-3.5 sits at 34–35 islands from T1 through T3**, and `MatMulNBits` alone then collapses it to
+  **one island of 364 nodes**. Partial coverage of that graph is worth *exactly nothing* — the
+  useful transition is a cliff, not a slope.
+- **On gpt-oss, claiming `Cast` moves coverage 28% → 54% while moving island count 52 → 125.** More
+  ops claimed, strictly worse partitioning. **That is death-by-fallback observed, not argued** — and
+  a coverage percentage would have scored it as a 26-point win.
+
+**The metric of record is therefore `(claimed_op_coverage, island_count, largest_island_flops)`,
+reported together, per producer at version, never separated.** Reasons, in order of how much they
+cost us if ignored:
+
+1. **`largest_island_flops` alone can rise while the graph gets worse.** The `Cast` step could
+   plausibly raise the largest island slightly *and* double the fragment count; only the pair makes
+   the regression visible. A single number is a number that can be gamed by accident.
+2. **Island count is the transfer-boundary count**, and each boundary is a device↔host round trip
+   under §6 until the allocator lands. It is the quantity §5.4's `retain_viable` exists to control,
+   so it must be the quantity we report — a rule enforced by a mechanism nobody measures is a rule
+   in name only.
+3. **Coverage stays in the triple deliberately, as the thing being disciplined.** Dropping it would
+   be dishonest in the other direction; it is a real signal about breadth. It just may never appear
+   *alone*, and any report showing coverage without the other two is incomplete on its face.
+
+**Binding consequence for the partitioner:** an op whose claiming raises island count without
+raising largest-island FLOPs is a **candidate for declining even though we implement it**. §5.4's
+`retain_viable` already models this per island; the `Cast` result says the same question must be
+askable per *op* against a real corpus, and that the answer can be "we support this op and decline
+it in this graph". Owner: Mouse, in the census and the MVS policy. That is not a contradiction of
+§8.1 — claimed can never outrun translatable — it is the reverse direction, and the reverse
+direction is a legitimate optimisation.
+
+Niobe reports the triple in `PERF.md`; Mouse reports it in the census; I will not accept a milestone
+report that shows one member of it.
 
 ### 10.0.1 Milestone risk register — "op works" ≠ "model works"
 
@@ -2030,6 +2109,37 @@ integrated and one discrete device**, and `caps.rs` changes carry that as a revi
 M0 onward. Both bugs that produced this rule were invisible on a single device and on lavapipe, so
 CI would not have caught either.
 
+**R5 — our errors are not randomly signed. Four of the five census contradictions were wrong in the
+permissive direction, and that is the pattern, not the individual bugs.** *Added
+2026-07-29T15:02:55-07:00.* Mouse's census of two real Foundry Local graphs surfaced five places
+where a predicate or a fingerprint disagreed with the artifact. Individually each is a fix; together
+they are a finding, because a randomly-signed error distribution would not land four-to-one.
+
+The most serious: **packed QKV was a permissive hole.** The `GroupQueryAttention` predicate never
+read inputs 1 and 2, so it would have **claimed** a packed node and handed the kernel a fused QKV
+tensor where it expected a query. **Both real models pack on every layer**, so this was not an edge
+case — it was the normal path, and it produces wrong numbers rather than a decline. Two others of
+the same sign: `do_rotary=1` is universal in both graphs with no separate rotary node anywhere, so
+the planned "claim GQA first, add fused rotary later" sequencing would have claimed **zero** nodes
+while appearing to make progress; and contrib ops appear in the **default domain**
+(`SimplifiedLayerNormalization` with `domain == ""`), a third registry category where `SinceVersion`
+is meaningless and only a fingerprint can detect drift.
+
+**Why the sign matters more than the count.** A too-strict predicate declines, and a decline is
+loud: it shows up as a claim-rate drop, an island-count rise, and a CPU-fallback line in the claim
+log. A too-permissive predicate claims, and a wrong claim is silent by construction — it produces
+numbers. **This is now the third independent observation of the same asymmetry** (C2 item 7's
+permissive fingerprint, §7.9's probe-failure-reads-as-no-capability, and this), which is enough to
+stop treating it as a coincidence and start treating it as the direction our mistakes lean.
+
+**The consequence, which is a review rule rather than a mechanism:** when auditing a claim predicate
+or a fingerprint, **the question is not "is this right?" but "in which direction is this wrong?"** —
+and an audit that finds nothing must say which permissive failures it specifically looked for. A
+predicate that does not read an input cannot reject on it, so **every optional input a schema
+defines is enumerated in the predicate and explicitly accepted or declined** — silence about an
+input is acceptance of it, and that is exactly how packed QKV got through. Owner: Mouse for the
+predicates, Fact Checker as the second reader whose brief is specifically the permissive direction.
+
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
@@ -2091,6 +2201,56 @@ is faster" — it is that `ai.onnx::Attention` is **standard-domain and opset-ve
 4), so the lower-risk claim surface and the faster loop point the same direction. If the standard
 form were the riskier one I would have ruled the other way and eaten the CI latency.
 
+**T3 DEMONSTRATION RULING — 2026-07-29T15:02:55-07:00. Phi-3.5 becomes T3's demonstration target;
+`ai.onnx::Attention` remains T3's implementation entry point. This refines §10.0.2, it does not
+reverse it.**
+
+Mouse's case is strong and I accept it. Phi-3.5 (Foundry Local, read off the file per §8.5's third
+strengthening): MHA attention, so the first kernel skips KV-head broadcast; softcap 0, no sliding
+window, no attention sinks, no Q/K norm — **every option we currently decline is switched off**;
+symmetric RTN, uniform `bits=4`, `block_size=32`, every K a multiple of 32; the single `If` is a
+cold prologue that stays on CPU without shredding anything; five op types cover 353 of 366 nodes.
+And it is **on this disk and runnable**, which no Qwen3 graph is.
+
+**Why this refines rather than reverses §10.0.2.** §10.0.2 decided which *kernel* T3 starts with and
+that stands: `ai.onnx::Attention` is still first, still for the two reasons given — it decouples T3
+from the aliasing seam, and it is standard-domain and opset-versioned. What changes is which
+*graph* T3 must light up to be called done. Those were conflated in §10.0.2 and Mouse is right to
+separate them; **"which kernel do we write first" and "which model proves it" are different
+questions and I answered them with one decision.**
+
+But my own desk-availability argument does now point somewhere else, and I will say so rather than
+let it quietly stop applying: I chose `ai.onnx::Attention` partly because *"a path whose models we
+can produce and run on the desk is worth materially more"*. Phi-3.5 is on the desk **today** and no
+Qwen3 graph is. If that argument was good enough to sequence a kernel, it is good enough to
+re-target a demonstration, and consistency requires me to follow it in both directions.
+
+**The T4 criterion Mouse proposes is adopted verbatim, because it is measurable and falsifiable:**
+
+> **`MatMulNBits` claimed ⇒ Phi-3.5 partitions into one island of ≥360 nodes.**
+
+That is worth more than any coverage percentage in this document. It is a single number that can
+only be reached by the thing actually working, and the 34→1 cliff means it cannot be approached
+gradually or claimed partially.
+
+**The cost, stated because Mouse stated it and it must not be lost in adoption: Phi-3.5 exercises
+none of the standard-domain rows.** Under §8.5 the two producers are therefore reported
+**separately**, never merged into one number — and this is exactly the case R3 was written for.
+Binding constraints:
+
+- **Qwen3.5 end-to-end remains the named user target** (§1.5, T5a). Phi-3.5 is the *demonstration
+  that the pipeline works*, not a substitute for the goal, and a report implying otherwise is the
+  §1.5 error.
+- **T3's exit criterion stays per producer**: the ORT GenAI column is not served by a green Phi-3.5,
+  and the `mobius`/standard-domain column is not served by it either. Phi-3.5 green is **one column
+  of three**, reported as one column of three.
+- **The metric triple is reported for Phi-3.5 and for each other corpus artifact separately.** A
+  one-island Phi-3.5 sitting beside a 35-island Qwen graph is the honest picture and is precisely
+  what the amendment above exists to keep visible.
+- **`ai.onnx::Attention` does not become optional** because Phi-3.5 does not need it. It is the
+  standard-domain path, it is the lower-risk claim surface, and dropping it would leave us serving
+  exactly one producer well.
+
 ### M0 — "It loads, it runs, it matches"
 
 > **A stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a single
@@ -2137,7 +2297,7 @@ dishonestly. The first dispatch (§9.1.2) is real and it moves exactly one crite
 | # | Criterion | Status | What remains |
 |---|---|---|---|
 | 1 | build + clippy clean, Windows & Linux | **Met** on Windows; Linux via CI | Nothing; hold it |
-| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **Not met** | This is M0's actual subject. A kernel executes from a Rust integration test; it has never been reached *through ORT*, through a graph, or through `GetCapability`. The claim assertion has never observed a real claimed node on a device. |
+| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **Partially met — advanced 2026-07-29T15:02:55-07:00** | **The "loads the plugin, enumerates a Vulkan device" clauses are now satisfied**: ORT 1.28 enumerates our EP with **both** local GPUs and full metadata (`vulkan.device_name`, `device_kind`, `api_version`, `vendor_id`, `driver_version`, `device_index`), verified by the coordinator. Still open: the graph must actually *run* on the device via `Compile`→`Compute`, and the claim assertion must observe `Add` on `VulkanExecutionProvider` in the profiling JSON. |
 | 3 | Validation layers clean in the debug lane | **Partially met** | Zero errors on both local GPUs for the one dispatch — genuinely good, and the Intel result is the informative half. Not yet "clean in the debug lane" for the ORT-mediated path, which does not exist. |
 | 4 | No-ICD machine advertises zero devices, session runs on CPU | **Met** — enforced and tested | Nothing |
 | 5 | Shader-less build advertises zero devices and claims nothing (§7.8 condition 3) | **Met** — enforced and tested | Nothing |

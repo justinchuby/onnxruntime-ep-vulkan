@@ -290,6 +290,35 @@ pub unsafe fn release_status(api: *const ort::OrtApi, status: *mut ort::OrtStatu
     }
 }
 
+/// Read the message out of a status we own, without releasing it.
+///
+/// Separated from [`release_status`] because the two are needed in opposite orders at different
+/// call sites and fusing them would force every caller to pay for a `String` it usually discards.
+/// Returns a placeholder rather than an empty string on failure: an error whose message is `""`
+/// reads as "no error" in a log and is the reason a real failure gets skimmed past.
+///
+/// # Safety
+/// `api` must be null or a live `OrtApi`; `status` must be null or a status this thread owns and
+/// has not released.
+pub unsafe fn status_message(api: *const ort::OrtApi, status: *mut ort::OrtStatus) -> String {
+    if api.is_null() || status.is_null() {
+        return "<no status>".to_string();
+    }
+    // SAFETY: caller guarantees both pointers. `GetErrorMessage` returns a NUL-terminated pointer
+    // borrowed from the status, valid until the status is released — which this function does not
+    // do — so copying it here is sound.
+    unsafe {
+        let Some(get) = (*api).GetErrorMessage else {
+            return "<GetErrorMessage unavailable>".to_string();
+        };
+        let msg = get(status);
+        if msg.is_null() {
+            return "<null message>".to_string();
+        }
+        std::ffi::CStr::from_ptr(msg).to_string_lossy().into_owned()
+    }
+}
+
 /// Build an `OrtStatus` from an error code and a message.
 ///
 /// Returns null if `api` is null (nothing else is possible — a status can only be allocated by

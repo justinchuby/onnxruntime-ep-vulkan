@@ -122,7 +122,88 @@ and changed to assert `GpuToCpu` — was the pre-existing failing test the coord
 
 ---
 
-## Session 12b — Cross-platform standing directive response (2026-07-29T09:39:59-07:00)
+## Session 14 — §7.9 probe-validity; R5 re-evaluation; cargo ci green (2026-07-29T13:42:45-07:00)
+
+**Coordinator task:** Re-check whether lavapipe's `supportedStages = 0` in session 10 was a
+real device fact or the push_next probe bug. Implement §7.9 three-state probe and raw-value
+audit. Correct misleading lavapipe comment.
+
+**Finding — D-S14-01 — R5 removal premise was wrong:**
+Mesa 26.1 lavapipe DOES support subgroup BASIC in compute. The `supportedStages = 0` reading
+in session 10 was the push_next bug (D-S12-01 class) — a zeroed pNext chain returns all zeros
+regardless of device capability. Confirmed via web search (Mesa 26.1 docs) and CI probe output
+showing Mesa 26.1.3 on Windows lavapipe as Vulkan 1.4.348. The policy decision (R5 not in gate
+per §7.0) remains correct for independent reasons. Morpheus needs to update §7.2's R5 rationale.
+
+**Changes — D-S14-02 — §7.9 implementation:**
+
+1. **`vk/caps.rs`** — added two fields to `Capabilities`:
+   - `subgroup_probe_valid: bool` — false when `subgroup_size == 0` on a ≥1.1 device (§7.9 rule 1)
+   - `subgroup_supported_stages: vk::ShaderStageFlags` — raw stage flags (§7.9 rule 3 audit trail)
+   - `probe()` sets `subgroup_probe_valid = false` and logs WARN when size is zero
+   - `subgroup_basic_in_compute` derivation gates on `probe_valid`
+   - 3 new unit tests for three-state probe behavior
+   - Updated all test struct literals and `test_caps()` to include new fields
+
+2. **`vk/instance.rs`** — `probe_loader_report()` now calls `caps::probe` for each gate-passing
+   device and shows raw capability values (subgroup size, stages, probe validity, is_uma,
+   timestamp info) — the output that would have caught D-S12-01 immediately
+
+3. **`vk/instance.rs`** — corrected R5 comment and `lavapipe_profile_passes_gate` test to
+   document that the original `supportedStages=0` was a probe bug, not a device fact
+
+4. **`tests/layering.rs`** — fixed pre-existing compile error (`s.op` → `s.op_type`) in
+   `no_default_domain_row_carries_a_contrib_schema_baseline` test
+
+**Decisions:** D-S14-01 and D-S14-02 in `.squad/decisions/inbox/switch-engine-seams.md`.
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN
+- §7.9 three-state probe: ✅ implemented
+- Raw capability values in `epctl --probe-loader`: ✅ implemented
+- R5 finding documented: ✅ — premise wrong, policy correct, Morpheus update needed
+- layering.rs compile error: ✅ fixed
+
+
+**Context:** M0 task from coordinator: build the Compile → OrtNodeComputeInfo → Compute wire for
+`Add` fp32 through ORT. Prior sessions had wired `compile_impl` / `compute_impl` (ep.rs +
+session.rs), but three guard tests were still asserting the old `Staged` state for `Add`.
+
+**Changes made this session:**
+
+1. **`registry.rs` guard test fix** — `staged_rows_are_not_registered_for_translation` was using
+   `Add` as the staged example after Add was promoted to `Live`. The test was asserting
+   `spec_for(&add_desc).is_none()`, but `spec_for` now returns `Some` for a Live op. Renamed to
+   `live_rows_are_registered_for_translation_and_staged_rows_are_not`; uses `Sub` (Staged) as
+   the negative example; adds a positive assertion that Add IS translatable.
+
+2. **`cargo ci --fix`** — rustfmt and clippy warnings in the rewritten test block; auto-fixed.
+
+3. **`cargo ci` PASSED** — 258 lib tests, 6 dump-capabilities, 26 layering, 7 portability; all
+   green. fmt + clippy clean.
+
+**D-S13-01 — Vulkan drop order bug (session.rs field reordering):**
+Rust drops struct fields top-to-bottom; `VulkanSession` had `instance` first. `vkDestroyInstance`
+ran before `vkDestroyDevice` → STATUS_ACCESS_VIOLATION in `cdylib_load` test. Fixed by declaring
+`instance` last. Rule: struct fields must be in reverse-creation order (see decisions file).
+
+**D-S13-02 — Guard test update rule:**
+When flipping an op from `Staged` to `Live`, search for every test that hard-codes the op name
+against its old status. All three registry/elementwise guard tests had to change simultaneously.
+
+**D-S13-03 — ORT wire seam:**
+`compile_impl` + `compute_impl` are wired (ep.rs + session.rs). Session lifecycle gap: fresh
+VulkanSession created per compile_impl call; needs persistent Arc<VulkanSession> in VulkanEp.
+Trinity's ORT differential test is the M0 confirmation gate.
+
+**State at end of session:**
+- cargo ci: ✅ GREEN (258 lib tests)
+- Add: ✅ Live, registered, translatable
+- Guard tests: ✅ correct in both shader-present and shader-absent build modes
+- compile_impl / compute_impl wire: ✅ implemented, session lifecycle gap pending
+- docs/ENGINE.md: updated status table and Morpheus note
+- decisions/inbox/switch-engine-seams.md: D-S13-01 through D-S13-03 appended
+
 
 **Coordinator directive:** 要时刻注意跨平台通用性. All limits from device reports, never hardcoded. UMA is the mobile proxy.
 

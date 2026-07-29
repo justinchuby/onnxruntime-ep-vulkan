@@ -516,6 +516,21 @@ pub trait DispatchContext {
 }
 
 // -------------------------------------------------------------------------------------------
+// The compiled-session seam (re-exports)
+// -------------------------------------------------------------------------------------------
+
+// `ep.rs` needs to name the compiled artefact, the recorder that produces it and the session that
+// executes it. Those types live in `vk::session` because that is where they are implemented, but
+// the module dependency table (`DESIGN.md` §4.3, enforced by `tests/layering.rs`) says the ABI
+// boundary layer talks to `engine` and never to `vk`. Re-exporting them here is what makes that
+// true rather than aspirational: the names are engine vocabulary, the implementation stays
+// Switch's, and `ep.rs` gains no way to reach a raw Vulkan handle.
+//
+// Nothing re-exported here may expose an `ash` type in its public signature. That is the property
+// the layering rule actually protects, and a re-export is only legal while it holds.
+pub(crate) use crate::vk::session::{CompileRecorder, CompiledKernel, VulkanSession};
+
+// -------------------------------------------------------------------------------------------
 // Device capability probe (STUB)
 // -------------------------------------------------------------------------------------------
 

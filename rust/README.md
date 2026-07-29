@@ -58,11 +58,35 @@ commit.
 Clippy is run with `--workspace`, which is deliberately one notch stricter than CI: the tool
 that tells you CI will be green must not itself be the dirty thing.
 
-### It works without a Vulkan SDK
+### It finds an installed Vulkan SDK, and works without one
 
-If `glslc` is not found (neither `$VULKAN_SDK/bin/glslc` nor on `PATH`), `cargo ci` sets
-`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` for you so `build.rs` does not abort. It also
-sets `LIBCLANG_PATH` for bindgen if it can find a libclang and you have not set one.
+`glslc` is looked for in three places, in order: `$VULKAN_SDK/bin/glslc`, then `PATH`, then — on
+Windows — the highest-versioned `C:\VulkanSDK\<version>\Bin\glslc.exe`. The third case exists
+because the LunarG Windows installer sets neither `VULKAN_SDK` machine-wide nor `PATH`, so an SDK
+can be installed and still invisible to the build. `build.rs` and the xtask apply the same order,
+and `build.rs` emits a `cargo:warning` naming the compiler it fell back to.
+
+That third lookup is a *parity* fix, not a convenience. Without it, a box with the SDK installed
+still builds with zero shaders, and the tests that assert a Live op has a compiled shader variant
+fail locally while passing in CI. A tool that is red for a reason CI is not is worse than no tool:
+it teaches people to ignore it.
+
+If none of the three finds a compiler, `cargo ci` sets
+`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` for you so `build.rs` does not abort, and says so in
+its caveats. It also sets `LIBCLANG_PATH` for bindgen if it can find a libclang and you have not
+set one.
+
+### The rustfmt edition preflight
+
+Before running anything, `cargo ci` reads `edition` out of `Cargo.toml` and checks that this
+toolchain's `rustfmt` accepts it, refusing to run (exit 2) if it does not.
+
+This guards a genuinely nasty footgun: **`rustfmt --edition 2021` against this edition-2024 crate
+does not fail.** It parses what it can, silently leaves alone what it cannot, and reports success.
+You get a green formatting check locally and a red one in CI, with no diff to explain it. The
+normal path is already correct — `cargo fmt` passes the manifest's edition through — but a
+toolchain older than the edition would still produce the silent-success behaviour, so it is a hard
+failure here rather than a caveat somebody has to remember.
 
 ### What it *cannot* verify
 
@@ -97,6 +121,25 @@ still mean "the EP crate only" and are completely unaffected by the workspace.
 
 `cargo ci` builds debug, for speed; CI builds `--release`. Use `cargo ci --release` when you want
 the same profile CI uses.
+
+### When it is red, ask *whose file* before asking *what did I break*
+
+Several agents edit this crate at once, so a red `cargo ci` is ambiguous by default. Two runs ten
+minutes apart on 2026-07-29 went from three compile errors in `ops/ssm.rs`, to fully green, to
+three failing tests in `registry.rs`, with none of those changes coming from the agent running it.
+The fastest way to find out is to read the *paths* before the messages:
+
+```powershell
+cargo clippy --workspace --all-targets --message-format=short 2>&1 | Select-String '^src|^tests'
+```
+
+One line per finding, file and line first. If the paths are not yours, re-run in a minute rather
+than starting a debugging session on someone else's half-landed work.
+
+The one exception is `-D warnings`: a warning in *anyone's* file turns the whole lane red, so it is
+a shared resource rather than a private one. Comment-only fixes (a missing `// SAFETY:`, a
+`#[allow]` with a stated reason) are reasonable to land across an ownership boundary; anything that
+changes meaning is not.
 
 ---
 
@@ -420,6 +463,25 @@ The lint is itself tested: several cases run the scanner over deliberately plant
 assert it catches each one, so a refactor that neuters the detector fails too. It was also verified
 against a real planted file under `src/ops/`, which produced seven findings before being removed.
 
+#### It has caught a real violation
+
+On 2026-07-29 the mirror-image check failed on `ep.rs:28` — `use crate::vk::session::{...}`, added
+by the engine owner while integrating the compiled-session types into `Compile`. A single `use`
+line in a 1600-line file, added in good faith; not the kind of thing review catches reliably.
+
+The fix was not to relax the lint. `engine.rs` now re-exports the three names the boundary layer
+needs:
+
+```rust
+pub(crate) use crate::vk::session::{CompileRecorder, CompiledKernel, VulkanSession};
+```
+
+so `ep.rs` says `use crate::engine::{...}` and the module dependency table (`DESIGN.md` §4.3) holds
+as written: `ep.rs` → `engine` → `vk`. The condition that keeps the re-export honest rather than a
+laundering trick is stated above it in `engine.rs` — **nothing re-exported there may expose an
+`ash` type in its public signature.** While that holds, `ep.rs` has no path to a raw Vulkan handle,
+which is the property the rule exists to protect.
+
 ### Contrib domain (constraint C1)
 
 `DESIGN.md` §1.4 **C1** forbids any domain-wide contrib opt-in: the registry key *is* the
@@ -523,7 +585,47 @@ the `vk/` tree, implement `DispatchContext`, and add SPIR-V shaders under `shade
 invariant to preserve: a node is claimed *only if* it can actually be translated. The layering lint
 is on and will reject an op handler that reaches for `sys` or `ash`.
 
-**Tank**, next — real `Compile`, the allocator and data-transfer vtable slots (M2), a proposal for
-OQ-3 (opaque-handle registry vs `VK_KHR_buffer_device_address`) for Morpheus to decide, and the
-external resource importer when zero-copy IO binding is wanted. `src/sys.rs` carries the bound
-seam and a marked TODO showing exactly where that slots in.
+**Tank**, next — the allocator and data-transfer vtable slots (M2) and the external resource
+importer when zero-copy IO binding is wanted. `src/sys.rs` carries the bound seam and a marked
+TODO showing exactly where that slots in.
+
+---
+
+## The `Compile` → `Compute` seam
+
+**`Compile`** walks each fused subgraph ORT hands us and reads every body node into an owned
+`engine::NodeDesc` (op type, domain, since-version, attributes, and per-edge name / dtype / shape),
+producing an `engine::Plan`. The plan's `inputs` and `outputs` come from the **fused node**, not
+from the subgraph body, because that is the order ORT binds tensors in at `Compute` time — taking
+them from the body produces a list that looks right and is indexed wrong. The plan borrows nothing
+from ORT: once `Compile` returns, no graph pointer survives anywhere.
+
+Each node's registry `translate` handler then runs against a `CompileRecorder` — a `DispatchContext`
+that records instead of dispatching — baking a `Vec<CompiledKernel>`. Input/output byte sizes and
+output shapes are resolved from the plan at the same time. All of it lands in a
+`SubgraphComputeInfo`, which is what ORT holds.
+
+**`Compute`** checks that the kernel context binds exactly as many tensors as the subgraph was
+compiled for, then calls `VulkanSession::dispatch_ort`. The count check is not defensive noise: the
+compiled counts come from the fused node and the bound counts come from ORT, and if they ever
+disagree every index past the mismatch names a different tensor than the compiled plan believes —
+a wrong answer rather than an error.
+
+### Failure is a status, never a null
+
+ORT reads a **null return from `Compute` as success.** A `Compute` that fails quietly therefore
+reports success and leaves ORT's output tensors holding whatever was in them — a silent wrong
+answer, which from the host's point of view is worse than a crash and indistinguishable from a
+working EP. `SubgraphComputeInfo` carries the `OrtApi` for exactly this reason, and
+`ep::tests::a_compute_that_cannot_dispatch_returns_a_status_not_a_silent_success` pins it.
+
+A subgraph with no device or no recorded kernels gets a *stub* compute-info, which returns a status
+saying so rather than writing nothing and returning success.
+
+One consequence worth stating plainly: once an op is claimable, a `Compile` or `Compute` failure
+**fails session creation** rather than falling back to CPU. That is the right trade — correct and
+loud beats fast and wrong — but it means the first claimable op and a working dispatch path need to
+land together.
+
+---
+

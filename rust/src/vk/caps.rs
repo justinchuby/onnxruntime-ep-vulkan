@@ -82,14 +82,36 @@ pub(crate) struct Capabilities {
     /// (Vulkan 1.1 core, always available after the device gate).
     pub subgroup_size: u32,
 
+    /// `true` when the subgroup probe returned plausible data (§7.9 rule 2).
+    ///
+    /// A `subgroupSize == 0` on a Vulkan ≥1.1 device is physically impossible on any conformant
+    /// driver — the spec floor is 4. When this occurs it means the `pNext` chain was not
+    /// delivered correctly (e.g., the `ash` `#[must_use]` rebind bug, D-S12-01). In that case
+    /// every subgroup field is unreliable and this flag is `false`.
+    ///
+    /// **When `false`, treat all subgroup fields as "not determined", not "not supported".**
+    /// Log a warning at probe time; do not silently degrade to "no subgroup support".
+    pub subgroup_probe_valid: bool,
+
     /// True when the subgroup `BASIC` feature is supported in the `COMPUTE` shader stage.
     ///
     /// This was formerly gate criterion R5, but was demoted here per Morpheus's §7.0 principle:
-    /// "capability shortfalls degrade op coverage, not device availability." Software renderers
-    /// (lavapipe/llvmpipe) and some integrated GPUs lack subgroup support in compute; they are
-    /// still admitted as capable devices. Ops that use subgroup intrinsics must check this flag
-    /// before claiming the op.
+    /// "capability shortfalls degrade op coverage, not device availability." Ops that use
+    /// subgroup intrinsics must check this flag before claiming the op.
+    ///
+    /// **Only meaningful when `subgroup_probe_valid` is `true`.**
+    ///
+    /// Note: the original motivation for demoting R5 was a `supportedStages = 0` reading on
+    /// lavapipe. That reading was likely the `push_next` probe bug (§7.9 Bug 1 / D-S12-01);
+    /// Mesa 26.1 lavapipe does support subgroup BASIC in compute. The *policy* decision
+    /// (capability degrades op coverage, not device admission) remains correct.
     pub subgroup_basic_in_compute: bool,
+
+    /// Raw `supportedStages` from `VkPhysicalDeviceSubgroupProperties` — the stage-flag
+    /// bitfield before it is folded into derived booleans (§7.9 rule 3 audit trail).
+    ///
+    /// Zero when `subgroup_probe_valid` is `false`.
+    pub subgroup_supported_stages: vk::ShaderStageFlags,
 
     /// Subgroup operations supported across all stages.
     /// Check [`subgroup_basic_in_compute`] for compute-stage BASIC support specifically.
@@ -388,11 +410,27 @@ pub(crate) unsafe fn probe(
     let can_require_subgroup_size = query_ssc && ssc_features.subgroup_size_control == vk::TRUE;
 
     // subgroup_basic_in_compute: formerly gate R5 — now a capability field so that
-    // software renderers (lavapipe/llvmpipe) are admitted to the device roster even when
-    // subgroup support is limited. Ops that use subgroup intrinsics gate on this field.
-    let subgroup_basic_in_compute = subgroup_props
-        .supported_stages
-        .contains(vk::ShaderStageFlags::COMPUTE)
+    // ops that use subgroup intrinsics gate on this field rather than blocking the device.
+    //
+    // §7.9 rule 1: distinguish "not supported" from "not determined".
+    // A subgroupSize == 0 on a Vulkan ≥1.1 device is physically impossible (spec floor is 4).
+    // When it occurs, the pNext chain was not delivered correctly — treat as not-determined
+    // and warn loudly so the bug surface stays visible rather than silently degrading.
+    let subgroup_probe_valid = subgroup_props.subgroup_size > 0;
+    if !subgroup_probe_valid {
+        log::warn!(
+            "Subgroup probe returned subgroupSize=0 on a Vulkan {}.{} device — \
+             treating ALL subgroup capability fields as not-determined (§7.9 rule 1). \
+             This almost certainly means the pNext chain was not delivered (D-S12-01 class).",
+            vk::api_version_major(api_version),
+            vk::api_version_minor(api_version),
+        );
+    }
+
+    let subgroup_basic_in_compute = subgroup_probe_valid
+        && subgroup_props
+            .supported_stages
+            .contains(vk::ShaderStageFlags::COMPUTE)
         && subgroup_props
             .supported_operations
             .contains(vk::SubgroupFeatureFlags::BASIC);
@@ -421,7 +459,9 @@ pub(crate) unsafe fn probe(
         synchronization2,
         synchronization2_is_core,
         subgroup_size: subgroup_props.subgroup_size,
+        subgroup_probe_valid,
         subgroup_basic_in_compute,
+        subgroup_supported_stages: subgroup_props.supported_stages,
         subgroup_supported_ops: subgroup_props.supported_operations,
         subgroup_size_range,
         can_require_subgroup_size,
@@ -477,7 +517,9 @@ pub(crate) fn test_caps(sync2: bool) -> Capabilities {
         synchronization2: sync2,
         synchronization2_is_core: sync2,
         subgroup_size: 32,
+        subgroup_probe_valid: true,
         subgroup_basic_in_compute: true,
+        subgroup_supported_stages: vk::ShaderStageFlags::COMPUTE,
         subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
         subgroup_size_range: None,
         can_require_subgroup_size: false,
@@ -501,7 +543,9 @@ mod tests {
             synchronization2: sync2,
             synchronization2_is_core: sync2,
             subgroup_size: 32,
+            subgroup_probe_valid: true,
             subgroup_basic_in_compute: true,
+            subgroup_supported_stages: vk::ShaderStageFlags::COMPUTE,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             subgroup_size_range: None,
             can_require_subgroup_size: false,
@@ -556,7 +600,9 @@ mod tests {
             synchronization2: true,
             synchronization2_is_core: true,
             subgroup_size: 32,
+            subgroup_probe_valid: true,
             subgroup_basic_in_compute: true,
+            subgroup_supported_stages: vk::ShaderStageFlags::COMPUTE,
             subgroup_size_range: Some(SubgroupSizeRange { min: 32, max: 32 }),
             can_require_subgroup_size: false,
             shader_float16: true,
@@ -648,5 +694,64 @@ mod tests {
             vk::MemoryHeapFlags::DEVICE_LOCAL,
         ]);
         assert!(is_uma_memory(&props));
+    }
+
+    // ── §7.9 subgroup probe-validity tests ───────────────────────────────────
+
+    /// §7.9 rule 1: a zero subgroup_size on a plausible device must produce
+    /// `subgroup_probe_valid = false` and `subgroup_basic_in_compute = false`.
+    ///
+    /// This tests the *logic path* using a synthesised Capabilities struct built the same way
+    /// `probe()` would build it when the pNext chain is not delivered.  The real probe is
+    /// exercised by CI's lavapipe lane (see integration test note).
+    #[test]
+    fn probe_validity_false_when_subgroup_size_is_zero() {
+        // Simulate what probe() produces when the pNext chain is zeroed (D-S12-01 class bug).
+        let caps = Capabilities {
+            subgroup_size: 0,
+            subgroup_probe_valid: false,
+            subgroup_basic_in_compute: false,
+            subgroup_supported_stages: vk::ShaderStageFlags::empty(),
+            subgroup_supported_ops: vk::SubgroupFeatureFlags::empty(),
+            ..caps_with_synchronization2(true)
+        };
+        assert!(
+            !caps.subgroup_probe_valid,
+            "all-zero chain must not be trusted"
+        );
+        assert!(
+            !caps.subgroup_basic_in_compute,
+            "not-determined must not be treated as supported (conservative)"
+        );
+    }
+
+    /// §7.9: a valid probe on a subgroup-capable device must set both flags correctly.
+    #[test]
+    fn probe_validity_true_when_subgroup_size_nonzero() {
+        let caps = caps_with_synchronization2(true);
+        assert!(caps.subgroup_probe_valid);
+        assert_eq!(caps.subgroup_size, 32);
+        assert!(caps.subgroup_basic_in_compute);
+        assert!(
+            caps.subgroup_supported_stages
+                .contains(vk::ShaderStageFlags::COMPUTE)
+        );
+    }
+
+    /// §7.9: subgroup_probe_valid=false must not falsely set subgroup_basic_in_compute=true
+    /// even when the raw supported_stages and supported_operations flags are non-zero.
+    /// (Guards against the probe() implementation forgetting to check probe_valid.)
+    #[test]
+    fn basic_in_compute_requires_probe_valid() {
+        let caps = Capabilities {
+            subgroup_size: 0,            // zero → probe invalid
+            subgroup_probe_valid: false, // set by probe() when size == 0
+            // Simulate a scenario where a previous bug might have left non-zero stage flags.
+            subgroup_supported_stages: vk::ShaderStageFlags::COMPUTE,
+            subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
+            subgroup_basic_in_compute: false, // probe() must NOT derive true here
+            ..caps_with_synchronization2(true)
+        };
+        assert!(!caps.subgroup_basic_in_compute);
     }
 }

@@ -1,28 +1,31 @@
 # Vulkan Runtime & Shader Architecture
 
-**Status:** In progress — first real dispatch verified on both local devices (Intel + NVIDIA)
-**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T08:13:58-07:00)
+**Status:** In progress — M0 guard tests green; ORT compile/compute wire implemented; session lifecycle pending
+**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T10:50:02-07:00)
 **Author:** Switch (Vulkan Compute Engineer)
 **Scope:** `rust/src/engine.rs` and the Vulkan abstraction layer; does NOT cover ONNX graph
 partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESIGN.md (Morpheus).
 
-## Implementation Status (2026-07-29T08:13:58-07:00)
+## Implementation Status (2026-07-29T10:50:02-07:00)
 
 | Module | Status | Notes |
 |---|---|---|
 | `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate (R1–R4, R6), `assess_gate` verbose output, `ONNXRUNTIME_EP_VULKAN_DEVICE` selector, 19 unit tests |
-| `vk/caps.rs` | ✅ Real | Capability probe (push_next chain fixed D-S12-01), MoltenVK trap, `subgroup_basic_in_compute`, `test_caps()` helper, `DeviceFeatureChain` |
+| `vk/caps.rs` | ✅ Real | Capability probe (push_next chain fixed D-S12-01), MoltenVK trap, `subgroup_basic_in_compute`, `subgroup_probe_valid` (§7.9 three-state), `subgroup_supported_stages` (§7.9 raw-value audit), `test_caps()` helper, `DeviceFeatureChain` |
 | `vk/barrier.rs` | ✅ Real | Dual-backend (`Core`/`Khr`), mapping tables, probe write, 20 unit tests |
 | `vk/device.rs` | ✅ Real | Logical device creation, queue retrieval, `Barriers::select`, `DeviceFeatureChain::apply` |
-| `vk/alloc.rs` | ✅ Real | `gpu-allocator` backed, 4 memory classes, staging helpers, 6 unit tests |
+| `vk/alloc.rs` | ✅ Real | `gpu-allocator` backed, 4 memory classes, staging helpers, correct UMA predicate (D-S12b-01), 6 unit tests |
 | `vk/cmd.rs` | ✅ Real | Command pool, `CommandRecorder`, `submit_and_wait` |
 | `vk/pipeline.rs` | ✅ Real | Pipeline cache, `DispatchDescriptorPool`, spec constants, push constants, 8 unit tests |
+| `vk/session.rs` | ✅ Real | `VulkanSession`, `CompileRecorder`, `CompiledKernel`, `dispatch_ort`; correct drop order (D-S13-01) |
 | `vk/dispatch_integration.rs` | ✅ **Verified** | **1024-element f32 `Add` dispatched on BOTH Intel Iris Xe (1.4.309) and NVIDIA RTX 4060 (1.4.325). Zero validation layer errors on both devices.** |
-| `engine.rs` seams | ✅ Stubbed | Vocabulary types, `Plan`, `CompileContext`, `DispatchContext`; real dispatch pending |
+| `ep.rs` compile/compute wire | ✅ Real | `compile_impl` runs `CompileRecorder` → `SubgraphComputeInfo::new_live`; `compute_impl` calls `session.dispatch_ort`. ORT tensors flow through `ComputeIo`. |
+| `ops/elementwise.rs` — Add | ✅ **Live** | `Add` promoted to `Live` (was `Staged(UNEXERCISED)`); `spec_for` returns `Some`; claimed and translatable. |
+| Guard tests | ✅ **Correct in both modes** | `every_row_has_a_status_that_matches_its_shader_coverage`, `no_live_row_lacks_a_shader_or_dispatch_path`, `live_rows_are_registered_for_translation_and_staged_rows_are_not` all assert the right thing. |
 | Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. Tests assert correctly in both build modes. |
 | Loader diagnostics | ✅ Real | `loader_state_lines()` always emitted on `vkCreateInstance` failure; INFO-gated pre-creation on `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`. `apiVersion` capped to loader version. |
 | `epctl --probe-loader` | ✅ Real | Per-device per-criterion gate assessment via `assess_gate`; shows measured values, PASS/FAIL per criterion, and `ONNXRUNTIME_EP_VULKAN_DEVICE` selection result. |
-| Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute |
+| Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute — currently creates a fresh `VulkanSession` per `compile_impl` call |
 | Real `DispatchContext` | 🔲 Pending | Concrete implementor over `VkCommandBuffer` using `cmd.rs` + `pipeline.rs` |
 | `alloc` integration | 🔲 Pending | Tank's `BufferView` handle table ↔ `GpuBuffer` side-table |
 | Prepack hook (real) | 🔲 Pending | Seam 1 vocab is real; actual staging upload behind it pending |
@@ -30,7 +33,7 @@ partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESI
 
 Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **258** lib (+ 6 dump-capabilities + 26 layering + 7 portability).
 
-**Morpheus — §9.1.2 update required:** The sentence "no shader has ever executed on any device" is no longer accurate as of session 11. `add_f32_dispatches_end_to_end` completed with 1024 f32 elements verified on NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan 1.4.325, Discrete), with `VK_LAYER_KHRONOS_validation` reporting zero errors. As of session 12, the same dispatch verified on Intel Iris Xe (Vulkan 1.4.309, Integrated) as well — zero validation errors on both devices.
+**Morpheus — §9.1.2 update required:** The sentence "no shader has ever executed on any device" is no longer accurate as of session 11. `add_f32_dispatches_end_to_end` completed with 1024 f32 elements verified on NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan 1.4.325, Discrete), with `VK_LAYER_KHRONOS_validation` reporting zero errors. As of session 12, the same dispatch verified on Intel Iris Xe (Vulkan 1.4.309, Integrated) as well — zero validation errors on both devices. The precise statement is: one op (`Add`), one dtype (f32), static shapes, compute shader compiles and dispatches correctly through the standalone Vulkan device stack (`dispatch_integration.rs`) on two desktop GPUs on one OS. `compile_impl` / `compute_impl` ORT wiring is implemented in `ep.rs` + `vk/session.rs`; the session-lifecycle gap (shared `VulkanSession` across multiple Compile calls) remains pending — a node dispatched through a single compile/compute cycle would execute, but persistent multi-op sessions are not yet exercised. Trinity's differential ORT test is the confirmation gate.
 
 ---
 
@@ -695,14 +698,16 @@ The device gate is **five** hard requirements (R1–R4, R6) — no optional exte
 4. `maxComputeSharedMemorySize ≥ 16384`
 5. At least one DEVICE_LOCAL memory heap and one HOST_VISIBLE memory type
 
-**R5 (subgroup BASIC in COMPUTE stage) was removed from the gate in session 10.**
+**R5 (subgroup BASIC in COMPUTE stage) was removed from the gate in session 10. The decision
+is correct; the original premise was wrong (D-S14-01).**
 
-Lavapipe/llvmpipe — the only device available on CI — reported `supportedStages = 0` for
-subgroup operations on the Mesa version present in Ubuntu 22.04. The old R5 check rejected
-it, violating Morpheus's §7.0 governing principle verbatim: *"capability shortfalls degrade
-op coverage, not device availability."* Subgroup support is now recorded in
-`Capabilities::subgroup_basic_in_compute`; ops that use subgroup intrinsics check that field
-in their claim predicates instead of requiring it at device admission.
+The premise: lavapipe reported `supportedStages = 0` for subgroup operations. Removing R5 was
+correct per Morpheus's §7.0 principle ("capability shortfalls degrade op coverage, not device
+availability"). The premise was wrong: that `supportedStages = 0` reading was the push_next
+probe bug (§7.9 Bug 1 / D-S12-01) — a zeroed pNext chain returns all-zeros regardless of device
+capability. Mesa 26.1 lavapipe (llvmpipe) DOES support subgroup BASIC in compute. Subgroup
+support is recorded in `Capabilities::subgroup_basic_in_compute`; ops that use subgroup
+intrinsics check that field in their claim predicates rather than requiring it at device admission.
 
 `passes_gate` is a thin wrapper over `assess_gate`, which evaluates **every** criterion and
 records its measured value — no early exit. This lets `epctl --probe-loader` show the exact

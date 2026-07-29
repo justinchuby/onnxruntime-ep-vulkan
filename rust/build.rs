@@ -140,7 +140,8 @@ fn generate_ort_bindings(out_dir: &Path) {
 // 2. GLSL → SPIR-V
 // ---------------------------------------------------------------------------------------------
 
-/// Locate `glslc`: `$VULKAN_SDK/bin/glslc` first, then bare `glslc` on `$PATH`.
+/// Locate `glslc`: `$VULKAN_SDK/bin/glslc` first, then bare `glslc` on `$PATH`, then an installed
+/// SDK in its default location.
 fn find_glslc() -> Option<PathBuf> {
     if let Ok(sdk) = env::var("VULKAN_SDK") {
         let exe = if cfg!(windows) { "glslc.exe" } else { "glslc" };
@@ -151,12 +152,48 @@ fn find_glslc() -> Option<PathBuf> {
     }
     // Probe `$PATH` by actually running it — cheaper and more accurate than re-implementing PATH
     // resolution, and it also proves the binary is executable on this machine.
-    Command::new("glslc")
+    let on_path = Command::new("glslc")
         .arg("--version")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|_| PathBuf::from("glslc"))
+        .map(|_| PathBuf::from("glslc"));
+    if on_path.is_some() {
+        return on_path;
+    }
+    installed_sdk_glslc()
+}
+
+/// The LunarG Windows installer does not put `glslc` on `$PATH` and does not set `VULKAN_SDK`
+/// machine-wide; it installs to `C:\VulkanSDK\<version>\Bin`. Without this, a developer box with
+/// the SDK *installed* still builds with zero shaders, and the local test suite then fails tests
+/// that CI passes — the exact parity gap `cargo ci` exists to close.
+///
+/// Highest version wins, by lexicographic order on the directory name. That is not a correct
+/// version sort in general, but SDK directory names are zero-padded four-part numbers of equal
+/// shape, so it agrees with the numeric order in practice. Set `VULKAN_SDK` to override.
+fn installed_sdk_glslc() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let root = Path::new("C:\\VulkanSDK");
+    let mut versions: Vec<PathBuf> = fs::read_dir(root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.join("Bin").join("glslc.exe").is_file())
+        .collect();
+    versions.sort();
+    versions
+        .pop()
+        .map(|p| p.join("Bin").join("glslc.exe"))
+        .inspect(|p| {
+            println!(
+                "cargo:warning=using glslc from an installed Vulkan SDK at {} \
+                 (VULKAN_SDK was unset and glslc was not on PATH)",
+                p.display()
+            );
+        })
 }
 
 fn compile_shaders(out_dir: &Path) {

@@ -103,12 +103,35 @@ fn find_glslc() -> Option<PathBuf> {
             return Some(candidate);
         }
     }
-    Command::new("glslc")
+    let on_path = Command::new("glslc")
         .arg("--version")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|_| PathBuf::from("glslc"))
+        .map(|_| PathBuf::from("glslc"));
+    if on_path.is_some() {
+        return on_path;
+    }
+    installed_sdk_glslc()
+}
+
+/// Mirrors `build.rs::installed_sdk_glslc`. The LunarG Windows installer neither sets
+/// `VULKAN_SDK` machine-wide nor puts `glslc` on `$PATH`, so an SDK can be installed and still
+/// invisible. Reporting "NOT FOUND" in that case makes `cargo ci` build with zero shaders and then
+/// fail the live-row tests that CI passes — a false red, which is worse than a false green because
+/// it teaches people to ignore the tool.
+fn installed_sdk_glslc() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut versions: Vec<PathBuf> = std::fs::read_dir("C:\\VulkanSDK")
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.join("Bin").join("glslc.exe").is_file())
+        .collect();
+    versions.sort();
+    versions.pop().map(|p| p.join("Bin").join("glslc.exe"))
 }
 
 /// Does `libclang` need pointing at? `bindgen` needs it and it is not on `PATH` by default on
@@ -143,6 +166,50 @@ struct Env {
     libclang: Option<PathBuf>,
     /// `None` when no shader compiler was found — shaders will not be compiled.
     glslc: Option<PathBuf>,
+}
+
+/// The crate's edition, read from `Cargo.toml` rather than hard-coded.
+fn crate_edition(root: &Path) -> Option<String> {
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    manifest.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("edition")?;
+        let rest = rest.trim_start().strip_prefix('=')?;
+        Some(rest.trim().trim_matches('"').to_string())
+    })
+}
+
+/// Refuse to run if this toolchain's `rustfmt` cannot parse the crate's edition.
+///
+/// **Why this exists.** `rustfmt --edition 2021` run against an edition-2024 crate does not fail —
+/// it parses fewer constructs and quietly formats *nothing it does not understand*, so it reports
+/// success while leaving the file unformatted. CI then runs the correct edition, finds a diff, and
+/// goes red with no local reproduction. Niobe hit this; the cost of each of us discovering it
+/// individually is the wrong distribution of that cost, so it is a hard preflight failure here.
+///
+/// `cargo fmt` itself passes `--edition` from the manifest, so the *normal* path is already
+/// correct. What this guards is the case underneath it: a toolchain whose `rustfmt` predates the
+/// edition, where `cargo fmt` would pass `--edition 2024` to a rustfmt that rejects or ignores it.
+fn check_rustfmt_edition(env: &Env) -> Result<String, String> {
+    let Some(edition) = crate_edition(&env.root) else {
+        return Err("could not read `edition` from Cargo.toml".to_string());
+    };
+    let out = Command::new("rustfmt")
+        .args(["--edition", &edition, "--version"])
+        .output()
+        .map_err(|e| format!("could not run rustfmt: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "this toolchain's rustfmt does not accept `--edition {edition}`, which is the \
+             edition in Cargo.toml.\n           rustfmt said: {}\n           \
+             A rustfmt that does not understand the crate's edition does not fail on the code it \
+             cannot parse — it silently leaves it unformatted and reports success, which is \
+             exactly how CI goes red with no local reproduction. Update the toolchain \
+             (`rustup update`) rather than working around this.",
+            stderr.trim()
+        ));
+    }
+    Ok(edition)
 }
 
 fn run_check(check: &Check, env: &Env, fix_fmt: bool, release: bool) -> bool {
@@ -285,6 +352,19 @@ fn main() -> ExitCode {
         None => println!(
             "glslc: NOT FOUND — setting {ENV_ALLOW_MISSING_GLSLC}=1; shaders will not be compiled"
         ),
+    }
+    match check_rustfmt_edition(&env) {
+        Ok(edition) => println!("rustfmt: accepts --edition {edition} (matches Cargo.toml)"),
+        Err(msg) => {
+            eprintln!();
+            eprintln!("cargo ci: PREFLIGHT FAILED — {msg}");
+            eprintln!();
+            eprintln!(
+                "Refusing to run rather than reporting a green formatting check that CI will \
+                 contradict."
+            );
+            return ExitCode::from(2);
+        }
     }
 
     let mut failed: Vec<&str> = Vec::new();

@@ -40,6 +40,7 @@ pub(crate) mod cmd;
 pub(crate) mod device;
 pub(crate) mod instance;
 pub(crate) mod pipeline;
+pub(crate) mod session;
 
 /// End-to-end dispatch integration test. Only compiled in `#[cfg(test)]` builds.
 /// Skips silently when shaders are absent or no Vulkan device is available.

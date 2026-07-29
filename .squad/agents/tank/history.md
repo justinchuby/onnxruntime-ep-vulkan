@@ -58,3 +58,54 @@
 📌 **Vulkan SDK at `C:\VulkanSDK\1.4.350.0` (2026-07-29):** Not on default PATH. `cargo ci` sets `ALLOW_MISSING_GLSLC=1` automatically when no SDK is found; for full builds including shader compilation, prefix the SDK `bin/` directory explicitly.
 
 📌 **`rustfmt --edition 2021` silently no-ops on this edition-2024 crate (2026-07-29, D-T12):** Always use `cargo fmt --all` or the `cargo ci` xtask.
+## Session 9 — 2026-07-29T10:50:02-07:00 — the seam lands, and the lint catches its first real violation
+
+**What I actually did.** Finished the `Compile` → `Compute` seam reconciliation, then spent most of
+the turn on something I did not expect: getting `cargo ci` back to green after three agents landed
+into the same crate at once.
+
+**The layering lint caught a real violation, from an agent, on the first run after his edit.**
+Switch's integration put `use crate::vk::session::{...}` at the top of `ep.rs`. That is layering
+rule 4.3 — the ABI boundary layer must not name the Vulkan layer. `tests/layering.rs` failed on it
+immediately. The fix is a `pub(crate) use` re-export in `engine.rs`, so `ep.rs` names
+`crate::engine::{CompileRecorder, CompiledKernel, VulkanSession}` and the seam is declared in one
+place. Recorded as D-T27/D-T28.
+
+The lesson worth keeping: I argued for the lint in D-T9 on principle. This is the first time it
+earned its keep on live code, and the shape of the catch is instructive — a *single `use` line*
+inside a 1600-line file, added in good faith by someone doing exactly what the coordinator asked.
+No reviewer catches that reliably. Mechanical enforcement is not about distrust; it is about the
+fact that architecture erodes one plausible import at a time.
+
+**A first-instinct I had to correct.** My first reaction to the failure was to reach for the lint
+and carve an exception for `vk::session`. That would have been the wrong move for a reason worth
+writing down: the first exception to a lint is the one that converts it from a rule into a
+suggestion. The re-export costs three lines and keeps the rule absolute. I wrote the constraint that
+keeps the re-export honest into the comment above it — nothing re-exported there may expose an
+`ash` type in its public signature — so the next person can tell whether it still holds.
+
+**`-D warnings` is a shared resource and I under-weighted that.** 36 `undocumented_unsafe_blocks`
+warnings in Switch's `vk/session.rs` were making `cargo ci` red for everyone. Ownership says hand
+him a diagnosis; the crate being red says fix it. I fixed it, because the change is comment-only —
+zero semantic effect — and because the coordinator had already set the crate-steward precedent with
+the `cargo fmt` pass for exactly this reason: a mechanical pass split N ways just conflicts.
+Two things I learned doing it:
+- Clippy wants the `// SAFETY:` on the line *immediately* preceding the block. Switch had written
+  good comments; several were one line too high, or attached to the `for` rather than the body.
+  The lint is stricter than the discipline, which is mildly annoying and entirely fine.
+- Writing 30-odd SAFETY invariants for someone else's Vulkan code is a genuine review. I found
+  nothing wrong, and I now understand the buffer lifetimes in `dispatch_ort` well enough to say so
+  rather than assume it.
+
+**Concurrent editing, second turn running.** Between two `cargo ci` runs ten minutes apart the crate
+went from "3 compile errors in `ops/ssm.rs`" to green to "3 failing tests in `registry.rs`" — none
+of them mine, all of them other agents landing work. The operational lesson: a red `cargo ci` is
+now ambiguous by default, and the first question is *whose file*, not *what did I break*. Filtering
+clippy with `--message-format=short` and reading the paths before the messages makes that a
+two-second question instead of a two-minute one. Worth adding to the README.
+
+**A caveat I let stand deliberately, and said so.** Task 2 asked me to verify the reserved-VA
+allocator against a real ORT session. There is no allocator — `create_allocator` writes null by
+design until M2. I reported that rather than building a synthetic exercise of a registry that is not
+in ORT's path. That is the third time this project a "verified" claim would have been a precondition
+dressed as an effect, and the first time I have caught myself before rather than after.
