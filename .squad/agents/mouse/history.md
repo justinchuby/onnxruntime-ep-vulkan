@@ -28,6 +28,20 @@
 
 **Template infrastructure landed (turn 2):**
 - `OpStatus::Staged(reason)` — fully described row declines before predicate runs. Going live = one-word diff. Distinct staging reasons: `NO_SHADER`, `NEEDS_PARAMS`, `NEEDS_CAST_MATRIX`, `UNEXERCISED`.
+
+---
+
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
+
+📌 **Intel Iris Xe = spec-conformance oracle (2026-07-29, Morpheus D25 + Link):** Intel's implementation is strictest in the local device set (Vulkan 1.4.309, UMA, 32 KiB shared). When testing op claims and fingerprint predicates, verify passes on Intel first. A claim that only passes on NVIDIA but not Intel indicates either an undefined-behaviour exploit or a predicate that is too broad.
+
+📌 **`onnx-shape-inference` (Python) adopted as Trinity harness preprocessing step (2026-07-29, Trinity + Morpheus D24):** Runs `infer_symbolic_shapes` over test models before ORT, converting `[dynamic-shape]` declines into claimable nodes. Mouse's fingerprint predicates will be exercised more thoroughly. `onnx-shape-inference` is also the C2 fingerprint cross-check oracle.
+
+📌 **T3 sequencing finalised (2026-07-29, Morpheus D23):** `ai.onnx::Attention` first (standard-domain); GQA second (same exit criteria required). The `bind_aliased_output` seam must be confirmed with Switch before starting GQA implementation. No KV-cache or fp16 design decision as if only one consumer existed — design for both.
+
+📌 **`norm.rs` rustfmt flagged red by `cargo ci` (2026-07-29, Niobe):** Must be fixed by Mouse before the next `cargo ci` pass.
+
+📌 **Census corpus must be indexed by producer (2026-07-29, Morpheus D21):** A target model is "covered" only for a named producer. The M1 census item changes to per-producer. "Producer emits no GQA" must be an explicit row in the census output.
 - Claim predicate takes `(NodeView, OpSpec)` — the predicate reads `spec.caps`/`spec.op_type`/`spec.kernel` instead of closing over them. One predicate serves 60+ ops.
 - Machine-readable declines: `decline(code, detail)` renders `"[tag] sentence"`, `DeclineCode::of_reason()` parses back. Three consumers (human log, Trinity assertions, Niobe histogram), zero cross-owner edits.
 - `ShapePlan::broadcast` right-aligns into `[u32; MAX_RANK=6]`, zero stride on stretched axes. Push layout ≤ 128 bytes worst case (maxPushConstantsSize floor, asserted by test). `MAX_RANK=6` is not 8.

@@ -10,232 +10,123 @@
 
 ## Learnings
 
-<!-- SUMMARIZED by Scribe 2026-07-28T22:28:08-07:00 — full session details in decisions.md -->
+<!-- SUMMARIZED by Scribe 2026-07-29T09:00:39-07:00 — full session details in decisions.md -->
 
-### [SUMMARY] Sessions 1–6+: ENGINE.md, barrier abstraction, seams, device/memory/pipeline (2026-07-28)
+### [SUMMARY] Sessions 1–11: ENGINE.md through first real dispatch (2026-07-28–2026-07-29)
 
-**ENGINE.md authored (session 1):**
-- Reference study: llama.cpp (build-time GLSL→SPIR-V, specialization constants, per-vendor tuning, lazy pipeline creation). ExecuTorch (VK_API_VERSION_1_1, buffer-only, one-time record, weight prepacking at compile phase, yaml variant tables).
-- Chosen stack: `ash` + `gpu-allocator` (not vulkano, not wgpu).
-- Buffer-only tensor storage for v0. One command buffer per subgraph (no per-op submissions).
-- Per data-edge barriers (`vkCmdPipelineBarrier2`), not global. GLSL→SPIR-V at build time.
-- `synchronization2` and `subgroup_size_control` structurally simplify engine; baseline decision delegated to Morpheus.
+**Stack chosen (session 1):** `ash` + `gpu-allocator`. Buffer-only tensor storage, one command buffer per subgraph, per-edge barriers, GLSL→SPIR-V at build time.
 
-**Barrier abstraction (session 2) — `rust/src/vk/barrier.rs`:**
-- Dual-backend `Barriers` enum: `Sync2Backend`, `LegacyBackend`. `Access`/`Stage` closed enums (no None). Single mapping table.
-- Backend selected once at `Device::new`. `ep.force_legacy_barriers` session option forces legacy.
-- `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` env var: EP writes "sync2" or "legacy" to a file during `Barriers::select`. Used by Trinity's parity test.
-- Layering lint: `barrier.rs` is the ONLY file allowed to name barrier types; `BARRIER_RULES` + `SYNC2_FIELD_RULES` in `tests/layering.rs`.
-- ash 0.38 notes: `push_next` is safe but `#[must_use]`; extension paths are `ash::khr::*`; `vk::DependencyInfo` uses `vk::MemoryBarrier2` for execution-only sync2 barriers.
-- Rust 2024: `#![deny(unsafe_op_in_unsafe_fn)]` — unsafe fn calls inside unsafe fn still need explicit `unsafe {}` + SAFETY comment. `const { assert!(...) }` preferred form.
+**Barrier abstraction (session 2) — `rust/src/vk/barrier.rs`:** Dual-backend `Barriers` enum (`Sync2Backend` / `LegacyBackend`). Backend selected once at `Device::new`. `ep.force_legacy_barriers` session option. `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` env writes "sync2"/"legacy" for Trinity parity test. `barrier.rs` is the ONLY file allowed to name barrier types (enforced by `tests/layering.rs`).
 
-**Backend probe + force_legacy wiring (session 3) — `rust/src/vk/device.rs`:**
-- `Device` struct owns `ash_device`, `physical_device`, `caps`, `barriers`. `Device::new` is sole call site of `Barriers::select`.
-- `should_use_sync2(caps, force_legacy) -> bool` extracted for testability (ash::Device cannot be zeroed — non-nullable fn pointers → UB).
-- `caps::test_caps(sync2: bool)` defined outside `mod tests` so `device.rs` tests import without touching `synchronization2` token (layering compliance).
-- Total: 185 tests after session.
+**ash 0.38 / Rust 2024 permanent reference:** `push_next` is `#[must_use]`; `ash::khr::*` path. `ash::Device` cannot be zeroed. `entry.try_enumerate_instance_version()` not the panicking form. `c"main"` for C strings. `bytes.len().div_ceil(4)` (clippy enforces). `#![deny(unsafe_op_in_unsafe_fn)]` requires explicit `unsafe {}` + SAFETY comment even inside unsafe fns.
 
-**Engine seams for XL kernels (session 4) — `rust/src/engine.rs`:**
-- Seam 1 (prepack): `TileConfig`, `PackKey`, `PackInput`, `PackOutput`, `PrepackRequest`, `PrepackResult`, `CompileContext` trait.
-- Seam 2 (KV-cache aliasing): `bind_aliased_output` default method on `DispatchContext` (returns resolved input by default).
-- Seam 3 (build.rs variant table): `VariantRow`, `parse_shader_variants`, two-path compile in `build.rs`. `cargo:rerun-if-changed` for `shader_variants.txt`.
-- Seam 4 (indirect dispatch): `IndirectKernelRequest`, `dispatch_indirect` default method.
-- llama.cpp assessment: block format mismatch = no code copying. Tiling strategy, subgroup reduction shape, dequant-in-register patterns **do transfer**. (D-S4-10 correction of Mouse's "useless" claim.)
-- Rust trait default methods returning `Err(...)` = correct pattern for stubs that concrete engine impls override. All new methods have defaults; no existing implementors broken.
-- Total: 195 tests after session.
+**Engine seams (session 4):** `TileConfig`/`PackKey`/`PrepackRequest`; `bind_aliased_output` default method (KV-cache aliasing); `VariantRow`/`parse_shader_variants` in `build.rs`; `IndirectKernelRequest`/`dispatch_indirect` default. All new methods have defaults; no existing implementors broken. llama.cpp tiling strategy + subgroup reduction shape + dequant-in-register patterns transfer (D-S4-10); no code copying.
 
-**Real device enumeration (session 5) — `rust/src/vk/instance.rs`:**
-- `Instance` struct: `_entry` declared first (dropped last); `ash::Entry::new()` returns None gracefully when no loader.
-- `Instance::enumerate_capable_devices()` applies R1–R6 gate (pure `passes_gate` function, 15 unit tests).
-- `Capabilities::required_device_extensions(api_version)` lives in `caps.rs` (keeps `synchronization2` token out of `instance.rs`).
-- `Device::create(instance, capable, force_legacy)` — logical device creation, compute queue retrieval.
-- `probe_devices()` sorts discrete-first.
-- glslc fallback: Switch recommended hard SDK dep + escape hatch (168 SPIR-V blobs ≈ 1–3 MiB binary weight + staleness hazard). Morpheus ruled for hard SDK dep (OQ-4 resolved).
-- Total: 245 tests after session.
+**Device enumeration (session 5):** `Instance::enumerate_capable_devices` applies R1–R6 gate (`passes_gate` pure function, 15 unit tests). `probe_devices` sorts discrete-first. `MemClass`: `DeviceLocal`, `Upload`, `Download`, `PackedWeights`. `PipelineCache`: lazy `(shader_stem, spec_constants) → (VkPipeline, layout, dset_layout)`. Test count reached 268.
 
-**Memory / command / pipeline (session 6) — `alloc.rs`, `cmd.rs`, `pipeline.rs`:**
-- `MemClass`: `DeviceLocal`, `Upload`, `Download`, `PackedWeights` (maps to `GpuOnly` — enforces "no dequantized weight in VRAM" at type level).
-- `CommandPool` + `CommandRecorder<'pool>`: lifetime prevents use-after-pool-drop at compile time. `Drop` logs warning if `finish()` not called.
-- `submit_and_wait()`: fence-based blocking submit. V0: one submission per subgraph.
-- `PipelineCache`: lazy build+cache `(shader_stem, spec_constants) → (VkPipeline, VkPipelineLayout, VkDescriptorSetLayout)`. Shader module destroyed after pipeline creation.
-- `DispatchDescriptorPool`: per-dispatch pool-and-reset. V0 simple model; M2+ replaces with persistent.
-- `vk::SpecializationInfo` borrows both map_entries and data — return the storage from a helper, construct in caller scope.
-- Total: 265 tests after session.
+**Shader-less guard (session 7+):** `shaders::has_any()` = `SHADER_MODULES.is_empty()`. `probe_devices` + `get_capability_impl` both early-exit. OQ-4 escape hatch: `ALLOW_MISSING_GLSLC=1` produces inert artifact.
 
-**Shader-less guard (session 7+):**
-- `shaders::has_any()` = `SHADER_MODULES.is_empty()`. `probe_devices()` returns `vec![]` + logs warn. `get_capability_impl()` early-returns null + logs `[built-without-shaders]`.
-- Belt-and-suspenders: `probe_devices` (factory init) + `get_capability_impl` (per-session). Future refactor can skip either; both together prevent claiming.
-- OQ-4 condition 3 implemented: shader-less artifact advertises zero devices, claims nothing.
-- Total: 268 tests.
+**Session 9 — ICD diagnostics + apiVersion fix:** `Instance::create` caps requested `apiVersion` to loader version before calling `vkCreateInstance` (fixes latent `ERROR_INCOMPATIBLE_DRIVER` on 1.0 loaders; use `try_enumerate_instance_version` not the panicking form). Full loader diagnostic emitted on any create failure. `epctl --probe-loader` exits 1 when no capable device passes gate.
 
-**Key ash 0.38 / Rust 2024 facts (permanent reference):**
-- All `ash::Instance` methods are `unsafe`. `ash::khr::synchronization2::Device::new` is safe.
-- `push_next` is `#[must_use]`; use `let _ = props2.push_next(...)`.
-- Extension paths: `ash::khr::*` (not `ash::extensions::khr::*`).
-- `ash::Device::clone()` is cheap (Arc internally).
-- `gpu_allocator::vulkan::Allocator::new()` is safe.
-- `c"main"` is the modern c-string literal (Rust 1.77+).
-- `bytes.len().div_ceil(4)` — clippy `manual_div_ceil` enforces this.
-- `ash::Device` / `ash::Instance` cannot be zeroed (non-nullable fn pointers).
+**Session 10 — R5 removed from gate (lavapipe `supportedStages=0`):** R5 (subgroup BASIC in compute) removed from `passes_gate`. Now stored in `Capabilities::subgroup_basic_in_compute`. `assess_gate` evaluates all criteria without early exit for verbose diagnostics. 283 tests.
 
-**Current test count: 268 (233 lib + 6 dump-capabilities + 26 layering + 3 shader-guard). All passing.**
+**Session 11 — First real dispatch on NVIDIA RTX 4060 Laptop GPU:**
+- `add_f32_dispatches_end_to_end`: 1024 f32 elements, exact arithmetic, zero validation layer errors. §9.1.2 "no shader has ever executed" is now false.
+- **Bug D-S11-01:** NVIDIA 1.4 doesn't export `vkCmdPipelineBarrier2KHR` (extension alias); fixed: `Sync2Backend` is now `Core(Box<ash::Device>)` / `Khr(...)`.
+- **Bug D-S11-02:** `Instance::create` was requesting Vulkan 1.1 hardcoded; `vkGetDeviceProcAddr` only returns pointers up to requested version. Fixed: request `loader_version.min(1.3)`.
+- **Bug D-S11-03:** Missing feature chain in `VkDeviceCreateInfo`; fixed by adding `VkPhysicalDeviceSynchronization2Features` to `pNext` chain when enabling sync2.
+- Test count at end: 258 lib + 6 dump-capabilities + 26 layering + 7 portability = 297.
+
+**Outstanding (not yet done):** GPU timestamp query implementation (Niobe D-N4/D-N5 spec → Switch `vk/cmd.rs`). `dispatch_integration.rs` has 4 `undocumented_unsafe_blocks` + rustfmt. `bind_aliased_output` seam contract with Mouse. OQ-15 `vkCmdDispatchIndirect` evaluation.
 
 ---
 
-### 2026-07-29T05:17:03-07:00 — Session 9: ICD diagnostics, apiVersion fix, epctl --probe-loader
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
 
-**Task:** Diagnose `ERROR_INCOMPATIBLE_DRIVER` on both CI lanes (run 30450284838). The EP loaded
-and the degradation path worked (M0 criterion 5 confirmed — it advertised zero devices and let
-ORT fall back to CPU). But no Vulkan device could be enumerated, so M0 cannot be verified until
-the ICD issue is resolved.
+📌 **Local GPU facts (2026-07-29):** Vulkan SDK at `C:\VulkanSDK\1.4.350.0` — NOT on default PATH; prefix it explicitly in every shell command that calls glslc or epctl. Two devices pass §7.2 gate: **Intel Iris Xe Graphics** (Vulkan 1.4.309, UMA, 32 KiB shared, `maxSubgroupSize=32`) and **NVIDIA GeForce RTX 4060 Laptop GPU** (Vulkan 1.4.325, discrete, 48 KiB shared, `maxSubgroupSize=32`). 168 shader variants compile cleanly with SDK on PATH.
 
-**Diagnosis:**
-- Root cause is environmental: lavapipe ICD either missing or its library isn't loadable on both
-  CI runners. NOT a bug in our code.
-- Linux: `vulkaninfo` already warned in the install step (non-fatal); EP then got
-  `ERROR_INCOMPATIBLE_DRIVER` as expected. The `::warning::` failure mode masked the real problem.
-- Windows: ICD JSON was found, but the mesa DLL or its dependencies (MSVC runtime) may not be
-  loadable.
-- Neither lane had a pre-test Vulkan availability check that FAILS CI — both runners just silently
-  had no lavapipe.
+📌 **Intel Iris Xe = spec-conformance oracle (2026-07-29, Morpheus D25 + Link):** Intel's implementation is stricter than NVIDIA's on undefined behaviour and extension interactions. When the two disagree, assume Intel is correct. Use Intel results when filing bug reports or proposing spec questions.
 
-**Code changes made (this session):**
+📌 **R5 changed — subgroup BASIC in compute is now a probed capability, not a gate criterion (2026-07-29, Switch D-S10-01):** Removed from `passes_gate`; stored in `Capabilities::subgroup_basic_in_compute`. Mesa llvmpipe reports `supportedStages = 0`. Shader variants that require subgroup ops must check this capability before claiming the node, not at device-enumeration time.
 
-1. **`vk/instance.rs` — loader diagnostic function `loader_state_lines`:**
-   - Always emitted at WARN level on any `vkCreateInstance` failure.
-   - Emitted at INFO level pre-creation when `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`.
-   - Reports: `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, `VK_INSTANCE_LAYERS` env var values;
-     loader version from `vkEnumerateInstanceVersion`; layer count and names; instance extension
-     count (indicator of whether any ICD loaded).
+📌 **`rustfmt --edition 2021` silently no-ops on this edition-2024 crate (2026-07-29, Tank D-T12):** Always use `cargo fmt --all` — the xtask `cargo ci` command does this correctly. Never invoke rustfmt directly with an edition flag.
 
-2. **`vk/instance.rs` — apiVersion fix (defensive correctness):**
-   - `Instance::create` now calls `try_enumerate_instance_version` before building
-     `VkApplicationInfo`.
-   - If loader version is None (Vulkan 1.0) or < 1.1: return None early with clear message rather
-     than hitting `ERROR_INCOMPATIBLE_DRIVER` from requesting apiVersion 1.1 against a 1.0 loader.
-   - ash 0.38's `try_enumerate_instance_version()` returns `Ok(None)` for 1.0 loaders (function
-     not present) and `Ok(Some(v))` for 1.1+ loaders. Never panics (vs the deprecated
-     `enumerate_instance_version` which does panic on 1.0).
+📌 **GPU timestamp query spec (2026-07-29, Niobe D-N4/D-N5):** `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` activates GPU spans. Niobe owns `trace.rs`; Switch must implement the `vkCmdWriteTimestamp` call sites, query pool creation/reset, `timestampPeriod` scaling, non-stalling `vkGetQueryPoolResults`, and `VK_EXT_calibrated_timestamps` path — full spec in `docs/PERF.md §3`. Return type is `GpuTimestampReport { calibration, queue_family, intervals }` with raw ticks; Niobe's `trace.rs` owns all arithmetic.
 
-3. **`vk/instance.rs` — `probe_loader_report()` public fn:**
-   - Standalone loader probe: loads ash, collects loader state, tries `vkCreateInstance`, applies
-     §7.2 gate, returns multi-line diagnostic string. Bypasses the shader guard in
-     `probe_devices()` so it works on shader-less builds. Used by epctl.
-
-4. **`engine.rs` — `pub fn loader_probe_report()`:**
-   - Thin wrapper around `vk::instance::probe_loader_report()`. Exposed as `pub` so `epctl`
-     (a binary in the same crate, importing via `onnxruntime_vulkan_ep::engine`) can call it.
-
-5. **`epctl.rs` — `--probe-loader` flag (cross-owner edit — Tank owns epctl.rs):**
-   - New flag: runs `engine::loader_probe_report()`, prints to stdout.
-   - Exits 1 when no capable device found (usable as a gate step in CI scripts).
-   - Previously epctl was entirely static (no Vulkan, no ORT). This is the one addition that
-     touches Vulkan. All existing `--dump-capabilities` behavior unchanged.
-
-**What Link and Trinity need to do (decisions/inbox/switch-icd-diagnostics.md):**
-1. Set `VK_DRIVER_FILES` alongside `VK_ICD_FILENAMES` in `ci.yml` — newer loaders may prefer it.
-2. Linux: make `vulkaninfo` failure a hard `exit 1` (not `::warning::`) to catch lavapipe issues
-   before tests run.
-3. Linux: verify `mesa-vulkan-drivers` actually ships lavapipe on ubuntu-22.04 GitHub runners;
-   consider installing from the LunarG apt repo which is already added for shaderc.
-4. Windows: verify mesa DLL dependencies are loadable (check MSVC runtime availability).
-5. Add `epctl --probe-loader || exit 1` as a CI step before pytest to make Vulkan availability
-   explicit and named in the job log.
-
-**ash 0.38 lesson learned:**
-- `entry.try_enumerate_instance_version()` is unsafe and returns `VkResult<Option<u32>>`. The
-  deprecated `entry.enumerate_instance_version()` panics on Vulkan 1.0 loaders. Always use
-  `try_enumerate_instance_version`.
-- `entry.enumerate_instance_layer_properties()` and `entry.enumerate_instance_extension_properties`
-  are both unsafe. Both are loader-level queries that work without any ICD loaded.
-
-**What is verified vs written-but-unexercised:**
-- VERIFIED by unit tests (no ICD needed): all prior tests (272 total now); diagnostic functions
-  are exercised indirectly (paths don't panic on an ICD-less machine).
-- VERIFIED by real ORT run: M0 exit criterion 5 (zero-devices → CPU fallback) confirmed on both
-  CI lanes by run 30450284838, before ICD fix.
-- WRITTEN BUT NOT EXERCISED: `loader_state_lines` full output in the failure path (will fire on
-  next CI run with new code); `epctl --probe-loader` output (needs CI with Vulkan loader present).
-- UNBLOCKED: once Trinity/Link fix lavapipe, the new diagnostics will show "vkCreateInstance:
-  OK" + device count, and `probe_devices()` will return real devices.
-
-**Final state:** `cargo ci` green (rustfmt + clippy + build + test). **272 tests** (238 lib + 6
-dump-capabilities + 26 layering).
+📌 **`dispatch_integration.rs` has 4 flagged `undocumented_unsafe_blocks` + rustfmt issue (2026-07-29, Niobe):** Switch must fix these before the next `cargo ci` pass.
 
 ---
 
-### Session 10: R5 gate removal, `assess_gate`, and realistic device-profile tests (2026-07-28T22:28:08-07:00)
+## Session 12 — Multi-device dispatch; Intel oracle; caps probe fix (2026-07-29T08:13:58-07:00)
 
-**CI run:** `30456272132` (headSha `c615f17`)  
-**Problem:** `vkCreateInstance` now succeeds (session 9 `apiVersion` fix worked). But
-`epctl --probe-loader` reported `0 device(s) passed the §7.2 capability gate`. `vulkaninfo`
-confirmed a real Vulkan 1.3.255 lavapipe device (`llvmpipe (LLVM 15.0.7, 256 bits)`) exists.
-Our own gate is rejecting lavapipe.
+**Coordinator directive:** run dispatch on ALL capable devices with Intel as strictness oracle. Add explicit device selection via env var.
 
-**Root cause:** R5 (`subgroup_props.supported_stages.contains(COMPUTE) &&
-supported_operations.contains(BASIC)`) was the culprit. Mesa llvmpipe on Ubuntu 22.04 reports
-`supportedStages = 0` — no stage is listed as supporting subgroup operations in this Mesa build.
-R5a fails immediately.
+**D-S12-01 — caps probe `push_next` chain bug (FIXED):**
+`let _ = props2.push_next(...)` discarded the chain link — ALL capability fields derived from
+`VkPhysicalDeviceProperties2`/`Features2` chains were reading zeroed structs. Symptom: `subgroup_sz=0`
+on both devices. Fix: rebind `props2 = { let p = ...push_next(...); ... }`. This is the same bug as
+`DeviceFeatureChain` in session 11. After fix: `subgroup_sz=32` on both Intel Iris Xe and NVIDIA RTX 4060.
 
-This violates Morpheus's §7.0 governing principle verbatim: *"capability shortfalls degrade
-op coverage, not device availability."* R5 is not a correctness requirement for device admission;
-it is a capability that gates individual ops.
+**D-S12-02 — `is_uma=true` on NVIDIA RTX 4060 Laptop is correct:**
+Not a bug. ReBAR maps full VRAM as `HOST_VISIBLE`. `detect_uma` correctly identifies this.
+`is_uma` means "main GPU memory is CPU-writable" not "same physical DRAM as CPU". Keep as-is.
 
-**Code changes (session 10):**
+**D-S12-03 — Intel Iris Xe: zero validation errors on Add dispatch:**
+Intel passed with zero errors, same as NVIDIA. Barrier strategy, feature chain, descriptor set layout,
+push constants all spec-conformant. Conformance is symmetric for this workload. Reported to Link for
+driver-quirks watchlist: first hardware-derived entry (previous entries were from documentation).
 
-1. **`vk/instance.rs` — R5 removed from `passes_gate`:**
-   - Gate now checks R1–R4, R6 only.
-   - `passes_gate` signature drops the `subgroup_props` parameter.
-   - `enumerate_capable_devices` no longer queries subgroup properties via `props2` chain
-     (that query happens in `caps::probe` which runs after the gate).
-   - Decision recorded in `switch-engine-seams.md` D-S10-01.
+**D-S12-04 — `ONNXRUNTIME_EP_VULKAN_DEVICE` env var:**
+Added `select_device()` and `ENV_DEVICE_SELECTOR` in `instance.rs`. Dispatch integration test runs
+ALL capable devices regardless of selector (selector is for EP factory device selection, not test scope).
+`epctl --probe-loader` shows selector value and which device would be selected.
 
-2. **`vk/instance.rs` — `GateCriterion` struct and `assess_gate` function:**
-   - `GateCriterion` holds `label`, `requirement`, `measured` value, `passed`, and `failure_reason`.
-   - `assess_gate` evaluates all five criteria without early exit, returning the full breakdown.
-   - `passes_gate` is now a thin wrapper: calls `assess_gate`, returns `Err(failure_reason)` on
-     first failure. Error strings are unchanged — Trinity's tests still assert on them.
-   - `probe_loader_report` now iterates physical devices directly and calls `assess_gate` per
-     device, showing label / requirement / measured / verdict for each criterion.
-   - `enumerate_capable_devices` calls `assess_gate` at DEBUG on gate failure.
+**Results:**
+- Both devices PASS, zero validation errors
+- `add_f32_dispatches_end_to_end` verified on Intel Iris Xe (1.4.309, UMA, subgroup_sz=32) and NVIDIA RTX 4060 (1.4.325, discrete-ReBAR, subgroup_sz=32)
+- `cargo ci` green (fmt + clippy + build + test), 258 lib tests
+- Fixed 3 `undocumented_unsafe_blocks` (2 in `instance.rs`, 1 in `dispatch_integration.rs`) + `rustfmt` issue
 
-3. **`vk/caps.rs` — `subgroup_basic_in_compute: bool` added to `Capabilities`:**
-   - Replaces the old R5 gate semantics.
-   - Set in `caps::probe` from `subgroup_props.supported_stages.contains(COMPUTE) &&
-     supported_operations.contains(BASIC)`.
-   - Updated comment on `subgroup_supported_ops` (removed "BASIC is guaranteed by R5").
-   - `test_caps()` and `caps_with_synchronization2()` updated.
+**Outstanding:** GPU timestamp query hooks for Niobe (`vk/cmd.rs`). `bind_aliased_output` seam
+with Mouse. Session lifecycle (`VulkanEp` holding `Instance` + `Device`). Real `DispatchContext`.
 
-4. **`vk/instance.rs` — test updates:**
-   - Removed: `r5a_rejects_subgroup_not_in_compute_stage`, `r5b_rejects_missing_basic_subgroup_ops`
-   - Removed: `good_subgroup_props()` helper (no longer needed by gate tests)
-   - Added: `device_without_subgroup_compute_passes_gate` — pins R5 removal explicitly
-   - Added: `lavapipe_profile_passes_gate` — synthesised from Ubuntu 22.04 Mesa properties
-   - Added: `uma_integrated_gpu_passes_gate` — UMA combined DEVICE_LOCAL+HOST_VISIBLE heap
-   - Added: `discrete_gpu_passes_gate` — two-heap discrete GPU with resizable-BAR type
-   - Added: `assess_gate_reports_measured_values_and_identifies_failure` — verifies measured
-     values are present and only the failing criterion is reported as failed
+---
 
-**Key technical note:**
-- `subgroup_props` was queried in `enumerate_capable_devices` only for R5. After R5 removal,
-  that chain is gone from the gate loop. Subgroup properties are still queried in `caps::probe`
-  (which runs per-device after the gate passes), so no information is lost.
-- The `probe_loader_report` verbose output now answers "which criterion rejected this device
-  and what did it measure?" in a single tool invocation. This was the missing diagnostic that
-  made session 9 and 10 hard to triage.
+## Session 12b — Cross-platform standing directive response (2026-07-29T09:39:59-07:00)
 
-**What is verified vs written-but-unexercised:**
-- VERIFIED by unit tests (no ICD needed): 283 total (up from 272). All gate logic is exercised
-  including realistic lavapipe, UMA, and discrete profiles.
-- WRITTEN BUT NOT EXERCISED on real hardware: `assess_gate` verbose output in
-  `probe_loader_report` (will show on next CI run with lavapipe once the gate passes).
-- UNBLOCKED: `enumerate_capable_devices` will now return lavapipe as a capable device on CI.
-  The next milestone is Device::new becoming real.
+**Coordinator directive:** 要时刻注意跨平台通用性. All limits from device reports, never hardcoded. UMA is the mobile proxy.
 
-**ash 0.38 lesson (confirmed this session):**
-- `get_physical_device_properties2` and `get_physical_device_memory_properties` are both unsafe.
-  Clippy's `undocumented_unsafe_blocks` lint requires a SAFETY comment on the immediately
-  preceding line for each `unsafe {}` block in a loop body — a single comment before the
-  first block does not cover subsequent ones.
+**Changes made:**
 
-**Final state:** `cargo ci` green. **283 tests** (241 lib + 6 dump-capabilities + 26 layering + 7 portability).
+1. **`dispatch_integration.rs` — replace `256` with `EW_LOCAL_SIZE`:** The integration test used
+   `vec![256u32, 1u32]` and `plan.workgroups_1d(256)` as hardcoded constants. Replaced with
+   `crate::ops::common::templates::EW_LOCAL_SIZE`. Now if the constant changes (e.g. per-device
+   tuner), the integration test tracks it automatically. The dispatch still passes on both devices.
+
+2. **`alloc.rs` — `MemClass::Download` now uses `GpuToCpu` (was `CpuToGpu`):** The original code
+   used `CpuToGpu` for both Upload and Download. `Download` is GPU-writes/CPU-reads; `GpuToCpu`
+   signals this to `gpu-allocator` so it can prefer cached HOST_VISIBLE memory for readback. On
+   UMA devices (all same heap) it makes no difference; on discrete hardware the hint can select
+   a different BAR sub-type. Unit test renamed to `mem_class_download_maps_to_gpu_to_cpu`.
+
+3. **`ENGINE.md §3.2/§3.3` — updated to match reality:** §3.2 now shows the 4 actual
+   `MemClass` entries with `MemoryLocation` hints and notes on UMA behavior. §3.3 corrects the
+   "no staging needed on UMA" statement (v0 always stages; bypass is a future M1+ optimisation),
+   explains the future UMA bypass path using `caps.is_uma` + `Access::HostWrite`, and notes the
+   Intel Iris Xe test confirms the staging path works correctly on UMA.
+
+4. **`ENGINE.md §2.2` — Intel oracle and UMA rationale now explicit:** The section explains the
+   conformance asymmetry (correct on NVIDIA + wrong on Intel → we relied on something unspecified),
+   the `ONNXRUNTIME_EP_VULKAN_DEVICE` env var for deterministic per-device testing, and the
+   UMA/ReBAR distinction (discrete + ReBAR vs integrated UMA — both `is_uma=true`, different
+   physical topology).
+
+5. **`ENGINE.md §9.2` — workgroup size note:** Updated "256 threads" to refer to `EW_LOCAL_SIZE`
+   and its cross-platform rationale.
+
+**Structural rule encoded (not just documented):**
+- Workgroup sizes arrive from the shared constant `EW_LOCAL_SIZE`; the shader exposes it as
+  spec constant ID 0 so the runtime can override per device without recompiling GLSL.
+- `MemoryLocation` hints match actual usage semantics: `CpuToGpu` = CPU writes, `GpuToCpu` = CPU reads.
+- `cargo ci` green (258 lib tests, fmt, clippy).
+

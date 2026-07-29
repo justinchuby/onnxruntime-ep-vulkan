@@ -10,223 +10,151 @@
 
 ## Learnings
 
-<!-- Append new learnings below. Each entry is something lasting about the project. -->
+<!-- SUMMARIZED by Scribe 2026-07-29T09:00:39-07:00 — full session details in decisions.md -->
 
-📌 Team update (2026-07-28T17:59:54-07:00): Correctness oracle is ORT's own CPU EP running the same ONNX model — not numpy, not a custom reference. Every op test must also assert the node actually ran on `VulkanExecutionProvider` (not silently falling back to CPU). A test that does not assert device placement can pass vacuously even if the EP ran nothing. — decided by Morpheus
+### [SUMMARY] Rounds 1–5: CI foundation, barriers, quantization oracle, claim log, CI fixes (2026-07-28–2026-07-29)
 
-📌 Team update (2026-07-28T17:59:54-07:00): Tolerance policy — tolerances are derived and documented per op family. Widening a tolerance to turn a red test green requires Trinity's sign-off and an explanatory note inside the test. — decided by Morpheus
+**Correctness oracle (Morpheus):** ORT CPU EP running the same ONNX model. Every op test MUST assert the node ran on `VulkanExecutionProvider` — CPU fallback passes vacuously.
 
-📌 Team update (2026-07-28T17:59:54-07:00): Validation-layer-clean (zero Vulkan validation errors) is a hard "done" criterion for any engine change, not optional. — decided by Morpheus
+**Tolerance policy (per op-family):** fp32 elementwise: 1e-5/1e-5; fp16: 1e-3/1e-3; comparison: exact; reductions/GEMM M2+: TBD. Widening requires Trinity sign-off + in-test comment.
 
-📌 Team update (2026-07-28T17:59:54-07:00): Software rasterizers (lavapipe, SwiftShader) both pass Vulkan 1.3 conformance and are suitable for GPU-less CI. They are a smoke test, not a correctness claim. — decided by Morpheus, verified by Fact Checker
+**Three-regime quantization tolerance:** `DEQUANT_EXACT={rtol:0,atol:0}`, `MATMULNBITS_FP32={rtol:1e-3,atol:1e-4}`, `MATMULNBITS_FP16={rtol:2e-2,atol:1e-3}`. `accuracy_level` pinned at 1 (fp32). fp16 oracle gated on ORT≥1.28 (1.27 = NaN/Inf via null-allocator PrePack bug).
 
-📌 Team update (2026-07-28T17:59:54-07:00): M0 test — stock ORT loads the plugin, enumerates a Vulkan device, runs a graph with a single `Add` node, matches ORT CPU EP within tolerance, on Windows and Linux, on a software rasterizer, in CI. This is the first conformance test Trinity owns. — decided by Morpheus
+**Claim assertion mechanism:** ORT profiling JSON (`enable_profiling=True`, `end_profiling()`, parse `cat=="Node"` events for `args.provider=="VulkanExecutionProvider"`). Structured, not text parsing. `assert_vulkan_claims` in `tests/ops/_models.py`.
 
-📌 Team update (2026-07-28T17:59:54-07:00): Vulkan API baseline is a capability-set: ≥1.1 core + compute queue + `synchronization2` (ext or 1.3 core) + `subgroup_size_control` (ext or 1.3 core) + subgroup BASIC+ARITHMETIC + workgroup/shared-memory minimums. Tests run on any device meeting this bar (including software rasterizers). — decided by Morpheus, Switch, Link, Fact Checker
+**Barrier parity layer:** `test_barrier_parity.py` — 74 `claim=True` cases run twice (sync2 + force-legacy), asserts bit-identical outputs. `run_with_backend()`: sets `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`, applies `ep.force_legacy_barriers=1`.
 
-📌 Trinity work landed (2026-07-28T19:16:08-07:00): Test & CI foundation complete.
-  **Claim assertion mechanism:** ORT profiling JSON (`enable_profiling=True`, `end_profiling()`, parse `cat=="Node"` events for `args.provider=="VulkanExecutionProvider"`). Structured, not text parsing. Same mechanism as onnxruntime-mlx reference. Implemented in `tests/ops/_models.py::assert_vulkan_claims`.
-  **Tolerance policy:** Named constants in `_models.py` per op-family (fp32 elementwise: 1e-5/1e-5; fp32 transcendental: 1e-5/1e-5; fp16: 1e-3/1e-3; comparison: exact; reductions/GEMM M2+: TBD/OQ-10). Protocol for widening: Trinity sign-off + in-test comment.
-  **CI lanes:** Linux lavapipe (ubuntu-22.04, Mesa 22.0, Vulkan 1.3, lavapipe, VK_LAYER_KHRONOS_validation, zero-errors enforced); Windows build+clippy (SwiftShader Vulkan lane TODO, documented). Layering lint wired (grep fallback until Tank's binary).
-  **Files created:** `tests/README.md`, `tests/requirements.txt`, `tests/ops/conftest.py`, `tests/ops/_models.py`, `tests/ops/test_elementwise.py`, `tests/ops/test_claim_diagnostics.py`, `tests/ops/test_fallback.py`, `tests/conformance/README.md`, `tests/conformance/RESULTS.md`, `tests/conformance/claimed_ops.txt`, `tests/conformance/vulkan_runtime_wrapper.py`, `tests/conformance/test_conformance.py`, `tests/conformance/run_conformance.sh`, `.github/workflows/ci.yml`, `.github/workflows/conformance.yml`, `.squad/decisions/inbox/trinity-test-foundation.md`.
-  **Verified:** Python syntax clean (py_compile). YAML syntax valid.
-  **Scaffolded/blocked on Tank:** Actual test execution awaits `rust/` crate; `register_execution_provider_library` call; Mouse's Add claim predicate; Tank's validation-layer panic callback.
+**Machine-readable claim log:** `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` env var. `test_domain_regression.py` asserts `code=="not-registered"`. `read_claim_log(path)` in `_models.py`.
 
-📌 Trinity round-2 corrections applied (2026-07-28T19:16:08-07:00):
+**CI lanes:**
+- **Linux (ubuntu-22.04):** glslc from LunarG apt repo (`shaderc` package — NOT Ubuntu's `glslang-tools`); LunarG SDK version pinned at workflow-level; `VK_LAYER_KHRONOS_validation`; zero validation errors enforced.
+- **Windows:** lavapipe ICD registered in `HKLM:\SOFTWARE\Khronos\Vulkan\Drivers` (`VK_ICD_FILENAMES` ignored by loader when elevated); mesa-dist-win 26.1.3; ORT DLL PATH added for pytest.
+- **ORT version:** `ORT_VERSION=1.28.0` pinned at workflow-level env. `onnxruntime>=1.28` in `requirements.txt`.
 
-  **CORRECTION 1 — ORT 1.28.0:** `ORT_VERSION` now pinned at workflow-level `env:` in `ci.yml` (single location for the whole file); `conformance.yml` job-level env updated; `tests/requirements.txt` updated to `onnxruntime>=1.28`. Reason: ORT 1.27 has null-allocator PrePack bug + deleter lifetime issue in plugin EP path, fixed in 1.28 (released 2026-07-24). Source: Fact Checker audit trail.
+**conftest.py:** `register_vulkan_ep` is not autouse; Vulkan-independent tests (oracle pinning, layer capture, domain regression) run without EP lib. 8 tests pass unconditionally; rest skip cleanly.
 
-  **CORRECTION 2 — Windows Vulkan lane resolved:** Investigated mesa-dist-win (https://github.com/pal1000/mesa-dist-win). Latest release `26.1.3` (2026-06-26) ships `mesa3d-26.1.3-release-msvc.7z` (~69 MB, MSVC runtime, 7z extractable on windows-latest). This package includes lavapipe (Vulkan 1.3 CPU software rasterizer) as DLL + ICD JSON. SwiftShader rejected: Google publishes no Windows prebuilts; ~20 min build from source. `build-test-windows` CI job now installs mesa-dist-win lavapipe and runs pytest (plus always-on no-ICD fallback test). `MESA_VERSION: "26.1.3"` pinned at workflow-level env. Finding reported to Link (who owns `docs/PLATFORMS.md §7.4`).
+**`onnx-shape-inference` (Python) adopted as preprocessing step (Morpheus D24):** Sequence as coverage work, not harness polish.
 
-  **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
+**Validation-layer-clean** is a hard "done" criterion for any engine change. **CI is the only place shaders are verified against a reference; red CI blocks all merges.**
 
-📌 Trinity round-3: barrier parity layer (2026-07-28T19:16:08-07:00) — see decision record §8.
+**PowerShell gotcha:** `-match`/`-notmatch` are FILTERS on arrays, boolean only on scalars. Use `Select-String -Quiet`, `-contains`, or `( | Where-Object {...}).Count -gt 0` for boolean result from multi-line output. Both directions of a check must be verified.
 
-📌 Trinity round-4: quantization oracle + tolerance policy + domain regression (2026-07-28T22:28:08-07:00):
-
-  **Backend probe confirmed live (commit 255f2db):** Switch's `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`
-  is in `rust/src/vk/barrier.rs`. Updated `test_barrier_parity.py` to demote the `unknown` branch
-  from "TODO(Switch)" to "EP not yet built" messaging. Hard assert still fires for `legacy` value.
-
-  **conftest.py refactor — non-Vulkan tests now run without EP:**
-  `register_vulkan_ep` changed from `autouse=True` (session-wide skip) to a non-autouse fixture
-  that returns bool. `vulkan_device_available` gains it as a dependency and skips if not registered.
-  Result: Vulkan-independent tests (oracle pinning, layer capture, domain regression) run and pass
-  without `ONNXRUNTIME_VULKAN_EP_LIB` set. 8 tests now pass unconditionally; 198 skip cleanly.
-
-  **Quantization oracle investigation finding:**
-  - MatMulNBits fp32 activations: ORT CPU EP works as differential oracle on ORT 1.28. ✓
-  - MatMulNBits fp16 activations: ORT 1.27 produces NaN/Inf (PrePack bug); gated on ORT>=1.28.
-  - accuracy_level pinned to 1 (fp32 accumulator) via `MATMULNBITS_ORACLE_ACCURACY_LEVEL=1`.
-    Level 4 (int8 VNNI) diverges ~3.6e-3 max_abs at K=1024, N=512.
-  - SimplifiedLayerNormalization not on CPU EP in 1.27; use standard LayerNormalization opset 17.
-
-  **Three-regime tolerance policy implemented (Mouse OP_COVERAGE §10.1):**
-  - `DEQUANT_EXACT = {rtol:0, atol:0}` — bit-exact vs NumPy (not CPU EP).
-  - `MATMULNBITS_FP32 = {rtol:1e-3, atol:1e-4}` — fp32 vs CPU EP oracle.
-  - `MATMULNBITS_FP16 = {rtol:2e-2, atol:1e-3}` — fp16 vs CPU EP oracle (ORT>=1.28).
-  - Policy + justification in `_models.py` module docstring. Tests in `test_matmulnbits.py`.
-
-  **Per-layer capture mechanism built:**
-  - `with_captured_outputs(model_bytes, names)` — appends intermediates as graph outputs.
-  - `compare_layers(model_bytes, feeds, names)` — runs both EPs, returns per-layer diff list.
-  - Unit test `test_layer_capture_mechanism` passes without Vulkan device.
-
-  **Morpheus C1 — domain regression test (runtime half):**
-  - `tests/ops/test_domain_regression.py`: `com.microsoft::NotARealOp` → ORT raises `Fail`
-    (not SystemError / EP crash). Both tests pass without Vulkan device.
-  - TODO(Mouse): upgrade to machine-readable reason code once Mouse's registry API is confirmed.
-
-  **Final test count:** 206 collected; 8 pass unconditionally, 198 skip cleanly. 0 failures.
-📌 Trinity round-3: barrier-backend parity layer (2026-07-28T19:16:08-07:00):
-
-  **New test layer:** Created `tests/ops/test_barrier_parity.py`. Reads `_CASES` from `test_op_table.py`, filters to `claim=True` (~74 cases), runs each case twice with both barrier backends, asserts bit-identical outputs.
-
-  **Backend probe mechanism agreed with Switch:** When `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=<path>` is set, EP writes `"sync2"` or `"legacy"` to `<path>` during `Barriers::select` in `Device::new`. File-write IPC — zero ORT API changes required. Until Switch lands this, the parity test emits `UserWarning` rather than failing; the output comparison still runs. See `_models.run_with_backend` docstring for the exact contract.
-
-  **`run_with_backend()` added to `_models.py`:** Sets `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`, applies `ep.force_legacy_barriers=1` when `force_legacy=True`, returns `(outputs, active_backend)`. Probe file lives in `tests/ops/` (project-relative, never `/tmp`), unique per process.
-
-  **CI:** Both Linux and Windows pytest steps already collect `test_barrier_parity.py` (in `tests/ops/`). Explicit comments added. No extra pytest invocation needed — parity runs within the standard `pytest tests/ops` call. 198 tests total; all 198 skip cleanly without EP lib.
-
-  **Needs from others:**
-  - **Switch:** Implement `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` in `rust/src/vk/barrier.rs` per contract in `_models.run_with_backend` docstring.
-  - **Switch:** Wire `ep.force_legacy_barriers` session option to `Barriers::select` in `Device::new`.
-
-
-📌 Trinity round-2 corrections applied (2026-07-28T19:16:08-07:00):
-
-  **CORRECTION 1 — ORT 1.28.0:** `ORT_VERSION` now pinned at workflow-level `env:` in `ci.yml` (single location for the whole file); `conformance.yml` job-level env updated; `tests/requirements.txt` updated to `onnxruntime>=1.28`. Reason: ORT 1.27 has null-allocator PrePack bug + deleter lifetime issue in plugin EP path, fixed in 1.28 (released 2026-07-24). Source: Fact Checker audit trail.
-
-  **CORRECTION 2 — Windows Vulkan lane resolved:** Investigated mesa-dist-win (https://github.com/pal1000/mesa-dist-win). Latest release `26.1.3` (2026-06-26) ships `mesa3d-26.1.3-release-msvc.7z` (~69 MB, MSVC runtime, 7z extractable on windows-latest). This package includes lavapipe (Vulkan 1.3 CPU software rasterizer) as DLL + ICD JSON. SwiftShader rejected: Google publishes no Windows prebuilts; ~20 min build from source. `build-test-windows` CI job now installs mesa-dist-win lavapipe and runs pytest (plus always-on no-ICD fallback test). `MESA_VERSION: "26.1.3"` pinned at workflow-level env. Finding reported to Link (who owns `docs/PLATFORMS.md §7.4`).
-
-  **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
-
-
+**`test_op_table.py`** — single-dispatch `CaseSpec`-driven; 124 tests, all skip cleanly without EP lib. Pre-populated with all tier-1 ops.
 
 ---
 
-## Cross-agent context appended (2026-07-28T22:28:08-07:00)
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
 
-📌 **`force_legacy_barriers` parity lane contract (Switch + Trinity):** `ep.force_legacy_barriers=1` session option forces the legacy `vkCmdPipelineBarrier` backend. Trinity's `test_barrier_parity.py` runs claim=True ops with both backends; bitwise-identical outputs required. `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=<path>` env: EP writes "sync2" or "legacy" to the file during `Barriers::select`. Switch wired this in `barrier.rs`. CI must run the parity suite on both Linux and Windows lavapipe lanes.
+📌 **`onnx-shape-inference` (Python) adopted as Trinity harness preprocessing step (2026-07-29, Morpheus D24):** Runs `infer_symbolic_shapes` over test models before ORT, converting `[dynamic-shape]` declines into claimable nodes. Sequence this as coverage work, not harness polish — do not schedule it as a Trinity-only change.
 
-📌 **C2 item 7: fingerprint audit CI (Morpheus §1.4):** `graph_census.py` runs in CI before any tier-3 contrib work. Trinity owns the "must NOT claim `com.microsoft::NotARealOp`" domain regression test (`test_domain_regression.py`); upgrade to machine-readable reason code when Mouse's registry API is confirmed. `[contrib-schema]` decline ≠ `[attribute]` decline — do not merge buckets.
+📌 **Intel Iris Xe = spec-conformance oracle (2026-07-29, Morpheus D25 + Link):** Intel Iris Xe (Vulkan 1.4.309, UMA, 32 KiB) is stricter than NVIDIA on undefined behaviour and extension interactions. When conformance tests disagree between devices, assume Intel is correct. Write tests that exercise Intel's stricter interpretation.
 
-📌 **`accuracy_level` pinning (Trinity round-4 oracle investigation):** `MatMulNBits` oracle pinned at `MATMULNBITS_ORACLE_ACCURACY_LEVEL=1`. Level 4 diverges ~3.6e-3 (would present as GPU bug). Fp16 path gated on ORT ≥ 1.28. Three tolerances defined: `DEQUANT_EXACT` (bit-exact vs NumPy), `MATMULNBITS_FP32`, `MATMULNBITS_FP16`. Dequantize bit-layout goes to NumPy (independent spec), not CPU EP.
+📌 **Vulkan SDK at `C:\VulkanSDK\1.4.350.0` (2026-07-29):** Not on default PATH. CI test steps must prefix this explicitly or use `cargo ci --release`. CI is the only place shaders are verified against a reference — red CI blocks all merges.
 
-📌 **mesa-dist-win lavapipe on Windows (Trinity + Link):** Mesa release 26.1.3 (2026-06-26), `mesa3d-26.1.3-release-msvc.7z`, includes lavapipe (Vulkan 1.3) as DLL + ICD JSON. `MESA_VERSION: "26.1.3"` pinned at workflow env. SwiftShader rejected (no Windows prebuilts, 20 min build). Link owns `docs/PLATFORMS.md §7.4` update.
+📌 **GPU timestamp query requirements from Niobe (2026-07-29, D-N4/D-N5):** When `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` is set, Trinity's CI run must provide a non-null `GpuTimestampReport` from Switch's implementation. Trinity's tolerance policy does not change, but trace-enabled test runs must not crash even when GPU timing is unavailable on the CI device.
 
-📌 **ORT 1.28.0 pin (Trinity + Tank + Fact Checker):** `ORT_VERSION=1.28.0` pinned at workflow-level env in `ci.yml` and `conformance.yml`. 1.27 excluded (null-allocator PrePack bug; fp16 NaN/Inf confirmed by Trinity). `tests/requirements.txt` → `onnxruntime>=1.28`.
+📌 **R5 (subgroup BASIC in compute) is no longer a gate criterion (2026-07-29, Switch D-S10-01):** Removed from `passes_gate`. Tests that previously assumed all gated devices report subgroup BASIC in compute must be updated — instead check `Capabilities::subgroup_basic_in_compute`.
 
-📌 **`bind_aliased_output` / `dispatch_indirect` seams (Switch):** Default methods on `DispatchContext` return `Err` for unimplemented seams. Trinity's `Recorder` mock does not need to implement them unless testing XL kernels. When XL kernel parity tests are added, verify both backends execute correctly through these seams.
+---
 
-📌 **Claim diagnostic records (Mouse turn-5):** Per-event JSON, one self-contained line per event, append-and-flush (no lifecycle hook). Hooks `claim_decision` not the ep.rs aggregator. Trinity's C1 test (`test_domain_regression.py`) can parse the JSON file directly rather than asserting "zero nodes claimed" — upgrade when Mouse's format is stable.
+## Round 11 (2026-07-29T09:19:35-07:00): Shape inference delta + device parametrization
 
-📌 Trinity round-5 (superseded by round-6): initial glslc fix attempt:
+**Task 1 — onnx-shape-inference preprocessing oracle:**
 
-  **glslang-tools** provides `glslangValidator`, not `glslc`. Attempted to fix with `shaderc`
-  from Ubuntu 22.04 repos — that package does not exist there. Two consecutive unverified
-  claims. CI remained red.
+`apply_shape_inference(model_bytes) -> bytes` added to `_models.py`:
+- Uses `onnx.ModelProto.FromString` + `ir.from_proto` → `infer_symbolic_shapes` → `ir.to_proto().SerializeToString()`
+- NOTE: `ir.serde.deserialize` / `ir.proto.ModelProto` are NOT the right APIs — use `onnx.ModelProto.FromString` + `ir.from_proto`.
 
-📌 Trinity round-7: case 1/2 determination + GPG fix + layering lint (2026-07-28T22:28:08-07:00):
+`make_model_dynamic_output(op, inputs, ...)` added to `_models.py`:
+- Like `make_model` but outputs have `shape=None` — replicates exported models without shape annotations.
 
-  **glslc root cause:** Ubuntu 22.04 does not package glslc in any of its own repos.
-  The LunarG Vulkan SDK apt repository for Jammy does, via `shaderc`. Added step "Add
-  LunarG Vulkan SDK apt repository" using the versioned list file and modern GPG keyring:
-  key: `https://packages.lunarg.com/lunarg-signing-key-pub.asc`
-  list: `https://packages.lunarg.com/vulkan/1.3.296/lunarg-vulkan-1.3.296-jammy.list`
-  After `apt-get update`, `shaderc` installs `/usr/bin/glslc`. The "Verify GLSL compiler"
-  precondition step runs `glslc --version` — the CI run is the proof.
+`test_shape_inference_delta.py` created with 15 delta cases (Add, Sub, Mul, Div, Max, Relu, Neg, Abs, Exp, Log, Sqrt, Sigmoid, Tanh across 2-D and 3-D shapes):
 
-  **VULKAN_SDK_VERSION:** Promoted to workflow-level env. Previously only in Windows job.
+**DELTA MEASURED (local, 2026-07-29 on Justin's dev machine):**
+  Without preprocessing: **0/15** ops have resolved output shapes
+  After apply_shape_inference: **15/15** ops have resolved output shapes
+  **Delta: +15 ops** (shape-resolution proxy — EP-based count pending dispatch path)
 
-  **Windows crash:** PATH fix (round-5) did not resolve the access violation. DLL resolution
-  is not the cause. Diagnostic improvements added:
-  - conftest.py `register_vulkan_ep`: ctypes.CDLL pre-probe flushes to stderr before ORT
-    call. "ctypes OK" in crash output → fault is EP initialization code, not dependencies.
-  - `tests/ops/test_a_ep_smoke.py`: isolated ctypes + ORT-register tests, collected first.
+NOTE: This result is local. CI will confirm portability. Per Morpheus §9.1.2, a result
+obtained only on this desk is not a project result. Treat this as "expected delta is 15/15
+once CI runs" — not as a verified CI result.
 
-  **Rule cemented (twice violated, now internalized):** A claim about an external package's
-  contents is not usable until `package_binary --version` has run in the target environment.
-  The "Verify GLSL compiler" step is that verification; it is not optional.
+CLAIM CAVEAT (written into module docstring and test docstring):
+  "X without preprocessing" + "Y additionally after preprocessing" are different guarantees.
+  Never add them together without the caveat. Open question routed to Mouse: distinguish
+  `code="dynamic-shape" (always)` vs `code="dynamic-shape" (inferable)` in registry.
 
-  **Test count:** 210 collected; 8 pass unconditionally, 200 skip cleanly, 0 failures.
+**ir.Value ownership gotcha (NEW — intern this rule):**
+`ir.Graph` owns its input `Value` objects after construction. Storing live `ir.Value`
+instances at module level and reusing them across multiple model-building calls raises:
+  `"Value is already owned by a different graph."`
+Fix: Store `InputDesc(name, shape, dtype)` NamedTuple descriptors; call `desc.fresh()` to
+create a fresh `ir.Value` each time a model is built. This mirrors `test_op_table.py`'s
+pattern of creating values inside the test function rather than at class level.
 
-  **README ownership note:** README changes must go through the coordinator (Morpheus owns
-  the file). CI badge was committed by the coordinator without conflict this time.
+**Task 2 — device parametrization (pending Switch):**
 
-📌 Trinity round-8: YAML syntax error + permanent parse check (2026-07-28T22:28:08-07:00):
+Added to `conftest.py`:
+- `pytest_addoption`: `--vulkan-devices` CLI option (e.g. `--vulkan-devices 0,1`)
+- `VULKAN_DEVICE_INDEX` env var alternative
+- `pytest_generate_tests` hook: parametrizes any test requesting `vulkan_device_index` fixture
+- `make_session_options_for_device(device_index)` builds SessionOptions with TODO(Switch) comment
+- `vulkan_device_indices` and `vulkan_device_index` fixtures
 
-  **Failure:** ci.yml broke YAML parsing (run 30449585950 never started). Root cause: a
-  shell line continuation (`\`) inside the `run:` block scalar placed the second line at
-  column 1. YAML requires all content in a block scalar to be indented past the block's
-  indicator column — column 1 exits the block and breaks the document.
+Justin's two devices to exercise: Intel Iris Xe (device 0, strictest) + NVIDIA RTX 4060 (device 1).
+Intel-only failures are evidence of us relying on undefined behaviour, not Intel being broken.
+Multi-device runs are no-ops until Switch implements `ep.device_index` in `rust/src/ep.rs`.
 
-  **Fix:** collapsed the two-line `echo "deb ..." \ <continuation>` into a single line.
-  Content (signed-by=, LunarG URL) was correct; only the YAML-breaking line split was wrong.
+**Task 3 — CI layering lint:**
+Already correct from round 7: `cargo test --test layering`. Confirmed in ci.yml, no change needed.
 
-  **Permanent check added to `.github/CI_POLICY.md` pre-finish checklist:**
-  ```
-  python -c "import yaml, sys; [yaml.safe_load(open(f)) or print('OK:', f)
-    for f in ['.github/workflows/ci.yml', '.github/workflows/conformance.yml']]"
-  ```
-  This runs locally before ending any turn that edits a workflow file. The yaml parse is
-  syntax verification; `glslc --version` in-lane is tool availability verification. Both
-  are now documented as non-optional pre-finish steps in CI_POLICY.md.
+**Final state:** 240 tests collected; 10 pass unconditionally (8 original + 2 new shape-inference
+tests), 230 skip cleanly. 0 failures. Both YAML files parse clean.
 
-  **Working-practice note for YAML block scalars (`run: |`):**
-  - Shell `\` continuation is fine if the next line is indented at or past the block level.
-  - A continuation that outdents to column 1 exits the YAML block — the parser sees a new
-    mapping key, not a continuation string.
-  - Safe alternatives: single long line, or split with a shell variable:
-    `URL="...long..."; echo "deb $URL" | sudo tee ...`
+---
 
-📌 Trinity round-9: Windows elevation fix + epctl probe + lane hardening (2026-07-28T22:28:08-07:00):
+## Round 12 (2026-07-29T09:39:59-07:00): Portability directive — structural harness changes
 
-  **Windows root cause (Link §7.4.1):** LunarG loader 1.3+ silently ignores VK_ICD_FILENAMES,
-  VK_DRIVER_FILES, and VK_ADD_DRIVER_FILES when the process is elevated (Administrator with
-  UAC disabled). GitHub Actions Windows runners are `runneradmin`. The ICD path was correct;
-  the loader never read it. Fix: register the Mesa lavapipe ICD under
-  HKLM:\SOFTWARE\Khronos\Vulkan\Drivers via PowerShell. Registry-based discovery works under
-  elevation.
+**Coordinator standing directive:** "要时刻注意跨平台通用性" — cross-platform generality
+must be kept in mind at all times. A Vulkan EP that is really a desktop-NVIDIA EP has no
+reason to exist.
 
-  **VK_INSTANCE_LAYERS moved to pytest step (both lanes):** At job level it can cause
-  vkCreateInstance to fail if the layer path isn't configured yet, masking lavapipe as the
-  apparent problem. Now set only in the test step env.
+**Changes made (all in Trinity's owned files — tests/, .github/):**
 
-  **VK_LOADER_DEBUG: warn added at job level (both lanes):** Previously loader failures were
-  silent. Now all Vulkan-related steps emit loader diagnostics.
+**1. CI_POLICY.md rewritten** (previously had duplicate content bug):
+- Added §"Portability rules" section with 5 rules:
+  1. Intel is the spec-conformance oracle
+  2. No vendor special-casing
+  3. UMA memory model awareness
+  4. Local results are development loops only (must state source)
+  5. Portability failures are routed, not silenced
+- Added local device matrix table (Intel Iris Xe UMA vs NVIDIA RTX 4060 discrete)
+- Fixed duplicate content from prior write
 
-  **Vulkaninfo smoke-checks hardened:** Both lanes now grep for "llvmpipe" (lavapipe's device
-  name) and exit 1 if not found. Linux: also added `sudo ldconfig` after package install.
+**2. tests/README.md** — added portability policy section:
+- Intel-as-oracle rule
+- No vendor special-casing rule
+- UMA memory model note (Iris Xe ≈ Adreno/Mali)
+- `--vulkan-devices 0,1` usage example
 
-  **epctl --probe-loader step added (both lanes):** Switch's standalone Vulkan probe, before
-  pytest, exits non-zero if no capable device found. Turns "tests all skipped" into a named
-  red step with a diagnostic.
+**3. conftest.py structural additions:**
+- `pytest_configure` hook registers `portability` marker (required for `--strict-markers`)
+- Portability rules block as comments before CLI option code
+- `_intel_failure_note(device_index)` helper: returns diagnostic note to append to assertion
+  errors on device 0 (Intel). Reminds: "Intel is correct; the code must change."
 
-  **YAML parse verified:** Both workflow files pass `yaml.safe_load` — checklist followed.
+**KEY RULE: The three "never" rules:**
+  - NEVER add a vendor-conditional tolerance
+  - NEVER add a vendor-conditional skip (unless xfail with filed bug URL + strict=True)
+  - NEVER let a portability failure be diagnosed as "Intel being weird"
 
-📌 Trinity round-10: PowerShell array-match bug + Linux Vulkan confirmed (2026-07-28T22:28:08-07:00):
+**What tests decorated `@pytest.mark.portability` mean:**
+  - Run: `pytest tests/ops/ -m portability -v`
+  - An Intel-only failure in a marked test is a spec-conformance bug, routed to Switch or Mouse
+  - Tests that are specifically about cross-vendor invariants get this marker
 
-  **Linux: first working Vulkan device in this project's history.**
-  Smoke-check output from run 30454894424:
-    deviceName = llvmpipe (LLVM 15.0.7, 256 bits)
-    apiVersion = 1.3.255
-  The lane then fails at cargo clippy on Tank's ort::wchar_t issue (he is fixing it).
-  Once his fix lands, the Linux lane compiles and epctl --probe-loader runs against
-  a real Vulkan 1.3 device.
+**UMA note (for future test authors):**
+  When Switch implements `ep.device_index`, running `--vulkan-devices 0,1` will exercise both
+  UMA (Intel, device 0) and discrete (NVIDIA, device 1) memory models in one pytest run.
+  Any test that passes on device 1 and fails on device 0 is a staging-path assumption.
 
-  **Windows: PowerShell array-operator false-red bug fixed.**
-  Root cause: `$vulkInfo -notmatch "llvmpipe"` where `$vulkInfo` is an array. In PowerShell,
-  `-match`/`-notmatch` on an array is a *filter* (returns matching/non-matching elements),
-  not a boolean test. A non-empty array is truthy, so `-notmatch "llvmpipe"` returns all the
-  lines that don't contain it (~everything), which is always truthy → always fails.
-  The lavapipe UUID (llvm=6c6c766d, pipe=70697065) was visible in the log; the check was
-  wrong, not the environment.
-  Fix: `if (-not ($vulkInfo | Select-String -Quiet -SimpleMatch "llvmpipe"))` — explicitly
-  boolean via Select-String -Quiet which returns True/False, not an array.
-
-  **Lesson:** `-match`/`-notmatch` are filters on arrays, boolean only on scalars. Always
-  use `Select-String -Quiet`, `-contains`, or `($array | Where-Object {...}).Count -gt 0`
-  when a boolean result is needed from a multi-line output capture. The inverse failure
-  mode (false red) is cheaper than false green but equally misleading — both directions of
-  a check must be verified.

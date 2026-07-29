@@ -504,121 +504,188 @@
 - Document architectural decisions here
 - Keep history focused on work, decisions focused on direction
 
-**By:** Morpheus, Switch, Link, Fact Checker, Justin Chu via Copilot
-**What:** A device is advertised if and only if it satisfies: Vulkan ≥ 1.1 core; a compute queue; `synchronization2` (core in 1.3 **or** `VK_KHR_synchronization2`); `subgroup_size_control` (core in 1.3 **or** `VK_EXT_subgroup_size_control`); subgroup BASIC+ARITHMETIC in the COMPUTE stage; `maxComputeWorkGroupInvocations ≥ 256`; `maxComputeSharedMemorySize ≥ 16 KiB`. `VkApplicationInfo::apiVersion = min(vkEnumerateInstanceVersion(), VK_API_VERSION_1_3)`. Everything else — `shaderFloat16`, 16-bit storage, `shaderInt8`, timeline semaphores, `bufferDeviceAddress`, cooperative matrix, integer dot product — is capability-probed and gates a shader variant, never a hard requirement. Default SPIR-V target `vulkan1.1`; higher targets as separate variants.
-**Why:** Switch identified the only two features that materially simplify engine design: `synchronization2` (single barrier code path) and `subgroup_size_control` (eliminates defensive workgroup-size-unknown handling in GEMM shaders). Both exist as standalone extensions on 1.1/1.2 drivers, so we get both without paying a version floor's coverage cost. Link's platform analysis puts Vulkan 1.3 at ~26% and Vulkan 1.1 at ~89% of Android Vulkan-capable devices; Android is in scope per the project charter. Fact Checker verified: the premise behind the original 1.3 proposal does not hold — llama.cpp's base shader target is `vulkan1.2` (only the NVIDIA coopmat-2 path uses `vulkan1.3`), and ExecuTorch hardcodes `VK_API_VERSION_1_1`. On every platform tested first (desktop 2022+, lavapipe, SwiftShader, MoltenVK 1.2.5+) the capability-set requirement is satisfied by devices reporting 1.3, so in practice this *is* Justin's 1.3 baseline; the difference only appears on older Android, where the EP cleanly declines instead of failing to load.
-**Alternatives rejected:**
-- *Hard Vulkan 1.3 floor (Justin's initial proposal):* Buys only the two features already available as extensions; costs ~63 percentage points of Android installed-base coverage and pre-1.3.0 MoltenVK, for zero engine simplification. "llama.cpp does it" is not a valid justification — llama.cpp does not require 1.3 (Fact Checker claims 1–2, both contradicted).
-- *Hard Vulkan 1.2 floor (Link's recommendation):* Sane for desktop; on Android the 1.2 tier barely exists (bimodal 1.1/1.3 distribution), so it pays nearly the full Android cost of 1.3 while delivering less on desktop. Timeline semaphores — the main 1.2 addition — are unused in v0 and available as `VK_KHR_timeline_semaphore` on 1.1 when needed.
-- *Bare Vulkan 1.1 floor (ExecuTorch's position):* Forces the dual barrier path Switch warned about and leaves subgroup size to driver choice, which can silently produce wrong GEMM results.
-**Open:** OQ-1 — how many real 1.1/1.2 devices lack the two required extensions (Link, in progress). `DESIGN.md` §7 is final once OQ-1 lands.
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+<!-- ROUND 3 DECISIONS — 2026-07-29T09:00:39-07:00 (first-hardware round)          -->
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+
+### 2026-07-29T09:00:39-07:00: Use the local GPU — diagnose on hardware, use CI to prove portability
+
+**By:** Justin Chu (via Copilot)
+**What:** This development machine has real GPUs and must be used for iteration. Two Vulkan devices present: `Intel(R) Iris(R) Xe Graphics` (Vulkan 1.4.309, UMA 32 KiB shared memory) and `NVIDIA GeForce RTX 4060 Laptop GPU` (Vulkan 1.4.325, discrete 48 KiB shared memory). Both pass the §7.2 capability gate on every criterion. Vulkan SDK 1.4.350.0 is installed at `C:\VulkanSDK\1.4.350.0` (not on default PATH). With SDK on PATH, all 168 shader variants compile; `ALLOW_MISSING_GLSLC` is no longer needed locally. Local build recipe: `$env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"; $env:PATH="$env:VULKAN_SDK\Bin;$env:PATH"; cargo build --release`. Intel Iris Xe is the stricter implementation and should be treated as the spec-conformance oracle.
+**Why:** User directive. Three consecutive CI failures (missing package, bad YAML, PowerShell array bug) all masqueraded as "Vulkan is broken" — a single local command would have distinguished the hypotheses hours earlier. Principle: **diagnose on local hardware; use CI to prove portability, not to answer questions.**
+**Corollary:** `rustfmt --edition 2021` silently no-ops on this edition-2024 crate. Always use `cargo fmt --all` (which reads the `edition` from `Cargo.toml`).
 
 ---
 
-### 2026-07-28T17:59:54-07:00: Ruthless v1 non-goals
+### 2026-07-29T09:00:39-07:00: Prefer the project's own ONNX crates — reference first, adopt only what earns its place
 
-**By:** Morpheus
-**What:** Out of scope for v1: training, opset completeness, dynamic-shape fast paths (M0–M2), data-dependent output shapes, fp64, quantized ops, attention fusion, graph-level op fusion, mobile-first tuning, image/texture-backed tensors, multi-GPU/multi-queue, cooperative matrix, and all `com.microsoft` contrib ops. Full table in `DESIGN.md` §1.2.
-**Why:** The MLX EP reached 184/202 ops because MLX supplied op semantics. We supply everything. A broad v1 would be broad, shallow, and wrong — wrong is worse than absent because CPU fallback is always correct. A narrow correct v1 with clean fallback is strictly more useful than a wide one with a silent numerical bug.
-**Alternatives rejected:** Start with quantized matmul/attention (the MLX lesson) — those are the hardest possible ops to write from scratch; it would be a year before anything was verifiable on an unproven ABI.
+**By:** Justin Chu (via Copilot), Mouse (evaluation)
+**What:** Justin's own crates (`onnx-runtime-tracer`, `onnx-ir-rust`, `onnx-shape-inference`, `onnx-genai`, `onnx-genai-models`) are to be referenced and, where they earn their place, adopted. Adoption is not automatic — we ship a cdylib loaded into someone else's process, so every dependency is binary weight and a lifetime we do not control. Outcomes of evaluation: `onnx-runtime-tracer` adopted at `0.1.0-dev.5, default-features = false` (Niobe). `onnx-shape-inference` adopted as a **Python oracle** (Trinity harness preprocessing step, converts `[dynamic-shape]` declines into claims with no Rust changes). `onnx-ir-rust` and `onnx-runtime-ir` deferred with named triggers. `onnx-genai-models` (`mobius` builder) produced the decisive finding of this round: see "Op coverage is relative to a producer."
 
 ---
 
-### 2026-07-28T17:59:54-07:00: ORT CPU EP as the sole correctness oracle, with mandatory claim assertions
-
-**By:** Morpheus
-**What:** Every op test compares against ORT's own CPU EP running the same ONNX model. Every op test **must** assert the node actually ran on `VulkanExecutionProvider`. Tolerances are derived and documented per family; widening one requires Trinity's sign-off and an in-test note. Validation-layer-clean is part of "done" for any engine change. Software rasterizers are a smoke test, not a correctness claim.
-**Why:** CPU fallback is always correct; a plain output comparison passes whether or not the EP ran anything — the vacuous-pass trap. Using ORT CPU as oracle means we cannot encode our own misreading of an ONNX spec into both the implementation and the expectation.
-**Alternatives rejected:** numpy reference (re-derives ONNX semantics, bugs go in both); ONNX reference evaluator as primary oracle (good for conformance fuzzing, slow, not what user output is compared to).
-
----
-
-### 2026-07-28T17:59:54-07:00: Op growth by family, prioritized by island-merging
-
-**By:** Morpheus
-**What:** Coverage grows in families that share a shader skeleton, descriptor layout, and test file. A new op is worth claiming when it connects two existing claimed regions or extends one at the graph's edge. Benchmarks report island count and largest fused region alongside wall time.
-**Why:** One unclaimed node in the middle of a graph splits it into two islands with a device round-trip between them. Claim rate is a bad metric; fused-region compute volume is the good one. The MLX project learned this expensively.
-**Alternatives rejected:** Maximize claim rate (actively harmful — can make graphs slower); claim ops in ONNX-spec order (no amortization across shaders or tests).
-
----
-
-### 2026-07-28T17:59:54-07:00: Milestone M0 defined as an end-to-end vertical slice, not a layer
-
-**By:** Morpheus
-**What:** M0 = a stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a single `Add` node on that device, and matches the ORT CPU EP within tolerance, on Windows and Linux, on a software rasterizer, in CI. Every team member ships something into it.
-**Why:** The MLX Rust rewrite began exactly this way — a single-`Add` spike proved the two unknown boundaries and immediately caught a real per-session leak. A vertical slice proves the boundaries; a horizontal layer proves nothing until the last layer lands.
-**Alternatives rejected:** M0 = "Vulkan engine works standalone" (defers all ABI risk); M0 = "EP loads and claims nodes, no compute" (proves the easy half).
-
----
-
-### 2026-07-28T17:59:54-07:00: Divergences from the reference are enumerated, not implied
-
-**By:** Morpheus
-**What:** `DESIGN.md` §12 lists all 11 deliberate differences from `onnxruntime-mlx` with reasons. Anything not on that list is intended to match the reference. A PR that diverges without adding a row is a review rejection.
-**Why:** "We'll refactor later" is a decision, not an excuse. Both need to be written down at the moment they are made, or the reference stops being a reference and the two projects drift into unrelated codebases that can no longer share lessons.
-**Alternatives rejected:** Track divergences in commit messages (not discoverable at review time).
-
----
-
-### 2026-07-28T17:59:54-07:00: Rust Vulkan crate: `ash` + `gpu-allocator`
+### 2026-07-29T09:00:39-07:00: R5 (subgroup BASIC in compute) removed from the device gate — now a probed capability
 
 **By:** Switch
-**What:** Use `ash` (raw Vulkan bindings) as the Vulkan dependency, supplemented by `gpu-allocator` for suballocation.
-**Why:** `ash` is a thin binding over the Vulkan C API with zero abstraction overhead. `vulkano` adds a redundant ownership abstraction that conflicts with `engine.rs`'s own abstraction layer. `wgpu` abstracts over the WebGPU model and hides push constants, per-vendor specialization constants, and pipeline cache — all required for this EP. `gpu-allocator` is the pure-Rust VMA equivalent, used in production by Bevy and wgpu-hal.
-**Alternatives rejected:** `vulkano` (conflicts with engine abstraction layer); `wgpu` (hides required Vulkan primitives).
+**Supersedes:** R5 criterion in "Vulkan baseline frozen: minimal device gate, no required extensions" (2026-07-28T22:28:08-07:00). Only the gate status changes; the capability is still queried.
+**What:** `passes_gate` now checks R1–R4, R6 only. `Capabilities::subgroup_basic_in_compute` is probed (from `VkPhysicalDeviceSubgroupProperties`) and used by ops that require subgroup intrinsics in their claim predicates. `assess_gate` (new function) evaluates all criteria without early exit and drives `epctl --probe-loader` verbose output.
+**Why:** Mesa llvmpipe on Ubuntu 22.04 reports `supportedStages = 0` — lavapipe cannot pass R5, but lavapipe is the only device available on both CI lanes. Direct application of §7.0's governing principle: capability shortfalls degrade op coverage, not device availability. Requiring a compute-stage subgroup feature that software renderers and many integrated GPUs do not satisfy was a gate that should have been a probe from the start.
+**Alternatives rejected:** Keep R5 and exclude lavapipe from CI (no Vulkan CI whatsoever, blocking all shader execution until physical hardware is obtained).
 
 ---
 
-### 2026-07-28T17:59:54-07:00: Buffer-only tensor storage for v0
+### 2026-07-29T09:00:39-07:00: `VK_ICD_FILENAMES` rejected as Windows CI mechanism — use registry registration
+
+**By:** Link (root cause), Trinity (fix)
+**Supersedes:** Mesa lavapipe ICD mechanism in "CI lanes: lavapipe Linux primary; lavapipe Windows via mesa-dist-win; force-legacy parity lane" (2026-07-28T22:28:08-07:00). The env-var approach was the wrong mechanism.
+**What:** After extracting Mesa on the Windows CI lane, register the ICD in the Windows Vulkan driver registry key rather than using `VK_ICD_FILENAMES`: `New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name <icd_path> -Value 0 -PropertyType DWord -Force`. Add `VK_LOADER_DEBUG=warn` to test steps.
+**Why:** The LunarG Vulkan loader 1.3+ silently ignores `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, and `VK_ADD_DRIVER_FILES` when the calling process has elevated privileges. GitHub Actions Windows runners run as `runneradmin` (Administrators group, UAC disabled). Verified from primary source: KhronosGroup/Vulkan-Loader LoaderDriverInterface.md v1.3.274. The env-var is ignored; the registry is not.
+**Alternatives rejected:** `VK_DRIVER_FILES` (same elevated-privilege restriction); switching to mmozeiko/build-mesa (unrelated root cause).
+
+---
+
+### 2026-07-29T09:00:39-07:00: `glslc` must come from the LunarG apt repository on Ubuntu 22.04
+
+**By:** Trinity
+**What:** `glslc` is not in Ubuntu 22.04's own repos. The LunarG Vulkan SDK apt repository for Jammy provides the `shaderc` package (`/usr/bin/glslc`). `VULKAN_SDK_VERSION: "1.3.296.0"` pinned at workflow-level env (covers both Linux repo URL and Windows installer). A "Verify GLSL compiler (glslc)" precondition step runs `glslc --version` before the build step and fails with `::error::` if not found.
+**Why:** `glslang-tools` (Ubuntu default) provides `glslangValidator`, not `glslc`. CI was red for ≥4 consecutive runs because a step named "Install glslc" installed the wrong tool. A claim about an external system is not usable until something has executed and confirmed it.
+**Alternatives rejected:** LunarG Linux SDK tarball (~600 MB for one binary); Google shaderc GitHub release (inconsistently published); build from source (~10 min).
+
+---
+
+### 2026-07-29T09:00:39-07:00: `null` file_path to `Logger_LogMessage` causes access violation — always pass a real string
+
+**By:** Tank
+**What:** `Logger_LogMessage` is annotated `_In_z_` on `file_path` — ORT dereferences it unconditionally via `ToUTF8String`/`CodeLocation`. Passing `std::ptr::null()` causes a Windows access violation at the first log record emitted after `CreateEp`. Fixed: always pass a real NUL-terminated `ORTCHAR_T` string (`file!()` macro when available, the literal `<onnxruntime-ep-vulkan>` otherwise). Two `cfg` branches for the `wchar_t`/`char` width difference between Windows and Unix.
+**Why:** The bug manifested as a crash at `conftest.py:60` (`register_execution_provider_library`) — appearing to be a device-probe crash because the *warning about* the probe was what triggered the first log record. The crash was ours, not ORT's. Rule: for FFI, testing your own code is the easy half. Every `// SAFETY:` comment was about invariants we owe when touching ORT's memory; this bug was in the category of invariants we owe ORT about the arguments we pass.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `attach_default_ort_logger` / `restore_default_ort_logger` — OrtLogger lifetime contract
+
+**By:** Tank
+**What:** `CreateEp` must not attach the session's `OrtLogger` to the global bridge permanently. `ReleaseEp` must call `restore_default_ort_logger()` before dropping the EP. If there is no default, detach entirely. A static holding a dangling `OrtLogger*` from a destroyed session is UB at the next log record.
+**Why:** The lifetime bug (D-T15) was found by audit, not by test, because CI's suite never reached a second session. `tests/host_registration.rs` now exercises the unwind: emits a record after `ReleaseEp` and before `ReleaseEpFactory`.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `cargo ci` — one command that mirrors CI's Rust lanes exactly
+
+**By:** Tank
+**What:** `cargo xtask ci` (aliased as `cargo ci`) runs in order: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo build`, `cargo test`. Runs all checks even after one fails. `cargo ci --release` passes `--release` to the build and test steps. `cargo ci --fix` rewrites via `rustfmt` rather than checking. On success, prints a caveats block explicitly stating what it does NOT check (no shaders compiled without SDK, no Python lane, no Vulkan dispatch, no `cfg(unix)` from Windows).
+**Why:** CI was red for four consecutive runs without any agent noticing because each ran `cargo build; cargo clippy; cargo test` and saw green — `cargo fmt --check` was not in the loop. **The verification loop must live in one place and one place only**: `CHECKS` in `xtask/src/main.rs`. If CI gains a Rust check, it is added there in the same commit.
+**Design constraints:** Zero dependencies (xtask). Works with no SDK (sets `ALLOW_MISSING_GLSLC=1` automatically). `--workspace` scope for clippy. Separate package from `epctl` so it runs when the crate fails to build.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `tests/cdylib_load.rs` — mock host that dlopens the shipped cdylib
+
+**By:** Tank
+**What:** `tests/host_registration.rs` tests the rlib path (fast, catches ABI violations). `tests/cdylib_load.rs` dlopens the compiled `onnxruntime_vulkan_ep.dll`/`.so`/`.dylib`, resolves `CreateEpFactories`/`ReleaseEpFactory` by name, and runs the identical scenario with the same `_In_z_` contract checks. `libloading` added as a `[dev-dependencies]` entry (test-only). The mock ORT callbacks check SAL annotations: `_In_z_` arguments must be non-null and NUL-terminated; every `OrtStatus` released exactly once.
+**Why:** The access-violation crash lived between "the crate compiles" and "ORT's `GetProcAddress` call succeeds" — an interval previously untested. Re-planting the null file_path makes the test fail with a diagnostic rather than process death, before CI runs.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `apiVersion` capped to loader's reported version — latent loader-1.0 bug fixed
 
 **By:** Switch
-**What:** All tensors are backed by `VkBuffer` (storage buffer). Image storage (`VkImage` / `VK_DESCRIPTOR_TYPE_STORAGE_IMAGE`) is deferred until a specific op family (e.g., convolution) demonstrates a measurable benefit.
-**Why:** Target workloads are decoder-dominated with linear memory access. Image storage requires layout transitions and format probing without performance benefit for these access patterns. Barrier reasoning is simpler with buffers only.
+**What:** `Instance::create` calls `vkEnumerateInstanceVersion` before building `VkApplicationInfo`. If the loader version is Vulkan 1.0 (function not present) or < 1.1, returns `None` with a clear diagnostic. The requested `apiVersion` is capped to the loader version.
+**Why:** Vulkan spec requires `apiVersion` ≤ the instance version reported by `vkEnumerateInstanceVersion`. Requesting 1.1 against a 1.0 loader produces `ERROR_INCOMPATIBLE_DRIVER`. This was a latent bug for any user with a 1.0 loader + 1.1 ICD. `vkEnumerateInstanceVersion` is a loader-level function that returns correctly even when no ICD is installed.
 
 ---
 
-### 2026-07-28T17:59:54-07:00: One command buffer per subgraph; no per-op submission
+### 2026-07-29T09:00:39-07:00: Full loader diagnostic on `vkCreateInstance` failure; `epctl --probe-loader` as CI pre-check
 
 **By:** Switch
-**What:** The entire fused subgraph is recorded into one `VkCommandBuffer` and submitted once via `vkQueueSubmit`. Per-op submissions are prohibited.
-**Why:** `vkQueueSubmit` overhead is measured in microseconds per call on both NVIDIA and Qualcomm. Per-op submission on a 100-op subgraph would add milliseconds of CPU-side overhead. Single submission mirrors the MLX EP's single `mlx_eval` at the subgraph boundary.
+**What:** On any `vkCreateInstance` error, `Instance::create` emits at WARN: `VK_ICD_FILENAMES`/`VK_DRIVER_FILES`/`VK_INSTANCE_LAYERS` values, loader version, available layer names/count, instance extension count. `ERROR_INCOMPATIBLE_DRIVER` gets an additional hint. `epctl --probe-loader` runs a standalone probe and exits 1 when no device passes the §7.2 gate. Used as a CI pre-check step before pytest.
+**Why:** The pre-change log was a single unactionable line. The post-change log shows which ICD paths the loader was given, whether the ICD's library could be found, and which layers/extensions were visible — the difference between "maybe reinstall the driver" and a precise diagnosis.
 
 ---
 
-### 2026-07-28T17:59:54-07:00: Barrier placement: per data edge, not per dispatch
+### 2026-07-29T09:00:39-07:00: Linux mock_ort `wchar_t` bug fixed — `OrtChar` is platform-width
 
-**By:** Switch
-**What:** A `vkCmdPipelineBarrier2` (or `vkCmdPipelineBarrier` fallback) is inserted after each dispatch, once per consumer edge of each output buffer. No global `ALL_COMMANDS → ALL_COMMANDS` barrier.
-**Why:** Per-edge barriers let the driver schedule independent dispatch pairs in parallel. A global barrier serializes the entire GPU pipeline unnecessarily.
-
----
-
-### 2026-07-28T17:59:54-07:00: Shader source: GLSL compiled to SPIR-V at build time; embedded in cdylib
-
-**By:** Switch
-**What:** Shaders are written in GLSL, compiled by `glslc` during `cargo build` via `build.rs`, and embedded as byte slices in the cdylib. No runtime shader compiler is present in the deployed artifact. Tank's `build.rs` must locate and invoke `glslc`, iterate `shaders/glsl/`, write SPIR-V to `OUT_DIR/spv/`, and generate `OUT_DIR/shader_modules.rs`.
-**Why:** Both reference implementations (llama.cpp, ExecuTorch) use this pattern. Guarantees a self-contained plugin with deterministic SPIR-V output.
+**By:** Tank (fix), Link (root cause)
+**What:** `tests/mock_ort/mod.rs` used `ort::wchar_t` unconditionally. On Linux, `OrtChar = char` and bindgen emits `c_char`; `wchar_t` only exists on Windows. Fixed with `#[cfg(target_os = "windows")]` / `#[cfg(not(target_os = "windows"))]` branches.
+**Why:** Linux compile error was blocking the CI lane entirely, masking any Vulkan outcome. The error was in test infrastructure, not in the EP code.
 
 ---
 
-### 2026-07-28T17:59:54-07:00: ORT Plugin EP C API is experimental — accept and isolate the risk
+### 2026-07-29T09:00:39-07:00: Op coverage is relative to a producer, not to a model architecture
 
-**By:** Fact Checker
-**What:** The ORT plugin EP system (`OrtEpFactory`, `CreateEpFactories`) is functional but the ABI stability guarantee is weak — API redesigned after 1.22, major additions at 1.23 and 1.24, Qualcomm's first production plugin EP shipped May 2026. Strategy: pin to a specific ORT version for versioned releases; invest early in an abstraction layer that isolates the FFI from the rest of the codebase so breakages are contained.
-**Why:** ORT 1.22/1.23 headers confirm `@since Version 1.22`/`1.23` with experimental status. We are building on evolving infrastructure; raw FFI in Rust requires regenerating/updating unsafe bindings at each API change. Containment is cheaper than distributed updates.
-
----
-
-### 2026-07-28T17:59:54-07:00: No existing Vulkan EP or ORT Rust plugin-EP bindings — we write raw FFI
-
-**By:** Fact Checker
-**What:** There is no existing Vulkan EP for ORT (feature request open, no release). The `ort` Rust crate covers built-in providers only. We write raw FFI bindings or our own bindings wrapper from scratch.
-**Why:** Verified from ORT issue tracker and published crate registry. This is an opportunity (no prior art to be compatible with) and a risk (no ecosystem to draw from). The FFI abstraction strategy above applies directly.
+**By:** Morpheus (D21), Mouse (D-M6-04 — the finding)
+**What:** A coverage number is meaningless without naming the producer it was measured against. "We support Qwen3" is not a well-formed claim; "we support Qwen3 as emitted by producer P at version V" is. Four obligations follow: (1) the census corpus is indexed by producer and reports per producer; (2) a target model is "covered" only for a named producer; (3) standard-domain and contrib forms of the same computation get separate claim predicates even when sharing a kernel; (4) the standard domain is preferred where a producer offers one. `largest_island_flops` reported per producer from T3 onward; a green column cannot mask a near-zero one.
+**Why:** The inventory was derived from the ORT GenAI builder and then reasoned about as "what a Qwen3 graph looks like." The `onnx-genai-models` (`mobius`) builder builds the same target models but emits `ai.onnx::Attention` @ opset 23, `ai.onnx::RMSNormalization`, `ai.onnx::RotaryEmbedding` with no fused skip-norm — not the contrib equivalents. A Qwen3 built by Justin's own toolchain would have had ~5 nodes per decoder layer × 28 layers declined `[not-registered]` for want of a table row, not a kernel.
+**Alternatives rejected:** treating as a one-time registry fix (it is a class of error, not an incident); averaging coverage across producers (hides the gap).
 
 ---
 
-## Governance
+### 2026-07-29T09:00:39-07:00: Standard-domain rows registered: `ai.onnx::Attention`, `RMSNormalization`, `RotaryEmbedding`
 
-- All meaningful changes require team consensus
-- Document architectural decisions here
-- Keep history focused on work, decisions focused on direction
+**By:** Mouse (D-M6-04)
+**What:** `ai.onnx::Attention` (opset 23+), `ai.onnx::RMSNormalization` (opset 23+), `ai.onnx::RotaryEmbedding` (opset 23+) registered in the op table with `OPSET_STD_LLM = 23`. `RMSNormalization` reuses the `simplified_layer_norm` kernel (function-pointer identity asserted by test). `ai.onnx::Attention` gets its own predicate despite the shared kernel — attribute names differ (`q_num_heads` vs `num_heads`), illegal-combination set differs, optional inputs at different indices. Standard-domain rows carry no `ContribSchema` fingerprint (enforced by test — `ai.onnx` versions by opset which the row window already expresses). `op_table!` macro's opset lower bound now accepts a `tt` fragment (was `literal`) to allow named constants like `OPSET_STD_LLM`.
+**Why:** Without these rows, a Qwen3 built by `onnx-genai-models` declines every norm, every rotary, and every attention for no technical reason. A shared kernel, separate predicates: one predicate spanning both standard and contrib forms would be wrong about one of them in the permissive direction.
+
+---
+
+### 2026-07-29T09:00:39-07:00: T3 begins with `ai.onnx::Attention`, not `GroupQueryAttention` (sequencing)
+
+**By:** Morpheus (D23)
+**What:** `ai.onnx::Attention` is the first T3 kernel: no `seqlens_k` indirection, no in-place KV-cache aliasing, no `do_rotary` fold, rotary as its own node. GQA stays committed, stays T3 scope, and T3 does not exit without it — this is a sequencing decision only. Binding constraints: T3's exit criterion is **per producer** (decoder layer as one island for both `mobius` and ORT GenAI); no KV-cache or fp16 design decision may be made as though `ai.onnx::Attention` were the only consumer; reporting T3 progress in a way that implies the GenAI path is served is a §1.5 error.
+**Why:** (1) Decouples T3 from `bind_aliased_output` (required by GQA, not yet finished — a critical path through two unfinished owners' work simultaneously is chosen badly). (2) Unblocks a model family buildable locally on two gate-passing GPUs. (3) T3 is also the first real exercise of the entire dispatch path; the faster loop should be where that happens. The standard form is lower-risk (opset-versioned) and the faster loop point the same direction — had the standard form been riskier, Morpheus would have ruled the other way.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `onnx-shape-inference` adopted as a Python oracle; `onnx-ir-rust` / `onnx-runtime-ir` deferred
+
+**By:** Morpheus (D24), Mouse (D-M6-02, D-M6-03)
+**What:** `onnx-shape-inference` (Python, Apache-2.0, v0.3.0): adopted as (1) a Trinity harness preprocessing step — runs `infer_symbolic_shapes` over test models before ORT, converting `[dynamic-shape]` declines into claims with zero Rust changes (cheapest coverage in the plan); (2) independent ground truth for C2 contrib fingerprints. `onnx-ir-rust` deferred: no use-def tracking, no topological iteration, no deserialization; wrong structural fit (we never see a protobuf). `onnx-runtime-ir` deferred with named trigger: adopt when we need a graph representation outliving a single `GetCapability` call.
+**Why:** We are a guest in ORT's address space, handed `OrtGraph`/`OrtNode` across a C ABI, never seeing a protobuf. Any external IR means copying the whole graph into a second representation inside someone else's process. Today's partitioner is one union-find pass and does not need an IR.
+
+---
+
+### 2026-07-29T09:00:39-07:00: R1 narrowed: ORT GenAI GQA arity risk stands; `mobius` path definitively resolved
+
+**By:** Morpheus (D22)
+**What:** For the `onnx-genai-models` (`mobius`) path: Q/K norm is always separate `RMSNormalization` nodes; the 16-input GQA form never occurs because `mobius` never emits GQA. R1 (fused Q/K-norm GQA) is now a question about the ORT GenAI producer only. M1 census item changes from per-model to per-producer; a producer emitting no GQA must report that explicitly. `mobius` landing on the good side does not retire the risk for the ORT GenAI path.
+**Why:** An empty cell and "this producer does not emit this op" are different findings and must not look the same (§C3's rule).
+
+---
+
+### 2026-07-29T09:00:39-07:00: §9.1.2 refreshed: SDK installed, two GPUs pass gate, no shader dispatched
+
+**By:** Morpheus (D25)
+**What:** `DESIGN.md` §9.1.2 records: SDK installed at `C:\VulkanSDK\1.4.350.0`, two local GPUs pass the §7.2 gate, all 168 variants compile. **No shader has still been dispatched on any device.** Local GPUs are a development loop, not coverage — nothing they run is recorded, gated, or reproducible by anyone else.
+**Why:** A disclosure section that goes stale in the favourable direction is worse than none: compiling a shader and dispatching one are different facts, only the first has occurred.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `onnx-runtime-tracer` adopted at `0.1.0-dev.5`; seven Vulkan span phases defined
+
+**By:** Niobe (D-N1 through D-N7)
+**What:** Dependency: `onnx-runtime-tracer = "0.1.0-dev.5", default-features = false`. The pin is not incidental: that release's clock uses an absolute UNIX-microsecond domain whose origin is machine-level, so a span emitted from inside a plugin cdylib overlays the host's timeline with no offset negotiation. Bumping requires re-verifying the epoch property. Seven span phases: `compile`, `prepack`, `upload`, `record`, `submit`, `fence_wait`, `readback`. `Phase::Submit` is the only phase where `observes_gpu_work()` is `false` (unit test asserts this). `fence_wait` is labelled "UPPER BOUND." GPU timestamps are opt-in under `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` (separate from the main trace env var) to avoid perturbing command buffers on mobile tile-based GPUs.
+**Why:** MLX has unified memory and lazy eval; our vocabulary would be actively misleading there. Separating Submit from fence_wait makes CPU/GPU overlap visible, which is what we tune.
+
+---
+
+### 2026-07-29T09:00:39-07:00: `trace.rs` names no Vulkan type; GPU timestamps arrive as raw ticks with metadata
+
+**By:** Niobe (D-N5, D-N6)
+**What:** `rust/src/vk/` hands `GpuTimestampReport { calibration, queue_family, intervals }` with unconverted ticks to `trace.rs`. `trace.rs` owns masking, `timestampPeriod` conversion, single-wrap recovery, axis placement. GPU spans go on synthetic device lane `tid = 0x7600_0000 + queue_family` (never the submitting thread's lane). `anchor_uncertainty_us` carried through and printed. Full timestamp-query requirement spec in `docs/PERF.md` §3, routed to Switch.
+**Why:** Keeps `trace.rs` on the right side of the layering lint (no `ash`). Puts arithmetic with interesting failure modes (`timestampPeriod != 1.0`, `timestampValidBits < 64`, counter wrap) in the module with unit tests, not the one that needs a GPU to test anything.
+
+---
+
+### 2026-07-29T09:00:39-07:00: Benchmark harness design (Niobe D-N7 through D-N11)
+
+**By:** Niobe
+**What:** (D-N7) A case the EP did not claim yields no Vulkan number — `speedup=null`, row marked, `--fail-on-unclaimed` makes it fatal. Claim status from `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` JSON-Lines, not stderr. (D-N8) Noise gate: median + MAD/IQR/p05/p95; robust RSD > 10% marks noisy; delta flagged only when exceeding both the threshold and twice the spread. (D-N9) `bench/environment.py` stamps OS, CPU, ORT version, EP artifact path, Vulkan devices from `epctl --probe-loader`, every `ONNXRUNTIME_EP_VULKAN_*` var; `compare.py` refuses cross-env comparison without warning. (D-N10) OQ-12 anchor: `matmulnbits_q4_b32_K4096_N4096` carries `oq12_anchor=True`; ≥1.5× bar measured there only. (D-N11) `bench/transfer_calibration.py` sweeps a doubling byte staircase, fits `fixed_ns + bytes / bytes_per_ns`, prints paste-ready Rust literal. MVS constants (`SAFETY=3.0`, `node_count≥4`, 64 KiB floor) replaced per device via review.
+**Why:** A benchmark without a baseline and variance is a rumour. A harness that cries wolf on jitter gets ignored, and an ignored regression detector is worse than none. CPU fallback is always correct and hides in wall-clock tables.
+
+---
+
+### 2026-07-29T09:00:39-07:00: CI is the only place shaders execute — red CI blocks all merges
+
+**By:** Trinity
+**What:** README badge + `.github/CI_POLICY.md` documenting lane structure, failure investigation commands, and branch protection TODO (requires GitHub admin from Justin). Rule: a red CI badge blocks all merges. Every agent checks the badge before reporting work complete.
+**Why:** CI was red for ≥4 consecutive runs without detection. Four consecutive CI failures — wrong package, bad YAML, PowerShell array bug, null file_path — all stacked silently because local `cargo ci` passed and CI was not being watched. CI is the ONLY mechanism in this project that verifies any shader executes. A loss of CI is a loss of all empirical evidence.

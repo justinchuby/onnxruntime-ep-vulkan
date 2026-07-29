@@ -91,3 +91,53 @@ On Windows, `VK_ICD_FILENAMES` and `VK_DRIVER_FILES` are correct for non-elevate
 **OPEN ITEM — Linux secondary lavapipe failure:**
 
 The lavapipe smoke-check fires a warning (non-blocking) after LunarG upgrades `libvulkan1` to 1.3.296.0~rc1. Root cause is UNVERIFIED because it is masked by the compile error. Must re-evaluate after Tank's fix lands. Package state confirmed: Mesa 23.2.1, LunarG 1.3.296, validation layers 1.3.296. The ICD path `/usr/share/vulkan/icd.d/lvp_icd.x86_64.json` is installed by Ubuntu's `mesa-vulkan-drivers` (not the LunarG repo); on Linux the runner is non-elevated so `VK_ICD_FILENAMES` is NOT ignored. The failure is something else — most likely a library resolution or layer interaction issue with the upgraded loader. Not diagnosable until builds succeed.
+
+### 2026-07-29T09:19:35-07:00 — First execution-derived hardware data; lavapipe LVP2 quirk; Intel as oracle
+
+**Both CI lanes now working.** Linux: `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`, `apiVersion = 1.3.255`. Windows: lavapipe enumerated after Trinity registered ICD in `HKLM:\SOFTWARE\Khronos\Vulkan\Drivers`. The elevation-based env-var bypass was the Windows root cause; registry registration is the permanent correct mechanism.
+
+**NEW QUIRK — LVP2 (lavapipe, CI-observed):** `VkPhysicalDeviceSubgroupProperties::supportedStages = 0` on lavapipe. Subgroup operations are not emulated in software. Switch removed subgroup BASIC from the §7.2 device gate so lavapipe passes. Any code path using subgroup operations must check `supportedStages` and degrade to scalar — this is correct behavior for any conformant Vulkan 1.1 device, not a lavapipe-specific workaround. LVP1 (subgroupSize=1 on old lavapipe) is superseded by the more precise LVP2.
+
+**Local hardware probed (Justin's machine, `epctl --probe-loader`, 2026-07-29):**
+- Intel Iris Xe Graphics: Vulkan 1.4.309, gate PASS, UMA (DEVICE_LOCAL+HOST_VISIBLE same type), maxComputeWorkGroupInvocations=1024, maxComputeSharedMemorySize=32768
+- NVIDIA RTX 4060 Laptop: Vulkan 1.4.325, gate PASS, discrete (DEVICE_LOCAL heap 0 ≠ HOST_VISIBLE type 2), maxComputeSharedMemorySize=49152
+
+**UMA vs discrete is now a first-class platform distinction.** Intel Xe is UMA — same physical memory for CPU and GPU. RTX 4060 is discrete — separate VRAM and system RAM. Adreno and Mali are also UMA. The Intel Xe on Justin's desk is the closest available proxy for mobile memory behavior.
+
+**Intel as spec-conformance oracle.** Intel's Vulkan implementation is the strictest of major desktop vendors (owner-stated, Justin Chu 2026-07-29; consistent with industry knowledge). Rule: if a shader is correct on the RTX 4060 but wrong on the Iris Xe, the problem is an EP spec-compliance bug, not an Intel quirk. Do not special-case Intel; doing so masks portability problems that will reappear on MoltenVK and strict Android drivers. Both devices must be used in every local development loop.
+
+**Vulkan 1.4 in the wild.** Both desktop devices report Vulkan 1.4 (not 1.3). The §1 baseline discussion was conservative. DESIGN.md §7's device gate of ≥ 1.1 is unaffected — but the 1.3-or-bust framing of §1 is more outdated than it appeared.
+
+**OQ-12 unchanged.** Desktop GPUs do not touch the Adreno 5xx / Mali Bifrost question. All Android rows remain untested.
+
+### 2026-07-29T09:39:59-07:00 — Standing directive: cross-platform generality is structural, not a review step
+
+**Source:** `.squad/decisions/inbox/copilot-directive-cross-platform.md` (Justin Chu, via Copilot coordinator)
+
+**The rules, stated concisely so they are used rather than remembered:**
+
+1. **Derive from reported limits, never from observed constants.** Workgroup sizes, tile shapes, shared-memory budgets must come from the device's own `VkPhysicalDeviceLimits`, not from a constant that happens to fit the RTX 4060's 48 KiB. A constant that fits 48 KiB will silently fail on Iris Xe (32 KiB) and mobile (often 16–32 KiB).
+
+2. **UMA is the mobile case, and we have one on the desk.** Intel Iris Xe, all Adreno, all Mali, all Xclipse (SoC) are UMA — `DEVICE_LOCAL` and `HOST_VISIBLE` may be the same physical type. A staging path that assumes a discrete upload heap silently skips on all of these. The Iris Xe is the only local device that exercises this path; the RTX 4060 never does.
+
+3. **Intel is the spec oracle (repeated because it must not be forgotten).** Correct on RTX 4060 and wrong on Iris Xe = EP relying on undefined/unspecified behavior, not an Intel bug. Never fix this by special-casing Intel. Intel failures predict MoltenVK and strict Android driver failures.
+
+4. **Every `cfg` is a portability hazard — `tests/portability.rs` enforces it.** A target-conditional binding may only be named by a `cfg`-gated definition. The `ort::wchar_t` incident (Windows-only bindgen type used unconditionally, silently broke Linux lane) is the canonical example of what this rule prevents.
+
+5. **§9.1.2 discipline.** A result on this desk is not a result this project has. CI proves portability; physical Android and macOS coverage is absent (OQ-12). The three verification tiers — CI-verified, local-dev-verified, untested — must be kept distinct in PLATFORMS.md and never blurred.
+
+**What changed in PLATFORMS.md as a result:**
+- Document preamble now states the standing directive and its five rules explicitly.
+- §5 matrix table now has a `Memory` column (UMA / Discrete / N/A) as a first-class property in every row. Reading the table no longer requires inferring memory architecture from prose.
+- §5.1 rewritten to explain the UMA column and its consequences, rather than being a post-table footnote.
+- Intel iGPU rows split from Intel Arc rows so UMA/Discrete is visible at row level.
+
+---
+
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
+
+📌 **Windows ICD mechanism: registry registration, not env var (2026-07-29, Link + Trinity):** For non-elevated processes, `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` work. For elevated processes (CI runner = `runneradmin`), the LunarG loader ignores those env vars — ICD must be registered in `HKLM:\SOFTWARE\Khronos\Vulkan\Drivers`. Future CI setup for any Windows Vulkan resource must use the registry, not the env var.
+
+📌 **Lavapipe on Linux CI now functional (2026-07-29, Trinity + Link):** glslc installed from LunarG apt repo (`shaderc` package, not Ubuntu's `glslang-tools`). `VK_LAYER_KHRONOS_validation` enabled; zero validation errors enforced. The lavapipe smoke-check warning under upgraded loader is UNVERIFIED — recheck after Tank's `ort::wchar_t` fix lands and Linux builds succeed.
+
+📌 **Local GPU hardware: Intel Iris Xe (Vulkan 1.4.309, UMA, 32 KiB) and RTX 4060 Laptop GPU (Vulkan 1.4.325, discrete, 48 KiB) (2026-07-29):** Both pass §7.2 gate. Intel is stricter — use it as spec oracle. SDK at `C:\VulkanSDK\1.4.350.0` — not on default PATH; must be prefixed explicitly in CI steps.
