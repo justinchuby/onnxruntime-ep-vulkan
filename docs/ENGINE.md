@@ -403,23 +403,39 @@ submission, identical in structure to the MLX EP's single `mlx_eval` at the subg
 buffer.** There is no implicit ordering of compute dispatches in Vulkan.
 
 Barrier placement rule: after recording `vkCmdDispatch` for op N, walk N's output tensors. For
-each output tensor T that is an input to a later op M in the same subgraph, emit:
+each output tensor T that is an input to a later op M in the same subgraph, call
+`Barriers::buffer_deps` with one `BufferDep` per (T, M) consumer edge:
 
-```
-vkCmdPipelineBarrier2(cb,
-  srcStageMask  = COMPUTE_SHADER,
-  srcAccessMask = SHADER_WRITE,
-  dstStageMask  = COMPUTE_SHADER,
-  dstAccessMask = SHADER_READ,
-  buffer = T.buffer, offset = 0, size = VK_WHOLE_SIZE
-)
+```rust
+// After dispatching op N, emit one barrier per consumer edge.
+let deps: Vec<BufferDep> = op_n.outputs
+    .iter()
+    .flat_map(|tensor| tensor.consumer_ops(subgraph))
+    .map(|consumer| BufferDep {
+        buffer:  tensor.buffer,
+        offset:  0,
+        size:    vk::WHOLE_SIZE,
+        src:     Access::ShaderWrite,
+        dst:     Access::ShaderRead,
+    })
+    .collect();
+
+// SAFETY: cb is in recording state; all buffers are live for the command buffer lifetime.
+if !deps.is_empty() {
+    unsafe { barriers.buffer_deps(cb, &deps) };
+}
 ```
 
-**Why this is correct:** the Vulkan spec (§7.1, "Implicit synchronization guarantees") provides
-no ordering between two compute dispatches in the same command buffer unless a pipeline barrier
-or event covers the memory dependency. The barrier above inserts an execution barrier
-(`COMPUTE_SHADER → COMPUTE_SHADER`) and a memory barrier (`SHADER_WRITE → SHADER_READ`),
-making the write from op N visible to op M.
+`barriers` is the `Barriers` instance stored on the device, selected once at init from
+`Capabilities` (see §8 and `rust/src/vk/barrier.rs`). Call sites never branch on sync2 — they
+call `buffer_deps` and the backend handles the dispatch.
+
+**Why this is correct:** the Vulkan spec (§7.1) provides no ordering between two compute
+dispatches in the same command buffer unless a pipeline barrier or event covers the memory
+dependency. `buffer_deps` emits exactly one barrier command: either `vkCmdPipelineBarrier2`
+(sync2 path) or `vkCmdPipelineBarrier` (legacy path), both carrying N `VkBufferMemoryBarrier(2)`
+structs for the N consumer edges. The access mask pair (`SHADER_WRITE` → `SHADER_READ`) makes
+the write from op N visible to op M.
 
 **Why we don't coarsen to one global barrier:** a single
 `vkCmdPipelineBarrier(ALL_COMMANDS → ALL_COMMANDS)` at the start of each dispatch would be
@@ -435,7 +451,7 @@ barrier between them — only the barrier from the producer to each consumer is 
 | Primitive | v0 usage |
 |---|---|
 | `VkFence` | One per subgraph execution. CPU waits on it after `vkQueueSubmit`. Reset and reused for the next execution. |
-| `vkCmdPipelineBarrier2` | Inter-op memory barriers within the command buffer (via `synchronization2` when available; see §8). Falls back to `vkCmdPipelineBarrier` when `synchronization2` is absent. |
+| `Barriers` (see `DESIGN.md` §7.5 and `rust/src/vk/barrier.rs`) | Inter-op memory barriers within the command buffer. Selected once at device init: `Barriers::Sync2` uses `vkCmdPipelineBarrier2` when `synchronization2` is available; `Barriers::Legacy` uses `vkCmdPipelineBarrier` otherwise. No call site may branch on `capabilities.synchronization2` — they call `barriers.buffer_deps()` unconditionally. |
 | `VkSemaphore` (binary) | Used between transfer-queue staging upload and compute-queue dispatch: the transfer queue signals a binary semaphore on staging completion; the compute queue waits on it before executing the subgraph. |
 | Timeline semaphores | Not used in v0. Useful for multi-stream pipelining (overlapping prefill and decode dispatches). Deferred to post-v0 when ORT IoBinding patterns are understood. |
 
@@ -501,49 +517,103 @@ already embeds ORT.
 
 ## 8. Vulkan Version Baseline — Switch's Input
 
-Justin proposes Vulkan 1.3. This section analyses which 1.2/1.3 features actually change the
-engine design and which are cosmetic. **Morpheus makes the final baseline call** informed by
-Link's platform coverage analysis.
+> **Note (2026-07-28T19:16:08-07:00):** Morpheus has frozen the capability set in `DESIGN.md` §7
+> after Link measured real platform data. The analysis below is updated to reflect the frozen
+> decision. The original recommendation (1.3 baseline requiring `synchronization2`) is superseded.
 
-### Features that structurally change the engine
+### 8.0 The Frozen Capability Principle
 
-| Feature | Where it enters | Impact |
-|---|---|---|
-| **`synchronization2`** (VK_KHR_synchronization2, core in 1.3) | `vkCmdPipelineBarrier2`, `vkQueueSubmit2` | Replaces the coarse `VkPipelineStageFlagBits` enum with a 64-bit `VkPipelineStageFlags2`. This simplifies barrier code — e.g., `PIPELINE_STAGE_2_ALL_TRANSFER_BIT` correctly covers both copy and blit without combining six flags. If we baseline 1.3, we can write `vkCmdPipelineBarrier2` unconditionally and drop the fallback path. If we baseline 1.1, we maintain two barrier code paths. **This is the feature with the largest engine-code-simplification benefit.** |
-| **`VK_EXT_subgroup_size_control`** (core in 1.3) | Pipeline create-info `VkPipelineShaderStageRequiredSubgroupSizeCreateInfo` | Allows us to require the driver to use a specific subgroup size (e.g., 32 on RDNA, 64 on Ampere) in pipeline creation rather than receiving whatever the driver chooses. This directly affects workgroup sizing correctness for GEMM shaders — an incorrectly-sized subgroup can silently produce wrong results in cooperative ops. If baseline 1.1/1.2, we must probe `VK_EXT_subgroup_size_control` as an optional extension and code defensively around absent support. Baselining 1.3 makes the guarantee unconditional. |
-| **Timeline semaphores** (VK_KHR_timeline_semaphore, core in **1.2**) | `vkSignalSemaphore`, wait with value | Enables fine-grained, monotonically-increasing wait values per semaphore instead of one binary signal/wait pair. Changes how we'd build an async multi-queue pipeline (prefill + decode overlap). Not used in v0 (single-queue fence model), but if we baseline 1.2+ the timeline API is unconditionally available for post-v0 pipelining. Strictly a 1.2 contribution, not 1.3. |
-| **`shaderFloat16` / `16bit_storage`** (VK_KHR_shader_float16_int8 + VK_KHR_16bit_storage) | Shader variant selection, buffer descriptor types | Allows `float16_t` in storage buffers and shader arithmetic. Changes which dtype variants we compile and ship. **Not guaranteed by any baseline** — must be probed at runtime regardless of whether we baseline 1.1, 1.2, or 1.3. The baseline bump does not give this for free. |
-| **`bufferDeviceAddress`** (core in **1.2**) | Push constant payload (64-bit pointer) | Enables passing raw `VkDeviceAddress` values in push constants, allowing bindless buffer indexing without descriptor sets. Enables richer indirection (e.g., chained buffer access for MoE routing). **MoltenVK support is partial and restricted** (verified via platform coverage research). Do not rely on this feature in v0; probe at runtime and use only when fully supported. |
+**Capability shortfalls degrade op coverage, not device availability** (`DESIGN.md` §7.0).
 
-### Features that are cosmetic for the engine
+The device gate is six hard requirements — no optional extensions:
 
-| Feature | Why cosmetic |
+1. Vulkan ≥ 1.1
+2. At least one compute queue
+3. `maxComputeWorkGroupInvocations ≥ 256`
+4. `maxComputeSharedMemorySize ≥ 16384`
+5. Subgroup BASIC operations in COMPUTE stage
+6. At least one DEVICE_LOCAL and one HOST_VISIBLE memory type
+
+No extension is required. Capability shortfalls (no sync2, no fp16, no subgroup size control)
+mean fewer ops are available, not that the device is rejected.
+
+### 8.1 Why `synchronization2` Is Not Required
+
+Link measured `VK_KHR_synchronization2` availability: **68.57% of Android devices** have it
+(vulkan.gpuinfo.org, 2026-07-28). The gap — 31.43% — is concentrated in Adreno 5xx/6xx with
+frozen pre-2021 OEM blobs and Mali Bifrost on MediaTek. These are real devices carrying real
+inference workloads.
+
+The Khronos `VK_LAYER_KHRONOS_synchronization2` emulation layer was evaluated and **rejected**:
+the AOSP Vulkan loader only enumerates validation layers from the host application's
+`nativeLibraryDir`. A plugin inside someone else's APK process cannot inject layers. This path
+is closed.
+
+The established precedent among production Vulkan compute runtimes: wgpu, Dawn, and Godot all
+use `vkCmdPipelineBarrier` (legacy) exclusively on Android. We follow the same approach.
+
+**Engine resolution: dual-backend behind a single seam.**
+
+`rust/src/vk/barrier.rs` implements two backends (`Sync2Backend`, `LegacyBackend`) behind the
+`Barriers` enum. `Barriers::select` is called **once** in `Device::new`:
+
+```rust
+let barriers = unsafe {
+    Barriers::select(&caps, &instance, &device, opts.force_legacy_barriers)
+};
+// Stored on the device. No other code reads caps.synchronization2.
+```
+
+No call site anywhere else may branch on `caps.synchronization2`. The selection is transparent
+to all dispatch code; both backends produce identical submission shapes for parity testing.
+
+`ep.force_legacy_barriers` (default false) forces the legacy path on sync2-capable hardware so
+Trinity's CI harness can exercise both paths and assert identical results.
+
+### 8.2 `subgroup_size_control` Is a Query, Not a Requirement
+
+`VK_EXT_subgroup_size_control` (core in 1.3) is probed but never required.
+
+**Critical MoltenVK quirk**: MoltenVK 1.3.0 reports the extension present (via 1.3 core) but
+`subgroupSizeControl = VK_FALSE`. Metal cannot set SIMD-group width per pipeline. "Extension
+present" must never be read as "width controllable".
+
+The `Capabilities` struct (`rust/src/vk/caps.rs`) distinguishes:
+- `subgroup_size_range: Option<SubgroupSizeRange>` — whether the range is queryable (has values)
+- `can_require_subgroup_size: bool` — whether `VkPipelineShaderStageRequiredSubgroupSizeCreateInfo`
+  is actually honoured (the `subgroupSizeControl` feature flag is `VK_TRUE`)
+
+**Shader variant selection rule:** a shader whose correctness depends on a specific subgroup
+width may only be selected when the width is **known exactly** — either:
+- `subgroup_size_range.min == subgroup_size_range.max`, OR
+- `can_require_subgroup_size == true` and the required-size pipeline creation flag was used
+
+Otherwise the portable shared-memory variant runs. This rule prevents silent wrong-result bugs
+on hardware where the subgroup size is implementation-defined.
+
+### 8.3 Feature-by-Feature Analysis (updated)
+
+| Feature | Changed verdict |
 |---|---|
-| `VK_KHR_cooperative_matrix` | Changes matmul shader strategy dramatically — but it is not guaranteed by 1.3 baseline and must be capability-probed regardless. A 1.3 baseline does not give cooperative matrix; it remains an optional extension even on 1.3 devices. |
-| `dynamicRendering` | Render-pass-related; irrelevant for compute-only. |
-| `inlineUniformBlock` | Useful for small constant data embedded in descriptor sets; reduces one `vkUpdateDescriptorSets` call. Minor ergonomics improvement, not a structural change. |
-| `privateData` | Driver-private per-object data slots; developer tooling convenience only. |
-| `extendedDynamicState` | Graphics pipeline state; irrelevant for compute. |
+| **`synchronization2`** | **Probed only.** 31.43% Android gap. Dual-backend abstraction in `barrier.rs` resolves the code-simplicity cost at zero availability cost. |
+| **`VK_EXT_subgroup_size_control`** | **Probed only.** MoltenVK quirk: present ≠ controllable. See §8.2. |
+| **Timeline semaphores** (1.2 core) | Not used in v0. Probed for post-v0 pipelining. |
+| **`shaderFloat16` / `16bit_storage`** | Probed only. Not guaranteed by any baseline. F16 op variants only loaded when both flags are true. |
+| **`bufferDeviceAddress`** (1.2 core) | Not used in v0. MoltenVK support is partial. Probe at runtime; bindless deferred to post-v0. |
+| **`VK_KHR_cooperative_matrix`** | Not guaranteed by 1.3; must probe regardless. Deferred to GEMM milestone. |
 
-### Switch's Recommendation
+### 8.4 Switch's Updated Recommendation
 
-The **only two features that materially simplify the engine design** if guaranteed by baseline
-are `synchronization2` and `VK_EXT_subgroup_size_control`. Both are core in 1.3.
+The correct baseline is **Vulkan 1.1 with the six hard requirements above**. The
+`synchronization2` and `subgroup_size_control` simplifications that originally motivated a 1.3
+baseline are now obtained by other means:
 
-Platform cost: Android requires API 33+ (Android 13) for guaranteed Vulkan 1.3. Android 12
-(API 31) guarantees only Vulkan 1.1. MoltenVK supports Vulkan 1.3 since v1.2.5 with growing
-(but not complete) coverage. (Link is analyzing the full coverage matrix independently.)
+- Synchronization: dual-backend `Barriers` abstraction costs one `match` at init time and zero
+  code at every call site.
+- Subgroup size: the `can_require_subgroup_size` flag + the portable fallback variant provide
+  the same safety property without the platform exclusion cost.
 
-**If the team can accept Android 13+ as the minimum Android target:** baseline 1.3, eliminate
-the dual barrier code path, and get unconditional subgroup size control. The engine is simpler
-and the correctness argument for barriers is cleaner.
-
-**If Android 12 or broad MoltenVK compatibility is required:** baseline 1.1 or 1.2. Probe
-`synchronization2` and `subgroup_size_control` as optional extensions, implement the fallback
-barrier path, and gate subgroup-size-aware GEMM shaders behind the capability flag.
-
-Either way, `shaderFloat16`, `bufferDeviceAddress`, and `VK_KHR_cooperative_matrix` must be
-capability-probed at runtime — the baseline version does not change that requirement.
+**Morpheus makes the final call** after reviewing Link's full platform analysis.
 
 ---
 
