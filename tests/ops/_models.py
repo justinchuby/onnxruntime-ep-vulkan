@@ -314,3 +314,93 @@ def assert_vulkan_does_not_claim(model: bytes, feeds: dict[str, np.ndarray]) -> 
         "Check the claim predicate for this op in rust/src/ops/ and ensure it rejects "
         "this input form."
     )
+
+
+# ---------------------------------------------------------------------------
+# Barrier-backend parity helper — used by test_barrier_parity.py
+# ---------------------------------------------------------------------------
+
+
+def run_with_backend(
+    model: bytes,
+    feeds: dict[str, np.ndarray],
+    *,
+    force_legacy: bool = False,
+) -> tuple[list[np.ndarray], str]:
+    """Run *model* on the Vulkan EP with the specified barrier backend.
+
+    Parameters
+    ----------
+    model :
+        Serialised ONNX model bytes.
+    feeds :
+        Input name → ndarray mapping.
+    force_legacy :
+        If ``True``, adds ``ep.force_legacy_barriers=1`` to the session options, forcing
+        ``Barriers::Legacy`` (``vkCmdPipelineBarrier``) even on a device that supports
+        ``synchronization2``.  If ``False``, the device's natural selection from
+        ``Barriers::select`` is used (sync2 if available, legacy otherwise).
+
+    Returns
+    -------
+    (outputs, active_backend) where *active_backend* is one of:
+        ``"sync2"``   — ``Sync2Backend`` was selected (``VK_KHR_synchronization2`` path).
+        ``"legacy"``  — ``LegacyBackend`` was selected (``vkCmdPipelineBarrier`` path).
+        ``"unknown"`` — EP has not yet implemented ``ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE``
+                        (see TODO below); probe file was not written.
+
+    Implementation contract — what Switch must implement
+    ----------------------------------------------------
+    When the environment variable ``ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=<absolute-path>``
+    is set at session creation time, the EP must:
+
+    1. Write exactly ``"sync2"`` or ``"legacy"`` (no trailing newline, UTF-8) to ``<path>``
+       **before ``CreateSession`` returns**, during ``Barriers::select`` inside ``Device::new``.
+    2. Overwrite any previous content (create-or-truncate semantics).
+    3. If the file cannot be written (permissions, etc.), log a warning and continue —
+       the probe is test-only and must not affect correctness.
+
+    This is the simplest IPC mechanism that requires zero ORT API changes.  The path is
+    chosen by the test harness (unique per process, project-relative) to avoid /tmp and to
+    ensure cleanup regardless of test outcome.
+
+    The mechanism ties to DESIGN.md §7.5 item 5: "Trinity runs the differential suite twice
+    per lane — once default, once forced."  Without the probe, a ``force_legacy=True`` session
+    that silently ignores the option would make the parity test a false green.
+    """
+    # Project-relative probe file, unique per process (safe for pytest-xdist).
+    # Lives in tests/ops/ alongside the test files; always cleaned up in finally.
+    probe_path = Path(__file__).parent / f"_barrier_probe_{os.getpid()}.txt"
+    if probe_path.exists():
+        try:
+            probe_path.unlink()
+        except OSError:
+            pass
+
+    old_probe = os.environ.pop("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", None)
+    os.environ["ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE"] = str(probe_path.absolute())
+    try:
+        opts = _make_session_options()
+        if force_legacy:
+            opts.add_session_config_entry("ep.force_legacy_barriers", "1")
+        sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+        outputs = sess.run(None, feeds)
+    finally:
+        # Always restore the env var, whether the session succeeded or not.
+        if old_probe is not None:
+            os.environ["ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE"] = old_probe
+        else:
+            os.environ.pop("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", None)
+
+    active_backend = "unknown"
+    if probe_path.exists():
+        try:
+            active_backend = probe_path.read_text("utf-8").strip()
+        finally:
+            try:
+                probe_path.unlink()
+            except OSError:
+                pass
+
+    return outputs, active_backend
+

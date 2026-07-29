@@ -190,23 +190,24 @@ jobs:
 
       # -------------------------------------------------------
       # Op-correctness tests (pytest, Vulkan vs ORT CPU oracle).
+      # Includes:
+      #   - test_op_table.py    : claim + CPU oracle (124 cases)
+      #   - test_barrier_parity.py : sync2/legacy parity (74 claim=True cases, runs twice each)
+      #   - test_elementwise.py : edge-case structural tests
+      #   - test_fallback.py    : permanent CPU fallback and mixed session
+      #   - test_claim_diagnostics.py : M0 claim assertion + no-ICD fallback
+      # Barrier parity is wired here automatically — test_barrier_parity.py lives in
+      # tests/ops/ and is collected by the same pytest invocation (DESIGN.md §7.5 item 5).
       # Skips cleanly if the crate wasn't built yet.
       # -------------------------------------------------------
-      - name: Op-correctness tests (pytest, lavapipe)
+      - name: Op-correctness + barrier-parity tests (pytest, lavapipe)
         run: |
           if [ "${BUILD_SKIPPED:-}" = "1" ]; then
             echo "::notice::Build was skipped — op tests not run"
             exit 0
           fi
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          python -m pytest tests/ops -q --tb=short \
-            2>&1 | tee /tmp/ops_test.out
-          {
-            echo "### Op-correctness tests (Vulkan EP, lavapipe)"
-            echo '```'
-            tail -n 5 /tmp/ops_test.out
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          python -m pytest tests/ops -q --tb=short -p no:randomly --strict-markers
 
   # ----------------------------------------------------------------
   # 3. Windows: build + clippy + op tests (lavapipe via mesa-dist-win)
@@ -353,9 +354,13 @@ jobs:
         run: pip install -r tests/requirements.txt
 
       # -------------------------------------------------------
-      # Op tests with lavapipe.
+      # Op-correctness + barrier-parity tests (pytest, lavapipe).
+      # test_barrier_parity.py is collected automatically (same dir).
+      # Barrier parity runs the full claimed-op suite twice —
+      # once with the natural backend, once with force_legacy_barriers=1
+      # — asserting bit-identical outputs (DESIGN.md §7.5 item 5).
       # -------------------------------------------------------
-      - name: Run op tests (lavapipe, validation layers on)
+      - name: Run op-correctness + barrier-parity tests (lavapipe)
         if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll

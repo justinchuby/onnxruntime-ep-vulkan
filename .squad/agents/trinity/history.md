@@ -40,3 +40,26 @@
 
   **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
 
+📌 Trinity round-3: barrier-backend parity layer (2026-07-28T19:16:08-07:00):
+
+  **New test layer:** Created `tests/ops/test_barrier_parity.py`. Reads `_CASES` from `test_op_table.py`, filters to `claim=True` (~74 cases), runs each case twice with both barrier backends, asserts bit-identical outputs.
+
+  **Backend probe mechanism agreed with Switch:** When `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=<path>` is set, EP writes `"sync2"` or `"legacy"` to `<path>` during `Barriers::select` in `Device::new`. File-write IPC — zero ORT API changes required. Until Switch lands this, the parity test emits `UserWarning` rather than failing; the output comparison still runs. See `_models.run_with_backend` docstring for the exact contract.
+
+  **`run_with_backend()` added to `_models.py`:** Sets `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`, applies `ep.force_legacy_barriers=1` when `force_legacy=True`, returns `(outputs, active_backend)`. Probe file lives in `tests/ops/` (project-relative, never `/tmp`), unique per process.
+
+  **CI:** Both Linux and Windows pytest steps already collect `test_barrier_parity.py` (in `tests/ops/`). Explicit comments added. No extra pytest invocation needed — parity runs within the standard `pytest tests/ops` call. 198 tests total; all 198 skip cleanly without EP lib.
+
+  **Needs from others:**
+  - **Switch:** Implement `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` in `rust/src/vk/barrier.rs` per contract in `_models.run_with_backend` docstring.
+  - **Switch:** Wire `ep.force_legacy_barriers` session option to `Barriers::select` in `Device::new`.
+
+
+📌 Trinity round-2 corrections applied (2026-07-28T19:16:08-07:00):
+
+  **CORRECTION 1 — ORT 1.28.0:** `ORT_VERSION` now pinned at workflow-level `env:` in `ci.yml` (single location for the whole file); `conformance.yml` job-level env updated; `tests/requirements.txt` updated to `onnxruntime>=1.28`. Reason: ORT 1.27 has null-allocator PrePack bug + deleter lifetime issue in plugin EP path, fixed in 1.28 (released 2026-07-24). Source: Fact Checker audit trail.
+
+  **CORRECTION 2 — Windows Vulkan lane resolved:** Investigated mesa-dist-win (https://github.com/pal1000/mesa-dist-win). Latest release `26.1.3` (2026-06-26) ships `mesa3d-26.1.3-release-msvc.7z` (~69 MB, MSVC runtime, 7z extractable on windows-latest). This package includes lavapipe (Vulkan 1.3 CPU software rasterizer) as DLL + ICD JSON. SwiftShader rejected: Google publishes no Windows prebuilts; ~20 min build from source. `build-test-windows` CI job now installs mesa-dist-win lavapipe and runs pytest (plus always-on no-ICD fallback test). `MESA_VERSION: "26.1.3"` pinned at workflow-level env. Finding reported to Link (who owns `docs/PLATFORMS.md §7.4`).
+
+  **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
+
