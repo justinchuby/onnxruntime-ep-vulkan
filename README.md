@@ -14,9 +14,9 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 | Artifact | `libonnxruntime_vulkan_ep.so` / `onnxruntime_vulkan_ep.dll` / `libonnxruntime_vulkan_ep.dylib` |
 | ORT ABI | plugin-EP C ABI · built against ONNX Runtime **1.28** · minimum runtime API **1.24** |
 | Backend | Vulkan compute · GLSL → SPIR-V · [`ash`](https://github.com/ash-rs/ash) |
-| Target platforms | Windows · Linux · Android · macOS (MoltenVK) — *Windows and Linux are exercised in CI; the Android and macOS paths are designed for but not yet validated on physical hardware* |
+| Target platforms | `Windows · Linux · Android · macOS (MoltenVK)` — **Windows and Linux are verified in CI (lavapipe). The Android and macOS paths are designed for but have zero CI coverage on physical hardware; every Android and macOS entry in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) §5 is explicitly marked untested.** |
 | Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
-| Target hardware | NVIDIA · AMD · Intel · Adreno · Mali, plus lavapipe for GPU-less CI (Linux **and** Windows) |
+| Target hardware | NVIDIA · AMD · Intel · Adreno · Mali — *none of these is covered by CI today; the only verified lanes are the lavapipe software rasterizer on Linux and Windows* |
 | Operator domains | `ai.onnx` and `com.microsoft` — the contrib domain is in scope because the ORT GenAI model builder emits contrib ops directly; see [`docs/DESIGN.md`](docs/DESIGN.md) §1.4 for the claim-safety constraints |
 
 ## How it works

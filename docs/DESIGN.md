@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T20:54:42-07:00 (`com.microsoft` in scope by user ruling — §1.4 constraints, §10.0 milestone reconciliation; §7 frozen; OQ-1, OQ-8 and OQ-11 resolved)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T21:01:56-07:00 (RAI-003 CI-coverage disclosure; lavapipe-only correction; `com.microsoft` in scope by user ruling — §1.4 constraints, §10.0 milestone reconciliation; §7 frozen; OQ-1, OQ-8 and OQ-11 resolved)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -47,8 +47,8 @@ find-and-replace of the MLX design.
 ### 1.1 Goals for v1
 
 1. **Cross-platform GPU inference from one codebase.** Windows, Linux, Android, and macOS
-   (MoltenVK) on NVIDIA / AMD / Intel / Adreno / Mali, plus software rasterizers (lavapipe,
-   SwiftShader) so CI is possible without a GPU runner. No vendor-specific code path is
+   (MoltenVK) on NVIDIA / AMD / Intel / Adreno / Mali, plus the **lavapipe** software rasterizer so
+   CI is possible without a GPU runner. No vendor-specific code path is
    permitted to be load-bearing for correctness.
 2. **Zero ORT fork.** Ship a single shared library that a stock ORT loads via
    `RegisterExecutionProviderLibrary`.
@@ -456,7 +456,7 @@ onnxruntime-ep-vulkan/
 │       ├── __init__.py                # register_execution_provider_library(), EP_NAME, paths
 │       └── py.typed
 └── .github/workflows/
-    ├── ci.yml                         # fmt, clippy, build matrix, op tests on lavapipe/SwiftShader
+    ├── ci.yml                         # fmt, clippy, build matrix, op tests on lavapipe (Linux + Windows)
     ├── conformance.yml                # opt-in workflow_dispatch
     ├── bench.yml                      # informational perf comment on PRs
     └── publish.yml                    # wheel build + release
@@ -774,12 +774,12 @@ Consequences, stated so they are not re-litigated per op:
 | ExecuTorch `vk_api/Runtime.cpp` (Fact Checker, claim 2, SHA `8001512`) | Hardcodes `VK_API_VERSION_1_1` in `VkApplicationInfo`; `Device.cpp` branches feature queries at `>= VK_API_VERSION_1_1`; VMA is initialized with `VK_API_VERSION_1_0`. **Verdict: contradicted** — ExecuTorch targets 1.1. |
 | MoltenVK (Fact Checker, claim 3) | **Verified:** MoltenVK 1.3.0 (2025) advertises Vulkan 1.3 on macOS/iOS. Older MoltenVK does not. |
 | Android (Fact Checker, claim 4 — *unverified*, plausible) | Vulkan 1.3 ≈ **26%** of active Android devices; Vulkan 1.1 ≈ **62%**. The Android CDD does not mandate 1.3 at any API level as of Android 15. Link (`PLATFORMS.md` §4) reports ~89% for 1.1 measured against *devices that expose Vulkan at all* — a different denominator, same conclusion. |
-| lavapipe / SwiftShader (Fact Checker, claim 5) | **Verified:** both support Vulkan 1.3 and both pass 1.3 conformance. Adequate for GPU-less CI. |
+| lavapipe / SwiftShader (Fact Checker, claim 5) | **Verified:** both support Vulkan 1.3 and both pass 1.3 conformance. Adequate for GPU-less CI. *Update 2026-07-28T21:01:56-07:00: Trinity evaluated SwiftShader and **rejected** it — no usable prebuilts and a ~20-minute build from source. **Both CI lanes use lavapipe**: Linux via `apt`, Windows via mesa-dist-win 26.1.3.* |
 | Link (`PLATFORMS.md` §4) | Recommends 1.2 core + mandatory device features. Explicitly does **not** recommend a hard 1.3 baseline if Android coverage is a goal. |
 | Switch (`ENGINE.md` §8) | Exactly **two** features materially simplify the engine: `synchronization2` and `subgroup_size_control`. Both are core in 1.3 — **and both are available as standalone extensions on 1.1/1.2 drivers.** `shaderFloat16`, `bufferDeviceAddress`, and cooperative matrix must be capability-probed at runtime *regardless of baseline*. |
 | **Link, OQ-1 (`PLATFORMS.md` §8), vulkan.gpuinfo.org, pulled 2026-07-28** | **`VK_KHR_synchronization2`: Android 68.57%, Windows 87.78%, Linux 99.05%, macOS 97.5%, iOS 100%.** A **31.43-point Android gap** and a **12.22-point Windows gap.** The Android shortfall is concentrated in Adreno 5xx (Snapdragon 625–660, frozen pre-2021 OEM blobs), Adreno 6xx on unupdated Android 10/11, and Mali Bifrost (G52/G57/G72/G76) especially on MediaTek — populations with no update cadence, so this does not decay with time on any schedule we control. Link's verdict: the hard requirement is **not safe**. |
 | **Link, OQ-1** | **`VK_EXT_subgroup_size_control`: Android 85.88%, Windows 93.33%, Linux 98.81%, macOS/iOS 100%.** A **14.12-point Android gap.** |
-| **Link, OQ-1 — the MoltenVK artifact** | The macOS/iOS 100% figure is **extension-string presence only**. MoltenVK reports Vulkan 1.3, which promotes `subgroup_size_control` to core, so the string is always there — but the `subgroupSizeControl` **feature flag is `VK_FALSE`**, because Metal cannot control SIMD-group width per pipeline. **Requiring the feature flag to be `VK_TRUE` would silently exclude all of macOS and iOS** — and probably lavapipe and SwiftShader too, which have a single fixed CPU SIMD width. |
+| **Link, OQ-1 — the MoltenVK artifact** | The macOS/iOS 100% figure is **extension-string presence only**. MoltenVK reports Vulkan 1.3, which promotes `subgroup_size_control` to core, so the string is always there — but the `subgroupSizeControl` **feature flag is `VK_FALSE`**, because Metal cannot control SIMD-group width per pipeline. **Requiring the feature flag to be `VK_TRUE` would silently exclude all of macOS and iOS** — and probably lavapipe too, which has a single fixed CPU SIMD width. |
 | **Link, OQ-1 — limits that *are* safe** | `maxComputeWorkGroupInvocations ≥ 256`: ~1% of 8,206 Android reports show 128. `maxComputeSharedMemorySize ≥ 16 KiB`: the Vulkan spec minimum, universal. Subgroup `BASIC`: spec-guaranteed in the compute stage on 1.1+. Subgroup `ARITHMETIC`: >95%, but *query, never assume*. |
 | **Morpheus, layer-shim feasibility research (2026-07-28, primary sources below)** | The Khronos `VK_LAYER_KHRONOS_synchronization2` shim **cannot be shipped by us on Android.** The AOSP Vulkan loader does not read `VK_LAYER_PATH`, does not use JSON manifests, and searches only the **host application's** `nativeLibraryDir` (derived from the installed APK via `GraphicsEnv::getAppNamespace()`) plus `/data/local/debug/vulkan` (debuggable/userdebug only). Khronos' own `docs/synchronization2_layer.md` states the `.so` "needs to be packaged **inside the APK**". A plugin `.so` `dlopen`ed into someone else's process has no mechanism to add a layer search path. Sources: `developer.android.com/ndk/guides/graphics/validation-layer`; `KhronosGroup/Vulkan-Loader` `docs/LoaderLayerInterface.md` ("The Android loader does not use manifest files"; "There is No Support For Implicit Layers on Android"); `KhronosGroup/Vulkan-ExtensionLayer` `docs/synchronization2_layer.md`. |
 | **Morpheus, prior-art check on barrier strategy** | **wgpu, Dawn, and Godot all use legacy `vkCmdPipelineBarrier` exclusively and none of them ships the sync2 layer.** `gfx-rs/wgpu` `wgpu-hal/src/vulkan/command.rs` calls `cmd_pipeline_barrier` in `transition_buffers`/`transition_textures` with no sync2 variant and no sync2 entry in its `Workarounds` bitflags; `google/dawn` `src/dawn/native/vulkan/CommandBufferVk.cpp` calls `fn.CmdPipelineBarrier` and mentions sync2 only in a spec comment; `godotengine/godot` `drivers/vulkan/rendering_device_driver_vulkan.cpp` calls `vkCmdPipelineBarrier`. The cited precedent for Option B does not survive contact with the source. |
@@ -806,7 +806,7 @@ A physical device is advertised to ORT **if and only if** it satisfies all of:
 | R6 | At least one `DEVICE_LOCAL` memory type and at least one `HOST_VISIBLE` memory type | The staging path (§6) has no meaning otherwise. |
 
 **That is the entire gate.** It is satisfied by essentially every device that exposes Vulkan 1.1
-at all, on every platform, including MoltenVK, lavapipe and SwiftShader.
+at all, on every platform, including MoltenVK and lavapipe.
 
 **Everything else is capability-probed** into a single `vk::caps::Capabilities` struct, read once at
 device init, and used in exactly two ways: (a) to select an implementation strategy inside the
@@ -911,7 +911,7 @@ without excluding anyone.
 
 **Why this matters beyond macOS.** Requiring the feature flag would have excluded all of
 macOS/iOS (MoltenVK reports `VK_FALSE`; Metal has no per-pipeline SIMD-group width control) and
-very likely lavapipe and SwiftShader — meaning our own CI lanes. A requirement that excludes the
+very likely lavapipe — meaning both of our own CI lanes. A requirement that excludes the
 machines you test on is a requirement you have not tested. Requiring the extension *string* would
 still have cost 14.12 points of Android for information we can approximate from 1.1 core.
 
@@ -1239,14 +1239,19 @@ tolerance is *derived and documented*, never widened to make a red test green. W
 tolerance requires Trinity's sign-off and a note in the test.
 
 **Cross-platform.** The same suite runs on every CI lane. As landed by Trinity
-(2026-07-28): a **Linux lavapipe lane** and a **real Windows Vulkan lane** — she found lavapipe
-Windows prebuilts via mesa-dist-win, so our primary development platform has genuine correctness
-coverage rather than build-only coverage, which materially raises the value of a green CI run. ORT
-is pinned to 1.28 across lanes (§1.4 C2 depends on that pin). Claims are asserted from the
-profiling JSON, so "it ran on Vulkan" is proven rather than assumed. A pass on a software
-rasterizer alone remains a smoke test, not a correctness claim — lavapipe does not reproduce
-driver-specific subgroup, denorm, or precision behaviour, and §11.1's on-device work is what closes
-that gap. Link owns which lanes exist; Trinity owns what runs on them.
+(2026-07-28): a **Linux lavapipe lane** (via `apt`) and a **real Windows Vulkan lane** — she found
+lavapipe Windows prebuilts via **mesa-dist-win 26.1.3**, driven by `VK_ICD_FILENAMES`, so our
+primary development platform has genuine correctness coverage rather than build-only coverage, which
+materially raises the value of a green CI run. There is also an always-on no-ICD fallback assertion,
+which is exit criterion 4 of M0 tested continuously rather than once. **SwiftShader was evaluated
+and rejected** — no usable prebuilts and a ~20-minute build from source — so lavapipe is the only
+rasterizer we run and the only one this document should name. ORT is pinned to 1.28 across lanes
+(§1.4 C2 depends on that pin). Claims are asserted from the profiling JSON, so "it ran on Vulkan" is
+proven rather than assumed. A pass on a software rasterizer alone remains a smoke test, not a
+correctness claim — lavapipe does not reproduce driver-specific subgroup, denorm, or precision
+behaviour, and **there is currently no CI coverage of any physical GPU, on any platform**; §11.1's
+on-device work is what begins to close that gap. Link owns which lanes exist; Trinity owns what runs
+on them.
 
 ### 9.2 Benchmarking — Niobe
 
@@ -1331,7 +1336,7 @@ number going up is the only thing that means the named target is getting closer.
 | `registry.rs` + `NodeView`; `ops/elementwise.rs` with `Add` claim + handler; claim diagnostics | Mouse |
 | `engine.rs` — `NodeDesc`, `Plan`, `DispatchContext`; per-run command recording (no cache yet) | Tank + Morpheus (contract) |
 | `tests/ops/conftest.py`, `_models.py`, `test_elementwise.py`, claim assertion helper | Trinity |
-| CI: fmt, clippy, build on windows-latest + ubuntu-latest, lavapipe + SwiftShader lanes, **the `ep.force_legacy_barriers=1` duplicate lane (§7.5 item 5)**, Vulkan SDK provisioning, layering lint | Link |
+| CI: fmt, clippy, build on windows-latest + ubuntu-latest, **lavapipe on both** (Linux via `apt`, Windows via mesa-dist-win 26.1.3 with `VK_ICD_FILENAMES`), **the `ep.force_legacy_barriers=1` duplicate lane (§7.5 item 5)**, Vulkan SDK provisioning, layering lint | Link + Trinity |
 | `python/` package with `register_execution_provider_library()` | Tank |
 | Baseline harness stub; no numbers published | Niobe |
 
@@ -1441,7 +1446,7 @@ person's deep work — and §1.5's months-scale claim rests on them.
 | **OQ-9** | Threading model: one `VkDevice` per session (chosen) vs a process-shared device with a mutex. Sharing saves memory and pipeline-cache warmth for multi-session hosts. | **Tank + Switch** propose → Morpheus decides | post-M2 |
 | **OQ-10** | Tolerance policy for accumulation-order-sensitive ops (GEMM, reductions) across vendors, where fp32 associativity differs. Needs a stated, derived rule before M2's ops land, not after. | **Trinity** proposes → Morpheus ratifies | M2 |
 | **OQ-11** | ~~Ratification of `OP_COVERAGE.md` (§8.1).~~ **RESOLVED 2026-07-28T19:16:08-07:00: ratified with five amendments** (§8.4). It supersedes §8.2/§8.3; §8.1's seven principles stand. **Its central question — whether to admit `com.microsoft` — was then settled above my level by Justin's ruling of 2026-07-28T20:54:42-07:00** (see OQ-8); A1 is revised accordingly and survives as the *discipline* rather than as the permission. | Mouse proposed → **Morpheus ratified** → **Justin ruled on the domain** | — |
-| **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for some other reason? **The 31.43% figure is a database claim, not a usability claim, and until the experiment in §11.1 runs, that is exactly how much of it is unverified: all of it.** The experiment, its pass/fail bar, and what would reverse the decision are specified in §11.1. Needs real hardware, which we do not have. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
+| **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for some other reason? **The 31.43% figure is a database claim, not a usability claim, and until the experiment in §11.1 runs, that is exactly how much of it is unverified: all of it.** *Concurrence noted 2026-07-28T21:01:56-07:00: Link's `PLATFORMS.md` §8 rewrite now states the same position in his own words — the gpuinfo data proves those devices lack `VK_KHR_synchronization2`, not that a legacy barrier path makes them usable. The two documents agree on the honest position rather than each implying the other verified it.* The experiment, its pass/fail bar, and what would reverse the decision are specified in §11.1. Needs real hardware, which we do not have. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
 
 ### 11.1 OQ-12 — the minimum decisive experiment
 
