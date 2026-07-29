@@ -10,339 +10,83 @@
 
 ## Learnings
 
-<!-- Append new learnings below. Each entry is something lasting about the project. -->
+<!-- SUMMARIZED by Scribe 2026-07-28T22:28:08-07:00 — full session details in decisions.md -->
 
-📌 Team update (2026-07-28T17:59:54-07:00): Vulkan API baseline is a capability-set, not a version floor. Devices must have ≥1.1 core + compute queue + `synchronization2` + `subgroup_size_control` + subgroup BASIC+ARITHMETIC + workgroup and shared-memory minimums. Everything else (`shaderFloat16`, `shaderInt8`, etc.) is optional and gates shader variants. Mouse's op handlers choose variants via `DispatchContext`; they must never hard-require an optional capability. — decided by Morpheus, Switch, Link, Fact Checker
+### [SUMMARY] Turns 1–5: op plan, template infrastructure, contrib rows, kernels, diagnostics (2026-07-28)
 
-📌 Team update (2026-07-28T17:59:54-07:00): Hard layering rule — op handlers in `rust/src/ops/` must never reference `sys::`, `Ort`, `ash`, `vk::`, or `unsafe`. CI lint enforces this and fails the build on a violation. Op handlers see only `NodeDesc`, `NodeView`, `TensorRef`, and a `DispatchContext` trait. — decided by Morpheus
+**Foundational decisions (turn 1 — OP_COVERAGE.md authored):**
+- MLX op-coverage speed does NOT transfer: every op here is a hand-written GLSL shader. Leverage = kernels grow much slower than ops. Target ≥ 8 ops per kernel family in tiers 1–2.
+- Qwen ONNX graphs emit `com.microsoft` ops (GQA, RotaryEmbedding, MatMulNBits, SimplifiedLayerNormalization, SkipSimplifiedLayerNormalization). Declining the domain = EP cannot run Qwen at all.
+- ORT WebGPU EP (`webgpu_contrib_kernels.cc`) is the closest analog; registers `QMoE` but float `MoE` commented out — do `QMoE` first.
+- `MatMulNBits` is entry ticket for int4 LLMs (not optional). GEMV path (M=1) memory-bound; GEMM path (M>1) shared-memory tile. Never materialize dequantized weights in VRAM.
+- Broadcasting solved ONCE in `indexing.glsl`: zero stride = stretched axis. All ONNX broadcasting semantics normalize host-side in `ShapePlan`. No ONNX semantics in shaders.
+- Registry: `op_table!` macro with `caps: DtypeSet` column generating dtype claim check, build.rs shader variant list, `docs/OP_SUPPORT.md`, `--dump-capabilities`. CI fails on drift.
+- LLM path gated on M2 device allocator. KV cache / conv state cross subgraph boundary per token under M0/M1 = per-token cache round-trip.
+- MVS rule: `est_gpu_time > transfer_cost × 3.0`, floor `node_count ≥ 4 AND output_bytes ≥ 64 KiB`, waived for GEMM/attention/QGEMM anchored nodes. Anti-orphan pass for non-anchored 1–3 node islands.
+- `largest_island_flops` is the metric of record. `claimed_node_fraction` is diagnostic only.
+- Template infrastructure before op #1 is a milestone gate (M1 entry criterion). Ratified by Morpheus with this amendment.
 
-📌 Team update (2026-07-28T17:59:54-07:00): M0 op is a single `Add` node. This is the first deliverable for Mouse. — decided by Morpheus
+**Template infrastructure landed (turn 2):**
+- `OpStatus::Staged(reason)` — fully described row declines before predicate runs. Going live = one-word diff. Distinct staging reasons: `NO_SHADER`, `NEEDS_PARAMS`, `NEEDS_CAST_MATRIX`, `UNEXERCISED`.
+- Claim predicate takes `(NodeView, OpSpec)` — the predicate reads `spec.caps`/`spec.op_type`/`spec.kernel` instead of closing over them. One predicate serves 60+ ops.
+- Machine-readable declines: `decline(code, detail)` renders `"[tag] sentence"`, `DeclineCode::of_reason()` parses back. Three consumers (human log, Trinity assertions, Niobe histogram), zero cross-owner edits.
+- `ShapePlan::broadcast` right-aligns into `[u32; MAX_RANK=6]`, zero stride on stretched axes. Push layout ≤ 128 bytes worst case (maxPushConstantsSize floor, asserted by test). `MAX_RANK=6` is not 8.
+- Scalar inputs: leave `ShapePlan.rank` at 0 for all-scalar inputs; do NOT clamp to 1.
+- `REQUIRE_STATIC_SHAPES = true` in one place. Dynamic shapes decline everything with `[dynamic-shape]` bucket. One constant to flip when OQ-15 (shape-agnostic dispatch) lands.
+- `Recorder` mock `DispatchContext` = highest-value test asset: tests pure `NodeDesc → KernelRequest` with no Vulkan/ORT. Separates failure modes.
+- MVS shipped as two ordered gates: size gate then economics gate. Margin 3× not 1× — cost model crude, must fail towards CPU. `TransferModel::fit` is Niobe's calibration hook.
+- `concentration()` (largest-island FLOPs ÷ total claimed FLOPs) separates "80% in one island" from "80% across 40 islands". Unit tests assert these two have equal `node_coverage` and different honest metrics.
+- 69 elementwise rows, 5 claim predicates, 5 translate handlers (demonstrated leverage).
 
-📌 Team update (2026-07-28T17:59:54-07:00): Op growth strategy — grow by family (shared shader skeleton, descriptor layout, test file). Prioritize ops that merge existing graph islands or extend an island's edge. Benchmarks must report island count and largest fused region alongside wall time. Maximizing claim rate is actively harmful; maximize fused compute volume instead. — decided by Morpheus
+**Contrib rows (turn 3 — 11 named ops admitted):**
+- `com.microsoft` domain admitted by user ruling. Never a `domain == "com.microsoft"` predicate. Registry key is the allowlist.
+- Contrib schemas version with ORT releases (not opset). `ContribSchema` + per-op recorded ORT version in the table (not in comments). Census claim rates in CI + version-bump-as-review-gate.
+- `[attribute]` = deliberate limitation. `[contrib-schema]` = schema moved under us (alarm). Never lump these.
+- 11 staged rows: GroupQueryAttention, RotaryEmbedding, MatMulNBits, LinearAttention, CausalConvWithState, SimplifiedLayerNormalization, SkipSimplifiedLayerNormalization, QMoE, MultiHeadAttention, MoE (float oracle for QMoE), SkipLayerNormalization.
+- `SchemaBaseline` inside `ContribSchema` (not a parallel table) — impossible to record a schema without recording where it came from.
+- GQA fingerprint: 7 required inputs (not 3); optional inputs are positional; `seqlens_k`/`total_sequence_length` at indices 5 and 6.
+- GenAI builder sets `q_norm`/`k_norm` for Qwen3 — emits 16-input GQA node. Verify exported graph before scheduling a kernel against an assumed signature.
+- In a 5-agent concurrent repo: re-read every file before editing; check git status before diagnosing a test failure.
+- 174+26=205 tests after turn 3 (lib+layering+dump).
 
-📌 Team update (2026-07-28T17:59:54-07:00): v1 non-goals include quantized ops, contrib ops, attention fusion, graph-level op fusion, dynamic-shape fast paths, fp64, and data-dependent output shapes. Mouse must not invest in these families for v1. — decided by Morpheus
+**First real kernels (turn 4):**
+- `build.rs` scans `shaders/glsl/` non-recursively for `*.comp`. Parameterised templates must live in `shaders/glsl/templates/`.
+- Validate shaders without SDK: `glslangValidator.exe` from Khronos release. Same flags as build.rs.
+- COMPILED ≠ EXECUTED: `UNEXERCISED` staging reason distinct from `NO_SHADER`. Always report separately.
+- ONNX scalar semantics: `Round` = roundEven; `Mod` default = sign of divisor (`a - floor(a/b)*b`); GLSL `pow` undefined for negative base but ONNX is not; `Mean` in binary template = divide by N once at end; `Erf` = load-bearing for exact Gelu.
+- Byte-typed tensors: `bool`/`uint8` buffer must be allocated rounded up to 4 bytes (packed-byte stores write whole `uint` word). Tell Tank/Switch.
+- Correction (D-S4-10, Switch): llama.cpp block format mismatch = no code copying, but tiling/subgroup reduction/dequant-in-register patterns DO transfer. Never bundle licensing conclusions with technical ones.
+- `cargo build; cargo clippy --all-targets -- -D warnings; cargo test` → 245 passed. Set `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'` on machines without Vulkan SDK. Regenerate variant manifest: `MOUSE_BLESS_VARIANTS=1 cargo test --lib variants`.
 
----
+**Diagnostics (turn 5):**
+- Diagnostic codes are worthless if they stop at the FFI boundary. Design the reader in the same breath as the codes.
+- Per-event JSON (append-and-flush, one self-contained line per event). No lifecycle hook needed.
+- Hook `claim_decision` not `ep.rs` aggregator — zero cross-owner edits; all future callers get the record.
+- `GroupQueryAttention` fingerprint corrected: min_inputs=7, 1.28 and main forms identical.
+- `cargo test` → 265 passed.
 
-## 2026-07-28T18:51:35-07:00 — Op coverage plan (`docs/OP_COVERAGE.md`)
-
-📌 The MLX op-coverage speed does NOT transfer at face value. In `onnxruntime-mlx` an op handler is
-`ctx.binary(mlx_add, a, b)` — MLX supplied the kernel, numpy broadcasting, dtype promotion, unified
-memory, and lazy fusion. Here every op is a hand-written GLSL compute shader against explicit device
-memory. Our leverage must be manufactured: make hand-written *kernels* grow far more slowly than
-*ops*. Target ratio ≥ 8 ops per kernel family in tiers 1–2.
-
-📌 Real Qwen ONNX graphs come from the ORT GenAI model builder
-(`onnxruntime-genai/src/python/py/models/builders/qwen.py`), and it EMITS `com.microsoft` ops
-directly: `GroupQueryAttention`, `RotaryEmbedding`, `SimplifiedLayerNormalization`,
-`SkipSimplifiedLayerNormalization`, `MatMulNBits`. Declining the `com.microsoft` domain means the EP
-cannot run a Qwen graph at all. This reverses `DESIGN.md` §1.2.
-
-📌 Qwen3.5 is a hybrid: full-attention layers use GQA + `Sigmoid`/`Mul` output gating; linear-attention
-layers use `com.microsoft::CausalConvWithState` + `com.microsoft::LinearAttention` (rules
-linear/gated/delta/gated_delta) with conv-state and `[B,H_kv,d_k,d_v]` recurrent-state cache I/O.
-So "linear attention support" = two kernels, not a Mamba project. Mamba/Mamba2 do NOT export to ONNX
-cleanly (custom selective-scan kernels; state-spaces/mamba#200) — do not target them.
-
-📌 The ORT **WebGPU EP** (`onnxruntime/core/providers/webgpu/webgpu_execution_provider.cc` +
-`contrib_ops/webgpu/webgpu_contrib_kernels.cc`) is the closest existing analog to this project and its
-op registry is a strong prior on what a compute-shader EP needs. Notably it registers `QMoE` but has
-float `MoE` commented out — do `QMoE` first.
-
-📌 `MatMulNBits` is the entry ticket for int4 LLMs, not an optimization: an int4 graph where we claim
-everything except the quantized matmuls shatters into ~200 islands. It is a `B`-load variant of the
-shared tiled GEMM, not a new algorithm. Never materialize dequantized weights in VRAM. Decode (M=1)
-wants a memory-bound GEMV path; prefill (M>1) wants a shared-memory tile path.
-
-📌 Broadcasting must be solved ONCE, in a shared `indexing.glsl` header, with broadcast expressed as a
-**zero stride computed host-side** (no modulo, no branch, one code path). All ONNX semantics —
-negative axes, keepdims, rank padding — normalize host-side in a shared `ShapePlan`. A shader must
-never contain ONNX semantics. Corollary for testing: test the header exhaustively, then per-op tests
-only check the expression.
-
-📌 Registry decision: adopt MLX's registry *shape* (one table for both claim and translate; `deny!`/
-`require!` with the reason colocated) but diverge on ergonomics — a `macro_rules!` `ops!` table with a
-machine-readable `caps: DtypeSet` column that generates the dtype claim check, the `build.rs` shader
-variant list, `docs/OP_SUPPORT.md`, and `--dump-capabilities`. CI fails if the checked-in matrix
-differs. A hand-maintained support matrix is exactly the drift my charter exists to prevent.
-
-📌 The LLM path is gated on **M2's device allocator**, not on op coverage. KV cache / conv state /
-recurrent state cross the subgraph boundary every token; under M0/M1 host I/O that is a per-token
-round-trip of the whole cache. Also flagged: LLM kernel dimensions should live in push constants from
-day one so recorded command buffers are sequence-length-agnostic (record-once/replay-many is keyed on
-shape).
-
-📌 Partitioning needs a number, not a principle. Minimum Viable Subgraph:
-`est_gpu_time > transfer_cost × 3.0`, floor `node_count ≥ 4 AND output_bytes ≥ 64 KiB`, waived when the
-subgraph contains a GEMM/attention/QGEMM node; plus an anti-orphan pass dropping non-GEMM-anchored
-1–3 node islands. `transfer_cost` is **calibrated at device init**, never hardcoded — on UMA parts
-(Adreno/Mali/MoltenVK/integrated) the slope is ~0 and the rule must relax accordingly.
-
-📌 Known bug classes inherited from the MLX project's scars, decided centrally up front: empty/zero-size
-tensors are handled **on-device** (declining is a partition hazard); i64 indices are narrowed to i32
-when shape bounds prove it safe and declined otherwise; **null interior optional inputs** (ORT returns
-a null `OrtValueInfo` for `Clip` min/max, `Resize` roi) must be null-guarded in the clustering pass
-before dataflow edges are built. MLX's conformance fuzzing found 16 crash classes here — and a bad
-Vulkan dispatch can hang the GPU, so fuzz each op in its own subprocess.
-
-📌 Timeline honesty, recorded so it can be checked later: tiers 0–2 (121 ops) is weeks-scale and
-achievable — *conditional on building the template infrastructure before op #1*. "Qwen3.5 end-to-end"
-is months-scale, gated on three XL kernels (GQA, MatMulNBits, LinearAttention) with zero template
-leverage. Op count will look great long before any LLM runs; `largest_island_flops` is the metric that
-keeps us honest.
-
-📌 Highest-leverage tooling investment: `tools/graph_census.py` (node histogram by
-`(domain, op_type, opset, dtypes, ranks)` + claimability diff against the registry dump). Half a day of
-Python; converts every UNVERIFIED assumption into a verified one and auto-generates the coverage
-backlog. Required before tier 3.
+**ORT ABI facts verified against vendored 1.28 header:**
+- `Node_GetInputs`/`Node_GetOutputs`: size-then-fill protocol.
+- `GetValueInfoTypeInfo`: returns borrowed `const OrtTypeInfo**` — must NOT be released (double-free).
+- `CastTypeInfoToTensorInfo`: `_Outptr_result_maybenull_` (non-tensor → null, no error).
+- `Node_GetAttributeByName`: also `_Outptr_result_maybenull_`.
+- `ReadOpAttr`: call once to size, again to fill.
+- ORT returns null `OrtValueInfo` for omitted interior optional inputs (`Clip(x, , max)`).
 
 ---
 
-## 2026-07-28T19:16:08-07:00 — Turn 2: template infrastructure landed before op #1
+## Cross-agent context appended (2026-07-28T22:28:08-07:00)
 
-📌 The coordinator funded the §5 thesis verbatim: *build the machinery, not the ops*. What landed is a
-table-driven registry (`OpSpec` + `op_table!`), first-class claim predicates with machine-readable
-declines, a compile-time shader-variant table with a checked-in build manifest, and the
-minimum-viable-subgraph rule as arithmetic. 69 elementwise rows are served by 5 claim predicates and 5
-translate handlers — that ratio *is* the leverage, and it is now demonstrated rather than argued.
+📌 **C2 item 7: fingerprint audit CI job (Morpheus §1.4):** A CI job running `graph_census.py` must execute before any tier-3 contrib work. Rows with `SchemaBaseline` pointing to a non-release (ORT `main` only) may not be set to `Live` — this is a build failure enforced by Tank. Your `ContribSchema` nested `SchemaBaseline` field wins over Tank's side table (deleted). Verify the CI job exists in `graph_census.py` and is wired in `.github/workflows/` before tier-3.
 
-📌 **The trick that makes one predicate serve 60 ops: pass the row into the predicate.**
-`ClaimPredicate = fn(&NodeView, &OpSpec)`. The predicate reads `spec.caps` / `spec.op_type` /
-`spec.kernel` instead of closing over them. Without this, "adding an op is a row" is false and you are
-back to one function per op. Same for `TranslateHandler`. Remember this shape for the reduction, GEMM
-and shape-op templates.
+📌 **C1 domain regression test (Trinity):** `tests/ops/test_domain_regression.py` asserts `com.microsoft::NotARealOp` produces an ordinary decline (not a crash). TODO: upgrade Trinity's test to machine-readable reason code when your diagnostic JSON format is stable. `[contrib-schema]` and `[attribute]` must remain separate decline code buckets — never merge them.
 
-📌 **`OpStatus::Staged(reason)` is how you land a table before its shaders without breaking the
-claim/translate invariant.** A staged row is fully described and fully claim-tested, but
-`claim_decision` declines it with `[staged]` before the predicate runs, and `is_registered`/`spec_for`
-return nothing so it can never reach `Compile`. M0's "claims zero nodes" stays literally true; Trinity
-gets real "must NOT be claimed" assertions immediately; going live is a one-word diff. Use distinct
-staging reasons (`NO_SHADER`, `NEEDS_PARAMS`, `NEEDS_CAST_MATRIX`) — the table then reads as a sorted
-backlog and shows when 12 rows share one blocker.
+📌 **Switch's `bind_aliased_output` seam (Switch engine-seams, D-S3):** KV-cache in-place update requires `bind_aliased_output(output_slot, input_slot)` on `DispatchContext`. GQA and LinearAttention handlers will need this for M2+. Default method returns resolved input — your handlers do not need to use it until KV-cache is required.
 
-📌 **Machine-readable declines without touching another owner's ABI.** `ep.rs` (Tank's) constructs
-`Cow::Borrowed/Owned` reasons itself and calls `.clone().into_owned()`, so `DeclineReason` had to stay
-`Cow<'static, str>`. Solution: structure by *construction* — `decline(code, detail)` renders
-`"[tag] sentence"`, `DeclineCode::of_reason()` parses it back, `deny!`/`require!` stamp the code. One
-construction site, three consumers (human log, Trinity assertions, Niobe histogram), zero cross-owner
-edits. Generalisable lesson: when you need structure in someone else's type, put it in the value.
+📌 **Switch's `compile_hook_for` stub in `registry.rs` (Switch engine-seams, Seam 1):** `registry.rs` now has `pub fn compile_hook_for(desc: &NodeDesc) -> Option<CompileHook>`. Mouse fills in per-op prepack hooks for GQA/MatMulNBits. `CompileHook` = `fn(&mut CompileContext, &NodeDesc)`. The `TileConfig`, `PackKey`, `PackInput`, `PackOutput`, `PrepackRequest`, `PrepackResult` vocabulary is in `engine.rs`.
 
-📌 **ORT C API facts verified against the vendored 1.28 header** (write these down, they are easy to get
-wrong): `Node_GetInputs`/`Node_GetOutputs` are `_Out_writes_(n) const OrtValueInfo**` — you size then
-fill. **`GetValueInfoTypeInfo` returns a `const OrtTypeInfo**` that is borrowed and must NOT be
-released** — unlike the owning `GetTypeInfo`. Releasing it is a double-free.
-`CastTypeInfoToTensorInfo` is `_Outptr_result_maybenull_` (non-tensor → null, no error).
-`Node_GetAttributeByName` is also `_Outptr_result_maybenull_`. `ReadOpAttr` is
-`(attr, type, void* data, size_t len, size_t* out)` — call it once to size, again to fill.
+📌 **`concentration()` metric is the honest performance predictor (Mouse partition rule).** `largest_island_flops ÷ total_claimed_flops` separates "80% coverage across 40 islands" from "80% in one island". Niobe reports this; always include it alongside `node_coverage` in any coverage summary you publish.
 
-📌 ORT reports a **null `OrtValueInfo`** for an omitted *interior* optional input (`Clip(x, , max)`)
-rather than shortening the input list. Hence `EdgeType`'s fields are both `Option` and `has_input(i)`
-exists. Making "unknown" impossible to ignore is what stops a predicate from claiming an untranslatable
-node. This is the MLX scar, confirmed in the Vulkan ABI.
+📌 **Byte-typed tensors: allocator rounding (Mouse turn-4):** `bool`/`uint8` buffers must be allocated rounded up to 4 bytes. This is invisible from Rust; it belongs in the allocator contract. Coordinate with Tank when the M2 allocator lands. Document in `OP_COVERAGE.md §8` alongside the `PackedWeights` memory class note.
 
-📌 **`engine::KernelRequest::shader` is `&'static str`, so a variant stem can never be formatted at
-runtime.** All six dtype stems are baked into `Kernel` at compile time via `concat!` inside the
-`kernel!`/`stems!` macros. Stem order must match `ALL_DTYPES`; there is a test asserting it. Any future
-template family must follow the same pattern.
-
-📌 **A row's `caps` bitset *is* its variant set** — which killed §5.5's proposed `f16_relevant` gating
-list before it was written. `Atanh` declaring `FLOAT` and `BitwiseAnd` declaring `INT` generate exactly
-the variants each can use. 69 rows → 168 SPIR-V modules. The manifest
-(`src/ops/shader_variants.txt`, TSV: stem / source / `-D` defines) is checked in, regenerable with
-`MOUSE_BLESS_VARIANTS=1 cargo test`, and a test fails on drift — so the build's view of what shaders
-exist and the registry's view of what it dispatches cannot silently diverge. `build.rs` consuming it is
-a request to Switch, not something I can land.
-
-📌 **Zero stride *is* the broadcasting implementation.** `ShapePlan::broadcast` right-aligns into
-`[u32; MAX_RANK=6]`, computes contiguous strides over each input's own padded shape, and sets stride 0
-on stretched axes. The GLSL contains no broadcasting logic whatsoever. `all_identical` flags the linear
-fast path as a spec constant. Push layout `rank, elem_count, out_shape[6], strides[N][6]` = 104 bytes
-worst case for a ternary — inside the 128-byte `maxPushConstantsSize` floor, asserted by a test. This
-is why `MAX_RANK` is 6 and not 8.
-
-📌 Subtlety I got wrong once: **leave `ShapePlan.rank` at 0 for all-scalar inputs**, don't clamp to 1,
-or `out_dims()` returns `[1]` for what is genuinely a rank-0 output.
-
-📌 **`REQUIRE_STATIC_SHAPES = true` in one place.** Honest consequence: symbolic `batch`/`seq` decoder
-graphs currently decline *everything* with one dominant `[dynamic-shape]` bucket. That is the correct
-signal and it promotes OQ-M1 (shape-agnostic recording) above almost every individual op. One constant
-to flip when it lands.
-
-📌 **Trinity's `tests/layering.rs` scans `src/ops/**` for forbidden *whole tokens*** after stripping
-comments and strings: bare `sys`, `ort`, `ash`, `OrtNode`, `vk::`, `unsafe`. Word boundaries are
-respected (`support`, `sort` are fine) but it reads doc comments too in some paths — my `ops/mod.rs`
-docs deliberately never name them literally. All ABI work belongs in `registry.rs`, which is the
-sanctioned exception.
-
-📌 Named the table macro `op_table!`, not `ops!` — `ops!` is visually ambiguous with the `crate::ops`
-module path in `crate::ops!{}` position. Invoked as `crate::op_table! { ... }`.
-
-📌 Avoided `std::ptr::fn_addr_eq` in tests (MSRV/clippy risk); asserting on `status` /
-`Staged(NEEDS_PARAMS)` tests the same intent without comparing function pointers.
-
-📌 The `Recorder` mock `DispatchContext` is the highest-value test asset here — handlers are pure
-`NodeDesc → KernelRequest`, so the entire template layer is tested with no Vulkan device, no shaders
-and no ORT session. It also separates the failure modes: if `shape_plan` and the handler are asserted
-correct, a conformance failure is in the GLSL.
-
-📌 Partition rule shipped as two ordered gates: size (`min_nodes: 4` unless an anchor op is present)
-then economics (`compute_ns > margin × transfer_ns`, `margin = 3.0`). **The margin is 3× and not 1×
-because a cost model this crude is easily wrong by 2×, and it must fail towards "run on CPU", which is
-always correct.** `TransferModel::fit` (least squares over `(bytes, ns)` samples) is Niobe's calibration
-hook, so her measurements replace the placeholder constants instead of arguing with them.
-`concentration()` (largest-island FLOPs ÷ total claimed FLOPs) is the number that separates "80% of
-nodes across 40 islands" from "80% in one island" — the unit tests assert those two cases have
-identical `node_coverage` and wildly different honest metrics.
-
-📌 Rai ruled OQ-M6 🟢 GREEN: reading llama.cpp's MIT Vulkan shaders is permitted with **no attribution
-obligation for reading and learning**. The operative test is *"could you write this code without
-looking at the original?"* Obligations attach only on substantial source adaptation — and note SPIR-V
-compiled from adapted GLSL is a derived work, which matters because we embed SPIR-V in the cdylib.
-Practical discipline for GQA/MatMulNBits/LinearAttention: read, understand, close the tab, write.
-
-📌 Verify commands, all green on Windows: `cargo build`; `cargo clippy --all-targets -- -D warnings`;
-`cargo test --lib` → **141 passed** (was 45 at Tank's baseline). `cargo test --test layering` is 14/15,
-the failure being Switch/Trinity's in-flight barrier lint on the untracked `src/vk/command.rs` — not
-mine. Always re-check the baseline before blaming your own change for a red test in a repo with four
-agents editing concurrently.
-
----
-
-## 2026-07-28T21:01:56-07:00 — turn 3: contrib domain admitted, XL kernels funded
-
-📌 The two rulings I was most careful about both went the ambitious way: `com.microsoft` is admitted
-and the XL kernels are committed. Being honest about cost did **not** get the work descoped — it got
-it scheduled with the cost acknowledged. The lesson is that flagging expense clearly is not the same
-as arguing against something, and the coordinator explicitly valued the split claim (breadth in weeks,
-end-to-end LLM in months) enough to report it upward that way. Keep splitting the claim.
-
-📌 Contrib ops have **no opset guarantee**. `since_version = 1` forever, versioned by ORT *release*,
-inputs and attributes added **in place**. So the opset window — the whole compatibility contract for
-an `ai.onnx` row — is information-free for exactly the ops the LLM path needs. That is why
-`ContribSchema` exists. Never treat a contrib row's opset column as meaning anything.
-
-📌 The drift detector that actually works is **attribute-name enumeration**, not shape checking. ORT
-materializes defaulted optional attributes, so the observed name set is the *effective* schema. An
-unknown attribute name means the op may not be the op we think it is. `Node_GetNumAttributes` /
-`Node_GetAttributes` / `OpAttr_GetName` are all in the vendored 1.28 header — check the header before
-assuming a diagnostic is impossible.
-
-📌 Decline codes must not be lumped. `[attribute]` = a value we chose not to support (backlog, bulk,
-boring). `[contrib-schema]` = the schema moved under us (alarm, should be zero). Sharing a bucket
-hides the alarm inside the backlog at exactly the moment it matters.
-
-📌 Asymmetric failure directions decide how narrow to write a predicate. Too narrow ⇒ decline ⇒ CPU
-fallback ⇒ *always correct*. Too wide ⇒ wrong answer at full speed. So write narrow, record the
-confidence in the row, and widen with evidence from the decline histogram.
-
-📌 In a repo with five agents editing concurrently, **re-read the file before every edit**. `epctl.rs`
-grew a `sys::schema_baseline_for` lookup between my reading it and my editing it, and `sys.rs` grew a
-`CONTRIB_SCHEMA_BASELINES` side table covering my eleven rows before I registered them. When someone
-else's mechanism already solves your problem, do not delete it and do not silently duplicate it —
-add a test asserting the two agree, and record the part where they don't.
-
-📌 Two records of one fact is a drift hazard; a test is cheaper than a merge. The registry now asserts
-its fingerprints and `sys`'s side table agree on the verification *date*, and deliberately does not
-compare release strings because `LinearAttention`/`CausalConvWithState`/`QMoE` are main-branch-only.
-The divergence is written down in the decision file rather than hidden by loosening the test.
-
-📌 Predicate before kernel. The claim predicate holds the long uncertainty tail (schema reading,
-attribute semantics, decline taxonomy) and needs no GPU and no shader to test. Landing eleven staged
-rows with real predicates means the kernel author starts from a settled contract and Trinity can
-assert "must NOT be claimed" today.
-
-📌 Layering constraints C1/C2 (`DESIGN.md` §1.4) landed *while* I was writing the contrib rows and my
-first cut tripped C2. Check `tests/layering.rs` for new constraints before assuming a red test is
-your own regression — and note C2's check is a grep for the literal `schema_baseline` in non-test
-`registry.rs`, so the accessor name is load-bearing.
-
-📌 Verify commands, all green on Windows: `cargo build`; `cargo clippy --all-targets -- -D warnings`;
-`cargo test` → **174 lib + 25 layering + 6 dump_capabilities, 0 failed** (was 141 lib last turn, 45 at
-Tank's baseline).
-
-📌 Clippy gotcha, again worth remembering: `for x in iter.filter(..) { return Err(..) }` trips
-`clippy::never_loop`. Use `if let Some(x) = iter.find(..)`.
-
----
-
-## Turn 4 — 2026-07-28T22:28:08-07:00 — first real kernels
-
-📌 **`build.rs` compiles every `*.comp` sitting *directly* in `shaders/glsl/` with no `-D` defines**,
-separately from the variant-table rows. A parameterised template placed there is compiled twice, the
-second time with no `EW_OP`/`DTYPE_*`, and breaks the build on any machine that *has* `glslc` — i.e.
-it would have passed locally and failed only in CI. Templates therefore live in
-`shaders/glsl/templates/` (the scan is non-recursive). Read the build script before adding a file
-type it has never seen.
-
-📌 **You can validate shaders with no Vulkan SDK.** The Khronos glslang release ships a standalone
-`glslangValidator.exe`; unzip it outside the repo and run it with the same flags `build.rs` passes
-(`-V --target-env vulkan1.1 -S comp -I<include> -D...`). Caught every syntax error in one pass. Do
-not commit the tool.
-
-📌 **Compiled ≠ executed, and the difference deserves a status word.** 168 variants compile; zero
-have run, because `rust/src/vk/` has no pipeline or dispatch path yet. Hence `UNEXERCISED` as a
-staging reason distinct from `NO_SHADER`. Report the two separately, always — this is the same
-discipline as `largest_island_flops`, applied one level down.
-
-📌 **ONNX scalar semantics that bite:** `Round` is round-half-to-even (`roundEven`, not `round`);
-`Mod` with the default `fmod=0` takes the sign of the *divisor* (numpy), `a - floor(a/b)*b`; GLSL
-`pow` is undefined for a negative base but ONNX `Pow` is not; `Mean` in a binary template is only
-correct for two inputs, so the variadic lowering must divide by N once at the end. `Erf` is
-load-bearing far beyond itself, because exact `Gelu` decomposes through it.
-
-📌 **Byte-typed tensors force an allocator requirement.** Packed-byte stores write a whole `uint`
-word, so a `bool`/`uint8` buffer must be allocated rounded up to 4 bytes. This is invisible from the
-Rust side and must be told to whoever owns the allocator, not assumed.
-
-📌 **Correction taken (D-S4-10, Switch).** I wrote that llama.cpp's incompatible block layouts made
-reference reading pointless. Wrong, and instructively so: I had bundled a *licensing* conclusion
-("we cannot copy this") with a *technical* one ("there is nothing to learn"), and only the first was
-mine to make. Keep licensing records to licensing claims.
-
-📌 Verify commands, all green on Windows (needs `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`
-on any machine without the Vulkan SDK — which is everyone's today): `cargo build`;
-`cargo clippy --all-targets -- -D warnings`; `cargo test` → **213 lib + 26 layering + 6
-dump_capabilities = 245 passed**, 7 ignored, 0 failed.
-
-📌 Regenerate the variant manifest with `MOUSE_BLESS_VARIANTS=1 cargo test --lib variants`.
-
----
-
-## Turn 5 — 2026-07-28T22:28:08-07:00 — making the decline reason readable
-
-📌 **A closed set of diagnostic codes is worth nothing if it stops at the FFI boundary.** I spent a
-whole turn separating `[contrib-schema]` from `[attribute]` so drift would be distinguishable from a
-deliberate limitation — and then nobody outside the process could read either one, so Trinity's C1
-test had to assert "zero nodes claimed", which cannot tell a correct decline from a crash. When you
-design a diagnostic, design its *reader* in the same breath.
-
-📌 **Diagnostics that need a lifecycle hook to flush are diagnostics that flake.** There is no point
-in the plugin-EP ABI where we are told "the session is over". Append-and-flush one self-contained
-JSON line per event; the file is then valid and complete after every event and the reader needs to
-know nothing about EP teardown. This beat a teardown-written report on every axis.
-
-📌 **Record below the aggregation, not above it.** `ep.rs` collapses declines to one reason per op
-type, which is right for a human and wrong for a test. Hooking `claim_decision` instead meant zero
-changes to Tank's boundary layer and gave every future caller the same record for free.
-
-📌 **Check arities against the schema source, not against your memory of it.** My
-`GroupQueryAttention` fingerprint had `min_inputs: 3` (a guess from "three required inputs") when the
-schema says 7, because optional inputs are positional and `seqlens_k`/`total_sequence_length` sit at
-indices 5 and 6. My note that "the 1.28 and main forms differ" was also wrong — they are identical.
-Both errors were in the *permissive* direction, which is the failure mode a drift detector can least
-afford.
-
-📌 **The GenAI builder sets `q_norm`/`k_norm` for every Qwen3 decoder**, emitting a 16-input GQA node
-when its fused path is on, and ORT's schema doc says an EP without support "must reject the node when
-this input is set". So the shape of the op we receive is decided by someone else's builder, and "the
-kernel works" may not imply "the model runs". Verify the exported graph before scheduling a kernel
-against an assumed signature.
-
-📌 **Ask for empirical confirmation of an oracle before designing tests on it — it pays.** Trinity's
-check confirmed the CPU EP works for `MatMulNBits`, and turned up two things no amount of reasoning
-would have: `accuracy_level` 4 diverges ~3.6e-3 (so the reference would have drifted with the
-runner's CPU and looked like a GPU bug), and fp16 activations NaN on 1.27 via the same
-null-allocator `PrePack` defect that forced the version pin.
-
-📌 Verify commands, all green: `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`; `cargo build`;
-`cargo clippy --all-targets -- -D warnings`; `cargo test` → **265 passed**, 7 ignored, 0 failed.
+📌 **GQA fingerprint correction (Mouse turn-5):** `min_inputs = 7` (not 3). Optional inputs are positional; `seqlens_k`/`total_sequence_length` at indices 5 and 6. GenAI builder emits 16-input GQA for Qwen3 (sets `q_norm`/`k_norm`). Verify the exported graph before finalizing the GQA claim predicate.

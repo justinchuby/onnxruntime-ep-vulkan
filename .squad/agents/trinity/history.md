@@ -101,3 +101,50 @@
 
   **ADDITION — Flat op table:** Created `tests/ops/test_op_table.py` with `CaseSpec` dataclass and single `test_op_table` dispatch. Pre-populated with all tier-1 ops from OP_COVERAGE §4.1–§4.5: 23 EW-B, 27 EW-U, 16 activations, Cast/Where, Identity/Flatten/Reshape, plus declined set (fp64, NonZero). 124 tests total; all skip cleanly without EP lib. `assert_vulkan_does_not_claim` promoted to `_models.py` top-level export; `test_fallback.py` updated. `claim=True`/`False` rows are equally easy to write — bulk op addition is one row per op.
 
+
+
+---
+
+## Cross-agent context appended (2026-07-28T22:28:08-07:00)
+
+📌 **`force_legacy_barriers` parity lane contract (Switch + Trinity):** `ep.force_legacy_barriers=1` session option forces the legacy `vkCmdPipelineBarrier` backend. Trinity's `test_barrier_parity.py` runs claim=True ops with both backends; bitwise-identical outputs required. `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=<path>` env: EP writes "sync2" or "legacy" to the file during `Barriers::select`. Switch wired this in `barrier.rs`. CI must run the parity suite on both Linux and Windows lavapipe lanes.
+
+📌 **C2 item 7: fingerprint audit CI (Morpheus §1.4):** `graph_census.py` runs in CI before any tier-3 contrib work. Trinity owns the "must NOT claim `com.microsoft::NotARealOp`" domain regression test (`test_domain_regression.py`); upgrade to machine-readable reason code when Mouse's registry API is confirmed. `[contrib-schema]` decline ≠ `[attribute]` decline — do not merge buckets.
+
+📌 **`accuracy_level` pinning (Trinity round-4 oracle investigation):** `MatMulNBits` oracle pinned at `MATMULNBITS_ORACLE_ACCURACY_LEVEL=1`. Level 4 diverges ~3.6e-3 (would present as GPU bug). Fp16 path gated on ORT ≥ 1.28. Three tolerances defined: `DEQUANT_EXACT` (bit-exact vs NumPy), `MATMULNBITS_FP32`, `MATMULNBITS_FP16`. Dequantize bit-layout goes to NumPy (independent spec), not CPU EP.
+
+📌 **mesa-dist-win lavapipe on Windows (Trinity + Link):** Mesa release 26.1.3 (2026-06-26), `mesa3d-26.1.3-release-msvc.7z`, includes lavapipe (Vulkan 1.3) as DLL + ICD JSON. `MESA_VERSION: "26.1.3"` pinned at workflow env. SwiftShader rejected (no Windows prebuilts, 20 min build). Link owns `docs/PLATFORMS.md §7.4` update.
+
+📌 **ORT 1.28.0 pin (Trinity + Tank + Fact Checker):** `ORT_VERSION=1.28.0` pinned at workflow-level env in `ci.yml` and `conformance.yml`. 1.27 excluded (null-allocator PrePack bug; fp16 NaN/Inf confirmed by Trinity). `tests/requirements.txt` → `onnxruntime>=1.28`.
+
+📌 **`bind_aliased_output` / `dispatch_indirect` seams (Switch):** Default methods on `DispatchContext` return `Err` for unimplemented seams. Trinity's `Recorder` mock does not need to implement them unless testing XL kernels. When XL kernel parity tests are added, verify both backends execute correctly through these seams.
+
+📌 **Claim diagnostic records (Mouse turn-5):** Per-event JSON, one self-contained line per event, append-and-flush (no lifecycle hook). Hooks `claim_decision` not the ep.rs aggregator. Trinity's C1 test (`test_domain_regression.py`) can parse the JSON file directly rather than asserting "zero nodes claimed" — upgrade when Mouse's format is stable.
+
+📌 Trinity round-5: CI red-streak remediation (2026-07-28T22:28:08-07:00):
+
+  **Root cause of ≥4 consecutive red runs:** `glslang-tools` provides `glslangValidator`, not
+  `glslc`. Switch's `build.rs` looks for `glslc`. The step was named "Install Vulkan SDK
+  (lavapipe + validation layers + glslc)" — it promised a tool it did not install. Fixed by
+  adding `shaderc` package (provides `/usr/bin/glslc` on Ubuntu 22.04). Added "Verify GLSL
+  compiler (glslc)" precondition step that fails with `::error::` before the build rather than
+  a cryptic build.rs panic 40s later.
+
+  **Lesson learned:** A CI step name that promises a tool is a contract. Verify with `which`/
+  `--version` in the step itself; don't assume from the package description.
+
+  **Windows DLL load crash fix:** `$ORT_HOME\lib` added to PATH before pytest on Windows so
+  `LoadLibraryEx` can find `onnxruntime.dll` when loading the EP cdylib.
+
+  **CI visibility fix:** README badge + `.github/CI_POLICY.md`. Badge is passive signal that
+  beats a discipline rule; CI_POLICY.md documents lane structure and investigation commands.
+  Branch protection remains a TODO requiring GitHub admin.
+
+  **CLAIM_LOG integration:** `read_claim_log()` added to `_models.py`. `test_domain_regression.py`
+  updated to assert `code == "not-registered"` via Mouse's JSON Lines API. Both domain
+  regression tests pass without Vulkan EP (`8 passed, 198 skipped` clean run verified
+  post-recreation).
+
+  **Open:** Mouse should confirm `"not-registered"` is the canonical code string (not
+  `"not_registered"` with underscore). First green run with real EP expected to surface EP
+  initialization behavior — observe and report rather than assume green.
