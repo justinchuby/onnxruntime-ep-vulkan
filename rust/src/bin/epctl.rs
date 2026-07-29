@@ -19,6 +19,7 @@
 //! This binary consumes only the crate's public API. It deliberately owns no registry knowledge
 //! of its own, so it cannot drift from the table it reports on.
 
+use onnxruntime_vulkan_ep::engine;
 use onnxruntime_vulkan_ep::registry::{OPSET_ANY, OpSpec, OpStatus, all_specs};
 use onnxruntime_vulkan_ep::sys;
 
@@ -168,25 +169,53 @@ fn usage() {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!("    epctl --dump-capabilities [--json]");
+    eprintln!("    epctl --probe-loader");
     eprintln!();
     eprintln!("    --dump-capabilities  every registered op, its opset window, dtypes, status,");
     eprintln!("                         backing shader, and (for contrib ops) the ORT release");
     eprintln!("                         its claim predicate was verified against.");
     eprintln!("    --json               machine-readable output, for CI diffing.");
+    eprintln!("    --probe-loader       probe the Vulkan loader: library presence, version,");
+    eprintln!("                         ICD discovery env vars, available layers/extensions,");
+    eprintln!(
+        "                         and whether vkCreateInstance + device enumeration succeed."
+    );
+    eprintln!("                         Run this in CI before the test suite to establish whether");
+    eprintln!(
+        "                         Vulkan is functional on the runner independently of the EP."
+    );
 }
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
     let dump = args.iter().any(|a| a == "--dump-capabilities");
+    let probe = args.iter().any(|a| a == "--probe-loader");
 
-    if let Some(bad) = args
-        .iter()
-        .find(|a| a.as_str() != "--json" && a.as_str() != "--dump-capabilities")
-    {
+    if let Some(bad) = args.iter().find(|a| {
+        a.as_str() != "--json"
+            && a.as_str() != "--dump-capabilities"
+            && a.as_str() != "--probe-loader"
+    }) {
         eprintln!("epctl: unrecognised argument `{bad}`");
         usage();
         return std::process::ExitCode::from(2);
+    }
+
+    if probe {
+        // Note: this is the one epctl operation that creates a VkInstance and touches Vulkan.
+        // All other epctl operations remain static (no ORT, no Vulkan).
+        // Cross-owner edit: Switch added this; Tank owns epctl.rs. Flagged in decisions.
+        let report = engine::loader_probe_report();
+        println!("{report}");
+        // Exit 1 if the probe found no capable devices (useful for CI gate scripts).
+        let ok = report.contains("passed the §7.2 capability gate")
+            && !report.contains("0 device(s) passed");
+        return if ok {
+            std::process::ExitCode::SUCCESS
+        } else {
+            std::process::ExitCode::from(1)
+        };
     }
 
     if !dump {

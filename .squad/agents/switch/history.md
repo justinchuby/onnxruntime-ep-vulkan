@@ -79,3 +79,85 @@
 - `ash::Device` / `ash::Instance` cannot be zeroed (non-nullable fn pointers).
 
 **Current test count: 268 (233 lib + 6 dump-capabilities + 26 layering + 3 shader-guard). All passing.**
+
+---
+
+### 2026-07-29T05:17:03-07:00 — Session 9: ICD diagnostics, apiVersion fix, epctl --probe-loader
+
+**Task:** Diagnose `ERROR_INCOMPATIBLE_DRIVER` on both CI lanes (run 30450284838). The EP loaded
+and the degradation path worked (M0 criterion 5 confirmed — it advertised zero devices and let
+ORT fall back to CPU). But no Vulkan device could be enumerated, so M0 cannot be verified until
+the ICD issue is resolved.
+
+**Diagnosis:**
+- Root cause is environmental: lavapipe ICD either missing or its library isn't loadable on both
+  CI runners. NOT a bug in our code.
+- Linux: `vulkaninfo` already warned in the install step (non-fatal); EP then got
+  `ERROR_INCOMPATIBLE_DRIVER` as expected. The `::warning::` failure mode masked the real problem.
+- Windows: ICD JSON was found, but the mesa DLL or its dependencies (MSVC runtime) may not be
+  loadable.
+- Neither lane had a pre-test Vulkan availability check that FAILS CI — both runners just silently
+  had no lavapipe.
+
+**Code changes made (this session):**
+
+1. **`vk/instance.rs` — loader diagnostic function `loader_state_lines`:**
+   - Always emitted at WARN level on any `vkCreateInstance` failure.
+   - Emitted at INFO level pre-creation when `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`.
+   - Reports: `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, `VK_INSTANCE_LAYERS` env var values;
+     loader version from `vkEnumerateInstanceVersion`; layer count and names; instance extension
+     count (indicator of whether any ICD loaded).
+
+2. **`vk/instance.rs` — apiVersion fix (defensive correctness):**
+   - `Instance::create` now calls `try_enumerate_instance_version` before building
+     `VkApplicationInfo`.
+   - If loader version is None (Vulkan 1.0) or < 1.1: return None early with clear message rather
+     than hitting `ERROR_INCOMPATIBLE_DRIVER` from requesting apiVersion 1.1 against a 1.0 loader.
+   - ash 0.38's `try_enumerate_instance_version()` returns `Ok(None)` for 1.0 loaders (function
+     not present) and `Ok(Some(v))` for 1.1+ loaders. Never panics (vs the deprecated
+     `enumerate_instance_version` which does panic on 1.0).
+
+3. **`vk/instance.rs` — `probe_loader_report()` public fn:**
+   - Standalone loader probe: loads ash, collects loader state, tries `vkCreateInstance`, applies
+     §7.2 gate, returns multi-line diagnostic string. Bypasses the shader guard in
+     `probe_devices()` so it works on shader-less builds. Used by epctl.
+
+4. **`engine.rs` — `pub fn loader_probe_report()`:**
+   - Thin wrapper around `vk::instance::probe_loader_report()`. Exposed as `pub` so `epctl`
+     (a binary in the same crate, importing via `onnxruntime_vulkan_ep::engine`) can call it.
+
+5. **`epctl.rs` — `--probe-loader` flag (cross-owner edit — Tank owns epctl.rs):**
+   - New flag: runs `engine::loader_probe_report()`, prints to stdout.
+   - Exits 1 when no capable device found (usable as a gate step in CI scripts).
+   - Previously epctl was entirely static (no Vulkan, no ORT). This is the one addition that
+     touches Vulkan. All existing `--dump-capabilities` behavior unchanged.
+
+**What Link and Trinity need to do (decisions/inbox/switch-icd-diagnostics.md):**
+1. Set `VK_DRIVER_FILES` alongside `VK_ICD_FILENAMES` in `ci.yml` — newer loaders may prefer it.
+2. Linux: make `vulkaninfo` failure a hard `exit 1` (not `::warning::`) to catch lavapipe issues
+   before tests run.
+3. Linux: verify `mesa-vulkan-drivers` actually ships lavapipe on ubuntu-22.04 GitHub runners;
+   consider installing from the LunarG apt repo which is already added for shaderc.
+4. Windows: verify mesa DLL dependencies are loadable (check MSVC runtime availability).
+5. Add `epctl --probe-loader || exit 1` as a CI step before pytest to make Vulkan availability
+   explicit and named in the job log.
+
+**ash 0.38 lesson learned:**
+- `entry.try_enumerate_instance_version()` is unsafe and returns `VkResult<Option<u32>>`. The
+  deprecated `entry.enumerate_instance_version()` panics on Vulkan 1.0 loaders. Always use
+  `try_enumerate_instance_version`.
+- `entry.enumerate_instance_layer_properties()` and `entry.enumerate_instance_extension_properties`
+  are both unsafe. Both are loader-level queries that work without any ICD loaded.
+
+**What is verified vs written-but-unexercised:**
+- VERIFIED by unit tests (no ICD needed): all prior tests (272 total now); diagnostic functions
+  are exercised indirectly (paths don't panic on an ICD-less machine).
+- VERIFIED by real ORT run: M0 exit criterion 5 (zero-devices → CPU fallback) confirmed on both
+  CI lanes by run 30450284838, before ICD fix.
+- WRITTEN BUT NOT EXERCISED: `loader_state_lines` full output in the failure path (will fire on
+  next CI run with new code); `epctl --probe-loader` output (needs CI with Vulkan loader present).
+- UNBLOCKED: once Trinity/Link fix lavapipe, the new diagnostics will show "vkCreateInstance:
+  OK" + device count, and `probe_devices()` will return real devices.
+
+**Final state:** `cargo ci` green (rustfmt + clippy + build + test). **272 tests** (238 lib + 6
+dump-capabilities + 26 layering).

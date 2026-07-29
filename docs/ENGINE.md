@@ -1,12 +1,12 @@
 # Vulkan Runtime & Shader Architecture
 
 **Status:** In progress — core modules landed
-**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T01:51:01-07:00)
+**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T05:17:03-07:00)
 **Author:** Switch (Vulkan Compute Engineer)
 **Scope:** `rust/src/engine.rs` and the Vulkan abstraction layer; does NOT cover ONNX graph
 partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESIGN.md (Morpheus).
 
-## Implementation Status (2026-07-29T01:51:01-07:00)
+## Implementation Status (2026-07-29T05:17:03-07:00)
 
 | Module | Status | Notes |
 |---|---|---|
@@ -19,14 +19,15 @@ partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESI
 | `vk/pipeline.rs` | ✅ Real | Pipeline cache, `DispatchDescriptorPool`, spec constants, push constants, 8 unit tests |
 | `engine.rs` seams | ✅ Stubbed | Vocabulary types, `Plan`, `CompileContext`, `DispatchContext`; real dispatch pending |
 | Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. `shaders::has_any()`. 3 unit tests. |
+| Loader diagnostics | ✅ Real | `loader_state_lines()` always emitted on `vkCreateInstance` failure; INFO-gated pre-creation on `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`. `apiVersion` capped to loader version. |
+| `epctl --probe-loader` | ✅ Real | Standalone loader probe: library presence, loader version, ICD env vars, layers/extensions, `vkCreateInstance`, device gate. Exits 1 when no capable device found. |
 | Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute |
 | Real `DispatchContext` | 🔲 Pending | Concrete implementor over `VkCommandBuffer` using `cmd.rs` + `pipeline.rs` |
 | `alloc` integration | 🔲 Pending | Tank's `BufferView` handle table ↔ `GpuBuffer` side-table |
 | Prepack hook (real) | 🔲 Pending | Seam 1 vocab is real; actual staging upload behind it pending |
 | KV-cache aliasing | 🔲 Pending | Seam 2 default impl correct for stubs; real aliasing pending |
 
-Build status: `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all green.
-Test count: **268** (236 lib + 6 dump-capabilities + 26 layering).
+Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **272** (238 lib + 6 dump-capabilities + 26 layering).
 
 ---
 

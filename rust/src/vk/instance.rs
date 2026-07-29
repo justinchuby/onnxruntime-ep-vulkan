@@ -88,6 +88,54 @@ impl Instance {
             }
         };
 
+        // ── Query loader version ──────────────────────────────────────────────
+        // vkEnumerateInstanceVersion is a Vulkan 1.1 loader function. If it is absent (Vulkan 1.0
+        // loader), requesting apiVersion >= 1.1 in ApplicationInfo WILL cause
+        // ERROR_INCOMPATIBLE_DRIVER — the loader checks this before consulting the ICD.
+        // SAFETY: entry is live; this is a loader-level query requiring no ICD.
+        let loader_version = unsafe { entry.try_enumerate_instance_version() }.unwrap_or(None);
+
+        let api_version_to_request = match loader_version {
+            None => {
+                log::warn!(
+                    "Vulkan loader is version 1.0 (vkEnumerateInstanceVersion not available). \
+                     EP requires a Vulkan 1.1+ loader. Loader diagnostic:"
+                );
+                for line in loader_state_lines(&entry) {
+                    log::warn!("{line}");
+                }
+                return None;
+            }
+            Some(v) if v < vk::make_api_version(0, 1, 1, 0) => {
+                log::warn!(
+                    "Vulkan loader reports version {}.{} — EP requires 1.1+. Loader diagnostic:",
+                    vk::api_version_major(v),
+                    vk::api_version_minor(v)
+                );
+                for line in loader_state_lines(&entry) {
+                    log::warn!("{line}");
+                }
+                return None;
+            }
+            // Loader is ≥1.1: request exactly 1.1 (all the instance-level features we use are
+            // 1.1 core; requesting 1.3 would be wasteful and unnecessary).
+            Some(_) => vk::make_api_version(0, 1, 1, 0),
+        };
+
+        // ── Pre-creation diagnostic (verbose only) ────────────────────────────
+        let verbose = std::env::var(crate::logging::ENV_VERBOSE).as_deref() == Ok("1");
+        if verbose {
+            log::info!(
+                "[loader-probe] Before vkCreateInstance — loader version {}.{}.{}:",
+                vk::api_version_major(loader_version.unwrap()),
+                vk::api_version_minor(loader_version.unwrap()),
+                vk::api_version_patch(loader_version.unwrap())
+            );
+            for line in loader_state_lines(&entry) {
+                log::info!("{line}");
+            }
+        }
+
         // ── Optionally enable validation layer ───────────────────────────────
         let mut layer_ptrs: Vec<*const std::os::raw::c_char> = Vec::new();
         let validation_layer_name = c"VK_LAYER_KHRONOS_validation";
@@ -120,10 +168,9 @@ impl Instance {
             .application_version(vk::make_api_version(0, 0, 1, 0))
             .engine_name(&engine_name)
             .engine_version(vk::make_api_version(0, 0, 1, 0))
-            // Request 1.1; drivers that only support 1.0 are filtered out by R1 at enumeration
-            // time. Requesting 1.1 is necessary so that 1.1 promoted extensions (subgroup
-            // properties, get_physical_device_properties2) are callable without extension strings.
-            .api_version(vk::make_api_version(0, 1, 1, 0));
+            // api_version_to_request is capped to the loader's reported version above.
+            // Requesting a higher version than the loader supports returns INCOMPATIBLE_DRIVER.
+            .api_version(api_version_to_request);
 
         let create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -133,8 +180,32 @@ impl Instance {
         // SAFETY: entry is live; app_name/engine_name/layer_ptrs outlive create_info.
         let handle = match unsafe { entry.create_instance(&create_info, None) } {
             Ok(h) => h,
+            Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => {
+                // This is the most actionable failure: the loader found no usable ICD, or the
+                // ICD DLL/so could not be loaded. The full loader state is always emitted here
+                // regardless of verbose mode — this is the log that makes it diagnosable.
+                log::warn!(
+                    "vkCreateInstance failed (ERROR_INCOMPATIBLE_DRIVER). The loader found no \
+                     usable ICD or the ICD library is not loadable. Loader diagnostic:"
+                );
+                for line in loader_state_lines(&entry) {
+                    log::warn!("{line}");
+                }
+                log::warn!(
+                    "  Hint: set VK_DRIVER_FILES (preferred) in addition to VK_ICD_FILENAMES, \
+                     verify the ICD DLL/so path and its dependencies, and confirm that \
+                     VK_LAYER_KHRONOS_validation is findable at VK_LAYER_PATH."
+                );
+                return None;
+            }
             Err(e) => {
-                log::warn!("vkCreateInstance failed ({e:?}). The EP will advertise no devices.");
+                log::warn!(
+                    "vkCreateInstance failed ({e:?}). The EP will advertise no devices. \
+                            Loader diagnostic:"
+                );
+                for line in loader_state_lines(&entry) {
+                    log::warn!("{line}");
+                }
                 return None;
             }
         };
@@ -372,6 +443,197 @@ fn device_kind_from_type(ty: vk::PhysicalDeviceType) -> DeviceKind {
         _ => DeviceKind::Cpu,
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Loader-state diagnostics
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Collect human-readable lines describing what the Vulkan loader currently sees.
+///
+/// Reads environment variables (`VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, `VK_INSTANCE_LAYERS`),
+/// queries the loader version, and enumerates available layers and extension counts. This is
+/// entirely loader-level — no ICD is needed and no `VkInstance` is created.
+///
+/// Called in two places:
+/// 1. Unconditionally on any `vkCreateInstance` failure (logged at WARN so it is always visible).
+/// 2. Before creation when `ONNXRUNTIME_EP_VULKAN_VERBOSE=1` (logged at INFO).
+fn loader_state_lines(entry: &ash::Entry) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for var in ["VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_INSTANCE_LAYERS"] {
+        let val = std::env::var(var).unwrap_or_else(|_| "<not set>".to_string());
+        lines.push(format!("  {var} = {val}"));
+    }
+
+    // Loader version — available without any ICD.
+    // SAFETY: entry is live; vkEnumerateInstanceVersion is a loader function with no side effects.
+    let ver = unsafe { entry.try_enumerate_instance_version() };
+    let ver_str = match ver {
+        Ok(None) => {
+            "1.0 (vkEnumerateInstanceVersion unavailable — loader is Vulkan 1.0)".to_string()
+        }
+        Ok(Some(v)) => format!(
+            "{}.{}.{}",
+            vk::api_version_major(v),
+            vk::api_version_minor(v),
+            vk::api_version_patch(v)
+        ),
+        Err(e) => format!("<error: {e:?}>"),
+    };
+    lines.push(format!("  loader version = {ver_str}"));
+
+    // Available layers — enumerates from the loader manifest directories.
+    // SAFETY: entry is live; this is a read-only enumeration.
+    let layer_names: Vec<String> = unsafe { entry.enumerate_instance_layer_properties() }
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| {
+            // SAFETY: layer_name is a null-terminated C array the loader filled.
+            unsafe { CStr::from_ptr(l.layer_name.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    lines.push(format!(
+        "  available layers ({}) = {}",
+        layer_names.len(),
+        if layer_names.is_empty() {
+            "<none>".to_string()
+        } else {
+            layer_names.join(", ")
+        }
+    ));
+
+    // Extension count — non-zero only if at least one ICD is loadable. A count of 0 or only
+    // surface/swapchain loader extensions (without compute-relevant ICD extensions) indicates
+    // no functional compute ICD was found.
+    // SAFETY: entry is live; None pLayerName → enumerates all instance extensions.
+    let ext_count = unsafe { entry.enumerate_instance_extension_properties(None) }
+        .map(|v| v.len())
+        .unwrap_or(0);
+    lines.push(format!(
+        "  instance extensions visible to loader = {ext_count} \
+         (0 or small values suggest no ICD loaded)"
+    ));
+
+    lines
+}
+
+/// Run a standalone loader probe and return a formatted diagnostic report.
+///
+/// Used by `epctl --probe-loader`. Bypasses the shader guard in [`super::super::engine::probe_devices`]
+/// so that CI can verify Vulkan availability independently of shader compilation.
+///
+/// This creates — and immediately drops — a `VkInstance`. It does not create a logical device
+/// or allocate any GPU memory.
+pub(crate) fn probe_loader_report() -> String {
+    let mut out: Vec<String> = Vec::new();
+
+    out.push("=== Vulkan Loader Probe ===".to_string());
+
+    // Step 1: load the dynamic library.
+    // SAFETY: ash::Entry::load() opens the system Vulkan loader; no invariant required beyond
+    // "the system has a Vulkan loader installed."
+    let entry = match unsafe { ash::Entry::load() } {
+        Ok(e) => e,
+        Err(e) => {
+            out.push(format!("FAIL: no Vulkan loader found — {e}"));
+            out.push(String::new());
+            out.push(
+                "Action required: install the Vulkan loader (libvulkan.so.1 on Linux, \
+                      vulkan-1.dll on Windows, or MoltenVK on macOS)."
+                    .to_string(),
+            );
+            return out.join("\n");
+        }
+    };
+
+    out.push("Vulkan library loaded.".to_string());
+
+    // Step 2: loader state (env vars, version, layers, extensions).
+    out.extend(loader_state_lines(&entry));
+
+    // Step 3: try to create a VkInstance.
+    let app_name = CString::new("epctl-probe").expect("no interior NUL");
+    let engine_name = CString::new("vulkan-ep-probe").expect("no interior NUL");
+
+    // SAFETY: entry is live; vkEnumerateInstanceVersion is a loader function.
+    let loader_version = unsafe { entry.try_enumerate_instance_version() }.unwrap_or(None);
+    let api_v = match loader_version {
+        Some(v) if v >= vk::make_api_version(0, 1, 1, 0) => vk::make_api_version(0, 1, 1, 0),
+        Some(v) => {
+            out.push(format!(
+                "FAIL: loader version {}.{} is below the required 1.1.",
+                vk::api_version_major(v),
+                vk::api_version_minor(v)
+            ));
+            return out.join("\n");
+        }
+        None => {
+            out.push(
+                "FAIL: loader is Vulkan 1.0 (vkEnumerateInstanceVersion not present). \
+                      EP requires 1.1+."
+                    .to_string(),
+            );
+            return out.join("\n");
+        }
+    };
+
+    let app_info = vk::ApplicationInfo::default()
+        .application_name(&app_name)
+        .engine_name(&engine_name)
+        .api_version(api_v);
+    let create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+
+    // SAFETY: entry is live; app_name/engine_name outlive create_info.
+    let inst_handle = match unsafe { entry.create_instance(&create_info, None) } {
+        Ok(h) => h,
+        Err(e) => {
+            out.push(format!("FAIL: vkCreateInstance returned {e:?}."));
+            if e == vk::Result::ERROR_INCOMPATIBLE_DRIVER {
+                out.push(
+                    "  → ERROR_INCOMPATIBLE_DRIVER: the loader found no usable ICD. \
+                          Check VK_ICD_FILENAMES / VK_DRIVER_FILES above and verify the \
+                          ICD DLL/so is loadable."
+                        .to_string(),
+                );
+            }
+            return out.join("\n");
+        }
+    };
+
+    out.push("vkCreateInstance: OK.".to_string());
+
+    // Wrap in a temporary Instance so Drop calls vkDestroyInstance.
+    let inst = Instance {
+        _entry: entry,
+        handle: inst_handle,
+    };
+
+    // Step 4: enumerate devices and apply the §7.2 gate.
+    let devices = inst.enumerate_capable_devices();
+    out.push(format!(
+        "{} device(s) passed the §7.2 capability gate:",
+        devices.len()
+    ));
+    for (i, d) in devices.iter().enumerate() {
+        out.push(format!(
+            "  [{i}] {:?}: {} (driver {}, Vulkan {})",
+            d.info.kind, d.info.name, d.info.driver_version, d.info.api_version
+        ));
+    }
+    if devices.is_empty() {
+        out.push(
+            "  (no devices — either there is no ICD or all devices failed the gate)".to_string(),
+        );
+    }
+
+    out.join("\n")
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Internal helpers (non-diagnostic)
+// ──────────────────────────────────────────────────────────────────────────────
 
 /// Format a driver version for display.
 ///
