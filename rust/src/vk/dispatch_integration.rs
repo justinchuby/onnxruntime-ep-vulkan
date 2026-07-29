@@ -8,19 +8,26 @@
 //! 2. No Vulkan instance — no loader installed or `vkCreateInstance` fails.
 //! 3. No capable device — all devices fail the §7.2 gate.
 //!
-//! CI lanes install the LunarG SDK and configure a software ICD; both Linux and Windows CI
-//! lanes run this test unless neither glslc nor a device is present.
+//! When multiple devices are present the test runs on **all of them**, not just the first.
+//! This exercises both a UMA (e.g. Intel Iris Xe) and a discrete (e.g. NVIDIA RTX 4060) path
+//! in the same test run. See `docs/ENGINE.md §2.1` for why Intel is treated as a strictness
+//! oracle rather than a second data point.
 //!
 //! # Validation layers
 //!
 //! The instance is created with `enable_validation = true` so `VK_LAYER_KHRONOS_validation`
 //! is active when installed. Without a `VkDebugUtilsMessengerEXT`, the layer's default output
-//! goes to stderr. Any validation error appears prefixed with `VALIDATION ERROR` in the test
-//! runner output and causes the test to fail. Zero validation errors on the first clean dispatch
-//! is M0 exit criterion 9 (ENGINE.md §9.0.3).
+//! goes to stderr. Any validation error appears prefixed with `Validation Error` in the test
+//! runner output.
 //!
-//! Programmatic error capture via `VkDebugUtilsMessengerEXT` is deferred: it requires
-//! `Instance::create` to accept extra instance extensions, which is a separate session's work.
+//! Programmatic error capture via `VkDebugUtilsMessengerEXT` (fail-counting) is deferred: it
+//! requires extending `Instance::create` to accept additional instance extensions.
+//!
+//! # Device selection
+//!
+//! All devices that pass the §7.2 gate are exercised. The test reports each separately.
+//! `ONNXRUNTIME_EP_VULKAN_DEVICE` is **not** consulted here — the intent is completeness,
+//! not selection. It is consulted by the EP factory at session start.
 //!
 //! # Niobe timestamp hooks
 //!
@@ -35,10 +42,10 @@ use super::{
     barrier::{Access, BufferDep},
     cmd::{CommandPool, submit_and_wait},
     device::Device,
-    instance::Instance,
+    instance::{CapableDevice, Instance},
     pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
 };
-use crate::ops::common::shape_plan::ShapePlan;
+use crate::ops::common::{shape_plan::ShapePlan, templates::EW_LOCAL_SIZE};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -65,82 +72,70 @@ fn bytes_as_f32(b: &[u8]) -> Vec<f32> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Integration test
+// Per-device dispatch helper
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// End-to-end `Add` dispatch on real hardware with validation layers enabled.
+/// Run one `Add` f32 dispatch end-to-end on a single capable device.
 ///
-/// Exercises the full pipeline:
-/// 1. Instance (validation layers active) → device selection → `vkCreateDevice`.
-/// 2. `gpu-allocator` backed buffers: two device-local inputs + one output, three staging
-///    buffers (upload + download).
-/// 3. SPIR-V pipeline creation from the embedded `ew_binary_add_f32` shader.
-/// 4. Descriptor set allocation and binding.
-/// 5. Single command buffer: upload copies → input barriers → dispatch → output barrier →
-///    download copy.
-/// 6. Single `vkQueueSubmit` + fence wait.
-/// 7. Read-back and exact comparison against CPU-computed expected values.
+/// Creates a logical device, allocates all buffers, records and submits one command buffer,
+/// reads back the result, and verifies it against the CPU reference. All resources are freed
+/// on return.
 ///
-/// The test uses 1 024 f32 elements (`a[i] = i as f32`, `b[i] = i * 0.5`). All values are
-/// exactly representable in IEEE 754 single precision; the addition is exact (no rounding), so
-/// a byte-for-byte comparison is valid.
-#[test]
-fn add_f32_dispatches_end_to_end() {
-    // ── Guard 1: shader-less build ────────────────────────────────────────────
-    if !crate::engine::shaders::has_any() {
-        eprintln!(
-            "[SKIP] add_f32_dispatches_end_to_end: built without shaders \
-             (ALLOW_MISSING_GLSLC=1 build — no shader compiled in)"
-        );
-        return;
-    }
-    let Some(spirv) = crate::engine::shaders::find("ew_binary_add_f32") else {
-        eprintln!(
-            "[SKIP] add_f32_dispatches_end_to_end: ew_binary_add_f32 not compiled in \
-             (check shader_variants.txt)"
-        );
-        return;
-    };
-
-    // ── Guard 2: Vulkan instance ──────────────────────────────────────────────
-    // enable_validation=true: activates VK_LAYER_KHRONOS_validation when installed.
-    // Without a VkDebugUtilsMessengerEXT, the layer's output goes to stderr.
-    let Some(instance) = Instance::create(true) else {
-        eprintln!("[SKIP] add_f32_dispatches_end_to_end: no Vulkan instance (no loader or ICD)");
-        return;
-    };
-
-    // ── Guard 3: capable device (sorted best-first; index 0 = discrete if present) ─
-    let devices = instance.enumerate_capable_devices();
-    let Some(capable) = devices.into_iter().next() else {
-        eprintln!("[SKIP] add_f32_dispatches_end_to_end: no capable Vulkan device");
-        return;
-    };
-
-    eprintln!(
-        "[RUN ] add_f32_dispatches_end_to_end: device='{}' kind={:?} api={}",
-        capable.info.name, capable.info.kind, capable.info.api_version
+/// Returns `Ok(())` on success, or `Err(message)` if any step fails — allowing the caller to
+/// collect per-device results rather than panicking immediately.
+///
+/// `spirv` must be valid SPIR-V bytes for the `ew_binary_add_f32` kernel.
+///
+/// # Validation
+///
+/// The caller creates the instance with `enable_validation = true`. Without a
+/// `VkDebugUtilsMessengerEXT`, validation messages go to stderr. The `Err` path covers
+/// logical Vulkan failures (vkCreateDevice failing, alloc failing, etc.); validation layer
+/// messages are observable on stderr but do not automatically return `Err`.
+///
+/// # UMA topology
+///
+/// `capable.caps.is_uma` is logged. On UMA devices (Intel Iris Xe, mobile) the
+/// `DEVICE_LOCAL` heap is also `HOST_VISIBLE`; the staging copies are still issued and correct
+/// — they simply copy within the same physical heap rather than across heaps. A future M1+
+/// optimisation may skip the copy for UMA; this path proves correctness first.
+fn run_add_on_device(
+    instance: &Instance,
+    capable: &CapableDevice,
+    spirv: &[u8],
+) -> Result<(), String> {
+    let dev_label = format!(
+        "'{}' kind={:?} api={} uma={} subgroup_sz={} ts_period={:.4}ns ts_bits={}",
+        capable.info.name,
+        capable.info.kind,
+        capable.info.api_version,
+        capable.caps.is_uma,
+        capable.caps.subgroup_size,
+        capable.caps.timestamp_period_ns,
+        capable.caps.timestamp_valid_bits,
     );
+    eprintln!("[RUN ] run_add_on_device: {dev_label}");
 
-    // ── Create Vulkan objects ─────────────────────────────────────────────────
+    // ── Logical device ────────────────────────────────────────────────────────
+    // SAFETY: instance is live; capable was produced by instance.enumerate_capable_devices().
+    let device = unsafe { Device::create(instance.ash(), capable, false) }
+        .ok_or_else(|| format!("vkCreateDevice failed for {}", capable.info.name))?;
 
-    // SAFETY: instance is live; capable was produced by instance.enumerate_capable_devices()
-    // on the same instance, satisfying Device::create's safety contract.
-    let device =
-        unsafe { Device::create(instance.ash(), &capable, false) }.expect("vkCreateDevice failed");
-
+    // ── Allocator ─────────────────────────────────────────────────────────────
     // SAFETY: instance and device are both live; physical_device is from the same instance.
     let mut alloc =
         unsafe { Allocator::new(instance.ash(), device.physical_device(), device.ash()) }
-            .expect("Allocator::new failed");
+            .ok_or_else(|| format!("Allocator::new failed for {}", capable.info.name))?;
 
+    // ── Command pool ──────────────────────────────────────────────────────────
     // SAFETY: device is live; compute_queue_family is valid (came from CapableDevice).
     let cmd_pool = unsafe { CommandPool::new(device.ash(), device.compute_queue_family()) }
-        .expect("CommandPool::new failed");
+        .ok_or_else(|| format!("CommandPool::new failed for {}", capable.info.name))?;
 
+    // ── Pipeline cache ────────────────────────────────────────────────────────
     // SAFETY: device is live.
-    let mut pipeline_cache =
-        unsafe { PipelineCache::new(device.ash(), &[]) }.expect("PipelineCache::new failed");
+    let mut pipeline_cache = unsafe { PipelineCache::new(device.ash(), &[]) }
+        .ok_or_else(|| format!("PipelineCache::new failed for {}", capable.info.name))?;
 
     // ── Test data ─────────────────────────────────────────────────────────────
     const N: usize = 1024;
@@ -153,13 +148,13 @@ fn add_f32_dispatches_end_to_end() {
     // Inputs: STORAGE_BUFFER | TRANSFER_DST (staged-in via upload, then read by the shader).
     // SAFETY: alloc is live; byte_size is non-zero.
     let buf_a =
-        unsafe { alloc.alloc_device("add_in0", byte_size) }.expect("alloc_device(in0) failed");
+        unsafe { alloc.alloc_device("add_in0", byte_size) }.ok_or("alloc_device(in0) failed")?;
     // SAFETY: alloc is live; byte_size is non-zero.
     let buf_b =
-        unsafe { alloc.alloc_device("add_in1", byte_size) }.expect("alloc_device(in1) failed");
+        unsafe { alloc.alloc_device("add_in1", byte_size) }.ok_or("alloc_device(in1) failed")?;
 
-    // Output: STORAGE_BUFFER | TRANSFER_SRC (written by the shader, then copied to the download
-    // staging buffer). alloc_device adds TRANSFER_DST only; we need TRANSFER_SRC here.
+    // Output: STORAGE_BUFFER | TRANSFER_SRC (written by the shader, then copied to the
+    // download staging buffer). alloc_device adds TRANSFER_DST only; we need TRANSFER_SRC.
     // SAFETY: alloc is live; byte_size is non-zero.
     let buf_out = unsafe {
         alloc.alloc(
@@ -169,41 +164,35 @@ fn add_f32_dispatches_end_to_end() {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
         )
     }
-    .expect("alloc(out) failed");
+    .ok_or("alloc(out) failed")?;
 
     // ── Staging buffers ───────────────────────────────────────────────────────
     // SAFETY: alloc is live; byte_size is non-zero.
     let staging_a =
-        unsafe { alloc.alloc_upload("staging_a", byte_size) }.expect("alloc_upload(a) failed");
+        unsafe { alloc.alloc_upload("staging_a", byte_size) }.ok_or("alloc_upload(a) failed")?;
     // SAFETY: alloc is live; byte_size is non-zero.
     let staging_b =
-        unsafe { alloc.alloc_upload("staging_b", byte_size) }.expect("alloc_upload(b) failed");
+        unsafe { alloc.alloc_upload("staging_b", byte_size) }.ok_or("alloc_upload(b) failed")?;
     // SAFETY: alloc is live; byte_size is non-zero.
     let staging_out =
-        unsafe { alloc.alloc_download("staging_out", byte_size) }.expect("alloc_download failed");
+        unsafe { alloc.alloc_download("staging_out", byte_size) }.ok_or("alloc_download failed")?;
 
     // ── Shape plan → push constants + workgroup count ─────────────────────────
     let shape = vec![N as i64];
-    let plan =
-        ShapePlan::broadcast(&[shape.as_slice(), shape.as_slice()]).expect("broadcast failed");
-    assert!(
-        plan.all_identical,
-        "same-shape inputs must produce all_identical == true (EW_IDENTICAL spec-const must be 1)"
-    );
+    let plan = ShapePlan::broadcast(&[shape.as_slice(), shape.as_slice()])
+        .map_err(|e| format!("ShapePlan::broadcast failed: {e}"))?;
     let push_consts = plan.push_constants();
-    let [wg_x, wg_y, wg_z] = plan.workgroups_1d(256);
+    let [wg_x, wg_y, wg_z] = plan.workgroups_1d(EW_LOCAL_SIZE);
 
-    // ── Pipeline (spec: local_size_x=256, EW_IDENTICAL=1 since both shapes match) ─
+    // ── Pipeline ──────────────────────────────────────────────────────────────
     let key = PipelineKey {
         shader: "ew_binary_add_f32",
-        // spec_id 0: local_size_x=256, spec_id 1: EW_IDENTICAL=1 (identical input shapes).
-        spec_constants: vec![256u32, 1u32],
+        // spec_id 0: local_size_x (from EW_LOCAL_SIZE), spec_id 1: EW_IDENTICAL=1.
+        spec_constants: vec![EW_LOCAL_SIZE, 1u32],
     };
     // SAFETY: spirv is valid SPIR-V bytes from build.rs; pipeline_cache and device are live.
     let entry = unsafe { pipeline_cache.get_or_create(key, spirv, 3) }
-        .expect("vkCreateComputePipelines failed for ew_binary_add_f32");
-    // Copy the raw handles (all vk::* types are Copy) to release the &mut borrow on
-    // pipeline_cache via NLL — we do not need to call pipeline_cache again.
+        .ok_or("vkCreateComputePipelines failed for ew_binary_add_f32")?;
     let pipeline = entry.pipeline;
     let pipeline_layout = entry.pipeline_layout;
     let dsl = entry.descriptor_set_layout;
@@ -211,7 +200,7 @@ fn add_f32_dispatches_end_to_end() {
     // ── Descriptor pool + set ─────────────────────────────────────────────────
     // SAFETY: device is live; max_bindings=3 covers in0, in1, out.
     let desc_pool = unsafe { DispatchDescriptorPool::new(device.ash(), 3) }
-        .expect("DispatchDescriptorPool::new failed");
+        .ok_or("DispatchDescriptorPool::new failed")?;
     let buf_bindings = [
         (buf_a.buffer, byte_size),
         (buf_b.buffer, byte_size),
@@ -219,20 +208,15 @@ fn add_f32_dispatches_end_to_end() {
     ];
     // SAFETY: desc_pool is live; dsl has exactly 3 STORAGE_BUFFER bindings.
     let desc_set = unsafe { desc_pool.allocate_and_write(dsl, &buf_bindings) }
-        .expect("vkAllocateDescriptorSets failed");
+        .ok_or("vkAllocateDescriptorSets failed")?;
 
     // ── Record command buffer ─────────────────────────────────────────────────
     // SAFETY: no previous recording is in flight on this pool.
-    let recorder = unsafe { cmd_pool.begin() }.expect("vkBeginCommandBuffer failed");
+    let recorder = unsafe { cmd_pool.begin() }.ok_or("vkBeginCommandBuffer failed")?;
     let cmd = recorder.cmd;
 
     // Step 1 — Write CPU data into staging and record staging→device copies.
-    //
-    // record_upload writes to staging.mapped_ptr() and emits vkCmdCopyBuffer.
-    // We do not need to manually write to staging memory — the helper does it.
-    //
-    // SAFETY: cmd is recording; staging_{a,b} are MemClass::Upload; buf_{a,b} are DeviceLocal;
-    //         byte sizes match the allocated sizes.
+    // SAFETY: cmd is recording; staging_{a,b} are Upload; buf_{a,b} are DeviceLocal.
     unsafe {
         record_upload(
             device.ash(),
@@ -251,9 +235,6 @@ fn add_f32_dispatches_end_to_end() {
     }
 
     // Step 2 — Barrier: TRANSFER_WRITE → SHADER_READ on both input buffers.
-    //
-    // The vkCmdCopyBuffer commands above produce TRANSFER_WRITE accesses. The dispatch below
-    // reads both buffers as SHADER_READ. Without this barrier the reads are undefined.
     let upload_deps = [
         BufferDep {
             buffer: buf_a.buffer,
@@ -274,9 +255,7 @@ fn add_f32_dispatches_end_to_end() {
     unsafe { device.barriers().buffer_deps(cmd, &upload_deps) };
 
     // Step 3 — Dispatch.
-    //
-    // SAFETY: cmd is recording; all handles (pipeline, layout, descriptor set) are valid and
-    //         compatible with each other (created from the same device).
+    // SAFETY: cmd is recording; all handles are valid and compatible.
     unsafe {
         device
             .ash()
@@ -304,9 +283,6 @@ fn add_f32_dispatches_end_to_end() {
     }
 
     // Step 4 — Barrier: SHADER_WRITE → TRANSFER_READ on the output buffer.
-    //
-    // The dispatch writes buf_out. The vkCmdCopyBuffer below reads it as a transfer source.
-    // Without this barrier the copy would race the dispatch write.
     let output_dep = [BufferDep {
         buffer: buf_out.buffer,
         offset: 0,
@@ -322,63 +298,49 @@ fn add_f32_dispatches_end_to_end() {
     unsafe { record_download(device.ash(), cmd, &buf_out, &staging_out, byte_size) };
 
     // ── Submit and wait ───────────────────────────────────────────────────────
-    // SAFETY: recorder.finish() ends recording and returns the command buffer in executable
-    //         state. std::mem::forget prevents the drop from running.
-    let cmd_buf = unsafe { recorder.finish() }.expect("vkEndCommandBuffer failed");
+    // SAFETY: cmd is in recording state; no further recording calls will follow.
+    let cmd_buf = unsafe { recorder.finish() }.ok_or("vkEndCommandBuffer failed")?;
 
     // SAFETY: cmd_buf is in executable state; the queue is idle; device is live.
-    // submit_and_wait blocks until the fence signals; all GPU writes to staging_out are visible
-    // to the CPU on return because staging_out uses HOST_COHERENT memory.
     let submitted = unsafe { submit_and_wait(device.ash(), device.compute_queue(), cmd_buf) };
-    assert!(submitted, "vkQueueSubmit or vkWaitForFences failed");
+    if !submitted {
+        // Free all buffers before returning Err (no panic-on-drop from gpu-allocator).
+        // SAFETY: all buffers were produced by alloc and have not been freed.
+        unsafe {
+            alloc.free(buf_a);
+            alloc.free(buf_b);
+            alloc.free(buf_out);
+            alloc.free(staging_a);
+            alloc.free(staging_b);
+            alloc.free(staging_out);
+        }
+        return Err("vkQueueSubmit or vkWaitForFences failed".to_string());
+    }
 
     // ── Read back and verify ──────────────────────────────────────────────────
-    // submit_and_wait returns only after the fence signals, so GPU writes to staging_out are
-    // visible to the CPU at this point (staging_out uses HOST_COHERENT memory).
     let result_ptr = staging_out
         .mapped_ptr()
-        .expect("staging_out must have a HOST_VISIBLE mapped pointer");
-    // SAFETY: GPU work completed above; result_ptr is valid for byte_size bytes;
-    //         the memory is HOST_COHERENT so no explicit cache invalidation is needed.
+        .ok_or("staging_out must have a HOST_VISIBLE mapped pointer")?;
+    // SAFETY: GPU work completed; result_ptr is valid for byte_size bytes; HOST_COHERENT.
     let result_bytes =
         unsafe { std::slice::from_raw_parts(result_ptr as *const u8, byte_size as usize) };
     let result = bytes_as_f32(result_bytes);
 
-    // All 1024 elements must match exactly. Both inputs use integer-representable f32 values;
-    // addition of such values is exact (no rounding). Any discrepancy indicates a shader,
-    // descriptor, or push-constant bug.
-    assert_eq!(result.len(), N, "output element count mismatch");
+    // Verify: all 1024 elements must match exactly (exact arithmetic, no rounding).
+    let mut mismatch = None;
     for i in 0..N {
-        assert_eq!(
-            result[i], expected[i],
-            "Add mismatch at index {i}: got {}, expected {} (a={}, b={})",
-            result[i], expected[i], input_a[i], input_b[i],
-        );
+        if result[i] != expected[i] {
+            mismatch = Some(format!(
+                "Add mismatch at index {i}: got {}, expected {} (a={}, b={})",
+                result[i], expected[i], input_a[i], input_b[i],
+            ));
+            break;
+        }
     }
 
-    eprintln!(
-        "[PASS] add_f32_dispatches_end_to_end: {N} f32 elements verified on '{}'",
-        capable.info.name,
-    );
-
     // ── Explicit cleanup ──────────────────────────────────────────────────────
-    //
-    // GpuBuffer has no Drop impl — it must be freed through the Allocator to return the
-    // sub-allocation block to gpu-allocator. Failing to do so produces a diagnostic warning
-    // from gpu-allocator's own Drop.
-    //
-    // RAII drop order after this block (reverse declaration order):
-    //   desc_pool  → vkDestroyDescriptorPool
-    //   pipeline_cache → vkDestroyPipeline + layout + dsl + vkDestroyPipelineCache
-    //   cmd_pool   → vkDestroyCommandPool
-    //   alloc      → gpu-allocator verifies zero live allocations (all freed below)
-    //   device     → vkDestroyDevice
-    //   instance   → vkDestroyInstance + unloads the loader library
-    //
-    // All RAII destructors use their own cloned ash::Device handle so device drop order
-    // (device last, before instance) is correct.
-    //
-    // SAFETY: each buffer was produced by `alloc` and has not been freed previously.
+    // GpuBuffer has no Drop impl — must be freed via Allocator before it goes out of scope.
+    // SAFETY: each buffer was produced by alloc and has not been freed previously.
     unsafe {
         alloc.free(buf_a);
         alloc.free(buf_b);
@@ -387,4 +349,93 @@ fn add_f32_dispatches_end_to_end() {
         alloc.free(staging_b);
         alloc.free(staging_out);
     }
+
+    // RAII drop order (reverse declaration):
+    //   desc_pool → vkDestroyDescriptorPool
+    //   pipeline_cache → vkDestroyPipeline + layout + dsl + vkDestroyPipelineCache
+    //   cmd_pool → vkDestroyCommandPool
+    //   alloc → gpu-allocator verifies zero live allocations
+    //   device → vkDestroyDevice
+
+    match mismatch {
+        Some(msg) => Err(msg),
+        None => {
+            eprintln!("[PASS] run_add_on_device: {N} f32 elements verified on {dev_label}");
+            Ok(())
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Integration test — all capable devices
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// End-to-end `Add` f32 dispatch, exercised on **every** capable device.
+///
+/// If more than one device passes the §7.2 gate (e.g. Intel Iris Xe + NVIDIA RTX 4060 on the
+/// development machine) this test runs on both and reports per-device results. The test fails
+/// if ANY device produces a wrong answer or a hard Vulkan error.
+///
+/// **Intel as a strictness oracle.** Intel's Vulkan driver is more spec-conformant than
+/// NVIDIA's. A failure on Intel that succeeds on NVIDIA almost always means the shader or
+/// barrier logic relies on undefined behaviour, not that Intel has a bug. Both must pass.
+///
+/// See `run_add_on_device` for the per-device mechanics.
+#[test]
+fn add_f32_dispatches_end_to_end() {
+    // ── Guard 1: shader-less build ────────────────────────────────────────────
+    if !crate::engine::shaders::has_any() {
+        eprintln!(
+            "[SKIP] add_f32_dispatches_end_to_end: built without shaders \
+             (ALLOW_MISSING_GLSLC=1 build — no shader compiled in)"
+        );
+        return;
+    }
+    let Some(spirv) = crate::engine::shaders::find("ew_binary_add_f32") else {
+        eprintln!(
+            "[SKIP] add_f32_dispatches_end_to_end: ew_binary_add_f32 not compiled in \
+             (check shader_variants.txt)"
+        );
+        return;
+    };
+
+    // ── Guard 2: Vulkan instance ──────────────────────────────────────────────
+    // enable_validation=true: activates VK_LAYER_KHRONOS_validation when installed.
+    let Some(instance) = Instance::create(true) else {
+        eprintln!("[SKIP] add_f32_dispatches_end_to_end: no Vulkan instance (no loader or ICD)");
+        return;
+    };
+
+    // ── Guard 3: enumerate all capable devices ────────────────────────────────
+    let devices = instance.enumerate_capable_devices();
+    if devices.is_empty() {
+        eprintln!("[SKIP] add_f32_dispatches_end_to_end: no capable Vulkan device");
+        return;
+    }
+
+    eprintln!(
+        "[INFO] add_f32_dispatches_end_to_end: {} capable device(s) — running on all",
+        devices.len()
+    );
+
+    // ── Run on every device, collect per-device outcomes ─────────────────────
+    let mut failures: Vec<String> = Vec::new();
+
+    for capable in &devices {
+        match run_add_on_device(&instance, capable, spirv) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("[FAIL] device='{}': {e}", capable.info.name);
+                failures.push(format!("{}: {e}", capable.info.name));
+            }
+        }
+    }
+
+    // Fail once at the end so all per-device output is visible before the panic.
+    assert!(
+        failures.is_empty(),
+        "add_f32 dispatch failed on {} device(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

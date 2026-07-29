@@ -37,7 +37,9 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE, XL_KERNEL};
+use crate::registry::{
+    ContribSchema, NodeView, OPSET_ANY, OPSET_QDQ_MAX, OpSpec, PINNED_BASELINE, XL_KERNEL,
+};
 use crate::{deny, require};
 
 /// `com.microsoft.MatMulNBits`, as of ORT 1.28.
@@ -246,8 +248,13 @@ crate::op_table! {
     // one the LLM path needs, so the window starts there rather than at 10. `caps` names the
     // *compute* dtype (the float side of the conversion); the packed side is checked by the
     // predicate, not by the capability set.
-    "DequantizeLinear",           Ai,     21 ..= OPSET_ANY, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
-    "QuantizeLinear",             Ai,     21 ..= OPSET_ANY, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
+    //
+    // The window is **closed** at 25 rather than open-ended: Q/DQ is revised almost every ONNX
+    // release (21 added `block_size`/`output_dtype`, 23 split out the scale type constraint and
+    // added `precision`, 24 admitted `float8e8m0` scales). An unread revision must decline as
+    // `[opset]`, not be claimed by a predicate written against an older schema — §4.19.
+    "DequantizeLinear",           Ai,     21 ..= OPSET_QDQ_MAX, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
+    "QuantizeLinear",             Ai,     21 ..= OPSET_QDQ_MAX, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
 }
 
 #[cfg(test)]
@@ -268,6 +275,24 @@ mod tests {
             "QuantizeLinear",
         ] {
             let _ = row(op);
+        }
+    }
+
+    /// Q/DQ is revised almost every ONNX release, so its window is closed at the newest read.
+    ///
+    /// 21 added `block_size`/`output_dtype`; 23 split the scale type constraint out and added
+    /// `precision`; 24 admitted `float8e8m0` scales; 25 is current. An open-ended window over an op
+    /// with that revision rate has the same defect the `Attention` row had — §4.19.
+    #[test]
+    fn qdq_windows_are_closed_at_the_newest_schema_read() {
+        for op in ["DequantizeLinear", "QuantizeLinear"] {
+            let spec = row(op);
+            assert_eq!(
+                (spec.min_opset, spec.max_opset),
+                (21, OPSET_QDQ_MAX),
+                "{op}"
+            );
+            assert_ne!(spec.max_opset, OPSET_ANY, "{op}");
         }
     }
 

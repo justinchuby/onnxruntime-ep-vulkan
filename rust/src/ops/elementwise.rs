@@ -28,11 +28,11 @@
 //! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
 
 use crate::kernel;
-use crate::ops::common::claim;
+use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC};
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{OPSET_ANY, UNEXERCISED};
+use crate::registry::{NodeView, OPSET_ANY, OPSET_STD_SWISH, OpSpec, UNEXERCISED};
 
 /// `Equal` compares booleans as well as numbers.
 const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
@@ -44,6 +44,17 @@ pub const NEEDS_PARAMS: &str = "it carries attributes the plain elementwise temp
 /// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
 pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
      dtype, so it needs its own template and manifest column";
+
+/// `ai.onnx::Swish` (opset 24) — claim only `alpha = 1`, i.e. SiLU.
+///
+/// The generic unary template has no push-constant slot for an attribute, so a general `alpha`
+/// would be [`NEEDS_PARAMS`]. But `alpha = 1` is what every SwiGLU MLP emits and it is a distinct,
+/// fully-handled shader, so the honest row is "claimed at 1, declined elsewhere" rather than
+/// either claiming everything or staging the whole op behind a parameter we do not need yet.
+fn swish(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_unary(view, spec)?;
+    claim::attr_float_is(view, spec, "alpha", 1.0)
+}
 
 crate::op_table! {
     // ---------------------------------------------------------------------------------------
@@ -122,6 +133,12 @@ crate::op_table! {
     "Shrink",         Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "shrink"),  claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
     "Gelu",           Ai,     20 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "gelu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
 
+    // `Swish` is new at opset 24 and is what `onnxruntime/mobius` emits for the SwiGLU gate of
+    // every LLM MLP. `Swish(x) = x * sigmoid(alpha * x)`; the shader implements `alpha = 1`, which
+    // is SiLU, and the predicate declines any other alpha rather than pretending the default is
+    // the only value. Window closed at 24 because that is the only schema version that exists.
+    "Swish",          Ai,     OPSET_STD_SWISH ..= OPSET_STD_SWISH, FLOAT, kernel!(EwUnary, "swish"), swish, templates::ew_unary, Staged(UNEXERCISED);
+
     // ---------------------------------------------------------------------------------------
     // Variadic elementwise — composed from the binary template, never an N-input shader.
     // ---------------------------------------------------------------------------------------
@@ -143,6 +160,29 @@ crate::op_table! {
 mod tests {
     use super::*;
     use crate::registry::{Domain, OpStatus};
+
+    /// `Swish` is new at opset 24 and is the SwiGLU activation `onnxruntime/mobius` emits.
+    ///
+    /// It is registered at exactly its one schema version, and the predicate claims only
+    /// `alpha = 1` — the shader is `x * sigmoid(x)`, and a shader that ignores `alpha` while
+    /// claiming the node is the permissive failure this design forbids.
+    #[test]
+    fn swish_is_registered_at_exactly_24_with_alpha_pinned() {
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "Swish")
+            .expect("Swish row");
+        assert_eq!(row.domain, Domain::Ai);
+        assert_eq!((row.min_opset, row.max_opset), (24, 24));
+        assert_eq!(row.kernel.op, "swish");
+        assert!(
+            !std::ptr::fn_addr_eq(
+                row.claim,
+                claim::ew_unary as crate::registry::ClaimPredicate
+            ),
+            "Swish must not use the bare unary predicate; that would claim any alpha"
+        );
+    }
 
     #[test]
     fn the_table_is_the_size_op_coverage_promises_for_tier_1() {

@@ -122,13 +122,46 @@ pub(crate) struct Capabilities {
     pub shader_float16: bool,
 
     // ── Memory topology ────────────────────────────────────────────────────────
-    /// True when the largest `DEVICE_LOCAL` heap is also `HOST_VISIBLE` (unified memory
-    /// architecture: Apple/MoltenVK, integrated Intel, some Android SoCs).
+    /// True when **every** memory heap is `DEVICE_LOCAL` — the definition of unified memory
+    /// architecture.
     ///
-    /// On UMA devices the staging path is skipped: tensors are uploaded once into a
-    /// `HOST_VISIBLE | DEVICE_LOCAL` buffer and read directly by the shader without a
-    /// `vkCmdCopyBuffer` transfer.
+    /// On integrated GPUs (Intel Iris Xe, Adreno, Mali) the single heap carries both
+    /// `DEVICE_LOCAL` and `HOST_VISIBLE`. On discrete GPUs there is always a separate
+    /// system-RAM heap without `DEVICE_LOCAL`, even when the VRAM heap is also `HOST_VISIBLE`
+    /// via Resizable BAR (ReBAR). ReBAR makes discrete VRAM CPU-accessible but does not
+    /// remove the system-RAM heap — so `is_uma` is correctly `false` for discrete GPUs
+    /// regardless of ReBAR.
+    ///
+    /// When `true`, the UMA staging bypass (M1+ optimisation) may skip the `vkCmdCopyBuffer`
+    /// and write directly into a `HOST_VISIBLE | DEVICE_LOCAL` buffer. v0 always stages.
     pub is_uma: bool,
+
+    // ── Timestamp ─────────────────────────────────────────────────────────────
+    /// Nanoseconds per GPU timestamp tick (device-wide, from
+    /// `VkPhysicalDeviceLimits::timestampPeriod`).
+    ///
+    /// **Owned by `trace.rs`** — `vk/` code MUST NOT multiply by this value. All timestamp
+    /// query results are returned as raw ticks; Niobe's `trace.rs` performs the conversion.
+    ///
+    /// Measured values on known hardware:
+    /// - Intel Iris Xe: 52.0833 ns/tick
+    /// - NVIDIA RTX 4060 Laptop: 1.0 ns/tick
+    ///
+    /// The 52× difference is why `vk/` never converts: code correct on NVIDIA and converting
+    /// ticks-to-ns directly would be wrong by 52× on Iris Xe.
+    ///
+    /// Zero means the device does not support timestamps.
+    pub timestamp_period_ns: f32,
+
+    /// Number of valid low-order bits in a compute-queue timestamp value, from
+    /// `VkQueueFamilyProperties::timestampValidBits` for the compute queue family.
+    ///
+    /// Values 32..=64; 0 means timestamps are not supported on this queue family.
+    /// Raw tick values from `vkGetQueryPoolResults` must be masked:
+    /// `raw & ((1u64 << valid_bits) - 1)` (or the full u64 when `valid_bits == 64`).
+    ///
+    /// Intel Iris Xe reports 36 valid bits — only the low 36 bits of each tick are stable.
+    pub timestamp_valid_bits: u32,
 }
 
 impl Capabilities {
@@ -290,33 +323,50 @@ pub(crate) unsafe fn probe(
         has_ext("VK_EXT_subgroup_size_control") || api_version >= vk::make_api_version(0, 1, 3, 0);
 
     // ── VkPhysicalDeviceProperties2 chain ─────────────────────────────────────
+    //
+    // ash 0.38 quirk: `push_next` takes `self` by value and returns `Self`. Discarding the
+    // return value with `let _ = ...` leaves p_next unlinked — the queried structs remain
+    // zeroed. Always re-bind. See `DeviceFeatureChain::apply` and `device.rs` for the same fix.
     let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
     let mut ssc_props = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
 
-    let mut props2 = vk::PhysicalDeviceProperties2::default();
-    // push_next is safe; the #[must_use] return is just the modified struct — ignore it.
-    let _ = props2.push_next(&mut subgroup_props);
-    if query_ssc {
-        let _ = props2.push_next(&mut ssc_props);
-    }
+    let mut props2 = {
+        let p = vk::PhysicalDeviceProperties2::default().push_next(&mut subgroup_props);
+        if query_ssc {
+            p.push_next(&mut ssc_props)
+        } else {
+            p
+        }
+    };
 
     // SAFETY: instance is live per caller; physical_device came from that instance. The p_next
     // chain contains only structs that live on this stack frame and is only read during this
     // call — no dangling pointers escape.
     unsafe { instance.get_physical_device_properties2(physical_device, &mut props2) };
 
+    // Copy `timestamp_period_ns` before using `subgroup_props` or `ssc_props`.
+    // NLL (non-lexical lifetimes) rule: props2 mutably borrows subgroup_props and ssc_props;
+    // its last USE must come before any access to those structs. By placing this assignment
+    // immediately after the properties query, props2's last use is here.
+    let timestamp_period_ns = props2.properties.limits.timestamp_period;
+    let _ = props2; // suppress "unused variable" if NLL shortens the live range further
+
     // ── VkPhysicalDeviceFeatures2 chain ───────────────────────────────────────
     let mut vk12_features = vk::PhysicalDeviceVulkan12Features::default();
     let mut ssc_features = vk::PhysicalDeviceSubgroupSizeControlFeatures::default();
 
-    let mut features2 = vk::PhysicalDeviceFeatures2::default();
-    let _ = features2.push_next(&mut vk12_features);
-    if query_ssc {
-        let _ = features2.push_next(&mut ssc_features);
-    }
+    let mut features2 = {
+        let f = vk::PhysicalDeviceFeatures2::default().push_next(&mut vk12_features);
+        if query_ssc {
+            f.push_next(&mut ssc_features)
+        } else {
+            f
+        }
+    };
 
     // SAFETY: same rationale as the properties chain above.
     unsafe { instance.get_physical_device_features2(physical_device, &mut features2) };
+    let _ = features2; // ensure features2's last use is before vk12_features/ssc_features reads
 
     // ── Derive Capabilities from the queried structs ───────────────────────────
     let synchronization2 =
@@ -351,8 +401,21 @@ pub(crate) unsafe fn probe(
     // TODO: probe VkPhysicalDevice{Float16Int8,16BitStorage}FeaturesKHR on 1.1 devices.
     let shader_float16 = vk12_features.shader_float16 == vk::TRUE;
 
-    // SAFETY: instance and physical_device are live per the caller's contract.
-    let is_uma = unsafe { detect_uma(instance, physical_device) };
+    // ── Memory topology ───────────────────────────────────────────────────────
+    let is_uma = is_uma_memory(&unsafe {
+        // SAFETY: instance is live per caller; physical_device came from that instance.
+        instance.get_physical_device_memory_properties(physical_device)
+    });
+
+    // ── Timestamp ─────────────────────────────────────────────────────────────
+    // timestampValidBits is per queue family; find the compute queue family.
+    // SAFETY: instance is live per caller; physical_device came from that instance.
+    let qf_props = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    let timestamp_valid_bits = qf_props
+        .iter()
+        .find(|qf| qf.queue_flags.contains(vk::QueueFlags::COMPUTE))
+        .map(|qf| qf.timestamp_valid_bits)
+        .unwrap_or(0);
 
     Capabilities {
         synchronization2,
@@ -364,40 +427,37 @@ pub(crate) unsafe fn probe(
         can_require_subgroup_size,
         shader_float16,
         is_uma,
+        timestamp_period_ns,
+        timestamp_valid_bits,
     }
 }
 
-/// Returns `true` when the device uses a unified memory architecture: the largest
-/// `DEVICE_LOCAL` memory heap is also `HOST_VISIBLE` (Apple/MoltenVK, integrated Intel, Adreno).
+/// Returns `true` when the device uses a unified memory architecture.
 ///
-/// # Safety
-/// `instance` and `physical_device` must be live and related.
-unsafe fn detect_uma(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> bool {
-    // SAFETY: instance is live per caller; physical_device came from that instance.
-    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
-
+/// **Predicate:** every memory heap is `DEVICE_LOCAL`. This is the correct test because:
+/// - Integrated UMA GPUs (Intel Iris Xe, Adreno, Mali) have a single heap with
+///   `DEVICE_LOCAL | HOST_VISIBLE` — every heap is DEVICE_LOCAL → `true`.
+/// - Discrete GPUs always have a separate system-RAM heap without `DEVICE_LOCAL`, even
+///   when Resizable BAR (ReBAR) is enabled. ReBAR makes VRAM CPU-accessible but does not
+///   remove the system-RAM heap → `false` for discrete regardless of ReBAR.
+///
+/// The previous predicate ("largest DEVICE_LOCAL heap is also HOST_VISIBLE") incorrectly
+/// returned `true` for discrete GPUs with ReBAR enabled.
+///
+/// Call this only through `probe` — do NOT query memory properties again at dispatch time.
+fn is_uma_memory(mem_props: &vk::PhysicalDeviceMemoryProperties) -> bool {
     let heap_count = mem_props.memory_heap_count as usize;
-
-    // Find the largest DEVICE_LOCAL heap.
-    let largest_device_local = (0..heap_count)
-        .filter(|&i| {
-            mem_props.memory_heaps[i]
-                .flags
-                .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
-        })
-        .max_by_key(|&i| mem_props.memory_heaps[i].size);
-
-    let Some(heap_idx) = largest_device_local else {
-        return false; // No DEVICE_LOCAL heap — should never happen after R6.
-    };
-
-    // Check whether any memory type on that heap is also HOST_VISIBLE.
-    let type_count = mem_props.memory_type_count as usize;
-    (0..type_count).any(|i| {
-        let t = &mem_props.memory_types[i];
-        t.heap_index == heap_idx as u32
-            && t.property_flags
-                .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
+    if heap_count == 0 {
+        return false;
+    }
+    // True UMA: no heap lacks DEVICE_LOCAL. A discrete GPU always has a system-RAM heap
+    // without DEVICE_LOCAL; an integrated GPU's single heap always has DEVICE_LOCAL (R6
+    // requires at least one DEVICE_LOCAL heap to pass the gate, and UMA devices have exactly
+    // one heap, so if the device passed the gate the single heap must be DEVICE_LOCAL).
+    (0..heap_count).all(|i| {
+        mem_props.memory_heaps[i]
+            .flags
+            .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
     })
 }
 
@@ -415,7 +475,7 @@ unsafe fn detect_uma(instance: &ash::Instance, physical_device: vk::PhysicalDevi
 pub(crate) fn test_caps(sync2: bool) -> Capabilities {
     Capabilities {
         synchronization2: sync2,
-        synchronization2_is_core: sync2, // test helper: treat sync2 as core when enabled
+        synchronization2_is_core: sync2,
         subgroup_size: 32,
         subgroup_basic_in_compute: true,
         subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
@@ -423,6 +483,8 @@ pub(crate) fn test_caps(sync2: bool) -> Capabilities {
         can_require_subgroup_size: false,
         shader_float16: false,
         is_uma: false,
+        timestamp_period_ns: 1.0,
+        timestamp_valid_bits: 64,
     }
 }
 
@@ -445,6 +507,8 @@ mod tests {
             can_require_subgroup_size: false,
             shader_float16: false,
             is_uma: false,
+            timestamp_period_ns: 1.0,
+            timestamp_valid_bits: 64,
         }
     }
 
@@ -489,15 +553,17 @@ mod tests {
         // MoltenVK: reports 1.3 core (so subgroup_size_range is Some) but subgroupSizeControl
         // is VK_FALSE (Metal cannot control SIMD width per pipeline).
         let caps = Capabilities {
-            synchronization2: true, // 1.3 core
+            synchronization2: true,
             synchronization2_is_core: true,
-            subgroup_size: 32, // Apple GPU fixed wave = 32
+            subgroup_size: 32,
             subgroup_basic_in_compute: true,
             subgroup_size_range: Some(SubgroupSizeRange { min: 32, max: 32 }),
-            can_require_subgroup_size: false, // <── the MoltenVK distinction
+            can_require_subgroup_size: false,
             shader_float16: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             is_uma: true,
+            timestamp_period_ns: 1.0,
+            timestamp_valid_bits: 64,
         };
         // Range is exact → safe to use the 32-wide variant even without `require`.
         assert!(caps.subgroup_size_is_exact());
@@ -517,5 +583,70 @@ mod tests {
 
         let basic_only = caps_with_synchronization2(false);
         assert!(!basic_only.has_subgroup_arithmetic());
+    }
+
+    // ── is_uma_memory tests ───────────────────────────────────────────────────
+
+    /// Build a minimal `VkPhysicalDeviceMemoryProperties` for unit tests.
+    /// Only `memory_heap_count` and the first `n` heap flags are meaningful.
+    #[allow(clippy::field_reassign_with_default)]
+    fn mem_props_from_heap_flags(
+        flags: &[vk::MemoryHeapFlags],
+    ) -> vk::PhysicalDeviceMemoryProperties {
+        let mut props = vk::PhysicalDeviceMemoryProperties::default();
+        props.memory_heap_count = flags.len() as u32;
+        for (i, &f) in flags.iter().enumerate() {
+            props.memory_heaps[i].flags = f;
+            props.memory_heaps[i].size = 1 << 30; // size not relevant for UMA test
+        }
+        props
+    }
+
+    #[test]
+    fn integrated_uma_single_device_local_heap_is_uma() {
+        // Intel Iris Xe / Adreno / Mali: one heap, DEVICE_LOCAL | HOST_VISIBLE.
+        // The heap has DEVICE_LOCAL, and there is only one heap → every heap is DL → UMA.
+        let props = mem_props_from_heap_flags(&[vk::MemoryHeapFlags::DEVICE_LOCAL]);
+        assert!(is_uma_memory(&props));
+    }
+
+    #[test]
+    fn discrete_gpu_two_heaps_not_uma() {
+        // Traditional discrete GPU: heap 0 = VRAM (DEVICE_LOCAL), heap 1 = system RAM (none).
+        let props = mem_props_from_heap_flags(&[
+            vk::MemoryHeapFlags::DEVICE_LOCAL,
+            vk::MemoryHeapFlags::empty(),
+        ]);
+        assert!(!is_uma_memory(&props));
+    }
+
+    #[test]
+    fn discrete_gpu_with_rebar_two_heaps_not_uma() {
+        // Discrete GPU with ReBAR: heap 0 = VRAM (DEVICE_LOCAL, also accessible via ReBAR),
+        // heap 1 = system RAM (no DEVICE_LOCAL). The system-RAM heap's absence of DEVICE_LOCAL
+        // correctly returns false — ReBAR does NOT make a discrete GPU a UMA device.
+        // (This was the bug in the previous `detect_uma` implementation.)
+        let props = mem_props_from_heap_flags(&[
+            vk::MemoryHeapFlags::DEVICE_LOCAL, // VRAM — also HOST_VISIBLE via ReBAR
+            vk::MemoryHeapFlags::empty(),      // system RAM — no DEVICE_LOCAL
+        ]);
+        assert!(!is_uma_memory(&props));
+    }
+
+    #[test]
+    fn zero_heaps_not_uma() {
+        let props = mem_props_from_heap_flags(&[]);
+        assert!(!is_uma_memory(&props));
+    }
+
+    #[test]
+    fn all_heaps_device_local_is_uma() {
+        // Hypothetical device with two DEVICE_LOCAL heaps (e.g. cached + uncached on same
+        // physical memory). All are DEVICE_LOCAL → UMA.
+        let props = mem_props_from_heap_flags(&[
+            vk::MemoryHeapFlags::DEVICE_LOCAL,
+            vk::MemoryHeapFlags::DEVICE_LOCAL,
+        ]);
+        assert!(is_uma_memory(&props));
     }
 }

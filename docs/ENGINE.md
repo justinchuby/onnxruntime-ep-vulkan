@@ -1,33 +1,36 @@
 # Vulkan Runtime & Shader Architecture
 
-**Status:** In progress — core modules landed
-**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-28T22:28:08-07:00)
+**Status:** In progress — first real dispatch verified on both local devices (Intel + NVIDIA)
+**Date:** 2026-07-28T17:59:54-07:00 (updated 2026-07-29T08:13:58-07:00)
 **Author:** Switch (Vulkan Compute Engineer)
 **Scope:** `rust/src/engine.rs` and the Vulkan abstraction layer; does NOT cover ONNX graph
 partitioning (Mouse), ORT C ABI plumbing (Tank), platform matrix (Link), or DESIGN.md (Morpheus).
 
-## Implementation Status (2026-07-28T22:28:08-07:00)
+## Implementation Status (2026-07-29T08:13:58-07:00)
 
 | Module | Status | Notes |
 |---|---|---|
-| `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate (R1–R4, R6), `assess_gate` verbose output, 19 unit tests |
-| `vk/caps.rs` | ✅ Real | Capability probe, MoltenVK trap, `subgroup_basic_in_compute` field, `test_caps()` helper |
-| `vk/barrier.rs` | ✅ Real | Dual-backend, mapping tables, probe write, 20 unit tests |
-| `vk/device.rs` | ✅ Real | Logical device creation, queue retrieval, `Barriers::select`, Drop |
+| `vk/instance.rs` | ✅ Real | Instance creation, physical device enumeration, §7.2 gate (R1–R4, R6), `assess_gate` verbose output, `ONNXRUNTIME_EP_VULKAN_DEVICE` selector, 19 unit tests |
+| `vk/caps.rs` | ✅ Real | Capability probe (push_next chain fixed D-S12-01), MoltenVK trap, `subgroup_basic_in_compute`, `test_caps()` helper, `DeviceFeatureChain` |
+| `vk/barrier.rs` | ✅ Real | Dual-backend (`Core`/`Khr`), mapping tables, probe write, 20 unit tests |
+| `vk/device.rs` | ✅ Real | Logical device creation, queue retrieval, `Barriers::select`, `DeviceFeatureChain::apply` |
 | `vk/alloc.rs` | ✅ Real | `gpu-allocator` backed, 4 memory classes, staging helpers, 6 unit tests |
 | `vk/cmd.rs` | ✅ Real | Command pool, `CommandRecorder`, `submit_and_wait` |
 | `vk/pipeline.rs` | ✅ Real | Pipeline cache, `DispatchDescriptorPool`, spec constants, push constants, 8 unit tests |
+| `vk/dispatch_integration.rs` | ✅ **Verified** | **1024-element f32 `Add` dispatched on BOTH Intel Iris Xe (1.4.309) and NVIDIA RTX 4060 (1.4.325). Zero validation layer errors on both devices.** |
 | `engine.rs` seams | ✅ Stubbed | Vocabulary types, `Plan`, `CompileContext`, `DispatchContext`; real dispatch pending |
-| Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. `shaders::has_any()`. 3 unit tests. |
+| Shader-less guard | ✅ Real | §7.8 condition 3: `probe_devices()` + `GetCapability` return zero/claim-nothing when `SHADER_MODULES` empty. Tests assert correctly in both build modes. |
 | Loader diagnostics | ✅ Real | `loader_state_lines()` always emitted on `vkCreateInstance` failure; INFO-gated pre-creation on `ONNXRUNTIME_EP_VULKAN_VERBOSE=1`. `apiVersion` capped to loader version. |
-| `epctl --probe-loader` | ✅ Real | Per-device per-criterion gate assessment via `assess_gate`; shows measured values and PASS/FAIL verdict for every criterion. |
+| `epctl --probe-loader` | ✅ Real | Per-device per-criterion gate assessment via `assess_gate`; shows measured values, PASS/FAIL per criterion, and `ONNXRUNTIME_EP_VULKAN_DEVICE` selection result. |
 | Session lifecycle | 🔲 Pending | `VulkanEp` in `ep.rs` must hold `Instance` + `Device` across Compile/Compute |
 | Real `DispatchContext` | 🔲 Pending | Concrete implementor over `VkCommandBuffer` using `cmd.rs` + `pipeline.rs` |
 | `alloc` integration | 🔲 Pending | Tank's `BufferView` handle table ↔ `GpuBuffer` side-table |
 | Prepack hook (real) | 🔲 Pending | Seam 1 vocab is real; actual staging upload behind it pending |
 | KV-cache aliasing | 🔲 Pending | Seam 2 default impl correct for stubs; real aliasing pending |
 
-Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **283** (241 lib + 6 dump-capabilities + 26 layering + 7 portability + 3 doc-tests ignored).
+Build status: `cargo ci` green (rustfmt + clippy + build + test). Test count: **258** lib (+ 6 dump-capabilities + 26 layering + 7 portability).
+
+**Morpheus — §9.1.2 update required:** The sentence "no shader has ever executed on any device" is no longer accurate as of session 11. `add_f32_dispatches_end_to_end` completed with 1024 f32 elements verified on NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan 1.4.325, Discrete), with `VK_LAYER_KHRONOS_validation` reporting zero errors. As of session 12, the same dispatch verified on Intel Iris Xe (Vulkan 1.4.309, Integrated) as well — zero validation errors on both devices.
 
 ---
 
@@ -119,16 +122,42 @@ matching the `OrtEpDevice` model (one `OrtEpDevice` per usable physical device):
    than one.
 5. Prefer the highest-scoring device as the default when the user does not pin a device.
 
+**Explicit device selection — `ONNXRUNTIME_EP_VULKAN_DEVICE`:** set this environment variable to
+either an integer index (0-based, within the ordered list of capable devices after gate scoring)
+or a case-insensitive name substring to pin to a specific device. Example:
+`ONNXRUNTIME_EP_VULKAN_DEVICE=Intel` or `ONNXRUNTIME_EP_VULKAN_DEVICE=0`. The selected device
+and reason are reported by `epctl --probe-loader`. This allows deterministic per-device testing
+without recompiling.
+
+**Intel as conformance oracle:** Intel's Vulkan driver is stricter than NVIDIA's about undefined
+behaviour, missing synchronisation, and extension interactions. When both devices are present,
+if a dispatch is correct on NVIDIA and raises a validation error on Intel, Intel's finding is
+the actionable one. Encode results per device rather than aggregating — a pass on NVIDIA alone
+does not constitute a pass. This is not special-casing Intel: it is the correct reading of the
+spec conformance asymmetry between the two driver families.
+
 **Vendor detection** (following llama.cpp's approach — verified in
 [ggml-vulkan.cpp lines 163–168](https://github.com/ggml-org/llama.cpp/blob/0cea3622/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L163-L168)):
 the `VkPhysicalDeviceProperties.vendorID` is stored on the device handle. This drives
 per-vendor shader variant selection and workaround paths later; it does not affect device
 selection scoring.
 
-**UMA detection:** if `VkPhysicalDeviceMemoryProperties` shows the largest heap is both
-`DEVICE_LOCAL` and `HOST_VISIBLE` (i.e., a unified-memory GPU such as Apple/MoltenVK or
-integrated Intel), the device is flagged `uma = true` and the staging copy path is suppressed
-(§3.3).
+**UMA detection:** `is_uma = true` when the largest `DEVICE_LOCAL` heap also has a
+`HOST_VISIBLE` memory type. This covers two physically distinct configurations:
+- **True integrated UMA** (e.g. Intel Iris Xe): device-local memory is the same DRAM as system
+  RAM; no VRAM heap exists independently.
+- **Discrete GPU with ReBAR** (e.g. NVIDIA RTX 4060 Laptop with Resizable BAR enabled): the full
+  VRAM heap is mapped `HOST_VISIBLE` via PCIe BAR, allowing direct CPU writes to VRAM.
+
+Both cases allow bypassing the staging copy path (§3.3) because the GPU can read from memory
+that the CPU can also write. The distinction (integrated vs ReBAR discrete) is tracked separately
+via `VkPhysicalDeviceType` and reported in `epctl --probe-loader`. **The correct predicate for
+UMA is: every memory heap is `DEVICE_LOCAL`.** A discrete GPU with ReBAR has a system-RAM heap
+without `DEVICE_LOCAL` even though its VRAM heap is also `HOST_VISIBLE`; ReBAR does not make
+a discrete GPU a UMA device. Tile sizes and workgroup shapes derived from reported limits (not
+hardcoded constants) must fit within the device's `maxComputeSharedMemorySize` — Intel Iris Xe
+reports 32 KiB, NVIDIA RTX 4060 Laptop reports 48 KiB; any constant tuned on the NVIDIA device
+may silently be too large for Intel.
 
 ### 2.3 Logical Device and Queues
 
@@ -173,32 +202,51 @@ suballocator. Decision rationale:
 We do **not** roll a bespoke allocator for v0. The performance argument for a custom allocator
 does not arise until we have profiling data showing `gpu-allocator` is a bottleneck.
 
-### 3.2 Memory Heaps and Buffer Kinds
+### 3.2 Memory Classes and `gpu-allocator` Location Hints
 
-| Buffer kind | Heap flags | Used for |
-|---|---|---|
-| `DeviceLocal` | `DEVICE_LOCAL` | Tensor data live on GPU; model weights after upload |
-| `HostVisible` / `HostCoherent` | `HOST_VISIBLE \| HOST_COHERENT` | Staging buffers for upload/download |
-| `HostCached` | `HOST_VISIBLE \| HOST_CACHED` | Download readback where CPU reads are frequent |
+Four memory classes are in use (matching `alloc.rs::MemClass`):
 
-On a UMA device all three collapse to a single heap and no staging is needed (§3.3).
+| Class | `MemoryLocation` hint | Flags requested | Used for |
+|---|---|---|---|
+| `DeviceLocal` | `GpuOnly` | `DEVICE_LOCAL` | Live tensor data, KV-cache |
+| `Upload` | `CpuToGpu` | `HOST_VISIBLE \| HOST_COHERENT` | CPU→GPU staging (write-combining preferred) |
+| `Download` | `GpuToCpu` | `HOST_VISIBLE \| HOST_COHERENT` | GPU→CPU readback (cached preferred) |
+| `PackedWeights` | `GpuOnly` | `DEVICE_LOCAL` | Compile-time prepacked weights; never freed mid-run |
+
+`gpu-allocator` maps these hints to the best available `VkMemoryType`. On discrete GPUs the
+`GpuOnly` and `CpuToGpu` types are on different physical heaps (VRAM vs PCIe-mapped BAR). On
+UMA devices (Intel Iris Xe, Adreno, Mali) and on discrete GPUs with ReBAR all four types may
+reside on the same physical heap — `gpu-allocator` still picks the right type within that heap
+(write-combining vs cached when both are exposed).
+
+**The `Upload`/`Download` distinction matters on every memory architecture.** `CpuToGpu` signals
+that the CPU writes and the GPU reads; `GpuToCpu` signals the reverse. On discrete hardware
+these may select different BAR regions. Using the wrong hint is not a crash but degrades
+throughput on non-UMA devices, so they are kept separate.
 
 ### 3.3 Staging / Upload / Download Paths
 
-**Discrete GPU path (UMA = false):**
+**v0 always stages, even on UMA devices.** Correctness is proven first; the staging bypass is
+a future M1+ optimisation.
 
 ```
-ORT CPU tensor  →  vkMapMemory(staging)  →  vkCmdCopyBuffer  →  device-local buffer
-device-local buffer  →  vkCmdCopyBuffer  →  vkMapMemory(readback)  →  ORT CPU tensor
+CPU data  →  vkMapMemory(Upload staging)  →  vkCmdCopyBuffer  →  DeviceLocal buffer
+DeviceLocal buffer  →  vkCmdCopyBuffer  →  vkMapMemory(Download staging)  →  CPU data
 ```
 
-Staging buffers for upload are owned by `StagingPool`, a fixed-size ring of host-visible
-buffers. When the pool is exhausted, a temporary dedicated allocation is made. After the
-compute queue signals completion (fence), staging allocations are returned to the pool.
+On UMA devices (Intel Iris Xe, Adreno, Mali) the `vkCmdCopyBuffer` is an in-heap copy — the
+GPU reads from a different `VkBuffer` that maps to the same physical DRAM. It is correct and
+produces no data hazard. The Intel Iris Xe dispatch test confirms this path works without
+validation errors.
 
-**UMA path:** the ORT tensor pointer is wrapped in a `HOST_VISIBLE | DEVICE_LOCAL` buffer
-using `VK_EXT_external_memory_host` (when available) or copied once into a persistent
-host-visible device-local buffer. No transfer-queue submission is needed.
+**Future UMA bypass (not in v0):** when `caps.is_uma == true`, the `DeviceLocal` buffer could
+be allocated as `HOST_VISIBLE | DEVICE_LOCAL` and the CPU could write to it directly via
+`vkMapMemory`, skipping the `vkCmdCopyBuffer`. This requires that the shader's `TRANSFER_DST`
+usage is changed to just `STORAGE_BUFFER` and that the barrier pipeline changes from
+`TRANSFER_WRITE → SHADER_READ` to `HOST_WRITE → SHADER_READ`. The barrier abstraction in
+`barrier.rs` already has `Access::HostWrite` for this purpose. The feature gate for this path
+is `caps.is_uma`, not the device type — a discrete GPU with ReBAR has `is_uma=true` and
+should also benefit.
 
 ### 3.4 Buffer Suballocation and Alignment
 
@@ -763,7 +811,10 @@ tensors) from ORT `Compute` to output:
 ### 9.2 Shader required
 
 `shaders/glsl/elementwise_add_f32.comp` — reads two storage buffers, writes one, dispatches
-in 1D workgroups of 256 threads. Parameterized by element count via push constant.
+in 1D workgroups. Workgroup size is `EW_LOCAL_SIZE` (256), selected as the minimum guaranteed
+by `maxComputeWorkGroupInvocations` and matching every vendor's preferred subgroup size. It
+reaches the shader as spec constant ID 0 so a per-device tuner can override it later without
+recompiling GLSL.
 
 ### 9.3 Data flow for one `Add` op
 

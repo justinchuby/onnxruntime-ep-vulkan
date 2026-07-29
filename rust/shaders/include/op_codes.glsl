@@ -80,6 +80,7 @@
 #define OP_TRELU       81
 #define OP_SHRINK      82
 #define OP_GELU        83
+#define OP_SWISH       84
 
 // -- select ---------------------------------------------------------------------------------
 #define OP_WHERE       90

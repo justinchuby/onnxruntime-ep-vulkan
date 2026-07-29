@@ -92,6 +92,36 @@ with Mouse. Session lifecycle (`VulkanEp` holding `Instance` + `Device`). Real `
 
 ---
 
+## Session 12c — UMA predicate fix + timestamp seam (2026-07-29T09:47:45-07:00)
+
+**Coordinator directive:** fix failing `mem_class_download_maps_to_cpu_to_gpu` test, fix UMA
+predicate (Niobe's measurement), add timestamp seam for Niobe.
+
+**D-S12b-01 — `is_uma` predicate corrected:**
+Previous "largest DL heap also HV" returned `true` for discrete+ReBAR. New: every heap is
+DEVICE_LOCAL. Result: NVIDIA RTX 4060 now `uma=false` (was wrong `true`). Intel Iris Xe
+remains `uma=true`. Extracted into `is_uma_memory(mem_props)` pure function with 5 unit tests
+including an explicit test that discrete+ReBAR is NOT UMA.
+
+**D-S12b-02 — `Capabilities::timestamp_period_ns` and `timestamp_valid_bits`:**
+Verified Niobe's measured values: Iris Xe=52.0833 ns/tick (ts_bits=36), RTX 4060=1.0 ns/tick
+(ts_bits=64). 52× difference confirmed on hardware. Fields added to `Capabilities`, populated
+in `probe()`. The "NOT converted in vk/" contract is explicit in the doc comment.
+
+**D-S12b-03 — test fix:**
+`mem_class_download_maps_to_cpu_to_gpu` renamed to `mem_class_download_maps_to_gpu_to_cpu`
+and changed to assert `GpuToCpu` — was the pre-existing failing test the coordinator reported.
+
+**Results:**
+- NVIDIA RTX 4060: `uma=false`, `ts_period=1.0000ns`, `ts_bits=64`, dispatch PASS
+- Intel Iris Xe: `uma=true`, `ts_period=52.0833ns`, `ts_bits=36`, dispatch PASS
+- `cargo ci` green (268 lib tests, fmt, clippy)
+
+**Outstanding:** GPU timestamp query pool hooks in `cmd.rs` (Niobe owns spec, Switch owns
+`vkCmdWriteTimestamp` call sites per D-N4/D-N5). Session lifecycle. Real `DispatchContext`.
+
+---
+
 ## Session 12b — Cross-platform standing directive response (2026-07-29T09:39:59-07:00)
 
 **Coordinator directive:** 要时刻注意跨平台通用性. All limits from device reports, never hardcoded. UMA is the mobile proxy.

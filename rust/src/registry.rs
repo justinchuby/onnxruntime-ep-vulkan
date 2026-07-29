@@ -892,7 +892,7 @@ pub const OPSET_ANY: i32 = i32::MAX;
 /// The first `ai.onnx` opset containing the standard-domain LLM ops.
 ///
 /// ONNX opset 23 (onnx 1.18) added `Attention`, `RMSNormalization` and `RotaryEmbedding` to the
-/// default domain. Those are the spellings a model built by `onnx-genai-models` uses — where an
+/// default domain. Those are the spellings a model built by `onnxruntime/mobius` uses — where an
 /// ORT-GenAI-built graph would carry `com.microsoft::GroupQueryAttention`,
 /// `SimplifiedLayerNormalization` and `com.microsoft::RotaryEmbedding` instead. We register both
 /// spellings; see `OP_COVERAGE.md` §4.16.
@@ -900,6 +900,42 @@ pub const OPSET_ANY: i32 = i32::MAX;
 /// The window starts here rather than at 1 because a node claiming to be `Attention` at opset 22
 /// is not the operator we implement.
 pub const OPSET_STD_LLM: i32 = 23;
+
+/// The newest ONNX release whose `defs.cc`/`old.cc` this crate's `ai.onnx` windows were read from.
+///
+/// The contrib analogue is [`SCHEMA_VERIFIED_ON`]. `ai.onnx` needs its own because an opset window
+/// is only as trustworthy as the last time somebody read the spec: `Attention` gained an input at
+/// opset 24 while this crate's row said `23 ..= OPSET_ANY`, which would have claimed the new form
+/// and silently computed the wrong causal offset. See `OP_COVERAGE.md` §4.19.
+pub const ONNX_SPEC_READ: &str = "onnx v1.22.0 (opset 27), defs.cc/old.cc read 2026-07-29";
+
+/// Schema versions of `ai.onnx::Attention`: 23 (onnx 1.18) and 24 (onnx 1.19).
+///
+/// Closed, not open-ended. Opset 24 added optional input 6 `nonpad_kv_seqlen` — the external
+/// KV-cache pattern that pairs with [`TensorScatter`](OPSET_STD_TENSOR_SCATTER) — and changed the
+/// meaning of `is_causal` when it is present. There is no `Attention`-25 today; if one appears it
+/// must decline as `[opset]` until somebody reads it, which is what the closed bound buys.
+pub const OPSET_STD_ATTENTION_MAX: i32 = 24;
+
+/// `ai.onnx::RMSNormalization` and `ai.onnx::RotaryEmbedding` exist at exactly one schema version.
+///
+/// Both were introduced at opset 23 and are unrevised through opset 27 — verified: neither has an
+/// entry in the opset-24 section of `onnx/defs/operator_sets.h`, and both still live in
+/// `defs.cc` (current) rather than `old.cc`. A future revision declines rather than mis-claims.
+pub const OPSET_STD_NORM_MAX: i32 = 23;
+
+/// `ai.onnx::TensorScatter`, new at opset 24: the functional model of an in-place KV-cache write.
+pub const OPSET_STD_TENSOR_SCATTER: i32 = 24;
+
+/// `ai.onnx::Swish`, new at opset 24: `x * sigmoid(alpha * x)`, i.e. SiLU at `alpha = 1`.
+pub const OPSET_STD_SWISH: i32 = 24;
+
+/// Highest `QuantizeLinear`/`DequantizeLinear` schema version this crate has read: 25.
+///
+/// Q/DQ is revised almost every release — 21 added `block_size` and `output_dtype`, 23 split the
+/// scale type constraint out and added `precision`, 24 admitted `float8e8m0` scales, 25 is current.
+/// An open-ended window over an op with that revision rate is the same bug as `Attention`'s.
+pub const OPSET_QDQ_MAX: i32 = 25;
 
 /// The date every contrib fingerprint in this crate was read from ORT's schema documentation.
 ///

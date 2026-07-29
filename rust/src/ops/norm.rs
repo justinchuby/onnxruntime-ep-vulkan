@@ -32,7 +32,9 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OpSpec, PINNED_BASELINE};
+use crate::registry::{
+    ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OPSET_STD_NORM_MAX, OpSpec, PINNED_BASELINE,
+};
 use crate::require;
 
 /// Staging reason for rows that need the reduction template rather than a bespoke kernel.
@@ -105,7 +107,7 @@ crate::op_table! {
     //  op                                    domain  opsets                       caps    kernel          claim                       translate                  status                    schema
     "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
     "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SKIP_SIMPLIFIED_LAYER_NORM;
-    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
+    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
 }
 
 #[cfg(test)]
@@ -179,5 +181,28 @@ mod tests {
         );
         // Same claim predicate, and it must stay that way: they are one kernel.
         assert!(std::ptr::fn_addr_eq(contrib.claim, standard.claim));
+    }
+
+    /// `RMSNormalization` has exactly one schema version, so its window is closed at 23.
+    ///
+    /// Verified against onnx v1.22.0 on 2026-07-29: it is absent from the opset-24 section of
+    /// `onnx/defs/operator_sets.h` and still lives in `defs.cc` rather than `old.cc`, so version 23
+    /// is current at opset 27. `onnxruntime/mobius` builds at opset 24 but the *node* still resolves
+    /// to schema version 23 — `Node_GetSinceVersion` reports the op's schema version, not the
+    /// model's opset, which is why a closed window here does not exclude opset-24 graphs.
+    ///
+    /// mobius also emits this op at **rank 4** for Qwen3's per-head Q/K norm, with `axis = -1`.
+    /// The shared predicate must not assume rank 3.
+    #[test]
+    fn rmsnorm_window_is_closed_at_its_only_schema_version() {
+        let standard = OPS
+            .iter()
+            .find(|s| s.op_type == "RMSNormalization")
+            .expect("the standard-domain spelling");
+        assert_eq!((standard.min_opset, standard.max_opset), (23, 23));
+        assert_ne!(
+            standard.max_opset, OPSET_ANY,
+            "an unread future revision must decline as [opset], never be claimed"
+        );
     }
 }

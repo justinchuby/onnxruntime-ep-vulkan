@@ -31,33 +31,52 @@
 //! embeds the compiled SPIR-V into the cdylib and SPIR-V compiled from adapted GLSL is a derived
 //! work.
 
-//! # Two producers, two attention ops (2026-07-29)
+//! # Two producers, two attention ops (2026-07-29, re-derived against `onnxruntime/mobius`)
 //!
-//! The paragraph above is true of an **ORT-GenAI-built** graph. Justin's own
-//! `onnx-genai-models` builder emits **`ai.onnx::Attention` @ opset 23** instead — six inputs
-//! (Q, K, V, attention_bias, past_key, past_value) with `q_num_heads`/`kv_num_heads`/`scale`
-//! attributes — and never emits `GroupQueryAttention` at all. Same model, same architecture, a
-//! different node at the centre of every decoder layer.
+//! The paragraph above is true of an **ORT-GenAI-built** graph. The `onnxruntime/mobius` builder
+//! (@ `87fd878`, opset 24) emits **`ai.onnx::Attention`** instead — `op.Attention(query, key,
+//! value, attn_mask, past_key, past_value, ...)` with `q_num_heads`/`kv_num_heads`/`scale`/
+//! `softcap`/`is_causal` attributes and `_outputs=3`, no `_domain=` kwarg. Same model, same
+//! architecture, a different node at the centre of every decoder layer.
+//!
+//! Two things the re-derivation changed versus the earlier reading of `justinchuby/onnx-genai-models`:
+//!
+//! 1. **Opset 24, not 23**, and opset 24 added a 7th input to `Attention` — `nonpad_kv_seqlen`
+//!    (index 6, `int64`, `(batch,)`). mobius passes it on its *static* KV-cache path, paired with
+//!    `ai.onnx::TensorScatter`. It changes the causal offset per batch element, so a kernel that
+//!    ignores it computes a plausible wrong answer. It is declined explicitly below.
+//! 2. **`com.microsoft::GroupQueryAttention` is still reachable from this producer.** mobius has a
+//!    `RotaryAttentionToGQA` rewrite and a direct `_forward_gqa()` fast path, both gated on the
+//!    target EP advertising GQA support. So the contrib row is not dead code for mobius graphs —
+//!    which spelling arrives depends on how the EP is described to the builder, not on the model.
 //!
 //! That is a coverage fact, not a trivia item: a registry holding only the contrib spelling
 //! declines every attention node in a mobius-built Qwen3 and the model runs entirely on CPU. Both
-//! rows are therefore present. They are also genuinely one kernel — opset-23 `Attention` with
+//! rows are therefore present. They are also genuinely one kernel — `Attention` with
 //! `q_num_heads != kv_num_heads` *is* grouped-query attention, and the head-grouping predicate
 //! below is shared verbatim. The standard-domain form is in fact the *easier* of the two: no
 //! `seqlens_k` indirection, no in-place KV-cache aliasing requirement, and the rotary embedding
 //! arrives as its own node rather than as a `do_rotary` attribute.
 //!
+//! **R1 settled for this producer:** mobius emits Q/K RMS norm as *separate* rank-4
+//! `ai.onnx::RMSNormalization` nodes before the attention op and never passes norm weights into
+//! the attention node, on any EP path. The 16-input fused-QK-norm GQA node is an ORT-GenAI
+//! construct, not a mobius one. The inputs-14/15 decline below stays — it is still right for a
+//! GenAI-built graph — but it is not on the mobius critical path.
+//!
 //! The scheduling consequence is in `OP_COVERAGE.md` §4.16: `ai.onnx::Attention` is the cheaper
 //! first target and it unblocks a model family we can build ourselves, which makes it a better
-//! T3 entry point than GQA even though GQA is the more famous op.
+//! T3 entry point than GQA even though GQA is the more famous op. Morpheus ratified that in
+//! `DESIGN.md` §10.0.2.
 
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
-use crate::ops::common::dtype::FLOAT;
+use crate::ops::common::dtype::{ANY, FLOAT};
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
 use crate::registry::{
-    ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OpSpec, PINNED_BASELINE, XL_KERNEL,
+    ContribSchema, NO_SHADER, NodeView, OPSET_ANY, OPSET_STD_ATTENTION_MAX, OPSET_STD_LLM,
+    OPSET_STD_NORM_MAX, OPSET_STD_TENSOR_SCATTER, OpSpec, PINNED_BASELINE, XL_KERNEL,
 };
 use crate::require;
 
@@ -208,11 +227,12 @@ fn rotary_embedding(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
-/// `ai.onnx::Attention` (opset 23) — the standard-domain spelling of grouped-query attention.
+/// `ai.onnx::Attention` (opset 23 and 24) — the standard-domain spelling of grouped-query attention.
 ///
-/// Six inputs: `Q`, `K`, `V`, `attn_mask`, `past_key`, `past_value`, the last three optional.
-/// Grouping comes from the `q_num_heads`/`kv_num_heads` attribute pair rather than from the tensor
-/// shapes, exactly as in the contrib form, so the head-grouping rule is shared.
+/// Inputs at 23: `Q`, `K`, `V`, `attn_mask`, `past_key`, `past_value`, the last three optional.
+/// Opset 24 appends optional input 6 `nonpad_kv_seqlen`. Grouping comes from the
+/// `q_num_heads`/`kv_num_heads` attribute pair rather than from the tensor shapes, exactly as in
+/// the contrib form, so the head-grouping rule is shared.
 ///
 /// Deliberately *not* sharing a claim predicate with [`group_query_attention`], despite the shared
 /// kernel: the attribute names differ (`num_heads` vs `q_num_heads`), the illegal-combination set
@@ -246,6 +266,17 @@ fn std_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // attribute only; an explicit mask tensor is a separate binding and a separate code path.
     claim::input_absent(view, spec, 3, "attn_mask")?;
 
+    // Input 6 is `nonpad_kv_seqlen`, **new at opset 24**. It selects the external KV-cache
+    // pattern: K/V hold the full max-length cache (written by `TensorScatter`) and this tensor
+    // gives the valid length per batch element. With `is_causal = 1` it moves the causal offset to
+    // `nonpad_kv_seqlen[b] - q_sequence_length` per batch element, so a kernel that ignores it
+    // attends to padding and produces plausible wrong logits.
+    //
+    // This is the concrete instance of why an open-ended opset window is a correctness bug rather
+    // than a tidiness one: the row said `23 ..= OPSET_ANY`, and mobius defaults to opset 24 and
+    // takes this path for static caches. `OP_COVERAGE.md` §4.19.
+    claim::input_absent(view, spec, 6, "nonpad_kv_seqlen")?;
+
     Ok(())
 }
 
@@ -265,13 +296,41 @@ fn std_rotary_embedding(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
+/// `ai.onnx::TensorScatter` (opset 24) — the functional model of an in-place KV-cache write.
+///
+/// New at opset 24 and emitted by `onnxruntime/mobius` on its static-KV-cache path, immediately
+/// upstream of the `Attention` node that consumes `nonpad_kv_seqlen`. Inputs: `past_cache`,
+/// `update`, optional `write_indices` `(batch,)`. Attributes: `axis` (default -2, must not be 0)
+/// and `mode` (`"linear"` | `"circular"`).
+///
+/// Why it is in this file rather than a shape module: it exists only to express KV-cache writes,
+/// and its whole value to us is that the spec explicitly permits the backend to alias
+/// `present_cache` onto `past_cache`. That is precisely the `bind_aliased_output` seam Switch
+/// built for GQA, so it belongs next to the ops that need it.
+///
+/// `"circular"` is declined: the wrap-around write is a different index computation, not a slow
+/// case of the linear one.
+fn tensor_scatter(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::typed_input(view, spec, 0, "past_cache")?;
+    claim::attr_string_in(view, spec, "mode", &["linear"], "linear")?;
+    let axis = view.attr_int("axis").unwrap_or(-2);
+    require!(
+        axis != 0,
+        Attribute,
+        "`{}` has axis = 0; the schema forbids scattering along the batch dimension",
+        spec.op_type
+    );
+    Ok(())
+}
+
 crate::op_table! {
     //  op                     domain  opsets                       caps    kernel          claim                   translate                  status              schema
     "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  group_query_attention,  templates::unimplemented,  Staged(XL_KERNEL),  schema: &GROUP_QUERY_ATTENTION;
     "RotaryEmbedding",         Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  rotary_embedding,       templates::unimplemented,  Staged(XL_KERNEL),  schema: &ROTARY_EMBEDDING;
     "MultiHeadAttention",      Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  claim::never,           templates::unimplemented,  Staged(XL_KERNEL),  schema: &MULTI_HEAD_ATTENTION;
-    "Attention",               Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  std_attention,          templates::unimplemented,  Staged(XL_KERNEL);
-    "RotaryEmbedding",         Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  std_rotary_embedding,   templates::unimplemented,  Staged(XL_KERNEL);
+    "Attention",               Ai,     OPSET_STD_LLM ..= OPSET_STD_ATTENTION_MAX, FLOAT,  kernel!(None),  std_attention,          templates::unimplemented,  Staged(XL_KERNEL);
+    "RotaryEmbedding",         Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX,      FLOAT,  kernel!(None),  std_rotary_embedding,   templates::unimplemented,  Staged(XL_KERNEL);
+    "TensorScatter",           Ai,     OPSET_STD_TENSOR_SCATTER ..= OPSET_STD_TENSOR_SCATTER, ANY, kernel!(None), tensor_scatter, templates::unimplemented, Staged(NO_SHADER);
 }
 
 #[cfg(test)]
@@ -386,6 +445,57 @@ mod tests {
         for s in OPS {
             assert!(matches!(s.status, OpStatus::Staged(_)));
         }
+    }
+
+    /// Opset 24 added `Attention` input 6 `nonpad_kv_seqlen`, and `onnxruntime/mobius` defaults to
+    /// opset 24. Before 2026-07-29 this row was `23 ..= OPSET_ANY`, so an opset-24 node — including
+    /// the static-cache form that supplies input 6 — matched a predicate written against the
+    /// opset-23 schema. That is the failure mode the whole design exists to prevent: not a decline,
+    /// a *silent wrong answer* (the per-batch causal offset would be ignored).
+    ///
+    /// The window is now closed at the highest schema version anybody has read. A hypothetical
+    /// `Attention`-25 declines as `[opset]` until someone reads it.
+    #[test]
+    fn attention_window_covers_23_and_24_and_stops_there() {
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "Attention" && s.domain == Domain::Ai)
+            .expect("standard-domain Attention");
+        assert_eq!(row.min_opset, 23);
+        assert_eq!(row.max_opset, 24, "opset 24 is the newest schema read");
+        assert_ne!(
+            row.max_opset, OPSET_ANY,
+            "an open-ended window over an op that gains inputs is a correctness bug, not untidiness"
+        );
+    }
+
+    /// `RotaryEmbedding` has exactly one standard-domain schema version, unlike `Attention`.
+    ///
+    /// Verified against onnx v1.22.0: it is absent from the opset-24 section of `operator_sets.h`
+    /// and still lives in `defs.cc` rather than `old.cc`, i.e. version 23 is current at opset 27.
+    #[test]
+    fn std_rotary_embedding_has_a_single_schema_version() {
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "RotaryEmbedding" && s.domain == Domain::Ai)
+            .expect("standard-domain RotaryEmbedding");
+        assert_eq!(row.min_opset, 23);
+        assert_eq!(row.max_opset, 23);
+    }
+
+    /// `TensorScatter` is new at opset 24 and is the other half of the static-KV-cache pattern.
+    #[test]
+    fn tensor_scatter_is_registered_at_exactly_24() {
+        let row = OPS
+            .iter()
+            .find(|s| s.op_type == "TensorScatter")
+            .expect("the opset-24 KV-cache write");
+        assert_eq!(row.domain, Domain::Ai);
+        assert_eq!((row.min_opset, row.max_opset), (24, 24));
+        assert!(
+            row.schema.is_none(),
+            "standard domain carries no fingerprint"
+        );
     }
 
     #[test]

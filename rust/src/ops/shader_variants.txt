@@ -163,6 +163,8 @@ ew_unary_softsign_f16	templates/ew_unary.comp	EW_OP=OP_SOFTSIGN,SCALAR_T=float16
 ew_unary_softsign_f32	templates/ew_unary.comp	EW_OP=OP_SOFTSIGN,SCALAR_T=float,DTYPE_F32
 ew_unary_sqrt_f16	templates/ew_unary.comp	EW_OP=OP_SQRT,SCALAR_T=float16_t,DTYPE_F16
 ew_unary_sqrt_f32	templates/ew_unary.comp	EW_OP=OP_SQRT,SCALAR_T=float,DTYPE_F32
+ew_unary_swish_f16	templates/ew_unary.comp	EW_OP=OP_SWISH,SCALAR_T=float16_t,DTYPE_F16
+ew_unary_swish_f32	templates/ew_unary.comp	EW_OP=OP_SWISH,SCALAR_T=float,DTYPE_F32
 ew_unary_tan_f16	templates/ew_unary.comp	EW_OP=OP_TAN,SCALAR_T=float16_t,DTYPE_F16
 ew_unary_tan_f32	templates/ew_unary.comp	EW_OP=OP_TAN,SCALAR_T=float,DTYPE_F32
 ew_unary_tanh_f16	templates/ew_unary.comp	EW_OP=OP_TANH,SCALAR_T=float16_t,DTYPE_F16

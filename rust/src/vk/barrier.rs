@@ -824,9 +824,8 @@ mod tests {
 
     #[test]
     fn force_legacy_overrides_sync2_capability() {
-        // The pure selection logic: force_legacy=true must produce "not sync2" regardless of caps.
         let caps = crate::vk::caps::Capabilities {
-            synchronization2: true, // device reports sync2 — must be overridden
+            synchronization2: true,
             synchronization2_is_core: true,
             subgroup_size: 32,
             subgroup_basic_in_compute: true,
@@ -835,6 +834,8 @@ mod tests {
             can_require_subgroup_size: false,
             shader_float16: false,
             is_uma: false,
+            timestamp_period_ns: 1.0,
+            timestamp_valid_bits: 64,
         };
         assert!(
             !should_use_sync2(&caps, true /* force_legacy */),
@@ -854,6 +855,8 @@ mod tests {
             can_require_subgroup_size: false,
             shader_float16: false,
             is_uma: false,
+            timestamp_period_ns: 1.0,
+            timestamp_valid_bits: 64,
         };
         assert!(
             !should_use_sync2(&caps, false),
@@ -873,6 +876,8 @@ mod tests {
             can_require_subgroup_size: false,
             shader_float16: false,
             is_uma: false,
+            timestamp_period_ns: 1.0,
+            timestamp_valid_bits: 64,
         };
         assert!(
             should_use_sync2(&caps, false),

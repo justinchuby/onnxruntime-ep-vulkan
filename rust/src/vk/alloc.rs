@@ -14,12 +14,17 @@
 //!
 //! # Memory classes (`ENGINE.md` §3)
 //!
-//! | Class | Location | Typical use |
+//! | Class | `MemoryLocation` hint | Typical use |
 //! |---|---|---|
-//! | `DeviceLocal` | `DEVICE_LOCAL` | Compute inputs/outputs, KV-cache, prepacked weights |
-//! | `Upload` | `HOST_VISIBLE | HOST_COHERENT` | CPU→GPU staging (write-once per Run) |
-//! | `Download` | `HOST_VISIBLE | HOST_COHERENT` | GPU→CPU readback |
-//! | `PackedWeights` | `DEVICE_LOCAL` | Compile-time packed weight tensors; never freed mid-run |
+//! | `DeviceLocal` | `GpuOnly` | Compute inputs/outputs, KV-cache, prepacked weights |
+//! | `Upload` | `CpuToGpu` | CPU→GPU staging (write-combining; write-once per Run) |
+//! | `Download` | `GpuToCpu` | GPU→CPU readback (cached; CPU reads after fence wait) |
+//! | `PackedWeights` | `GpuOnly` | Compile-time packed weight tensors; never freed mid-run |
+//!
+//! `gpu-allocator` selects the optimal `VkMemoryType` from these hints. On UMA devices
+//! (Intel Iris Xe, Adreno, Mali) all four classes may land on the same physical heap — the
+//! hints still guide the allocator toward write-combining vs cached sub-types when the
+//! hardware exposes them.
 //!
 //! All four classes map to `VkBuffer` (no images). This is v0's buffer-only decision
 //! (`ENGINE.md` §3.1: "buffer-only vs buffer+image: buffer-only for v0").
@@ -79,7 +84,14 @@ impl MemClass {
     fn gpu_alloc_location(self) -> MemoryLocation {
         match self {
             MemClass::DeviceLocal | MemClass::PackedWeights => MemoryLocation::GpuOnly,
-            MemClass::Upload | MemClass::Download => MemoryLocation::CpuToGpu,
+            // Upload: CPU writes, GPU reads — CpuToGpu lets gpu-allocator prefer
+            // write-combining HOST_VISIBLE memory on discrete devices.
+            MemClass::Upload => MemoryLocation::CpuToGpu,
+            // Download: GPU writes, CPU reads — GpuToCpu lets gpu-allocator prefer
+            // cached HOST_VISIBLE memory for efficient CPU readback. On UMA devices
+            // (Iris Xe, Adreno, Mali) both will land on the same physical heap anyway, but
+            // the hint matters on discrete GPUs with separate PCIe BAR regions.
+            MemClass::Download => MemoryLocation::GpuToCpu,
         }
     }
 }
@@ -457,10 +469,12 @@ mod tests {
     }
 
     #[test]
-    fn mem_class_download_maps_to_cpu_to_gpu() {
+    fn mem_class_download_maps_to_gpu_to_cpu() {
+        // Download = GPU writes, CPU reads. GpuToCpu lets gpu-allocator prefer cached
+        // HOST_VISIBLE memory for efficient CPU readback — not the same as Upload (CpuToGpu).
         assert_eq!(
             MemClass::Download.gpu_alloc_location(),
-            MemoryLocation::CpuToGpu,
+            MemoryLocation::GpuToCpu,
         );
     }
 

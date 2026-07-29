@@ -165,6 +165,10 @@ COMPUTE_T apply(COMPUTE_T x) {
     return max(x, 0.0);
 #elif EW_OP == OP_SIGMOID
     return ew_sigmoid(x);
+#elif EW_OP == OP_SWISH
+    // ONNX opset 24 `Swish`: x * sigmoid(alpha * x). The claim predicate admits only alpha = 1,
+    // which is SiLU — the activation every SwiGLU MLP in the LLM tiers uses.
+    return x * ew_sigmoid(x);
 #elif EW_OP == OP_HARDSWISH
     return x * clamp(x / 6.0 + 0.5, 0.0, 1.0);
 #elif EW_OP == OP_SOFTPLUS

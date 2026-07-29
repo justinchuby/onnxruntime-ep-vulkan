@@ -39,6 +39,71 @@ use super::caps::{self, Capabilities};
 use crate::engine::{DeviceInfo, DeviceKind};
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Device-selection environment variable
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Environment variable for pinning the EP to a specific physical device.
+///
+/// Accepted values:
+/// - Unset or empty: use best-first ordering (discrete GPU preferred).
+/// - An integer (`"0"`, `"1"`, …): 0-based index into the sorted capable-devices list.
+/// - A substring (`"Intel"`, `"RTX"`, …): case-insensitive match against device name;
+///   the first match wins.
+///
+/// Intended uses:
+/// - CI lanes: `ONNXRUNTIME_EP_VULKAN_DEVICE=0` runs on the best device (default),
+///   `ONNXRUNTIME_EP_VULKAN_DEVICE=Intel` pins to the Intel driver for strictness testing.
+/// - Developer machines: select between discrete and integrated for per-device dispatch tests.
+///
+/// **Intel as a strictness oracle.** Intel's Vulkan drivers are known for strict spec
+/// conformance; NVIDIA's for tolerating things the spec does not guarantee. A kernel that
+/// is correct on NVIDIA but fails on Intel has almost certainly relied on undefined behaviour,
+/// not found an Intel bug. The device selector exists so this asymmetry is exercised
+/// deliberately rather than accidentally. See `docs/ENGINE.md §2.1 (Multi-device testing)`.
+pub(crate) const ENV_DEVICE_SELECTOR: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE";
+
+/// Select a device index from the sorted capable-devices list using `ONNXRUNTIME_EP_VULKAN_DEVICE`.
+///
+/// Returns `None` only when `devices` is empty. If the selector names a non-existent index or
+/// an unmatched substring, a warning is logged and index 0 (the default best device) is returned.
+pub(crate) fn select_device(devices: &[CapableDevice]) -> Option<usize> {
+    if devices.is_empty() {
+        return None;
+    }
+    let selector = std::env::var(ENV_DEVICE_SELECTOR).unwrap_or_default();
+    if selector.is_empty() {
+        return Some(0);
+    }
+    // Integer index?
+    if let Ok(idx) = selector.parse::<usize>() {
+        if idx < devices.len() {
+            return Some(idx);
+        }
+        log::warn!(
+            "{ENV_DEVICE_SELECTOR}={selector}: index out of range \
+             ({} device(s) passed the gate). Using device 0.",
+            devices.len(),
+        );
+        return Some(0);
+    }
+    // Name substring (case-insensitive).
+    let lower = selector.to_lowercase();
+    match devices
+        .iter()
+        .position(|d| d.info.name.to_lowercase().contains(&lower))
+    {
+        Some(idx) => Some(idx),
+        None => {
+            log::warn!(
+                "{ENV_DEVICE_SELECTOR}={selector}: no device name contains '{selector}' \
+                 (case-insensitive). Using device 0.",
+            );
+            Some(0)
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Instance
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -766,6 +831,86 @@ pub(crate) fn probe_loader_report() -> String {
             "  → All devices rejected; see the FAIL criterion above for the specific reason."
                 .to_string(),
         );
+    } else {
+        // Show which device the EP would select and what env var controls it.
+        // We need the full CapableDevice list for select_device, but probe_loader_report uses
+        // a lightweight gate-only path (no caps::probe). Reproduce the sort score from DeviceKind.
+        let selector_val = std::env::var(ENV_DEVICE_SELECTOR).unwrap_or_default();
+        out.push(String::new());
+        out.push(format!(
+            "{ENV_DEVICE_SELECTOR} = {}",
+            if selector_val.is_empty() {
+                "<not set — best-first (discrete preferred)>".to_string()
+            } else {
+                selector_val.clone()
+            }
+        ));
+        // Replicate best-first sort to find the default (index 0 after sort by DeviceKind::score).
+        // We don't have CapableDevice here so we sort raw_devices by device type score.
+        let score = |ty: vk::PhysicalDeviceType| match ty {
+            vk::PhysicalDeviceType::DISCRETE_GPU => 3u8,
+            vk::PhysicalDeviceType::INTEGRATED_GPU => 2,
+            vk::PhysicalDeviceType::VIRTUAL_GPU => 1,
+            _ => 0,
+        };
+        let mut passing: Vec<(usize, String, vk::PhysicalDeviceType)> = raw_devices
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &pdev)| {
+                // SAFETY: inst.handle and pdev are live; pdev came from enumerate_physical_devices
+                // against this instance handle in the same scope.
+                let p = unsafe { inst.handle.get_physical_device_properties(pdev) };
+                // SAFETY: same as above.
+                let m = unsafe { inst.handle.get_physical_device_memory_properties(pdev) };
+                // SAFETY: same as above.
+                let qf = unsafe {
+                    inst.handle
+                        .get_physical_device_queue_family_properties(pdev)
+                }
+                .into_iter()
+                .position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE))
+                .map(|i| i as u32);
+                if passes_gate(&p, &p.limits, &m, qf).is_ok() {
+                    Some((idx, device_name_str(&p), p.device_type))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        passing.sort_by_key(|(_, _, ty)| std::cmp::Reverse(score(*ty)));
+
+        if !passing.is_empty() {
+            // Apply the selector logic (mirrors select_device but on the probe-only data).
+            let selected_name = if selector_val.is_empty() {
+                format!(
+                    "Device {} '{}' (best-first default; set {ENV_DEVICE_SELECTOR}=<index|name> to override)",
+                    passing[0].0, passing[0].1
+                )
+            } else if let Ok(idx) = selector_val.parse::<usize>() {
+                passing
+                    .get(idx)
+                    .map(|(i, n, _)| format!("Device {i} '{n}' (selected by index {idx})"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "index {idx} out of range — would fall back to Device {} '{}'",
+                            passing[0].0, passing[0].1
+                        )
+                    })
+            } else {
+                let lower = selector_val.to_lowercase();
+                passing
+                    .iter()
+                    .find(|(_, n, _)| n.to_lowercase().contains(&lower))
+                    .map(|(i, n, _)| format!("Device {i} '{n}' (matched '{selector_val}')"))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "no name matches '{selector_val}' — would fall back to Device {} '{}'",
+                            passing[0].0, passing[0].1
+                        )
+                    })
+            };
+            out.push(format!("Would select: {selected_name}"));
+        }
     }
 
     out.join("\n")
