@@ -150,3 +150,15 @@ has.**
 now I have anchored on a heading and omitted it from the replacement, silently deleting `### 8.2`
 and `### M0`. Both were caught by re-listing headings afterwards. Always re-grep the heading
 structure after any edit anchored on a heading.
+
+---
+
+## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
+
+📌 **CI is the only place shaders are verified; red CI blocks all merges (2026-07-29, Trinity + Morpheus):** `README.md` now carries a CI badge and explicit callout. A shader running locally is a development loop, not coverage. A result obtained only on this desk is not a result this project has.
+
+📌 **`onnx-genai-models` (`mobius`) finding (2026-07-29, Mouse D-M6-04):** Standard-domain ops now registered. Coverage is relative to a named producer. Morpheus D21: a target model is "covered" only when a named producer is specified. The M1 census must be per-producer; "producer emits no GQA" must be an explicit row.
+
+📌 **T3 sequencing fixed: `ai.onnx::Attention` first (2026-07-29, Morpheus D23):** GQA sequenced after. The `bind_aliased_output` seam must be designed for both consumers' requirements (Switch + Mouse must coordinate).
+
+📌 **`rustfmt --edition 2021` silently no-ops on edition-2024 crate (2026-07-29, Tank D-T12):** Always use `cargo fmt --all`.
