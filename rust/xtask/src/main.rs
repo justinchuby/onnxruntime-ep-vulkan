@@ -51,7 +51,8 @@ struct Check {
 /// The layering lint has no entry of its own because it is an integration test (`tests/layering.rs`)
 /// and therefore already inside `cargo test`. That was a deliberate choice when it was written —
 /// a check that runs as part of something you already run cannot be forgotten. `cargo test` also
-/// covers `tests/dump_capabilities.rs`, which is C2's surface.
+/// covers `tests/portability.rs` (the cross-platform lint) and `tests/dump_capabilities.rs`, which
+/// is C2's surface.
 const CHECKS: &[Check] = &[
     Check {
         name: "rustfmt",
@@ -78,7 +79,7 @@ const CHECKS: &[Check] = &[
         args: &["build"],
     },
     Check {
-        name: "test (incl. layering lint + capability dump)",
+        name: "test (incl. layering + portability lints + capability dump)",
         mirrors: "job `build-test-linux` — Layering lint, plus the crate's own test suite",
         args: &["test"],
     },
@@ -219,8 +220,14 @@ fn print_caveats(env: &Env) {
          \x20   claim diagnostics, no-ICD fallback) was not run. It needs a real ONNX Runtime."
     );
     println!(
-        "  * Only this host's OS and toolchain. CI builds Linux and Windows; a `cfg(unix)` path\n\
-         \x20   that does not compile is invisible from a Windows machine and vice versa."
+        "  * ONLY THIS HOST'S TARGET WAS COMPILED. Nothing here builds for the other OS, and this\n\
+         \x20   caveat has already come true once: `tests/mock_ort/mod.rs` named a bindgen type\n\
+         \x20   that only exists on Windows, and broke the Linux lane for a full cycle.\n\
+         \x20   `tests/portability.rs` now lints the cheap subset of that class (platform-only\n\
+         \x20   bindings must be cfg-gated; every fork must have both arms), but a lint is not a\n\
+         \x20   compiler. A genuine cross-check needs `cargo check --target <other>`, which needs\n\
+         \x20   a sysroot for the target's libc before bindgen can parse the ORT headers — see\n\
+         \x20   D-T20. Until then: when you touch anything platform-conditional, watch CI."
     );
     println!(
         "\n  `cargo ci` green means: CI's *Rust* lanes should pass. It does not mean the EP works."

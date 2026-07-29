@@ -186,6 +186,49 @@ fn usage() {
     );
 }
 
+/// The phrase in `engine::loader_probe_report()` that carries the gate verdict.
+///
+/// This is a **contract between two files with different owners** — `engine.rs` is Switch's, this
+/// is mine — expressed, for now, as a substring of prose. See [`probe_exit_code`].
+const GATE_VERDICT_MARKER: &str = "passed the §7.2 capability gate";
+
+/// Turn the loader-probe report into an exit code for CI gate scripts.
+///
+/// # Why this is more than one line
+///
+/// The obvious implementation is `report.contains(MARKER) && !report.contains("0 device(s)")`.
+/// The problem is what happens when the marker is *absent*: that spelling silently returns
+/// "failure", which is indistinguishable from a genuine "no capable device". So the day someone
+/// rewords the report — an ordinary, blameless edit to a human-readable string in a file whose
+/// owner has no reason to know this parser exists — CI starts reporting "Vulkan is broken on this
+/// runner" and the next person spends a cycle chasing an environment that is fine. That is the
+/// exact failure mode we have already burned two CI cycles on this week, in the opposite
+/// direction.
+///
+/// So: absence of the marker is its own exit code (3) with a message naming the coupling. A wrong
+/// answer is worse than a loud refusal to answer.
+///
+/// The real fix is for `loader_probe_report()` to return a struct with the verdict as a field and
+/// `Display` for the prose, so this parsing disappears. That is Switch's file and his call; this
+/// makes the failure mode survivable in the meantime.
+fn probe_exit_code(report: &str) -> std::process::ExitCode {
+    if !report.contains(GATE_VERDICT_MARKER) {
+        eprintln!(
+            "epctl: the loader probe report does not contain the phrase this gate reads\n\
+             \x20 expected substring: {GATE_VERDICT_MARKER:?}\n\
+             \x20 epctl cannot tell 'no capable device' from 'the report was reworded', and \
+             guessing would either green-light a broken runner or condemn a working one.\n\
+             \x20 Fix: keep the phrase, or (better) have `engine::loader_probe_report()` return \
+             the verdict as data instead of prose."
+        );
+        return std::process::ExitCode::from(3);
+    }
+    if report.contains("0 device(s) passed") {
+        return std::process::ExitCode::from(1);
+    }
+    std::process::ExitCode::SUCCESS
+}
+
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
@@ -208,14 +251,7 @@ fn main() -> std::process::ExitCode {
         // Cross-owner edit: Switch added this; Tank owns epctl.rs. Flagged in decisions.
         let report = engine::loader_probe_report();
         println!("{report}");
-        // Exit 1 if the probe found no capable devices (useful for CI gate scripts).
-        let ok = report.contains("passed the §7.2 capability gate")
-            && !report.contains("0 device(s) passed");
-        return if ok {
-            std::process::ExitCode::SUCCESS
-        } else {
-            std::process::ExitCode::from(1)
-        };
+        return probe_exit_code(&report);
     }
 
     if !dump {
@@ -229,4 +265,32 @@ fn main() -> std::process::ExitCode {
         dump_human()
     }
     std::process::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three outcomes must be distinguishable. Conflating the last two is the bug this
+    /// function exists to prevent.
+    #[test]
+    fn probe_exit_code_separates_failure_from_an_unreadable_report() {
+        let pass = format!("2 device(s) {GATE_VERDICT_MARKER}");
+        let fail = format!("0 device(s) passed — none {GATE_VERDICT_MARKER}");
+        let reworded = "Vulkan looks fine on this machine.";
+
+        assert_eq!(
+            format!("{:?}", probe_exit_code(&pass)),
+            format!("{:?}", std::process::ExitCode::SUCCESS)
+        );
+        assert_eq!(
+            format!("{:?}", probe_exit_code(&fail)),
+            format!("{:?}", std::process::ExitCode::from(1))
+        );
+        assert_eq!(
+            format!("{:?}", probe_exit_code(reworded)),
+            format!("{:?}", std::process::ExitCode::from(3)),
+            "a reworded report must be its own exit code, not a silent 'no devices' verdict"
+        );
+    }
 }

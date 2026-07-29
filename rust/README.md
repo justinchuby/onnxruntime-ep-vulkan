@@ -448,6 +448,39 @@ needs `cargo test --all-targets` (which includes it) plus LLVM/libclang on every
 
 ---
 
+## Portability lint
+
+[`tests/portability.rs`](tests/portability.rs), run by `cargo test --test portability` and by
+`cargo ci`. It is the layering lint's companion for a different failure class: **code that
+compiles on the machine it was written on and cannot compile anywhere else.**
+
+| Rule | What it enforces |
+|---|---|
+| **P1** | A binding that exists on only some targets may only be named by a `cfg`-gated definition. Today that list is one entry, `ort::wchar_t`. |
+| **P2** | Every `#[cfg(windows)]` item has a `#[cfg(not(windows))]` sibling in the same file. |
+
+It also prints the crate's entire platform-conditional surface and fails if it grows past a
+reviewable size, on the theory that a small surface consolidated behind aliases is worth more than
+a lint chasing `cfg` spread through the crate.
+
+**Why it exists.** `ORTCHAR_T` is `wchar_t` on Windows and `char` elsewhere, so bindgen emits
+`ort::wchar_t` only on Windows. `tests/mock_ort/mod.rs` named it directly, which compiled here and
+broke the Linux lane outright — masking everything behind it, including the lavapipe result we
+were actually waiting for. `cargo ci` had already printed a caveat saying precisely this could
+happen. This file is that caveat converted into a mechanism.
+
+**Why not just cross-compile locally?** Because it does not work on a Windows box, and that was
+measured rather than assumed. `rustup` has the Linux and macOS std libraries installed here and
+`cargo check --target x86_64-unknown-linux-gnu` gets all the way through every dependency —
+bindgen even re-targets clang correctly — before dying in `build.rs` on `'stdlib.h' file not
+found`. Clang's own builtin headers can be supplied via `BINDGEN_EXTRA_CLANG_ARGS` (that fixes
+`stdbool.h`), but `stdlib.h` is glibc's, and having it means vendoring or downloading a Linux
+sysroot on every dev box. Rejected as infrastructure we would not maintain; see D-T20 in
+`.squad/decisions/inbox/tank-m0-foundation.md`. A lint is not a compiler, and `cargo ci` says so
+in its own output.
+
+---
+
 ## Module map
 
 | Module | Owner | What it is |

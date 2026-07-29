@@ -135,6 +135,28 @@ fn check_in_z(p: *const c_char, who: &str, param: &str) -> String {
     s.to_string_lossy().into_owned()
 }
 
+/// `ORTCHAR_T`, as the platform defines it.
+///
+/// ONNX Runtime's `onnxruntime_c_api.h` does this:
+///
+/// ```c
+/// #ifdef _WIN32
+/// typedef wchar_t ORTCHAR_T;
+/// #else
+/// typedef char ORTCHAR_T;
+/// #endif
+/// ```
+///
+/// so bindgen emits `*const wchar_t` on Windows and `*const c_char` everywhere else, and
+/// `ort::wchar_t` does not exist at all on Linux. This alias is the *only* place the difference
+/// is allowed to appear: every check below is written once, against the alias, so the `_In_z_`
+/// contract is enforced identically on both platforms and neither one can silently lose it.
+#[cfg(windows)]
+pub type OrtChar = ort::wchar_t;
+/// See the Windows arm.
+#[cfg(not(windows))]
+pub type OrtChar = c_char;
+
 /// Validate an `_In_z_ const ORTCHAR_T*` — the parameter that killed the first real load.
 ///
 /// This is what ORT does with it on Windows:
@@ -147,7 +169,11 @@ fn check_in_z(p: *const c_char, who: &str, param: &str) -> String {
 /// ```
 /// Both are undefined behaviour on NULL. So the mock treats NULL as a hard violation rather than
 /// tolerating it — tolerating it here is precisely how the real crash escaped review.
-fn check_in_z_ortchar(p: *const ort::wchar_t, who: &str, param: &str) -> String {
+///
+/// The null check, the NUL-termination scan and the empty-string check are shared: `OrtChar` is a
+/// concrete type on each platform, so the same body compiles for `u16` and for `i8`. Only the
+/// final decode differs, and it differs the way ORT's own decode differs.
+fn check_in_z_ortchar(p: *const OrtChar, who: &str, param: &str) -> String {
     if p.is_null() {
         violation(format!(
             "{who}: `{param}` is annotated _In_z_ but was NULL — ONNX Runtime dereferences this \
@@ -155,7 +181,7 @@ fn check_in_z_ortchar(p: *const ort::wchar_t, who: &str, param: &str) -> String 
         ));
         return String::new();
     }
-    let mut units: Vec<u16> = Vec::new();
+    let mut units: Vec<OrtChar> = Vec::new();
     let mut i = 0usize;
     loop {
         if i > 64 * 1024 {
@@ -178,7 +204,28 @@ fn check_in_z_ortchar(p: *const ort::wchar_t, who: &str, param: &str) -> String 
             "{who}: `{param}` is an empty string; ORT expects a real source path"
         ));
     }
-    String::from_utf16_lossy(&units)
+    decode_ortchars(&units)
+}
+
+/// Decode `ORTCHAR_T` units the way ONNX Runtime does: UTF-16 through `ToUTF8String` on Windows,
+/// raw bytes into a `std::string` elsewhere. Lossy on both, because a mock host that rejects a
+/// path ORT would have accepted is a mock that lies.
+#[cfg(windows)]
+fn decode_ortchars(units: &[OrtChar]) -> String {
+    String::from_utf16_lossy(units)
+}
+
+/// See the Windows arm.
+///
+/// `c_char` is signed on x86_64 and *unsigned* on aarch64, so the cast below is a no-op on some
+/// targets and a reinterpretation on others. That is exactly why it is written once here instead
+/// of at each use site — and why the lint is silenced deliberately rather than by writing code
+/// that only compiles on half of the non-Windows targets.
+#[cfg(not(windows))]
+#[allow(clippy::unnecessary_cast)]
+fn decode_ortchars(units: &[OrtChar]) -> String {
+    let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -238,7 +285,7 @@ unsafe extern "C" fn logger_log_message(
     logger: *const ort::OrtLogger,
     severity: ort::OrtLoggingLevel,
     message: *const c_char,
-    file_path: *const ort::wchar_t,
+    file_path: *const OrtChar,
     line_number: c_int,
     func_name: *const c_char,
 ) -> ort::OrtStatusPtr {
