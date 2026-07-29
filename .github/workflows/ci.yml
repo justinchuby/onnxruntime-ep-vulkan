@@ -430,7 +430,7 @@ jobs:
           $env:MESA_LOG_LEVEL = "error"
           $vulkInfo = & "$env:VULKAN_SDK\Bin\vulkaninfoSDK.exe" --summary 2>&1
           Write-Host $vulkInfo
-          if ($vulkInfo -notmatch "llvmpipe") {
+          if (-not ($vulkInfo | Select-String -Quiet -SimpleMatch "llvmpipe")) {
             Write-Error "lavapipe (llvmpipe) not found in vulkaninfo output after registry registration. Check HKLM:\SOFTWARE\Khronos\Vulkan\Drivers and mesa3d\x64\ DLL path."
             exit 1
           }

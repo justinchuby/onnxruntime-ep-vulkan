@@ -204,3 +204,29 @@
   red step with a diagnostic.
 
   **YAML parse verified:** Both workflow files pass `yaml.safe_load` — checklist followed.
+
+📌 Trinity round-10: PowerShell array-match bug + Linux Vulkan confirmed (2026-07-28T22:28:08-07:00):
+
+  **Linux: first working Vulkan device in this project's history.**
+  Smoke-check output from run 30454894424:
+    deviceName = llvmpipe (LLVM 15.0.7, 256 bits)
+    apiVersion = 1.3.255
+  The lane then fails at cargo clippy on Tank's ort::wchar_t issue (he is fixing it).
+  Once his fix lands, the Linux lane compiles and epctl --probe-loader runs against
+  a real Vulkan 1.3 device.
+
+  **Windows: PowerShell array-operator false-red bug fixed.**
+  Root cause: `$vulkInfo -notmatch "llvmpipe"` where `$vulkInfo` is an array. In PowerShell,
+  `-match`/`-notmatch` on an array is a *filter* (returns matching/non-matching elements),
+  not a boolean test. A non-empty array is truthy, so `-notmatch "llvmpipe"` returns all the
+  lines that don't contain it (~everything), which is always truthy → always fails.
+  The lavapipe UUID (llvm=6c6c766d, pipe=70697065) was visible in the log; the check was
+  wrong, not the environment.
+  Fix: `if (-not ($vulkInfo | Select-String -Quiet -SimpleMatch "llvmpipe"))` — explicitly
+  boolean via Select-String -Quiet which returns True/False, not an array.
+
+  **Lesson:** `-match`/`-notmatch` are filters on arrays, boolean only on scalars. Always
+  use `Select-String -Quiet`, `-contains`, or `($array | Where-Object {...}).Count -gt 0`
+  when a boolean result is needed from a multi-line output capture. The inverse failure
+  mode (false red) is cheaper than false green but equally misleading — both directions of
+  a check must be verified.
