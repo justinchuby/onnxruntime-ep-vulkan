@@ -1,59 +1,44 @@
 """Domain-wide opt-in regression tests (Morpheus C1 requirement).
 
-Morpheus C1 states: no domain-wide opt-in may exist. Specifically, the implementation
-must not contain a code path like `if node.domain == "com.microsoft" { claim(node) }`.
-The VulkanExecutionProvider must decline any op that is not individually registered,
-including fictional ops in the com.microsoft domain, with an ordinary "not-registered"
-decline — not a crash, not a panic, not a silent claim.
+Morpheus C1: no domain-wide opt-in may exist. The implementation must not have a code
+path like `if node.domain == "com.microsoft" { claim(node) }`. The EP must decline any
+op not individually registered, including fabricated ops in any domain, with an ordinary
+"not-registered" decline -- not a crash, not a panic, not a silent claim.
 
-Tank has banned the domain as a *value* statically in `rust/tests/layering.rs`. This
-module is the runtime half: it proves the architecture holds end-to-end.
+Tank bans the domain as a *value* statically in `rust/tests/layering.rs`. This module is
+the runtime half: it proves the architecture holds end-to-end.
 
-Test: test_notarealop_ordinary_decline
-  - Fabricates a node `com.microsoft::NotARealOp`.
-  - Asserts the Vulkan EP declines with an ordinary ORT "no kernel" error, NOT a crash.
-  - Asserts the CPU EP can complete the session (since the session has CPU fallback).
-  - Asserts the Vulkan EP executed ZERO nodes of the model.
-  - The decline reason is asserted via the machine-readable mechanism once Mouse's
-    registry exposes it (TODO below). Until then, the structural assert (zero nodes
-    claimed) is the guard.
+Machine-readable claim log (Mouse OP_COVERAGE.md section 10.2):
+  Set ONNXRUNTIME_EP_VULKAN_CLAIM_LOG=<path> before session creation. The EP appends one
+  JSON Lines record per decision, flushed immediately:
+    {"op":"com.microsoft::NotARealOp","node":"n0","opset":1,"claimed":false,
+     "code":"not-registered","reason":"[not-registered] no Vulkan handler registered..."}
+  code is null when claimed. code == "not-registered" is the C1-specific assertion.
 
-TODO(Mouse): once the claim-predicate registry exposes machine-readable decline reasons
-  (the "not-registered" reason code from ops/registry.rs), update this test to assert
-  against the reason code directly rather than relying only on the profiling-JSON absence
-  of VulkanExecutionProvider in "provider" events. The structural assertion (zero nodes)
-  is correct and sufficient until then.
-
-Mouse note: Mouse's staged registry entries for com.microsoft ops (FastGelu, GroupQueryAttention,
-  MatMulNBits, etc.) each have explicit claim predicates. Only those ops are claimed. A
-  fictional op in the same domain must not be claimed, and this test verifies that invariant.
+Tests:
+  test_notarealop_ordinary_decline  -- asserts code="not-registered" via CLAIM_LOG + no crash
+  test_notarealop_vulkan_does_not_claim -- belt-and-suspenders: zero Vulkan nodes (profiling)
 """
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import onnxruntime as ort
-import pytest
 
 import tests.ops._models as m
 
 
 # ---------------------------------------------------------------------------
-# C1 regression — com.microsoft::NotARealOp must produce an ordinary decline
+# Shared model builder
 # ---------------------------------------------------------------------------
 
 
 def _make_not_a_real_op_model() -> tuple[bytes, dict[str, np.ndarray]]:
-    """Build a minimal model containing a com.microsoft::NotARealOp node.
-
-    Returns (model_bytes, feeds). The graph has a single node of type NotARealOp in the
-    com.microsoft domain. No CPU EP kernel exists for this op either, so the session
-    creation itself should fail or the run should raise an appropriate ORT error.
-
-    The important invariant is: the Vulkan EP must NOT claim the op (no domain-wide opt-in),
-    and the error must be an ordinary "no registered kernel" ORT error, not an EP crash.
-    """
-    import onnx
+    """Build a model with a single com.microsoft::NotARealOp node."""
     import onnx.helper as oh
     from onnx import TensorProto as tp
 
@@ -66,6 +51,7 @@ def _make_not_a_real_op_model() -> tuple[bytes, dict[str, np.ndarray]]:
         outputs=["Y"],
         domain="com.microsoft",
     )
+    import onnx
     graph = oh.make_graph(
         [node],
         "not_a_real_op_test",
@@ -83,104 +69,113 @@ def _make_not_a_real_op_model() -> tuple[bytes, dict[str, np.ndarray]]:
     return model.SerializeToString(), feeds
 
 
+# ---------------------------------------------------------------------------
+# C1 regression
+# ---------------------------------------------------------------------------
+
+# ORT exception types that represent ordinary "no kernel" errors (not EP crashes).
+_ORT_NO_KERNEL_ERRORS = (
+    ort.capi.onnxruntime_pybind11_state.Fail,
+    ort.capi.onnxruntime_pybind11_state.InvalidGraph,
+    ort.capi.onnxruntime_pybind11_state.InvalidProtobuf,
+    ort.capi.onnxruntime_pybind11_state.NotImplemented,
+    ort.capi.onnxruntime_pybind11_state.NotFound,
+)
+
+
 def test_notarealop_ordinary_decline():
-    """com.microsoft::NotARealOp must be declined by the Vulkan EP with a normal ORT error.
+    """com.microsoft::NotARealOp must decline with code="not-registered" and not crash.
 
-    Morpheus C1 — the runtime half of the architectural invariant that no domain-wide opt-in
-    exists. Tank's static ban in layering.rs prevents the *value* from appearing in code;
-    this test proves the runtime behaviour matches the architectural intent.
-
-    The assertion sequence:
-    1. Session creation with Vulkan EP must either succeed (if the EP partitions the graph
-       and declines this op) or raise an ORT-category error (not a segfault or Python crash).
-       Either outcome is acceptable — what is NOT acceptable is the Vulkan EP claiming the op.
-    2. If session creation succeeds, the Vulkan EP must have claimed ZERO nodes
-       (assert_vulkan_does_not_claim). A claim would mean a domain-wide opt-in exists.
-    3. Any ORT exception must be an "invalid graph / no registered kernel" class error,
-       not an EP-internal panic or segfault.
-
-    TODO(Mouse): when the claim-predicate registry exposes machine-readable decline reasons,
-       replace the structural assertion (zero nodes) with:
-           assert decline_reason == "not-registered"
-       using the structured reason code from ops/registry.rs. The current test is correct
-       but does not yet distinguish between "no kernel" (correct) and "panic" (wrong).
+    Morpheus C1 runtime half. Assertion sequence:
+    1. CLAIM_LOG (Mouse sec 10.2): if the EP is built, assert code == "not-registered".
+       This is the definitive assertion -- it distinguishes "declined correctly" from a
+       crash before reaching the claim predicate, and from domain-wide acceptance.
+    2. ORT error type: session creation must raise an ORT Fail/similar, NOT SystemError
+       (which would indicate an EP crash/panic).
+    3. Zero Vulkan nodes claimed (via test_notarealop_vulkan_does_not_claim, belt-and-suspenders).
     """
     model_bytes, feeds = _make_not_a_real_op_model()
 
-    # Check: session creation with Vulkan EP providers.
-    opts = ort.SessionOptions()
-    opts.log_severity_level = 3
+    log_path = Path(__file__).parent / f"_claim_log_{os.getpid()}.jsonl"
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    old_log = os.environ.pop("ONNXRUNTIME_EP_VULKAN_CLAIM_LOG", None)
+    os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(log_path.absolute())
 
     try:
-        sess = ort.InferenceSession(
-            model_bytes,
-            opts,
-            providers=[m.EP_NAME, "CPUExecutionProvider"],
-        )
-        # Session created successfully: Vulkan EP must have declined without crashing.
-        # Now run and assert zero Vulkan claims.
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
         try:
-            sess.run(None, feeds)
-            # If run succeeded with the EP available, that means both EP and CPU declined
-            # and somehow the session ran — which should not happen for an unknown op.
-            # Use the profiling-based assertion to confirm zero Vulkan claims.
-            m.assert_vulkan_does_not_claim(model_bytes, feeds)
-        except (
-            ort.capi.onnxruntime_pybind11_state.Fail,
-            ort.capi.onnxruntime_pybind11_state.InvalidGraph,
-            ort.capi.onnxruntime_pybind11_state.NotImplemented,
-            ort.capi.onnxruntime_pybind11_state.NotFound,
-        ):
-            # Expected: no CPU kernel either, so the run legitimately fails.
-            pass
-        except Exception as exc:
-            # Any other exception must not be an EP crash.
-            if isinstance(exc, SystemError):
-                raise AssertionError(
-                    f"com.microsoft::NotARealOp caused a SystemError — this suggests an "
-                    f"EP crash rather than an ordinary 'no registered kernel' decline. "
-                    f"Original: {exc}"
-                ) from exc
+            sess = ort.InferenceSession(
+                model_bytes,
+                opts,
+                providers=[m.EP_NAME, "CPUExecutionProvider"],
+            )
+            try:
+                sess.run(None, feeds)
+            except _ORT_NO_KERNEL_ERRORS:
+                pass  # expected: no CPU kernel either
+        except _ORT_NO_KERNEL_ERRORS:
+            pass  # expected: ORT raises Fail/similar because no EP has a kernel
+        except SystemError as exc:
+            raise AssertionError(
+                "com.microsoft::NotARealOp caused a SystemError during session creation -- "
+                "this indicates an EP crash rather than an ordinary decline. "
+                f"Original: {exc}"
+            ) from exc
 
-    except (
-        ort.capi.onnxruntime_pybind11_state.Fail,
-        ort.capi.onnxruntime_pybind11_state.InvalidGraph,
-        ort.capi.onnxruntime_pybind11_state.InvalidProtobuf,
-        ort.capi.onnxruntime_pybind11_state.NotImplemented,
-        ort.capi.onnxruntime_pybind11_state.NotFound,
-    ):
-        # Session creation failed with an expected ORT error — this is acceptable.
-        # The Vulkan EP did not crash, and no domain-wide claim occurred.
+    finally:
+        if old_log is not None:
+            os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = old_log
+        else:
+            os.environ.pop("ONNXRUNTIME_EP_VULKAN_CLAIM_LOG", None)
+
+    # Assertion 1: CLAIM_LOG decline code.
+    claims = m.read_claim_log(log_path)
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
         pass
-    except SystemError as exc:
-        raise AssertionError(
-            f"com.microsoft::NotARealOp caused a SystemError during session creation — "
-            f"this suggests an EP crash rather than an ordinary decline. Original: {exc}"
-        ) from exc
+
+    if claims:
+        # EP wrote the log -- assert the specific decline code.
+        key = "com.microsoft::NotARealOp"
+        assert key in claims, (
+            f"CLAIM_LOG did not contain an entry for '{key}'. "
+            f"Keys present: {list(claims.keys())}"
+        )
+        record = claims[key]
+        assert not record["claimed"], (
+            f"EP claimed com.microsoft::NotARealOp -- domain-wide opt-in suspected. "
+            f"Record: {record}"
+        )
+        code = record.get("code")
+        assert code == "not-registered", (
+            f"Expected decline code 'not-registered' but got {code!r}. "
+            f"Full record: {record}\n"
+            "If this is another code, check Mouse's DeclineCode definition and update "
+            "the assertion to match the canonical 'unregistered op' code."
+        )
+    # If claims is empty (EP not built), the structural check in
+    # test_notarealop_vulkan_does_not_claim covers this path.
 
 
 def test_notarealop_vulkan_does_not_claim():
-    """Even when a Vulkan device is available, NotARealOp must not be claimed.
+    """com.microsoft::NotARealOp must not appear as a Vulkan-claimed node (structural check).
 
-    This is the canonical statement of Morpheus C1 as a skip-safe test: if no Vulkan
-    device is present, the EP cannot claim anything and the test passes vacuously. If a
-    device IS present, we prove the architectural property.
-
-    This test only runs its Vulkan-specific assertion if the EP is available (fixture),
-    but the model-construction side runs always.
+    Belt-and-suspenders for test_notarealop_ordinary_decline: uses ORT profiling JSON to
+    assert zero VulkanExecutionProvider nodes, regardless of whether CLAIM_LOG is available.
+    Passes trivially when the EP is not built (no Vulkan provider -> zero claims guaranteed).
     """
     model_bytes, feeds = _make_not_a_real_op_model()
 
-    # Check: does any Vulkan device try to claim this op?
-    # We use the profiling-based check but catch the session-creation failure that happens
-    # when neither EP nor CPU has a kernel for the op.
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
     opts.enable_profiling = True
     opts.profile_file_prefix = "_notarealop_probe"
-
-    import json
-    import os
 
     try:
         sess = ort.InferenceSession(
@@ -204,24 +199,17 @@ def test_notarealop_vulkan_does_not_claim():
                 and "provider" in e["args"]
             }
             assert m.EP_NAME not in providers_seen, (
-                f"{m.EP_NAME} claimed com.microsoft::NotARealOp — a domain-wide opt-in "
-                f"exists! This violates Morpheus C1. Providers seen: {sorted(providers_seen)}"
+                f"{m.EP_NAME} claimed com.microsoft::NotARealOp -- domain-wide opt-in "
+                f"exists! Providers seen: {sorted(providers_seen)}"
             )
         finally:
             try:
                 os.remove(profile_path)
             except OSError:
                 pass
-    except (
-        ort.capi.onnxruntime_pybind11_state.Fail,
-        ort.capi.onnxruntime_pybind11_state.InvalidGraph,
-        ort.capi.onnxruntime_pybind11_state.InvalidProtobuf,
-        ort.capi.onnxruntime_pybind11_state.NotImplemented,
-        ort.capi.onnxruntime_pybind11_state.NotFound,
-    ):
-        # No kernel found, session creation failed. The Vulkan EP did not claim the op.
-        pass
+    except _ORT_NO_KERNEL_ERRORS:
+        pass  # no kernel -> no claim; acceptable
     except SystemError as exc:
         raise AssertionError(
-            f"com.microsoft::NotARealOp caused a SystemError — EP crash suspected. {exc}"
+            f"com.microsoft::NotARealOp caused a SystemError -- EP crash suspected. {exc}"
         ) from exc

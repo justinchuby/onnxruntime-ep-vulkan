@@ -104,6 +104,58 @@ FP32_EXACT = {"rtol": 0, "atol": 0}
 FP16_ANY = {"rtol": 1e-3, "atol": 1e-3}
 
 # ---------------------------------------------------------------------------
+# Machine-readable claim log helpers (Mouse's OP_COVERAGE.md §10.2)
+# ---------------------------------------------------------------------------
+
+
+def read_claim_log(log_path: "Path | str") -> dict[str, dict]:
+    """Parse a CLAIM_LOG JSON Lines file into a dict keyed by qualified op name.
+
+    Set ONNXRUNTIME_EP_VULKAN_CLAIM_LOG=<path> before session creation and the EP writes
+    one JSON Lines record per claim decision, flushed immediately. Each record has:
+        op      — domain-qualified op type  (e.g. "com.microsoft::MatMulNBits")
+        node    — graph node name (or "" if unnamed)
+        opset   — resolved since_version (or 0 if unresolved)
+        claimed — bool
+        code    — DeclineCode tag ("not-registered", "attribute", etc.) or null if claimed
+        reason  — human-readable explanation string
+
+    Returns {op_name: last_record} for each op seen in the file.
+    Returns {} if the file doesn't exist (EP not built, or log not written).
+
+    Usage:
+        log_path = Path(__file__).parent / f"_claim_{os.getpid()}.jsonl"
+        os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(log_path)
+        try:
+            InferenceSession(model, ...)
+            claims = read_claim_log(log_path)
+            assert claims["Add"]["claimed"]
+            assert claims["com.microsoft::NotARealOp"]["code"] == "not-registered"
+        finally:
+            del os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"]
+            log_path.unlink(missing_ok=True)
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(log_path)
+    if not p.exists():
+        return {}
+    result: dict[str, dict] = {}
+    try:
+        for line in p.read_text("utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    record = json.loads(line)
+                    result[record["op"]] = record
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except OSError:
+        pass
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Quantization tolerance constants (Mouse's three-regime policy, OP_COVERAGE §10.1)
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,13 @@
 # onnxruntime-ep-vulkan
 
+[![CI](https://github.com/justinchuby/onnxruntime-ep-vulkan/actions/workflows/ci.yml/badge.svg)](https://github.com/justinchuby/onnxruntime-ep-vulkan/actions/workflows/ci.yml)
+
+> **CI is the only place shaders execute.** A red CI lane means we have zero empirical
+> evidence that the EP works. Before landing a commit: run `gh run list --limit 5` and
+> confirm the badge above is green. A red badge blocks all merges — not by a GitHub branch
+> protection rule (not yet configured), but by team discipline enforced by this notice.
+> See [`.github/CI_POLICY.md`](.github/CI_POLICY.md) for the full policy.
+
 A **cross-platform Vulkan compute execution provider for ONNX Runtime**, written in Rust and
 shipped as an out-of-tree **plugin EP**. It is loaded by a stock, unmodified ONNX Runtime through
 the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxruntime`.

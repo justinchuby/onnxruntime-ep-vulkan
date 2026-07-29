@@ -88,17 +88,27 @@ jobs:
 
       # -------------------------------------------------------
       # Vulkan SDK: lavapipe (Mesa CPU rasterizer), validation
-      # layers, glslc, spirv-tools.
+      # layers, GLSL compiler (glslc), spirv-tools.
+      #
+      # IMPORTANT: glslc ships in the 'shaderc' package on Ubuntu
+      # 22.04, NOT in 'glslang-tools' (which provides glslangValidator
+      # only). This was the source of a CI red-streak: 'glslang-tools'
+      # was installed but the build.rs looked for 'glslc' and failed
+      # with "glslc not found but 168 shader(s) exist".
+      #
+      # 'shaderc' → /usr/bin/glslc (Google's GLSL→SPIR-V frontend)
+      # 'glslang-tools' → /usr/bin/glslangValidator (kept for completeness)
       # Ubuntu 22.04 ships Mesa 22.0 which reports Vulkan 1.3
       # and passes the capability gate required by this EP.
       # -------------------------------------------------------
-      - name: Install Vulkan SDK (lavapipe + validation layers + glslc)
+      - name: Install Vulkan SDK (lavapipe + validation layers)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
             libvulkan-dev \
             vulkan-validationlayers \
             mesa-vulkan-drivers \
+            shaderc \
             glslang-tools \
             spirv-tools \
             vulkan-tools
@@ -106,6 +116,23 @@ jobs:
           VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
             vulkaninfo --summary 2>&1 | grep -i "GPU id" || \
             echo "::warning::vulkaninfo did not report a GPU — lavapipe may not be installed correctly"
+
+      # -------------------------------------------------------
+      # Precondition check: verify the GLSL compiler is actually
+      # on PATH before the build starts. A build that fails 40s
+      # later inside build.rs with a panic is a much worse
+      # diagnostic than this explicit check.
+      # -------------------------------------------------------
+      - name: Verify GLSL compiler (glslc)
+        run: |
+          glslc --version || {
+            echo "::error::glslc not found on PATH after installing 'shaderc'."
+            echo "Package contents:"
+            dpkg -L shaderc 2>/dev/null || true
+            echo "PATH: $PATH"
+            exit 1
+          }
+          echo "glslc OK: $(glslc --version 2>&1 | head -1)"
 
       # -------------------------------------------------------
       # ONNX Runtime: download the prebuilt Linux x64 package.
@@ -359,12 +386,20 @@ jobs:
       # Barrier parity runs the full claimed-op suite twice —
       # once with the natural backend, once with force_legacy_barriers=1
       # — asserting bit-identical outputs (DESIGN.md §7.5 item 5).
+      #
+      # NOTE: ORT DLL directory must be on PATH so that the EP DLL
+      # can find its onnxruntime.dll dependency at load time.
+      # Without this, LoadLibraryEx fails with "module not found"
+      # (Windows error 126/127) when register_execution_provider_library
+      # tries to load the EP cdylib.
       # -------------------------------------------------------
       - name: Run op-correctness + barrier-parity tests (lavapipe)
         if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
         run: |
+          # Add ORT DLL directory to PATH so EP DLL finds onnxruntime.dll on load.
+          $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
           python -m pytest tests\ops -q --tb=short `
             -p no:randomly --strict-markers
 
