@@ -31,12 +31,34 @@
 //! embeds the compiled SPIR-V into the cdylib and SPIR-V compiled from adapted GLSL is a derived
 //! work.
 
+//! # Two producers, two attention ops (2026-07-29)
+//!
+//! The paragraph above is true of an **ORT-GenAI-built** graph. Justin's own
+//! `onnx-genai-models` builder emits **`ai.onnx::Attention` @ opset 23** instead — six inputs
+//! (Q, K, V, attention_bias, past_key, past_value) with `q_num_heads`/`kv_num_heads`/`scale`
+//! attributes — and never emits `GroupQueryAttention` at all. Same model, same architecture, a
+//! different node at the centre of every decoder layer.
+//!
+//! That is a coverage fact, not a trivia item: a registry holding only the contrib spelling
+//! declines every attention node in a mobius-built Qwen3 and the model runs entirely on CPU. Both
+//! rows are therefore present. They are also genuinely one kernel — opset-23 `Attention` with
+//! `q_num_heads != kv_num_heads` *is* grouped-query attention, and the head-grouping predicate
+//! below is shared verbatim. The standard-domain form is in fact the *easier* of the two: no
+//! `seqlens_k` indirection, no in-place KV-cache aliasing requirement, and the rotary embedding
+//! arrives as its own node rather than as a `do_rotary` attribute.
+//!
+//! The scheduling consequence is in `OP_COVERAGE.md` §4.16: `ai.onnx::Attention` is the cheaper
+//! first target and it unblocks a model family we can build ourselves, which makes it a better
+//! T3 entry point than GQA even though GQA is the more famous op.
+
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE, XL_KERNEL};
+use crate::registry::{
+    ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OpSpec, PINNED_BASELINE, XL_KERNEL,
+};
 use crate::require;
 
 /// `com.microsoft.GroupQueryAttention`.
@@ -186,11 +208,70 @@ fn rotary_embedding(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
+/// `ai.onnx::Attention` (opset 23) — the standard-domain spelling of grouped-query attention.
+///
+/// Six inputs: `Q`, `K`, `V`, `attn_mask`, `past_key`, `past_value`, the last three optional.
+/// Grouping comes from the `q_num_heads`/`kv_num_heads` attribute pair rather than from the tensor
+/// shapes, exactly as in the contrib form, so the head-grouping rule is shared.
+///
+/// Deliberately *not* sharing a claim predicate with [`group_query_attention`], despite the shared
+/// kernel: the attribute names differ (`num_heads` vs `q_num_heads`), the illegal-combination set
+/// differs (`is_causal` and `qk_matmul_output_mode` have no contrib equivalent) and the optional
+/// inputs sit at different indices. One predicate covering both would be a predicate that is wrong
+/// about one of them, and a predicate that is wrong in the permissive direction is the one failure
+/// this design does not tolerate.
+fn std_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::typed_input(view, spec, 0, "Q")?;
+
+    // Both are optional in the schema, defaulting to "infer from the shapes". When they are given
+    // — which is what a builder emitting grouped-query attention does — the ratio must be one the
+    // kernel can dispatch.
+    if let (Some(q), Some(kv)) = (view.attr_int("q_num_heads"), view.attr_int("kv_num_heads")) {
+        require!(
+            head_grouping_is_supported(q, kv),
+            Attribute,
+            "`{}` has q_num_heads = {q} and kv_num_heads = {kv}; the grouped-query kernel needs \
+             q_num_heads to be a positive multiple of kv_num_heads",
+            spec.op_type
+        );
+    }
+
+    // Same reasoning as the contrib row: each of these changes the numerics, and a plausible wrong
+    // answer is worse than a CPU fallback.
+    claim::attr_float_is(view, spec, "softcap", 0.0)?;
+    claim::attr_int_is(view, spec, "qk_matmul_output_mode", 0)?;
+    claim::attr_int_is(view, spec, "softmax_precision", 0)?;
+
+    // Input 3 is `attn_mask`. The first kernel implements causal masking from the `is_causal`
+    // attribute only; an explicit mask tensor is a separate binding and a separate code path.
+    claim::input_absent(view, spec, 3, "attn_mask")?;
+
+    Ok(())
+}
+
+/// `ai.onnx::RotaryEmbedding` (opset 23) — the standard-domain rotary op.
+///
+/// Same maths as the contrib row, different optional-input shape: position ids are input 3 here
+/// rather than input 1, and there is no packed-batching mode to refuse.
+fn std_rotary_embedding(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::typed_input(view, spec, 0, "X")?;
+    let interleaved = view.attr_int("interleaved").unwrap_or(0);
+    require!(
+        matches!(interleaved, 0 | 1),
+        Attribute,
+        "`{}` has interleaved = {interleaved}; the attribute is a boolean",
+        spec.op_type
+    );
+    Ok(())
+}
+
 crate::op_table! {
-    //  op                     domain  opsets            caps    kernel          claim                   translate                  status              schema
-    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  group_query_attention,  templates::unimplemented,  Staged(XL_KERNEL),  schema: &GROUP_QUERY_ATTENTION;
-    "RotaryEmbedding",         Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  rotary_embedding,       templates::unimplemented,  Staged(XL_KERNEL),  schema: &ROTARY_EMBEDDING;
-    "MultiHeadAttention",      Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  claim::never,           templates::unimplemented,  Staged(XL_KERNEL),  schema: &MULTI_HEAD_ATTENTION;
+    //  op                     domain  opsets                       caps    kernel          claim                   translate                  status              schema
+    "GroupQueryAttention",     Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  group_query_attention,  templates::unimplemented,  Staged(XL_KERNEL),  schema: &GROUP_QUERY_ATTENTION;
+    "RotaryEmbedding",         Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  rotary_embedding,       templates::unimplemented,  Staged(XL_KERNEL),  schema: &ROTARY_EMBEDDING;
+    "MultiHeadAttention",      Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  claim::never,           templates::unimplemented,  Staged(XL_KERNEL),  schema: &MULTI_HEAD_ATTENTION;
+    "Attention",               Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  std_attention,          templates::unimplemented,  Staged(XL_KERNEL);
+    "RotaryEmbedding",         Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  std_rotary_embedding,   templates::unimplemented,  Staged(XL_KERNEL);
 }
 
 #[cfg(test)]
@@ -250,10 +331,59 @@ mod tests {
     }
 
     #[test]
-    fn every_row_here_is_contrib_and_fingerprinted() {
+    fn every_contrib_row_here_is_fingerprinted() {
+        // Standard-domain rows carry no fingerprint by design: `ai.onnx` versions by opset, which
+        // the row's window already expresses. Only `com.microsoft` needs C2.
         for s in OPS {
-            assert_eq!(s.domain, Domain::Ms, "{} is a contrib op", s.op_type);
-            assert!(s.schema.is_some(), "{} needs a fingerprint", s.op_type);
+            match s.domain {
+                Domain::Ms => assert!(s.schema.is_some(), "{} needs a fingerprint", s.op_type),
+                Domain::Ai => assert!(
+                    s.schema.is_none(),
+                    "{} is standard-domain; its opset window is its version contract",
+                    s.op_type
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn both_producers_attention_ops_are_registered() {
+        // The 2026-07-29 crate review found that ORT GenAI emits
+        // `com.microsoft::GroupQueryAttention` while Justin's `onnx-genai-models` emits
+        // `ai.onnx::Attention` @ opset 23 and never emits GQA at all. Registering one spelling
+        // means every attention node of a model built by the other toolchain runs on CPU.
+        let contrib = OPS
+            .iter()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .expect("the ORT GenAI spelling");
+        let standard = OPS
+            .iter()
+            .find(|s| s.op_type == "Attention" && s.domain == Domain::Ai)
+            .expect("the standard-domain spelling");
+        assert_eq!(contrib.domain, Domain::Ms);
+        assert_eq!(standard.min_opset, OPSET_STD_LLM);
+        // Deliberately *different* predicates over the same kernel — the attribute names and
+        // optional-input indices differ, so one predicate would be wrong about one of them.
+        assert!(!std::ptr::fn_addr_eq(contrib.claim, standard.claim));
+    }
+
+    #[test]
+    fn rotary_embedding_is_registered_in_both_domains() {
+        let rows: Vec<_> = OPS
+            .iter()
+            .filter(|s| s.op_type == "RotaryEmbedding")
+            .collect();
+        assert_eq!(rows.len(), 2, "one contrib spelling, one standard-domain");
+        assert!(rows.iter().any(|s| s.domain == Domain::Ms));
+        assert!(rows.iter().any(|s| s.domain == Domain::Ai));
+        // And they must remain distinguishable by qualified name, or the registry lookup that
+        // resolves a node to a row would be ambiguous.
+        assert_ne!(rows[0].qualified_name(), rows[1].qualified_name());
+    }
+
+    #[test]
+    fn nothing_here_is_live_yet() {
+        for s in OPS {
             assert!(matches!(s.status, OpStatus::Staged(_)));
         }
     }

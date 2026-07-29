@@ -53,6 +53,9 @@ pub mod logging;
 pub mod ops;
 pub mod registry;
 pub mod sys;
+// Observability (Niobe). Env-gated Chrome-Trace tracing + the GPU-timestamp ingest seam; inert
+// unless `ONNXRUNTIME_EP_VULKAN_TRACE` names a path. See `docs/PERF.md`.
+pub mod trace;
 pub(crate) mod vk;
 
 use std::ffi::c_char;

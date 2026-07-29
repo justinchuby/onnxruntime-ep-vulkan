@@ -66,6 +66,17 @@ pub(crate) struct Capabilities {
     /// the device; everything else calls `barriers.buffer_deps(…)`.
     pub synchronization2: bool,
 
+    /// True when `synchronization2` originates from Vulkan 1.3 core (not just the KHR extension).
+    ///
+    /// On Vulkan 1.3+ the core entry point is `vkCmdPipelineBarrier2`. On Vulkan 1.1/1.2 with
+    /// `VK_KHR_synchronization2`, only the KHR alias `vkCmdPipelineBarrier2KHR` is exported.
+    /// `Barriers::select` reads this once to choose the right entry point. Some Vulkan 1.3+
+    /// drivers do NOT export the KHR alias even though the spec permits it, so we must use the
+    /// core function name on 1.3+ regardless of whether the extension was explicitly enabled.
+    ///
+    /// **Read only in `vk/barrier.rs` and `vk/caps.rs`.**
+    pub synchronization2_is_core: bool,
+
     // ── Subgroup ───────────────────────────────────────────────────────────────
     /// Fixed subgroup size from `VkPhysicalDeviceSubgroupProperties::subgroupSize`
     /// (Vulkan 1.1 core, always available after the device gate).
@@ -174,6 +185,63 @@ impl Capabilities {
         }
         exts
     }
+
+    /// Build a `DeviceFeatureChain` that carries any `VkPhysicalDevice*Features` structs
+    /// that must be chained into `VkDeviceCreateInfo::pNext` at device creation time.
+    ///
+    /// Call `chain.apply(device_info)` immediately before `vkCreateDevice`. The chain
+    /// must outlive `device_info` (declare it before `device_info` in the caller's scope).
+    ///
+    /// **Why this belongs in `caps.rs`:** it branches on `synchronization2`, which the
+    /// layering lint (`DESIGN.md §7.5`) restricts to `vk/barrier.rs` and this file.
+    pub(crate) fn device_feature_chain(&self) -> DeviceFeatureChain {
+        DeviceFeatureChain::new(self)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DeviceFeatureChain — feature structs for VkDeviceCreateInfo::pNext
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Owning storage for all Vulkan device feature structs that must be chained into
+/// `VkDeviceCreateInfo::pNext`.
+///
+/// Declare this *before* `VkDeviceCreateInfo` in the caller's scope so that the stack
+/// storage outlives the `p_next` pointer chain. Call [`DeviceFeatureChain::apply`] to
+/// consume the base `DeviceCreateInfo` and return one with the chain attached.
+///
+/// This type lives in `caps.rs` because it branches on `capabilities.synchronization2`,
+/// which the layering lint forbids outside `vk/barrier.rs` and `vk/caps.rs`.
+pub(crate) struct DeviceFeatureChain {
+    synchronization2_enabled: bool,
+    synchronization2: vk::PhysicalDeviceSynchronization2Features<'static>,
+}
+
+impl DeviceFeatureChain {
+    fn new(caps: &Capabilities) -> Self {
+        Self {
+            synchronization2_enabled: caps.synchronization2,
+            synchronization2: vk::PhysicalDeviceSynchronization2Features::default()
+                .synchronization2(caps.synchronization2),
+        }
+    }
+
+    /// Attach the feature chain to `device_info` and return the extended info.
+    ///
+    /// The returned `DeviceCreateInfo` borrows mutably into the fields of `self`; `self`
+    /// must remain live and unmoved until `vkCreateDevice` returns.
+    pub(crate) fn apply<'a>(
+        &'a mut self,
+        device_info: vk::DeviceCreateInfo<'a>,
+    ) -> vk::DeviceCreateInfo<'a> {
+        if self.synchronization2_enabled {
+            // SAFETY: self.synchronization2 is declared inside Self and will not move while
+            // self is held by the caller. push_next links p_next into it.
+            device_info.push_next(&mut self.synchronization2)
+        } else {
+            device_info
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -253,6 +321,7 @@ pub(crate) unsafe fn probe(
     // ── Derive Capabilities from the queried structs ───────────────────────────
     let synchronization2 =
         has_ext("VK_KHR_synchronization2") || api_version >= vk::make_api_version(0, 1, 3, 0);
+    let synchronization2_is_core = api_version >= vk::make_api_version(0, 1, 3, 0);
 
     let subgroup_size_range = if query_ssc {
         Some(SubgroupSizeRange {
@@ -287,6 +356,7 @@ pub(crate) unsafe fn probe(
 
     Capabilities {
         synchronization2,
+        synchronization2_is_core,
         subgroup_size: subgroup_props.subgroup_size,
         subgroup_basic_in_compute,
         subgroup_supported_ops: subgroup_props.supported_operations,
@@ -345,6 +415,7 @@ unsafe fn detect_uma(instance: &ash::Instance, physical_device: vk::PhysicalDevi
 pub(crate) fn test_caps(sync2: bool) -> Capabilities {
     Capabilities {
         synchronization2: sync2,
+        synchronization2_is_core: sync2, // test helper: treat sync2 as core when enabled
         subgroup_size: 32,
         subgroup_basic_in_compute: true,
         subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
@@ -366,6 +437,7 @@ mod tests {
     fn caps_with_synchronization2(sync2: bool) -> Capabilities {
         Capabilities {
             synchronization2: sync2,
+            synchronization2_is_core: sync2,
             subgroup_size: 32,
             subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
@@ -418,7 +490,8 @@ mod tests {
         // is VK_FALSE (Metal cannot control SIMD width per pipeline).
         let caps = Capabilities {
             synchronization2: true, // 1.3 core
-            subgroup_size: 32,      // Apple GPU fixed wave = 32
+            synchronization2_is_core: true,
+            subgroup_size: 32, // Apple GPU fixed wave = 32
             subgroup_basic_in_compute: true,
             subgroup_size_range: Some(SubgroupSizeRange { min: 32, max: 32 }),
             can_require_subgroup_size: false, // <── the MoltenVK distinction

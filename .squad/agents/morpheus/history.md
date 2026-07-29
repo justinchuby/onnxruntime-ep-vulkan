@@ -74,3 +74,79 @@
 - OQ-15: shape-agnostic dispatch / `vkCmdDispatchIndirect` (Switch).
 - OQ-16: LinearAttention/CausalConvWithState schema stabilization (T5a gated on upstream).
 - OQ-13: zero-copy IO binding (Tank, post-M2).
+
+---
+
+## 2026-07-29T08:13:58-07:00 — coverage is producer-relative, and T3's first kernel
+
+**The most dangerous kind of wrong is a correct answer to a narrower question than you asked.** Our
+op inventory was derived from *emitted graphs* — the thing I praised when ratifying it, and I still
+would. But it was derived from **one exporter's** emitted graphs and then reasoned about as "what a
+Qwen3 graph looks like". Justin's own `mobius` builder emits `ai.onnx::Attention` @ 23,
+`RMSNormalization` and `RotaryEmbedding` with no fused skip-norm; `MatMulNBits` is the only op the
+two toolchains share. A Qwen3 from our own user's own toolchain would have declined five nodes per
+layer across 28 layers for **want of a table row, not a kernel** — every op already implemented or
+planned. Nothing was misread. Nothing was missing from the list. The list answered a different
+question.
+
+**Standing rule: a coverage number is meaningless without naming the producer it was measured
+against.** "We support Qwen3" is not well-formed. Model architectures are not expressed in ONNX —
+*exporters* are, and two exporters over identical weights and identical mathematics disagree on
+domain, on fusion boundaries, and on which optional inputs exist. This is now §8.5 and it is
+enforced structurally: the census is indexed by producer, and every tier exit criterion that names a
+model names the producer that built it.
+
+**Verify against the artefacts of the people you are building for, first.** The finding came from
+Justin saying 这都是我们的项目 and Mouse actually reading the repo. The reference architecture, the
+target models, and the *exporter* are all his. I had treated the exporter as an environmental
+constant.
+
+**Shared kernel, separate gate.** `RMSNormalization` shares `simplified_layer_norm`'s handler
+(asserted by function-pointer identity — the right way to say "same kernel" so it cannot drift), but
+`ai.onnx::Attention` gets its own predicate, because attribute names, illegal combinations and
+optional-input indices differ, so one predicate over both is wrong about one of them **in the
+permissive direction**. Same asymmetry as C2 item 7. The kernel is where duplication is expensive;
+the gate is where duplication is *cheap and protective*. Do not let "we already have that kernel"
+argue for "we already have that predicate".
+
+**Prefer the standard domain where a producer offers one** — opset-versioned means the monotonic
+range check is back, which is the exact thing C2 exists to compensate for the absence of. Every op
+served from `ai.onnx` is an op outside the contrib risk surface.
+
+**Sequencing decisions must state whether they are also scope decisions, or they will be read as
+scope decisions.** I ruled T3 starts with `ai.onnx::Attention` rather than GQA. Two real reasons:
+it decouples T3 from Switch's unfinished aliasing seam, and it gives us a model family we can build
+and iterate on at the desk on the first milestone that actually dispatches anything. But the
+honest objection is that this optimises for *our* tooling while ORT GenAI is what external users
+hit — so I attached constraints rather than waving it away: T3 exits only per-producer on both
+columns, `largest_island_flops` reports per producer, and the KV-cache contract is designed for
+GQA's requirements even though the first kernel does not use them. **Designing the memory contract
+around the easier consumer is how the second consumer becomes a rewrite.**
+
+**Test your own ruling against the counterfactual and say the result.** The strongest form of the
+T3 argument is not "local iteration is faster" — it is that the standard-domain form is *also* the
+lower-risk claim surface, so both considerations point the same way. I wrote down that had the
+standard form been riskier I would have ruled the other way and eaten the CI latency. A ruling that
+cannot name the condition that would have flipped it is a preference wearing a ruling's clothes.
+
+**A "no" without a trigger is a question that gets re-asked every quarter.** The crate evaluations
+came back mostly negative and the good one is `onnx-runtime-ir`'s deferral: it names a *structural*
+fact — ORT hands us `OrtGraph`/`OrtNode` across a C ABI and we never see a protobuf, so an external
+IR means copying the graph into a second representation inside someone else's process — rather than
+a maturity judgement that expires, and it names what would reverse it. Deferrals here should look
+like that. Separately: `onnx-shape-inference` is the **cheapest coverage in the plan** and I nearly
+filed it as harness polish — it turns `[dynamic-shape]` declines into claims with zero Rust
+changes. Coverage that costs no kernel should be sequenced as coverage.
+
+**Refresh disclosure sections in the favourable direction too.** §9.1.2 said the machine had no ICD
+and no `glslc`; it now has both, two conforming GPUs, and 168 compiling variants — and *still* has
+never dispatched a shader. Had I left it, the next reader would have found one false detail and
+discounted the whole section, including the part that is still true and still the point. Also added:
+the local GPUs are a development loop, not coverage — nothing they run is recorded, gated or
+reproducible by anyone else, and **a result obtained only on this desk is not a result this project
+has.**
+
+**Mechanical note to self: the `edit` tool applies `old_str` → `new_str` literally.** Three times
+now I have anchored on a heading and omitted it from the replacement, silently deleting `### 8.2`
+and `### M0`. Both were caught by re-listing headings afterwards. Always re-grep the heading
+structure after any edit anchored on a heading.

@@ -889,6 +889,18 @@ pub const XL_KERNEL: &str =
 /// Open-ended upper bound for a row's opset window.
 pub const OPSET_ANY: i32 = i32::MAX;
 
+/// The first `ai.onnx` opset containing the standard-domain LLM ops.
+///
+/// ONNX opset 23 (onnx 1.18) added `Attention`, `RMSNormalization` and `RotaryEmbedding` to the
+/// default domain. Those are the spellings a model built by `onnx-genai-models` uses — where an
+/// ORT-GenAI-built graph would carry `com.microsoft::GroupQueryAttention`,
+/// `SimplifiedLayerNormalization` and `com.microsoft::RotaryEmbedding` instead. We register both
+/// spellings; see `OP_COVERAGE.md` §4.16.
+///
+/// The window starts here rather than at 1 because a node claiming to be `Attention` at opset 22
+/// is not the operator we implement.
+pub const OPSET_STD_LLM: i32 = 23;
+
 /// The date every contrib fingerprint in this crate was read from ORT's schema documentation.
 ///
 /// One constant, so that "when did anyone last check the contrib schemas" has exactly one answer
@@ -1131,10 +1143,14 @@ impl OpSpec {
 ///         claim_matmul_nbits, templates::unimplemented, Staged(XL_KERNEL), schema: &MATMUL_NBITS;
 /// }
 /// ```
+///
+/// The lower bound of the opset window is a single token — either a literal or the name of a
+/// constant, e.g. `OPSET_STD_LLM ..= OPSET_ANY` for the `ai.onnx` ops that first appear in opset
+/// 23. It cannot be a general expression, because `..=` may not follow an `expr` fragment.
 #[macro_export]
 macro_rules! op_table {
     ($(
-        $op:literal, $domain:ident, $min:literal ..= $max:expr, $caps:expr,
+        $op:literal, $domain:ident, $min:tt ..= $max:expr, $caps:expr,
         $kernel:expr, $claim:path, $translate:path, $status:expr
         $(, schema: $schema:expr)?
         $(, compile: $compile:expr)?

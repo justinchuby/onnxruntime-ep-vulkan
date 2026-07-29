@@ -90,3 +90,48 @@
 📌 **Byte-typed tensors: allocator rounding (Mouse turn-4):** `bool`/`uint8` buffers must be allocated rounded up to 4 bytes. This is invisible from Rust; it belongs in the allocator contract. Coordinate with Tank when the M2 allocator lands. Document in `OP_COVERAGE.md §8` alongside the `PackedWeights` memory class note.
 
 📌 **GQA fingerprint correction (Mouse turn-5):** `min_inputs = 7` (not 3). Optional inputs are positional; `seqlens_k`/`total_sequence_length` at indices 5 and 6. GenAI builder emits 16-input GQA for Qwen3 (sets `q_norm`/`k_norm`). Verify the exported graph before finalizing the GQA claim predicate.
+
+---
+
+## Turn 6 — 2026-07-29T07:14:15-07:00 — the in-house crate review
+
+📌 **Op coverage is relative to a *producer*, not to a model architecture.** The biggest finding of
+the turn, and it invalidated a premise of my own document. I derived the entire op inventory from
+what the ORT GenAI model builder emits. Justin's `onnx-genai-models` builds the *same models* and
+emits `ai.onnx::Attention`, `RMSNormalization` and `RotaryEmbedding` @ opset 23 instead of the
+`com.microsoft` spellings — so our table would have declined every norm, rotary and attention node
+in a Qwen3 built by our own toolchain. Same kernels, missing rows. **Always ask "which exporter
+produced this graph", never just "which model is this".**
+
+📌 **Reading the source changed three verdicts that the READMEs would have gotten wrong.**
+`onnx-ir-rust` looks like a Rust ONNX IR and is 20% of one — its producer/consumer fields are
+literally commented out, and it cannot ingest a protobuf at all. `onnx-shape-inference` sounds like
+a Rust crate and is pure Python. `onnx-genai` sounds like a model thing and contains the most
+complete Rust IR of the three. Judge dependencies from `src/`, never from the front page.
+
+📌 **The decisive objection to a graph IR here is architectural, not quality.** We are a plugin EP:
+ORT hands us `OrtGraph`/`OrtNode` across a C ABI and we never see a protobuf. Any external IR would
+require *copying the whole graph* into a second representation inside someone else's process. That
+objection would survive the library becoming perfect, which is why it is worth stating separately
+from maturity concerns — and why the deferral came with a named trigger (a representation that must
+outlive one `GetCapability` call) rather than a vague "maybe later".
+
+📌 **"Defer the dependency, adopt the information" is a real outcome.** Justin said *参考*, and the
+review produced a bigger coverage gain (five standard-domain rows) than any of the three libraries
+would have. `onnx-shape-inference` also became two free things: a preprocessing step for Trinity
+that turns `[dynamic-shape]` declines into claims with zero Rust changes, and a second independent
+source for the contrib fingerprints.
+
+📌 **Share kernels freely; share claim predicates only when the vocabularies genuinely match.**
+`RMSNormalization` reuses `simplified_layer_norm` verbatim. `ai.onnx::Attention` needed its own
+predicate over the same kernel, because attribute names, the illegal-combination set and the
+optional-input indices all differ. A predicate stretched to cover two schemas is wrong about one of
+them, in the permissive direction.
+
+📌 **`macro_rules!` gotcha:** `$min:literal ..= $max:expr` cannot accept a named constant, and you
+cannot upgrade it to `$min:expr` either, because `..=` may not follow an `expr` fragment. `$min:tt`
+takes both a literal and a bare ident.
+
+📌 Verify commands, all green: `$env:ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC='1'`; `cargo ci`
+→ **299 passed**, 7 ignored, 0 failed. (Clippy has one error in `src/trace.rs`, Niobe's file, not
+mine.)

@@ -191,12 +191,24 @@ fn stage_to_sync2(stage: Stage) -> vk::PipelineStageFlags2 {
 // Backends
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Barrier backend that uses `VK_KHR_synchronization2` / Vulkan 1.3 core.
+/// Barrier backend that uses `vkCmdPipelineBarrier2`.
 ///
-/// Emits `vkCmdPipelineBarrier2` with a `VkDependencyInfo` carrying one
-/// `VkBufferMemoryBarrier2` per dep.
-pub(crate) struct Sync2Backend {
-    fns: ash::khr::synchronization2::Device,
+/// Two sub-variants handle the entry-point name difference:
+/// - `Core` — Vulkan 1.3+ core: `device.cmd_pipeline_barrier2()`.
+/// - `Khr` — `VK_KHR_synchronization2` on Vulkan 1.1/1.2: loaded via the KHR extension loader.
+///
+/// The split is necessary because some Vulkan 1.3+ drivers do **not** export
+/// `vkCmdPipelineBarrier2KHR` (the extension alias), even though the spec permits it.
+/// Using the wrong entry point causes a null-function-pointer panic in ash.
+pub(crate) enum Sync2Backend {
+    /// Vulkan 1.3 core — use the promoted entry point `vkCmdPipelineBarrier2`.
+    ///
+    /// Boxed to avoid a large-enum-variant warning: `ash::Device` is ~1488 bytes while
+    /// `Khr` is ~72 bytes; boxing equalises the size and reduces the stack footprint of every
+    /// `Sync2Backend` value.
+    Core(Box<ash::Device>),
+    /// `VK_KHR_synchronization2` on Vulkan 1.1/1.2 — use the KHR alias.
+    Khr(ash::khr::synchronization2::Device),
 }
 
 /// Barrier backend that uses Vulkan 1.0/1.1 `vkCmdPipelineBarrier`.
@@ -280,9 +292,19 @@ impl Barriers {
         let use_sync2 = should_use_sync2(caps, force_legacy);
         write_backend_probe(use_sync2);
         if use_sync2 {
-            // `Device::new` is safe in ash 0.38; the unsafe contract lives at device-creation time.
-            let fns = ash::khr::synchronization2::Device::new(instance, device);
-            Barriers::Sync2(Box::new(Sync2Backend { fns }))
+            if caps.synchronization2_is_core {
+                // Vulkan 1.3+: the promoted core entry point `vkCmdPipelineBarrier2` is loaded
+                // directly from ash::Device. Do NOT use the KHR extension loader here — some
+                // 1.3+ drivers do not export `vkCmdPipelineBarrier2KHR` even though the spec
+                // permits it, resulting in a null function pointer and a panic.
+                Barriers::Sync2(Box::new(Sync2Backend::Core(Box::new(device.clone()))))
+            } else {
+                // Vulkan 1.1/1.2 with VK_KHR_synchronization2: use the extension alias.
+                // The extension was explicitly requested in device_extensions, so the function
+                // pointer is guaranteed to be present.
+                let fns = ash::khr::synchronization2::Device::new(instance, device);
+                Barriers::Sync2(Box::new(Sync2Backend::Khr(fns)))
+            }
         } else {
             Barriers::Legacy(Box::new(LegacyBackend {
                 device: device.clone(),
@@ -382,7 +404,17 @@ impl Sync2Backend {
 
         // SAFETY: cb is recording, dep_info is well-formed, barriers are live (on the stack
         // for the duration of cmd_pipeline_barrier2 which returns before this frame ends).
-        unsafe { self.fns.cmd_pipeline_barrier2(cb, &dep_info) };
+        match self {
+            Sync2Backend::Core(device) => {
+                // SAFETY: device is live; cmd_pipeline_barrier2 is a Vulkan 1.3 core function.
+                unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+            Sync2Backend::Khr(fns) => {
+                // SAFETY: fns loaded the KHR extension; the function pointer is non-null
+                // (VK_KHR_synchronization2 was explicitly enabled at device creation).
+                unsafe { fns.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+        }
     }
 
     unsafe fn execution_only(&self, cb: vk::CommandBuffer, src: Stage, dst: Stage) {
@@ -401,7 +433,16 @@ impl Sync2Backend {
             ..Default::default()
         };
         // SAFETY: cb is recording per caller; dep_info and mem_barrier are live on this frame.
-        unsafe { self.fns.cmd_pipeline_barrier2(cb, &dep_info) };
+        match self {
+            Sync2Backend::Core(device) => {
+                // SAFETY: Vulkan 1.3 core function; device is live.
+                unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+            Sync2Backend::Khr(fns) => {
+                // SAFETY: KHR extension function pointer is non-null (extension was enabled).
+                unsafe { fns.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+        }
     }
 }
 
@@ -786,6 +827,7 @@ mod tests {
         // The pure selection logic: force_legacy=true must produce "not sync2" regardless of caps.
         let caps = crate::vk::caps::Capabilities {
             synchronization2: true, // device reports sync2 — must be overridden
+            synchronization2_is_core: true,
             subgroup_size: 32,
             subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
@@ -804,6 +846,7 @@ mod tests {
     fn no_force_legacy_and_no_sync2_selects_legacy() {
         let caps = crate::vk::caps::Capabilities {
             synchronization2: false,
+            synchronization2_is_core: false,
             subgroup_size: 64,
             subgroup_basic_in_compute: false,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
@@ -822,6 +865,7 @@ mod tests {
     fn sync2_capable_without_force_selects_sync2() {
         let caps = crate::vk::caps::Capabilities {
             synchronization2: true,
+            synchronization2_is_core: true,
             subgroup_size: 32,
             subgroup_basic_in_compute: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,

@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T22:28:08-07:00 (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T08:13:58-07:00 (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added; census indexed by producer) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -1569,6 +1569,93 @@ whether they are answering the same question before adjudicating. Here one answe
 copied?" and the other "does reading it help?" — both correctly, about different things. My error
 would have been to widen three tiers on the first answer when my estimates depended on the second.
 
+### 8.5 Op coverage is relative to a **producer**, not to a model architecture
+
+*Added 2026-07-29T08:13:58-07:00. Ratifying and generalizing `OP_COVERAGE.md` §4.18 (Mouse).*
+
+This belongs in the architecture document rather than only in the coverage plan, because it is a
+class of error the entire plan was exposed to and it will recur.
+
+**What happened.** Our op inventory was derived from emitted graphs — which is why I ratified it
+(§8.1) and still would. But it was derived from emitted graphs *of one exporter*, the ORT GenAI
+model builder, and then reasoned about as though it described **"what a Qwen3 graph looks like"**.
+When Mouse read Justin's own `justinchuby/onnx-genai-models` (the `mobius` builder) on Justin's
+direction, it built the same target models out of a substantially different op set:
+
+| Our table held (contrib) | `mobius` emits |
+|---|---|
+| `com.microsoft::GroupQueryAttention` | `ai.onnx::Attention` @ opset 23, 6 inputs |
+| `com.microsoft::SimplifiedLayerNormalization` | `ai.onnx::RMSNormalization` |
+| `com.microsoft::RotaryEmbedding` | `ai.onnx::RotaryEmbedding` |
+| fused skip-norm | *nothing* — not emitted |
+
+`MatMulNBits` is the only op both toolchains agree on. Because the registry held only the contrib
+column, a Qwen3 built by **Justin's own toolchain** would have declined roughly five nodes per
+layer across 28 layers as `[not-registered]` — **for want of a table row, not a kernel.** Every one
+of those ops was already implemented or planned. The nodes would have been handed to CPU, the
+`largest_island_flops` metric would have been near zero on the artifact that matters most, and the
+diagnosis would have looked like an engine problem.
+
+**The generalization, which is now a standing rule.** *A coverage number is meaningless without
+naming the producer it was measured against.* "We support Qwen3" is not a well-formed claim; "we
+support Qwen3 as emitted by producer P at version V" is. Model architectures are not expressed in
+ONNX — *exporters* are, and two exporters targeting identical weights and identical mathematics can
+disagree on domain, on fusion boundaries, and on which optional inputs exist. Nothing in this
+finding was a misreading: everything was read correctly, nothing was missing from the list, and the
+list was answering a narrower question than we thought it was. That is the §10.0.1 failure shape
+exactly, and it is why §10.0.1 exists.
+
+**What it obliges us to do.**
+
+1. **The corpus is indexed by producer.** Every artifact in `tools/graph_census.py`'s corpus
+   carries the producer and version that built it, and the census reports **per producer**. A
+   coverage figure that averages across producers hides precisely the gap this finding exposed.
+2. **A target model is only "covered" when it is covered for a named producer**, and the tier exit
+   criteria say which. Where two producers disagree, both columns are scope or one is explicitly
+   out of scope with a recorded reason — never left ambiguous.
+3. **Standard-domain and contrib forms of the same computation get separate claim predicates**,
+   even where they share a kernel. Mouse registered `RMSNormalization` sharing
+   `simplified_layer_norm`'s handler (asserted by function-pointer identity, which is the right way
+   to state "same kernel" so it cannot silently drift) while giving `ai.onnx::Attention` its own
+   predicate. **Ratified, and the reasoning is binding:** attribute names, illegal-combination sets
+   and optional-input indices all differ, so a single predicate spanning both would be wrong about
+   one of them **in the permissive direction** — accepting a node whose semantics it never checked.
+   That is the exact asymmetry C2 item 7 was added for. Shared kernels, separate gates.
+4. **Prefer the standard domain where a producer offers one.** `ai.onnx::Attention`,
+   `RMSNormalization` and `RotaryEmbedding` are opset-versioned, which restores the monotonic
+   range-check that §1.4 C2 exists to compensate for the absence of. Every op we can serve from the
+   standard domain is an op outside the contrib risk surface. The contrib rows stay — the ORT GenAI
+   path is real and external — but standard-domain support is not merely an alternative, it is the
+   lower-risk of the two.
+
+**Windowing.** The standard-domain LLM rows are windowed `OPSET_STD_LLM(23)..=OPSET_ANY`. Opset 23
+is where these ops enter the standard domain; the open upper bound is consistent with §1.3's
+conservative claiming only because the claim predicate validates the node's actual shape rather
+than trusting the version — if a future opset revises `Attention`'s attribute surface, the
+predicate declines on the attribute, not on the number. That is a load-bearing assumption and it is
+worth stating so it can be attacked.
+
+### 8.6 External crate evaluations — deferred, with named triggers
+
+*Added 2026-07-29T08:13:58-07:00.* Justin directed the team to evaluate his own crates
+(*"这都是我们的项目"*). Mouse's evaluations came back mostly negative, and I am recording them here
+because **the reasons do not expire and a "no" without a trigger becomes a question that gets asked
+every quarter.**
+
+| Crate | Verdict | Reason | Revisit trigger |
+|---|---|---|---|
+| `onnx-ir-rust` | **Deferred, no expected revisit** | 20% complete by its own status file; use-def tracking commented out in source; no protobuf deserialisation. | None set. Re-evaluate only if its status file changes materially. |
+| `onnx-shape-inference` | **Adopted — as an oracle, not a dependency** | Pure Python, so the dependency question does not arise. Run as a preprocessing step in Trinity's harness it resolves symbolic dims, converting `[dynamic-shape]` declines into claims **with zero Rust changes**. | Adopted now. |
+| `onnx-genai` / `onnx-runtime-ir` | **Deferred on structural grounds** | Genuinely good, and that is not the issue: **ORT hands us `OrtGraph`/`OrtNode` across a C ABI and we never see a protobuf**, so any external IR means copying the entire graph into a second representation inside someone else's process. | **Adopt the day we need a graph representation that outlives a single `GetCapability` call.** |
+
+Two things worth extracting. First, **`onnx-shape-inference` is the cheapest coverage in the whole
+plan** — it converts declines into claims without touching a kernel, a predicate or a line of Rust,
+and it should be sequenced accordingly rather than treated as harness polish. Second, the
+`onnx-runtime-ir` deferral is the right *kind* of "no": it names a structural fact about our
+position in the process (we are a guest inside ORT's address space, working from ORT's own graph
+view) rather than a maturity judgement that would be obsolete in six months, and it names the
+trigger that would reverse it. Deferrals in this project should look like that one.
+
 ---
 
 ## 9. Testing and benchmarking strategy
@@ -1665,21 +1752,27 @@ runtime assertion that an unregistered contrib op declines like any other unregi
 constraint checked only statically can be satisfied by code that never runs; a constraint checked
 only at runtime can be reintroduced in a path no test reaches. C1 now has neither hole.
 
-#### 9.1.2 Execution status — what has actually run, as of 2026-07-28T22:28:08-07:00
+#### 9.1.2 Execution status — what has actually run, as of 2026-07-29T08:13:58-07:00
 
 This document describes a design and a partially-implemented crate. It must not be read as
 describing a working GPU pipeline, and the following is stated here so that no reader has to infer
 it:
 
-- **No shader in this repository has ever been executed on any device.** As of this revision the
-  development machine has no Vulkan ICD installed and no `glslc` (§7.8), the shader corpus is a
-  variant table plus GLSL sources that have not been compiled here, and Switch's device path is
-  vocabulary, seams and stubs rather than a live submit loop.
-- **Trinity's lavapipe lanes are the only place anything will execute on a device**, and they
-  execute on a software rasterizer, which §9.1 already qualifies as a smoke test rather than a
-  correctness claim.
-- Every "green" count reported to date — 227 tests at the `cbb1a0d` level, 206 collected / 8 passing
-  in the no-EP configuration — measures **host-side logic**: claim predicates, registry invariants,
+- **No shader in this repository has ever been executed on any device.** The shader corpus now
+  *compiles* — as of 2026-07-29 the development machine has the Vulkan SDK installed, two GPUs that
+  pass the §7.2 capability gate, and all 168 shader variants build locally — but compiling a shader
+  and dispatching one are different facts, and only the first has occurred. Switch's dispatch path
+  is under implementation; until it lands, no SPIR-V module in this tree has been submitted to a
+  queue. *(This bullet previously recorded that the machine had no ICD and no `glslc`; that changed
+  on 2026-07-29 and the conclusion did not.)*
+- **Trinity's lavapipe lanes remain the only *CI* place anything will execute on a device**, on a
+  software rasterizer, which §9.1 already qualifies as a smoke test rather than a correctness claim.
+  The two local GPUs are a development loop, not coverage: nothing they run is recorded, gated, or
+  reproducible by anyone else, and a result obtained only on this desk is not a result this project
+  has.
+- Every "green" count reported to date — 227 at the `cbb1a0d` level, ~300 at the 2026-07-29 level,
+  206 collected / 8 passing in the no-EP configuration — measures **host-side logic**: claim
+  predicates, registry invariants,
   the layering lint, decline paths, and the harness itself. That is real work and it is exactly what
   has to be right before a kernel is worth writing, but it is not evidence about numerics on a GPU.
 - The first genuine execution evidence is M0's exit criteria (§10); the first evidence about
@@ -1782,7 +1875,6 @@ either one XL kernel or two depending on an answer nobody has looked up. A T3 th
 is exactly the surprise §10.0 exists to prevent.
 
 **RULING — this is an M1 verification item, not M2, and not a T3 precondition.** Three reasons:
-
 1. **The artifact already exists.** Trinity built a GenAI Qwen3-0.6B graph for the oracle work
    (§9.1.1). The check is: load it, find the `com.microsoft::GroupQueryAttention` nodes, count their
    inputs, and record whether slots 14/15 are populated or whether `SimplifiedLayerNormalization`
@@ -1821,11 +1913,87 @@ input count of each GQA node and which optional slots are populated. Not "we loo
   user models and the fused variant is required for T5a, not optional. This is the outcome that
   moves the item from "risk" to "scope".
 
+**R1 UPDATE, 2026-07-29T08:13:58-07:00 — half of R1 is now answered, and the question was
+mis-scoped.** Mouse's `mobius` finding (§8.5) settles it definitively **for that producer**: the
+`mobius` builder emits Q/K norm as separate `ai.onnx::RMSNormalization` nodes before attention,
+always; the choice is **not** conditioned on execution provider; and the 16-input fused GQA form
+**never occurs**, because `mobius` never emits `GroupQueryAttention` at all. For the ORT GenAI
+producer the hazard stands entirely unchanged — it does populate `q_norm_weight`/`k_norm_weight` at
+inputs 14/15 when its fused path is enabled.
+
+So R1 narrows to **"the ORT GenAI producer"**, and the M1 census item is **re-scoped from per-model
+to per-producer**: the census reports GQA arity and populated optional slots *per producer per
+artifact*, and a producer that emits no GQA reports that fact explicitly rather than being absent
+from the table. An empty cell and a "this producer does not emit this op" are different findings and
+must not look the same.
+
+The pre-committed outcomes above stand, read as being about the ORT GenAI column only. Note that
+`mobius` landing on the good side does **not** retire the risk: the ORT GenAI path is the one most
+external users hit, so the widening exposure is undiminished — what has changed is that we now have
+a producer we can iterate against while that answer is outstanding.
+
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
 
+**R3 — a coverage figure that is not indexed by producer is not a coverage figure.** The general
+form of §8.5, tracked here because it is a recurring milestone hazard rather than a one-time fix.
+Every tier exit criterion that names a model must name the producer and version that built it.
+Owner: Mouse, in the census; enforced by me at every milestone review.
 
+### 10.0.2 T3 sequencing — RULING: `ai.onnx::Attention` is T3's first kernel
+
+*Decided 2026-07-29T08:13:58-07:00, on Mouse's proposal.*
+
+**Ruling: T3 begins with `ai.onnx::Attention`. `GroupQueryAttention` stays committed, stays the
+harder kernel, and stays T3 scope — it is no longer first.**
+
+Mouse's technical case is sound and I accept it: `ai.onnx::Attention` has no `seqlens_k`
+indirection, no in-place KV-cache aliasing, no `do_rotary` fold, and rotary arrives as its own
+node. That is a materially smaller kernel and it is the same *mathematics*, so almost none of the
+learning is thrown away when GQA follows.
+
+Two considerations decide it beyond kernel difficulty:
+
+1. **It decouples T3 from an unfinished engine seam.** In-place KV-cache aliasing
+   (`bind_aliased_output`, Switch's seam 2) is required by the GQA path and **not at all** by the
+   `ai.onnx::Attention` path. Sequencing the harder kernel first would have made T3's start
+   conditional on another owner finishing, and a critical path that runs through two people's
+   unfinished work at once is a critical path we chose badly.
+2. **It unblocks a model family we can build and iterate on locally.** This machine now has two
+   GPUs passing the §7.2 gate, the Vulkan SDK installed, and all 168 shader variants compiling. A
+   development loop that closes on the desk is worth materially more per day than one that closes
+   through CI — and per §9.1.2 we have *never executed a kernel*, so the first attention kernel is
+   also the first serious exercise of the whole dispatch path. Doing that where the loop is fast is
+   simply correct.
+
+**The objection, stated fairly, because it is the substance of the decision.** Sequencing T3 around
+what is convenient for *us* to build risks optimising for our own tooling rather than for users, and
+the ORT GenAI producer is the one most external users will actually hit. That objection is real and
+I am not dismissing it — I am ruling that it constrains the decision rather than reverses it, and
+the constraints are binding:
+
+- **This is a sequencing decision, not a scope decision.** `GroupQueryAttention` is not deferred,
+  descoped, or made conditional. It is the next kernel after `ai.onnx::Attention`, and T3 does not
+  exit without it. If anyone reports T3 progress in a way that implies the GenAI path is served
+  because `ai.onnx::Attention` is green, that is the §1.5 error and I will treat it as one.
+- **The T3 exit criterion is stated per producer** (§8.5, R3): T3 exits when a decoder layer is
+  claimed as one island for **both** the `mobius` and ORT GenAI producers. One producer green is
+  half of T3, reported as half.
+- **`largest_island_flops` is reported per producer from T3 onward.** A number averaged across
+  producers would let a green `mobius` column mask a near-zero GenAI column, which is precisely the
+  self-deception §10.0 and this metric exist to prevent.
+- **No fp16/KV-cache design decision may be made as though the `ai.onnx::Attention` path were the
+  only consumer.** The KV-cache contract (§6, A4) is designed for the GQA path's requirements from
+  the start, even though the first kernel does not exercise it. Designing the memory contract around
+  the easier consumer is how the second consumer becomes a rewrite.
+
+**Why this is not merely convenience.** The strongest form of the argument is not "local iteration
+is faster" — it is that `ai.onnx::Attention` is **standard-domain and opset-versioned** (§8.5 item
+4), so the lower-risk claim surface and the faster loop point the same direction. If the standard
+form were the riskier one I would have ruled the other way and eaten the CI latency.
+
+### M0 — "It loads, it runs, it matches"
 
 > **A stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a single
 > `Add` node on that device, and the output matches the ORT CPU EP within tolerance — on both
@@ -1882,13 +2050,14 @@ coverage table as the authoritative contract.
 | Per-family differential tests, tolerance policy, `tests/backend/` node tests | Trinity |
 | `bench/` harness + first published baselines with island counts | Niobe |
 | macOS/MoltenVK lane; first real-GPU lane if a runner is available; driver quirk log | Link |
-| `tools/graph_census.py` + node histograms for all 7 corpus artifacts (`OP_COVERAGE.md` §2.2), **including GQA node arity and populated-optional-input reporting (§10.0.1 R1)** | Mouse + Trinity |
+| `tools/graph_census.py` + node histograms for all 7 corpus artifacts (`OP_COVERAGE.md` §2.2), **indexed by producer (§8.5), including GQA node arity and populated-optional-input reporting per producer (§10.0.1 R1)** | Mouse + Trinity |
 
 **Exit criteria.** Every T1 op green vs CPU on ≥2 platforms; **a pure-elementwise graph of ≥20 nodes
 compiles to one island, one submission**; a shape change re-records once and then replays;
-`OP_SUPPORT.md` is generated from the registry and matches it by construction; `graph_census.py`
-exists and has produced histograms for the full corpus; **the census reports GQA input counts and
-populated optional slots for every corpus artifact containing GQA, resolving §10.0.1 R1**; and
+`OP_SUPPORT.md` is generated from the registry and matches it by construction; **`graph_census.py`
+exists, is indexed by producer, and has produced histograms for the full corpus**; **the census
+reports GQA input counts and populated optional slots per producer for every artifact, resolving
+§10.0.1 R1 for the ORT GenAI column**; and
 **the ops-per-hand-written-kernel ratio is reported and is ≥ 8** (§8.4 A2).
 
 ### M2 — "Real memory, real compute" (`OP_COVERAGE.md` tier T2 — 33 ops, cum. 121)
@@ -1925,7 +2094,7 @@ Sequenced by `OP_COVERAGE.md` §6, not re-sequenced here. **Entry precondition f
 
 | Tier | Target | Gating item |
 |---|---|---|
-| T3 | Qwen3-0.6B fp16, GenAI-built, KV cache, correct tokens end-to-end, ≤2 islands | `GroupQueryAttention` (XL); M2's allocator; fp16 (OQ-14); push-constant shapes + OQ-15 |
+| T3 | **Qwen3-0.6B fp16, decoder layer as one island for *both* the `mobius` and ORT GenAI producers**, KV cache, correct tokens end-to-end, ≤2 islands | `ai.onnx::Attention` **first** (§10.0.2), then `GroupQueryAttention` (XL); M2's allocator; fp16 (OQ-14); push-constant shapes + OQ-15 |
 | T4 | Qwen3-1.7B int4, correct tokens, ≤2 islands, beats ORT CPU on ≥2 vendors | `MatMulNBits` (XL) + weight prepacking |
 | T5a | **Qwen3.5 hybrid end-to-end — the named target of the directive** | `LinearAttention` `gated_delta` (XL) + `CausalConvWithState` |
 | T5b | Qwen3-MoE int4 with the expert block on Vulkan | `QMoE`; likely needs indirect dispatch (OQ-15) |
@@ -1934,7 +2103,10 @@ Sequenced by `OP_COVERAGE.md` §6, not re-sequenced here. **Entry precondition f
 
 Android hardware validation (§11.1's OQ-12 experiment) runs in parallel with T3–T4 and is gated only
 on devices, not on op coverage. The three XL kernels are **not parallelizable away** — each is one
-person's deep work — and §1.5's months-scale claim rests on them.
+person's deep work — and §1.5's months-scale claim rests on them. **Every tier row above names a
+model; from now on it must also name the producer that built it** (§8.5, §10.0.1 R3), and
+`largest_island_flops` is reported per producer so that one green producer column cannot mask
+another that is near zero.
 
 ---
 
@@ -1957,7 +2129,8 @@ person's deep work — and §1.5's months-scale claim rests on them.
 | **OQ-10** | Tolerance policy for accumulation-order-sensitive ops (GEMM, reductions) across vendors, where fp32 associativity differs. Needs a stated, derived rule before M2's ops land, not after. | **Trinity** proposes → Morpheus ratifies | M2 |
 | **OQ-11** | ~~Ratification of `OP_COVERAGE.md` (§8.1).~~ **RESOLVED 2026-07-28T19:16:08-07:00: ratified with five amendments** (§8.4). It supersedes §8.2/§8.3; §8.1's seven principles stand. **Its central question — whether to admit `com.microsoft` — was then settled above my level by Justin's ruling of 2026-07-28T20:54:42-07:00** (see OQ-8); A1 is revised accordingly and survives as the *discipline* rather than as the permission. | Mouse proposed → **Morpheus ratified** → **Justin ruled on the domain** | — |
 | **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for some other reason? **The 31.43% figure is a database claim, not a usability claim, and until the experiment in §11.1 runs, that is exactly how much of it is unverified: all of it.** *Concurrence noted 2026-07-28T21:01:56-07:00: Link's `PLATFORMS.md` §8 rewrite now states the same position in his own words — the gpuinfo data proves those devices lack `VK_KHR_synchronization2`, not that a legacy barrier path makes them usable. The two documents agree on the honest position rather than each implying the other verified it.* The experiment, its pass/fail bar, and what would reverse the decision are specified in §11.1. Needs real hardware, which we do not have. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
-
+
+
 | **OQ-16** | **When do `LinearAttention` and `CausalConvWithState` appear in a *released* ORT, and does their schema change between our main-branch fingerprint and that release?** *New, 2026-07-28T22:28:08-07:00.* Four of the eleven admitted contrib rows (`LinearAttention`, `CausalConvWithState`, `QMoE`, `MoE`) carry `MAIN_BASELINE` — they exist only on ORT main. All four are `Staged`, so nothing is claimed against an unreleased schema, and C2 item 6 now makes that structural rather than intentional. But `LinearAttention` and `CausalConvWithState` gate **T5a, the named Qwen3.5 target**, so we are partly gated on an *upstream schema stabilizing* — a different risk from "the Vulkan kernel is hard", with different mitigations, and it must be reported as such rather than folded into a Vulkan schedule slip. Practically: the T5a kernels may be written twice, and every main-baseline fingerprint needs re-verification the moment its release exists. | **Fact Checker** watches upstream → Mouse re-verifies → **Morpheus** rules on T5a scope | T5a |
 
 ### 11.1 OQ-12 — the minimum decisive experiment

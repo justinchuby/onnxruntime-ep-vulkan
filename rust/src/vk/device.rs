@@ -3,7 +3,7 @@
 //! [`Device`] is the engine's view of one selected Vulkan physical device. It owns:
 //! - The `ash::Device` logical-device handle (all Vulkan calls go through it).
 //! - The [`Barriers`] instance, selected **once** in [`Device::new`] from
-//!   [`EpOptions::force_legacy_barriers`] and [`Capabilities::synchronization2`]. No code
+//!   [`EpOptions::force_legacy_barriers`] and the device capability set. No code
 //!   outside this file may call [`Barriers::select`].
 //! - The [`Capabilities`] oracle — the single capability oracle for the device lifetime.
 //!
@@ -31,7 +31,11 @@
 
 use ash::vk;
 
-use super::{barrier::Barriers, caps::Capabilities, instance::CapableDevice};
+use super::{
+    barrier::Barriers,
+    caps::{Capabilities, DeviceFeatureChain},
+    instance::CapableDevice,
+};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Device
@@ -105,9 +109,19 @@ impl Device {
             .map(|s| s.as_ptr())
             .collect();
 
+        // Build the feature chain for VkDeviceCreateInfo::pNext.
+        //
+        // `DeviceFeatureChain` owns the feature structs and encapsulates all branching on
+        // `caps.synchronization2`. This keeps that token out of device.rs in compliance with
+        // the layering lint (DESIGN.md §7.5; verified by `layering.rs`).
+        //
+        // SAFETY: feature_chain must outlive device_info (declared first; same scope). The
+        // p_next chain borrowed by device_info points into feature_chain's fields.
+        let mut feature_chain: DeviceFeatureChain = capable.caps.device_feature_chain();
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
             .enabled_extension_names(&ext_ptrs);
+        let device_info = feature_chain.apply(device_info);
 
         // SAFETY: instance is live per the caller's contract. capable.physical_device was
         // enumerated from instance and is still valid. device_info borrows queue_info and

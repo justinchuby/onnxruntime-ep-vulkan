@@ -1,12 +1,20 @@
 //! Normalization — the RMSNorm family the LLM path runs on.
 //!
-//! # Why these are contrib ops and why that is fine
+//! # Two spellings of the same maths, and we need both
 //!
-//! A GenAI-built Qwen3 graph does not contain `LayerNormalization`; it contains
+//! An **ORT-GenAI-built** Qwen3 graph does not contain `LayerNormalization`; it contains
 //! `com.microsoft.SimplifiedLayerNormalization` (RMSNorm) and
 //! `com.microsoft.SkipSimplifiedLayerNormalization` (residual-add + RMSNorm fused). Both appear
-//! twice per decoder layer, plus the Q/K norms, so a 28-layer model has roughly 60 of them. They
-//! are not XL — they are one reduction template away — but they are unavoidable.
+//! twice per decoder layer, plus the Q/K norms, so a 28-layer model has roughly 60 of them.
+//!
+//! A **`onnx-genai-models` (mobius)-built** Qwen3 graph — Justin's own builder — contains none of
+//! those. It emits the standard-domain **`RMSNormalization` (ai.onnx opset 23)** instead, four
+//! times per decoder layer once Q/K norm is counted, and does not fuse the residual add at all.
+//!
+//! So the same model, built by two of our own toolchains, produces two disjoint sets of norm
+//! nodes, and a registry holding only the contrib spellings declines 100% of the second. Both
+//! spellings are therefore in the table. This is the general shape of the lesson recorded in
+//! `OP_COVERAGE.md` §4.16: op coverage is relative to a *producer*, not to a model architecture.
 //!
 //! # These are the fusion the allowlist is for
 //!
@@ -15,13 +23,16 @@
 //! square, a mean reduction, an `rsqrt` and two multiplies — five dispatches and four round trips
 //! through device memory for a bandwidth-bound operation. Fused, it is one pass. That is the
 //! entire justification for a fusion and it is the same reason the exporter fused it.
+//!
+//! The reduction kernel is shared by all four rows here regardless of spelling, which is why the
+//! standard-domain rows cost a table row each rather than a kernel each.
 
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE};
+use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OpSpec, PINNED_BASELINE};
 use crate::require;
 
 /// Staging reason for rows that need the reduction template rather than a bespoke kernel.
@@ -91,9 +102,10 @@ fn skip_simplified_layer_norm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult
 }
 
 crate::op_table! {
-    //  op                                    domain  opsets            caps    kernel          claim                       translate                  status                    schema
-    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
-    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SKIP_SIMPLIFIED_LAYER_NORM;
+    //  op                                    domain  opsets                       caps    kernel          claim                       translate                  status                    schema
+    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
+    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SKIP_SIMPLIFIED_LAYER_NORM;
+    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_ANY, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
 }
 
 #[cfg(test)]
@@ -130,10 +142,42 @@ mod tests {
     }
 
     #[test]
-    fn every_row_here_is_contrib_and_fingerprinted() {
+    fn every_contrib_row_here_is_fingerprinted() {
+        // Standard-domain rows carry no fingerprint by design: `ai.onnx` ops are versioned by
+        // opset, which the row's window already expresses. Only `com.microsoft` needs C2.
         for s in OPS {
-            assert_eq!(s.domain, Domain::Ms);
-            assert!(s.schema.is_some());
+            match s.domain {
+                Domain::Ms => assert!(s.schema.is_some(), "{} needs a fingerprint", s.op_type),
+                Domain::Ai => assert!(
+                    s.schema.is_none(),
+                    "{} is standard-domain; its opset window is its version contract",
+                    s.op_type
+                ),
+            }
         }
+    }
+
+    #[test]
+    fn both_spellings_of_rmsnorm_are_registered() {
+        // The finding from the 2026-07-29 crate review: ORT GenAI emits
+        // `com.microsoft::SimplifiedLayerNormalization`, Justin's `onnx-genai-models` emits
+        // `ai.onnx::RMSNormalization` @ opset 23, and they are the same maths. Registering only
+        // one of them silently halves our coverage depending on who built the model.
+        let contrib = OPS
+            .iter()
+            .find(|s| s.op_type == "SimplifiedLayerNormalization")
+            .expect("the ORT GenAI spelling");
+        let standard = OPS
+            .iter()
+            .find(|s| s.op_type == "RMSNormalization")
+            .expect("the standard-domain spelling");
+        assert_eq!(contrib.domain, Domain::Ms);
+        assert_eq!(standard.domain, Domain::Ai);
+        assert_eq!(
+            standard.min_opset, OPSET_STD_LLM,
+            "RMSNormalization does not exist before opset 23"
+        );
+        // Same claim predicate, and it must stay that way: they are one kernel.
+        assert!(std::ptr::fn_addr_eq(contrib.claim, standard.claim));
     }
 }

@@ -49,3 +49,81 @@
 📌 **llama.cpp accelerant (Rai 🟢 Green, Switch D-S4-10).** Tiling strategy, subgroup reduction shape, dequant-in-register patterns transfer as algorithmic reference. No code copying. Budget algorithm study time for GQA and MatMulNBits tiling specifically before implementing Niobe's GEMM benchmarks.
 
 📌 **`concentration()` metric (Mouse registry).** `largest_island_flops ÷ total_claimed_flops`. Report this alongside `node_coverage`. Two graphs can have identical node coverage and wildly different concentration; concentration is the honest performance predictor.
+
+---
+
+## 2026-07-29 — Tracing integration + benchmark harness (first turn)
+
+Task: bring Justin's own `onnx-runtime-tracer` crate here from `onnxruntime-mlx`, adapted to a
+Vulkan backend, and build the `bench/` harness.
+
+**Shipped:** `rust/src/trace.rs` (new, 12 unit tests, all green), `docs/PERF.md` (new),
+`bench/{bench,cases,stats,environment,compare,transfer_calibration,test_harness}.py` +
+`bench/README.md` (new; 11 harness self-tests green), decisions at
+`.squad/decisions/inbox/niobe-tracing-integration.md`. Flagged minimal edits to Tank's
+`rust/Cargo.toml` (one dep line + pin comment) and `rust/src/lib.rs` (`pub mod trace;`).
+
+📌 **`onnx-runtime-tracer` pin `0.1.0-dev.5` is load-bearing, not cosmetic.** That release's clock
+reports an absolute machine-domain timestamp, so a trace emitted from inside our plugin `cdylib`
+(own statics, no shared process-global epoch) overlays the host's trace with **no offset
+negotiation**. A release that moved the epoch to "first call into the library" would break overlay
+*silently* — traces still load, still look plausible, wrong by an unknowable constant. Re-verify
+before ever bumping. `default-features = false` keeps prost/protobuf out of the host process.
+
+📌 **MLX's span vocabulary does not transfer.** MLX = lazy graph + unified memory, so host wall
+time around `mlx_eval` is a defensible compute proxy and there are no transfers to instrument.
+We have explicit command buffers, explicit staging, async queues. Our phases: `compile`,
+`prepack`, `upload`, `record`, `submit`, `fence_wait`, `readback`.
+
+📌 **`vkQueueSubmit` wall time measures almost nothing** — driver bookkeeping, essentially
+independent of the work submitted. `Phase::Submit` is the only phase with
+`observes_gpu_work() == false` and there is a test asserting that so a refactor cannot lose it.
+`fence_wait` is the honest host-observable bound and is labelled UPPER BOUND (queue contention,
+other clients). Kernel time comes from the device or it does not come at all.
+
+📌 **`timestampPeriod` is NOT 1.0 on real hardware.** NVIDIA typically reports 1.0; AMD ~20-83,
+Adreno large. Assuming 1.0 under-reports GPU time by up to ~80x — i.e. produces an implausibly
+excellent speedup on exactly the vendors we most need to be honest about.
+
+📌 **`timestampValidBits == 0` means that queue family supports no timestamps at all.** Not "badly"
+— none. Skip GPU tracing and record why; never emit zeros. Otherwise mask to the low valid bits
+before any arithmetic (a 32-valid-bit / 1 ns device wraps in ~4.3 s, so wrap recovery is routine,
+not theoretical). Never shift by 64.
+
+📌 **Never call `vkGetQueryPoolResults` with `WAIT_BIT` on a possibly-in-flight submission** — that
+stalls the host on the GPU and turns the instrument into the thing it is measuring. Read after the
+fence signals; prefer `WITH_AVAILABILITY`.
+
+📌 **Host<->device correlation:** prefer `VK_EXT_calibrated_timestamps` (returns `maxDeviation`,
+pass it straight through as `anchor_uncertainty_us`); fallback is bracketing a timestamp-only
+submission between two host clock reads and reporting half the round-trip. Re-anchor per session
+at minimum — clocks drift and a stale anchor slides GPU spans off the host timeline in a way that
+reads as a scheduling anomaly.
+
+📌 **GPU spans go on a synthetic lane (`0x7600_0000 + queue_family`), never the submitting
+thread's.** Drawing async GPU work inside the host call that submitted it is the most effective
+way to make a trace lie, and it hides CPU/GPU overlap, which is the thing we tune.
+
+📌 **`trace.rs` names no Vulkan type by design.** `vk/` hands over raw unconverted ticks
+(`GpuTimestampReport`); `trace.rs` owns masking / period conversion / wrap recovery / axis
+placement *and the tests for them*. Keeps us on the right side of the `layering.rs` lint and puts
+the interesting failure modes in the module that can be tested without a GPU.
+
+📌 **Harness gates that matter more than the numbers:** (a) claim gate — a case the EP did not
+actually claim yields `null`, read from `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`, not stderr, because CPU
+fallback is numerically correct and therefore hides in a wall-clock table; (b) noise gate — a delta
+must exceed both the threshold and 2x the worse sample's robust spread; (c) environment stamped on
+every result. `bench/test_harness.py` tests the gates themselves.
+
+📌 **Repo mechanics learned:** crate edition is **2024** — `rustfmt --edition 2021 src/trace.rs`
+silently leaves the file unformatted and `cargo ci` stays red; use `--edition 2024`. `cargo ci`
+runs rustfmt -> clippy (`-D warnings`, incl. `undocumented_unsafe_blocks`) -> build -> test.
+`ONNXRUNTIME_VULKAN_EP_LIB` (word order differs from the `ONNXRUNTIME_EP_VULKAN_*` behaviour-flag
+prefix) is the Python-side lib path var. crates.io's JSON API refuses `curl`; use `cargo fetch`
+plus the local registry cache to inspect a dependency's source.
+
+📌 **Still true, and the whole reason for the discipline above: no shader in this repo has ever
+executed on any device** (`DESIGN.md` §9.1.2). 280+ green host-side tests are evidence about
+partitioning and plumbing, not about GPU behaviour. Both local GPUs pass the §7.2 gate (Intel Iris
+Xe 1.4.309, NVIDIA RTX 4060 Laptop 1.4.325), so local measurement becomes possible once the SDK
+lands — that is a *possibility*, not a measurement. OQ-12 remains unanswered.

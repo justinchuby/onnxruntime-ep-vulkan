@@ -712,36 +712,68 @@ mod tests {
         }
     }
 
+    // ── DESIGN.md §7.8 condition 3: shader-less artifact guards ─────────────────────────
+    //
+    // These three tests work in BOTH build modes:
+    //   • shader-complete build (glslc present, normal CI): has_any() == true
+    //   • escape-hatch build (ALLOW_MISSING_GLSLC=1): has_any() == false
+    //
+    // Each test asserts the invariant that holds in the current build, so the suite stays
+    // green in both modes rather than requiring a conditional skip or a separate CI matrix.
+
     #[test]
-    fn no_shaders_are_embedded_yet() {
-        assert!(shaders::SHADER_MODULES.is_empty());
-        assert!(shaders::find("elementwise_binary").is_none());
+    fn shader_module_table_matches_build_mode() {
+        // has_any() and SHADER_MODULES.is_empty() must always agree — they describe the same fact.
+        let table_non_empty = !shaders::SHADER_MODULES.is_empty();
+        assert_eq!(
+            shaders::has_any(),
+            table_non_empty,
+            "has_any() must agree with !SHADER_MODULES.is_empty()"
+        );
+
+        if shaders::has_any() {
+            // Shader-complete build: M0's first shader (ew_binary_add_f32) must be present.
+            assert!(
+                shaders::find("ew_binary_add_f32").is_some(),
+                "ew_binary_add_f32 must be compiled into a shader-complete build"
+            );
+            // Old placeholder stem must never appear.
+            assert!(
+                shaders::find("elementwise_binary").is_none(),
+                "no shader is registered under the legacy stem 'elementwise_binary'"
+            );
+        } else {
+            // Escape-hatch build: no shader is available.
+            assert!(shaders::find("ew_binary_add_f32").is_none());
+            assert!(shaders::find("elementwise_binary").is_none());
+        }
     }
 
-    // ── DESIGN.md §7.8 condition 3: shader-less artifact guards ─────────────────────────
-
     #[test]
-    fn has_any_returns_false_in_this_build() {
-        // This build was compiled without shaders (no glslc on the build machine, or
-        // ALLOW_MISSING_GLSLC=1). Verify the guard function reflects the build state correctly.
-        // When the first real shader is added and compiled, this test will fail — and should then
-        // be updated to assert `has_any() == true`. The failure is the signal that condition 3's
-        // probe path changes from "always false" to "real check against build state".
-        assert!(
-            !shaders::has_any(),
-            "has_any() must be false in a shader-less build (SHADER_MODULES is empty)"
-        );
+    fn has_any_reflects_build_state() {
+        // has_any() is a thin wrapper over SHADER_MODULES.is_empty(). This test documents
+        // and pins both directions:
+        //   • shader-complete build → has_any() is true, SHADER_MODULES is non-empty.
+        //   • escape-hatch build   → has_any() is false, SHADER_MODULES is empty.
+        if shaders::has_any() {
+            assert!(
+                !shaders::SHADER_MODULES.is_empty(),
+                "has_any() true implies SHADER_MODULES non-empty"
+            );
+        } else {
+            assert!(
+                shaders::SHADER_MODULES.is_empty(),
+                "has_any() false implies SHADER_MODULES is empty"
+            );
+        }
     }
 
     #[test]
     fn probe_devices_returns_empty_when_no_shaders() {
-        // DESIGN.md §7.8 condition 3: a shader-less build must advertise zero devices.
-        // In this build, SHADER_MODULES is empty, so probe_devices() must return empty
-        // regardless of whether a Vulkan ICD is present.
-        //
-        // This test is currently green because shaders::has_any() == false. When the first
-        // shader is compiled in, this test will fail and should be removed (at that point
-        // probe_devices() correctly returns real devices on Trinity's lavapipe lane).
+        // DESIGN.md §7.8 condition 3: a shader-less artifact must advertise zero devices.
+        // When shaders are compiled in, probe_devices() may return real devices (depending on
+        // whether an ICD is present); the zero-device guarantee only applies to the no-shader
+        // case. This test only runs its assertion in the escape-hatch build.
         if !shaders::has_any() {
             let devices = probe_devices();
             assert!(
@@ -750,6 +782,8 @@ mod tests {
                 devices.len()
             );
         }
+        // In a shader-complete build the test is a no-op (passes trivially): probe_devices()
+        // returns whatever the ICD reports, which is correct behaviour.
     }
 
     // ── Seam 1: prepack vocabulary ────────────────────────────────────────────────────────

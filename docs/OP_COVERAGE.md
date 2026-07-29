@@ -476,6 +476,52 @@ Sequence types (`SequenceAt`/`Construct`/`Empty`/`Erase`/`Insert`/`Length`/`Map`
 (`OP_ARCHITECTURE.md` §2.1) — these need non-tensor value types, non-numeric data, or a codec. A
 GPU compute EP has nothing to offer them.
 
+### 4.18 Coverage is relative to a *producer*, not to a model architecture (2026-07-29)
+
+The single most consequential thing the review of Justin's ONNX crates turned up, and it corrects a
+premise this whole document was built on.
+
+§4.1–4.17 derive the op inventory from what the **ORT GenAI model builder** emits. Justin's own
+`onnx-genai-models` (the `mobius` package) builds the same models — Qwen3, Qwen3.5, Qwen2.5-VL,
+Qwen3-VL, DeepSeek V3, Mamba, and more — and emits a **substantially different op set**. Read from
+`src/mobius/components/_attention.py` and `src/mobius/models/qwen.py`:
+
+| Role in a Qwen3 decoder layer | ORT GenAI builder emits | `onnx-genai-models` emits |
+|---|---|---|
+| Attention | `com.microsoft::GroupQueryAttention` (up to 16 inputs) | **`ai.onnx::Attention` @ opset 23** (6 inputs) |
+| RMS norm | `com.microsoft::SimplifiedLayerNormalization` | **`ai.onnx::RMSNormalization` @ opset 23** |
+| Residual + norm | `com.microsoft::SkipSimplifiedLayerNormalization` (fused) | not fused — plain `Add` + `RMSNormalization` |
+| Rotary | `com.microsoft::RotaryEmbedding` | **`ai.onnx::RotaryEmbedding` @ opset 23** |
+| Q/K norm | inputs 14/15 of the GQA node, *or* separate nodes | always separate `RMSNormalization` nodes |
+| int4 weights | `com.microsoft::MatMulNBits` | `com.microsoft::MatMulNBits` — **the one op both agree on** |
+
+Before this review the registry held only the left-hand column. A Qwen3 model built by Justin's own
+toolchain would therefore have had **every norm, every rotary and every attention node declined
+`[not-registered]`** — not because we lack the kernel, but because we never wrote the row. The
+kernels are the same kernels. That is a coverage loss of roughly 5 nodes per decoder layer, ×28
+layers, for zero technical reason.
+
+Both spellings are now registered (`ops/norm.rs`, `ops/attention.rs`), sharing kernels and, where
+the attribute vocabularies genuinely match, sharing claim predicates. `RMSNormalization` shares
+`simplified_layer_norm` verbatim. `ai.onnx::Attention` gets its own predicate despite the shared
+kernel, because the attribute names differ (`q_num_heads` vs `num_heads`), the illegal-combination
+set differs (`is_causal`, `qk_matmul_output_mode`, `softmax_precision` have no contrib equivalent)
+and the optional inputs sit at different indices — one predicate spanning both would be a predicate
+that is wrong about one of them, in the permissive direction.
+
+**This also reorders T3.** `ai.onnx::Attention` is the cheaper first attention target: no
+`seqlens_k` indirection, no in-place KV-cache aliasing requirement, no `do_rotary` fold, and rotary
+arrives as its own node. It unblocks a model family we can *build ourselves and iterate on locally*,
+which matters far more now that we have two working GPUs on this machine. GQA remains committed and
+remains the harder kernel; it is no longer obviously the one to write first. Flagged for Morpheus,
+since T3's definition is his to ratify.
+
+**And it partially settles R1 (the fused-QK-norm GQA question).** For the `onnx-genai-models` path
+the answer is definitive: Q/K norm is always separate `RMSNormalization` nodes applied before the
+attention op, the choice is *not* conditioned on execution provider, and the 16-input form never
+occurs. For the ORT GenAI path the hazard stands unchanged — its builder does emit inputs 14/15
+when its fused path is enabled — so §4.10's precondition is narrowed, not removed.
+
 ---
 
 ## 5. Leverage strategy — how breadth gets cheap
@@ -1445,6 +1491,7 @@ I propose, Morpheus ratifies. These conflict with the architecture of record:
 | `DESIGN.md` §8.3 | fragmentation rule stated qualitatively | **MVS rule with a measured transfer-cost calibration (§7.2)** | "Does this merge two islands" needs a number to be enforceable. |
 | `decisions.md` "Ruthless v1 non-goals" | as above | as above | Same three rows. |
 | `ENGINE.md` §3.6 | buffer-only, image storage deferred until a family shows benefit | **`Conv` (tier 5c/6) is that family — re-evaluate then, not before** | Agreement, with a named trigger. |
+| `DESIGN.md` §8.2, T3 entry point | T3 begins with `com.microsoft::GroupQueryAttention` | **T3 should begin with `ai.onnx::Attention` @ opset 23** (§4.18) | Justin's own `onnx-genai-models` emits the standard-domain op and never emits GQA. It is the cheaper kernel (no `seqlens_k` indirection, no KV-cache aliasing, no `do_rotary` fold) and it unblocks a model family we can build and iterate on locally. GQA stays committed; it is no longer obviously first. |
 
 Nothing here contradicts the two hard layering rules, the claim-conservatism rule, the ORT-CPU
 oracle, the capability-set Vulkan baseline, or the record-once/replay-many decision. Those are load
@@ -1506,6 +1553,7 @@ header, the `THIRD_PARTY_NOTICES.md` entry and the commit note.
 | `CausalConvWithState` | `ops/ssm.rs` | **Independent implementation.** | None. |
 | `QMoE` / `MoE` | `ops/moe.rs` | **Independent implementation.** Masked-dense first; the routing math is ours. | None. |
 | `SimplifiedLayerNormalization` / `Skip*` | `ops/norm.rs` | **Independent implementation.** RMSNorm is four lines; our reduction template supplies the rest. | None. |
+| `ai.onnx::Attention`, `ai.onnx::RotaryEmbedding`, `ai.onnx::RMSNormalization` | `ops/attention.rs`, `ops/norm.rs` | **Independent implementation.** Same kernels as the contrib spellings above; the standard-domain rows are table entries over them, not new code. | None. |
 
 If any kernel later needs substantial adaptation of third-party shader source, the procedure is in
 `docs/THIRD_PARTY.md` (Rai's) and must be followed **before** the adapted code lands, because our
@@ -1542,7 +1590,112 @@ more to the schedule than any single template.
 
 ---
 
-## 14. References
+## 14. In-house ONNX crates — evaluation (2026-07-29)
+
+Justin directed us to *参考* — reference — his own Rust/Python ONNX projects rather than build graph
+handling from scratch. I read the source of all four rather than the READMEs. Verdicts first,
+because three of the four are "defer", and the fourth turned out to be worth more than any of the
+dependencies would have been.
+
+| Crate | What it actually is today | Verdict |
+|---|---|---|
+| `onnx-ir-rust` (`onnx-ir-core`) | Rust, Apache-2.0, ~2,400 lines, **20% complete** by its own `IMPLEMENTATION_STATUS.md` | **Defer** |
+| `onnx-shape-inference` | **Python**, Apache-2.0, v0.3.0 alpha, SymPy-backed, strong contrib-op coverage | **Defer as a dependency; adopt as an oracle and as reference** |
+| `onnx-genai` (`onnx-runtime-ir`) | Rust, MIT, a real IR with full use-def, arenas, topological order | **Defer, with a named trigger** |
+| `onnx-genai-models` (`mobius`) | Python, Apache-2.0, programmatic model builder | **Not a dependency — but the highest-value find, see §4.18** |
+
+### 14.1 `onnx-ir-rust` — defer
+
+Read from `crates/onnx-ir-core/src/`. It has `Graph`, `Node`, `Value`, `Attr`, `Shape`,
+`SymbolicDim`, `Tensor` and an intrusive `DoublyLinkedList<Node>`. What it does **not** have is
+everything we would adopt it for:
+
+- **No use-def tracking.** `value.rs` carries the producer/consumer fields *commented out*, with
+  the note that they "will be added when Node is properly defined with reference counting".
+  Consumer queries are the single thing a partitioner needs most.
+- **No topological iteration, no subgraph extraction, no reachability or dominance.** Listed as
+  Phase 5–6 work.
+- **No protobuf ingestion.** `prost` is declared as a dependency but no deserialization exists.
+- **Mutation primitives are known-buggy** — `pop_front`/`pop_back`/`clear` have `#[ignore]`d tests.
+- **Not published to crates.io** (404), so it would be a git dependency on a moving target.
+
+And even at 100% completion it would not fit: we never see a protobuf. ORT hands us `OrtGraph` /
+`OrtNode` handles across a C ABI, and there is no path to wrap those — we would have to *copy* the
+whole graph into a second representation inside a cdylib living in someone else's process. Paying
+`prost` (~500 KB) plus a full second graph, to replace roughly 150 lines of union-find over the
+handles we already have, is not a trade. **Defer, with no expected revisit.**
+
+### 14.2 `onnx-shape-inference` — defer as a dependency, adopt as an oracle
+
+It is **Python**, not Rust, so the dependency question does not even arise for a cdylib. But the
+substance is genuinely strong and directly touches two things I own:
+
+- It is **really symbolic**: SymPy-backed dimension arithmetic with a safe recursive-descent parser
+  (no `eval`), constraint propagation that anchors anonymous `_d0` symbols to author-declared names
+  like `batch`/`seq`, and three merge policies (`refine`/`strict`/`merge`).
+- Its `_ops/_microsoft.py` implements shape functions for `GroupQueryAttention`,
+  `SimplifiedLayerNormalization`, `SkipSimplifiedLayerNormalization`, `RotaryEmbedding`,
+  `MultiHeadAttention`, `BiasGelu`, `FastGelu`, `QuickGelu`, `BiasSplitGelu`, `GroupNorm` and more.
+
+Two adoptions that cost us nothing and are worth real coverage:
+
+1. **As a preprocessing step in Trinity's harness.** Our claim predicates decline symbolic dims
+   (`symbolic_dims_are_rejected_not_guessed`). Running `infer_symbolic_shapes` over a test model
+   before handing it to ORT would resolve many dims to concrete integers, converting
+   `[dynamic-shape]` declines into claims **with no change to our Rust at all**. This is the
+   cheapest coverage available anywhere in this document, and it is a test-harness change, not a
+   runtime one. Routed to Trinity.
+2. **As independent ground truth for the C2 contrib fingerprints.** Its `_microsoft.py` encodes
+   contrib input ordering and output arity, derived independently of ORT's own docs. Where it and
+   `ContribOperators.md` agree, my fingerprint confidence rises; where they disagree, that is a
+   flag worth chasing rather than a coin toss. It does **not** solve schema *drift* — it is a
+   snapshot like any other — but it doubles the sources behind each fingerprint.
+
+Not a dependency. A tool and a second opinion.
+
+### 14.3 `onnx-genai` (`onnx-runtime-ir`) — defer, with a named trigger
+
+This one is not a toy. `crates/onnx-runtime-ir/src/graph.rs` is ~60 KB and the IR has exactly what
+`onnx-ir-rust` lacks: `producer`/`consumers` on every `Value`, arena-allocated stable `NodeId`/
+`ValueId`, sorted consumer snapshots for deterministic rewrites, per-node opset overrides,
+`Option<ValueId>` inputs that model ONNX optional inputs correctly, symbol constraints, and
+control-flow subgraph bodies. It is MIT, so licence-compatible with us with no `THIRD_PARTY.md`
+consequence. The workspace also contains `onnx-runtime-ep-api`, `onnx-runtime-optimizer` and
+`onnx-runtime-shape-inference`.
+
+It is still **defer**, for one structural reason and one prudential one:
+
+- *Structural:* the same C-ABI mismatch. It builds and loads its own graphs; it cannot adopt an
+  `OrtGraph`. Using it would mean transcribing ORT's handles into its arenas — real work, a second
+  copy of the graph resident in the host process, and a new failure mode (transcription bugs) in
+  the layer whose correctness is hardest to test.
+- *Prudential:* `0.1.0-dev.5`, unpublished, active development. A cdylib loaded into someone
+  else's process is the worst possible place to take a fast-moving unpublished git dependency,
+  because the lifetime is not ours and neither is the process.
+
+**The named trigger, so this is a decision rather than a shrug:** if we ever need a graph
+representation that outlives a single `GetCapability` call — a cross-session compiled-graph cache,
+a rewrite pass, or a partitioner that needs repeated reachability queries over a mutable graph —
+then we need an IR, and at that point `onnx-runtime-ir` is the first thing to reach for rather than
+something to write. Today `ops/partition.rs` consumes an already-built `Island` and the clustering
+that produces it is one union-find pass, so we do not.
+
+### 14.4 What we actually adopted
+
+No new dependency lines. Nothing for Tank to add to `Cargo.toml`. What changed is the **op table**,
+which is where the value turned out to be: five standard-domain rows
+(`ai.onnx::Attention`, `ai.onnx::RotaryEmbedding`, `ai.onnx::RMSNormalization`, plus the shared
+predicates) that make a model built by Justin's own toolchain claimable at all. See §4.18. That is
+a larger coverage gain than any of the three libraries would have produced, and it came from
+reading them.
+
+I want to be explicit that "defer" here is not politeness-avoidance in the other direction: the
+directive said *参考*, and the reference paid off. It simply paid off as information rather than as
+linkage.
+
+---
+
+## 15. References
 
 - ORT GenAI model builder — <https://github.com/microsoft/onnxruntime-genai/blob/main/src/python/py/models/builder.py>
 - ORT GenAI Qwen builders (Qwen2.5-VL / Qwen3-VL / Qwen3.5) — <https://github.com/microsoft/onnxruntime-genai/blob/main/src/python/py/models/builders/qwen.py>
@@ -1555,3 +1708,11 @@ more to the schedule than any single template.
 - ONNX model zoo ResNet-50 — <https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v2-7.onnx>
 - Local reference: `onnxruntime-mlx/docs/OP_ARCHITECTURE.md`, `rust/src/registry.rs`, `rust/src/ops/*.rs`, `tests/conformance/RESULTS.md`
 - This repo: `docs/DESIGN.md`, `docs/ENGINE.md`, `.squad/decisions.md`
+- In-house crates evaluated in §14 — <https://github.com/justinchuby/onnx-ir-rust>,
+  <https://github.com/justinchuby/onnx-shape-inference>,
+  <https://github.com/justinchuby/onnx-genai>,
+  <https://github.com/justinchuby/onnx-genai-models>
+- `onnx-genai-models` attention construction (the §4.18 finding) —
+  `src/mobius/components/_attention.py`, `src/mobius/models/qwen.py`
+- ONNX opset 23 additions (`Attention`, `RMSNormalization`, `RotaryEmbedding`) —
+  <https://onnx.ai/onnx/operators/>

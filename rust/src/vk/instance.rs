@@ -117,9 +117,21 @@ impl Instance {
                 }
                 return None;
             }
-            // Loader is ≥1.1: request exactly 1.1 (all the instance-level features we use are
-            // 1.1 core; requesting 1.3 would be wasteful and unnecessary).
-            Some(_) => vk::make_api_version(0, 1, 1, 0),
+            // Loader is ≥1.1: request up to Vulkan 1.3.
+            //
+            // We cap at 1.3 (not higher) because that is the API version the engine has been
+            // validated against. More importantly, `vkGetDeviceProcAddr` only returns function
+            // pointers for functions up to the instance's requested API version. Requesting 1.3
+            // ensures that Vulkan 1.3 core device-level functions like `vkCmdPipelineBarrier2`
+            // are available in the device function table built by ash::Instance::create_device.
+            // Without this, calling `device.cmd_pipeline_barrier2()` panics with a null function
+            // pointer even on a Vulkan 1.4 physical device (the loader gates which functions it
+            // exposes to the device based on what the instance requested).
+            //
+            // The cap at 1.3 prevents ERROR_INCOMPATIBLE_DRIVER on loaders < 1.3. If the loader
+            // is 1.1 or 1.2 we request that exact version; the sync2 backend falls back to the
+            // KHR extension path for those older devices automatically.
+            Some(v) => v.min(vk::make_api_version(0, 1, 3, 0)),
         };
 
         // ── Pre-creation diagnostic (verbose only) ────────────────────────────
