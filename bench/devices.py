@@ -306,8 +306,23 @@ def _parse_memory_from_text(text: str, count: int) -> "dict[int, dict]":
     return result
 
 
+def _sweep_stale_scratch() -> None:
+    """Remove ``vkfacts-*`` directories left behind by an interrupted probe.
+
+    The scratch directory has to live under ``bench/`` rather than the system temp directory.
+    That means an interrupted run leaves a directory git can see, and one of them was committed
+    before this sweep existed. `TemporaryDirectory` already cleans up on the normal path; this
+    covers the abnormal one, at the start of the next probe.
+    """
+    here = Path(__file__).resolve().parent
+    for stale in here.glob("vkfacts-*"):
+        if stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+
+
 def probe(exe: "Path | None" = None) -> "tuple[list[DeviceFacts], str]":
     """Return ``(devices, note)``. A non-empty note means the facts could not be obtained."""
+    _sweep_stale_scratch()
     exe = exe or find_vulkaninfo()
     if exe is None:
         return [], (

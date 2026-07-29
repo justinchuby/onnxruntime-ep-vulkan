@@ -202,6 +202,63 @@ Mouse notes the `mobius` path avoids `seqlens_k` indirection and KV-cache aliasi
 is the likelier of the two to give us a model we can build and iterate on **on this machine**;
 that is a reason to represent both, not a reason to assume one.
 
+### 2.2 Portability envelope — what a number has to fit inside to be about the EP
+
+Justin's standing directive: **要时刻注意跨平台通用性** — cross-platform generality, at all times.
+A Vulkan EP that is really a desktop-NVIDIA EP has no reason to exist; better-supported vendor
+backends already do that job.
+
+The measurement version of that directive is narrow and checkable. **A configuration measured on
+this desk is only a statement about the EP if a device the EP admits could select it.** The
+admission floor is already decided, in `DESIGN.md` §7.2:
+
+| Floor | Value | Source |
+|---|---|---|
+| shared memory | **16384 B** (16 KiB) | §7.2 R4 |
+| workgroup invocations | **256** | §7.2 R3 |
+| subgroup size | **no guarantee at all** — Vulkan 1.1 guarantees `BASIC` in compute and says nothing about the size | §7.2 R5 |
+
+§7.0's rule is that capability shortfalls degrade **op coverage**, not **device availability** — so
+a device sitting exactly on that floor is a device we *promised to run on*, and it has 16 KiB, not
+32 and not 48.
+
+What this rules out that is easy to get wrong:
+
+* **The Iris Xe is not a mobile proxy for shared memory.** It is our closest available proxy for
+  the mobile *memory model* — it is UMA, as Adreno and Mali are — but it has 32 KiB, twice the
+  floor. A 32 KiB tile passing on it is not portability evidence.
+* **Both local GPUs report `subgroupSize == 32`.** That is precisely the coincidence most likely
+  to bake a 32 into a kernel and have it pass every local test. A configuration that depends on a
+  subgroup size must record which; the harness never assumes one.
+* **A UMA shortcut is not a portability win.** Skipping the staging path is correct on the Iris Xe
+  and on Adreno/Mali, and wrong on the 4060 except through the resizable-BAR window, which is not
+  unified memory (§1.4). Both paths must exist.
+
+`bench/portability.py` turns this into a verdict on a configuration — `portable`,
+`needs-fallback`, or `unknown` — with `quotable_as_ep_behaviour` true only for `portable`.
+`needs-fallback` is *not* a failure: measuring a 48 KiB tile on the 4060 is legitimate and useful.
+It means the number describes a path a floor device cannot take, so the floor-compliant fallback
+must be measured before the number is quoted as the EP's behaviour. **`unknown` is not quotable
+either** — a configuration nobody recorded is a configuration nobody can reproduce.
+
+Every result row carries a `portability` verdict and every result file carries `portability_floor`
+with the selected device's headroom. `bench.py` prints that headroom on every run (the 4060 is
+3.0× the floor, the Iris Xe 2.0×), and `compare.py` banners any table whose rows came from
+non-floor or unrecorded configurations. Today **every row is `unknown`**, because the engine does
+not report tile shape or workgroup size yet — that is the honest state, and it is printed rather
+than assumed away.
+
+**Transfer models are fitted per transfer class and may not be blended.**
+`portability.transfer_model_merge_refusal()` refuses to combine a UMA fit with a discrete one: on
+a UMA part an upload may be a mapped write with no copy at all, on a discrete part it is a staging
+buffer and a bus transfer, and a single affine model fitted across both would land plausibly
+*between* the two. Plausible and wrong is the failure mode this document exists to prevent.
+
+**Routed to Switch, since §7.2 is enforced in code he owns:** the harness can only record a
+configuration the engine reports. `tile_config`, the workgroup size actually dispatched, the
+shared-memory bytes actually requested, and whether the kernel took the UMA or the staging path
+would each turn a row from `unknown` into a judgeable verdict. Until then the portability column
+is honest but empty.
 ---
 
 ## 3. Requirement: Vulkan timestamp queries (routed to Switch)
@@ -398,6 +455,9 @@ in a hurry.
 | `compare.py` given two files built by different producers | **Refuses**, exit 2, prints no table. `--cross-producer-study` relabels it as an exporter study with no verdict. |
 | `compare.py` given a file with no recorded producer | Same refusal. "We do not know what built these" is not evidence that the same thing built both. |
 | Two rows with different `producer_fingerprint` | Marked `🏭 different producer — different graph, not comparable`; the delta is suppressed. |
+| A configuration above the §7.2 admission floor (16 KiB shared / 256 invocations) | Verdict `needs-fallback`, `quotable_as_ep_behaviour = false`, and `compare.py` banners the table. Legitimate to measure; not quotable as the EP's behaviour until the floor-compliant fallback is measured too. |
+| A configuration nobody recorded | Verdict `unknown`, also not quotable. Today that is every row. |
+| Combining a UMA transfer fit with a discrete one | Refused. The blended affine constants would land plausibly between the two and describe neither part. |
 
 `bench/test_plausible_but_wrong.py` tests each of these against the shape of the wrong answer it
 prevents, using the real device values from §1.4 as fixtures.
@@ -467,17 +527,29 @@ measurement of the CPU.**
   tested on synthetic tick values; it has never ingested a tick produced by a GPU. It has now
   been checked against two real `timestampPeriod` and `timestampValidBits` values (§1.4), which
   is a check of the arithmetic, not of the plumbing.
-* The Vulkan SDK 1.4.350.0 is installed and all 168 shader variants compile. `epctl
-  --probe-loader` confirms both devices pass the §7.2 gate. The harness has been run end to end
-  on this machine against both. **No shader has executed**: at the time of writing the release
-  build was blocked by in-flight engine work, the host ORT is 1.27 and so the plugin does not
-  load, and the dispatch path is still being implemented. All of that makes measurement
-  *imminent*. None of it is a measurement.
+* The Vulkan SDK 1.4.350.0 is installed, all 168 shader variants compile, and `epctl
+  --probe-loader` confirms both devices pass the §7.2 gate. The host ORT is now **1.28.0**, so
+  the plugin **loads**: `register_execution_provider_library` succeeds, the EP enumerates the
+  devices, and its claim predicates run against real graphs. Every op declines, with the honest
+  reason — for `Add`: *"is in the op table but not enabled: its compute shader compiles but has
+  never executed on a device, so claiming it would be a bet"*. **No shader has executed.** The
+  EP being loadable is a real milestone and it is not a measurement.
+* **Every "vulkan" column produced so far is the CPU EP.** On the RTX 4060,
+  `add_fp32_4096x1024` reported 0.858 ms "vulkan" against 1.247 ms "cpu". That ratio is 1.45×,
+  it is two samples of the same CPU code, and the claim gate reported it as ⛔ NOT CLAIMED with
+  `speedup_end_to_end: null`. This is the second time the harness has manufactured a plausible
+  speedup out of CPU noise (§5.1 was the first, at 1.70×) and the second time the gate caught
+  it. The gates are not theoretical.
+* **No number here is portable yet, and the harness says so.** Every row's `portability` verdict
+  is `unknown` (§2.2), because the engine does not yet report the tile shape, workgroup size or
+  memory path that produced it. Both local GPUs sit 2–3× above the §7.2 admission floor, so
+  "it worked here" would not have been portability evidence even if a kernel had run.
 * **When the first dispatch lands, it will be a smoke test.** A single `Add` on one GPU against
   the CPU EP, at whatever iteration count, is a check that the timing path produces plausible
   non-zero numbers on the expected side of zero. It is not a statement about anything a user
   cares about, and it must not be quoted as one. The first quotable number requires: a claimed
-  graph, a named device, a named tile config, a median with spread over a non-noisy sample, and
-  a GPU kernel time separate from host latency.
+  graph, a named device, a named producer, a named tile config that is either floor-compliant or
+  paired with a floor-compliant fallback, a median with spread over a non-noisy sample, and a
+  GPU kernel time separate from host latency.
 
 The instrument is built and calibrated. It has not yet been pointed at anything.

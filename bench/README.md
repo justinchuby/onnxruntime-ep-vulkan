@@ -20,6 +20,7 @@ Pin `onnxruntime>=1.28`. This is enforced: see the refusals below.
 | `bench.py` | The runner. Vulkan vs the ORT CPU EP on the same machine, same process, same ORT build. |
 | `cases.py` | The cases, built from `tests/ops/_models.py` so the benchmark cannot drift from what is tested. |
 | `producers.py` | Who built the graph. Makes it impossible to name a case after a model family its producer did not export, and refuses base-vs-PR comparisons across producers. |
+| `portability.py` | The §7.2 admission floor (16 KiB shared, 256 invocations). Answers whether a measured configuration is selectable on every device the EP admits — and refuses to blend UMA and discrete transfer models. |
 | `devices.py` | Per-device facts (`timestampPeriod`, `timestampValidBits`, UMA vs discrete, shared memory, subgroup size) read from `vulkaninfo`. Decides whether two numbers may be compared at all. |
 | `stats.py` | Median + robust spread (MAD, IQR, p05/p95, `rsd`) and the noise gate for comparisons. |
 | `environment.py` | Device / driver / OS / CPU / ORT / build-flags record stamped onto every result. |
@@ -141,6 +142,14 @@ Refusals built into the harness:
 * **Two runs built by different producers are not compared.** Refused, exit 2, no table.
   `--cross-producer-study` prints a labelled side-by-side with no verdict. A file with no
   recorded producer is refused for the same reason a file with no recorded device is.
+* **A number from a configuration a floor device cannot select is not the EP's number.**
+  `DESIGN.md` §7.2 admits devices with **16 KiB** of shared memory and 256 invocations. Both
+  GPUs here are 2–3× above that, so "it fits on the smaller local GPU" is not portability
+  evidence — the Iris Xe is our UMA proxy for Adreno/Mali, not a proxy for their shared-memory
+  budget. Every row carries a `portability` verdict; only `portable` is quotable, and today
+  every row is `unknown` because the engine does not report its configuration yet.
+* **UMA and discrete transfer models are never blended.** The blended affine constants would
+  land plausibly between the two and describe neither part.
 * **Nothing is extrapolated.** A number that was not measured is `null`.
 
 ### The 1.70× that wasn't
@@ -157,6 +166,21 @@ matmulnbits_q4_b32_K4096_N4096   vulkan= 1.361 ms    cpu= 2.311 ms      → 1.70
 two samples of the same CPU code separated by noise (rsd 38.6% and 62.5%, both flagged). The
 claim gate suppressed it; the version gate was added afterwards so the column is not produced at
 all. Full write-up: `docs/PERF.md` §5.1.
+
+### And then the 1.45× that wasn't
+
+ORT 1.28 landed later the same day, so the plugin now **loads**: the EP enumerates both devices
+and its claim predicates run. Every op still declines — `Add` reports *"is in the op table but not
+enabled: its compute shader compiles but has never executed on a device, so claiming it would be a
+bet"* — so every "vulkan" column is still the CPU EP. On the RTX 4060:
+
+```
+add_fp32_4096x1024               vulkan= 0.858 ms    cpu= 1.247 ms      → 1.45x
+```
+
+Same shape, different route in. The claim gate marked it ⛔ NOT CLAIMED with
+`speedup_end_to_end: null`. Two manufactured speedups in one day, both caught. The gates are not
+theoretical.
 
 ## Expected shapes of results (not predictions — reading instructions)
 
