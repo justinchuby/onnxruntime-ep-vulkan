@@ -1,0 +1,422 @@
+"""Unified op-table test harness for the Vulkan EP.
+
+HOW TO ADD AN OP
+================
+Add a single row to ``_CASES``. That is all. No new file, no new fixture, no new function.
+
+Each row is an ``OpCase`` with:
+  - ``id``      : unique pytest identifier, e.g. ``"Add-fp32"``
+  - ``op``      : ONNX op name
+  - ``domain``  : ``""`` for ai.onnx, ``"com.microsoft"`` for contrib ops
+  - ``attrs``   : dict of op attributes (may be empty)
+  - ``inputs``  : list of ``(name, DataType, shape)`` triples
+  - ``feeds``   : ``{name: np.ndarray}`` — seeded, deterministic inputs
+  - ``outputs`` : list of ``(name, DataType, shape)`` triples
+  - ``tol``     : tolerance dict from ``_models`` (``FP32_ELEMENTWISE``, etc.)
+  - ``claim``   : ``True`` → assert EP claims the node; ``False`` → assert EP does NOT claim
+
+For ``claim=True``: the test calls ``m.check()`` which asserts:
+  1. VulkanExecutionProvider actually executed the node (vacuous-pass guard).
+  2. Outputs match ORT CPU EP within ``tol``.
+
+For ``claim=False``: the test calls ``m.assert_vulkan_does_not_claim()`` + ``m.assert_matches_cpu()``.
+  This is the conservative-claiming guard: proves the EP declined the node AND CPU produced
+  correct results — catches over-claiming before silent wrong results reach a user.
+
+TOLERANCE POLICY
+================
+Use named constants from ``_models``; never hardcode numbers.
+See ``_models.py`` module docstring for full policy and justifications.
+
+DETERMINISM
+===========
+All input arrays are constructed from ``_RNG`` (seeded 42). Do not use ``np.random``
+directly; do not call ``_RNG`` at module level outside of the ``_CASES`` table
+construction — that would make the seed position depend on import order.
+
+OP COVERAGE MAPPING
+===================
+Sections below mirror OP_COVERAGE.md §4.1–§4.5 + declined set.
+When Mouse's crate adds an op family, add the corresponding rows in the matching section.
+A row with ``claim=True`` is a pending test: it will be red until Tank implements the op.
+That is intentional — the table is the implementation checklist.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import numpy as np
+import pytest
+from onnx_ir import DataType as DT
+
+import _models as m
+
+# ---------------------------------------------------------------------------
+# Deterministic RNG — seed fixed; all inputs constructed once at import time.
+# ---------------------------------------------------------------------------
+_RNG = np.random.default_rng(42)
+
+
+# ---------------------------------------------------------------------------
+# CaseSpec — one row in the op table.
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class CaseSpec:
+    id: str
+    op: str
+    feeds: dict[str, np.ndarray]
+    claim: bool = True
+    domain: str = ""
+    attrs: dict[str, object] = dataclasses.field(default_factory=dict)
+    inputs: list[tuple[str, DT, list[int]]] = dataclasses.field(default_factory=list)
+    outputs: list[tuple[str, DT, list[int]]] = dataclasses.field(default_factory=list)
+    tol: dict[str, float] = dataclasses.field(default_factory=lambda: dict(m.FP32_ELEMENTWISE))
+
+
+# ---------------------------------------------------------------------------
+# Factory helpers — reduce per-row verbosity for common patterns.
+# These are called ONCE at module load to populate _CASES; do not call them
+# inside test functions.
+# ---------------------------------------------------------------------------
+
+def _f32(shape: tuple[int, ...]) -> np.ndarray:
+    return _RNG.standard_normal(shape).astype(np.float32)
+
+def _f32_pos(shape: tuple[int, ...]) -> np.ndarray:
+    """Strictly positive fp32 — for Sqrt, Log, Reciprocal, etc."""
+    return (np.abs(_RNG.standard_normal(shape)) + 1e-3).astype(np.float32)
+
+def _f32_unit(shape: tuple[int, ...]) -> np.ndarray:
+    """fp32 in (-1, 1) — for Asin, Acos, Atanh."""
+    return ((_RNG.random(shape) * 1.8) - 0.9).astype(np.float32)
+
+def _f32_ge1(shape: tuple[int, ...]) -> np.ndarray:
+    """fp32 >= 1 — for Acosh."""
+    return (_RNG.random(shape).astype(np.float32) + 1.01)
+
+def _bool(shape: tuple[int, ...]) -> np.ndarray:
+    return _RNG.integers(0, 2, shape).astype(bool)
+
+def _i32(shape: tuple[int, ...]) -> np.ndarray:
+    return _RNG.integers(-100, 100, shape, dtype=np.int32)
+
+_S = (3, 4)  # standard test shape
+
+def _ew2(
+    op_id: str,
+    op: str,
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    in_dt: DT = DT.FLOAT,
+    out_dt: DT = DT.FLOAT,
+    attrs: dict | None = None,
+    tol: dict | None = None,
+    claim: bool = True,
+    domain: str = "",
+) -> CaseSpec:
+    """Two-input elementwise op: output shape = a.shape."""
+    shape = list(a.shape)
+    return CaseSpec(
+        id=op_id, op=op, domain=domain,
+        attrs=attrs or {},
+        inputs=[("a", in_dt, shape), ("b", in_dt, list(b.shape))],
+        feeds={"a": a, "b": b},
+        outputs=[("out", out_dt, shape)],
+        tol=tol or dict(m.FP32_ELEMENTWISE),
+        claim=claim,
+    )
+
+
+def _ew1(
+    op_id: str,
+    op: str,
+    x: np.ndarray,
+    *,
+    in_dt: DT = DT.FLOAT,
+    out_dt: DT = DT.FLOAT,
+    attrs: dict | None = None,
+    tol: dict | None = None,
+    claim: bool = True,
+) -> CaseSpec:
+    """One-input elementwise op: output shape = x.shape."""
+    shape = list(x.shape)
+    return CaseSpec(
+        id=op_id, op=op,
+        attrs=attrs or {},
+        inputs=[("x", in_dt, shape)],
+        feeds={"x": x},
+        outputs=[("out", out_dt, shape)],
+        tol=tol or dict(m.FP32_ELEMENTWISE),
+        claim=claim,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _CASES — THE TABLE.  Add an op here; it will be tested automatically.
+#
+# claim=True  → test will PASS only when Tank's crate claims the op.
+# claim=False → test will PASS only when the EP declines the op.
+# ---------------------------------------------------------------------------
+
+_CASES: list[CaseSpec] = [
+
+    # ======================================================================
+    # §4.1  Binary / variadic elementwise — EW-B (23 ops)
+    # ======================================================================
+
+    # --- fp32 arithmetic (all S, all EW-B) ---
+    _ew2("Add-fp32",  "Add",  _f32(_S), _f32(_S)),
+    _ew2("Sub-fp32",  "Sub",  _f32(_S), _f32(_S)),
+    _ew2("Mul-fp32",  "Mul",  _f32(_S), _f32(_S)),
+    _ew2("Div-fp32",  "Div",  _f32(_S), _f32_pos(_S)),        # avoid div-by-zero
+    _ew2("Pow-fp32",  "Pow",  _f32_pos(_S), _f32_pos(_S)),    # pow(pos, pos) stays real
+    _ew2("Min-fp32",  "Min",  _f32(_S), _f32(_S)),
+    _ew2("Max-fp32",  "Max",  _f32(_S), _f32(_S)),
+    _ew2("PRelu-fp32","PRelu",_f32(_S), _f32_pos((4,)),        # slope broadcast on last dim
+        tol=dict(m.FP32_ACTIVATION)),
+
+    # --- variadic fold — claim only when variadic support is complete ---
+    # Sum/Mean claim 2-input form; variadic expansion is gated separately.
+    _ew2("Sum-fp32-2inp", "Sum",  _f32(_S), _f32(_S)),
+    _ew2("Mean-fp32-2inp","Mean", _f32(_S), _f32(_S)),
+
+    # --- comparison ops → bool output ---
+    _ew2("Equal-fp32",          "Equal",          _f32(_S), _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("Greater-fp32",        "Greater",        _f32(_S), _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("Less-fp32",           "Less",           _f32(_S), _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("GreaterOrEqual-fp32", "GreaterOrEqual", _f32(_S), _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("LessOrEqual-fp32",    "LessOrEqual",    _f32(_S), _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+
+    # --- integer arithmetic ---
+    _ew2("Add-i32",  "Add",  _i32(_S), _i32(_S), in_dt=DT.INT32, out_dt=DT.INT32,
+         tol=dict(m.FP32_EXACT)),
+    _ew2("Mul-i32",  "Mul",  _i32(_S), _i32(_S), in_dt=DT.INT32, out_dt=DT.INT32,
+         tol=dict(m.FP32_EXACT)),
+
+    # --- boolean logic ---
+    _ew2("And-bool", "And", _bool(_S), _bool(_S),
+         in_dt=DT.BOOL, out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("Or-bool",  "Or",  _bool(_S), _bool(_S),
+         in_dt=DT.BOOL, out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew2("Xor-bool", "Xor", _bool(_S), _bool(_S),
+         in_dt=DT.BOOL, out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+
+    # --- bitwise integer ---
+    _ew2("BitwiseAnd-i32", "BitwiseAnd", _i32(_S), _i32(_S),
+         in_dt=DT.INT32, out_dt=DT.INT32, tol=dict(m.FP32_EXACT)),
+    _ew2("BitwiseOr-i32",  "BitwiseOr",  _i32(_S), _i32(_S),
+         in_dt=DT.INT32, out_dt=DT.INT32, tol=dict(m.FP32_EXACT)),
+    _ew2("BitwiseXor-i32", "BitwiseXor", _i32(_S), _i32(_S),
+         in_dt=DT.INT32, out_dt=DT.INT32, tol=dict(m.FP32_EXACT)),
+
+    # ======================================================================
+    # §4.2  Unary elementwise — EW-U (27 ops)
+    # ======================================================================
+
+    _ew1("Neg-fp32",        "Neg",        _f32(_S)),
+    _ew1("Abs-fp32",        "Abs",        _f32(_S)),
+    _ew1("Sign-fp32",       "Sign",       _f32(_S), tol=dict(m.FP32_EXACT)),
+    _ew1("Floor-fp32",      "Floor",      _f32(_S), tol=dict(m.FP32_EXACT)),
+    _ew1("Ceil-fp32",       "Ceil",       _f32(_S), tol=dict(m.FP32_EXACT)),
+    _ew1("Round-fp32",      "Round",      _f32(_S), tol=dict(m.FP32_EXACT)),
+    _ew1("Sqrt-fp32",       "Sqrt",       _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Reciprocal-fp32", "Reciprocal", _f32_pos(_S)),
+    _ew1("Exp-fp32",        "Exp",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Log-fp32",        "Log",        _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Erf-fp32",        "Erf",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Sin-fp32",        "Sin",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Cos-fp32",        "Cos",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Tan-fp32",        "Tan",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Asin-fp32",       "Asin",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Acos-fp32",       "Acos",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Atan-fp32",       "Atan",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Sinh-fp32",       "Sinh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Cosh-fp32",       "Cosh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Tanh-fp32",       "Tanh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Asinh-fp32",      "Asinh",      _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Acosh-fp32",      "Acosh",      _f32_ge1(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Atanh-fp32",      "Atanh",      _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Not-bool",        "Not",        _bool(_S),
+         in_dt=DT.BOOL, out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew1("BitwiseNot-i32",  "BitwiseNot", _i32(_S),
+         in_dt=DT.INT32, out_dt=DT.INT32, tol=dict(m.FP32_EXACT)),
+    _ew1("IsNaN-fp32",      "IsNaN",      _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+    _ew1("IsInf-fp32",      "IsInf",      _f32(_S),
+         out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
+
+    # ======================================================================
+    # §4.3  Activations — EW-U with push-constant params (16 ops)
+    # ======================================================================
+
+    _ew1("Relu-fp32",            "Relu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("Sigmoid-fp32",         "Sigmoid",         _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Tanh-act-fp32",        "Tanh",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("LeakyRelu-default",    "LeakyRelu",       _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("LeakyRelu-alpha0.1",   "LeakyRelu",       _f32(_S), tol=dict(m.FP32_ACTIVATION),
+         attrs={"alpha": 0.1}),
+    _ew1("Elu-default",          "Elu",             _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("Elu-alpha1.5",         "Elu",             _f32(_S), tol=dict(m.FP32_ACTIVATION),
+         attrs={"alpha": 1.5}),
+    _ew1("Selu-default",         "Selu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("Celu-default",         "Celu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("HardSigmoid-default",  "HardSigmoid",     _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("HardSigmoid-custom",   "HardSigmoid",     _f32(_S), tol=dict(m.FP32_ACTIVATION),
+         attrs={"alpha": 0.15, "beta": 0.4}),
+    _ew1("HardSwish-fp32",       "HardSwish",       _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("Softplus-fp32",        "Softplus",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Softsign-fp32",        "Softsign",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Gelu-fp32",            "Gelu",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Mish-fp32",            "Mish",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("ThresholdedRelu-fp32", "ThresholdedRelu", _f32(_S), tol=dict(m.FP32_ACTIVATION),
+         attrs={"alpha": 1.0}),
+
+    # ======================================================================
+    # §4.4  Select / cast — EW-T (3 ops)
+    # ======================================================================
+
+    # Cast fp32 → int32
+    CaseSpec(
+        id="Cast-fp32-to-i32", op="Cast",
+        attrs={"to": int(DT.INT32)},  # ONNX TensorProto.INT32 = 6
+        inputs=[("x", DT.FLOAT, list(_S))],
+        feeds={"x": _f32(_S)},
+        outputs=[("out", DT.INT32, list(_S))],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # Cast int32 → fp32
+    CaseSpec(
+        id="Cast-i32-to-fp32", op="Cast",
+        attrs={"to": int(DT.FLOAT)},  # ONNX TensorProto.FLOAT = 1
+        inputs=[("x", DT.INT32, list(_S))],
+        feeds={"x": _i32(_S)},
+        outputs=[("out", DT.FLOAT, list(_S))],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # Cast fp32 → bool
+    CaseSpec(
+        id="Cast-fp32-to-bool", op="Cast",
+        attrs={"to": int(DT.BOOL)},   # ONNX TensorProto.BOOL = 9
+        inputs=[("x", DT.FLOAT, list(_S))],
+        feeds={"x": _f32(_S)},
+        outputs=[("out", DT.BOOL, list(_S))],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # Cast fp32 → fp64 is DECLINED (fp64 is a permanent CPU fallback — §4.4 "no f64 ever")
+    CaseSpec(
+        id="Cast-fp32-to-fp64-declined", op="Cast",
+        attrs={"to": int(DT.DOUBLE)},
+        inputs=[("x", DT.FLOAT, list(_S))],
+        feeds={"x": _f32(_S)},
+        outputs=[("out", DT.DOUBLE, list(_S))],
+        tol=dict(m.FP32_EXACT),
+        claim=False,
+    ),
+
+    # Where: 3-way broadcast; condition is BOOL, x/y are fp32
+    CaseSpec(
+        id="Where-fp32", op="Where",
+        inputs=[
+            ("cond", DT.BOOL,  list(_S)),
+            ("x",    DT.FLOAT, list(_S)),
+            ("y",    DT.FLOAT, list(_S)),
+        ],
+        feeds={
+            "cond": _bool(_S),
+            "x":    _f32(_S),
+            "y":    _f32(_S),
+        },
+        outputs=[("out", DT.FLOAT, list(_S))],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # ======================================================================
+    # §4.5  Shape metadata — zero-dispatch ops (9 ops)
+    # ======================================================================
+
+    # Identity: passthrough, no kernel, always claimed as an island-welder.
+    _ew1("Identity-fp32", "Identity", _f32(_S)),
+
+    # Flatten (to 1D by default, axis=1 → [3, 4])
+    CaseSpec(
+        id="Flatten-fp32-axis1", op="Flatten",
+        attrs={"axis": 1},
+        inputs=[("x", DT.FLOAT, [3, 4])],
+        feeds={"x": _f32((3, 4))},
+        outputs=[("out", DT.FLOAT, [3, 4])],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # Reshape (static shape initializer as input 1 — must be a constant in the graph)
+    # NOTE: Reshape with a dynamic shape input requires graph-building support for
+    # initializer constants. See test_elementwise.py for a full graph test when it lands.
+    # Row is present to mark the claimed op; the graph builder below handles the static case.
+    CaseSpec(
+        id="Reshape-fp32-static", op="Reshape",
+        attrs={},
+        # inputs[1] is the target shape — encoded as a constant initializer in the graph.
+        # We special-case this in the dispatch below via a CaseSpec subclass or skip marker.
+        # For now, mark as pending with a sentinel that the dispatch recognises.
+        inputs=[("x", DT.FLOAT, [3, 4]), ("shape", DT.INT64, [2])],
+        feeds={
+            "x":     _f32((3, 4)),
+            "shape": np.array([4, 3], dtype=np.int64),
+        },
+        outputs=[("out", DT.FLOAT, [4, 3])],
+        tol=dict(m.FP32_EXACT),
+    ),
+
+    # ======================================================================
+    # §4.1 / §4.2  DECLINED cases — must NOT be claimed
+    # ======================================================================
+
+    # fp64 arithmetic: Vulkan shaderFloat64 is optional; EP must decline.
+    _ew2("Add-fp64-declined", "Add",
+         _f32(_S).astype(np.float64), _f32(_S).astype(np.float64),
+         in_dt=DT.DOUBLE, out_dt=DT.DOUBLE,
+         tol=dict(m.FP32_EXACT), claim=False),
+
+    # NonZero: data-dependent output shape — permanent CPU fallback (OP_COVERAGE §4.7).
+    CaseSpec(
+        id="NonZero-declined", op="NonZero",
+        inputs=[("x", DT.FLOAT, [3, 4])],
+        feeds={"x": np.array([[0.0, 1.5, 0.0, 2.0], [0.0, 0.0, -1.0, 0.0]], dtype=np.float32)},
+        outputs=[("out", DT.INT64, [2, -1])],
+        tol=dict(m.FP32_EXACT),
+        claim=False,
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Test dispatch — single function, single parametrize.
+# Adding a row to _CASES is all that is required to add a test.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+def test_op_table(case: CaseSpec, require_vulkan) -> None:
+    """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+    inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+    outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+    model   = m.make_model(
+        case.op, inputs, outputs,
+        domain=case.domain,
+        attributes=case.attrs,
+    )
+    if case.claim:
+        m.check(model, case.feeds, **case.tol)
+    else:
+        m.assert_vulkan_does_not_claim(model, case.feeds)
+        if m.cpu_can_run(model, case.feeds):
+            m.assert_matches_cpu(model, case.feeds, **case.tol)

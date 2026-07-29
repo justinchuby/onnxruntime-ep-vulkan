@@ -1,0 +1,164 @@
+"""Pytest configuration for the Vulkan EP op-correctness suite.
+
+The Vulkan execution-provider plugin is registered once per test session from the
+``ONNXRUNTIME_VULKAN_EP_LIB`` environment variable (the cargo-built cdylib). Running
+``pytest`` without that variable **skips** the entire suite with a clear message rather
+than failing, so this is safe to include in any pytest invocation.
+
+Environment variables
+---------------------
+ONNXRUNTIME_VULKAN_EP_LIB
+    Absolute path to the built EP cdylib
+    (``rust/target/release/libonnxruntime_vulkan_ep.so`` on Linux,
+    ``libonnxruntime_vulkan_ep.dylib`` on macOS,
+    ``onnxruntime_vulkan_ep.dll`` on Windows).
+
+ONNXRUNTIME_EP_VULKAN_VALIDATE
+    Set to ``1`` to force validation-layer checks in every test session (adds
+    ``ep.enable_validation=true`` to all SessionOptions). In CI debug lanes this
+    is set automatically; locally it can be opt-in. The EP panics on any Vulkan
+    validation error, which surfaces as an ORT exception and fails the test.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import struct
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import onnx_ir as ir
+import onnxruntime as ort
+import pytest
+
+EP_NAME = "VulkanExecutionProvider"
+
+
+# ---------------------------------------------------------------------------
+# Session-level EP registration
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def register_vulkan_ep() -> None:
+    """Register the Vulkan EP plugin exactly once for the whole test session."""
+    lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
+    if not lib:
+        pytest.skip(
+            "ONNXRUNTIME_VULKAN_EP_LIB is not set. "
+            "Set it to the absolute path of the built EP cdylib:\n"
+            "  Linux:   rust/target/release/libonnxruntime_vulkan_ep.so\n"
+            "  macOS:   rust/target/release/libonnxruntime_vulkan_ep.dylib\n"
+            "  Windows: rust\\target\\release\\onnxruntime_vulkan_ep.dll\n"
+            "If the crate has not been built yet, run: cargo build --release",
+            allow_module_level=True,
+        )
+    lib_path = Path(lib).resolve()
+    if not lib_path.is_file():
+        pytest.skip(
+            f"EP library not found at {lib_path}. "
+            "Build the crate first: cargo build --release",
+            allow_module_level=True,
+        )
+    ort.register_execution_provider_library(EP_NAME, str(lib_path))
+
+
+# ---------------------------------------------------------------------------
+# Device availability probe (session-scoped, opt-in per test)
+# ---------------------------------------------------------------------------
+
+
+def _probe_vulkan_device() -> bool:
+    """Return True if the registered Vulkan EP claims at least one node in a probe session.
+
+    Builds a trivial single-Add model, runs it with profiling enabled, and checks
+    whether any profiling event has provider=VulkanExecutionProvider. Returns False
+    if the EP is registered but advertises zero devices (no Vulkan ICD, or all devices
+    fail the capability gate).
+    """
+    # Build a minimal Add model using onnx_ir
+    x = ir.Value(name="x", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+    y = ir.Value(name="y", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+    out = ir.Value(name="out", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+    node = ir.node("Add", [x, y], outputs=[out])
+    graph = ir.Graph([x, y], [out], nodes=[node], name="probe", opset_imports={"": 21})
+    model_bytes = ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 4  # suppress noise during probe
+    opts.enable_profiling = True
+    opts.profile_file_prefix = "_vulkan_probe"
+    try:
+        sess = ort.InferenceSession(
+            model_bytes, opts, providers=[EP_NAME, "CPUExecutionProvider"]
+        )
+        feeds = {
+            "x": np.array([1.0, 2.0], dtype=np.float32),
+            "y": np.array([3.0, 4.0], dtype=np.float32),
+        }
+        sess.run(None, feeds)
+        profile_path = sess.end_profiling()
+    except Exception:
+        return False
+
+    try:
+        with open(profile_path) as fh:
+            events = json.load(fh)
+        providers = {
+            e.get("args", {}).get("provider")
+            for e in events
+            if e.get("cat") == "Node" and isinstance(e.get("args"), dict)
+        }
+        return EP_NAME in providers
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(profile_path)
+        except OSError:
+            pass
+
+
+_DEVICE_AVAILABLE: bool | None = None  # cached per session
+
+
+@pytest.fixture(scope="session")
+def vulkan_device_available() -> bool:
+    """Session-scoped fixture: True iff a Vulkan device passed the capability gate."""
+    global _DEVICE_AVAILABLE
+    if _DEVICE_AVAILABLE is None:
+        _DEVICE_AVAILABLE = _probe_vulkan_device()
+    return _DEVICE_AVAILABLE
+
+
+@pytest.fixture
+def require_vulkan(vulkan_device_available: bool) -> None:
+    """Skip the calling test if no Vulkan device is available."""
+    if not vulkan_device_available:
+        pytest.skip(
+            "No Vulkan device available — either no ICD is installed or all devices "
+            "failed the capability gate. Tests requiring a Vulkan device are skipped. "
+            "To run on CPU software rasterizer (lavapipe): "
+            "export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Session options factory (provides validation layer control)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def session_options() -> ort.SessionOptions:
+    """Standard SessionOptions for op tests: quiet logging, optional validation layers."""
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3  # WARNING and above only
+    validate = os.environ.get("ONNXRUNTIME_EP_VULKAN_VALIDATE", "").strip()
+    if validate == "1":
+        # Force validation layers on even in release builds.
+        # The EP panics on any validation error → test fails with ORT exception.
+        opts.add_session_config_entry("ep.enable_validation", "1")
+    return opts

@@ -1,0 +1,4 @@
+# Claimed ops for the Vulkan EP conformance suite.
+# One op per line. Kept in sync with rust/src/registry.rs.
+# M0: Add only. Update when new ops land in the registry.
+Add

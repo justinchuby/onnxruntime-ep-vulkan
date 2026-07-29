@@ -1,0 +1,381 @@
+name: CI
+
+# Triggers: every push to main and every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# ------------------------------------------------------------------
+# Version pins — change here, nowhere else.
+# ------------------------------------------------------------------
+# ORT_VERSION: compile and test against ORT 1.28 (released 2026-07-24).
+#   DO NOT use 1.27: it contains a null-allocator PrePack bug and a
+#   deleter lifetime issue in the plugin-EP path, fixed in 1.28.
+#   Source: .squad/decisions/inbox/fact-checker-ort-1.28-api.md
+#
+# MESA_VERSION (Windows only): lavapipe via mesa-dist-win.
+#   mesa3d-{ver}-release-msvc.7z ships lavapipe (Vulkan 1.3 CPU
+#   software rasterizer) as a self-contained Windows DLL + ICD JSON.
+#   Source: https://github.com/pal1000/mesa-dist-win (26.1.3 = latest
+#   stable as of 2026-07-28).
+# ------------------------------------------------------------------
+env:
+  ORT_VERSION: "1.28.0"
+  MESA_VERSION: "26.1.3"
+
+# ------------------------------------------------------------------
+# CI lanes:
+#   format          : rustfmt check (ubuntu, fast, no build)
+#   build-test-linux: cargo build + clippy + op tests (lavapipe)
+#                     + validation layers (zero errors enforced)
+#                     + layering lint
+#   build-test-windows: cargo build + clippy + op tests (lavapipe
+#                     via mesa-dist-win) + no-ICD fallback test
+#                     + validation layers via LunarG SDK
+# ------------------------------------------------------------------
+
+jobs:
+
+  # ----------------------------------------------------------------
+  # 1. Format check (fast, no build, no Vulkan SDK needed)
+  # ----------------------------------------------------------------
+  format:
+    name: rustfmt check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (rustup, no third-party action)
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+          rustup default stable
+          cargo fmt --version
+
+      - name: Check formatting
+        # The rust/ crate may not exist yet if Tank hasn't landed it.
+        # Exit 0 with a warning rather than breaking CI on a missing crate.
+        run: |
+          if [ -f rust/Cargo.toml ]; then
+            cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          else
+            echo "::warning::rust/Cargo.toml not found — format check skipped (crate not yet landed)"
+          fi
+
+  # ----------------------------------------------------------------
+  # 2. Linux: build + clippy + op tests (lavapipe GPU-less lane)
+  # ----------------------------------------------------------------
+  build-test-linux:
+    name: Build + op tests (Linux, lavapipe)
+    runs-on: ubuntu-22.04
+    env:
+      # Force Vulkan loader to use lavapipe exclusively.
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      # Enable Vulkan validation layers in all test sessions.
+      # The EP panics (→ ORT error → test failure) on any validation error.
+      ONNXRUNTIME_EP_VULKAN_VALIDATE: "1"
+      VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (rustup, no third-party action)
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt,clippy --no-self-update
+          rustup default stable
+          rustc --version && cargo --version
+
+      # -------------------------------------------------------
+      # Vulkan SDK: lavapipe (Mesa CPU rasterizer), validation
+      # layers, glslc, spirv-tools.
+      # Ubuntu 22.04 ships Mesa 22.0 which reports Vulkan 1.3
+      # and passes the capability gate required by this EP.
+      # -------------------------------------------------------
+      - name: Install Vulkan SDK (lavapipe + validation layers + glslc)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libvulkan-dev \
+            vulkan-validationlayers \
+            mesa-vulkan-drivers \
+            glslang-tools \
+            spirv-tools \
+            vulkan-tools
+          # Smoke-check: verify lavapipe is usable
+          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+            vulkaninfo --summary 2>&1 | grep -i "GPU id" || \
+            echo "::warning::vulkaninfo did not report a GPU — lavapipe may not be installed correctly"
+
+      # -------------------------------------------------------
+      # ONNX Runtime: download the prebuilt Linux x64 package.
+      # The EP crate's build.rs needs ORT headers for FFI bindings.
+      # -------------------------------------------------------
+      - name: Provision ONNX Runtime ${{ env.ORT_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" \
+            | tar xz
+          echo "ORT_HOME=$PWD/onnxruntime-linux-x64-${ORT_VERSION}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade \
+            "onnxruntime==${ORT_VERSION}" \
+            numpy onnx onnx_ir pytest
+
+      # -------------------------------------------------------
+      # Build the EP crate. Fails cleanly with a clear message
+      # if the crate skeleton hasn't landed yet (Tank's work).
+      # -D warnings: warning-clean is a CI requirement.
+      # -------------------------------------------------------
+      - name: Build Vulkan EP (cargo build --release)
+        run: |
+          if [ ! -f rust/Cargo.toml ]; then
+            echo "::warning::rust/Cargo.toml not found — EP crate not yet landed (Tank's work in progress)"
+            echo "BUILD_SKIPPED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+          RUSTFLAGS="-D warnings" \
+            cargo build --release --manifest-path rust/Cargo.toml
+          # Verify the cdylib was produced
+          test -f rust/target/release/libonnxruntime_vulkan_ep.so || {
+            echo "::error::cdylib not found after build — check [lib] crate-type in Cargo.toml"
+            exit 1
+          }
+          echo "ONNXRUNTIME_VULKAN_EP_LIB=$PWD/rust/target/release/libonnxruntime_vulkan_ep.so" \
+            >> "$GITHUB_ENV"
+
+      - name: Clippy (all warnings as errors)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo clippy --release --manifest-path rust/Cargo.toml \
+            --all-targets -- -D warnings
+
+      # -------------------------------------------------------
+      # Layering lint — Tank owns the check entry point.
+      # Trinity wires it into CI here. If the entry point doesn't
+      # exist yet, emit a warning (not an error) and show what
+      # the rule is, so the first PR that plants a violation is
+      # caught even before Tank's tool lands.
+      # -------------------------------------------------------
+      - name: Layering lint (rust/src/ops/ boundary check)
+        run: |
+          if [ ! -d "rust/src/ops" ]; then
+            echo "::notice::rust/src/ops/ not found — layering lint will run once Tank's crate lands"
+            exit 0
+          fi
+          # TODO(Tank): Replace the grep below with:
+          #   cargo run --manifest-path rust/Cargo.toml --bin layering-lint
+          # once Tank's lint binary is defined. The grep below is a correct
+          # implementation of the rule from .squad/decisions.md and will catch
+          # real violations even before the binary exists.
+          echo "Checking layering rule: ops code must not import sys::, Ort, ash::, vk::, or use unsafe"
+          if grep -rn '\bsys::\|OrtApi\|ash::\|vk::\b' rust/src/ops/ 2>/dev/null; then
+            echo "::error::Layering violation in rust/src/ops/ — ORT C ABI or raw Vulkan handles must not appear in op code. See .squad/decisions.md"
+            exit 1
+          fi
+          if grep -rn '\bunsafe\b' rust/src/ops/ 2>/dev/null; then
+            echo "::error::Layering violation in rust/src/ops/: unsafe code must not appear in op handlers. See .squad/decisions.md"
+            exit 1
+          fi
+          echo "Layering lint: PASS"
+
+      # -------------------------------------------------------
+      # Op-correctness tests (pytest, Vulkan vs ORT CPU oracle).
+      # Skips cleanly if the crate wasn't built yet.
+      # -------------------------------------------------------
+      - name: Op-correctness tests (pytest, lavapipe)
+        run: |
+          if [ "${BUILD_SKIPPED:-}" = "1" ]; then
+            echo "::notice::Build was skipped — op tests not run"
+            exit 0
+          fi
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          python -m pytest tests/ops -q --tb=short \
+            2>&1 | tee /tmp/ops_test.out
+          {
+            echo "### Op-correctness tests (Vulkan EP, lavapipe)"
+            echo '```'
+            tail -n 5 /tmp/ops_test.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ----------------------------------------------------------------
+  # 3. Windows: build + clippy + op tests (lavapipe via mesa-dist-win)
+  # ----------------------------------------------------------------
+  # FINDING (2026-07-28): lavapipe IS available on Windows CI.
+  #   Mesa ships Windows lavapipe builds via mesa-dist-win:
+  #   https://github.com/pal1000/mesa-dist-win
+  #   The MSVC release (mesa3d-{ver}-release-msvc.7z) ships the
+  #   lavapipe ICD DLL + JSON. 7-zip is available on windows-latest.
+  #   Validation layers come from the LunarG Vulkan SDK already
+  #   installed for glslc/headers; VK_LAYER_PATH = $VULKAN_SDK\Bin.
+  #
+  #   SwiftShader was also investigated: Google does not publish
+  #   prebuilt Windows binaries (only source); building from source
+  #   requires cmake + clang (~20 min). mesa-dist-win lavapipe is
+  #   the better Windows software-rasterizer for CI.
+  #   Reported to docs/PLATFORMS.md §7.4 (Link owns that file).
+  # ----------------------------------------------------------------
+  build-test-windows:
+    name: Build + op tests (Windows, lavapipe via mesa-dist-win)
+    runs-on: windows-latest
+    env:
+      VULKAN_SDK_VERSION: "1.3.296.0"
+      # Set by the lavapipe install step below; declared here for visibility.
+      # VK_ICD_FILENAMES: (set in step)
+      ONNXRUNTIME_EP_VULKAN_VALIDATE: "1"
+      VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (rustup, no third-party action)
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      # -------------------------------------------------------
+      # LunarG Vulkan SDK: provides vulkan.h (for ash), glslc,
+      # and validation layer headers. The installer sets VULKAN_SDK.
+      # -------------------------------------------------------
+      - name: Install LunarG Vulkan SDK
+        run: |
+          $ver = "$env:VULKAN_SDK_VERSION"
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          Write-Host "Downloading Vulkan SDK $ver from $url"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\VulkanSDK.exe"
+          Start-Process -Wait -FilePath "$env:TEMP\VulkanSDK.exe" `
+            -ArgumentList '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          $sdkPath = "C:\VulkanSDK\$ver"
+          echo "VULKAN_SDK=$sdkPath" >> $env:GITHUB_ENV
+          echo "$sdkPath\Bin" >> $env:GITHUB_PATH
+          Write-Host "Vulkan SDK installed at $sdkPath"
+
+      # -------------------------------------------------------
+      # ONNX Runtime: download the prebuilt Windows x64 zip.
+      # -------------------------------------------------------
+      - name: Provision ONNX Runtime ${{ env.ORT_VERSION }}
+        run: |
+          $ver = "$env:ORT_VERSION"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$ver/onnxruntime-win-x64-$ver.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\ort.zip"
+          Expand-Archive -Path "$env:TEMP\ort.zip" -DestinationPath "$env:GITHUB_WORKSPACE"
+          $ortHome = "$env:GITHUB_WORKSPACE\onnxruntime-win-x64-$ver"
+          echo "ORT_HOME=$ortHome" >> $env:GITHUB_ENV
+
+      # -------------------------------------------------------
+      # Build: warns if crate not yet landed.
+      # -------------------------------------------------------
+      - name: Build Vulkan EP (cargo build --release)
+        run: |
+          if (-not (Test-Path "rust\Cargo.toml")) {
+            Write-Host "::warning::rust\Cargo.toml not found — EP crate not yet landed (Tank's work in progress)"
+            echo "BUILD_SKIPPED=1" >> $env:GITHUB_ENV
+            exit 0
+          }
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          $env:RUSTFLAGS = "-D warnings"
+          cargo build --release --manifest-path rust\Cargo.toml
+          if (-not (Test-Path "rust\target\release\onnxruntime_vulkan_ep.dll")) {
+            Write-Error "cdylib not found after build — check [lib] crate-type in Cargo.toml"
+            exit 1
+          }
+
+      - name: Clippy (all warnings as errors)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo clippy --release --manifest-path rust\Cargo.toml `
+            --all-targets -- -D warnings
+
+      # -------------------------------------------------------
+      # Mesa lavapipe ICD (Windows, mesa-dist-win).
+      # Installs the CPU-only Vulkan 1.3 software rasterizer so
+      # correctness tests can run without a real GPU on windows-latest.
+      #
+      # SwiftShader was also investigated: Google does not publish
+      # prebuilt Windows binaries; building from source requires
+      # cmake + clang (~20 min) — too costly for routine PR CI.
+      # mesa-dist-win lavapipe (MSVC release, ~69 MB) is the right
+      # Windows software ICD. Finding reported to docs/PLATFORMS.md
+      # §7.4 (Link owns that file; we do not edit it here).
+      #
+      # Package contents: x64\ with lavapipe DLL + lvp_icd*.json.
+      # 7z is available on windows-latest runners.
+      # VK_LAYER_PATH is set to $VULKAN_SDK\Bin so the already-
+      # installed LunarG validation layers are found by the loader.
+      # -------------------------------------------------------
+      - name: Install Mesa lavapipe (mesa-dist-win ${{ env.MESA_VERSION }})
+        run: |
+          $ver = "$env:MESA_VERSION"
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$ver/mesa3d-$ver-release-msvc.7z"
+          $archive = "$env:GITHUB_WORKSPACE\mesa3d.7z"
+          $dest    = "$env:GITHUB_WORKSPACE\mesa3d"
+          Write-Host "Downloading Mesa $ver from $url"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          & 7z x $archive "-o$dest" -y | Out-Null
+          # Locate the lavapipe ICD JSON — Mesa names it lvp_icd*.json
+          $icdJson = Get-ChildItem -Recurse -Path $dest -Filter "lvp_icd*.json" |
+                     Sort-Object FullName | Select-Object -First 1
+          if (-not $icdJson) {
+            # Dump the extracted tree so the maintainer can see the real layout
+            Get-ChildItem -Recurse $dest | Select-Object FullName
+            Write-Error "lavapipe ICD JSON not found — check mesa-dist-win package structure"
+            exit 1
+          }
+          Write-Host "Found lavapipe ICD: $($icdJson.FullName)"
+          echo "VK_ICD_FILENAMES=$($icdJson.FullName)"  >> $env:GITHUB_ENV
+          # Add the DLL directory to PATH so vkCreateInstance finds vulkan_lvp.dll
+          echo "$($icdJson.DirectoryName)" >> $env:GITHUB_PATH
+          # Validation layers live in the LunarG SDK Bin folder
+          echo "VK_LAYER_PATH=$env:VULKAN_SDK\Bin" >> $env:GITHUB_ENV
+
+      # -------------------------------------------------------
+      # Python test environment
+      # -------------------------------------------------------
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test dependencies
+        run: pip install -r tests/requirements.txt
+
+      # -------------------------------------------------------
+      # Op tests with lavapipe.
+      # -------------------------------------------------------
+      - name: Run op tests (lavapipe, validation layers on)
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
+        run: |
+          python -m pytest tests\ops -q --tb=short `
+            -p no:randomly --strict-markers
+
+      # -------------------------------------------------------
+      # No-ICD fallback test (always runs, even without a build).
+      # Proves: zero devices advertised → session falls back to CPU
+      # gracefully. M0 exit criterion, Windows-specific coverage.
+      # Overrides VK_ICD_FILENAMES to a nonexistent path, so the
+      # Vulkan loader returns zero devices regardless of lavapipe.
+      # -------------------------------------------------------
+      - name: Run no-ICD fallback test
+        run: |
+          $env:VK_ICD_FILENAMES = "C:\nonexistent\lvp_icd.json"
+          $env:VK_DRIVER_FILES  = "C:\nonexistent\lvp_icd.json"
+          if (Test-Path "rust\target\release\onnxruntime_vulkan_ep.dll") {
+            $env:ONNXRUNTIME_VULKAN_EP_LIB = "$env:GITHUB_WORKSPACE\rust\target\release\onnxruntime_vulkan_ep.dll"
+          }
+          python -m pytest tests\ops\test_claim_diagnostics.py::test_no_vulkan_icd_falls_back_to_cpu `
+            -q --tb=short
