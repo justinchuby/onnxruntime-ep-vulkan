@@ -1,11 +1,11 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
-**Status:** v0 architecture of record — accepted for M0/M1 implementation
-**Date:** 2026-07-28T17:59:54-07:00
+**Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-28T19:16:08-07:00 (§7 frozen, OQ-1 resolved)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
-**Sibling documents:** [`ENGINE.md`](./ENGINE.md) (Switch — Vulkan runtime & shaders), [`PLATFORMS.md`](./PLATFORMS.md) (Link — platform & hardware matrix)
+**Sibling documents:** [`ENGINE.md`](./ENGINE.md) (Switch — Vulkan runtime & shaders), [`PLATFORMS.md`](./PLATFORMS.md) (Link — platform & hardware matrix), [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse — op coverage plan)
 
 ---
 
@@ -26,6 +26,7 @@ build through the plugin-EP C ABI. No ORT fork, no ORT rebuild, no link against
 | ORT ABI | plugin-EP C ABI, `ORT_API_VERSION 27` (ORT 1.27.x) |
 | Version scheme | `0.<ORT_API_VERSION>.<patch>` → `0.27.0` |
 | Backend | Vulkan compute, GLSL → SPIR-V, `ash` bindings |
+| **Device requirement** | **Vulkan 1.1 core + a compute queue + four limits (§7.2).** No required extensions. Everything else is probed and degrades op coverage, never device availability. |
 
 The architecture is **deliberately the same shape as `onnxruntime-mlx`**: a registry-driven,
 claim → fuse → compile → run plugin EP with conservative node claiming and clean CPU fallback.
@@ -193,6 +194,7 @@ purpose:
 | `ep.pipeline_cache_path` | string | platform cache dir | On-disk `VkPipelineCache` blob location. |
 | `ep.max_claim_ops` | string list | unset | Restrict claiming to a named op set. Debugging and bisecting only. |
 | `ep.disable_device_memory` | bool | `false` | Force the M0 host-memory I/O path (see §6.3). Escape hatch for driver bugs. |
+| `ep.force_legacy_barriers` | bool | `false` | Force the legacy `vkCmdPipelineBarrier` backend on a device that supports `synchronization2` (§7.5). Exists so CI exercises both barrier backends on the same hardware; also an escape hatch for a broken sync2 driver. |
 
 Environment variables mirror the MLX EP's convention for observability, and are *not* a
 configuration surface: `ONNXRUNTIME_EP_VULKAN_VERBOSE`, `ONNXRUNTIME_EP_VULKAN_TRACE=<path>`,
@@ -405,7 +407,11 @@ descriptor sets, barriers, pipeline selection, and submission. `ENGINE.md` §1 s
 boundary from the engine side and enforces it with module privacy: the wrapper types in `vk/` are
 not `pub` outside the engine.
 
-*Enforcement:* the same CI lint greps `rust/src/ops/` for `ash`, `vk::`, and `unsafe`.
+*Enforcement:* the same CI lint greps `rust/src/ops/` for `ash`, `vk::`, and `unsafe`. It also
+enforces the barrier seam of §7.5: `cmd_pipeline_barrier`, `cmd_pipeline_barrier2`,
+`BufferMemoryBarrier`, `DependencyInfo`, `PipelineStageFlags*` and `AccessFlags*` may appear
+**only** in `rust/src/vk/barrier.rs`, and `Capabilities::synchronization2` may be read **only** in
+`rust/src/vk/barrier.rs` and `rust/src/vk/caps.rs`.
 
 **Why this matters enough to reject a working PR over.** The MLX EP got a mature backend that
 handled memory, scheduling, and dtypes. We do not. Every op we add is a shader, a descriptor
@@ -589,12 +595,35 @@ resident across `Compute` calls; shapeless recording so a growing dimension does
 
 ## 7. Vulkan API baseline — decision
 
-> **Status: reconciled, with one item outstanding.** Link's [`PLATFORMS.md`](./PLATFORMS.md) §4,
-> Switch's [`ENGINE.md`](./ENGINE.md) §8, and Fact Checker's audit trail
-> (`.squad/fact-checker/audit-trail.md`, claims 1–5) all exist and are incorporated below. The one
-> item still open is **OQ-1** — how many real devices report Vulkan 1.1/1.2 *without*
-> `VK_KHR_synchronization2` or `VK_EXT_subgroup_size_control`. §7.2 is the working decision and
-> becomes final when Link answers OQ-1.
+> **Status: FROZEN as of 2026-07-28T19:16:08-07:00.** OQ-1 is **resolved** with measured data
+> (Link, [`PLATFORMS.md`](./PLATFORMS.md) §8, vulkan.gpuinfo.org pulled 2026-07-28) and the answer
+> **reversed the provisional §7.2 requirement set**. This section is now the binding contract for
+> Switch's [`ENGINE.md`](./ENGINE.md) and Link's CI matrix. Changing it requires a new decision
+> record, not an edit.
+>
+> **Governing directive (Justin, 2026-07-28):** 「如果 1.3 兼容性不好 那 1.2 更好。可以保证兼容性
+> 是最好。」 — *broad device compatibility is the top-priority property of this decision.* Where
+> device coverage and engine-code simplicity conflict, **coverage wins**. Every ruling below is
+> made under that constraint, and where it costs Switch complexity, it costs Switch complexity.
+>
+> Justin separately ratified the *framing* — a capability set rather than a version number
+> (「拿能力集很聪明，听你的」). What changed is where the bar sits, not how the bar is expressed.
+
+### 7.0 The frozen principle
+
+**The device gate is minimal. Capability shortfalls degrade op coverage, not device availability.**
+
+This one sentence replaces the previous "require the two features Switch wants" posture. A device
+that lacks an optional capability must still load, still be advertised, and still run every op
+that does not need that capability. It declines the ops it cannot do correctly, and ORT's
+partitioner sends those to CPU (§2.6). We never refuse a device for a reason that only affects
+*some* ops.
+
+Consequences, stated so they are not re-litigated per op:
+
+- A hard device requirement must be justified by *"no op we will ever ship can work without it."*
+- A per-op requirement is expressed as a claim predicate in `ops/` (§8), never as a device gate.
+- Anything we make optional, we must be able to run **both ways in CI** (§7.5 item 5, §9.1).
 
 ### 7.1 The evidence
 
@@ -609,6 +638,12 @@ resident across `Compute` calls; shapeless recording so a growing dimension does
 | lavapipe / SwiftShader (Fact Checker, claim 5) | **Verified:** both support Vulkan 1.3 and both pass 1.3 conformance. Adequate for GPU-less CI. |
 | Link (`PLATFORMS.md` §4) | Recommends 1.2 core + mandatory device features. Explicitly does **not** recommend a hard 1.3 baseline if Android coverage is a goal. |
 | Switch (`ENGINE.md` §8) | Exactly **two** features materially simplify the engine: `synchronization2` and `subgroup_size_control`. Both are core in 1.3 — **and both are available as standalone extensions on 1.1/1.2 drivers.** `shaderFloat16`, `bufferDeviceAddress`, and cooperative matrix must be capability-probed at runtime *regardless of baseline*. |
+| **Link, OQ-1 (`PLATFORMS.md` §8), vulkan.gpuinfo.org, pulled 2026-07-28** | **`VK_KHR_synchronization2`: Android 68.57%, Windows 87.78%, Linux 99.05%, macOS 97.5%, iOS 100%.** A **31.43-point Android gap** and a **12.22-point Windows gap.** The Android shortfall is concentrated in Adreno 5xx (Snapdragon 625–660, frozen pre-2021 OEM blobs), Adreno 6xx on unupdated Android 10/11, and Mali Bifrost (G52/G57/G72/G76) especially on MediaTek — populations with no update cadence, so this does not decay with time on any schedule we control. Link's verdict: the hard requirement is **not safe**. |
+| **Link, OQ-1** | **`VK_EXT_subgroup_size_control`: Android 85.88%, Windows 93.33%, Linux 98.81%, macOS/iOS 100%.** A **14.12-point Android gap.** |
+| **Link, OQ-1 — the MoltenVK artifact** | The macOS/iOS 100% figure is **extension-string presence only**. MoltenVK reports Vulkan 1.3, which promotes `subgroup_size_control` to core, so the string is always there — but the `subgroupSizeControl` **feature flag is `VK_FALSE`**, because Metal cannot control SIMD-group width per pipeline. **Requiring the feature flag to be `VK_TRUE` would silently exclude all of macOS and iOS** — and probably lavapipe and SwiftShader too, which have a single fixed CPU SIMD width. |
+| **Link, OQ-1 — limits that *are* safe** | `maxComputeWorkGroupInvocations ≥ 256`: ~1% of 8,206 Android reports show 128. `maxComputeSharedMemorySize ≥ 16 KiB`: the Vulkan spec minimum, universal. Subgroup `BASIC`: spec-guaranteed in the compute stage on 1.1+. Subgroup `ARITHMETIC`: >95%, but *query, never assume*. |
+| **Morpheus, layer-shim feasibility research (2026-07-28, primary sources below)** | The Khronos `VK_LAYER_KHRONOS_synchronization2` shim **cannot be shipped by us on Android.** The AOSP Vulkan loader does not read `VK_LAYER_PATH`, does not use JSON manifests, and searches only the **host application's** `nativeLibraryDir` (derived from the installed APK via `GraphicsEnv::getAppNamespace()`) plus `/data/local/debug/vulkan` (debuggable/userdebug only). Khronos' own `docs/synchronization2_layer.md` states the `.so` "needs to be packaged **inside the APK**". A plugin `.so` `dlopen`ed into someone else's process has no mechanism to add a layer search path. Sources: `developer.android.com/ndk/guides/graphics/validation-layer`; `KhronosGroup/Vulkan-Loader` `docs/LoaderLayerInterface.md` ("The Android loader does not use manifest files"; "There is No Support For Implicit Layers on Android"); `KhronosGroup/Vulkan-ExtensionLayer` `docs/synchronization2_layer.md`. |
+| **Morpheus, prior-art check on barrier strategy** | **wgpu, Dawn, and Godot all use legacy `vkCmdPipelineBarrier` exclusively and none of them ships the sync2 layer.** `gfx-rs/wgpu` `wgpu-hal/src/vulkan/command.rs` calls `cmd_pipeline_barrier` in `transition_buffers`/`transition_textures` with no sync2 variant and no sync2 entry in its `Workarounds` bitflags; `google/dawn` `src/dawn/native/vulkan/CommandBufferVk.cpp` calls `fn.CmdPipelineBarrier` and mentions sync2 only in a spec comment; `godotengine/godot` `drivers/vulkan/rendering_device_driver_vulkan.cpp` calls `vkCmdPipelineBarrier`. The cited precedent for Option B does not survive contact with the source. |
 
 The premise that motivated 1.3 — "llama.cpp requires it" — is contradicted by llama.cpp's own
 source at both the runtime check and the shader target, and independently verified as contradicted
@@ -616,65 +651,248 @@ by Fact Checker. That does not make 1.3 wrong; it makes the *reason* wrong, and 
 decide this on the two features Switch identified than on a misattribution.
 
 
-### 7.2 Decision
+### 7.2 Decision — the frozen capability set
 
-**We require a capability set, not a version number.**
+**We require a capability set, not a version number.** The set is deliberately small.
 
-A physical device is advertised to ORT if and only if it satisfies all of:
+A physical device is advertised to ORT **if and only if** it satisfies all of:
 
-| Requirement | Rationale |
-|---|---|
-| Vulkan **≥ 1.1** core (instance and device) | `VkPhysicalDeviceFeatures2` / property chains in core; subgroup properties in core; the Android floor. |
-| A queue family with `VK_QUEUE_COMPUTE_BIT` | Obvious. |
-| **`synchronization2`** — core in 1.3 *or* `VK_KHR_synchronization2` | Switch's #1 simplification. One barrier code path, not two. |
-| **`subgroup_size_control`** — core in 1.3 *or* `VK_EXT_subgroup_size_control` | Switch's #2. A wrong subgroup size silently produces wrong results in cooperative GEMM shaders; guessing is not acceptable. |
-| Subgroup `BASIC` + `ARITHMETIC` ops in the `COMPUTE` stage | Required by reductions, softmax, and GEMM. |
-| `maxComputeWorkGroupInvocations ≥ 256`, `maxComputeSharedMemorySize ≥ 16 KiB` | Below this, our tiling assumptions do not hold. |
+| # | Hard requirement | Why it is a *device* gate and not a per-op gate |
+|---|---|---|
+| R1 | Vulkan **≥ 1.1** core, instance and device | `VkPhysicalDeviceFeatures2` / `VkPhysicalDeviceProperties2` chains and `VkPhysicalDeviceSubgroupProperties` are core at 1.1. Below 1.1 we cannot even *ask* what a device can do, so no op can be claimed safely. This is also the Android floor. |
+| R2 | A queue family with `VK_QUEUE_COMPUTE_BIT` | Without it there is nothing to dispatch to. |
+| R3 | `maxComputeWorkGroupInvocations ≥ 256` | Every shader skeleton we will write assumes a 256-invocation workgroup. ~1% of Android reports fall below. |
+| R4 | `maxComputeSharedMemorySize ≥ 16384` | The Vulkan spec minimum; universal. Listed so the assumption is written down, not because it filters anything. |
+| R5 | Subgroup `BASIC` in the `COMPUTE` stage | Spec-guaranteed on 1.1+; listed for the same reason as R4. |
+| R6 | At least one `DEVICE_LOCAL` memory type and at least one `HOST_VISIBLE` memory type | The staging path (§6) has no meaning otherwise. |
+
+**That is the entire gate.** It is satisfied by essentially every device that exposes Vulkan 1.1
+at all, on every platform, including MoltenVK, lavapipe and SwiftShader.
+
+**Everything else is capability-probed** into a single `vk::caps::Capabilities` struct, read once at
+device init, and used in exactly two ways: (a) to select an implementation strategy inside the
+engine, or (b) to gate an op's claim predicate. Nothing on this list may ever become a device gate
+without a new decision record:
+
+| Capability | Probed how | What it changes |
+|---|---|---|
+| `synchronization2` | 1.3 core **or** `VK_KHR_synchronization2` device extension | Selects the barrier backend (§7.3). **Not required.** |
+| `subgroup_size_control` **properties** | 1.3 core **or** `VK_EXT_subgroup_size_control` — *properties queryable only* (§7.4) | Narrows the known subgroup-size range; enables the subgroup-cooperative shader variants. |
+| Subgroup `ARITHMETIC` / `BALLOT` / `SHUFFLE` | `VkPhysicalDeviceSubgroupProperties::supportedOperations` | Gates the subgroup-reduction shader variants. Absent → shared-memory tree-reduction variant. |
+| `shaderFloat16`, `storageBuffer16BitAccess` | `VkPhysicalDeviceVulkan12Features` / `VK_KHR_shader_float16_int8` + `VK_KHR_16bit_storage` | Gates fp16 op variants; absent → those ops are not claimed for fp16. |
+| `shaderInt8`, integer dot product | extension probe | Gates future quantized ops. |
+| Timeline semaphores | 1.2 core or `VK_KHR_timeline_semaphore` | Post-v0 multi-stream pipelining. Unused in v0. |
+| `bufferDeviceAddress` | 1.2 core or `VK_KHR_buffer_device_address` | OQ-3 alternative only. |
+| Cooperative matrix | `VK_KHR_cooperative_matrix` / `VK_NV_cooperative_matrix2` | Post-v0 GEMM variants, llama.cpp's `_cm2` split. |
 
 `VkApplicationInfo::apiVersion` is set to `min(vkEnumerateInstanceVersion(), VK_API_VERSION_1_3)`
-— llama.cpp's pattern. Every feature above the required set — `shaderFloat16`,
-`storageBuffer16BitAccess`, `shaderInt8`, timeline semaphores, `bufferDeviceAddress`, cooperative
-matrix, integer dot product — is **capability-probed at runtime** through a single
-`vk::caps::Capabilities` struct and gates a shader variant, never a hard requirement.
+— llama.cpp's pattern. We ask for the highest the loader will give us and then *use* only what the
+device actually reports.
 
-### 7.3 Why this and not the alternatives
+### 7.3 `synchronization2` — dropped from the hard requirement; Switch carries a legacy path
 
-**Why not a hard 1.3 baseline (Justin's proposal).** It buys us exactly the two features above,
-which we get anyway as extensions. It costs roughly **36 points of Android installed-base
-coverage** (Fact Checker: 26% at 1.3 vs 62% at 1.1; Link reports the same gap against a
-Vulkan-capable denominator) and any MoltenVK older than 1.3.0 — for zero engine simplification,
-because our required set already guarantees a single barrier path. Adopting it would also mean the
-project's own stated cross-platform mandate ("Windows, Linux, Android, macOS") comes with an
-unwritten asterisk. If we ever want that asterisk, it should be a scope decision with a decision
-record, not a side effect of an API constant.
+**Ruling: Option A.** `synchronization2` is **not required**. Switch implements a legacy
+`vkCmdPipelineBarrier` backend alongside the `vkCmdPipelineBarrier2` backend, selected once at
+device init (§7.5 defines the seam).
 
-**Why not a hard 1.2 baseline (Link's recommendation).** Link is right that 1.2 is a sane desktop
-balance, but on Android the 1.2 tier barely exists — devices jumped 1.1 → 1.3. So a 1.2 floor
-pays nearly the full Android cost of a 1.3 floor while getting less than 1.3 gives on desktop.
-The only thing 1.2 core adds that we care about is timeline semaphores, which v0 does not use
-(single-queue fence model, `ENGINE.md` §6.3) and which are available as
-`VK_KHR_timeline_semaphore` on 1.1 when we do.
+This reverses the provisional §7.2 of 2026-07-28T17:59:54-07:00, which required it.
 
-**Why not a bare 1.1 floor (ExecuTorch's position).** It would force the dual-barrier path Switch
-warned about and leave subgroup size a driver's choice. The extension requirement buys us both
-guarantees at a small, measurable cost in device coverage — and unlike a version bump, we can
-*measure* that cost: Link can enumerate how many real devices expose 1.1 without
-`VK_KHR_synchronization2`. That is OQ-1.
+**Why.** Under the compatibility-first directive, a 31.43-point Android exclusion and a
+12.22-point Windows exclusion cannot be traded for one internal code path. The Windows number
+matters as much as the Android one and is easy to overlook: nearly one desktop Windows device in
+eight in Link's sample would be silently declined. The missing Android population is
+*structurally* missing — Adreno 5xx blobs frozen before the 2021 extension, Mali Bifrost on
+MediaTek with no update cadence — so it does not shrink on any timeline we control.
 
-**In practice, on the platforms we test first, this is Justin's 1.3 baseline.** Every desktop
-driver from 2022 onward, lavapipe, SwiftShader (both verified 1.3-conformant), and MoltenVK 1.3.0+
-report 1.3 and satisfy the set trivially. The difference only shows up on older Android, and there
-it shows up as "works" or "cleanly declines" rather than "fails to load."
+The cost is bounded and one-time: two implementations of a five-function internal API, written
+once, tested in CI on every run (§7.5). The cost of the alternative is unbounded and permanent:
+every device we decline is a device we can never win back with engineering.
 
-### 7.4 Shader targets
+#### Ruling on the layer-shim proposal (Link's Option B) — **rejected as a shippable mechanism**
+
+The coordinator asked me to examine rather than adopt this. I did, and the concern is correct and
+decisive.
+
+| Platform | Can *our plugin* enable `VK_LAYER_KHRONOS_synchronization2`? | Basis |
+|---|---|---|
+| **Retail Android (non-rooted, non-debuggable)** | **No.** | The AOSP loader does not read `VK_LAYER_PATH`, does not use JSON manifests, and enumerates layers only from the **host application's** `nativeLibraryDir` (set by the framework at process launch from the installed APK via `GraphicsEnv::getAppNamespace()`) and from `/data/local/debug/vulkan`, which requires a debuggable app or a userdebug build. Khronos' own layer documentation says the `.so` must be "packaged inside the APK". We do not own the APK. |
+| Windows | Conditionally yes | `SetEnvironmentVariable("VK_ADD_LAYER_PATH", …)` before *our* `vkCreateInstance` works, because the desktop loader re-scans layer paths at `vkCreateInstance`, not at load time. **Fails silently** if the host process runs at High Integrity Level (`loader_secure_getenv` returns NULL). Mutating the environment of a host process we do not own is also a `setenv`/`getenv` data race in any multi-threaded host. |
+| Linux / macOS | Conditionally yes | Same mechanism; fails under setuid/setgid (`secure_getenv`). Manifest must carry an absolute `.so` path. Same race. |
+
+Two independent reasons to reject it even where it technically works:
+
+1. **It does not solve the platform it was proposed for.** Android is 100% of the reason we were
+   considering it, and Android is the one platform where it cannot work from a plugin.
+2. **The cited precedent does not exist.** wgpu, Dawn, and Godot were offered as evidence that
+   shipping this layer is normal practice. Reading their source, all three use legacy
+   `vkCmdPipelineBarrier` exclusively and none of them ships the sync2 layer. The precedent
+   actually supports Option A.
+
+Add to that: silently mutating a host process's environment variables from inside a `dlopen`ed
+plugin is behaviour I would reject in code review on its own merits, independent of Vulkan.
+
+**What survives.** Nothing that we ship. If an *Android integrator* independently packages
+`libVkLayer_khronos_synchronization2.so` in their own APK and enables it, our sync2 backend will
+light up automatically — because we probe the extension, and the layer's documented behaviour is
+to advertise the extension and disable itself when the driver already provides it. That is a
+**documented, optional, integrator-side deployment note** in `PLATFORMS.md`, not a mechanism we
+depend on and not a substitute for the legacy path. Labelled as materially weaker, exactly as the
+coordinator required.
+
+**Option C (scope Android to a 2021+ population) is rejected outright** — it is the directive read
+backwards.
+
+### 7.4 `subgroup_size_control` — required as a *query*, never as a *feature*
+
+**Ruling.** `subgroup_size_control` is **not** a device gate at all, and where we do consult it we
+require only that the **properties struct is queryable**. We **never** require
+`VkPhysicalDeviceSubgroupSizeControlFeatures::subgroupSizeControl == VK_TRUE`, and we never call
+`vkCmdSetRequiredSubgroupSize`-style per-pipeline sizing as a correctness dependency.
+
+Precisely what the engine does:
+
+1. **Always** read `VkPhysicalDeviceSubgroupProperties::subgroupSize` and `supportedOperations`
+   (Vulkan 1.1 core, universally available). This is the baseline knowledge.
+2. **If** `VK_EXT_subgroup_size_control` is present *or* the device reports 1.3 core, chain
+   `VkPhysicalDeviceSubgroupSizeControlProperties` into `vkGetPhysicalDeviceProperties2` and record
+   `minSubgroupSize` / `maxSubgroupSize` / `requiredSubgroupSizeStages`. Treat this as *better
+   information about the range*, nothing more.
+3. **Only if** the `subgroupSizeControl` feature flag is additionally `VK_TRUE` may a pipeline be
+   created with `VkPipelineShaderStageRequiredSubgroupSizeCreateInfo`. This is an *optimization
+   path*, gated at pipeline-creation time.
+4. **A shader whose correctness depends on a specific subgroup width may only be selected when the
+   width is known exactly** — i.e. `minSubgroupSize == maxSubgroupSize`, or the required-size
+   pipeline path from (3) is available and was used. Otherwise the engine selects the portable
+   variant, which uses shared memory and workgroup barriers and makes no subgroup-width assumption.
+
+Rule 4 is the substantive part and it is a correctness rule, not a performance rule. Assuming a
+subgroup width silently produces wrong numbers in cooperative GEMM and reduction shaders; that was
+the original reason for wanting this extension, and this formulation preserves the guarantee
+without excluding anyone.
+
+**Why this matters beyond macOS.** Requiring the feature flag would have excluded all of
+macOS/iOS (MoltenVK reports `VK_FALSE`; Metal has no per-pipeline SIMD-group width control) and
+very likely lavapipe and SwiftShader — meaning our own CI lanes. A requirement that excludes the
+machines you test on is a requirement you have not tested. Requiring the extension *string* would
+still have cost 14.12 points of Android for information we can approximate from 1.1 core.
+
+**Link's third open item — the 12.22% Windows `synchronization2` gap — is moot** under this
+ruling. We accept nothing, because we require nothing; those devices run the legacy backend.
+
+### 7.5 The barrier abstraction contract — binding on `ENGINE.md`
+
+Switch wrote `ENGINE.md` §6.2 around a single `vkCmdPipelineBarrier2` path (§6.3 already noted a
+fallback, but only as a sentence). This section is the contract that replaces it.
+
+**Rule: one internal barrier API, two backends, selected exactly once at device init. Not
+`if caps.sync2 { … } else { … }` at call sites.** A dual path scattered across the recorder is how
+this decision turns into a bug farm; a single seam is how it stays a one-time cost.
+
+The seam lives in **`rust/src/vk/barrier.rs`** and is the *only* file in the crate permitted to
+name `vkCmdPipelineBarrier`, `vkCmdPipelineBarrier2`, `VkBufferMemoryBarrier`,
+`VkBufferMemoryBarrier2`, `VkDependencyInfo`, or the `VK_PIPELINE_STAGE*` / `VK_ACCESS*` flag
+families. The layering lint (§4.2) is extended to enforce this: those tokens outside
+`vk/barrier.rs` fail CI.
+
+Shape of the seam (illustrative — Switch owns the final signatures):
+
+```rust
+// rust/src/vk/barrier.rs — the ONLY module that names Vulkan barrier types.
+
+/// Our own closed set. Deliberately contains no `None`/`NONE` variant: `VK_PIPELINE_STAGE_2_NONE`
+/// has no legacy equivalent, so the abstraction must not be able to express it.
+pub(crate) enum Access { ShaderRead, ShaderWrite, TransferRead, TransferWrite, HostRead, HostWrite }
+
+pub(crate) struct BufferDep {
+    pub buffer: vk::Buffer, pub offset: u64, pub size: u64,
+    pub src: Access, pub dst: Access,
+}
+
+pub(crate) enum Barriers { Sync2(Sync2Backend), Legacy(LegacyBackend) }
+
+impl Barriers {
+    /// Chosen ONCE, in `Device::new`, from `Capabilities`. Never re-evaluated.
+    pub(crate) fn select(caps: &Capabilities, dev: &ash::Device) -> Self;
+
+    pub(crate) fn buffer_deps(&self, cb: vk::CommandBuffer, deps: &[BufferDep]);
+    pub(crate) fn execution_only(&self, cb: vk::CommandBuffer, src: Access, dst: Access);
+}
+```
+
+Binding requirements on the implementation:
+
+1. **`Barriers::select` is called once, in `Device::new`, and the result is stored on the device
+   handle.** `recorded.rs` and every op path call `dev.barriers().buffer_deps(...)`. No call site
+   anywhere else may branch on `caps.synchronization2`.
+2. **`Access` and `Stage` are our own closed enums, not Vulkan flag re-exports.** This is what makes
+   the legacy backend total rather than best-effort: every value we can express has an exact 32-bit
+   legacy equivalent by construction. `VK_PIPELINE_STAGE_2_NONE`, `SHADER_STORAGE_*`-only bits, and
+   any other sync2-only concept are simply not representable.
+3. **The mapping is one table, in one place.** `ShaderRead → (COMPUTE_SHADER, SHADER_READ)`,
+   `ShaderWrite → (COMPUTE_SHADER, SHADER_WRITE)`, `TransferRead → (TRANSFER, TRANSFER_READ)`,
+   `TransferWrite → (TRANSFER, TRANSFER_WRITE)`, `HostRead → (HOST, HOST_READ)`,
+   `HostWrite → (HOST, HOST_WRITE)`. The sync2 backend widens the same table to the `_2_` flag
+   names. If the two tables ever disagree, that is a bug in one file.
+4. **Batching semantics are identical in both backends.** `buffer_deps` takes a slice and emits
+   **one** barrier command covering all of them — `VkDependencyInfo` with N
+   `VkBufferMemoryBarrier2` for sync2, one `vkCmdPipelineBarrier` with N `VkBufferMemoryBarrier`
+   and OR-ed stage masks for legacy. The barrier-placement algorithm in `ENGINE.md` §6.2 does not
+   change at all; only the emission does.
+5. **Both backends are exercised on every CI run.** A new session option
+   **`ep.force_legacy_barriers`** (bool, default `false`) forces `Barriers::Legacy` on a device
+   that supports sync2. Trinity runs the differential suite twice per lane — once default, once
+   forced — so the legacy path is never the untested path. Without this, the ~99%-Linux-coverage
+   sync2 path is the only one our CI ever sees, and the 31% of Android we just bought would be
+   running code no test has executed.
+6. **`ENGINE.md` §6.2's worked example must be rewritten in terms of `buffer_deps`**, and §6.3's
+   `vkCmdPipelineBarrier2` row must point at this section. §6.2's *reasoning* — per-edge barriers
+   rather than one global barrier, one barrier per consumer edge — is correct and unchanged.
+
+### 7.6 Why this and not the alternatives
+
+**Why not a hard 1.3 baseline (Justin's original proposal).** It buys the two features Switch
+wanted, which we have now stopped requiring anyway. It costs roughly **36 points of Android
+installed-base coverage** (Fact Checker: 26% at 1.3 vs 62% at 1.1) and any MoltenVK older than
+1.3.0, for zero engine simplification. The premise that motivated it — "llama.cpp requires 1.3" —
+is contradicted by llama.cpp's own source at both the runtime check (floor 1.2) and the shader
+target (base shaders `--target-env=vulkan1.2`), independently verified by Fact Checker (claims
+1–2). It is also flatly incompatible with the compatibility-first directive.
+
+**Why not a hard 1.2 baseline.** On Android the 1.2 tier barely exists — devices jumped 1.1 → 1.3
+— so a 1.2 floor pays nearly the full Android cost of a 1.3 floor while getting less than 1.3
+gives on desktop. The only 1.2 core feature we care about is timeline semaphores, which v0 does not
+use and which are available as `VK_KHR_timeline_semaphore` on 1.1 when we do.
+
+**Why not keep the two-extension requirement (the provisional 2026-07-28T17:59:54 position).**
+Because Link measured it and it costs 31.43 points of Android and 12.22 points of Windows. It was
+a defensible position under "we don't know the number"; it is indefensible now that we do.
+
+**Why not require `synchronization2` on desktop only, and legacy on Android.** A per-platform
+requirement is the worst of both: we still write both backends, and we additionally get a matrix
+where a Windows-only contributor cannot reproduce an Android-only code path. If we are writing the
+legacy backend at all, it must be the one that runs everywhere it is needed and gets tested
+everywhere.
+
+**What we lose by being this permissive.** Two things, both accepted: (1) `Barriers` has two
+implementations forever, and the CI matrix doubles for barrier-sensitive tests (§7.5 item 5);
+(2) a device can now be advertised, claim an op, and produce a slow result where a stricter gate
+would have declined the device and let CPU handle it. Mitigation for (2) is Niobe's job, not the
+gate's: if a device class is measurably worse than CPU, that is a *scoring* and *claim* decision
+(§8), recorded per device class in `PLATFORMS.md` — not a reason to refuse to load.
+
+### 7.7 Shader targets
 
 SPIR-V is compiled with `--target-env=vulkan1.1` by default (SPIR-V 1.3), which every device
-meeting the requirement above can consume. This is one notch below llama.cpp's `vulkan1.2` default
-and is the conservative choice for Android breadth; if a base shader ever needs a 1.2-only SPIR-V
-capability we raise the default and record it. Variants needing higher SPIR-V (fp16 arithmetic,
-integer dot product, cooperative matrix) are compiled as **separate variants at a higher target**
-and selected at runtime by `Capabilities` — the same split llama.cpp uses for its `_cm2` shaders.
-Never a single fat module with runtime-dead capabilities; some drivers validate the whole module.
+meeting §7.2 can consume. This is one notch below llama.cpp's `vulkan1.2` default and is the
+conservative choice for Android breadth; if a base shader ever needs a 1.2-only SPIR-V capability
+we raise the default and record it. Variants needing higher SPIR-V (fp16 arithmetic, integer dot
+product, cooperative matrix) or a known subgroup width (§7.4 rule 4) are compiled as **separate
+variants** and selected at runtime from `Capabilities` — the same split llama.cpp uses for its
+`_cm2` shaders. Never a single fat module with runtime-dead capabilities; some drivers validate
+the whole module.
+
+Note that shader targets are **independent of the barrier decision**: `synchronization2` is a
+host-side API, not a SPIR-V capability. Nothing in `shaders/` changes because of §7.3.
 
 
 ---
@@ -683,7 +901,40 @@ Never a single fat module with runtime-dead capabilities; some drivers validate 
 
 ### 8.1 Strategy
 
-Mouse owns `docs/OP_ARCHITECTURE.md` and the registry. The architectural constraints on that work:
+> **Authoritative coverage plan: [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse).** Justin has raised
+> the ambition sharply — *"mlx 达到这样的 op coverage 只用了几天，不是两年，我们要 target 高 op
+> coverage。当然 focus on llm，moe，multi modal，linear attention，qwen3.5，conv 这些类型的模型
+> 优先。"* Coverage is therefore driven by **model families** (LLM/Qwen3.5 → MoE → multimodal →
+> linear attention/SSM → conv), not by the incremental family list in §8.2. Mouse proposes;
+> **Morpheus ratifies.** When `OP_COVERAGE.md` is ratified it **supersedes §8.2 and §8.3** as the
+> sequencing plan, and §8.2 below is retained only as the M0/M1 floor — the minimum that must exist
+> for the pipeline to be provable.
+>
+> **The constraints §8.1 imposes on `OP_COVERAGE.md` are not negotiable by the coverage plan.** An
+> aggressive schedule changes *what order* ops land in and *how many* land per week. It does not
+> change the claiming discipline, the fallback guarantee, or the fragmentation rule. Specifically,
+> the coverage plan must honour:
+>
+> 1. **Conservative claiming (§1.3, §8.1 items 2–3).** Every claim predicate validates domain, op
+>    type, opset range, arity, dtypes, attributes, static-shape availability, and broadcast form.
+>    A partially-implemented op is an unclaimed op. Speed of coverage is never a reason to claim
+>    something we cannot translate correctly for every input we accepted.
+> 2. **Clean CPU fallback (§2.6, §5).** Declining must be free and silent. No op may be claimed
+>    whose failure mode is an error at `Compile` or `Compute` time rather than a decline at
+>    `GetCapability` time.
+> 3. **A minimum viable subgraph size.** A claimed region must be large enough that its compute
+>    outweighs the device round-trip at its boundary (§8.3). High op *count* that shreds a graph
+>    into transfer-dominated fragments is a regression wearing a coverage badge. The metric of
+>    record is Niobe's island count and largest fused region (§9.2), not the number of ops in the
+>    registry.
+> 4. **Every claimed op ships with its differential test and its platform row on the same PR**
+>    (items 4–5 below). This is what makes a fast schedule survivable rather than a debt pile.
+>
+> A model-family-driven plan is the right instinct and I expect to ratify it. These four constraints
+> are what I will check it against.
+
+Mouse owns `docs/OP_COVERAGE.md`, `docs/OP_ARCHITECTURE.md` and the registry. The architectural
+constraints on that work:
 
 1. **One op = one handler + one claim predicate + one registration line, in one
    `ops/<family>.rs`.** Zero edits to `ep.rs`, `engine.rs`, or the registry core. If adding an op
@@ -702,7 +953,10 @@ Mouse owns `docs/OP_ARCHITECTURE.md` and the registry. The architectural constra
 7. **fp32 first.** fp16 is a variant per family, gated on `shaderFloat16` +
    `storageBuffer16BitAccess`, added family by family once fp32 is green. No fp64, ever.
 
-### 8.2 The v0 op set (M0–M1)
+### 8.2 The M0/M1 op floor
+
+> Superseded as a *plan* by [`OP_COVERAGE.md`](./OP_COVERAGE.md) once ratified (§8.1). Retained as
+> the minimum that must exist for the pipeline to be provable; nothing here is a ceiling.
 
 **M0 — one op, end to end.** `Add`, fp32, identical shapes, 2 inputs, 1 output, static shape.
 That is the whole M0 claim set. It exists to prove the ABI, the device, the memory path, the
@@ -757,6 +1011,7 @@ both the implementation and the expectation.
 | Conformance fuzzing | `tests/conformance/` | Bounded property-based fuzzing of claimed ops against the ONNX standard, one op per subprocess so a native crash cannot abort the run. | Opt-in `workflow_dispatch`. |
 | Validation layers | all suites, debug builds | `VK_LAYER_KHRONOS_validation` clean is part of "done" for any engine change. | Required in the CI debug lane. |
 | Leak / teardown | stress scripts across many sessions | RAII teardown leaves no `VkDeviceMemory`, no pipelines, no descriptor pools. | Required. |
+| **Barrier-backend parity** | every lane, run twice | The full suite with the default backend and again with `ep.force_legacy_barriers=1`, asserting **identical** numerical results (§7.5 item 5). Without this, the legacy `vkCmdPipelineBarrier` path we carry for 31% of Android and 12% of Windows would never be executed by any test we own. | **Required on every PR.** |
 
 **The vacuous-pass trap, stated plainly.** Because CPU fallback is always correct, a test that
 merely compares outputs will pass whether or not the EP ran anything. Every op test **must** assert
@@ -805,12 +1060,14 @@ Each milestone's exit criteria are verifiable by a command, not by an opinion.
 |---|---|
 | `Cargo.toml`, `build.rs` (ORT bindgen + GLSL→SPIR-V embedding), crate scaffolding | Tank |
 | `lib.rs`, `factory.rs`, `ep.rs` — factory/EP/compute-info vtables, panic guards, RAII teardown | Tank |
-| `vk/` — instance, physical-device scoring + capability gate, device, queue, allocator, staging, descriptor pool, pipeline cache, command recording, single-fence submit | Switch |
+| `vk/` — instance, physical-device scoring + capability gate (§7.2), device, queue, allocator, staging, descriptor pool, pipeline cache, command recording, single-fence submit | Switch |
+| **`vk/barrier.rs` — the barrier seam of §7.5: `Access`/`BufferDep` enums, `Barriers::select`, and *both* the `Sync2Backend` and `LegacyBackend` implementations** | Switch |
+| `vk/caps.rs` — `Capabilities` probe incl. `synchronization2`, `subgroup_size_control` **properties-only** query (§7.4), subgroup ops, fp16 | Switch |
 | `shaders/elementwise_binary.comp` + the SPIR-V embedding pipeline | Switch |
 | `registry.rs` + `NodeView`; `ops/elementwise.rs` with `Add` claim + handler; claim diagnostics | Mouse |
 | `engine.rs` — `NodeDesc`, `Plan`, `DispatchContext`; per-run command recording (no cache yet) | Tank + Morpheus (contract) |
 | `tests/ops/conftest.py`, `_models.py`, `test_elementwise.py`, claim assertion helper | Trinity |
-| CI: fmt, clippy, build on windows-latest + ubuntu-latest, lavapipe + SwiftShader lanes, Vulkan SDK provisioning, layering lint | Link |
+| CI: fmt, clippy, build on windows-latest + ubuntu-latest, lavapipe + SwiftShader lanes, **the `ep.force_legacy_barriers=1` duplicate lane (§7.5 item 5)**, Vulkan SDK provisioning, layering lint | Link |
 | `python/` package with `register_execution_provider_library()` | Tank |
 | Baseline harness stub; no numbers published | Niobe |
 
@@ -822,8 +1079,11 @@ Each milestone's exit criteria are verifiable by a command, not by an opinion.
 4. A machine with no Vulkan ICD loads the plugin, advertises zero devices, logs a warning, and the
    session still runs on CPU.
 5. `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` prints per-op decline reasons.
-6. The layering lint is in CI and fails a deliberately-planted violation.
-7. Both sibling docs and this one are consistent; §12 lists every divergence.
+6. The layering lint is in CI and fails a deliberately-planted violation, including a planted
+   `cmd_pipeline_barrier` outside `vk/barrier.rs` (§4.2, §7.5).
+7. **The full test suite passes twice per lane — once with the default barrier backend and once
+   with `ep.force_legacy_barriers=1` — with identical numerical results** (§7.5 item 5).
+8. Both sibling docs and this one are consistent; §12 lists every divergence.
 
 ### M1 — "A useful elementwise EP"
 
@@ -865,11 +1125,12 @@ speedup vs the ORT CPU EP on at least one real GPU, published with methodology.
 
 ### M3+ — "Breadth and platforms"
 
-Android (NDK cross-compile, Adreno + Mali validation, the 1.1-without-extensions coverage question
-from OQ-1), fp16 variants across families, `Conv` and pooling, persistent activation buffers,
-shapeless recording for dynamic dimensions, graph-level fusion patterns, quantized ops, attention.
-Sequencing is decided at the M2 retrospective, informed by what Niobe's numbers and Link's matrix
-actually say — not scheduled now.
+Android (NDK cross-compile, Adreno + Mali validation — **including deliberate validation on the
+Adreno 5xx / Mali Bifrost population that §7.3 bought us, which is the whole point of carrying the
+legacy barrier backend**), fp16 variants across families, `Conv` and pooling, persistent activation
+buffers, shapeless recording for dynamic dimensions, graph-level fusion patterns, quantized ops,
+attention. Sequencing is decided at the M2 retrospective, informed by what Niobe's numbers,
+Link's matrix, and the ratified `OP_COVERAGE.md` actually say — not scheduled now.
 
 ---
 
@@ -877,9 +1138,9 @@ actually say — not scheduled now.
 
 | # | Question | Decided by | Blocks |
 |---|---|---|---|
-| **OQ-1** | How many real devices report Vulkan 1.1/1.2 **without** `VK_KHR_synchronization2` or `VK_EXT_subgroup_size_control`? If that set is large on Android, §7.2's requirement needs the dual barrier path after all. | Link investigates → **Morpheus decides** | Final §7 sign-off; M3 |
+| **OQ-1** | ~~How many real devices report Vulkan 1.1/1.2 **without** `VK_KHR_synchronization2` or `VK_EXT_subgroup_size_control`?~~ **RESOLVED 2026-07-28T19:16:08-07:00.** Link measured it (`PLATFORMS.md` §8, vulkan.gpuinfo.org 2026-07-28): `VK_KHR_synchronization2` is missing on **31.43% of Android** and **12.22% of Windows**; `VK_EXT_subgroup_size_control` on **14.12% of Android**, and its *feature flag* is `VK_FALSE` on all of macOS/iOS. **Ruling (§7.2–§7.5): both are dropped from the hard requirement.** `synchronization2` becomes a probed capability selecting one of two barrier backends behind a single seam (`vk/barrier.rs`); `subgroup_size_control` is consulted as a *properties query* only and never as a required feature. Link's layer-shim option is **rejected** — the AOSP loader cannot discover a layer we ship from a plugin `.so`, and the cited wgpu/Dawn/Godot precedent turned out to be legacy-barrier-only in all three. | Link investigated → **Morpheus decided** | — (§7 is frozen) |
 | **OQ-2** | ~~Do llama.cpp and ExecuTorch's stated version floors survive verification?~~ **RESOLVED 2026-07-28T17:59:54-07:00.** Fact Checker claims 1–2: both "requires 1.3" claims **contradicted**. llama.cpp base shaders target `vulkan1.2` (only `_cm2` variants target 1.3); ExecuTorch hardcodes `VK_API_VERSION_1_1`. Claim 4 (Android share) remains *unverified but plausible*. | **Fact Checker** (done) | — |
-| **OQ-3** | Opaque-handle registry vs `VK_KHR_buffer_device_address` for the ORT allocator's pointer problem (§6.3). Provisionally the registry; BDA if profiling ever justifies it *and* MoltenVK coverage improves. | Tank proposes → **Morpheus decides** | M2 |
+| **OQ-3** | The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair. Three candidates now: (a) an **opaque-handle registry** — a monotonic token cast to `*mut c_void`, resolved through a side table (provisional); (b) `VK_KHR_buffer_device_address`; (c) **ORT 1.28's `CreateExternalResourceImporterForDeviceImpl`** — *live alternative, added 2026-07-28T19:16:08-07:00*. If it does what its name suggests — importing an externally-allocated device resource such as a `VkBuffer` into ORT without a host round-trip — it is a **better answer than (a)**, because it makes the mapping ORT's contract rather than our side table, and it removes the "a pointer we hand out must never be dereferenced" hazard entirely. **Not resolved:** Fact Checker is verifying the exact symbol and semantics; Tank is building `sys.rs` against the 1.28 headers in parallel. Note this also reopens the ORT ABI version pinned in §0 (currently `ORT_API_VERSION 27`) — adopting (c) means a 1.28 floor, which is its main cost. | Fact Checker verifies → Tank proposes → **Morpheus decides** | M2 |
 | **OQ-4** | Shader compilation: build-time `glslc` from the Vulkan SDK (SDK becomes a build dependency) vs checked-in pre-generated SPIR-V (reviewable diffs, but binary artifacts in git) vs both with SDK preferred. Provisionally: build-time with checked-in fallback. | **Switch** proposes → Link validates on all CI lanes → Morpheus decides | M0 |
 | **OQ-5** | `gpu-allocator` vs a hand-rolled suballocator. `ENGINE.md` §3.1 picks `gpu-allocator`; I concur provisionally. Confirm it cross-compiles cleanly for Android and works under MoltenVK. | **Switch** owns → Link validates | M0/M3 |
 | **OQ-6** | What vendor ID does the factory report when it advertises zero devices, or before a device is bound? ORT calls `GetVendorId` on the factory, not per device. | **Tank** proposes → Morpheus decides | M0 |
@@ -887,6 +1148,8 @@ actually say — not scheduled now.
 | **OQ-8** | Is `com.microsoft` contrib-op support ever in scope? It is where the MLX EP's value concentrated (MatMulNBits, GQA), but it is a much larger surface. | **Morpheus**, at the M2 retrospective | M3+ scope |
 | **OQ-9** | Threading model: one `VkDevice` per session (chosen) vs a process-shared device with a mutex. Sharing saves memory and pipeline-cache warmth for multi-session hosts. | **Tank + Switch** propose → Morpheus decides | post-M2 |
 | **OQ-10** | Tolerance policy for accumulation-order-sensitive ops (GEMM, reductions) across vendors, where fp32 associativity differs. Needs a stated, derived rule before M2's ops land, not after. | **Trinity** proposes → Morpheus ratifies | M2 |
+| **OQ-11** | Ratification of `OP_COVERAGE.md` (§8.1) — does the model-family-driven, high-ambition coverage plan honour conservative claiming, clean CPU fallback, and the minimum-viable-subgraph rule? Raised 2026-07-28T19:16:08-07:00. | **Mouse** proposes → **Morpheus ratifies** | §8 supersession; M1 sequencing |
+| **OQ-12** | Does carrying the legacy barrier backend (§7.3) actually buy usable devices, or does the Adreno 5xx / Mali Bifrost population fail us for some *other* reason (driver bugs, `maxComputeWorkGroupInvocations`, absent subgroup ARITHMETIC, unusably slow)? If the answer is "these devices are unusable anyway", the legacy backend is still correct for the 12.22% Windows gap, but the Android argument weakens. Must be answered with a real device, not a database. Raised 2026-07-28T19:16:08-07:00. | **Link** measures → Niobe benchmarks → Morpheus reviews | M3 Android scope |
 
 ---
 
@@ -908,6 +1171,7 @@ reference.
 | D9 | **Vendor ID is read from the bound device**, not hardcoded to one vendor. | Cross-platform mandate. |
 | D10 | **Validation layers are part of the definition of done.** No MLX equivalent. | Vulkan's error surface is enormous and mostly silent without layers; MLX's C API validates for us. |
 | D11 | **`ash` (safe-ish Rust Vulkan bindings) rather than bindgen over `vulkan.h`.** MLX bindgens `mlx-c` directly. | `ash` is the ecosystem standard, handles the loader/extension-function-pointer problem correctly, and removes a large class of hand-written FFI bugs. The ORT side still uses bindgen, matching the reference. |
+| D12 | **Two barrier backends behind one internal seam (`vk/barrier.rs`), selected once at device init**, plus a session option to force the legacy one. MLX has no counterpart — MLX's C API owns all synchronization. | §7.3. Requiring `synchronization2` would exclude 31.43% of Android and 12.22% of Windows; the compatibility-first directive makes that unacceptable. The cost is one file with two implementations and a doubled CI lane, which is bounded; the cost of the alternative is permanent device exclusion. wgpu, Dawn and Godot all ship legacy-only barriers, so this is the mainstream position, not an exotic one. |
 
 ---
 
@@ -917,7 +1181,19 @@ reference.
   `docs/COMPILED_CAPTURE.md`, `rust/src/{lib,factory,ep,engine,registry,compiled,sys}.rs`,
   `rust/{Cargo.toml,build.rs}`, `tests/`, `bench/`, `python/`.
 - **Sibling docs:** [`ENGINE.md`](./ENGINE.md) (Switch), [`PLATFORMS.md`](./PLATFORMS.md) (Link),
-  `OP_ARCHITECTURE.md` (Mouse, forthcoming), `BENCHMARKS.md` (Niobe, forthcoming).
+  [`OP_COVERAGE.md`](./OP_COVERAGE.md) (Mouse), `OP_ARCHITECTURE.md` (Mouse, forthcoming),
+  `BENCHMARKS.md` (Niobe, forthcoming).
+- **Vulkan layer deployment (§7.3 ruling):** `KhronosGroup/Vulkan-Loader`
+  `docs/LoaderLayerInterface.md` and `docs/LoaderApplicationInterface.md` (Android layer discovery;
+  "The Android loader does not use manifest files"; elevated-privilege `secure_getenv` caveats),
+  `loader/loader_environment.c`; `KhronosGroup/Vulkan-ExtensionLayer`
+  `docs/synchronization2_layer.md` ("needs to be packaged inside the APK");
+  `developer.android.com/ndk/guides/graphics/validation-layer`.
+- **Barrier prior art (§7.3):** `gfx-rs/wgpu` `wgpu-hal/src/vulkan/command.rs`
+  (`cmd_pipeline_barrier`, legacy only); `google/dawn`
+  `src/dawn/native/vulkan/CommandBufferVk.cpp` (`fn.CmdPipelineBarrier`, legacy only);
+  `godotengine/godot` `drivers/vulkan/rendering_device_driver_vulkan.cpp` (`vkCmdPipelineBarrier`,
+  legacy only). None ships `VK_LAYER_KHRONOS_synchronization2`.
 - **ORT plugin-EP C ABI:** `onnxruntime_ep_c_api.h`, `RegisterExecutionProviderLibrary`,
   `SessionOptionsAppendExecutionProvider_V2`, `CreateEpFactories`, `ReleaseEpFactory`.
 - **Prior art — llama.cpp Vulkan backend:** `ggml/src/ggml-vulkan/ggml-vulkan.cpp`,
@@ -929,4 +1205,6 @@ reference.
   (`vulkan_partitioner.py`), serialized graph, `prepack()` at init, command buffer recorded once
   and replayed, buffers **and** image textures, VMA, on-disk `VkPipelineCache`, hard floor
   Vulkan 1.1.
-- **Decision records:** `.squad/decisions/inbox/morpheus-architecture-v0.md`.
+- **Decision records:** `.squad/decisions/inbox/morpheus-architecture-v0.md`,
+  `.squad/decisions/inbox/morpheus-oq1-resolution.md`,
+  `.squad/decisions/inbox/link-oq1-extension-availability.md`.

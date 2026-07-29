@@ -14,6 +14,7 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 | ORT ABI | plugin-EP C ABI, `ORT_API_VERSION 27` (ONNX Runtime 1.27.x) |
 | Backend | Vulkan compute · GLSL → SPIR-V · [`ash`](https://github.com/ash-rs/ash) |
 | Target platforms | Windows · Linux · Android · macOS (MoltenVK) |
+| Device requirement | **Vulkan 1.1 core + a compute queue.** No required extensions — see [`docs/DESIGN.md`](docs/DESIGN.md) §7. |
 | Target hardware | NVIDIA · AMD · Intel · Adreno · Mali, plus lavapipe / SwiftShader for GPU-less CI |
 
 ## How it works
@@ -50,7 +51,8 @@ sess = ort.InferenceSession(
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Morpheus | **Architecture of record.** Goals and non-goals, ORT integration, crate layout, module boundaries, execution flow, tensor/memory model, Vulkan baseline, op strategy, testing, milestones, open questions. |
 | [`docs/ENGINE.md`](docs/ENGINE.md) | Switch | Vulkan runtime: device and context, memory and allocators, shader strategy, pipelines and descriptors, command submission and synchronization. |
 | [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Link | Platform and driver support matrix, Vulkan version reality per platform, capability detection, toolchains, CI lanes. |
-| `docs/OP_ARCHITECTURE.md` | Mouse | Op registry design and the authoritative op-coverage contract. *(forthcoming)* |
+| `docs/OP_COVERAGE.md` | Mouse | **Authoritative op-coverage plan**, driven by model families (LLM/Qwen3.5 → MoE → multimodal → linear attention/SSM → conv). *(in progress)* |
+| `docs/OP_ARCHITECTURE.md` | Mouse | Op registry design and the per-op claim contract. *(forthcoming)* |
 | `docs/BENCHMARKS.md` | Niobe | Benchmark methodology and published baselines. *(forthcoming)* |
 
 ## Design in one paragraph
