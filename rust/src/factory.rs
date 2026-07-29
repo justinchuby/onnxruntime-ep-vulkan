@@ -269,8 +269,12 @@ unsafe fn get_supported_devices_impl(
     }
 
     // Snapshot ORT's hardware-device list so correlation is a pure function over plain data.
-    let mut hw: Vec<(*const ort::OrtHardwareDevice, u32, u32, ort::OrtHardwareDeviceType)> =
-        Vec::with_capacity(num_devices);
+    let mut hw: Vec<(
+        *const ort::OrtHardwareDevice,
+        u32,
+        u32,
+        ort::OrtHardwareDeviceType,
+    )> = Vec::with_capacity(num_devices);
     if !devices.is_null() {
         for i in 0..num_devices {
             // SAFETY: ORT guarantees `devices` has `num_devices` valid entries, and each accessor
@@ -284,7 +288,9 @@ unsafe fn get_supported_devices_impl(
                 let device_id = (*api).HardwareDevice_DeviceId.map_or(0, |f| f(d));
                 let kind = (*api)
                     .HardwareDevice_Type
-                    .map_or(ort::OrtHardwareDeviceType_OrtHardwareDeviceType_CPU, |f| f(d));
+                    .map_or(ort::OrtHardwareDeviceType_OrtHardwareDeviceType_CPU, |f| {
+                        f(d)
+                    });
                 hw.push((d, vendor_id, device_id, kind));
             }
         }
@@ -338,10 +344,7 @@ unsafe fn get_supported_devices_impl(
         metadata.add(c"vulkan.device_id", &format!("{:#06x}", info.device_id));
         metadata.add(c"vulkan.device_kind", &format!("{:?}", info.kind));
         metadata.add(c"vulkan.device_index", &info.index.to_string());
-        metadata.add_cstr(
-            c"vulkan.correlation",
-            correlation_strategy(exact_match),
-        );
+        metadata.add_cstr(c"vulkan.correlation", correlation_strategy(exact_match));
 
         let mut ep_device: *mut ort::OrtEpDevice = ptr::null_mut();
         // SAFETY: `ep_api` is live; `p` is our factory; `hw_device` came from ORT's own list;
@@ -537,6 +540,10 @@ unsafe fn create_ep_impl(
 }
 
 unsafe extern "C" fn release_ep(_p: *mut ort::OrtEpFactory, ep: *mut ort::OrtEp) {
+    // The session logger `CreateEp` attached dies with the session, so unwind to the factory's
+    // process-default logger *before* dropping the EP. Leaving it attached would leave a dangling
+    // `OrtLogger*` that the next log record would forward into.
+    crate::logging::restore_default_ort_logger();
     // SAFETY: ORT hands back exactly the pointer `CreateEp` produced, exactly once.
     unsafe { VulkanEp::release(ep) };
 }

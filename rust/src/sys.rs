@@ -200,10 +200,13 @@ pub unsafe fn check_api_version(
     // SAFETY: the caller guarantees `ort_api_base` points at a live `OrtApiBase`. Both members are
     // populated by ORT for every version of the ABI that has ever existed, but we still treat the
     // function pointers as `Option` (bindgen models them that way) and refuse to unwrap blindly.
-    let (get_api, get_version_string) = unsafe { ((*ort_api_base).GetApi, (*ort_api_base).GetVersionString) };
+    let (get_api, get_version_string) =
+        unsafe { ((*ort_api_base).GetApi, (*ort_api_base).GetVersionString) };
 
     let Some(get_api) = get_api else {
-        return Err("OrtApiBase::GetApi is null; this host is not a usable ONNX Runtime".to_string());
+        return Err(
+            "OrtApiBase::GetApi is null; this host is not a usable ONNX Runtime".to_string(),
+        );
     };
 
     let host_version = match get_version_string {
@@ -260,7 +263,11 @@ pub unsafe fn check_api_version(
         ));
     }
 
-    Ok(NegotiatedApi { api, ep_api, version })
+    Ok(NegotiatedApi {
+        api,
+        ep_api,
+        version,
+    })
 }
 
 /// Release a non-null `OrtStatus` we own.
@@ -539,8 +546,14 @@ mod tests {
 
     #[test]
     fn version_window_is_well_formed() {
-        assert_eq!(ORT_API_VERSION_EXPECTED, 28, "we compile and ship against ORT 1.28");
-        assert_eq!(ORT_API_VERSION_MIN, 24, "declared minimum supported host is ORT 1.24");
+        assert_eq!(
+            ORT_API_VERSION_EXPECTED, 28,
+            "we compile and ship against ORT 1.28"
+        );
+        assert_eq!(
+            ORT_API_VERSION_MIN, 24,
+            "declared minimum supported host is ORT 1.24"
+        );
         // The ordering invariant is asserted at compile time at module scope; see the
         // `const _: () = assert!(ORT_API_VERSION_MIN <= ORT_API_VERSION_EXPECTED)` above.
         assert_eq!(ort::ORT_API_VERSION, ORT_API_VERSION_EXPECTED);

@@ -229,7 +229,9 @@ fn strip_comments_and_strings(src: &str) -> String {
         }
         // Char literal. Lifetimes (`'a`) are not literals, so require a closing quote within 4
         // chars and never swallow a newline.
-        if c == '\'' && let Some(consumed) = char_literal_len(&b, i) {
+        if c == '\''
+            && let Some(consumed) = char_literal_len(&b, i)
+        {
             out.extend(std::iter::repeat_n(' ', consumed));
             i += consumed;
             continue;
@@ -260,7 +262,9 @@ fn raw_string_len(b: &[char], i: usize) -> Option<usize> {
         return None;
     }
     j += 1;
-    let closing: String = std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+    let closing: String = std::iter::once('"')
+        .chain(std::iter::repeat_n('#', hashes))
+        .collect();
     let closing: Vec<char> = closing.chars().collect();
     while j < b.len() {
         if b[j] == '"' && b[j..].starts_with(closing.as_slice()) {
@@ -528,7 +532,10 @@ pub fn translate_add(node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult
 }
 "#;
     let found = scan("src/ops/elementwise.rs", clean, OPS_RULES);
-    assert!(found.is_empty(), "false positives on clean source: {found:?}");
+    assert!(
+        found.is_empty(),
+        "false positives on clean source: {found:?}"
+    );
 }
 
 #[test]
@@ -652,12 +659,14 @@ fn is_barrier_file(path: &std::path::Path) -> bool {
 /// Returns `true` when `path` is `src/vk/barrier.rs` or `src/vk/caps.rs`.
 fn is_sync2_permitted_file(path: &std::path::Path) -> bool {
     let s = path.to_string_lossy();
-    (s.contains("vk") && s.ends_with("barrier.rs"))
-        || (s.contains("vk") && s.ends_with("caps.rs"))
+    (s.contains("vk") && s.ends_with("barrier.rs")) || (s.contains("vk") && s.ends_with("caps.rs"))
 }
 
 /// Collect every `.rs` file under `src/` (recursively), excluding those matching `exclude`.
-fn rust_files_except(dir: &std::path::Path, exclude: impl Fn(&std::path::Path) -> bool) -> Vec<std::path::PathBuf> {
+fn rust_files_except(
+    dir: &std::path::Path,
+    exclude: impl Fn(&std::path::Path) -> bool,
+) -> Vec<std::path::PathBuf> {
     rust_files(dir)
         .into_iter()
         .filter(|p| !exclude(p))
@@ -762,10 +771,7 @@ fn detects_planted_barrier_violations() {
             "let f = vk::PipelineStageFlags::COMPUTE_SHADER;",
         ),
         // Naming AccessFlags outside the barrier module
-        (
-            "src/vk/command.rs",
-            "let a = vk::AccessFlags::SHADER_READ;",
-        ),
+        ("src/vk/command.rs", "let a = vk::AccessFlags::SHADER_READ;"),
     ];
     for (file, line) in planted {
         let found = scan(file, line, BARRIER_RULES);
@@ -792,7 +798,11 @@ fn record(caps: &Capabilities, cb: vk::CommandBuffer) {
     }
 }
 "#;
-    let found = scan("src/vk/command.rs", planted_in_command_rs, SYNC2_FIELD_RULES);
+    let found = scan(
+        "src/vk/command.rs",
+        planted_in_command_rs,
+        SYNC2_FIELD_RULES,
+    );
     assert!(
         !found.is_empty(),
         "sync2-field lint missed a planted violation: {planted_in_command_rs}"
@@ -1062,7 +1072,10 @@ const ANCHORS: &[&str] = &[
 ];
 "#;
     let found = scan_c1("src/ops/partition.rs", clean);
-    assert!(found.is_empty(), "false positive on qualified names: {found:?}");
+    assert!(
+        found.is_empty(),
+        "false positive on qualified names: {found:?}"
+    );
 }
 
 #[test]
@@ -1101,7 +1114,10 @@ fn test_modules_are_out_of_scope_for_c1() {
         "}\n",
     );
     let found = scan_c1("src/ops/x.rs", source);
-    assert!(found.is_empty(), "test code should be out of scope: {found:?}");
+    assert!(
+        found.is_empty(),
+        "test code should be out of scope: {found:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1182,4 +1198,3 @@ fn c2_surface_is_covered_by_the_dump_capabilities_suite() {
         "the capability-dump test no longer checks for the schema-baseline column"
     );
 }
-

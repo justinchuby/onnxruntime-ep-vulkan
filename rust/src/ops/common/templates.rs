@@ -77,7 +77,10 @@ fn common_dtype(node: &NodeDesc, from: usize, n: usize) -> EpResult<DType> {
         }
     }
     found.ok_or_else(|| {
-        EpError::Internal(format!("`{}` has no inputs to take a dtype from", node.op_type))
+        EpError::Internal(format!(
+            "`{}` has no inputs to take a dtype from",
+            node.op_type
+        ))
     })
 }
 
@@ -278,10 +281,7 @@ mod tests {
         let spec = spec_named("Mul");
         let node = NodeDesc {
             op_type: "Mul".into(),
-            inputs: vec![
-                tensor("a", DType::F16, &[8]),
-                tensor("b", DType::F16, &[8]),
-            ],
+            inputs: vec![tensor("a", DType::F16, &[8]), tensor("b", DType::F16, &[8])],
             outputs: vec![out("c", DType::F16, &[8])],
             ..Default::default()
         };
@@ -368,7 +368,10 @@ mod tests {
         let mut ctx = Recorder::default();
         let err = ew_binary(spec, &node, &mut ctx).unwrap_err();
         assert!(matches!(err, EpError::Unsupported(_)), "{err}");
-        assert!(ctx.dispatches.is_empty(), "nothing may be recorded on error");
+        assert!(
+            ctx.dispatches.is_empty(),
+            "nothing may be recorded on error"
+        );
     }
 
     #[test]
@@ -376,10 +379,7 @@ mod tests {
         let spec = spec_named("Add");
         let node = NodeDesc {
             op_type: "Add".into(),
-            inputs: vec![
-                tensor("a", DType::F32, &[4]),
-                tensor("b", DType::I32, &[4]),
-            ],
+            inputs: vec![tensor("a", DType::F32, &[4]), tensor("b", DType::I32, &[4])],
             outputs: vec![out("c", DType::F32, &[4])],
             ..Default::default()
         };

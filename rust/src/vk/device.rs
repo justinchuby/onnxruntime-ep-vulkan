@@ -31,11 +31,7 @@
 
 use ash::vk;
 
-use super::{
-    barrier::Barriers,
-    caps::Capabilities,
-    instance::CapableDevice,
-};
+use super::{barrier::Barriers, caps::Capabilities, instance::CapableDevice};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Device
@@ -103,8 +99,11 @@ impl Device {
             .queue_priorities(&queue_priority)];
 
         // Build the extension name pointer list.
-        let ext_ptrs: Vec<*const std::os::raw::c_char> =
-            capable.device_extensions.iter().map(|s| s.as_ptr()).collect();
+        let ext_ptrs: Vec<*const std::os::raw::c_char> = capable
+            .device_extensions
+            .iter()
+            .map(|s| s.as_ptr())
+            .collect();
 
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
@@ -113,21 +112,21 @@ impl Device {
         // SAFETY: instance is live per the caller's contract. capable.physical_device was
         // enumerated from instance and is still valid. device_info borrows queue_info and
         // ext_ptrs which both outlive this call.
-        let ash_device = match unsafe { instance.create_device(capable.physical_device, &device_info, None) } {
-            Ok(d) => d,
-            Err(e) => {
-                log::warn!(
-                    "vkCreateDevice failed for device '{}' ({e:?}). Skipping this device.",
-                    capable.info.name
-                );
-                return None;
-            }
-        };
+        let ash_device =
+            match unsafe { instance.create_device(capable.physical_device, &device_info, None) } {
+                Ok(d) => d,
+                Err(e) => {
+                    log::warn!(
+                        "vkCreateDevice failed for device '{}' ({e:?}). Skipping this device.",
+                        capable.info.name
+                    );
+                    return None;
+                }
+            };
 
         // Retrieve the compute queue (queue index 0 within the family).
         // SAFETY: ash_device is live; queue family and index are valid per the DeviceQueueCreateInfo above.
-        let compute_queue =
-            unsafe { ash_device.get_device_queue(capable.compute_queue_family, 0) };
+        let compute_queue = unsafe { ash_device.get_device_queue(capable.compute_queue_family, 0) };
 
         // SAFETY: instance is live per the caller's contract; ash_device was created from
         // capable.physical_device which was enumerated from instance.
@@ -165,8 +164,7 @@ impl Device {
         force_legacy: bool,
     ) -> Self {
         // SAFETY: instance and ash_device are live per caller; force_legacy contract above.
-        let barriers =
-            unsafe { Barriers::select(&caps, instance, &ash_device, force_legacy) };
+        let barriers = unsafe { Barriers::select(&caps, instance, &ash_device, force_legacy) };
 
         Device {
             ash_device,
@@ -276,7 +274,9 @@ mod tests {
         // force_legacy=false → sync2 selected.
         assert!(should_use_sync2(&caps, false));
         // The caps struct itself is unchanged by the selection (it's immutable).
-        assert!(caps.subgroup_supported_ops
-            .contains(ash::vk::SubgroupFeatureFlags::BASIC));
+        assert!(
+            caps.subgroup_supported_ops
+                .contains(ash::vk::SubgroupFeatureFlags::BASIC)
+        );
     }
 }

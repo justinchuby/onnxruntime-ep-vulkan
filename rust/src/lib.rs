@@ -184,7 +184,7 @@ pub unsafe extern "C" fn CreateEpFactories(
     // Route our log records into ORT's logger from here on.
     // SAFETY: `negotiated.api` is live; `default_logger` is ORT's process-default logger, valid
     // until `ReleaseEpFactory` detaches it.
-    unsafe { logging::attach_ort_logger(negotiated.api, default_logger) };
+    unsafe { logging::attach_default_ort_logger(negotiated.api, default_logger) };
 
     // SAFETY: `api_for_status` is a live `OrtApi`; the closure only touches ORT-supplied pointers.
     unsafe {

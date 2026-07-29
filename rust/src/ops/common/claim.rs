@@ -161,7 +161,12 @@ fn check_broadcast(view: &NodeView<'_>, spec: &OpSpec, n: usize) -> ClaimResult 
 ///
 /// `same_dtype_from` is the first input index that must share the common dtype; `Where` passes 1
 /// because its condition input is `bool` while its value inputs are not.
-fn elementwise(view: &NodeView<'_>, spec: &OpSpec, arity: usize, same_dtype_from: usize) -> ClaimResult {
+fn elementwise(
+    view: &NodeView<'_>,
+    spec: &OpSpec,
+    arity: usize,
+    same_dtype_from: usize,
+) -> ClaimResult {
     require!(
         view.num_inputs() == arity,
         Arity,
@@ -311,7 +316,13 @@ pub fn typed_input(view: &NodeView<'_>, spec: &OpSpec, i: usize, what: &str) -> 
 }
 
 /// Input `i` exists and has exactly rank `rank`.
-pub fn input_rank(view: &NodeView<'_>, spec: &OpSpec, i: usize, rank: usize, what: &str) -> ClaimResult {
+pub fn input_rank(
+    view: &NodeView<'_>,
+    spec: &OpSpec,
+    i: usize,
+    rank: usize,
+    what: &str,
+) -> ClaimResult {
     let edge = input_edge(view, spec, i)?;
     let Some(found) = edge.rank() else {
         deny!(
@@ -335,10 +346,7 @@ pub fn required_int(view: &NodeView<'_>, spec: &OpSpec, name: &str) -> Result<i6
         Some(v) => Ok(v),
         None => Err(crate::registry::decline(
             crate::registry::DeclineCode::Attribute,
-            format_args!(
-                "`{}` is missing required attribute `{name}`",
-                spec.op_type
-            ),
+            format_args!("`{}` is missing required attribute `{name}`", spec.op_type),
         )),
     }
 }
@@ -387,7 +395,9 @@ pub fn attr_string_in(
     allowed: &[&str],
     default: &str,
 ) -> ClaimResult {
-    let found = view.attr_string(name).unwrap_or_else(|| default.to_string());
+    let found = view
+        .attr_string(name)
+        .unwrap_or_else(|| default.to_string());
     require!(
         allowed.contains(&found.as_str()),
         Attribute,
@@ -462,7 +472,10 @@ mod tests {
             shape: None,
         };
         let err = check_shape(spec, &edge, "input 0").unwrap_err();
-        assert_eq!(DeclineCode::of_reason(&err), Some(DeclineCode::DynamicShape));
+        assert_eq!(
+            DeclineCode::of_reason(&err),
+            Some(DeclineCode::DynamicShape)
+        );
     }
 
     #[test]
@@ -473,7 +486,10 @@ mod tests {
             shape: Some(vec![-1, 8]),
         };
         let err = check_shape(spec, &edge, "input 0").unwrap_err();
-        assert_eq!(DeclineCode::of_reason(&err), Some(DeclineCode::DynamicShape));
+        assert_eq!(
+            DeclineCode::of_reason(&err),
+            Some(DeclineCode::DynamicShape)
+        );
         assert!(err.contains("symbolic"), "{err}");
     }
 

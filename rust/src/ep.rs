@@ -69,14 +69,18 @@ impl EpOptions {
             return out;
         };
 
-        // SAFETY: `get` is ORT's config accessor, used here with the documented two-call pattern
-        // (size query, then fill). See `read_config_entry`.
-        let read = |key: &str| -> Option<String> { unsafe { read_config_entry(api, get, options, key) } };
+        let read = |key: &str| -> Option<String> {
+            // SAFETY: `get` is ORT's config accessor, used here with the documented two-call
+            // pattern (size query, then fill). See `read_config_entry`.
+            unsafe { read_config_entry(api, get, options, key) }
+        };
 
         if let Some(v) = read("ep.device_index") {
             match v.trim().parse::<usize>() {
                 Ok(i) => out.device_index = Some(i),
-                Err(_) => log::warn!("ep.device_index: `{v}` is not a non-negative integer; ignoring"),
+                Err(_) => {
+                    log::warn!("ep.device_index: `{v}` is not a non-negative integer; ignoring")
+                }
             }
         }
         if let Some(v) = read("ep.enable_validation") {
@@ -126,8 +130,12 @@ fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
-type ConfigEntryFn =
-    unsafe extern "C" fn(*const ort::OrtSessionOptions, *const c_char, *mut c_char, *mut usize) -> ort::OrtStatusPtr;
+type ConfigEntryFn = unsafe extern "C" fn(
+    *const ort::OrtSessionOptions,
+    *const c_char,
+    *mut c_char,
+    *mut usize,
+) -> ort::OrtStatusPtr;
 
 /// Read one session config entry using ORT's two-call (size, then fill) protocol.
 ///
@@ -167,7 +175,12 @@ unsafe fn read_config_entry(
     // pointer so ORT can report what it actually wrote.
     unsafe {
         let mut written = size;
-        let status = get(options, c_key.as_ptr(), buf.as_mut_ptr().cast::<c_char>(), &mut written);
+        let status = get(
+            options,
+            c_key.as_ptr(),
+            buf.as_mut_ptr().cast::<c_char>(),
+            &mut written,
+        );
         if !status.is_null() {
             sys::release_status(api, status);
             return None;

@@ -174,7 +174,9 @@ fn compile_shaders(out_dir: &Path) {
         let entries = fs::read_dir(&glsl_dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", glsl_dir.display()));
         for entry in entries {
-            let path = entry.expect("cannot read a shaders/glsl directory entry").path();
+            let path = entry
+                .expect("cannot read a shaders/glsl directory entry")
+                .path();
             if path.is_file() && path.extension() == Some(OsStr::new("comp")) {
                 println!("cargo:rerun-if-changed={}", path.display());
                 direct_sources.push(path);
@@ -338,7 +340,11 @@ fn parse_shader_variants(path: &Path) -> Vec<VariantRow> {
                 lineno + 1
             );
         }
-        rows.push(VariantRow { stem, glsl_source, defines });
+        rows.push(VariantRow {
+            stem,
+            glsl_source,
+            defines,
+        });
     }
     rows
 }

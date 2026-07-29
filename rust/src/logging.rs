@@ -51,6 +51,12 @@ static INIT: Once = Once::new();
 /// check. Both are owned by ORT and outlive the window between those two calls.
 static ORT_LOGGER: AtomicPtr<ort::OrtLogger> = AtomicPtr::new(std::ptr::null_mut());
 static ORT_API: AtomicPtr<ort::OrtApi> = AtomicPtr::new(std::ptr::null_mut());
+/// The process-default logger from `CreateEpFactories`, kept so a session logger can be unwound.
+///
+/// `CreateEp` swaps in the session's logger; when that session goes away the pointer becomes
+/// dangling, so `ReleaseEp` must put this one back. Without it, every log record emitted between
+/// one session's teardown and the next session's creation would forward into freed memory.
+static ORT_DEFAULT_LOGGER: AtomicPtr<ort::OrtLogger> = AtomicPtr::new(std::ptr::null_mut());
 
 struct EpLogger {
     level: LevelFilter,
@@ -74,7 +80,13 @@ impl Log for EpLogger {
         };
         let message = record.args().to_string();
         eprintln!("[vulkan-ep] {tag}: {message}");
-        forward_to_ort(record.level(), record.target(), &message);
+        forward_to_ort(
+            record.level(),
+            record.target(),
+            &message,
+            record.file(),
+            record.line().unwrap_or(0),
+        );
     }
 
     fn flush(&self) {}
@@ -94,7 +106,18 @@ fn ort_severity(level: Level) -> ort::OrtLoggingLevel {
 
 /// Forward one record into ORT's logger, if one is attached. Best-effort and never panics: a
 /// logging failure must not be able to fail an inference.
-fn forward_to_ort(level: Level, target: &str, message: &str) {
+///
+/// # `file_path` must never be null
+///
+/// `OrtApi::Logger_LogMessage` annotates `file_path` `_In_z_`, not `_In_opt_z_`, and ORT means it.
+/// On Windows the implementation does
+/// `const std::string s = onnxruntime::ToUTF8String(file_path);`, which constructs a
+/// `std::wstring` from the pointer — a null there is an access violation inside `wcslen`, not an
+/// ignored argument. (On Unix it is `CodeLocation(file_path, …)`, i.e. `std::string{nullptr}`,
+/// equally undefined.) We passed null here and it killed the first ORT process that ever loaded
+/// this plugin. So `file_path` is always a real, NUL-terminated, platform-width string; when a
+/// record carries no source location we substitute [`UNKNOWN_FILE`] rather than null.
+fn forward_to_ort(level: Level, target: &str, message: &str, file: Option<&str>, line: u32) {
     let logger = ORT_LOGGER.load(Ordering::Acquire);
     let api = ORT_API.load(Ordering::Acquire);
     if logger.is_null() || api.is_null() {
@@ -107,13 +130,15 @@ fn forward_to_ort(level: Level, target: &str, message: &str) {
     let Ok(c_target) = CString::new(target.replace('\0', "?")) else {
         return;
     };
+    let c_file = ort_path(file.unwrap_or(UNKNOWN_FILE));
 
     // SAFETY: `api` and `logger` were published by `attach_ort_logger` from pointers ORT handed to
     // `CreateEpFactories`, and are cleared by `detach_ort_logger` before ORT can invalidate them,
-    // so a non-null read here is a live ORT logger. `Logger_LogMessage` copies both strings, so
-    // the `CString`s only need to outlive the call. `file_path` is null (permitted: ORT treats it
-    // as "no source location"), which also side-steps the `wchar_t` width difference between
-    // Windows (u16) and Unix (u32). The returned status is owned by us and released immediately.
+    // so a non-null read here is a live ORT logger. `Logger_LogMessage` copies all three strings,
+    // so the buffers only need to outlive the call. Every string argument is non-null and
+    // NUL-terminated, which the `_In_z_` annotations require — see this function's doc comment for
+    // what happens when `file_path` is not. The returned status is owned by us and released
+    // immediately.
     unsafe {
         let Some(log_message) = (*api).Logger_LogMessage else {
             return;
@@ -122,12 +147,32 @@ fn forward_to_ort(level: Level, target: &str, message: &str) {
             logger,
             ort_severity(level),
             c_message.as_ptr(),
-            std::ptr::null(),
-            0,
+            c_file.as_ptr(),
+            i32::try_from(line).unwrap_or(0),
             c_target.as_ptr(),
         );
         crate::sys::release_status(api, status);
     }
+}
+
+/// Stand-in `file_path` for a record with no source location. Never empty, never null.
+pub const UNKNOWN_FILE: &str = "<onnxruntime-ep-vulkan>";
+
+/// Encode a path as an `ORTCHAR_T` string: UTF-16 on Windows, UTF-8 elsewhere.
+///
+/// Returns an owned buffer whose `as_ptr()` is a valid NUL-terminated string of the platform's
+/// `ORTCHAR_T` width. Interior NULs are dropped/replaced rather than allowed to truncate.
+#[cfg(windows)]
+fn ort_path(s: &str) -> Vec<u16> {
+    s.encode_utf16()
+        .filter(|c| *c != 0)
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn ort_path(s: &str) -> CString {
+    CString::new(s.replace('\0', "?")).unwrap_or_else(|_| CString::default())
 }
 
 /// Start forwarding log records into ORT's logger.
@@ -144,9 +189,38 @@ pub unsafe fn attach_ort_logger(api: *const ort::OrtApi, logger: *const ort::Ort
     ORT_LOGGER.store(logger.cast_mut(), Ordering::Release);
 }
 
+/// Attach the *process-default* logger and remember it, so a session logger can later be unwound
+/// back to it by [`restore_default_ort_logger`].
+///
+/// # Safety
+/// Same contract as [`attach_ort_logger`]; called only from `CreateEpFactories` with the logger
+/// ORT guarantees lives until `ReleaseEpFactory`.
+pub unsafe fn attach_default_ort_logger(api: *const ort::OrtApi, logger: *const ort::OrtLogger) {
+    if api.is_null() || logger.is_null() {
+        return;
+    }
+    ORT_DEFAULT_LOGGER.store(logger.cast_mut(), Ordering::Release);
+    // SAFETY: both pointers are non-null and, per the caller's contract, live.
+    unsafe { attach_ort_logger(api, logger) };
+}
+
+/// Put the process-default logger back after a session's logger goes away.
+///
+/// Called from `ReleaseEp`. If there is no default (the factory was created without one) this
+/// detaches entirely rather than leaving the dead session logger in place — silence is correct,
+/// a dangling pointer is not.
+pub fn restore_default_ort_logger() {
+    let default = ORT_DEFAULT_LOGGER.load(Ordering::Acquire);
+    ORT_LOGGER.store(default, Ordering::Release);
+    if default.is_null() {
+        ORT_API.store(std::ptr::null_mut(), Ordering::Release);
+    }
+}
+
 /// Stop forwarding to ORT. Idempotent. Called before the pointers can become dangling.
 pub fn detach_ort_logger() {
     ORT_LOGGER.store(std::ptr::null_mut(), Ordering::Release);
+    ORT_DEFAULT_LOGGER.store(std::ptr::null_mut(), Ordering::Release);
     ORT_API.store(std::ptr::null_mut(), Ordering::Release);
 }
 
@@ -175,7 +249,10 @@ fn resolve_level() -> LevelFilter {
     if std::env::var_os(ENV_TRACE).is_some_and(|v| !v.is_empty()) {
         return LevelFilter::Debug;
     }
-    if std::env::var(ENV_VERBOSE).map(|v| v == "1").unwrap_or(false) {
+    if std::env::var(ENV_VERBOSE)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return LevelFilter::Info;
     }
     LevelFilter::Warn
@@ -224,7 +301,34 @@ mod tests {
     fn forwarding_is_a_noop_without_an_attached_logger() {
         detach_ort_logger();
         // Must not dereference anything: the pointers are null.
-        forward_to_ort(Level::Error, "test", "no logger attached");
+        forward_to_ort(Level::Error, "test", "no logger attached", Some("x.rs"), 1);
+    }
+
+    #[test]
+    fn ort_path_is_never_empty_and_is_nul_terminated() {
+        // ORT annotates `file_path` `_In_z_`; a null or unterminated buffer is an access
+        // violation inside ORT, not a tolerated argument.
+        for s in ["src/logging.rs", UNKNOWN_FILE, "", "a\0b"] {
+            let buf = ort_path(s);
+            #[cfg(windows)]
+            {
+                assert_eq!(buf.last().copied(), Some(0), "missing NUL for {s:?}");
+                assert!(
+                    buf[..buf.len() - 1].iter().all(|c| *c != 0),
+                    "interior NUL for {s:?}"
+                );
+            }
+            #[cfg(not(windows))]
+            {
+                assert!(!buf.as_bytes().contains(&0), "interior NUL for {s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_file_substitute_is_a_real_string() {
+        assert!(!UNKNOWN_FILE.is_empty());
+        assert!(!UNKNOWN_FILE.contains('\0'));
     }
 
     #[test]

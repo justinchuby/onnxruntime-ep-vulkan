@@ -303,11 +303,7 @@ impl Barriers {
     /// # Safety
     /// `cb` must be a primary command buffer in the recording state. Every `BufferDep::buffer`
     /// must be live for the duration of the command buffer's execution.
-    pub(crate) unsafe fn buffer_deps(
-        &self,
-        cb: vk::CommandBuffer,
-        deps: &[BufferDep],
-    ) {
+    pub(crate) unsafe fn buffer_deps(&self, cb: vk::CommandBuffer, deps: &[BufferDep]) {
         if deps.is_empty() {
             return;
         }
@@ -330,12 +326,7 @@ impl Barriers {
     ///
     /// # Safety
     /// `cb` must be a primary command buffer in the recording state.
-    pub(crate) unsafe fn execution_only(
-        &self,
-        cb: vk::CommandBuffer,
-        src: Stage,
-        dst: Stage,
-    ) {
+    pub(crate) unsafe fn execution_only(&self, cb: vk::CommandBuffer, src: Stage, dst: Stage) {
         match self {
             Barriers::Sync2(b) => {
                 // SAFETY: cb is recording per caller.
@@ -394,12 +385,7 @@ impl Sync2Backend {
         unsafe { self.fns.cmd_pipeline_barrier2(cb, &dep_info) };
     }
 
-    unsafe fn execution_only(
-        &self,
-        cb: vk::CommandBuffer,
-        src: Stage,
-        dst: Stage,
-    ) {
+    unsafe fn execution_only(&self, cb: vk::CommandBuffer, src: Stage, dst: Stage) {
         // A pure execution barrier in sync2 is expressed as a VkMemoryBarrier2 with
         // stage masks but zero access masks (no memory visibility, only ordering).
         let mem_barrier = vk::MemoryBarrier2 {
@@ -462,12 +448,7 @@ impl LegacyBackend {
         }
     }
 
-    unsafe fn execution_only(
-        &self,
-        cb: vk::CommandBuffer,
-        src: Stage,
-        dst: Stage,
-    ) {
+    unsafe fn execution_only(&self, cb: vk::CommandBuffer, src: Stage, dst: Stage) {
         // SAFETY: cb is recording per caller. Zero barriers is valid — this is a pure execution
         // barrier; `vkCmdPipelineBarrier` with no barrier structs is spec-legal.
         unsafe {
@@ -531,10 +512,7 @@ mod tests {
         ];
         for v in all {
             let (stage, access) = to_sync2_flags(v);
-            assert!(
-                !stage.is_empty(),
-                "sync2 stage must be non-empty for {v:?}"
-            );
+            assert!(!stage.is_empty(), "sync2 stage must be non-empty for {v:?}");
             assert!(
                 !access.is_empty(),
                 "sync2 access must be non-empty for {v:?}"
@@ -606,8 +584,14 @@ mod tests {
             Stage::AllCommands,
         ];
         for s in all {
-            assert!(!stage_to_legacy(s).is_empty(), "legacy stage non-empty for {s:?}");
-            assert!(!stage_to_sync2(s).is_empty(), "sync2 stage non-empty for {s:?}");
+            assert!(
+                !stage_to_legacy(s).is_empty(),
+                "legacy stage non-empty for {s:?}"
+            );
+            assert!(
+                !stage_to_sync2(s).is_empty(),
+                "sync2 stage non-empty for {s:?}"
+            );
         }
     }
 
@@ -696,19 +680,37 @@ mod tests {
     fn stage_to_legacy_exact_values() {
         // Assert exact mapping table values so a typo or wrong-flag mistake fails a unit test
         // rather than silently producing a too-permissive barrier at runtime.
-        assert_eq!(stage_to_legacy(Stage::ComputeShader), vk::PipelineStageFlags::COMPUTE_SHADER);
-        assert_eq!(stage_to_legacy(Stage::Transfer), vk::PipelineStageFlags::TRANSFER);
+        assert_eq!(
+            stage_to_legacy(Stage::ComputeShader),
+            vk::PipelineStageFlags::COMPUTE_SHADER
+        );
+        assert_eq!(
+            stage_to_legacy(Stage::Transfer),
+            vk::PipelineStageFlags::TRANSFER
+        );
         assert_eq!(stage_to_legacy(Stage::Host), vk::PipelineStageFlags::HOST);
-        assert_eq!(stage_to_legacy(Stage::AllCommands), vk::PipelineStageFlags::ALL_COMMANDS);
+        assert_eq!(
+            stage_to_legacy(Stage::AllCommands),
+            vk::PipelineStageFlags::ALL_COMMANDS
+        );
     }
 
     #[test]
     fn stage_to_sync2_exact_values() {
-        assert_eq!(stage_to_sync2(Stage::ComputeShader), vk::PipelineStageFlags2::COMPUTE_SHADER);
+        assert_eq!(
+            stage_to_sync2(Stage::ComputeShader),
+            vk::PipelineStageFlags2::COMPUTE_SHADER
+        );
         // Transfer maps to ALL_TRANSFER in sync2, not TRANSFER — this covers both copy and blit.
-        assert_eq!(stage_to_sync2(Stage::Transfer), vk::PipelineStageFlags2::ALL_TRANSFER);
+        assert_eq!(
+            stage_to_sync2(Stage::Transfer),
+            vk::PipelineStageFlags2::ALL_TRANSFER
+        );
         assert_eq!(stage_to_sync2(Stage::Host), vk::PipelineStageFlags2::HOST);
-        assert_eq!(stage_to_sync2(Stage::AllCommands), vk::PipelineStageFlags2::ALL_COMMANDS);
+        assert_eq!(
+            stage_to_sync2(Stage::AllCommands),
+            vk::PipelineStageFlags2::ALL_COMMANDS
+        );
     }
 
     // ── Backend probe ─────────────────────────────────────────────────────────
@@ -771,7 +773,10 @@ mod tests {
         // SAFETY: removing a var.
         unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
         write_backend_probe(false);
-        assert!(!p.exists(), "probe must not create a file when env var is absent");
+        assert!(
+            !p.exists(),
+            "probe must not create a file when env var is absent"
+        );
     }
 
     // ── force_legacy overrides synchronization2 capability ───────────────────

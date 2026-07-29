@@ -426,7 +426,8 @@ mod tests {
     #[test]
     fn every_template_mentions_every_op_it_must_compile() {
         let glsl = shaders_dir().join("glsl");
-        let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut sources: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for v in manifest() {
             let src = sources.entry(v.source.clone()).or_insert_with(|| {
                 std::fs::read_to_string(glsl.join(&v.source))

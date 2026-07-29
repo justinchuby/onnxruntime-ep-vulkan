@@ -21,6 +21,140 @@ capability. It claims **zero nodes** — by design. Every model runs on CPU, cor
 
 ---
 
+## Before you report work complete: `cargo ci`
+
+```sh
+cd rust
+cargo ci
+```
+
+**Run this before saying a change is done.** It runs, in CI's own order, exactly the checks
+CI's Rust lanes run:
+
+| # | Check | Mirrors |
+|---|---|---|
+| 1 | `cargo fmt --all -- --check` | job `format` |
+| 2 | `cargo clippy --workspace --all-targets -- -D warnings` | job `build-test-{linux,windows}` |
+| 3 | `cargo build` | job `build-test-{linux,windows}` |
+| 4 | `cargo test` (includes the layering lint and the capability-dump suite) | job `build-test-linux` |
+
+```sh
+cargo ci --list     # show the checks and which CI job each mirrors, without running them
+cargo ci --fix      # same, but rustfmt rewrites instead of complaining
+cargo ci --release  # build and test optimised, as CI does (slower; catches release-only faults)
+```
+
+It runs **every** check even after one fails, so a single invocation shows you every problem.
+
+### Why this exists
+
+CI was red for four consecutive runs and nobody noticed. Every agent ran `cargo build`,
+`cargo clippy` and `cargo test`, saw green, and reported green — `cargo fmt --check` was
+never in that loop. "Green" meant *"the commands I happened to remember passed"*. That is a
+verification gap, not bad luck, and the fix is an artefact rather than a habit: `cargo ci` **is
+the list**. If CI gains a Rust check, add it to `CHECKS` in `xtask/src/main.rs` in the same
+commit.
+
+Clippy is run with `--workspace`, which is deliberately one notch stricter than CI: the tool
+that tells you CI will be green must not itself be the dirty thing.
+
+### It works without a Vulkan SDK
+
+If `glslc` is not found (neither `$VULKAN_SDK/bin/glslc` nor on `PATH`), `cargo ci` sets
+`ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1` for you so `build.rs` does not abort. It also
+sets `LIBCLANG_PATH` for bindgen if it can find a libclang and you have not set one.
+
+### What it *cannot* verify
+
+`cargo ci` prints this on success too, because it matters more than the word "passed":
+
+- **No shader has executed.** DESIGN.md §9.1.2: no GLSL in this repository has ever run on any
+  device, real or software. Everything `cargo ci` checks is host-side Rust logic — claim
+  predicates, translation, layering, FFI shape.
+- **Without a Vulkan SDK, no shader is even compiled.** A GLSL syntax error is invisible
+  locally; CI's Linux and Windows lanes are the first thing that compiles them.
+- **No Vulkan device is touched** — no lavapipe, no validation layers, no `vkCreateInstance`.
+- **No Python lane** — `tests/ops` (op correctness against the ORT CPU oracle, barrier parity,
+  claim diagnostics, no-ICD fallback) needs a real ONNX Runtime and is not run.
+- **One OS only.** CI builds Linux *and* Windows; a `cfg(unix)` path that does not compile is
+  invisible from a Windows machine.
+
+`cargo ci` green means CI's *Rust* lanes should pass. **It does not mean the EP works.**
+
+Note the second half of that sentence carefully: on 2026-07-29 the plugin was loaded by a real
+ONNX Runtime for the first time and killed the host process with an access violation, while the
+crate had 268 passing tests and a green `cargo ci`. See
+[the mock-ORT-host test](#the-mock-ort-host-test) for what now covers that gap and what still
+does not.
+
+### How it is wired
+
+`rust/.cargo/config.toml` defines `ci = "run --quiet --package xtask --"`; the sequence lives in
+the `xtask` package (`rust/xtask/`), which has **zero dependencies** so it cannot fail for a
+reason of its own on a fresh clone. `rust/Cargo.toml` declares `default-members = ["."]`, so a
+bare `cargo build` / `cargo test` — and CI's `--manifest-path rust/Cargo.toml` invocations —
+still mean "the EP crate only" and are completely unaffected by the workspace.
+
+`cargo ci` builds debug, for speed; CI builds `--release`. Use `cargo ci --release` when you want
+the same profile CI uses.
+
+---
+
+## The mock-ORT-host test
+
+[`tests/mock_ort/mod.rs`](tests/mock_ort/mod.rs) is a **hand-built ONNX Runtime**: a zeroed
+`OrtApi`, `OrtEpApi` and `OrtApiBase` with the slots we depend on filled in by Rust callbacks. It
+drives the exact sequence a real ORT performs during `register_execution_provider_library`:
+
+```
+CreateEpFactories
+  → GetName / GetVendor / GetVersion / GetVendorId
+  → GetSupportedDevices          (with fake CPU and GPU OrtHardwareDevices)
+  → CreateEp / ReleaseEp         (and a deliberately invalid two-device CreateEp)
+  → ReleaseEpFactory
+```
+
+The point is not that these calls succeed. The point is that **every mock callback checks ORT's
+own SAL annotations and fails the test if we violate one**: `_In_z_` strings must be non-null and
+NUL-terminated at the platform's `ORTCHAR_T` width, `_Outptr_` out-parameters must be written
+before a success return, every `OrtStatus` handed out must be released exactly once, and
+`OrtKeyValuePairs` must not leak. It also asserts that a log record emitted while the EP is
+registered actually arrives at the host's logger — the round trip, not just the call.
+
+Two test binaries drive that one host:
+
+| Test | How it reaches the plugin | What only it can catch |
+|---|---|---|
+| [`tests/host_registration.rs`](tests/host_registration.rs) | linked **rlib** | shares the plugin's `log` crate, so it can force a record through the bridge on demand |
+| [`tests/cdylib_load.rs`](tests/cdylib_load.rs) | `dlopen`s the built **cdylib** and resolves the entry points **by name**, as ORT does | packaging faults: a missing `#[unsafe(no_mangle)]` export, a wrong `crate-type`, an unresolvable dependent DLL |
+
+`cdylib_load` sets `ONNXRUNTIME_EP_VULKAN_VERBOSE=1` before loading, because a loaded library has
+its own private copy of `log` that the test cannot write to — raising the plugin's own level makes
+it emit the "loaded" line at the end of `CreateEpFactories`, which forces the same logger round
+trip that access-violated in CI.
+
+### Why it exists
+
+The plugin's first-ever load by a real ONNX Runtime ended in a Windows access violation inside
+`register_execution_provider_library`. The cause was one argument: `forward_to_ort` passed `NULL`
+for `Logger_LogMessage`'s `file_path`. ORT annotates it `_In_z_`, **not** `_In_opt_z_`, and on
+Windows the implementation does `onnxruntime::ToUTF8String(file_path)` — a `std::wstring`
+constructed from the pointer, which dereferences `NULL` unconditionally. Our side was flawless: we
+never touched it. No amount of testing *our* code could have found it, because the bug was in
+what we told ORT to do.
+
+That is the general shape of every FFI bug worth having a test for, so the mock host asserts the
+*host's* contract rather than our behaviour.
+
+### What it cannot catch
+
+It is not ONNX Runtime. It checks that we honour the contracts ORT's headers document, not that
+ORT's implementation is happy with us, and it never creates a Vulkan device or runs a shader.
+**"`cargo ci` is green" and "the plugin works in ORT" remain unrelated claims** — CI's Python lane
+is the only thing that proves the second.
+
+---
+
 ## Building
 
 ### Prerequisites
@@ -274,6 +408,8 @@ Both are enforced mechanically by [`tests/layering.rs`](tests/layering.rs):
 ```powershell
 cargo test --test layering
 ```
+
+(It also runs as part of `cargo ci` — see [Before you report work complete](#before-you-report-work-complete-cargo-ci).)
 
 It scans `src/ops/**/*.rs` for a forbidden vocabulary (`crate::sys`, `Ort*`, `ash`, `vk::`, `Vk*`,
 `unsafe`, …) after stripping comments and string literals, so documentation that *names* a

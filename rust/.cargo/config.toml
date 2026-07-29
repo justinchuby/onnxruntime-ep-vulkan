@@ -1,0 +1,10 @@
+# Cargo configuration for the Vulkan EP crate.
+#
+# `cargo ci` is the single command that runs everything CI's Rust lanes run — rustfmt, clippy,
+# build, and the test suite (which contains the layering lint and the capability-dump checks).
+# Run it before reporting work complete. See `rust/README.md` and `rust/xtask/src/main.rs`.
+#
+# An alias can only invoke one cargo subcommand, which is why the sequence lives in `xtask`
+# rather than here.
+[alias]
+ci = "run --quiet --package xtask --"

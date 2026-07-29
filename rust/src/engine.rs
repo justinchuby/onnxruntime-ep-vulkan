@@ -786,12 +786,20 @@ mod tests {
     fn pack_key_different_tile_config_differs() {
         let k1 = PackKey {
             initializer: "w".into(),
-            config: TileConfig { tile_n: 8, tile_m: 4, block_size: 32 },
+            config: TileConfig {
+                tile_n: 8,
+                tile_m: 4,
+                block_size: 32,
+            },
             variant: "v",
         };
         let k2 = PackKey {
             initializer: "w".into(),
-            config: TileConfig { tile_n: 16, tile_m: 4, block_size: 32 },
+            config: TileConfig {
+                tile_n: 16,
+                tile_m: 4,
+                block_size: 32,
+            },
             variant: "v",
         };
         assert_ne!(k1, k2, "different tile_n must differ");
@@ -831,15 +839,27 @@ mod tests {
 
     #[test]
     fn prepack_request_stores_pack_fn() {
-        let config = TileConfig { tile_n: 8, tile_m: 4, block_size: 32 };
+        let config = TileConfig {
+            tile_n: 8,
+            tile_m: 4,
+            block_size: 32,
+        };
         let req = PrepackRequest {
             key: PackKey {
                 initializer: "w".into(),
                 config: config.clone(),
                 variant: "v",
             },
-            weight: TensorRef { name: "weight".into(), desc: None, is_initializer: true },
-            scales: TensorRef { name: "scales".into(), desc: None, is_initializer: true },
+            weight: TensorRef {
+                name: "weight".into(),
+                desc: None,
+                is_initializer: true,
+            },
+            scales: TensorRef {
+                name: "scales".into(),
+                desc: None,
+                is_initializer: true,
+            },
             zero_points: None,
             pack_fn: dummy_pack_fn,
         };
@@ -900,7 +920,11 @@ mod tests {
         let ctx = StubCtx;
         let key = PackKey {
             initializer: "w".into(),
-            config: TileConfig { tile_n: 8, tile_m: 4, block_size: 32 },
+            config: TileConfig {
+                tile_n: 8,
+                tile_m: 4,
+                block_size: 32,
+            },
             variant: "v",
         };
         let result = ctx.resolve_prepacked(&key);
@@ -914,10 +938,20 @@ mod tests {
     #[test]
     fn default_bind_aliased_output_resolves_input() {
         let mut ctx = StubCtx;
-        let input = TensorRef { name: "past_key".into(), desc: None, is_initializer: false };
-        let out = OutRef { name: "present_key".into(), desc: None };
+        let input = TensorRef {
+            name: "past_key".into(),
+            desc: None,
+            is_initializer: false,
+        };
+        let out = OutRef {
+            name: "present_key".into(),
+            desc: None,
+        };
         let result = ctx.bind_aliased_output(&input, &out);
-        assert!(result.is_ok(), "default aliased should return resolve result");
+        assert!(
+            result.is_ok(),
+            "default aliased should return resolve result"
+        );
     }
 
     #[test]
@@ -933,7 +967,10 @@ mod tests {
             dispatch_offset: 0,
         };
         let result = ctx.dispatch_indirect(req);
-        assert!(result.is_err(), "default dispatch_indirect should return Err");
+        assert!(
+            result.is_err(),
+            "default dispatch_indirect should return Err"
+        );
         match result {
             Err(EpError::Internal(_)) => {}
             other => panic!("expected Internal, got {:?}", other),

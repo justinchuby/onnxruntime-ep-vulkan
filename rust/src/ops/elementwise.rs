@@ -38,13 +38,11 @@ use crate::registry::{OPSET_ANY, UNEXERCISED};
 const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
 
 /// Staging reason for ops whose attributes the plain template cannot carry.
-pub const NEEDS_PARAMS: &str =
-    "it carries attributes the plain elementwise template has no push-constant slot for; it needs \
+pub const NEEDS_PARAMS: &str = "it carries attributes the plain elementwise template has no push-constant slot for; it needs \
      the parameterised template variant";
 
 /// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
-pub const NEEDS_CAST_MATRIX: &str =
-    "its shader variant space is keyed on a source/destination dtype pair rather than a single \
+pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
      dtype, so it needs its own template and manifest column";
 
 crate::op_table! {
@@ -161,11 +159,9 @@ mod tests {
     fn every_row_is_staged_and_says_why() {
         for s in OPS {
             match s.status {
-                OpStatus::Staged(reason) => assert!(
-                    !reason.is_empty(),
-                    "{} is staged with no reason",
-                    s.op_type
-                ),
+                OpStatus::Staged(reason) => {
+                    assert!(!reason.is_empty(), "{} is staged with no reason", s.op_type)
+                }
                 OpStatus::Live => panic!(
                     "{} is live but no shader exists; flip it only with its variant and \
                      conformance test",
@@ -215,7 +211,15 @@ mod tests {
         // The honest-claiming rule in table form: an op whose attributes the template cannot
         // carry is staged with a *different* blocker from one that is merely waiting on a shader,
         // so "what is left to do" is readable straight off the table.
-        for op in ["LeakyRelu", "Elu", "Selu", "Clip", "Mod", "BitShift", "Gelu"] {
+        for op in [
+            "LeakyRelu",
+            "Elu",
+            "Selu",
+            "Clip",
+            "Mod",
+            "BitShift",
+            "Gelu",
+        ] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
             assert_eq!(
                 s.status,

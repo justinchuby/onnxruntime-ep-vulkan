@@ -1,3 +1,11 @@
+# `xtask` is the local CI-parity runner (`cargo ci`). It is a workspace member so that
+# `cargo run --package xtask` resolves without a `--manifest-path`, and it is excluded from
+# `default-members` so that a bare `cargo build` / `cargo test` here still means "the EP crate"
+# and nothing else — including in CI, which invokes `--manifest-path rust/Cargo.toml`.
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+
 [package]
 name = "onnxruntime-ep-vulkan"
 version = "0.28.0"
@@ -40,8 +48,13 @@ log = { version = "0.4", features = ["std"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
 
-[build-dependencies]
-# Generates the ORT plugin-EP C ABI bindings from the vendored headers in
+[dev-dependencies]
+# `tests/cdylib_load.rs` loads the *shipped* cdylib by path and resolves `CreateEpFactories` /
+# `ReleaseEpFactory` by name, exactly as ONNX Runtime does. Test-only: the plugin itself is never
+# the one doing the loading, so this never ships.
+libloading = "0.8"
+
+[build-dependencies]# Generates the ORT plugin-EP C ABI bindings from the vendored headers in
 # `third_party/onnxruntime/include`. See `rust/README.md` for the bindgen-vs-handwritten rationale.
 bindgen = "0.72"
 

@@ -21,7 +21,7 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, PINNED_BASELINE, NodeView, OPSET_ANY, OpSpec};
+use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE};
 use crate::require;
 
 /// Staging reason for rows that need the reduction template rather than a bespoke kernel.

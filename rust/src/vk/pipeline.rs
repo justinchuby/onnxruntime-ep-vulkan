@@ -135,7 +135,9 @@ impl PipelineCache {
             return self.entries.get(&key);
         }
         // SAFETY: spirv is valid SPIR-V per the caller's contract; ash_device is live.
-        let entry = unsafe { Self::create_entry(&self.ash_device, self.vk_cache, &key, spirv, binding_count)? };
+        let entry = unsafe {
+            Self::create_entry(&self.ash_device, self.vk_cache, &key, spirv, binding_count)?
+        };
         self.entries.insert(key.clone(), entry);
         self.entries.get(&key)
     }
@@ -183,7 +185,10 @@ impl PipelineCache {
             match ash_device.create_descriptor_set_layout(&dsl_info, None) {
                 Ok(d) => d,
                 Err(e) => {
-                    log::error!("vkCreateDescriptorSetLayout failed for '{}': {e}", key.shader);
+                    log::error!(
+                        "vkCreateDescriptorSetLayout failed for '{}': {e}",
+                        key.shader
+                    );
                     return None;
                 }
             }
@@ -292,7 +297,8 @@ impl Drop for PipelineCache {
             // session is tearing down).
             unsafe {
                 self.ash_device.destroy_pipeline(entry.pipeline, None);
-                self.ash_device.destroy_pipeline_layout(entry.pipeline_layout, None);
+                self.ash_device
+                    .destroy_pipeline_layout(entry.pipeline_layout, None);
                 self.ash_device
                     .destroy_descriptor_set_layout(entry.descriptor_set_layout, None);
             }
@@ -415,10 +421,10 @@ impl DispatchDescriptorPool {
     pub(crate) unsafe fn reset(&self) {
         // SAFETY: pool is valid; all sets are done per caller's contract.
         unsafe {
-            if let Err(e) = self.ash_device.reset_descriptor_pool(
-                self.pool,
-                vk::DescriptorPoolResetFlags::empty(),
-            ) {
+            if let Err(e) = self
+                .ash_device
+                .reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
+            {
                 log::error!("vkResetDescriptorPool failed: {e}");
             }
         }
@@ -442,11 +448,7 @@ fn spirv_bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
     let mut out = vec![0u32; words];
     // SAFETY: dst has the right capacity and alignment; src overlaps is impossible.
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            out.as_mut_ptr().cast::<u8>(),
-            bytes.len(),
-        );
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().cast::<u8>(), bytes.len());
     }
     out
 }

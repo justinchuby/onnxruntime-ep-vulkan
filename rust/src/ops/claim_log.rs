@@ -198,7 +198,10 @@ mod tests {
     fn a_decline_records_the_machine_readable_code() {
         // This is exactly Trinity's C1 assertion: the decline must be attributable, not merely
         // present.
-        let why = reason(DeclineCode::NotRegistered, "no Vulkan handler is registered");
+        let why = reason(
+            DeclineCode::NotRegistered,
+            "no Vulkan handler is registered",
+        );
         let l = line("com.microsoft::NotARealOp", "n0", 1, Err(&why));
         assert!(
             l.contains(r#""code":"not-registered""#),
@@ -230,7 +233,10 @@ mod tests {
         let why: DeclineReason = Cow::Borrowed("excluded by ep.max_claim_ops");
         let l = line("Add", "n0", 14, Err(&why));
         assert!(l.contains(r#""code":null"#), "{l}");
-        assert!(l.contains("max_claim_ops"), "the detail is still recorded: {l}");
+        assert!(
+            l.contains("max_claim_ops"),
+            "the detail is still recorded: {l}"
+        );
     }
 
     #[test]
@@ -239,7 +245,11 @@ mod tests {
         // input is: a name containing `"` must not produce a file that is not valid JSON.
         let l = line("Add", "he said \"hi\"\n\tand left", 14, Ok(()));
         assert!(l.contains(r#"he said \"hi\"\n\tand left"#), "{l}");
-        assert_eq!(l.matches('\n').count(), 0, "no raw newline may reach the file");
+        assert_eq!(
+            l.matches('\n').count(),
+            0,
+            "no raw newline may reach the file"
+        );
     }
 
     #[test]

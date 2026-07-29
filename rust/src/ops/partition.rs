@@ -396,7 +396,11 @@ mod tests {
 
     #[test]
     fn a_lone_elementwise_node_is_never_claimed() {
-        let v = evaluate(&lone_add_island(), &TransferModel::DISCRETE, &Policy::default());
+        let v = evaluate(
+            &lone_add_island(),
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+        );
         assert!(matches!(
             v,
             Verdict::Reject(RejectReason::TooSmall { nodes: 1, .. })
@@ -487,8 +491,7 @@ mod tests {
     #[test]
     fn retain_viable_splits_the_set() {
         let islands = vec![big_matmul_island(), lone_add_island(), big_matmul_island()];
-        let (kept, dropped) =
-            retain_viable(&islands, &TransferModel::DISCRETE, &Policy::default());
+        let (kept, dropped) = retain_viable(&islands, &TransferModel::DISCRETE, &Policy::default());
         assert_eq!(kept.len(), 2);
         assert_eq!(dropped.len(), 1);
     }
@@ -589,7 +592,10 @@ mod tests {
                 .collect(),
         };
         let f = shredded.boundary_time_fraction(&TransferModel::DISCRETE, &Policy::default());
-        assert!(f > 0.9, "a shredded graph should be almost all transfer: {f}");
+        assert!(
+            f > 0.9,
+            "a shredded graph should be almost all transfer: {f}"
+        );
     }
 
     #[test]

@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Local CI-parity check runner for onnxruntime-ep-vulkan. Not shipped."
+
+[dependencies]
+# Deliberately none. `cargo ci` must be runnable on a fresh clone with nothing
+# fetched, and it must not be able to fail for a reason of its own.

@@ -119,8 +119,7 @@ impl Capabilities {
     /// size range) may use that value safely. Otherwise the portable shared-memory variant must
     /// be selected (DESIGN.md §7.4, rule 4).
     pub fn subgroup_size_is_exact(&self) -> bool {
-        self.subgroup_size_range
-            .is_some_and(|r| r.is_exact())
+        self.subgroup_size_range.is_some_and(|r| r.is_exact())
     }
 
     /// Returns the known-exact subgroup width, or `None` when the width is not exactly known.
@@ -210,8 +209,8 @@ pub(crate) unsafe fn probe(
     let api_version =
         unsafe { instance.get_physical_device_properties(physical_device) }.api_version;
 
-    let query_ssc = has_ext("VK_EXT_subgroup_size_control")
-        || api_version >= vk::make_api_version(0, 1, 3, 0);
+    let query_ssc =
+        has_ext("VK_EXT_subgroup_size_control") || api_version >= vk::make_api_version(0, 1, 3, 0);
 
     // ── VkPhysicalDeviceProperties2 chain ─────────────────────────────────────
     let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
@@ -243,8 +242,8 @@ pub(crate) unsafe fn probe(
     unsafe { instance.get_physical_device_features2(physical_device, &mut features2) };
 
     // ── Derive Capabilities from the queried structs ───────────────────────────
-    let synchronization2 = has_ext("VK_KHR_synchronization2")
-        || api_version >= vk::make_api_version(0, 1, 3, 0);
+    let synchronization2 =
+        has_ext("VK_KHR_synchronization2") || api_version >= vk::make_api_version(0, 1, 3, 0);
 
     let subgroup_size_range = if query_ssc {
         Some(SubgroupSizeRange {
@@ -258,8 +257,7 @@ pub(crate) unsafe fn probe(
     // `can_require_subgroup_size`: only true when the *feature flag* is VK_TRUE.
     // MoltenVK: extension/1.3 present → query_ssc=true, ssc_props filled, but
     // `subgroupSizeControl == VK_FALSE` — Metal cannot set SIMD width per pipeline.
-    let can_require_subgroup_size =
-        query_ssc && ssc_features.subgroup_size_control == vk::TRUE;
+    let can_require_subgroup_size = query_ssc && ssc_features.subgroup_size_control == vk::TRUE;
 
     // fp16: shaderFloat16 = arithmetic is available.
     // TODO: probe VkPhysicalDevice{Float16Int8,16BitStorage}FeaturesKHR on 1.1 devices.
@@ -284,13 +282,9 @@ pub(crate) unsafe fn probe(
 ///
 /// # Safety
 /// `instance` and `physical_device` must be live and related.
-unsafe fn detect_uma(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
+unsafe fn detect_uma(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> bool {
     // SAFETY: instance is live per caller; physical_device came from that instance.
-    let mem_props =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
     let heap_count = mem_props.memory_heap_count as usize;
 
@@ -401,10 +395,10 @@ mod tests {
         // MoltenVK: reports 1.3 core (so subgroup_size_range is Some) but subgroupSizeControl
         // is VK_FALSE (Metal cannot control SIMD width per pipeline).
         let caps = Capabilities {
-            synchronization2: true,   // 1.3 core
-            subgroup_size: 32,        // Apple GPU fixed wave = 32
+            synchronization2: true, // 1.3 core
+            subgroup_size: 32,      // Apple GPU fixed wave = 32
             subgroup_size_range: Some(SubgroupSizeRange { min: 32, max: 32 }),
-            can_require_subgroup_size: false,  // <── the MoltenVK distinction
+            can_require_subgroup_size: false, // <── the MoltenVK distinction
             shader_float16: true,
             subgroup_supported_ops: vk::SubgroupFeatureFlags::BASIC,
             is_uma: true,

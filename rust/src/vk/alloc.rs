@@ -49,13 +49,11 @@
 //! `engine::BufferView` token side-table in `ep.rs`.
 
 use ash::vk;
+use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator as GpuAllocator,
     AllocatorCreateDesc,
 };
-use gpu_allocator::MemoryLocation;
-
-
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Memory classes
@@ -224,9 +222,9 @@ impl Allocator {
         // SAFETY: buffer is valid; allocation.memory() is a valid VkDeviceMemory with
         // allocation.offset() as the correct byte offset.
         unsafe {
-            if let Err(e) = self
-                .ash_device
-                .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+            if let Err(e) =
+                self.ash_device
+                    .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
             {
                 log::error!("vkBindBufferMemory failed for '{name}': {e}");
                 // Free the gpu-allocator block before dropping the buffer.
@@ -264,11 +262,7 @@ impl Allocator {
     /// Convenience: allocate a device-local buffer for general compute I/O.
     ///
     /// `STORAGE_BUFFER` usage + `TRANSFER_DST` so it can receive staged uploads.
-    pub(crate) unsafe fn alloc_device(
-        &mut self,
-        name: &str,
-        size: u64,
-    ) -> Option<GpuBuffer> {
+    pub(crate) unsafe fn alloc_device(&mut self, name: &str, size: u64) -> Option<GpuBuffer> {
         // SAFETY: forwarding to alloc which has the same contract.
         unsafe {
             self.alloc(
@@ -304,11 +298,7 @@ impl Allocator {
     /// Convenience: allocate an upload (staging) buffer.
     ///
     /// `TRANSFER_SRC` — written by the CPU, read by a `vkCmdCopyBuffer` command.
-    pub(crate) unsafe fn alloc_upload(
-        &mut self,
-        name: &str,
-        size: u64,
-    ) -> Option<GpuBuffer> {
+    pub(crate) unsafe fn alloc_upload(&mut self, name: &str, size: u64) -> Option<GpuBuffer> {
         // SAFETY: forwarding to alloc which has the same contract.
         unsafe {
             self.alloc(
@@ -323,11 +313,7 @@ impl Allocator {
     /// Convenience: allocate a download (readback) buffer.
     ///
     /// `TRANSFER_DST` — written by `vkCmdCopyBuffer`, read by the CPU after a fence.
-    pub(crate) unsafe fn alloc_download(
-        &mut self,
-        name: &str,
-        size: u64,
-    ) -> Option<GpuBuffer> {
+    pub(crate) unsafe fn alloc_download(&mut self, name: &str, size: u64) -> Option<GpuBuffer> {
         // SAFETY: forwarding to alloc which has the same contract.
         unsafe {
             self.alloc(

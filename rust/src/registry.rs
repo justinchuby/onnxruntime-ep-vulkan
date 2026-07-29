@@ -874,8 +874,7 @@ pub const NO_SHADER: &str = "its compute shader has not been written yet";
 /// The exit is mechanical, not editorial: when the dispatch path exists and a differential test
 /// runs the variant against the CPU EP on a real device, the row's status becomes `Live` in a
 /// one-word diff. Until then the CPU EP runs these nodes and is always right.
-pub const UNEXERCISED: &str =
-    "its compute shader compiles but has never executed on a device, so claiming it would be a \
+pub const UNEXERCISED: &str = "its compute shader compiles but has never executed on a device, so claiming it would be a \
      bet rather than a capability";
 
 /// The blocker for the XL kernels: committed work, no template leverage, not written yet.
@@ -1318,11 +1317,8 @@ pub fn spec_for(desc: &NodeDesc) -> Option<&'static OpSpec> {
 ///
 /// **Mouse fills in the non-`None` paths.** Switch owns the dispatch machinery. The types here
 /// must match [`crate::engine::CompileContext`].
-pub type CompileHook = fn(
-    spec: &OpSpec,
-    desc: &NodeDesc,
-    ctx: &mut dyn crate::engine::CompileContext,
-) -> EpResult<()>;
+pub type CompileHook =
+    fn(spec: &OpSpec, desc: &NodeDesc, ctx: &mut dyn crate::engine::CompileContext) -> EpResult<()>;
 
 /// Return the compile hook for this node, if any.
 ///
@@ -1368,7 +1364,9 @@ mod tests {
 
     #[test]
     fn registry_keys_are_unique() {
-        let mut keys: Vec<String> = all_specs().map(|s| s.qualified_name().into_owned()).collect();
+        let mut keys: Vec<String> = all_specs()
+            .map(|s| s.qualified_name().into_owned())
+            .collect();
         keys.sort_unstable();
         let before = keys.len();
         keys.dedup();
@@ -1467,7 +1465,10 @@ mod tests {
             let own = s
                 .schema_baseline()
                 .unwrap_or_else(|| panic!("`{key}` has no schema baseline"));
-            assert!(!own.verified_on.is_empty(), "`{key}` has no verification date");
+            assert!(
+                !own.verified_on.is_empty(),
+                "`{key}` has no verification date"
+            );
         }
     }
 

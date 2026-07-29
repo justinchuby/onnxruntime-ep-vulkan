@@ -37,7 +37,7 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, PINNED_BASELINE, NodeView, OPSET_ANY, OpSpec, XL_KERNEL};
+use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE, XL_KERNEL};
 use crate::{deny, require};
 
 /// `com.microsoft.MatMulNBits`, as of ORT 1.28.
@@ -290,7 +290,10 @@ mod tests {
             assert!(supports_block_size(good));
         }
         for bad in [0, 1, 24, 48, 96, 256] {
-            assert!(!supports_block_size(bad), "{bad} is not a claimed block size");
+            assert!(
+                !supports_block_size(bad),
+                "{bad} is not a claimed block size"
+            );
         }
     }
 

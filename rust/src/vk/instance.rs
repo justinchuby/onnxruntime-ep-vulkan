@@ -35,8 +35,8 @@ use std::ffi::{CStr, CString};
 
 use ash::vk;
 
-use crate::engine::{DeviceInfo, DeviceKind};
 use super::caps::{self, Capabilities};
+use crate::engine::{DeviceInfo, DeviceKind};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Instance
@@ -94,8 +94,8 @@ impl Instance {
 
         if enable_validation {
             // SAFETY: entry is live; this is a simple property query with no side effects.
-            let available = unsafe { entry.enumerate_instance_layer_properties() }
-                .unwrap_or_default();
+            let available =
+                unsafe { entry.enumerate_instance_layer_properties() }.unwrap_or_default();
             let present = available.iter().any(|l| {
                 // SAFETY: layer_name is a null-terminated char array from the Vulkan driver.
                 let name = unsafe { CStr::from_ptr(l.layer_name.as_ptr()) };
@@ -112,8 +112,7 @@ impl Instance {
         }
 
         // ── Build application info ────────────────────────────────────────────
-        let app_name =
-            CString::new("onnxruntime-ep-vulkan").expect("no interior NUL in app name");
+        let app_name = CString::new("onnxruntime-ep-vulkan").expect("no interior NUL in app name");
         let engine_name = CString::new("vulkan-ep").expect("no interior NUL in engine name");
 
         let app_info = vk::ApplicationInfo::default()
@@ -135,14 +134,15 @@ impl Instance {
         let handle = match unsafe { entry.create_instance(&create_info, None) } {
             Ok(h) => h,
             Err(e) => {
-                log::warn!(
-                    "vkCreateInstance failed ({e:?}). The EP will advertise no devices."
-                );
+                log::warn!("vkCreateInstance failed ({e:?}). The EP will advertise no devices.");
                 return None;
             }
         };
 
-        Some(Instance { _entry: entry, handle })
+        Some(Instance {
+            _entry: entry,
+            handle,
+        })
     }
 
     /// The raw `ash::Instance`, for use by other modules within `vk/`.
@@ -177,17 +177,21 @@ impl Instance {
             let mut props2 = vk::PhysicalDeviceProperties2::default();
             let _ = props2.push_next(&mut subgroup_props);
             // SAFETY: handle and pdev are live; chain structs on the stack, no dangling refs.
-            unsafe { self.handle.get_physical_device_properties2(pdev, &mut props2) };
+            unsafe {
+                self.handle
+                    .get_physical_device_properties2(pdev, &mut props2)
+            };
 
             // ── Memory properties ─────────────────────────────────────────────
             // SAFETY: handle and pdev are live.
-            let mem_props =
-                unsafe { self.handle.get_physical_device_memory_properties(pdev) };
+            let mem_props = unsafe { self.handle.get_physical_device_memory_properties(pdev) };
 
             // ── Queue families ────────────────────────────────────────────────
             // SAFETY: handle and pdev are live.
-            let queue_families =
-                unsafe { self.handle.get_physical_device_queue_family_properties(pdev) };
+            let queue_families = unsafe {
+                self.handle
+                    .get_physical_device_queue_family_properties(pdev)
+            };
 
             let compute_family = queue_families
                 .iter()
@@ -195,9 +199,13 @@ impl Instance {
                 .map(|i| i as u32);
 
             // ── Apply the gate ────────────────────────────────────────────────
-            if let Err(reason) =
-                passes_gate(&props, &props.limits, &mem_props, compute_family, &subgroup_props)
-            {
+            if let Err(reason) = passes_gate(
+                &props,
+                &props.limits,
+                &mem_props,
+                compute_family,
+                &subgroup_props,
+            ) {
                 let name = device_name_str(&props);
                 log::debug!("Physical device {idx} ({name}): gate failed: {reason}");
                 continue;
@@ -322,8 +330,11 @@ pub(crate) fn passes_gate(
 
     // R6 — At least one DEVICE_LOCAL heap and at least one HOST_VISIBLE memory type.
     let heap_count = mem_props.memory_heap_count as usize;
-    let has_device_local = (0..heap_count)
-        .any(|i| mem_props.memory_heaps[i].flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL));
+    let has_device_local = (0..heap_count).any(|i| {
+        mem_props.memory_heaps[i]
+            .flags
+            .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
+    });
     if !has_device_local {
         return Err("R6a: no DEVICE_LOCAL memory heap");
     }
@@ -424,11 +435,11 @@ mod tests {
         m.memory_types[0].heap_index = 0;
         m.memory_types[0].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
         m.memory_types[1].heap_index = 1;
-        m.memory_types[1].property_flags = vk::MemoryPropertyFlags::HOST_VISIBLE
-            | vk::MemoryPropertyFlags::HOST_COHERENT;
+        m.memory_types[1].property_flags =
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
         m.memory_types[2].heap_index = 0;
-        m.memory_types[2].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL
-            | vk::MemoryPropertyFlags::HOST_VISIBLE; // UMA type
+        m.memory_types[2].property_flags =
+            vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE; // UMA type
         m
     }
 
@@ -461,14 +472,26 @@ mod tests {
     fn r1_rejects_vulkan_1_0() {
         let mut props = good_props();
         props.api_version = vk::make_api_version(0, 1, 0, 0);
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &good_mem_props(),
+            Some(0),
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R1: Vulkan API version < 1.1"));
     }
 
     #[test]
     fn r2_rejects_no_compute_queue() {
         let props = good_props();
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), None, &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &good_mem_props(),
+            None,
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R2: no compute queue family"));
     }
 
@@ -476,7 +499,13 @@ mod tests {
     fn r3_rejects_low_invocation_count() {
         let mut props = good_props();
         props.limits.max_compute_work_group_invocations = 128;
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &good_mem_props(),
+            Some(0),
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R3: maxComputeWorkGroupInvocations < 256"));
     }
 
@@ -485,7 +514,14 @@ mod tests {
         let mut props = good_props();
         props.limits.max_compute_work_group_invocations = 256;
         assert!(
-            passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &good_subgroup_props()).is_ok()
+            passes_gate(
+                &props,
+                good_limits(&props),
+                &good_mem_props(),
+                Some(0),
+                &good_subgroup_props()
+            )
+            .is_ok()
         );
     }
 
@@ -493,7 +529,13 @@ mod tests {
     fn r4_rejects_small_shared_memory() {
         let mut props = good_props();
         props.limits.max_compute_shared_memory_size = 8192;
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &good_mem_props(),
+            Some(0),
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R4: maxComputeSharedMemorySize < 16384"));
     }
 
@@ -502,7 +544,14 @@ mod tests {
         let mut props = good_props();
         props.limits.max_compute_shared_memory_size = 16384;
         assert!(
-            passes_gate(&props, good_limits(&props), &good_mem_props(), Some(0), &good_subgroup_props()).is_ok()
+            passes_gate(
+                &props,
+                good_limits(&props),
+                &good_mem_props(),
+                Some(0),
+                &good_subgroup_props()
+            )
+            .is_ok()
         );
     }
 
@@ -532,7 +581,13 @@ mod tests {
             m.memory_heaps[i].flags = vk::MemoryHeapFlags::empty();
         }
         let props = good_props();
-        let r = passes_gate(&props, good_limits(&props), &m, Some(0), &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &m,
+            Some(0),
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R6a: no DEVICE_LOCAL memory heap"));
     }
 
@@ -544,7 +599,13 @@ mod tests {
             m.memory_types[i].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
         }
         let props = good_props();
-        let r = passes_gate(&props, good_limits(&props), &m, Some(0), &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &m,
+            Some(0),
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R6b: no HOST_VISIBLE memory type"));
     }
 
@@ -553,7 +614,13 @@ mod tests {
         // R1 is checked before R2: version failure is reported first.
         let mut props = good_props();
         props.api_version = vk::make_api_version(0, 1, 0, 0);
-        let r = passes_gate(&props, good_limits(&props), &good_mem_props(), None, &good_subgroup_props());
+        let r = passes_gate(
+            &props,
+            good_limits(&props),
+            &good_mem_props(),
+            None,
+            &good_subgroup_props(),
+        );
         assert_eq!(r, Err("R1: Vulkan API version < 1.1"));
     }
 

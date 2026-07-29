@@ -62,10 +62,7 @@ impl CommandPool {
     /// # Safety
     /// - `ash_device` must be a live logical device for the lifetime of the returned `CommandPool`.
     /// - `queue_family` must be the compute queue family index reported by `Device::compute_queue_family()`.
-    pub(crate) unsafe fn new(
-        ash_device: &ash::Device,
-        queue_family: u32,
-    ) -> Option<Self> {
+    pub(crate) unsafe fn new(ash_device: &ash::Device, queue_family: u32) -> Option<Self> {
         let pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family);

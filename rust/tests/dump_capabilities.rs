@@ -39,7 +39,10 @@ fn dump_lists_every_registered_row_with_a_schema_baseline_column() {
     assert!(stdout.contains("schema baseline"), "{stdout}");
 
     let registered = onnxruntime_vulkan_ep::registry::all_specs().count();
-    assert!(registered > 0, "the registry is empty; this test proves nothing");
+    assert!(
+        registered > 0,
+        "the registry is empty; this test proves nothing"
+    );
     for spec in onnxruntime_vulkan_ep::registry::all_specs() {
         let name = spec.qualified_name();
         assert!(
@@ -64,7 +67,10 @@ fn json_output_is_well_formed_enough_to_diff() {
         "unbalanced braces in JSON output"
     );
     // No trailing comma before the closing bracket of the ops array.
-    assert!(!stdout.contains(",\n  ]"), "trailing comma in ops array:\n{stdout}");
+    assert!(
+        !stdout.contains(",\n  ]"),
+        "trailing comma in ops array:\n{stdout}"
+    );
 }
 
 #[test]

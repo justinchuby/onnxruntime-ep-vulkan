@@ -36,7 +36,7 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, PINNED_BASELINE, NodeView, OPSET_ANY, OpSpec, XL_KERNEL};
+use crate::registry::{ContribSchema, NodeView, OPSET_ANY, OpSpec, PINNED_BASELINE, XL_KERNEL};
 use crate::require;
 
 /// `com.microsoft.GroupQueryAttention`.
@@ -200,8 +200,14 @@ mod tests {
 
     #[test]
     fn grouped_head_ratios() {
-        assert!(head_grouping_is_supported(32, 8), "Qwen3-style 4:1 grouping");
-        assert!(head_grouping_is_supported(16, 16), "MHA is GQA with ratio 1");
+        assert!(
+            head_grouping_is_supported(32, 8),
+            "Qwen3-style 4:1 grouping"
+        );
+        assert!(
+            head_grouping_is_supported(16, 16),
+            "MHA is GQA with ratio 1"
+        );
         assert!(!head_grouping_is_supported(30, 8), "not a whole ratio");
         assert!(!head_grouping_is_supported(8, 0));
         assert!(!head_grouping_is_supported(0, 8));

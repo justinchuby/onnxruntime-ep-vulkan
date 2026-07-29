@@ -194,6 +194,10 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
 
-    if json { dump_json() } else { dump_human() }
+    if json {
+        dump_json()
+    } else {
+        dump_human()
+    }
     std::process::ExitCode::SUCCESS
 }
