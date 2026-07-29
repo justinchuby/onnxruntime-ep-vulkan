@@ -31,7 +31,7 @@ use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC};
 use crate::ops::common::templates;
-use crate::registry::OpStatus::Staged;
+use crate::registry::OpStatus::{Live, Staged};
 use crate::registry::{NodeView, OPSET_ANY, OPSET_STD_SWISH, OpSpec, UNEXERCISED};
 
 /// `Equal` compares booleans as well as numbers.
@@ -62,7 +62,7 @@ crate::op_table! {
     //
     //  op            domain  opset window        caps      kernel                       claim               translate               status
     // ---------------------------------------------------------------------------------------
-    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Live;
     "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
     "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
     "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
@@ -196,17 +196,27 @@ mod tests {
     }
 
     #[test]
-    fn every_row_is_staged_and_says_why() {
+    fn every_row_has_a_status_that_matches_its_shader_coverage() {
+        use crate::engine::shaders;
         for s in OPS {
             match s.status {
                 OpStatus::Staged(reason) => {
                     assert!(!reason.is_empty(), "{} is staged with no reason", s.op_type)
                 }
-                OpStatus::Live => panic!(
-                    "{} is live but no shader exists; flip it only with its variant and \
-                     conformance test",
-                    s.op_type
-                ),
+                OpStatus::Live => {
+                    // A live row promises its shader compiles and has been executed on a device.
+                    // Verify at minimum that the shader variant exists in the binary.
+                    let any_shader = s.caps.iter().any(|d| {
+                        s.kernel
+                            .stem(d)
+                            .is_some_and(|stem| shaders::find(stem).is_some())
+                    });
+                    assert!(
+                        any_shader,
+                        "{} is live but has no compiled shader variant in the binary",
+                        s.op_type
+                    );
+                }
             }
         }
     }

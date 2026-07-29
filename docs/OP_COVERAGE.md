@@ -580,6 +580,23 @@ input with no intervening ops, and Qwen3's Q/K norm sits between them — so **Q
 happens for Qwen3**. Three separate `MatMul` nodes, not one packed one. That is a partitioning
 input, and it makes the GEMM the T2 target it already was.
 
+> **Corrected 2026-07-29 (§4.21.2, contradiction 3).** The sentence above is true of Qwen3 and was
+> wrongly generalised: I treated packed QKV as a form we would not meet. The Foundry Local census
+> shows **both** cached ORT-GenAI models pack QKV on *every* layer — `GroupQueryAttention` inputs 1
+> and 2 are empty strings and input 0 carries the fused `qkv_proj` output. "Never happens for
+> Qwen3" is a statement about one model family, not about the producer. The predicate has been
+> narrowed to require inputs 1 and 2 to be present; it previously never read them and would have
+> claimed a packed node.
+
+**Third recurrence, and the rule that supersedes this one (2026-07-29).** §4.18 was the wrong
+producer; §4.19–§4.20 were the right producer at the wrong revision; §4.21 is the right producer at
+a known revision whose *actual output* was never read. Each time the correction was one level more
+concrete than the last, which is the tell that the underlying rule was still too abstract. The
+stronger form, which §4.21.2 records and which §8.5 should carry:
+
+> **A claim about what a producer emits is not evidence until it has been read off a graph that
+> producer actually produced.** Builder source is a statement of intent; the model file is the fact.
+
 ---
 
 ### 4.19 Opset 24 — what moved, and why open-ended windows were a correctness bug (2026-07-29)
@@ -626,15 +643,331 @@ gained an input or attribute in a decade, closing ~70 windows at 27 would declin
 graphs the day onnx 1.23 ships, and the only opset-24 change to any of them was a dtype the caps
 set already refuses. The closed set is the set with evidence behind it.
 
-One errata to carry forward, not yet acted on: onnx main records that the **`Attention`-24
-reference implementation is itself wrong** for `nonpad_kv_seqlen != q_sequence_length` (top-left
-instead of bottom-right causal alignment, NaN for fully-masked rows), corrected in onnx 1.23
-*without an opset bump*. If we ever claim input 6, we must decide which semantics to implement, and
-a differential test against onnx ≤ 1.22's reference would encode the bug. Filed as **R4** in §13.
+**Errata, resolved 2026-07-29.** The `Attention`-24 *reference implementation* was itself wrong for
+`nonpad_kv_seqlen != q_sequence_length` (top-left instead of bottom-right causal alignment, NaN for
+fully-masked rows). Justin ruled that it is fixed **in place, with no opset bump** — bumping would
+fragment compatibility and oblige ONNX to maintain a definition known to be wrong. So
+`ai.onnx::Attention`-24 is defined by the corrected semantics and there is nothing for us to gate
+on: no dual path, no legacy variant, no onnx-version branch in a claim predicate. Declining input 6
+remains correct because we do not implement it, not because its meaning was uncertain.
+
+What the episode leaves behind is a **detection blind spot**, recorded in §9.4.1: a correction
+applied without a version change is invisible to both opset windows and contrib fingerprints,
+because every number our detectors compare stays identical. The only signal is a differential test
+against a *pinned* reference, which makes the oracle's `onnx` version a correctness input rather
+than test hygiene — routed to Trinity beside the existing ORT pin.
+
+---
+
+### 4.20 The full opset range — what "the latest opset" actually means (2026-07-29)
+
+Justin: *"onnx最新opset好像是26 我们都要支持"* — support the whole range up to current, not just
+the window mobius happens to emit. The number needed resolving first: the coordinator measured
+`onnx.defs.onnx_opset_version() -> 27` on the installed onnx 1.22.0, against Justin's 26.
+
+#### 4.20.1 Both numbers are right; they answer different questions
+
+`onnx/defs/schema.h` @ v1.22.0 carries **two** maps:
+
+```c++
+map_[ONNX_DOMAIN]                  = std::make_pair(1, 27);   // registered
+last_release_version_map_[ONNX_DOMAIN] = 26;                  // last released
+```
+
+with the field comment saying the max version *"may be ahead of the last-release-version"* in
+non-release builds. So:
+
+| Question | Answer | Where it comes from |
+|---|---|---|
+| Highest opset ONNX declares **released** | **26** (onnx v1.21.0, 2026-03-27) | `last_release_version_map_` — Justin's number |
+| Highest opset **registered**, i.e. that a model can be stamped with and the checker will accept | **27** (onnx v1.22.0, 2026-06-15) | `map_`, which is what `onnx_opset_version()` returns |
+
+Opset 27 is not a draft in any operational sense: `OpSet_Onnx_ver27` registers three ops
+(`CausalConvWithState`, `LinearAttention`, `Range`), `helper.make_model` stamps 27 by default, and
+`checker` validates at 27. That `last_release_version_map_` still reads 26 in a *release* build
+looks like a v1.22.0 oversight rather than a statement that 27 is provisional — but it is not our
+call to make, so both numbers are recorded as constants
+(`registry::ONNX_OPSET_LAST_RELEASED`, `registry::ONNX_OPSET_REGISTERED`) with a test asserting they
+are distinct. **Our windows are written against 27**, the registered maximum, because that is the
+number that decides what we can be handed.
+
+#### 4.20.2 The extension was already done — because windows are schema-version windows
+
+The directive assumes closed windows decline newer graphs. For every op we claim, they do not, and
+§4.19.1 is why: a row's window is a **schema-version** window. The finding, verified against
+`onnx/defs/operator_sets.h` @ v1.22.0 for opsets 25, 26 and 27:
+
+| Op | Our window | Newest schema version that **exists** | Verdict |
+|---|---|---|---|
+| `ai.onnx::Attention` | `23 ..= 24` | **24** — no `Attention` at 25/26/27 | Already complete. Not extended: there is nothing above it |
+| `ai.onnx::RMSNormalization` | `23 ..= 23` | **23** | Already complete |
+| `ai.onnx::RotaryEmbedding` | `23 ..= 23` | **23** | Already complete |
+| `ai.onnx::TensorScatter` | `24 ..= 24` | **24** | Already complete |
+| `ai.onnx::Swish` | `24 ..= 24` | **24** | Already complete |
+| `ai.onnx::QuantizeLinear` / `DequantizeLinear` | `21 ..= 25` | **25** — opset 26 is `BitCast`/`CumProd`, opset 27 is the three SSM/`Range` ops | Already complete |
+| ~70 elementwise rows | open-ended | various, all ancient | Left open per §4.19.1 |
+
+So an opset-27 model is claimable today for every op above: ORT resolves each node to its schema
+version, and every one of those versions is inside a window we already have. **The closed bounds
+are complete coverage of the operators, not a restriction on model opset.** The one place the
+distinction would have bitten — an op revised above our bound — does not exist in the current spec.
+
+That is a genuinely cheap result, and it is cheap *because* of the schema-version framing. Had the
+rows been keyed on model opset, satisfying this directive would have meant re-reading and re-testing
+every predicate at four more opsets.
+
+#### 4.20.3 What the range check *did* turn up
+
+Three things, and the first is the substantive coverage win of the exercise.
+
+**1. `LinearAttention` and `CausalConvWithState` are now `ai.onnx` ops at opset 27.** We had them
+only as `com.microsoft` rows carrying `MAIN_BASELINE` — main-branch-only contrib ops with low
+fingerprint confidence. onnx v1.22.0 standardised both: `LinearAttention-27` (3D packed
+`[B, T, H×D]`, GQA-aware, `update_rule ∈ {linear, gated, delta, gated_delta}`, optional
+`past_state`/`decay`/`beta`, state type constrained separately from activation type) and
+`CausalConvWithState-27` (stateful causal depthwise 1-D conv, weight `(channels, 1, k)`, optional
+fused silu/swish, `past_state` in / `present_state` out).
+
+This is §8.5 recurring on the hybrid path: **the same computation has two spellings from two
+producers**, and registering one means Qwen3.5's linear-attention layers run on the EP for whoever
+exported through ORT and fall back for whoever exported through the standard domain — with no
+coverage number saying which. Both spellings now have rows. The `ai.onnx` rows are windowed
+`27 ..= 27` and carry no `ContribSchema` (they are versioned by opset, which is the whole point of
+standardisation), and their predicates assert only what was read line for line: dtype and
+`update_rule` / `activation`. Head-count and chunking attributes were **not** verified in the
+standard schema, so the predicates do not mention them; the rows are `Staged(XL_KERNEL)` and the
+status check fires before the predicate, so nothing is claimable on an unverified assumption.
+
+**2. `QuantizeLinear-25` has a `precision` attribute, and we were ignoring it.** Two readings of the
+schema history disagree about whether `precision` arrived at 23 or 25; the disagreement does not
+need settling, because the conservative action is the same either way. `precision` selects the
+accumulation precision of the `x / y_scale` division — a *numeric* attribute, i.e. exactly the
+`accuracy_level` failure shape Trinity measured on the oracle, where the wrong choice produces a
+plausible answer rather than a visible error. `quant_linear` now declines any non-default
+`precision`. No producer we census emits it, so this costs nothing and closes a silent-wrongness
+path.
+
+**3. Opsets 25/26/27 otherwise touch us only through type constraints.** Opset 25 is an IR-13
+`uint2`/`int2`/`float8e8m0` expansion across 18 ops (`Cast`, `Reshape`, `Transpose`, `Pad`,
+`Identity`, `Squeeze`, `Unsqueeze`, `Shape`, `Size`, `Flatten`, `Constant`, `ConstantOfShape`, `If`,
+`Loop`, `Scan`, Q/DQ); opset 26 adds `BitCast` and `CumProd`; opset 27 bumps `Range` to
+float16/bfloat16 with a new `stash_type`. None of these needs a window change — our predicates check
+the *actual* edge dtype against the row's `caps`, and `uint2`/`int2`/`float8e8m0` are in no
+capability set we declare, so they decline on dtype. `BitCast`, `CumProd` and `Range` have no rows;
+they decline as `[not-registered]`, which is the correct answer for an op nobody has implemented.
+
+#### 4.20.4 What this does not buy
+
+Extending or confirming an upward bound protects against exactly one thing: a *declared interface*
+moving. It says nothing about the class of change catalogued in §9.4.1, and confirming the bounds
+here has, if anything, increased our exposure to it — we now hold windows that cover every published
+version of six ops, with no version-shaped signal that would tell us if any of their meanings
+changed underneath. See §9.4.2.
+
+---
+
+### 4.21 The Foundry Local census — two real production graphs, and what they overturn (2026-07-29)
+
+Justin: *"搞定之后可以用机器上的 foundry local 模型测试一下"*. Two ORT-GenAI-built models are
+cached on this machine, and they are the **first real production graphs this project has seen**.
+Everything before §4.21 was derived from schema documents and from builder source. This section is
+derived from the models themselves; where the two disagree, the models win.
+
+Reproduced with `census.py`, `probe.py` and `islands.py` (scripts recorded in the decisions inbox).
+All three read the proto with `load_external_data=False` — weights are irrelevant to a census and
+13 GB of them is not worth loading.
+
+#### 4.21.1 The census
+
+| | **Phi-3.5-mini-instruct** `cuda-int4-rtn-block-32` | **gpt-oss-20b** `v1` |
+|---|---|---|
+| producer | `onnxruntime-genai` `'0.0.0'` | `onnxruntime-genai` `''` |
+| ir_version | 7 | 10 |
+| **opset imports** | **`ai.onnx` = 14**, `com.microsoft` = 1 | **`ai.onnx` = 21**, `com.microsoft` = 1 |
+| main-graph nodes | 366 (+4 in subgraphs = 370) | 374 |
+| subgraphs | **3** — one `If` with two 2-node branches | **1** — no control flow |
+| activation dtype | fp16 throughout | fp16, **with fp32 norms** and 100 `Cast` nodes |
+
+**Phi-3.5 histogram** (370 nodes incl. subgraphs): `com.microsoft::MatMulNBits` 161,
+`com.microsoft::SkipSimplifiedLayerNormalization` 64, `ai.onnx::Mul` 64,
+`com.microsoft::GroupQueryAttention` 32, `ai.onnx::Sigmoid` 32, `Constant` 7, `Cast` 2, `Gather` 2,
+and one each of `Greater`, `If`, `ReduceSum`, `Sub`, `Shape`, `SimplifiedLayerNormalization`.
+
+**gpt-oss-20b histogram** (374 nodes): `ai.onnx::Cast` **100**, `com.microsoft::MatMulNBits` 73,
+`ai.onnx::Add` 72, `com.microsoft::SkipSimplifiedLayerNormalization` 48,
+`com.microsoft::GroupQueryAttention` 24, `ai.onnx::Reshape` 24, `com.microsoft::QMoE` 24,
+`Constant` 3, `Gather` 2, and one each of `Shape`, `ReduceSum`, `Sub`,
+`SimplifiedLayerNormalization`.
+
+Node-level detail that only a probe shows:
+
+- **GQA, Phi-3.5:** 9 declared inputs, 7 occupied. Inputs 1 and 2 (`key`, `value`) are **empty
+  strings** and input 0 is `qkv_proj/MatMul/output_0` — packed QKV. Inputs 5/6 are INT32
+  `seqlens_k` / `total_sequence_length`, shared by all 32 layers. Inputs 7/8 are
+  `cos_cache`/`sin_cache`. Attributes: `num_heads = kv_num_heads = 32` (so this is MHA, not
+  grouped), `scale = 0.102062`, `softcap = 0`, **`do_rotary = 1`**, `rotary_interleaved = 0`.
+- **GQA, gpt-oss:** 12 declared inputs, 8 occupied — additionally **input 11 = `attn.sinks`**
+  (attention sinks). `num_heads = 64`, `kv_num_heads = 8` (real 8:1 grouping),
+  **`local_window_size = 128` on 12 layers and `-1` on the other 12** — alternating sliding-window
+  attention. `do_rotary = 1` again.
+- **`MatMulNBits`, Phi-3.5:** 3 inputs — `B` is UINT8, `scales` fp16, **no zero-points** (symmetric
+  RTN). `bits = 4`, `block_size = 32`, `accuracy_level = 0`, `K ∈ {3072, 8192}`,
+  `N ∈ {3072, 8192, 9216, 32064}`.
+- **`MatMulNBits`, gpt-oss:** 4 inputs — with zero-points. **`bits` is 4 on 60 nodes and 8 on 13**,
+  in the same model. `block_size = 32`, `K ∈ {2880, 4096}`, `N ∈ {5120, 2880, 32, 201088}`.
+- **`SkipSimplifiedLayerNormalization`:** 3 inputs, **4 declared outputs** of which only slots 0 and
+  3 are occupied in all 112 nodes across both models. Slot 3 is the residual sum and it feeds the
+  next block, so a kernel producing only output 0 breaks the residual stream.
+- **`QMoE`, gpt-oss:** 11 declared inputs, 8 occupied (input, router probs, `gate_up_proj`
+  qweight/scales/bias, `down_proj` qweight/scales/bias; the last three slots empty). Attributes:
+  `k = 4`, `activation_type = "swiglu"`, `activation_alpha = 1.702`, `activation_beta = 1.0`,
+  `expert_weight_bits = 4`, `normalize_routing_weights = 1`, `swiglu_limit = 7.0`,
+  `swiglu_fusion = 0`, `use_sparse_mixer = 0`.
+- **The `If`, Phi-3.5:** produces `cos_cache`/`sin_cache` in a one-time prologue. It is *not* in the
+  decoder loop. gpt-oss has no `If` at all — it ships the caches as initializers.
+
+#### 4.21.2 Five recorded conclusions the real graphs contradict
+
+Stated plainly, in the §4.18 spirit. Four of the five are errors in the permissive or the
+mis-scoped direction, which is the direction that matters.
+
+**1. The opset *floor*, which I never considered at all.** §4.20 established the ceiling with some
+care and treated the floor as settled. It is not: Phi-3.5 imports `ai.onnx` at **14** and gpt-oss at
+**21** — same producer, different versions, eight opsets apart. `OPSET_STD_LLM = 23` is not merely
+an upper-bounded window, it is a **floor that excludes both real models outright** for every
+standard-domain row that uses it. `RMSNormalization`, `ai.onnx::Attention` and `ai.onnx::Swish`
+cannot match anything here — not because the ops are missing but because the graphs are older than
+the schema versions we window. Our elementwise rows start at 7 and are unaffected, which is the only
+reason the census shows any claimable standard-domain nodes at all.
+
+This is not a bug to fix by lowering bounds — `RMSNormalization` genuinely does not exist before
+opset 23. It is a **scope correction**: the standard-domain LLM rows target mobius, and *no
+ORT-GenAI graph will ever use them*, because GenAI puts all of that work in `com.microsoft`. Two
+producers, two disjoint op sets, and the tier plan had silently assumed one.
+
+**2. `do_rotary = 1` is universal, not optional.** `group_query_attention` declines any node with
+`do_rotary != 0`, on the reasoning that fused rotary is a later variant. Every GQA node in both
+models sets it, and **neither graph contains a separate rotary node at all** — Phi-3.5 has no
+`RotaryEmbedding` in any domain. So the "claim GQA first, add fused rotary later" plan claims
+exactly zero nodes. Fused rotary is not a variant of the GQA kernel; on this producer it *is* the
+GQA kernel. Predicate unchanged (the kernel does not do it yet), scope corrected.
+
+**3. Packed QKV was a permissive hole, and I have closed it.** §4.10 recorded that
+`PackQKVForGQA` "never matches Qwen3" and treated the packed form as hypothetical. It is the form
+both models use on every layer. Worse, `group_query_attention` never read inputs 1 or 2 at all, so
+it would have **claimed** a packed node and handed the kernel a fused `[B, S, (Nq+2Nkv)·H]` tensor
+where it expected a query. That is the exact failure §7 exists to prevent and it was sitting in the
+predicate. Inputs 1 and 2 are now required to be present, which narrows the claim.
+
+**4. Contrib ops appear in the *default domain*.** `SimplifiedLayerNormalization` is emitted with
+`node.domain == ""` — not `"com.microsoft"` — by both models. ONNX opset 14 and 21 publish no such
+operator. This is a third category the registry did not model: **no ONNX schema, but the standard
+domain**, so `Node_GetSinceVersion` returns a number that means nothing and only a fingerprint can
+detect drift. Our row was `com.microsoft::` only, so every real graph declined it as
+`[not-registered]` — "we have never heard of this op", when the truth was "we registered it under a
+name the producer does not use". Now handled with a second row and an explicit hazard register,
+`registry::ORT_FUSED_IN_DEFAULT_DOMAIN`, whose test caps it at four entries: if it grows, the
+registry needs a third `Domain` variant rather than a list.
+
+**5. `QMoE` top-k and the T5b scope.** `supports_top_k` admits 1 and 2, written from schema reading.
+The only real MoE graph we have routes **top-4**. The fingerprint was also missing
+`activation_alpha`/`activation_beta`, so a real node declined as `[contrib-schema]` — the right
+answer for the wrong reason, which is precisely the misattribution §9.2.1 exists to prevent. The
+attributes are now known; the top-k bound is unchanged and now has a test explaining what evidence
+would justify raising it.
+
+**The recurrence is the finding.** This is the third time in two days that a conclusion drawn from a
+document has been overturned by an artefact: §4.18 (wrong producer), §4.19/§4.20 (right producer,
+wrong revision), and now §4.21 (right producer, but never actually looked at its output). The rule
+in §8.5 — *a coverage number without a named producer at a version is not well-formed* — is
+necessary and was not sufficient. The stronger form:
+
+> **A claim about what a producer emits is not evidence until it has been read off a graph that
+> producer actually produced.** Builder source is a statement of intent; the model file is the fact.
+
+#### 4.21.3 What "Phi-3.5 runs end-to-end on Vulkan" actually requires
+
+The partition simulation (`islands.py`, an *optimistic* approximation of `ops/partition.rs` — it
+ignores dtype and rank predicates, so it upper-bounds coverage and lower-bounds island count):
+
+| Claim set | Phi-3.5: claimed / islands / largest | gpt-oss: claimed / islands / largest |
+|---|---|---|
+| T0 nothing | 0 % / 0 / 0 | 0 % / 0 / 0 |
+| T1 elementwise+shape | 28 % / **35** / 5 | 28 % / **52** / 49 |
+| T1 + `Cast` | 29 % / 35 / 6 | 54 % / **125** / 49 |
+| T2 + norms | 47 % / 35 / 66 | 67 % / 28 / 172 |
+| T3 + `GroupQueryAttention` | 55 % / 34 / 66 | 74 % / 3 / 172 |
+| **T4 + `MatMulNBits`** | **99 % / 1 / 364** | 93 % / 1 / 349 |
+| T5b + `QMoE` | 99 % / 1 / 364 | **100 % / 1 / 373** |
+
+Two things fall out, and both are sharper than anything the tier plan asserted.
+
+**Partial coverage of these graphs is worth nothing.** Phi-3.5 sits at 34–35 islands from T1 all the
+way through T3. 161 `MatMulNBits` nodes are interleaved through every layer, so until they are
+claimed the graph is confetti no matter what else we add. Then `MatMulNBits` alone takes it from
+55 % / 34 islands to **99 % / one island of 364 nodes**. There is no gradual approach to this model:
+it is one op away from complete and, without that op, three tiers of work buy nothing measurable.
+
+**Claiming more ops can make partitioning strictly worse.** On gpt-oss, adding `Cast` to the T1 set
+raises coverage from 28 % to 54 % and raises the island count from 52 to **125** — a 2.4× increase
+in the number of subgraph boundaries, each one a device transfer. This is death-by-fallback observed
+rather than argued, and it is the concrete justification for §7's minimum-viable-subgraph rule.
+It also identifies the metric Niobe needs: **island count and largest-island size, tracked together,
+per producer at version** — coverage percentage alone would have called the `Cast` step a 26-point
+improvement.
+
+**The requirement list.** Five op types cover 353 of Phi-3.5's 366 main-graph nodes:
+
+| Op | Count | Status against our predicates today |
+|---|---|---|
+| `com.microsoft::MatMulNBits` | 161 | **Claimable as specified** — bits 4, block 32, K%32 = 0, no `g_idx`, 3-input symmetric form. Only the kernel is missing |
+| `com.microsoft::SkipSimplifiedLayerNormalization` | 64 | Fingerprint fits (3 in, 4 out, `epsilon`). Needs the row-reduction template and **must emit output 3** |
+| `ai.onnx::Mul` / `Sigmoid` | 64 / 32 | Already in the elementwise table, opset 7 floor, fp16 |
+| `com.microsoft::GroupQueryAttention` | 32 | **Declined on three counts**: `do_rotary = 1`, packed QKV, and the kernel. All three must land together |
+| `ai.onnx::SimplifiedLayerNormalization` | 1 | Row added this turn; shares the RMSNorm kernel |
+
+Plus a 13-node cold prologue (`Cast`, `Gather`, `Greater`, `If`, `ReduceSum`, `Sub`, `Shape`,
+`Constant`) that can stay on CPU without shredding anything, because it runs once and feeds
+`cos_cache`/`sin_cache` rather than sitting between decoder layers.
+
+So the honest end-to-end requirement is **three kernels**: block-quantized GEMM/GEMV, fused
+skip-RMSNorm with a residual output, and MHA-with-fused-rotary-and-packed-QKV over an fp16 paged KV
+cache. Not 87 ops. Not a tier ladder. Three kernels and the elementwise table we already have.
+
+#### 4.21.4 Is Phi-3.5 a better first target than Qwen3.5?
+
+Yes, and it is not close.
+
+- **It is on this disk and runnable.** No Qwen3 graph exists on this machine, and every statement we
+  have made about Qwen3's exported form is inference from a builder we have not run.
+- **Its attention is MHA.** `num_heads = kv_num_heads = 32`, so the grouped-query indexing is the
+  identity and the first attention kernel can skip the KV-head broadcast entirely.
+- **`softcap = 0`, `local_window_size` absent, no attention sinks, no QK norm.** Every numeric
+  option we deliberately decline is off. gpt-oss, by contrast, has sliding windows on half its
+  layers and attention sinks on all of them.
+- **Its quantization is the easy corner.** Symmetric RTN, no zero-points, uniform `bits = 4`,
+  `block_size = 32`, and every `K` a multiple of 32. gpt-oss mixes 4-bit and 8-bit weights in one
+  model and uses zero-points.
+- **Its control flow is cold.** The single `If` is a prologue, not a loop body.
+- **It is small enough to hold.** 366 nodes, five op types, 2.2 GB of weights that fit on both GPUs
+  in this machine.
+
+The cost is that Phi-3.5 exercises **none** of the standard-domain LLM rows (§4.20) — it is a pure
+`com.microsoft` graph at `ai.onnx` 14. So it does not validate the mobius path, and §8.5 means we
+must report the two separately rather than letting one stand in for the other. That is a reporting
+obligation, not an argument against it.
+
+**Proposed amendment to the T3 exit criterion**, for Morpheus since §10.0.2 is his: keep
+`ai.onnx::Attention` as the *implementation* entry point — it is the simpler schema and it serves
+mobius — but make the *demonstration* Phi-3.5, because it is the only LLM we can actually run
+end-to-end and measure. And add a T4 exit criterion that is now precisely measurable:
+**`MatMulNBits` claimed ⇒ Phi-3.5 partitions into one island of ≥ 360 nodes.**
 
 ---
 
 ## 5. Leverage strategy — how breadth gets cheap
+
+
 
 This is the heart of the plan. Restating the target: **≥ 8 ops per hand-written kernel family in
 tiers 1–2.** The 174-op inventory is served by roughly **13 kernel templates** plus ~14 bespoke
@@ -1414,7 +1747,104 @@ making `ContribSchema.baseline` on the row the single source of the C2 baseline,
 cross-check with a test asserting exactly that. Reviewed and approved — one record, owned by whoever
 writes the predicate it describes.
 
-### 9.5 Engine seams the XL kernels need that do not exist yet
+### 9.4.1 What C2 does **not** detect — behavioural drift without a version change
+
+C2 is version-based by construction. `ContribSchema` compares an observed node against a shape
+pinned to a named ORT release; `min_opset ..= max_opset` compares a node against a named ONNX
+schema version. Both answer the question *"has the declared interface moved?"* Neither answers
+*"has the meaning of an unchanged interface moved?"*
+
+That second thing happens, and we hit it on the first op we looked at closely. `ai.onnx::Attention`
+at opset 24 had a defective reference implementation — top-left instead of bottom-right causal
+alignment when `nonpad_kv_seqlen != q_sequence_length`, and NaN for fully-masked rows. Justin ruled
+on 2026-07-29 that it is **fixed in place, with no opset bump**:
+
+> 不bump opset了 不然兼容性很麻烦还要维护一个错的def 你按照正确的实现就行了
+
+That ruling is right and it is the one I would want as a consumer — bumping would fragment
+compatibility across every producer and oblige ONNX to maintain a definition known to be wrong.
+Its consequence for us is that **`ai.onnx::Attention`-24 is defined by the corrected semantics,
+full stop.** No dual path, no legacy variant, nothing to gate on an onnx version inside a claim
+predicate. Our narrowing to `23 ..= 24` with input 6 declined stands unchanged and on its own
+merits: we decline `nonpad_kv_seqlen` because we do not implement it, not because its meaning was
+ever in doubt.
+
+But the *class* of event is worth naming, because our machinery is blind to it:
+
+> **Blind spot:** a correction applied to an operator's semantics without a version change is
+> invisible to opset-based and release-baseline checking alike. Every number our detectors compare
+> stays identical across the change. `ContribSchema` will not fire. The opset window will not fire.
+> The only signal is a differential test against a *pinned* reference — and if the reference is
+> unpinned, the drift presents as a regression in our kernel rather than as a change in the spec.
+
+Three consequences, recorded rather than solved:
+
+1. **This is not a contrib-domain problem.** §9.4 exists because `com.microsoft` has no opset. This
+   defect class attacks `ai.onnx` too, and `ai.onnx` is the domain we treat as the safe one. The
+   opset window is a strong guarantee about *interface* and no guarantee at all about *behaviour*.
+2. **The oracle version is a correctness input, not test hygiene.** The same opset-24 graph yields
+   different expected outputs under onnx 1.22 and onnx 1.23, and the model carries no signal to
+   distinguish them. Routed to Trinity: pin `onnx` in the harness and in CI beside the ORT pin,
+   with the reason written next to the number. This is the `accuracy_level` argument one layer out.
+   Noted in passing that `requirements.txt` pins `onnxruntime>=1.28` — whether `onnx` is pinned at
+   all or arrives transitively is hers to check, and a transitive dependency is not a pin.
+3. **We cannot detect it ourselves; we can only be told.** There is no fingerprint to write. What
+   is actionable is the human process: Fact Checker is establishing whether this class recurs in
+   other ops we claim, and any such finding belongs in the per-row `notes` field, which is the one
+   place a fingerprint can carry a fact its own structure cannot express.
+
+**How this surfaced, because the method is the transferable part.** Nothing detected it. It came
+out of following §7.1's rule literally — *when the schema moves under us, narrow the predicate and
+decline, never guess* — and therefore going to read what actually changed between opset 23 and 24
+rather than trusting that an open-ended window was harmless. The interface change (input 6) is what
+the rule was aimed at; the errata was sitting next to it in the same source file. With the original
+`23 ..= OPSET_ANY` window we would have claimed the node and returned plausible wrong logits, and
+we would have found out from a benchmark that looked slightly off. The rule paid for itself on its
+first real application, and it paid off *twice* — once for the thing it was designed to catch, and
+once for a thing it was not.
+
+### 9.4.2 What confirming the opset range does **not** protect against
+
+§4.20 confirmed that our closed windows cover every published schema version of every op we claim.
+That is worth having, and it is worth being precise about what it buys, because "we support the
+full opset range" reads as a stronger statement than it is.
+
+An opset window is a guarantee about a **declared interface**: the inputs, the attributes, the type
+constraints. Confirming its upper bound proves that no *interface* has moved above our bound
+unread. It proves nothing about meaning. And ONNX has corrected the meaning of `Attention` **five
+times without a single version bump**:
+
+| PR | First released | What changed | Opsets | Bump? |
+|---|---|---|---|---|
+| onnx#7297 | v1.19.1 (2025-10-10) | Causal mask wrongly blocked past KV positions | 23, 24 | No |
+| onnx#7274 | v1.20.0 (2025-12-01) | GQA key/value repetition changed from tiling to `repeat_interleave` | 24 | No |
+| onnx#7867 | v1.22.0 (2026-06-15) | Softcap applied *after* mask/bias instead of before — masked positions got nonzero softmax mass | 23, 24 | No |
+| onnx#7913 | v1.22.0 (2026-06-15) | `qk_matmul_output_mode` values 1 and 2 swapped meaning | 24 | No |
+| onnx#8068 | **unreleased** | `is_causal` bottom-right alignment on external KV cache; NaN guards | 23, 24 | No |
+
+`RotaryEmbedding`-23 has a sixth instance (onnx#7313, fixed in v1.19.1: reference implementation
+only, spec unchanged). Every one of these is invisible to opset windows and to `ContribSchema`
+alike, by construction — §9.4.1.
+
+Three things follow, and one of them is encouraging:
+
+1. **Confirming the range slightly increases exposure.** We now hold windows covering every
+   published version of six ops. Every additional version inside a window is additional surface for
+   an in-place correction we cannot see.
+2. **Conservative claiming is the only structural defence, and it worked.** onnx#7913 swapped the
+   meaning of `qk_matmul_output_mode` 1 and 2 with no version change — and it cannot affect us,
+   because `std_attention` claims only `qk_matmul_output_mode == 0`. Declining every non-default
+   value of an attribute is not just a scope decision; it is *immunity to that attribute's semantics
+   changing*. This is a real argument for narrow predicates that I had not previously made:
+   **the attributes you decline cannot drift under you.** Where §7's narrowness was justified on
+   correctness-of-implementation grounds, it turns out also to shrink the C2 blind spot.
+3. **The residual is the attributes we do claim.** For `Attention` that is the causal mask
+   (onnx#7297, onnx#8068) and GQA repetition (onnx#7274) — both squarely inside what we intend to
+   implement, both silently corrected. There is no fingerprint that catches this. The only
+   instrument is Trinity's differential suite against a *pinned* onnx, which is why the pin is a
+   correctness input and not hygiene.
+
+### 9.5 Engine dependencies this plan creates
 
 Recorded here so they are routed rather than discovered late:
 
@@ -1626,7 +2056,7 @@ landed so far depends on their outcome.
 | OQ-M5 | Conformance harness crash containment (per-op subprocess) and GPU-hang recovery. | Trinity |
 | ~~OQ-M6~~ | ~~License review for reading llama.cpp Vulkan shaders as a reference for the 3 XL kernels.~~ **RESOLVED 🟢 GREEN 2026-07-28 (Rai).** See below. | ~~Coordinator~~ |
 | OQ-M7 | Does ORT 1.28's `CreateExternalResourceImporterForDeviceImpl` remove the KV-cache round-trip before M2 lands? | Tank / Morpheus |
-| R4 | The `Attention`-24 reference implementation is itself wrong for `nonpad_kv_seqlen != q_sequence_length` (top-left instead of bottom-right causal alignment; NaN for fully-masked rows), corrected in onnx 1.23 **without an opset bump**. If we claim input 6, which semantics do we implement — and does the differential oracle encode the bug? See §4.19. | Mouse + Trinity |
+| ~~R4~~ | ~~The `Attention`-24 reference implementation is wrong for `nonpad_kv_seqlen != q_sequence_length`; which semantics do we implement?~~ **RESOLVED 2026-07-29 (Justin).** Fixed in place, **no opset bump**: `Attention`-24 *is* the corrected semantics. No dual path, nothing to gate on an onnx version. The oracle must pin `onnx` (Trinity); the detection blind spot is recorded in §9.4.1. | ~~Mouse + Trinity~~ |
 
 ### 13.1 OQ-M6 resolution — reading llama.cpp's Vulkan shaders is authorized
 
@@ -1900,3 +2330,24 @@ linkage.
   `onnx/defs/operator_sets.h` (opset membership),
   `onnx/version_converter/adapters/Attention_24_23.h` (proof that 24 cannot be downgraded to 23
   when `nonpad_kv_seqlen` is present)
+- **ONNX opset range 25–27** (§4.20) — `onnx/defs/schema.h` (`map_[ONNX_DOMAIN] = {1, 27}` vs
+  `last_release_version_map_[ONNX_DOMAIN] = 26`, onnx v1.22.0), `onnx/defs/operator_sets.h`
+  (opset-25 IR-13 type expansion across 18 ops; opset-26 `BitCast`/`CumProd`; opset-27
+  `CausalConvWithState`/`LinearAttention`/`Range`), `onnx/defs/quantization/defs.cc`
+  (QuantizeLinear-25 `output_dtype`/`precision`, DequantizeLinear-25 `output_dtype`),
+  `onnx/docs/Changelog.md` @ v1.22.0
+- **In-place ONNX errata, no opset bump** (§9.4.2) — onnx#7297 (v1.19.1, Attention causal mask),
+  onnx#7274 (v1.20.0, Attention GQA `repeat_interleave`), onnx#7867 (v1.22.0, Attention softcap
+  ordering), onnx#7913 (v1.22.0, `qk_matmul_output_mode` 1↔2 swap), onnx#8068 (unreleased,
+  `is_causal` alignment + NaN guards), onnx#7313 (v1.19.1, RotaryEmbedding-23 reference impl)
+- **Real production graphs censused (§4.21)** — Foundry Local model cache,
+  `C:\Users\justinchu\.foundry\cache\models\Microsoft\`:
+  - `Phi-3.5-mini-instruct-cuda-gpu\cuda-int4-rtn-block-32\model.onnx` — producer
+    `onnxruntime-genai` `'0.0.0'`, ir_version 7, opset imports `ai.onnx` **14** + `com.microsoft` 1,
+    366 main-graph nodes, fp16, int4 symmetric RTN block-32, 2.2 GB external data
+  - `gpt-oss-20b-cuda-gpu\v1\model.onnx` — producer `onnxruntime-genai` `''` (empty version string),
+    ir_version 10, opset imports `ai.onnx` **21** + `com.microsoft` 1, 374 nodes, fp16 activations
+    with fp32 norms, mixed 4/8-bit `MatMulNBits`, 24 `QMoE` (top-4, swiglu)
+
+  Per §8.5 these are two distinct producers-at-version and coverage must be reported separately for
+  each; neither substitutes for the mobius path, which they share no standard-domain LLM ops with.

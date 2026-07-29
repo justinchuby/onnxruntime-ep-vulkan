@@ -3,9 +3,17 @@
 //! # What this covers
 //!
 //! Qwen3.5 is a hybrid: most layers are linear-attention (gated delta net) rather than softmax
-//! attention, with a short causal depthwise convolution carrying its own state. Both ops arrive
-//! from the exporter as single `com.microsoft` nodes, and both carry recurrent state in and out —
-//! the same KV-cache-shaped problem as `GroupQueryAttention`, with the same M2 dependency.
+//! attention, with a short causal depthwise convolution carrying its own state. Both ops carry
+//! recurrent state in and out — the same KV-cache-shaped problem as `GroupQueryAttention`, with the
+//! same M2 dependency.
+//!
+//! # Two spellings, both real
+//!
+//! Both ops exist **twice**: as `com.microsoft` contrib ops on ORT main, and — since onnx v1.22.0
+//! — as standard `ai.onnx` ops at opset 27. That is `OP_COVERAGE.md` §8.5 again: coverage is
+//! relative to a producer at a version, and an exporter targeting the standard domain emits nodes
+//! our contrib rows would never see. Registering only one spelling would make the hybrid path run
+//! for one producer and fall back for the other, with no coverage number saying which. §4.20.
 //!
 //! # Why this is the hardest row in the plan
 //!
@@ -27,7 +35,9 @@ use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
 use crate::registry::OpStatus::Staged;
-use crate::registry::{ContribSchema, MAIN_BASELINE, NodeView, OPSET_ANY, OpSpec, XL_KERNEL};
+use crate::registry::{
+    ContribSchema, MAIN_BASELINE, NodeView, OPSET_ANY, OPSET_STD_LLM, OpSpec, XL_KERNEL,
+};
 use crate::require;
 
 /// `com.microsoft.LinearAttention`.
@@ -106,16 +116,57 @@ fn causal_conv_with_state(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
+/// `ai.onnx::LinearAttention`, opset 27 — the standard-domain spelling of [`LINEAR_ATTENTION`].
+///
+/// Verified conservatively: the schema names an `update_rule` attribute with the same four values
+/// as the contrib op, takes `query`/`key`/`value` plus optional `past_state`/`decay`/`beta`, and
+/// carries the recurrent state type separately from the activation type. The *rest* of its
+/// attribute vocabulary — head counts, chunking — was not read line for line, so the predicate
+/// asserts only what was, and everything unread is protected by the row being staged.
+fn std_linear_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::typed_input(view, spec, 0, "query")?;
+    claim::attr_string_in(
+        view,
+        spec,
+        "update_rule",
+        &[FIRST_UPDATE_RULE],
+        FIRST_UPDATE_RULE,
+    )?;
+    Ok(())
+}
+
+/// `ai.onnx::CausalConvWithState`, opset 27 — the standard-domain spelling of the fused conv.
+///
+/// Weight shape is `(channels, 1, k)`: depthwise, 1-D, which is why there is no `ndim` attribute to
+/// pin the way the contrib row does — the rank is fixed by the schema instead.
+fn std_causal_conv_with_state(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::typed_input(view, spec, 0, "input")?;
+    claim::attr_string_in(view, spec, "activation", CONV_ACTIVATIONS, "none")?;
+    Ok(())
+}
+
 crate::op_table! {
     //  op                      domain  opsets            caps    kernel          claim                    translate                  status              schema
     "LinearAttention",          Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  linear_attention,        templates::unimplemented,  Staged(XL_KERNEL),  schema: &LINEAR_ATTENTION;
     "CausalConvWithState",      Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  causal_conv_with_state,  templates::unimplemented,  Staged(XL_KERNEL),  schema: &CAUSAL_CONV_WITH_STATE;
+
+    // The `ai.onnx` half, new at opset 27 (onnx v1.22.0). These are not aliases of the contrib rows
+    // above: they are a second producer's spelling of the same computation, and §8.5's rule —
+    // coverage is relative to a producer *at a version* — means both spellings need rows or the
+    // Qwen3.5 hybrid path runs only for whoever exported it. Windows are closed at exactly 27
+    // because that is both the version they were introduced at and the newest that exists. §4.20.
+    "LinearAttention",          Ai,     OPSET_STD_LLM ..= OPSET_STD_LLM,  FLOAT,  kernel!(None),  std_linear_attention,        templates::unimplemented,  Staged(XL_KERNEL);
+    "CausalConvWithState",      Ai,     OPSET_STD_LLM ..= OPSET_STD_LLM,  FLOAT,  kernel!(None),  std_causal_conv_with_state,  templates::unimplemented,  Staged(XL_KERNEL);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::registry::{Domain, OpStatus};
+
+    fn contrib_rows() -> impl Iterator<Item = &'static OpSpec> {
+        OPS.iter().filter(|s| s.domain == Domain::Ms)
+    }
 
     #[test]
     fn the_qwen35_rule_is_the_one_we_claim_first() {
@@ -124,7 +175,7 @@ mod tests {
 
     #[test]
     fn both_rows_admit_a_state_output() {
-        for s in OPS {
+        for s in contrib_rows() {
             let schema = s.schema.expect("contrib row");
             assert_eq!(
                 schema.max_outputs, 2,
@@ -139,7 +190,7 @@ mod tests {
     fn both_rows_say_they_are_unverified_against_a_release() {
         // The honesty check: these ops are main-branch only, and the fingerprint has to say so,
         // because a `[contrib-schema]` decline and `epctl --dump-capabilities` both quote it.
-        for s in OPS {
+        for s in contrib_rows() {
             let schema = s.schema.expect("contrib row");
             assert!(
                 schema.notes.contains("re-verify"),
@@ -155,10 +206,38 @@ mod tests {
     }
 
     #[test]
-    fn every_row_here_is_contrib_and_staged() {
+    fn every_row_here_is_staged() {
         for s in OPS {
-            assert_eq!(s.domain, Domain::Ms);
             assert!(matches!(s.status, OpStatus::Staged(_)));
+        }
+    }
+
+    /// Both SSM ops exist in two domains, and both spellings must be registered.
+    ///
+    /// This is §8.5 applied to the hybrid path: `com.microsoft` is what ORT's own exporter emits
+    /// today, `ai.onnx` at opset 27 is what onnx v1.22.0 standardised. Registering only one means
+    /// the Qwen3.5 linear-attention layers run on the EP for one producer and fall back for the
+    /// other, and the coverage number would not say which. §4.20.
+    #[test]
+    fn both_ssm_ops_are_registered_in_both_domains() {
+        for op in ["LinearAttention", "CausalConvWithState"] {
+            let rows: Vec<_> = OPS.iter().filter(|s| s.op_type == op).collect();
+            assert_eq!(rows.len(), 2, "{op} needs a contrib row and a standard row");
+            assert!(rows.iter().any(|s| s.domain == Domain::Ms));
+            let std_row = rows
+                .iter()
+                .find(|s| s.domain == Domain::Ai)
+                .unwrap_or_else(|| panic!("{op} has no ai.onnx row"));
+            assert_eq!(
+                (std_row.min_opset, std_row.max_opset),
+                (OPSET_STD_LLM, OPSET_STD_LLM),
+                "{op}: opset 27 is both the version it was introduced at and the newest that \
+                 exists, so the window is closed at exactly one value"
+            );
+            assert!(
+                std_row.schema.is_none(),
+                "{op}: a standard-domain row is versioned by opset, not fingerprinted"
+            );
         }
     }
 }

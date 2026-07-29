@@ -39,7 +39,8 @@ use crate::require;
 /// drift, and an unknown attribute declines rather than guesses.
 pub static QMOE: ContribSchema = ContribSchema {
     baseline: MAIN_BASELINE,
-    notes: "14-input and extended forms both admitted; re-verify against a release before going live",
+    notes: "14-input and extended forms both admitted; 11-input form with 8 occupied slots and \
+            activation_alpha/beta observed in gpt-oss-20b; re-verify against a release before going live",
     min_inputs: 8,
     max_inputs: 21,
     min_outputs: 1,
@@ -47,6 +48,12 @@ pub static QMOE: ContribSchema = ContribSchema {
     required_attrs: &["k"],
     known_attrs: &[
         "activation_type",
+        // Observed on every QMoE node in gpt-oss-20b (`activation_alpha = 1.702`,
+        // `activation_beta = 1.0`). They were missing here, so a real node declined as
+        // `[contrib-schema]` — the right answer for the wrong reason. Knowing an attribute is not
+        // claiming it: the predicate still has to pin the values the kernel implements.
+        "activation_alpha",
+        "activation_beta",
         "k",
         "normalize_routing_weights",
         "quant_type",
@@ -123,6 +130,35 @@ mod tests {
         assert!(supports_top_k(2), "the common MoE LLM configuration");
         assert!(!supports_top_k(4));
         assert!(!supports_top_k(0));
+    }
+
+    /// The only real MoE graph we have routes **top-4**, which we decline.
+    ///
+    /// gpt-oss-20b: 24 `QMoE` nodes, all with `k = 4`, `activation_type = "swiglu"`,
+    /// `activation_alpha = 1.702`, `expert_weight_bits = 4`, `use_sparse_mixer = 0` (§4.21).
+    /// "This EP implements top-1 and top-2" was written from schema reading and matches no model
+    /// on this disk. The decline is still correct — the kernel does not exist — but the T5b scope
+    /// is wrong, and this test exists so that raising the bound is a deliberate act with the
+    /// evidence attached rather than a quiet edit.
+    #[test]
+    fn the_only_real_moe_graph_we_have_routes_top_4_and_we_decline_it() {
+        assert!(
+            !supports_top_k(4),
+            "if this is being relaxed, the routing kernel must actually handle top-4 and \
+             gpt-oss-20b must be in the conformance set"
+        );
+        for attr in [
+            "activation_alpha",
+            "activation_beta",
+            "expert_weight_bits",
+            "k",
+        ] {
+            assert!(
+                QMOE.knows(attr),
+                "`{attr}` is on every gpt-oss-20b QMoE node; not knowing it attributes the \
+                 decline to schema drift instead of to the predicate that actually refused"
+            );
+        }
     }
 
     #[test]

@@ -45,9 +45,13 @@ pub const NEEDS_REDUCTION: &str =
     "it needs the shared row-reduction template, which has not been written yet";
 
 /// `com.microsoft.SimplifiedLayerNormalization` — RMSNorm.
+///
+/// **Emitted in the default domain, not `com.microsoft`.** Both Foundry Local graphs carry
+/// `node.domain == ""` for this op (§4.21), so it has two rows below and the `ai.onnx` one is on
+/// `registry::ORT_FUSED_IN_DEFAULT_DOMAIN`.
 pub static SIMPLIFIED_LAYER_NORM: ContribSchema = ContribSchema {
     baseline: PINNED_BASELINE,
-    notes: "read from ContribOperators.md",
+    notes: "ContribOperators.md; observed with an EMPTY domain in both Foundry Local graphs",
     min_inputs: 2,
     max_inputs: 2,
     min_outputs: 1,
@@ -57,9 +61,14 @@ pub static SIMPLIFIED_LAYER_NORM: ContribSchema = ContribSchema {
 };
 
 /// `com.microsoft.SkipSimplifiedLayerNormalization` — residual add fused into RMSNorm.
+///
+/// **Census-confirmed** against both Foundry Local graphs (§4.21): 3 inputs, 4 *declared* outputs
+/// of which only slots 0 and 3 are occupied (1 and 2 are empty strings — mean and inv-std, which
+/// the builder never asks for), `epsilon = 1e-5`. Output 3 is the residual sum, and it is what
+/// feeds the next block, so a kernel that produces only output 0 breaks the residual stream.
 pub static SKIP_SIMPLIFIED_LAYER_NORM: ContribSchema = ContribSchema {
     baseline: PINNED_BASELINE,
-    notes: "read from ContribOperators.md",
+    notes: "ContribOperators.md; arity confirmed against Phi-3.5-mini-int4 and gpt-oss-20b",
     min_inputs: 3,
     max_inputs: 5,
     min_outputs: 1,
@@ -108,12 +117,66 @@ crate::op_table! {
     "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
     "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SKIP_SIMPLIFIED_LAYER_NORM;
     "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
+
+    // The same op again, in the **default domain**. Not a duplicate and not defensive coding: the
+    // ORT GenAI model builder writes `SimplifiedLayerNormalization` with `node.domain == ""`, and
+    // both Foundry Local models on this machine do it (`OP_COVERAGE.md` §4.21). Without this row
+    // the node keys as `ai.onnx::SimplifiedLayerNormalization` and declines `[not-registered]`,
+    // which reads as "we have never heard of this op" when the truth is "we registered it under
+    // the wrong name". It carries the *fingerprint* rather than trusting its opset window, because
+    // ONNX publishes no schema for it — see `registry::ORT_FUSED_IN_DEFAULT_DOMAIN`.
+    "SimplifiedLayerNormalization",           Ai,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::registry::{Domain, OpStatus};
+
+    /// RMSNorm is emitted under two different domains by the same producer.
+    ///
+    /// The ORT GenAI builder writes `SimplifiedLayerNormalization` with an **empty** domain, which
+    /// keys as `ai.onnx::`. Registering only the `com.microsoft::` spelling makes every real graph
+    /// decline it as `[not-registered]` — "we have never heard of this op" — when in fact we had
+    /// registered it under a name the producer does not use. Both Foundry Local models do this;
+    /// §4.21. The `ai.onnx` row keeps the fingerprint because ONNX publishes no schema for it.
+    #[test]
+    fn rmsnorm_is_registered_under_both_domains_the_builder_emits() {
+        let rows: Vec<_> = OPS
+            .iter()
+            .filter(|s| s.op_type == "SimplifiedLayerNormalization")
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "one row per domain the producer actually emits"
+        );
+        let ai = rows
+            .iter()
+            .find(|s| s.domain == Domain::Ai)
+            .expect("the empty-domain spelling");
+        assert!(
+            crate::registry::ORT_FUSED_IN_DEFAULT_DOMAIN.contains(&ai.op_type),
+            "an ai.onnx row with no ONNX schema must be on the hazard register"
+        );
+        assert!(
+            ai.schema.is_some(),
+            "no opset can version this op, so the fingerprint is the only drift signal"
+        );
+        assert!(rows.iter().any(|s| s.domain == Domain::Ms));
+    }
+
+    /// `SkipSimplifiedLayerNormalization` declares four outputs and the fourth one matters.
+    ///
+    /// Census: slots 1 and 2 are empty strings in all 112 nodes across both models, but slot 3 —
+    /// the residual sum — is always occupied and feeds the next block. A kernel that emits only
+    /// output 0 silently breaks the residual stream.
+    #[test]
+    fn the_skip_norm_fingerprint_admits_the_residual_output() {
+        assert_eq!(SKIP_SIMPLIFIED_LAYER_NORM.max_outputs, 4);
+        assert_eq!(SKIP_SIMPLIFIED_LAYER_NORM.min_inputs, 3);
+        assert!(SKIP_SIMPLIFIED_LAYER_NORM.knows("epsilon"));
+    }
 
     #[test]
     fn last_axis_in_both_spellings() {
@@ -146,10 +209,19 @@ mod tests {
     #[test]
     fn every_contrib_row_here_is_fingerprinted() {
         // Standard-domain rows carry no fingerprint by design: `ai.onnx` ops are versioned by
-        // opset, which the row's window already expresses. Only `com.microsoft` needs C2.
+        // opset, which the row's window already expresses. The exception is an op ORT registers in
+        // the default domain with no ONNX schema at all — there the opset says nothing and only a
+        // fingerprint can detect drift. See `registry::ORT_FUSED_IN_DEFAULT_DOMAIN` and §4.21.
         for s in OPS {
             match s.domain {
                 Domain::Ms => assert!(s.schema.is_some(), "{} needs a fingerprint", s.op_type),
+                Domain::Ai if crate::registry::ORT_FUSED_IN_DEFAULT_DOMAIN.contains(&s.op_type) => {
+                    assert!(
+                        s.schema.is_some(),
+                        "{} has no ONNX schema, so its fingerprint is the only version contract",
+                        s.op_type
+                    )
+                }
                 Domain::Ai => assert!(
                     s.schema.is_none(),
                     "{} is standard-domain; its opset window is its version contract",

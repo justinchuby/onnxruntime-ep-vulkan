@@ -656,6 +656,128 @@ fn dtype_from_onnx(et: ort::ONNXTensorElementDataType) -> Option<DType> {
 }
 
 // -------------------------------------------------------------------------------------------
+// Public helpers for `compile_impl` (ep.rs boundary layer)
+// -------------------------------------------------------------------------------------------
+
+/// Read the name of an `OrtValueInfo` pointer.
+///
+/// Returns an empty string on any failure (null pointer, missing API entry, ORT error).
+///
+/// # Safety
+/// `api` must be a live `OrtApi`; `vi` must be a live `OrtValueInfo` owned by an ORT graph
+/// that outlives this call.
+pub unsafe fn value_info_name(api: *const ort::OrtApi, vi: *const ort::OrtValueInfo) -> String {
+    if vi.is_null() || api.is_null() {
+        return String::new();
+    }
+    // SAFETY: api and vi are live per the caller's contract.
+    unsafe {
+        let Some(get) = (*api).GetValueInfoName else {
+            return String::new();
+        };
+        let mut ptr: *const std::ffi::c_char = std::ptr::null();
+        let st = get(vi, &mut ptr);
+        if !st.is_null() {
+            sys::release_status(api, st);
+            return String::new();
+        }
+        if ptr.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    }
+}
+
+/// Read the [`EdgeType`] of a standalone `OrtValueInfo` pointer.
+///
+/// Equivalent to `NodeView::edge_type(slot)` but usable outside of `NodeView`'s method context,
+/// so that `compile_impl` can build [`crate::engine::TensorDesc`] for graph inputs/outputs.
+///
+/// Returns `None` for null pointers, non-tensor types, or when ORT's type-info API is absent.
+///
+/// # Safety
+/// `api` must be a live `OrtApi`; `vi` must be a live `OrtValueInfo` owned by an ORT graph.
+pub unsafe fn value_info_edge_type(
+    api: *const ort::OrtApi,
+    vi: *const ort::OrtValueInfo,
+) -> Option<EdgeType> {
+    if vi.is_null() || api.is_null() {
+        return None;
+    }
+    // SAFETY: api and vi are live per the caller's contract. The logic below is identical to
+    // `NodeView::edge_type` but uses the standalone `GetValueInfoTypeInfo` path (which borrows
+    // the type info rather than requiring a release). All out-params are valid initialised slots;
+    // all status pointers are owned by us and released on error.
+    unsafe {
+        let get_ti = (*api).GetValueInfoTypeInfo?;
+        let mut ti: *const ort::OrtTypeInfo = std::ptr::null();
+        let st = get_ti(vi, &mut ti);
+        if !st.is_null() {
+            sys::release_status(api, st);
+            return None;
+        }
+        if ti.is_null() {
+            return None;
+        }
+
+        let cast = (*api).CastTypeInfoToTensorInfo?;
+        let mut tt: *const ort::OrtTensorTypeAndShapeInfo = std::ptr::null();
+        let st = cast(ti, &mut tt);
+        if !st.is_null() {
+            sys::release_status(api, st);
+            return None;
+        }
+        if tt.is_null() {
+            return Some(EdgeType::default());
+        }
+
+        let mut dtype = None;
+        if let Some(get_et) = (*api).GetTensorElementType {
+            let mut et: ort::ONNXTensorElementDataType =
+                ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+            let st = get_et(tt, &mut et);
+            if st.is_null() {
+                dtype = dtype_from_onnx(et);
+            } else {
+                sys::release_status(api, st);
+            }
+        }
+
+        let mut shape = None;
+        if let (Some(get_n), Some(get_d)) = ((*api).GetDimensionsCount, (*api).GetDimensions) {
+            let mut rank: usize = 0;
+            let st = get_n(tt, &mut rank);
+            if st.is_null() {
+                let mut dims = vec![0i64; rank];
+                let ok = if rank == 0 {
+                    true
+                } else {
+                    let st = get_d(tt, dims.as_mut_ptr(), rank);
+                    if st.is_null() {
+                        true
+                    } else {
+                        sys::release_status(api, st);
+                        false
+                    }
+                };
+                if ok {
+                    for d in &mut dims {
+                        if *d < 0 {
+                            *d = -1;
+                        }
+                    }
+                    shape = Some(dims);
+                }
+            } else {
+                sys::release_status(api, st);
+            }
+        }
+
+        Some(EdgeType { dtype, shape })
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 // Decline reasons
 // -------------------------------------------------------------------------------------------
 
@@ -889,6 +1011,25 @@ pub const XL_KERNEL: &str =
 /// Open-ended upper bound for a row's opset window.
 pub const OPSET_ANY: i32 = i32::MAX;
 
+/// Ops that ORT registers in the **default (`ai.onnx`) domain** while having no ONNX schema.
+///
+/// Discovered by censusing real Foundry Local graphs (`OP_COVERAGE.md` §4.21): the ORT GenAI model
+/// builder emits `SimplifiedLayerNormalization` with `node.domain == ""`, not `"com.microsoft"`.
+/// Both Phi-3.5-mini-int4 and gpt-oss-20b do this, so it is the builder's behaviour, not a quirk.
+///
+/// This breaks the registry's two-axis assumption. Every other row is either `ai.onnx` — versioned
+/// by an opset window, because ONNX publishes a schema — or `com.microsoft` — versioned by a
+/// [`ContribSchema`] fingerprint, because no opset exists. These ops are a third thing: **no ONNX
+/// schema, but the default domain**, so `Node_GetSinceVersion` returns a number that means nothing
+/// and only a fingerprint can detect drift.
+///
+/// The rule the tests enforce: an `ai.onnx` row may carry a fingerprint **iff** its op type is
+/// listed here, and such a row must declare the full `1 ..= OPSET_ANY` window rather than pretend
+/// its opset bound says something. The list is a hazard register — it grows only when a real graph
+/// is observed emitting the op with an empty domain, and if it ever gets long the registry needs a
+/// third `Domain` variant instead of an allow-list.
+pub const ORT_FUSED_IN_DEFAULT_DOMAIN: &[&str] = &["SimplifiedLayerNormalization"];
+
 /// The first `ai.onnx` opset containing the standard-domain LLM ops.
 ///
 /// ONNX opset 23 (onnx 1.18) added `Attention`, `RMSNormalization` and `RotaryEmbedding` to the
@@ -907,14 +1048,33 @@ pub const OPSET_STD_LLM: i32 = 23;
 /// is only as trustworthy as the last time somebody read the spec: `Attention` gained an input at
 /// opset 24 while this crate's row said `23 ..= OPSET_ANY`, which would have claimed the new form
 /// and silently computed the wrong causal offset. See `OP_COVERAGE.md` §4.19.
-pub const ONNX_SPEC_READ: &str = "onnx v1.22.0 (opset 27), defs.cc/old.cc read 2026-07-29";
+pub const ONNX_SPEC_READ: &str = "onnx v1.22.0 — opset 27 registered, 26 last-released; defs.cc/old.cc/operator_sets.h read 2026-07-29";
+
+/// The highest `ai.onnx` opset ONNX itself declares **released**: 26 (onnx v1.21.0).
+///
+/// Distinct from the highest *registered* opset, which is 27 in onnx v1.22.0. ONNX keeps the two
+/// apart deliberately — `schema.h` carries both `map_[ONNX_DOMAIN] = {1, 27}` and
+/// `last_release_version_map_[ONNX_DOMAIN] = 26`, with the comment *"in other versions, the max
+/// version may be ahead of the last-release-version."* `onnx.defs.onnx_opset_version()` reports the
+/// registered maximum (27); the release field reports 26. Both numbers are correct answers to
+/// different questions, which is why `OP_COVERAGE.md` §4.20 records the question along with them.
+pub const ONNX_OPSET_LAST_RELEASED: i32 = 26;
+
+/// The highest `ai.onnx` opset **registered** in the newest onnx release: 27 (onnx v1.22.0).
+///
+/// Models can be stamped 27 — `helper.make_model` defaults to it and the checker accepts it — so a
+/// node carrying a schema version of 27 is something we can actually be handed.
+pub const ONNX_OPSET_REGISTERED: i32 = 27;
 
 /// Schema versions of `ai.onnx::Attention`: 23 (onnx 1.18) and 24 (onnx 1.19).
 ///
 /// Closed, not open-ended. Opset 24 added optional input 6 `nonpad_kv_seqlen` — the external
 /// KV-cache pattern that pairs with [`TensorScatter`](OPSET_STD_TENSOR_SCATTER) — and changed the
-/// meaning of `is_causal` when it is present. There is no `Attention`-25 today; if one appears it
-/// must decline as `[opset]` until somebody reads it, which is what the closed bound buys.
+/// meaning of `is_causal` when it is present.
+///
+/// 24 is also the **newest `Attention` schema that exists**: opsets 25, 26 and 27 register no
+/// `Attention`. So this window is complete coverage of the op, not a restriction — a model stamped
+/// opset 27 still resolves its `Attention` nodes to schema version 24 and is claimable here. §4.20.
 pub const OPSET_STD_ATTENTION_MAX: i32 = 24;
 
 /// `ai.onnx::RMSNormalization` and `ai.onnx::RotaryEmbedding` exist at exactly one schema version.
@@ -929,6 +1089,12 @@ pub const OPSET_STD_TENSOR_SCATTER: i32 = 24;
 
 /// `ai.onnx::Swish`, new at opset 24: `x * sigmoid(alpha * x)`, i.e. SiLU at `alpha = 1`.
 pub const OPSET_STD_SWISH: i32 = 24;
+
+/// `ai.onnx::LinearAttention` and `ai.onnx::CausalConvWithState`, new at opset 27 (onnx v1.22.0).
+///
+/// The standard-domain spellings of two ops we already had `com.microsoft` rows for. 27 is both the
+/// version they were introduced at and the newest registered, so the window is a single value.
+pub const OPSET_STD_SSM: i32 = 27;
 
 /// Highest `QuantizeLinear`/`DequantizeLinear` schema version this crate has read: 25.
 ///
@@ -981,6 +1147,19 @@ pub const MAIN_BASELINE: SchemaBaseline = SchemaBaseline {
 /// Where the exact schema could not be verified, the fields below are written narrow and the row's
 /// doc comment says so. The `[contrib-schema]` histogram bucket is then the tool that tells us
 /// which fingerprints to widen, with evidence.
+///
+/// # What this does *not* detect (`OP_COVERAGE.md` §9.4.1)
+///
+/// Everything here is version-based: it answers *"has the declared interface moved?"* It cannot
+/// answer *"has the meaning of an unchanged interface moved?"* An operator whose semantics are
+/// corrected **without** a version change — as `ai.onnx::Attention`-24 was, by user ruling on
+/// 2026-07-29 — is invisible to this struct *and* to an opset window, because every number either
+/// detector compares stays identical across the change.
+///
+/// There is no fingerprint field that would catch it. The only signal is a differential test
+/// against a *pinned* reference, which is why the harness's `onnx` and `onnxruntime` versions are
+/// correctness inputs rather than test hygiene. When such a case is known for a row, it belongs in
+/// [`ContribSchema::notes`] — the one field that can carry a fact the structure cannot express.
 #[derive(Clone, Copy, Debug)]
 pub struct ContribSchema {
     /// The ORT release this fingerprint was read from, and the date someone read it.
@@ -1393,16 +1572,91 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_row_is_live_in_m0() {
+    fn no_live_row_lacks_a_shader_or_dispatch_path() {
+        // M0 exit: the first rows flipped Live have shaders that have executed on real hardware.
+        // This test now verifies the positive constraint: every Live row has a compiled shader
+        // variant and a translate handler, rather than enforcing that no rows are Live.
+        use crate::engine::shaders;
         let live: Vec<_> = all_specs()
             .filter(|s| s.is_live())
             .map(|s| s.qualified_name().into_owned())
             .collect();
+        // At least Add must be live — if this ever goes back to zero we likely regressed.
         assert!(
-            live.is_empty(),
-            "M0 claims nothing; flipping a row to Live means its shader, its conformance test and \
-             the M0 note in the module docs all landed together. Live rows: {live:?}"
+            !live.is_empty(),
+            "no rows are Live; the ORT dispatch wire landed with Add and must stay live"
         );
+        for name in &live {
+            let desc = NodeDesc {
+                op_type: name.split(':').next_back().unwrap_or(name).into(),
+                ..Default::default()
+            };
+            // spec_for must return Some for a live row (it filters on is_live).
+            assert!(
+                spec_for(&desc).is_some(),
+                "{name} is live but spec_for returns None — is_live() and spec_for are inconsistent"
+            );
+            // Every live row must have at least one compiled shader variant.
+            let spec = spec_for(&desc).unwrap();
+            let has_shader = spec.caps.iter().any(|d| {
+                spec.kernel
+                    .stem(d)
+                    .is_some_and(|stem| shaders::find(stem).is_some())
+            });
+            assert!(
+                has_shader,
+                "{name} is live but has no compiled shader variant in the binary"
+            );
+        }
+    }
+
+    /// "The latest opset" has two correct answers, and the difference matters.
+    ///
+    /// `onnx.defs.onnx_opset_version()` returns 27 on onnx 1.22.0, while `schema.h` still records
+    /// `last_release_version_map_[ONNX_DOMAIN] = 26`. Justin's "26" is the release field; the 27 the
+    /// coordinator measured is the registered maximum. Both are true; leaving it implicit is how a
+    /// moving fact rots. Recorded in `OP_COVERAGE.md` §4.20 and pinned here.
+    #[test]
+    // Both operands are `const`, so clippy calls the comparison constant. That is precisely the
+    // point: this test exists to fail the build the day someone edits one of the two constants
+    // and collapses the distinction the doc comment above describes.
+    #[allow(clippy::assertions_on_constants)]
+    fn the_latest_opset_has_two_answers_and_both_are_recorded() {
+        assert_eq!(ONNX_OPSET_LAST_RELEASED, 26);
+        assert_eq!(ONNX_OPSET_REGISTERED, 27);
+        assert!(
+            ONNX_OPSET_REGISTERED > ONNX_OPSET_LAST_RELEASED,
+            "if these ever converge, a release closed opset 27 and every window bounded by a \
+             'newest schema version' claim needs re-reading"
+        );
+        assert!(
+            ONNX_SPEC_READ.contains("27") && ONNX_SPEC_READ.contains("26"),
+            "the provenance string is quoted in `[opset]` declines; it has to name both numbers \
+             or the decline is unactionable"
+        );
+    }
+
+    /// No standard-domain row may be bounded above by an opset nobody has read.
+    ///
+    /// A closed window is a promise that somebody checked the op's schema history up to that bound.
+    /// A bound above [`ONNX_OPSET_REGISTERED`] would be a promise about a schema that does not
+    /// exist yet — the same defect as an open-ended window, spelled differently. §4.20.
+    #[test]
+    fn closed_standard_windows_stay_within_the_spec_we_have_read() {
+        for s in all_specs().filter(|s| s.domain == Domain::Ai && s.max_opset != OPSET_ANY) {
+            assert!(
+                s.max_opset <= ONNX_OPSET_REGISTERED,
+                "{} is bounded at opset {} but only {} is registered in {ONNX_SPEC_READ}",
+                s.qualified_name(),
+                s.max_opset,
+                ONNX_OPSET_REGISTERED
+            );
+            assert!(
+                s.min_opset <= s.max_opset,
+                "{} has an empty window",
+                s.qualified_name()
+            );
+        }
     }
 
     #[test]
@@ -1439,15 +1693,54 @@ mod tests {
         }
     }
 
+    /// The opset window is the compatibility statement for `ai.onnx` — except for the ops that
+    /// have no ONNX schema at all. See [`ORT_FUSED_IN_DEFAULT_DOMAIN`].
     #[test]
-    fn no_ai_onnx_row_declares_a_contrib_schema() {
-        // The opset window is the compatibility statement for `ai.onnx`; a schema fingerprint
-        // there would be a second, weaker source of truth.
-        for s in all_specs().filter(|s| s.domain == Domain::Ai) {
+    fn only_ort_fused_default_domain_rows_carry_a_fingerprint() {
+        for s in all_specs().filter(|s| s.domain == Domain::Ai && s.schema.is_some()) {
+            assert!(
+                ORT_FUSED_IN_DEFAULT_DOMAIN.contains(&s.op_type),
+                "`{}` is ai.onnx with a contrib fingerprint but is not on the ORT-fused \
+                 allow-list; ai.onnx rows are versioned by their opset window",
+                s.op_type
+            );
+            assert_eq!(
+                (s.min_opset, s.max_opset),
+                (1, OPSET_ANY),
+                "`{}` has no ONNX schema, so its opset window carries no information and must \
+                 not pretend to — the fingerprint is the compatibility statement",
+                s.op_type
+            );
+        }
+    }
+
+    /// Conversely: an `ai.onnx` row *not* on the allow-list must have no fingerprint.
+    #[test]
+    fn ordinary_ai_onnx_rows_use_their_opset_window_not_a_fingerprint() {
+        for s in all_specs()
+            .filter(|s| s.domain == Domain::Ai && !ORT_FUSED_IN_DEFAULT_DOMAIN.contains(&s.op_type))
+        {
             assert!(
                 s.schema.is_none(),
                 "`{}` is ai.onnx and must use its opset window, not a contrib fingerprint",
                 s.op_type
+            );
+        }
+    }
+
+    /// The allow-list is a hazard register, not a convenience. Keep it small and evidenced.
+    #[test]
+    fn the_default_domain_fusion_allow_list_is_evidenced_and_small() {
+        assert!(
+            ORT_FUSED_IN_DEFAULT_DOMAIN.len() <= 4,
+            "this list grows only when a real graph is observed emitting the op with an empty \
+             domain; if it is getting long, the registry needs a third domain concept instead"
+        );
+        for op in ORT_FUSED_IN_DEFAULT_DOMAIN {
+            assert!(
+                all_specs().any(|s| s.op_type == *op && s.domain == Domain::Ai),
+                "`{op}` is on the default-domain fusion list but has no ai.onnx row, so the \
+                 list is documenting a hazard we do not actually handle"
             );
         }
     }
@@ -1559,21 +1852,36 @@ mod tests {
     }
 
     #[test]
-    fn staged_rows_are_not_registered_for_translation() {
-        // A staged row must never reach `Compile`: claimed and translatable stay identical.
-        let desc = NodeDesc {
+    fn live_rows_are_registered_for_translation_and_staged_rows_are_not() {
+        // A live row must reach Compile: claimed and translatable stay identical.
+        let add_desc = NodeDesc {
             op_type: "Add".into(),
             ..Default::default()
         };
         assert!(
-            lookup(&desc.qualified_name()).is_some(),
+            lookup(&add_desc.qualified_name()).is_some(),
             "Add should be in the table"
         );
         assert!(
-            !is_registered(&desc),
-            "Add is staged, so it is not translatable"
+            is_registered(&add_desc),
+            "Add is live and must be translatable"
         );
-        assert!(spec_for(&desc).is_none());
+        assert!(spec_for(&add_desc).is_some());
+
+        // A staged row must never reach Compile.
+        let sub_desc = NodeDesc {
+            op_type: "Sub".into(),
+            ..Default::default()
+        };
+        assert!(
+            lookup(&sub_desc.qualified_name()).is_some(),
+            "Sub should be in the table"
+        );
+        assert!(
+            !is_registered(&sub_desc),
+            "Sub is staged, so it is not translatable"
+        );
+        assert!(spec_for(&sub_desc).is_none());
     }
 
     #[test]

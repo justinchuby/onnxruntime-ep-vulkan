@@ -51,7 +51,8 @@ use crate::{deny, require};
 /// presence as schema drift.
 pub static MATMUL_NBITS: ContribSchema = ContribSchema {
     baseline: PINNED_BASELINE,
-    notes: "read from ContribOperators.md",
+    notes: "ContribOperators.md; 3-input (symmetric RTN) and 4-input (zero-point) forms both \
+            observed in Foundry Local graphs, bits 4 and 8, block_size 32",
     min_inputs: 3,
     max_inputs: 6,
     min_outputs: 1,
@@ -232,6 +233,20 @@ fn quant_linear(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
             spec.op_type
         ),
     }
+    // `precision` selects the accumulation precision of the `x / y_scale` division. Two readings of
+    // the schema history disagree about whether it arrived at 23 or at 25 (§4.20); declining every
+    // non-default value is correct under both, and costs nothing because no producer we census
+    // emits it. It is a *numeric* attribute, so guessing it is the `accuracy_level` failure mode
+    // Trinity measured on the oracle — a silently different answer, not a visibly wrong one.
+    match view.attr_int("precision") {
+        None | Some(0) => {}
+        Some(p) => deny!(
+            Attribute,
+            "`{}` sets `precision` = {p}; this EP computes the scale division at the storage \
+             precision and will not silently substitute a different accumulator",
+            spec.op_type
+        ),
+    }
     Ok(())
 }
 
@@ -249,10 +264,11 @@ crate::op_table! {
     // *compute* dtype (the float side of the conversion); the packed side is checked by the
     // predicate, not by the capability set.
     //
-    // The window is **closed** at 25 rather than open-ended: Q/DQ is revised almost every ONNX
-    // release (21 added `block_size`/`output_dtype`, 23 split out the scale type constraint and
-    // added `precision`, 24 admitted `float8e8m0` scales). An unread revision must decline as
-    // `[opset]`, not be claimed by a predicate written against an older schema — §4.19.
+    // The window is **closed** at 25 rather than open-ended, and 25 is also the *newest schema
+    // version that exists*: `operator_sets.h` registers no Q/DQ at 26 or 27 (opset 26 is `BitCast`
+    // and `CumProd`; opset 27 is `CausalConvWithState`, `LinearAttention` and `Range`). So this
+    // window declines nothing that ONNX has published — it is complete coverage of the op, not a
+    // restriction — while still failing closed on a future revision. §4.20.
     "DequantizeLinear",           Ai,     21 ..= OPSET_QDQ_MAX, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
     "QuantizeLinear",             Ai,     21 ..= OPSET_QDQ_MAX, FLOAT,  kernel!(None),  quant_linear,          templates::unimplemented,  Staged(XL_KERNEL);
 }
@@ -278,11 +294,12 @@ mod tests {
         }
     }
 
-    /// Q/DQ is revised almost every ONNX release, so its window is closed at the newest read.
+    /// Q/DQ's window is closed at 25 — which is also the newest version that exists.
     ///
-    /// 21 added `block_size`/`output_dtype`; 23 split the scale type constraint out and added
-    /// `precision`; 24 admitted `float8e8m0` scales; 25 is current. An open-ended window over an op
-    /// with that revision rate has the same defect the `Attention` row had — §4.19.
+    /// 21 added `block_size`/`output_dtype`; 24 admitted `float8e8m0` scales; 25 added `uint2`/
+    /// `int2` and (on one reading) `precision`. `operator_sets.h` registers no Q/DQ at 26 or 27, so
+    /// the closed bound declines nothing ONNX has published while still failing closed on a future
+    /// revision. This test is the pin for that claim — §4.20.
     #[test]
     fn qdq_windows_are_closed_at_the_newest_schema_read() {
         for op in ["DequantizeLinear", "QuantizeLinear"] {
@@ -293,6 +310,11 @@ mod tests {
                 "{op}"
             );
             assert_ne!(spec.max_opset, OPSET_ANY, "{op}");
+            assert!(
+                spec.max_opset < crate::registry::ONNX_OPSET_REGISTERED,
+                "{op}: 25 is below the registered maximum 27 by fact, not by caution — if a Q/DQ \
+                 revision ever appears at 26 or 27 this bound must be re-read, not raised"
+            );
         }
     }
 

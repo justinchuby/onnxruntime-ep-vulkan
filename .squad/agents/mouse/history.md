@@ -239,3 +239,113 @@ to go and look pay off on things they were not aimed at.
 📌 Still true and worth repeating: **zero of my kernels have executed.** `add_f32` executing on both
 local GPUs with validation layers clean is Switch's path working, not mine. The seam exists now;
 the honest statement about my rows is unchanged.
+
+---
+
+## Turn 9 — the opset range (2026-07-29)
+
+**Directive:** support the full ONNX opset range, not just what mobius emits.
+
+**The number.** "Latest opset" has two correct answers and they disagree by one. onnx v1.22.0
+registers 27 (`map_[ONNX_DOMAIN] = {1,27}`, what `onnx_opset_version()` returns, what
+`make_model` stamps) but still reports `last_release_version_map_[ONNX_DOMAIN] = 26`. Justin
+said 26, the coordinator measured 27, and neither was wrong. Lesson: when two people disagree about
+a version number, the likely cause is that the library exposes two of them for different purposes.
+Go read the header before picking a side. Both are now constants with a test.
+
+**The result nobody expected: there was nothing to extend.** Every closed window I set last turn —
+Attention 23..=24, RMSNorm 23..=23, RotaryEmbedding 23..=23, TensorScatter 24..=24, Swish 24..=24,
+Q/DQ 21..=25 — is already at the newest schema version that *exists*. Opset 25 is a type-constraint
+expansion, 26 is BitCast/CumProd, 27 is the SSM ops plus Range. So an opset-27 model is claimable
+today for all of them.
+
+That is entirely because windows are keyed on **schema version**, not model opset. Had I keyed them
+on model opset, satisfying this directive would have meant re-reading and re-testing six predicates
+at four more opsets. **A framing choice made for correctness reasons paid off as speed.** Worth
+remembering the shape of that: the cheap answer to a scope directive usually comes from a
+representation decision made earlier, not from working faster.
+
+**The actual coverage win was a side effect.** Reading the opset-27 contents to answer a question
+about *bounds* turned up that `LinearAttention` and `CausalConvWithState` are now `ai.onnx`
+ops. I had them only as low-confidence `com.microsoft` main-branch rows. That is §4.18 recurring
+on the Qwen3.5 hybrid path — same computation, two producers, two spellings — and it would have
+gone unnoticed indefinitely because nothing about our contrib rows looks wrong. **Range checks find
+things that are not range problems.** Read the whole diff, not the part that answers your question.
+
+**A new argument for narrow predicates.** onnx#7913 swapped the meaning of `qk_matmul_output_mode`
+1 and 2 with no opset bump. It cannot touch us, because we claim only mode 0. Generalised:
+*the attributes you decline cannot drift under you.* I had been defending narrow claiming purely on
+"we have not implemented that"; it is also a structural defence against the C2 blind spot. The
+residual is exactly the attributes we do claim — for Attention that is the causal mask and GQA
+repetition, both of which ONNX has silently corrected.
+
+**Ambiguity is not always worth resolving.** Two sources disagreed about whether Q/DQ's
+`precision` arrived at opset 23 or 25. I did not settle it: declining every non-default value is
+correct under both readings and costs nothing. Check whether the conservative action is
+reading-independent before spending time on the reading.
+
+**Process.** Two `vk::barrier` tests fail under the parallel runner and pass with
+`--test-threads=1` — a shared probe file in Switch's code. Confirmed it was pre-existing by
+running the two tests in isolation rather than assuming. Flagged, not touched.
+
+---
+
+## Turn 10 — 2026-07-29 — The Foundry Local census: two real graphs, five wrong conclusions
+
+**The lesson landed a third time and the recurrence is the finding.** Turn 6: wrong producer.
+Turns 8-9: right producer, wrong revision. This turn: right producer at a pinned revision, whose
+**actual output I had never read**. Each correction was one level more concrete than the last,
+which is the tell that the underlying rule was still too abstract. The form I now hold:
+
+> A claim about what a producer emits is not evidence until it has been read off a graph that
+> producer actually produced. Builder source is intent; the model file is the fact.
+
+I had written §8.5 ("a coverage number without a named producer at a version is not well-formed")
+and still spent two turns reasoning about op sets from `builder.py` and schema headers. Writing a
+rule is not the same as being governed by it. The concrete tell I missed: I could quote a builder's
+rewrite-rule preconditions but could not quote a single node's input arity.
+
+**I had been reasoning about the ceiling only.** Four turns of narrowing and extending upper
+bounds — 23, 24, 26, 27 — and both real models import `ai.onnx` at **14** and **21**. The floor
+excluded them outright from every standard-domain LLM row. Ranges have two ends and I had treated
+one as interesting and one as settled. Ask which end the evidence actually constrains.
+
+**Two of the five errors were permissive, which is the direction that costs.** `group_query_attention`
+never read inputs 1 and 2, so it would have *claimed* a packed-QKV node and handed the kernel a
+fused tensor where it expected a query. I had recorded "PackQKVForGQA never matches Qwen3" and
+generalised a statement about one model family into a statement about the producer. Both cached
+models pack on every layer. **A negative finding about one model is not a negative finding about
+the world** — the scope of a "never" is exactly the scope of the evidence for it.
+
+**Simulation beat argument, and contradicted it.** I had argued death-by-fallback abstractly in §7.
+Running an island simulation on real graphs produced something I would not have predicted: adding
+`Cast` to the claim set on gpt-oss raises coverage 28%→54% **and islands 52→125**. Claiming more
+ops made partitioning strictly worse. And Phi-3.5 sits at 34-35 islands from T1 through T3 and then
+collapses to *one island of 364* the moment `MatMulNBits` lands. Two conclusions I could not have
+reached by reading: partial coverage of these graphs is worth nothing, and coverage percentage is
+an actively misleading metric. **Cheap simulation against a real artefact is worth more than a
+careful argument about a hypothetical one.** ~120 lines of Python.
+
+**"Right answer, wrong reason" is a defect.** Real `QMoE` nodes were declining as
+`[contrib-schema]` because my fingerprint was missing two attributes — but they should decline on
+top-k (4, and we admit 1|2). The decline was correct and the diagnosis was wrong, which is exactly
+what the machine-readable decline codes exist to prevent. **Check that declines fire for the reason
+you think.** A census makes that checkable; nothing else does.
+
+**A third registry category appeared that I had not modelled.** `SimplifiedLayerNormalization`
+carries `domain == ""` — no ONNX schema, but the standard domain, so `Node_GetSinceVersion` is
+meaningless and only a fingerprint detects drift. My taxonomy was binary (standard-with-opset vs
+contrib-with-fingerprint) and reality had a third case. I handled it with an explicit allow-list
+capped at four entries **by test**, so if it grows the test forces a real `Domain` variant rather
+than letting the list quietly become the normal case. **When you patch a taxonomy with a list, put
+a bound on the list.**
+
+**Discipline held under temptation.** The census made it obvious how to make the coverage numbers
+look good: lower the floor, admit `do_rotary`, widen top-k. I widened nothing and *narrowed* GQA.
+The point of measuring what is out there is to know it, not to move predicates until the count
+improves.
+
+**Still true and worth repeating: zero of my kernels have executed.** Phi-3.5 is now a runnable
+target sitting on this disk, which is a better first target than Qwen3.5 on every axis (MHA not
+GQA, softcap 0, no SWA, no sinks, no QK norm, symmetric RTN, uniform bits/block, cold control
+flow, 366 nodes). That changes what is worth building first, not what has been built.

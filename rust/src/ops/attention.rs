@@ -94,7 +94,8 @@ use crate::require;
 /// bucket is how we find out.
 pub static GROUP_QUERY_ATTENTION: ContribSchema = ContribSchema {
     baseline: PINNED_BASELINE,
-    notes: "ContribOperators.md @ v1.28.0, cross-checked against bert_defs.cc on main; identical",
+    notes: "ContribOperators.md @ v1.28.0, cross-checked against bert_defs.cc on main; identical. \
+            12-input form with input 11 `head_sink` observed in gpt-oss-20b",
     min_inputs: 7,
     max_inputs: 16,
     min_outputs: 1,
@@ -181,7 +182,23 @@ fn group_query_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 
     // `do_rotary` folds RoPE into the attention kernel. Both settings are implementable, but the
     // first kernel does not, and claiming what the kernel does not do is the one prohibited move.
+    //
+    // **Census note (§4.21): `do_rotary = 1` on every GQA node in both Foundry Local graphs**, and
+    // neither graph contains a separate `RotaryEmbedding` node at all. So this is not an exotic
+    // option we can defer — it is the only form the ORT GenAI builder emits, and a GQA kernel
+    // without fused rotary claims nothing. Recorded rather than relaxed: the decline is correct
+    // until the kernel does it.
     claim::attr_int_is(view, spec, "do_rotary", 0)?;
+
+    // **Packed QKV.** When inputs 1 and 2 are empty, input 0 is a single fused `[B, S, (Nq+2Nkv)*H]`
+    // tensor rather than a query, and the kernel's addressing is completely different. This was a
+    // permissive hole: nothing above reads inputs 1 or 2, so the node would have been claimed and
+    // the kernel would have read a query tensor that is three tensors wide.
+    //
+    // Both Foundry Local graphs use the packed form on every layer (§4.21), so this is the common
+    // case, not the corner. Declining it is the honest answer until the kernel splits the packing.
+    claim::typed_input(view, spec, 1, "key (packed QKV is a different kernel)")?;
+    claim::typed_input(view, spec, 2, "value (packed QKV is a different kernel)")?;
 
     // Optional inputs that change the numerics. Each must be *absent*, and each is a real trap:
     //
@@ -275,6 +292,12 @@ fn std_attention(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // This is the concrete instance of why an open-ended opset window is a correctness bug rather
     // than a tidiness one: the row said `23 ..= OPSET_ANY`, and mobius defaults to opset 24 and
     // takes this path for static caches. `OP_COVERAGE.md` §4.19.
+    //
+    // The semantics are *not* in doubt. ONNX corrected the opset-24 reference implementation in
+    // place — no opset bump, by user ruling 2026-07-29 — so `Attention`-24 means the corrected
+    // bottom-right alignment and there is nothing here to gate on an onnx version. We decline
+    // because the kernel does not implement it yet, which is the only reason this file ever
+    // declines anything.
     claim::input_absent(view, spec, 6, "nonpad_kv_seqlen")?;
 
     Ok(())
@@ -352,6 +375,38 @@ mod tests {
         assert!(!head_grouping_is_supported(8, 0));
         assert!(!head_grouping_is_supported(0, 8));
         assert!(!head_grouping_is_supported(-8, 8));
+    }
+
+    /// The GQA fingerprint must admit the shapes real graphs emit, so the decline is attributed to
+    /// the predicate rather than to phantom schema drift.
+    ///
+    /// Census (§4.21): Phi-3.5-mini-int4 emits 9 declared inputs / 3 outputs; gpt-oss-20b emits 12
+    /// declared inputs (slot 11 = `head_sink`, the attention-sink term) / 3 outputs and carries
+    /// `local_window_size` on every node — 128 on half the layers, -1 on the other half, i.e.
+    /// alternating sliding-window attention.
+    #[test]
+    fn the_gqa_fingerprint_admits_both_real_arities() {
+        for declared in [9usize, 12] {
+            assert!(
+                declared >= GROUP_QUERY_ATTENTION.min_inputs
+                    && declared <= GROUP_QUERY_ATTENTION.max_inputs,
+                "{declared}-input GQA is emitted by a real Foundry Local graph and the \
+                 fingerprint rejects it"
+            );
+        }
+        assert!(3 <= GROUP_QUERY_ATTENTION.max_outputs);
+        for attr in [
+            "do_rotary",
+            "local_window_size",
+            "softcap",
+            "rotary_interleaved",
+            "scale",
+        ] {
+            assert!(
+                GROUP_QUERY_ATTENTION.knows(attr),
+                "`{attr}` is on real nodes"
+            );
+        }
     }
 
     #[test]

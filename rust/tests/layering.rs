@@ -1155,14 +1155,30 @@ fn every_contrib_row_records_the_ort_release_it_was_written_against() {
 fn no_default_domain_row_carries_a_contrib_schema_baseline() {
     // The other direction. A baseline on an `ai.onnx` row is noise that dilutes the signal on the
     // rows where it is load-bearing — their contract is the opset window.
+    //
+    // With one evidenced exception, and it is not hypothetical: the ORT GenAI builder emits some
+    // *fused* ops into the **default** domain rather than `com.microsoft`. Censused 2026-07-29,
+    // `SimplifiedLayerNormalization` with `node.domain == ""` in both cached Foundry Local models
+    // (Phi-3.5-mini int4 at `ai.onnx` 14, gpt-oss-20b at `ai.onnx` 21). ONNX publishes no such
+    // operator at any opset, so `Node_GetSinceVersion` returns a number that means nothing and the
+    // fingerprint is the only thing that can detect drift — exactly the case a baseline exists for.
+    //
+    // The exception is bounded by `registry::ORT_FUSED_IN_DEFAULT_DOMAIN`, which
+    // `registry::tests::the_default_domain_fusion_allow_list_is_evidenced_and_small` caps at four
+    // entries. If it ever grows past that, the registry needs a third `Domain` variant rather than
+    // a list, and this test should go back to admitting nothing.
+    let allowed = onnxruntime_vulkan_ep::registry::ORT_FUSED_IN_DEFAULT_DOMAIN;
     let spurious: Vec<String> = onnxruntime_vulkan_ep::registry::all_specs()
         .filter(|s| s.domain.as_str().is_empty() && s.schema_baseline().is_some())
+        .filter(|s| !allowed.contains(&s.op_type))
         .map(|s| s.qualified_name().into_owned())
         .collect();
     assert!(
         spurious.is_empty(),
         "default-domain row(s) {spurious:?} carry a contrib schema baseline; their compatibility \
-         contract is the opset window"
+         contract is the opset window. If one of these is an ORT-fused op that the builder emits \
+         into the default domain, add it to `registry::ORT_FUSED_IN_DEFAULT_DOMAIN` with the \
+         censused model that evidences it — do not relax this test."
     );
 }
 
