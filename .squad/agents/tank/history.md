@@ -229,3 +229,42 @@ I recorded that as unproven rather than letting "ORT allocated through us" stand
 the quarantine: unit-proven, not session-proven. And the validation-layer positive control is still
 owed — it needs a planted violation in Switch's files, so I recorded it as owed rather than
 describing the mechanism and counting that as progress.
+
+## Session 12 — 2026-07-29 — device memory becomes real, and a probe that lied to me
+
+**Worktree.** Moved to `C:\Users\justinchu\dev\ep-vulkan-tank` on `squad/tank`. First full build
+1m30s. This immediately did what it was supposed to: `cargo ci` green here means *my* tree is green.
+
+**What I built.** `src/transfer.rs` — the `OrtDataTransferImpl`. The allocator could not be
+exercised in a real session at all without it: advertising device memory makes ORT demand a
+transfer and fail every `Run` until it gets one. Host staging (`HostStaging` in `allocator.rs`)
+gives handles real bytes today; `transfer::host_backing_for` is the seam the engine calls to turn
+a handle into readable memory. End-to-end success on both GPUs: 1 dispatch, 0 compute failures,
+numerically correct, 0 failed lookups.
+
+**The lesson, and it is a sharper version of the one I keep relearning.** My own probe printed
+`run OK, numerically correct: True` through a run in which the EP was failing and ORT had silently
+fallen back to CPU. I nearly reported it. **A probe that checks the output value but not which
+provider produced it is a caveat pretending to be a check.** Previous sessions I wrote a caveat and
+felt finished; this time I wrote a *checker* and felt finished, and the checker was the bug. The
+fix is the general one the team arrived at independently: gate on the effect
+(`dispatches_executed > 0`), never on a precondition.
+
+**Two verifications I was asked to complete, and did not.** ORT's planner never handed us an
+interior pointer — 0 interior copies in every real session, including at 1 MiB tensors with
+mem-pattern on. And no real session reused a freed handle, so quarantine rejection has still only
+fired in unit tests. Both designs are right by construction and both now have local tests, but
+neither has been *observed*. I wrote that down as "not verified" rather than as "verified in
+principle", which is the same distinction that caught two fabricated speedups this week.
+
+**Smaller things worth keeping.**
+* `Mutex<Vec<*mut T>>` is not `Sync`; store `usize`.
+* bindgen's `CopyTensors` takes `*mut *const OrtValue`, not `*const *const`.
+* A closure inside an enclosing `unsafe {}` inherits the unsafe context, so its inner `unsafe`
+  blocks become "unnecessary" warnings. Extract the body into a separate `unsafe fn` — that is why
+  `copy_tensors_impl` and `create_data_transfer_impl` exist.
+* A diagnostic counter that is non-zero on a healthy run is one people learn to ignore. I made
+  `failed_lookups` read 2–4 on a perfect run by routing `classify` through the counting `resolve`;
+  added a non-counting `classify` to the registry.
+* The `edit` tool joins lines when an `old_str` ending in `\n` is replaced by one without. Bit me
+  twice; both caught by viewing afterwards.

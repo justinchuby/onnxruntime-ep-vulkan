@@ -1289,6 +1289,23 @@ unsafe fn compute_impl(
         );
     }
 
+    // A size that agrees is still not a pointer that can be read. Once device memory is
+    // advertised, ORT may place a subgraph input in *our* memory, and the pointer it then binds is
+    // a handle: a reserved, deliberately inaccessible address. `dispatch_ort` would `memcpy` from
+    // it and the process would die at that instruction with no explanation — which is the handle
+    // scheme working exactly as designed, and useless unless something asks first.
+    //
+    // SAFETY: `api` and `kernel_context` are live for the duration of this call.
+    let addressable =
+        unsafe { check_bound_inputs_are_addressable(api, kernel_context, &info.input_byte_sizes) };
+    if let Err(msg) = addressable {
+        counters::record_compute_failure();
+        return fail(
+            ort::OrtErrorCode_ORT_EP_FAIL,
+            format!("VulkanExecutionProvider: {msg}"),
+        );
+    }
+
     // SAFETY: `info.session` is non-null (checked by `is_live`) and points into the
     // `Box<VulkanSession>` owned by the `VulkanEp` that produced this compute-info; ORT releases
     // every compute-info before the EP, so the box is still alive and the address is stable.
@@ -1388,6 +1405,70 @@ unsafe fn check_bound_input_sizes(
                         "read only part of the host's tensor and compute a wrong answer"
                     }
                 ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify that every bound input is memory the engine can actually read.
+///
+/// This is the guard between ORT's memory placement and the engine's raw-pointer world. It is a
+/// separate check from [`check_bound_input_sizes`] because it catches a different failure: not "the
+/// tensor is the wrong length" but "the tensor is not where the engine thinks it is".
+///
+/// Returns `Ok(())` when every input is host memory (the normal case, and the only case when
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` is off), and an explanatory error when one is a device
+/// handle. It never silently substitutes the backing pointer: the engine reads the tensor itself,
+/// so a substitution here would be a value nobody uses and a false sense that the path works.
+///
+/// # Safety
+/// `api` and `ctx` must be live.
+unsafe fn check_bound_inputs_are_addressable(
+    api: *const ort::OrtApi,
+    ctx: *mut ort::OrtKernelContext,
+    want: &[u64],
+) -> Result<(), String> {
+    // Cheap exit for every build that has not opted into device memory: with no registry there is
+    // no handle space, so no pointer can be one.
+    if crate::factory::all_registries().is_empty() {
+        return Ok(());
+    }
+    // SAFETY: `api`/`ctx` are live; every out-param below is a valid initialised local, and every
+    // status we receive is released before we return.
+    unsafe {
+        let (Some(get_input), Some(get_data)) =
+            ((*api).KernelContext_GetInput, (*api).GetTensorMutableData)
+        else {
+            return Ok(());
+        };
+        for (i, &planned) in want.iter().enumerate() {
+            let mut value: *const ort::OrtValue = ptr::null();
+            let status = get_input(ctx, i, &mut value);
+            if !status.is_null() {
+                sys::release_status(api, status);
+                continue;
+            }
+            if value.is_null() {
+                continue;
+            }
+            let mut p: *mut std::ffi::c_void = ptr::null_mut();
+            let status = get_data(value.cast_mut(), &mut p);
+            if !status.is_null() {
+                sys::release_status(api, status);
+                continue;
+            }
+            match crate::transfer::host_backing_for(p.cast::<u8>(), planned as usize) {
+                // Host memory, or a handle whose bytes the engine can reach: the engine resolves
+                // it at bind time. Nothing to refuse.
+                None | Some(Ok(_)) => {}
+                Some(Err(why)) => {
+                    return Err(format!(
+                        "input {i} is bound to device handle {p:?} and its bytes are unreachable: \
+                         {why}. Refusing the dispatch rather than running it against an \
+                         inaccessible address."
+                    ));
+                }
             }
         }
     }

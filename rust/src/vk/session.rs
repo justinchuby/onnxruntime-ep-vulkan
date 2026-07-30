@@ -303,6 +303,31 @@ impl VulkanSession {
             input_cpu_ptrs.push(data as *const u8);
         }
 
+        // ── Step 1b: resolve any input that lives in the EP's own device memory ──
+        //
+        // Cross-owner note (Tank): when `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` is on, ORT may place
+        // a subgraph input in memory *this EP* allocated, and the pointer above is then an opaque
+        // handle — a reserved, inaccessible address, by design, so that mistaking it for memory
+        // faults instead of reading someone else's tensor. `host_backing_for` returns `None` for
+        // ordinary host memory (the default build, unchanged) and the readable bytes for a handle.
+        for (i, p) in input_cpu_ptrs.iter_mut().enumerate() {
+            let want = input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
+            match crate::transfer::host_backing_for(p.cast_mut().cast::<u8>(), want) {
+                None => {}
+                Some(Ok(backing)) => *p = backing as *const u8,
+                Some(Err(why)) => {
+                    let msg = format!(
+                        "VulkanExecutionProvider: input {i} lives in device memory and its bytes \
+                         are unreachable: {why}"
+                    );
+                    // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract).
+                    return unsafe {
+                        crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, &msg)
+                    };
+                }
+            }
+        }
+
         // ── Step 2 & 3: allocate all GPU buffers ─────────────────────────────
         // We allocate everything upfront so cleanup is a single loop on error.
         let mut gpu_inputs: Vec<GpuBuffer> = Vec::new();
@@ -746,6 +771,23 @@ impl VulkanSession {
                 };
             };
             let byte_size = output_byte_sizes[i] as usize;
+            // Cross-owner note (Tank): as for inputs — an output ORT placed in this EP's own
+            // device memory is an opaque handle, not writable memory. Resolve it to its backing
+            // before copying, or the write below would fault on a reserved page.
+            match crate::transfer::host_backing_for(out_ptr.cast::<u8>(), byte_size) {
+                None => {}
+                Some(Ok(backing)) => out_ptr = backing.cast::<std::ffi::c_void>(),
+                Some(Err(why)) => {
+                    let msg = format!(
+                        "VulkanExecutionProvider: output {i} lives in device memory and is not \
+                         writable through this path: {why}"
+                    );
+                    // SAFETY: `api` is live per the fn contract. Buffer cleanup is the caller's.
+                    return unsafe {
+                        crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, &msg)
+                    };
+                }
+            }
             // SAFETY: src_ptr is valid for byte_size bytes (GPU work complete, HOST_COHERENT);
             // out_ptr was allocated by ORT and is valid for byte_size bytes.
             unsafe {

@@ -520,6 +520,7 @@ unsafe fn advertise_device_memory(
         // If a future ORT documents that it copies, the fix is to release here again — but the
         // burden of proof is on the documentation, because this direction fails loudly and the
         // other direction fails silently and only under memory pressure.
+        record_advertised_device(info.vendor_id, info.index);
         log::info!(
             "VulkanExecutionProvider: advertised device memory `{}` for device #{} — ORT may now \
              allocate through this EP",
@@ -752,6 +753,45 @@ pub(crate) fn registry_for_device(
     Some(r)
 }
 
+/// Which devices we advertised memory for, as `(vendor_id, device_id)`.
+///
+/// The data transfer needs this because an `OrtMemoryDevice` will only tell it a vendor and a
+/// device id — never the index we key registries by. Recorded at advertisement time, which always
+/// precedes any copy.
+static ADVERTISED_DEVICES: std::sync::LazyLock<Mutex<Vec<(u32, u32, usize)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+fn record_advertised_device(vendor_id: u32, device_index: usize) {
+    if let Ok(mut v) = ADVERTISED_DEVICES.lock() {
+        let key = (vendor_id, device_index as u32, device_index);
+        if !v.contains(&key) {
+            v.push(key);
+        }
+    }
+}
+
+/// Every registry that exists, keyed by `(vendor_id, device_id)`.
+///
+/// Used by the data-transfer path and by [`crate::transfer::host_backing_for`], which need to
+/// recognise a handle without knowing which device produced it. Cheap: at most one entry per GPU.
+pub(crate) fn all_registries()
+-> std::collections::HashMap<(u32, u32), Arc<crate::allocator::HandleRegistry>> {
+    let mut out = std::collections::HashMap::new();
+    let advertised: Vec<(u32, u32, usize)> = match ADVERTISED_DEVICES.lock() {
+        Ok(v) => v.clone(),
+        Err(e) => e.into_inner().clone(),
+    };
+    let Ok(map) = REGISTRIES.lock() else {
+        return out;
+    };
+    for (vendor_id, device_id, index) in advertised {
+        if let Some(r) = map.get(&index) {
+            out.insert((vendor_id, device_id), Arc::clone(r));
+        }
+    }
+    out
+}
+
 unsafe extern "C" fn create_allocator(
     p: *mut ort::OrtEpFactory,
     memory_info: *const ort::OrtMemoryInfo,
@@ -896,14 +936,84 @@ unsafe extern "C" fn release_allocator(
     unsafe { crate::allocator::VulkanAllocator::release(allocator) };
 }
 
+/// Hand ORT the data transfer that moves bytes to and from our device handles.
+///
+/// Advertising a device allocator obliges us to provide this: without it ORT fails every `Run`
+/// with "There's no data transfer registered for copying tensors from …". So the two are wired
+/// together — if no device was advertised we return null, which is the legal "I have no device
+/// memory" answer and keeps a host-memory-only build exactly as it was.
 unsafe extern "C" fn create_data_transfer(
-    _p: *mut ort::OrtEpFactory,
+    p: *mut ort::OrtEpFactory,
     data_transfer: *mut *mut ort::OrtDataTransferImpl,
 ) -> ort::OrtStatusPtr {
+    // Null the out-param before anything fallible: on every early return ORT must read a definite
+    // null rather than whatever was in the slot.
     if !data_transfer.is_null() {
         // SAFETY: valid out-param slot supplied by ORT.
         unsafe { *data_transfer = ptr::null_mut() };
     }
+    if p.is_null() || data_transfer.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `p` is the factory pointer ORT received from `CreateEpFactories`.
+    let f = unsafe { this(p) };
+    let (api, ep_api, abi) = (f.ort_api, f.ep_api, f.abi_version);
+
+    // SAFETY: `api` is live; the guard converts any panic below into a status rather than
+    // unwinding into ORT's C++.
+    unsafe {
+        crate::guard_ffi_status(api, "OrtEpFactory::CreateDataTransfer", || {
+            create_data_transfer_impl(api, ep_api, abi, data_transfer)
+        })
+    }
+}
+
+/// The body of `CreateDataTransfer`, outside the panic guard so its `unsafe` blocks stay
+/// individually justified.
+///
+/// # Safety
+/// `api`/`ep_api` must be the live negotiated tables and `data_transfer` a writable out-param slot.
+unsafe fn create_data_transfer_impl(
+    api: *const ort::OrtApi,
+    ep_api: *const ort::OrtEpApi,
+    abi: u32,
+    data_transfer: *mut *mut ort::OrtDataTransferImpl,
+) -> ort::OrtStatusPtr {
+    let advertised: Vec<(u32, u32, usize)> = match ADVERTISED_DEVICES.lock() {
+        Ok(v) => v.clone(),
+        Err(e) => e.into_inner().clone(),
+    };
+    if advertised.is_empty() {
+        // No device memory was advertised, so nothing can ever be allocated in it and a data
+        // transfer would never be called. Null is the contract's way to say that.
+        return ptr::null_mut();
+    }
+
+    let mut registries = std::collections::HashMap::new();
+    for (vendor_id, device_id, index) in advertised {
+        if let Some(r) = registry_for_device(index) {
+            registries.insert((vendor_id, device_id), r);
+        }
+    }
+    if registries.is_empty() {
+        log::warn!(
+            "VulkanExecutionProvider: device memory was advertised but no handle registry could \
+             be created, so no data transfer is offered. Sessions that place a tensor in device \
+             memory will fail at Run with a clear ORT message rather than copying into unusable \
+             addresses."
+        );
+        return ptr::null_mut();
+    }
+
+    let n = registries.len();
+    // SAFETY: `api`/`ep_api` are the live negotiated tables and outlive the process's use of this
+    // object; `abi` is the negotiated version, which is what bounds how far into this vtable ORT
+    // may read.
+    let dt = unsafe { crate::transfer::VulkanDataTransfer::new(api, ep_api, abi, registries) };
+    // SAFETY: valid out-param slot supplied by ORT; ownership passes to ORT, which returns it
+    // through `OrtDataTransferImpl::Release`.
+    unsafe { *data_transfer = dt.cast() };
+    log::info!("VulkanExecutionProvider: data transfer created for {n} device memory space(s)");
     ptr::null_mut()
 }
 
