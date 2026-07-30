@@ -832,6 +832,11 @@ pub mod tally {
     static DEVICE_BACKED: AtomicU64 = AtomicU64::new(0);
     static STAGED_SPANS: AtomicU64 = AtomicU64::new(0);
     static STAGED_BYTES: AtomicU64 = AtomicU64::new(0);
+    static ALLOCATORS_RELEASED: AtomicU64 = AtomicU64::new(0);
+    static ALLOCATORS_LIVE: AtomicU64 = AtomicU64::new(0);
+    static FREES_AFTER_RELEASE: AtomicU64 = AtomicU64::new(0);
+    static LIVE_AT_RELEASE_SPANS: AtomicU64 = AtomicU64::new(0);
+    static LIVE_AT_RELEASE_BYTES: AtomicU64 = AtomicU64::new(0);
 
     pub(super) fn on_alloc(requested: u64, live_bytes: u64) {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
@@ -841,6 +846,36 @@ pub mod tally {
 
     pub(super) fn on_free() {
         FREES.fetch_add(1, Ordering::Relaxed);
+        // Scope, carefully. The first cut of this counter tested `ALLOCATORS_RELEASED > 0`, which
+        // is monotone — so after any one allocator went away, every subsequent Free from every
+        // *other* live allocator counted as late. On the real model under pytest that reported
+        // 2508 late frees on a run where nothing was wrong. That is the same scope error as the
+        // still-live-handles warning this counter was written to replace, reproduced inside its
+        // own replacement. The condition that means something is a Free arriving when **no**
+        // allocator is live: only then is there nobody left who could legitimately own the span.
+        if ALLOCATORS_LIVE.load(Ordering::Relaxed) == 0
+            && ALLOCATORS_RELEASED.load(Ordering::Relaxed) > 0
+        {
+            FREES_AFTER_RELEASE.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// An `OrtAllocator` of ours was handed to ORT.
+    pub(super) fn on_allocator_created() {
+        ALLOCATORS_LIVE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// An `OrtAllocator` of ours was released, with this many spans still live in the *shared*
+    /// registry — see [`leak_verdict`] for why that number is not attributable to this allocator.
+    pub(super) fn on_allocator_released(live_spans: u64, live_bytes: u64) {
+        ALLOCATORS_RELEASED.fetch_add(1, Ordering::Relaxed);
+        ALLOCATORS_LIVE
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_sub(1))
+            })
+            .ok();
+        LIVE_AT_RELEASE_SPANS.fetch_add(live_spans, Ordering::Relaxed);
+        LIVE_AT_RELEASE_BYTES.fetch_max(live_bytes, Ordering::Relaxed);
     }
 
     /// A `VkBuffer` was attached to a handle for the first time: this one is genuinely on device.
@@ -865,6 +900,11 @@ pub mod tally {
         pub device_backed_spans: u64,
         pub staged_spans: u64,
         pub staged_bytes: u64,
+        pub allocators_released: u64,
+        pub allocators_live: u64,
+        pub frees_after_release: u64,
+        pub live_at_release_spans: u64,
+        pub live_at_release_bytes: u64,
     }
 
     pub fn snapshot() -> Tally {
@@ -876,7 +916,81 @@ pub mod tally {
             device_backed_spans: DEVICE_BACKED.load(Ordering::Relaxed),
             staged_spans: STAGED_SPANS.load(Ordering::Relaxed),
             staged_bytes: STAGED_BYTES.load(Ordering::Relaxed),
+            allocators_released: ALLOCATORS_RELEASED.load(Ordering::Relaxed),
+            allocators_live: ALLOCATORS_LIVE.load(Ordering::Relaxed),
+            frees_after_release: FREES_AFTER_RELEASE.load(Ordering::Relaxed),
+            live_at_release_spans: LIVE_AT_RELEASE_SPANS.load(Ordering::Relaxed),
+            live_at_release_bytes: LIVE_AT_RELEASE_BYTES.load(Ordering::Relaxed),
         }
+    }
+
+    /// Whether spans still live at allocator release are a leak of ours or a lifetime we do not own.
+    ///
+    /// # The answer, measured: neither. It was a scope error in the instrument.
+    ///
+    /// The original warning said: *"ORT frees what it allocated, so this is either a leak on our
+    /// side or a tensor the session outlived."* That is honest and useless. An open disjunction in
+    /// a warning is a decision deferred to whoever reads it, which in practice means it is decided
+    /// later, by someone with less context, under worse conditions — or never, because a warning
+    /// that has always been there reads as furniture. 2.09 GB is not furniture.
+    ///
+    /// Measured on the real 2.2 GB model under pytest, both vendors:
+    /// **`alloc_allocations` 2511, `alloc_frees` 2511.** ORT hands back every span. There is no
+    /// leak, and there never was. Three things were true at once and only their combination looked
+    /// alarming:
+    ///
+    /// 1. [`HandleRegistry`] is **process-global per device** (`factory::REGISTRIES`), shared by
+    ///    every allocator and data transfer for that device. `registry.stats().live_spans` read at
+    ///    one allocator's release therefore counts spans that *other, still-running sessions* own.
+    ///    The warning named this allocator as the owner of memory belonging to its neighbours.
+    ///    That run released seven allocators; summed, they reported 1257 "still live" spans that
+    ///    were all subsequently freed.
+    /// 2. The registry **outlives every allocator by construction**, because `REGISTRIES` holds an
+    ///    `Arc` for the process lifetime. So the hazard the warning gestured at — a late `Free`
+    ///    landing in a torn-down registry — cannot occur here. Reserved address space and staging
+    ///    are not reclaimed at allocator release at all.
+    /// 3. The counters file was written from `VulkanDataTransfer::release`, which ORT calls
+    ///    *before* releasing allocators, so the file could never have shown any of this. It is now
+    ///    rewritten at allocator release too.
+    ///
+    /// So the warning is now scoped: it is `debug!` when other holders of the shared registry are
+    /// still running, and `warn!` only for the last allocator on a device, where "still live"
+    /// finally means what it says.
+    ///
+    /// # The instrument that goes red if this benign reading is wrong
+    ///
+    /// `frees_after_release`, and its own first version was wrong in exactly the way described
+    /// above — it tested `released > 0`, which is monotone, and so counted every `Free` from every
+    /// still-live allocator once any one allocator had gone. It reported 2508 late frees on a
+    /// healthy run. It now requires `allocators_live == 0`: a `Free` arriving when no allocator of
+    /// ours exists is a span nobody could legitimately still own. Reported as
+    /// `alloc_frees_after_release` so a lane asserts on it instead of a human noticing a log line.
+    pub fn leak_verdict() -> String {
+        let t = snapshot();
+        if t.frees_after_release > 0 {
+            return format!(
+                "{} Free call(s) arrived while no allocator of ours was live, so ORT still \
+                 believed it owned spans nobody was left to own. Investigate before quoting any \
+                 memory number from this run.",
+                t.frees_after_release
+            );
+        }
+        format!(
+            "{} allocation(s) and {} free(s) this process: ORT returned {}. No Free has arrived \
+             while no allocator was live (alloc_frees_after_release = 0, {} release(s)). The \
+             reserved address space and staging behind these handles belong to the per-device \
+             registry, which outlives every allocator, so nothing is reclaimed here and nothing \
+             is lost. This line is informational; it becomes a defect report when \
+             alloc_frees_after_release is non-zero or allocations and frees disagree at exit.",
+            t.allocations,
+            t.frees,
+            if t.frees >= t.allocations {
+                "all of them"
+            } else {
+                "fewer than it took"
+            },
+            t.allocators_released
+        )
     }
 
     /// What this run's memory actually was, stated from the numbers rather than from a static
@@ -1200,6 +1314,7 @@ impl VulkanAllocator {
             memory_info,
             ort_api,
         });
+        tally::on_allocator_created();
         Box::into_raw(boxed).cast()
     }
 
@@ -1249,13 +1364,31 @@ impl VulkanAllocator {
             me.registry.summary()
         );
         let stats = me.registry.stats();
-        if stats.live_spans > 0 {
-            log::warn!(
-                "VulkanExecutionProvider: {} device handle(s) ({} B) were still live when the \
-                 allocator was released. ORT frees what it allocated, so this is either a leak on \
-                 our side or a tensor the session outlived.",
+        tally::on_allocator_released(stats.live_spans, stats.live_bytes);
+        // Scope matters here, and getting it wrong made this warning fire on healthy runs. The
+        // registry is process-global per device (`factory::REGISTRIES`), shared by every allocator
+        // and data transfer for that device. So `live_spans` at *one* allocator's release counts
+        // spans that other, still-running sessions legitimately own. Attributing them to this
+        // release names the wrong owner. `strong_count` tells us whether anyone else is still
+        // holding the registry: the `REGISTRIES` map holds one Arc permanently, and we hold one,
+        // so 2 means we are the last user and anything still live is genuinely unreclaimed.
+        let other_holders = Arc::strong_count(&me.registry).saturating_sub(2);
+        if stats.live_spans > 0 && other_holders > 0 {
+            log::debug!(
+                "VulkanExecutionProvider: {} device handle(s) ({} B) live in the shared registry \
+                 at this allocator's release, with {} other holder(s) still running. These belong \
+                 to sessions that have not finished; this release does not orphan them.",
                 stats.live_spans,
-                stats.live_bytes
+                stats.live_bytes,
+                other_holders
+            );
+        } else if stats.live_spans > 0 {
+            log::warn!(
+                "VulkanExecutionProvider: {} device handle(s) ({} B) were still live when the last \
+                 allocator for this device was released — ORT did not hand these back to Free. {}",
+                stats.live_spans,
+                stats.live_bytes,
+                tally::leak_verdict()
             );
         }
         if !me.memory_info.is_null() {
@@ -1268,6 +1401,14 @@ impl VulkanAllocator {
             }
         }
         drop(me);
+        // Re-dump. The first dump happens at `VulkanDataTransfer::release`, which ORT calls
+        // *before* it releases the allocator — so a file written only there reports
+        // `alloc_allocators_released: 0` and `alloc_frees_after_release: 0` no matter what
+        // subsequently happens, and those zeros are unfalsifiable rather than clean. The whole
+        // document is regenerated from the current snapshot, so the later write simply supersedes
+        // the earlier one. Measured, not assumed: without this call the two keys read 0 on a run
+        // that leaves 322 handles live.
+        crate::counters::dump_observations_if_requested();
     }
 }
 

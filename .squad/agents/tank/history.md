@@ -533,3 +533,60 @@ because on run 1 the arena is clean and *everything* unwritten looks like zeros.
 where "unwritten" and "written zero" are indistinguishable.** That is the same structural blindness
 as the interior-pointer one, arrived at from a completely different direction, and the whole
 `tests/ops/` suite runs exactly one run per session.
+
+---
+
+## Session 17 — the coverage falsifier, and making the same mistake twice in one hour
+
+### The falsifier was cheap and I should have built it the first time
+
+The coordinator could not reproduce my 1192 interior pointers — they got 0 — and asked me to
+confirm or correct their reading that the difference was run count. The right answer was not an
+argument. It was one environment variable: make my own probe's run count a parameter and see
+whether it produces *their* number.
+
+    runs      1      2      3      4
+    interior  0    596   1192   1788
+
+It does, exactly, at one run. That is a much stronger form of confirmation than agreeing with
+them would have been, because it makes my instrument produce the result that would have refuted
+me. **The cheapest way to defend a measurement is to make it fail on demand.** I had the data to
+do this a session earlier and did not think of it, because I was busy being right.
+
+Worth separating two claims I had been running together: `pointers_in_guard_band` falsifies the
+*correctness* of interior resolution; only the run-count sweep falsifies the *coverage*. I had
+been offering the first when asked about the second.
+
+### I reproduced the exact bug I was fixing, inside its own fix
+
+The 2.09 GB "still live" warning turned out to be a scope error: `HandleRegistry` is
+process-global per device, so `live_spans` at one allocator's release counts other live sessions'
+tensors. Diagnosed it, understood it, wrote a replacement counter — and the replacement tested
+`allocators_released > 0`, which is monotone, so after the first release it counted every free
+from every other live allocator. **2508 "late frees" on a healthy run.** Same error. Same hour.
+Written by someone who had just finished explaining that error to himself.
+
+The lesson is not "be careful". The error is not in the reasoning, it is in an ambient assumption
+that never gets stated: that a counter's scope matches the scope of the event it names. Both
+instruments were numerically correct and attributed to the wrong owner. That is R9 moved up a
+level — from *the number does not measure the claim* to *the number does not measure whose claim*.
+
+It was caught only because I ran the new counter against the real model before believing it,
+which is now the third time this project has been saved by "run it on the real thing before you
+quote it" and the second time this week it saved me specifically.
+
+### An unfalsifiable zero, which is not the same as a clean one
+
+`alloc_allocators_released` read 0 on every run, and I nearly reported that as "release never
+happens". It read 0 because the counters file is dumped from `VulkanDataTransfer::release`, which
+ORT calls *before* it releases allocators — so the file structurally could not report the thing I
+was pointing it at. Same shape as the run-1 interior zero: the instrument was ordered before the
+event. Fixed by re-dumping at allocator release. **When a diagnostic reads zero, the first
+question is whether it was in a position to read anything else.**
+
+### The disjunction, resolved
+
+`allocs == frees == 2511`. ORT returns every span, the registry outlives every allocator by
+construction, and nothing was ever leaked. The warning is now `debug!` while other holders are
+running and `warn!` only for the last allocator on a device. An open disjunction in a warning is a
+decision deferred to whoever reads it next, under worse conditions — usually nobody.

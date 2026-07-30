@@ -243,6 +243,13 @@ enum CounterVerdict {
     OutOfBounds {
         count: u64,
     },
+    /// A `Free` arrived after we released the allocator that owned the span.
+    ///
+    /// Unconditional, like [`CounterVerdict::OutOfBounds`], and for the same reason: it is not a
+    /// metric, it is ORT and this EP disagreeing about who owns 2 GB.
+    FreeAfterRelease {
+        count: u64,
+    },
     /// `--require-device-memory` was asked for and the run did not deliver it.
     NotOnDevice {
         staged_spans: u64,
@@ -317,6 +324,15 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
         && oob > 0
     {
         return CounterVerdict::OutOfBounds { count: oob };
+    }
+
+    // Same class, same unconditional treatment: a Free arriving after the allocator that owned the
+    // span was released means ORT still believed it owned memory we had torn down. Absence of the
+    // key means a build or a run that cannot report it, which is not a zero.
+    if let Some(late) = json_u64(&doc, "alloc_frees_after_release")
+        && late > 0
+    {
+        return CounterVerdict::FreeAfterRelease { count: late };
     }
 
     // Also ahead of the dispatch count, and for the same reason: a run whose tensors sat in host
@@ -423,6 +439,22 @@ fn check_counters_with(
                  silently wrong answer instead of a failing lane. Treat it as a bug in shape or \
                  size accounting, not as an allocator tuning knob, and read the `*.trace.txt` \
                  beside the counters file for the exact addresses."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::FreeAfterRelease { count } => {
+            eprintln!(
+                "epctl: FAIL — {count} Free call(s) arrived after the allocator that owned the \
+                 span had been released.\n\
+                 \x20 ORT and this EP disagree about who owns that memory. This check exists \
+                 because the still-live-handles WARN used to end with an open disjunction — \
+                 \"either a leak on our side or a tensor the session outlived\" — which is honest \
+                 and undecidable by the reader, so it was never decided. This number decides it: \
+                 spans that are still live at release and are *never* freed afterwards are ORT \
+                 reclaiming them by destroying the session, which costs us nothing. Spans that are \
+                 freed afterwards mean ORT held a pointer into a registry we had torn down.\n\
+                 \x20 On a build that unmaps the reservation at release, this is a use-after-free \
+                 rather than a log line. Do not quote memory numbers from this run."
             );
             std::process::ExitCode::from(1)
         }
@@ -839,6 +871,59 @@ mod tests {
              \"pointers_in_guard_band\": {in_guard_band}\n}}\n"
         ));
         doc
+    }
+
+    fn snapshot_with_late_frees(dispatches: u64, late: u64, live_at_release: u64) -> String {
+        let mut doc = snapshot(dispatches);
+        let cut = doc.rfind('}').expect("json");
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        doc.push_str(&format!(
+            ",\n  \"alloc_allocations\": 427,\n  \"alloc_frees\": 105,\n  \
+             \"alloc_allocators_released\": 1,\n  \
+             \"alloc_live_at_release_spans\": {live_at_release},\n  \
+             \"alloc_frees_after_release\": {late}\n}}\n"
+        ));
+        doc
+    }
+
+    /// The still-live-handles warning used to end in an open disjunction. This is the number that
+    /// closes it, so it needs the same plant-break-confirm treatment the guard band got.
+    #[test]
+    fn a_free_after_release_fails_the_lane_but_merely_live_handles_do_not() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-late-free-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        // 322 handles live at release and never freed afterwards. This is the state the real
+        // 2.2 GB model produces on both vendors, and it must NOT fail a lane: ORT reclaims them
+        // by destroying the session, and our reservation goes with the registry.
+        let benign = dir.join("benign.json");
+        std::fs::write(&benign, snapshot_with_late_frees(30, 0, 322)).expect("write");
+        assert_eq!(
+            read_counters(benign.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "handles still live at release are ORT's lifetime, not our leak — failing on this \
+             would make the check fire on every healthy model run and be switched off"
+        );
+
+        // One late Free is the whole difference, and it outranks a healthy dispatch count.
+        let defect = dir.join("defect.json");
+        std::fs::write(&defect, snapshot_with_late_frees(30, 1, 322)).expect("write");
+        assert_eq!(
+            read_counters(defect.to_str().expect("utf8"), 1),
+            CounterVerdict::FreeAfterRelease { count: 1 },
+            "a single Free after release means ORT held a pointer into a torn-down registry"
+        );
+
+        // Absence is not zero: a build or run that cannot report the key must not read as clean.
+        let missing = dir.join("missing.json");
+        std::fs::write(&missing, snapshot(30)).expect("write");
+        assert_eq!(
+            read_counters(missing.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "a snapshot without the key predates it; absence is not a fault signal"
+        );
     }
 
     #[test]
