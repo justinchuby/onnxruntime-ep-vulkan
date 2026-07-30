@@ -1024,3 +1024,87 @@ factor post-fix. Ruling: oracle pinning is correct; no change needed.
 ### Commits
   8523733 — Merge origin/main, resolve conflict, remove stale xfail from Trinity's gate
   (plus new tests in test_matmulnbits.py and test_phi35.py for multi-run stability)
+## Session 22 — 2026-07-30T08:29:00-07:00
+
+### Coordinator relay received
+The coordinator confirmed the defect was one bug seen through two lenses (Tank's two-lens finding).
+Switch's fix (74ef4a4) is the canonical version, now on main. Three assignments:
+  1. Land the accuracy_level ruling for Trinity
+  2. Write the binding-arity finding into OP_COVERAGE.md as a coverage axis
+  3. Proof ledger groundwork (§8.9 + §7.0.1)
+
+Additional instruction: restore the xfail I removed — Trinity's test_phi35_vulkan_matches_cpu_logits
+must stay xfail(strict=True) as intentional friction until Trinity explicitly signs off.
+
+### Merge origin/main
+Merged 74ef4a4 (Switch's canonical fix) + addenda. Conflict in session.rs: accepted theirs
+(Switch's version is canonical). test_phi35.py: no new conflict; restored xfail.
+
+### Assignment 1: accuracy_level ruling for Trinity (DP: _models.py, decision inbox)
+  Ruling: oracle pinning at accuracy_level=1 is correct for a model declaring level=0.
+  ORT CPU EP: levels 0-3 are identical (all SQNBIT_CompFp32); level 4 diverges (~4.6e-3).
+  GPU shader: float acc = 0.0 always — attribute not observed on GPU path.
+  Levels 0 and 1 are the same computation. No oracle error introduced.
+  Written to _models.py as ACCURACY_LEVEL RULING comment + decision inbox.
+
+### Assignment 2: binding-arity finding in OP_COVERAGE.md (§7.1.4)
+  Added §7.1.4 "Optional-input arity is a coverage axis, not a form simplification."
+  Documents the 2026-07-30 defect. Key points:
+  - MatMulNBits without zero_points: 4 bindings (descriptor slots 0-3)
+  - MatMulNBits with zero_points: 5 bindings (descriptor slots 0-4)
+  - Shader output at binding 4 was outside the 4-slot layout → silent no-op write
+  - Under §8.9 proof key, populated_optional_input_set is a key component → unrepresentable
+  - Checklist for new translate handlers with optional inputs
+
+### Assignment 3: proof ledger groundwork (§8.9 scaffolding)
+  Read §8.9 and §7.0.1. Implemented scaffolding in registry.rs:
+
+  OpStatus::Ready added:
+    - New variant meaning "kernel exists; claimability derived from ledger"
+    - Live deprecated (kept for backwards compat during transition)
+    - is_live() updated to cover Live | Ready
+    - epctl.rs and elementwise.rs updated for exhaustive match
+
+  DeclineCode::Unproven added:
+    - Tag: "unproven"
+    - Semantics: "Ready row, no ledger entry, not in CLAIM_UNPROVEN escape hatch"
+
+  ProofKey struct:
+    - 7-tuple per §8.9.2: (domain, op_type, opset_bucket, dtypes, variant, shape_class,
+      populated_optional_input_set)
+    - String form: domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs
+    - validate() rejects *, 1, all, bare op-type, empty
+
+  claim_unproven_keys() function:
+    - Parses ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN env var
+    - Comma-separated list of full proof keys only (no wildcards)
+    - On invalid key: logs at WARN and treats ENTIRE list as empty (safe default)
+    - On non-empty list: logs at WARN naming every enabled key
+
+  ledger_contains() stub:
+    - Always returns false until Trinity's harness generates the ledger
+    - Contains prominent TODO(mouse, §8.9) comment explaining what replaces it
+
+  §8.9.4 planted rejection tests (6 new unit tests):
+    - claim_unproven_rejects_star_wildcard: * rejected
+    - claim_unproven_rejects_boolean_one: 1 rejected
+    - claim_unproven_rejects_all_wildcard: all rejected
+    - claim_unproven_rejects_bare_op_type: bare name and domain::name both rejected
+    - claim_unproven_accepts_full_key: full 6-field key accepted
+    - claim_unproven_rejects_empty: empty and whitespace-only rejected
+
+  NOTE: The gate is NOT yet activated in claim_audit. Adding the proof ledger check in
+  claim_audit is the next step, but requires Trinity's harness to generate ledger entries
+  and a build.rs change to bake the ledger into the cdylib. Without the ledger, activation
+  would drop Phi-3.5 from 161 → 0 claimed (which the coordinator acknowledged as the
+  honest cost, but it should happen atomically with ledger generation, not before).
+
+### Test results
+  Rust unit tests: 354 passed, 0 failed (includes 6 new planted-rejection tests)
+  Python tests device 0: 31 passed, 1 expected failure (DequantizeLinear not claimed — correct)
+  Python tests device 1: not re-run (no code changes affecting device behavior)
+
+### Commits this session
+  8523733 — Merge origin/main, conflict resolution, xfail removal (corrected in next commit)
+  67b70eb — Multi-run stability tests + xfail removal (INCORRECT xfail removal)
+  9f3d0bb — Merge origin/main + three coordinator assignments (xfail restored)
