@@ -20,7 +20,7 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 # Test artefacts: claim-log probes written by the domain-regression tests
-_notarealop_probe_*.json
+_*probe_*.json
 
 # Python
 __pycache__/
