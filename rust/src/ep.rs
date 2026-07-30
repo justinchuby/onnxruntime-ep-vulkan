@@ -953,7 +953,19 @@ unsafe fn compile_impl(
         let mut recorder = CompileRecorder::new(plan.inputs.len());
         for node_desc in &plan.nodes {
             if let Some(spec) = registry::spec_for(node_desc) {
-                if let Err(e) = (spec.translate)(spec, node_desc, &mut recorder) {
+                // If any input lacks a static TensorDesc, the shapes are symbolic — the translate
+                // handler cannot compute push constants or workgroups at Compile time. Instead,
+                // store a DynKernelRecipe so that dispatch_ort can re-run the handler at Compute
+                // time with the concrete shapes ORT supplies.
+                let is_dynamic = node_desc.inputs.iter().any(|r| r.desc.is_none());
+                if is_dynamic {
+                    log::debug!(
+                        "Compile: op '{}' in subgraph {i} has symbolic-extent inputs — \
+                         deferring to dynamic dispatch",
+                        node_desc.op_type
+                    );
+                    recorder.push_dynamic_kernel(node_desc.clone(), spec);
+                } else if let Err(e) = (spec.translate)(spec, node_desc, &mut recorder) {
                     // SAFETY: `api` is live.
                     return unsafe {
                         sys::make_status(
@@ -1394,6 +1406,12 @@ unsafe fn check_bound_input_sizes(
                 continue;
             }
             if actual as u64 != planned {
+                // planned == 0 is the signal that this input's shape was symbolic at Compile time;
+                // dispatch_ort resolves the real size at Compute time via GetTensorSizeInBytes.
+                // Skip the check rather than refusing the dispatch.
+                if planned == 0 {
+                    continue;
+                }
                 return Err(format!(
                     "input {i} is {actual} byte(s) but this subgraph was compiled for {planned}. \
                      The shape ORT bound and the shape Compile planned for disagree, so the \
@@ -1745,6 +1763,7 @@ mod tests {
             workgroups: [1, 1, 1],
             bindings: Vec::new(),
             n_plan_inputs: 2,
+            dyn_recipe: None,
         });
         info.input_byte_sizes = vec![24, 24];
         info.output_byte_sizes = vec![24];

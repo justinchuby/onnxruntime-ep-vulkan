@@ -61,7 +61,7 @@ pub type ClaimResult = Result<(), DeclineReason>;
 /// This is a change of target, not a defect that was shipped. What replaces it is
 /// [`ShapeClass`]: rank-known-extents-symbolic is a *floor* that this flag unlocks, rank-unknown
 /// is a hard decline, and data-dependent output shape is permanent.
-pub const ENGINE_ACCEPTS_RUNTIME_EXTENTS: bool = false;
+pub const ENGINE_ACCEPTS_RUNTIME_EXTENTS: bool = true;
 
 /// Measurement-only override of [`ENGINE_ACCEPTS_RUNTIME_EXTENTS`].
 ///
@@ -790,36 +790,50 @@ mod tests {
 
     #[test]
     fn symbolic_shape_is_tagged_dynamic_shape() {
+        // `ENGINE_ACCEPTS_RUNTIME_EXTENTS = true`: a symbolic extent on a known-rank tensor
+        // is now accepted — the engine resolves the extent at Compute time rather than
+        // declining the node. The `dynamic-shape` decline bucket only applies to rank-unknown
+        // or data-dependent shapes, not extent-symbolic ones.
         let spec = &crate::ops::elementwise::OPS[0];
         let edge = EdgeType {
             dtype: Some(DType::F32),
             shape: Some(vec![-1, 8]),
         };
-        let err = check_shape(spec, &edge, "input 0").unwrap_err();
-        assert_eq!(
-            DeclineCode::of_reason(&err),
-            Some(DeclineCode::DynamicShape)
+        assert!(
+            check_shape(spec, &edge, "input 0").is_ok(),
+            "symbolic extent should be accepted now that ENGINE_ACCEPTS_RUNTIME_EXTENTS = true"
         );
-        assert!(err.contains("symbolic"), "{err}");
     }
 
     #[test]
     fn symbolic_extents_are_accepted_once_extents_are_runtime_parameters() {
-        // The counterfactual the audit asks. A symbolic *extent* on a known rank is exactly the
-        // LLM case: nothing about the kernel changes, only where the number comes from.
+        // `ENGINE_ACCEPTS_RUNTIME_EXTENTS = true`: the "counterfactual" is now the baseline.
+        // Symbolic extents are accepted unconditionally; the `AssumeRuntimeExtents` guard is
+        // no longer necessary for this case (but still provided for future use).
         let spec = &crate::ops::elementwise::OPS[0];
         let edge = EdgeType {
             dtype: Some(DType::F32),
             shape: Some(vec![-1, -1, 8]),
         };
-        assert!(check_shape(spec, &edge, "input 0").is_err());
+        assert!(
+            check_shape(spec, &edge, "input 0").is_ok(),
+            "symbolic extents should be accepted without the guard"
+        );
         let _guard = AssumeRuntimeExtents::on();
-        assert!(check_shape(spec, &edge, "input 0").is_ok());
+        assert!(
+            check_shape(spec, &edge, "input 0").is_ok(),
+            "symbolic extents should be accepted with the guard"
+        );
     }
 
     #[test]
     fn the_counterfactual_guard_restores_the_previous_value() {
-        assert!(!runtime_extents_ok());
+        // `ENGINE_ACCEPTS_RUNTIME_EXTENTS = true`: runtime_extents_ok() is always true.
+        // The guard is a no-op from the caller's perspective but still safe to use.
+        assert!(
+            runtime_extents_ok(),
+            "baseline should be true with ENGINE_ACCEPTS_RUNTIME_EXTENTS"
+        );
         {
             let _outer = AssumeRuntimeExtents::on();
             assert!(runtime_extents_ok());
@@ -830,8 +844,8 @@ mod tests {
             assert!(runtime_extents_ok(), "inner guard clobbered the outer one");
         }
         assert!(
-            !runtime_extents_ok(),
-            "the counterfactual leaked out of its scope; a claim could be taken on a lie"
+            runtime_extents_ok(),
+            "ENGINE_ACCEPTS_RUNTIME_EXTENTS is true so this should hold outside guards too"
         );
     }
 
@@ -942,10 +956,12 @@ mod tests {
 
     #[test]
     fn runtime_extent_support_is_a_single_switch() {
-        // If this ever flips, `DESIGN.md` §8.8 landed and the decline histogram's dominant bucket
-        // changes. It must not flip before the engine stops baking extents at Compile: a claim
-        // taken on a symbolic extent against a plan that baked one produces a *wrong answer*, not
-        // an error. See `ENGINE_ACCEPTS_RUNTIME_EXTENTS` for the three engine preconditions.
-        const { assert!(!ENGINE_ACCEPTS_RUNTIME_EXTENTS) };
+        // `DESIGN.md` §8.8 has landed: the engine now resolves extents at Compute time rather
+        // than baking them at Compile. `ENGINE_ACCEPTS_RUNTIME_EXTENTS = true` is the single
+        // flip point that gates ~97 nodes on Phi-3.5 (Mul, Sigmoid, Sub with dynamic shapes).
+        // If this test breaks it means someone reverted the flag without also reverting the three
+        // engine changes — those must stay in sync. See `ENGINE_ACCEPTS_RUNTIME_EXTENTS` for the
+        // three engine preconditions and the matching test in `test_dynamic_shape.rs`.
+        const { assert!(ENGINE_ACCEPTS_RUNTIME_EXTENTS) };
     }
 }
