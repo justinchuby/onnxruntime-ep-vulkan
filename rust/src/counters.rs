@@ -54,7 +54,7 @@
 //! executed nothing must not be able to look like a lane that was never asked to.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
@@ -96,9 +96,6 @@ static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
 
-/// Has the "first successful dispatch" snapshot already been written this process?
-static FIRST_DISPATCH_DUMPED: AtomicBool = AtomicBool::new(false);
-
 /// `Relaxed` is correct here and the reasoning is worth stating rather than assuming.
 ///
 /// These counters are diagnostics: nothing in the EP branches on them, so no other memory access
@@ -129,23 +126,17 @@ pub fn record_compute_failure() {
     COMPUTE_FAILURES.fetch_add(1, ORD);
 }
 
-/// Record `n` dispatches that ran to fence completion, and on the very first one write the
-/// snapshot file if one was requested.
+/// Record `n` dispatches that ran to fence completion, and write the snapshot file if requested.
 ///
-/// The early write is not tidiness. Both CI lanes currently die inside `session.run()`, and a
-/// snapshot written only at teardown tells you nothing about a process that never reaches
-/// teardown. Writing once on the first success means a crash *after* real work still leaves
-/// evidence that real work happened — which is the difference between "lavapipe never ran
-/// anything" and "lavapipe ran something and then we corrupted memory". Those two diagnoses send
-/// you to completely different files.
+/// Writing on every successful dispatch means: a crash *after* real work still leaves evidence of
+/// that work, and successive reads of the file always reflect the latest accumulated state rather
+/// than a snapshot from the process's first dispatch.
 pub fn record_dispatches(n: u64) {
     if n == 0 {
         return;
     }
     DISPATCHES_EXECUTED.fetch_add(n, ORD);
-    if !FIRST_DISPATCH_DUMPED.swap(true, ORD) {
-        dump_if_requested();
-    }
+    dump_if_requested();
 }
 
 /// Current values. Not a consistent cross-counter snapshot; see [`ORD`].
@@ -170,7 +161,6 @@ pub fn reset() {
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
-    FIRST_DISPATCH_DUMPED.store(false, ORD);
 }
 
 impl VulkanEpCounters {

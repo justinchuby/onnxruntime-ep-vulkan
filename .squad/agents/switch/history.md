@@ -437,3 +437,41 @@ and symbolic_extents_are_accepted_once_extents_are_runtime_parameters both updat
 - M1 exit criterion satisfied: seq_len=1 and seq_len=5 correct in same session.
 - cargo ci green.
 - Commit 9885f9 on branch squad/switch.
+
+---
+
+## Session 20 — Counter scoping fix + profiling island fix (2026-07-30T01:32:15-07:00)
+
+**Coordinator task:** Reconcile the three contradictory numbers from the Phi-3.5 census run:
+`Claimed: 161, Islands: 0, counters {compile_calls:1, subgraphs_live:1, dispatches_executed:1}`.
+
+**Investigation findings (D-S20-01):**
+
+**Finding 1: "Claimed: 161" measures GetCapability offers, not ORT acceptance.**
+CLAIM_LOG is written during GetCapability, before ORT calls Compile or Compute. The 161 figure
+is what our EP offered to ORT. ORT acceptance is confirmed separately by the counters.
+
+**Finding 2: counters {1,1,1} = probe contamination, not Phi-3.5 state.**
+record_dispatches() used FIRST_DISPATCH_DUMPED to write the file exactly once per process.
+conftest.py::_probe_vulkan_device() dispatches an Add kernel before any test — making the
+Add session the first dispatch. The file captured {1,1,1} (the probe Add state) and
+FIRST_DISPATCH_DUMPED=true. All 161 subsequent Phi-3.5 dispatches incremented the in-memory
+atomics but could not update the file.
+
+**Finding 3: Islands=0 — broken regex in _count_islands.**
+The regex matched on the profiling event name field expecting EP_NAME_<digits>_<digits>. Actual
+ORT plugin-EP profiling format: name="VulkanExecutionProvider_VulkanExecutionProvider_<hash>_<N>_<N>_kernel_time",
+args["op_name"]="VulkanExecutionProvider_<hash>_<N>" where <hash> is a 64-bit integer.
+No events matched the two-short-digits pattern -> islands=0 always.
+
+**Fixes:**
+1. counters.rs: removed FIRST_DISPATCH_DUMPED. record_dispatches() calls dump_if_requested() on every dispatch.
+2. ep.rs: removed all temporary diagnostic instrumentation from session 19. Permanent S18 changes intact.
+3. test_phi35.py: OrtEpVulkanResetExecutionCounters() via ctypes before Phi-3.5 session;
+   in-process counter read after sess.run(); _count_islands rewritten to use args["op_name"].
+   _MOUSE_PREDICTED_ISLANDS_LO/HI updated to 155-161.
+All three files are Tank's (cross-owner edits flagged to coordinator).
+
+**Verified (both devices, 2026-07-30):**
+compile_calls=1, subgraphs_live=161, compute_calls=161, compute_failures=0, dispatches_executed=161, islands=161
+cargo ci: GREEN (343 tests)

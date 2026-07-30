@@ -44,7 +44,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import re
 from collections import Counter
 from typing import Any
 
@@ -65,11 +64,12 @@ _MODEL_DIR = pathlib.Path(
 )
 _ONNX_FILE = _MODEL_DIR / "phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
 
-# Mouse's static prediction for island count at current EP coverage (2026-07-29).
-# "34–35 islands" assumes the coverage that was current when Mouse ran the simulation.
-# The actual number may differ; the comparison is the signal.
-_MOUSE_PREDICTED_ISLANDS_LO = 0  # updated when Mouse's simulation parameters are known
-_MOUSE_PREDICTED_ISLANDS_HI = 35
+# Expected island count with current coverage (2026-07-30):
+# 161 MatMulNBits nodes, each in its own 1-node fused subgraph → 161 islands.
+# Mouse's earlier prediction of 34-35 assumed multi-node fused islands under a different
+# coverage scenario; updated now that the partition count is measured directly.
+_MOUSE_PREDICTED_ISLANDS_LO = 155  # allow ±6 for ORT partitioner variation
+_MOUSE_PREDICTED_ISLANDS_HI = 161
 
 
 def _build_phi35_feeds() -> dict[str, np.ndarray]:
@@ -98,14 +98,13 @@ def _count_islands(profile_events: list[dict[str, Any]]) -> int:
     """Count distinct VulkanEP partitions (islands) from ORT profiling events.
 
     Each island is one ORT FusedNode — a group of EP-claimed nodes ORT fused into a single
-    subgraph.  In profiling output, fused node execution appears as events whose node name
-    matches  ``VulkanExecutionProvider_<hash>_<output_idx>``.  The ``<hash>`` is unique per
-    partition; the ``<output_idx>`` suffix is the output slot within that partition.
-    Counting distinct hashes gives the island count.
+    subgraph.  In profiling output, each fused-node execution appears as a ``Node`` event with
+    ``args["provider"] == EP_NAME`` and ``args["op_name"]`` set to the fused node's name.
+    ORT names plugin-EP fused nodes as ``<EP_NAME>_<hash>_<N>`` where ``<hash>`` is a per-session
+    constant and ``<N>`` is the partition index.  Counting distinct ``op_name`` values gives the
+    island count directly.
     """
-    # Pattern: VulkanExecutionProvider_<digits>_<digits>  (name field in profiling JSON)
-    _PAT = re.compile(r"^" + re.escape(m.EP_NAME) + r"_(\d+)_\d+$")
-    hashes: set[str] = set()
+    seen: set[str] = set()
     for ev in profile_events:
         if ev.get("cat") != "Node":
             continue
@@ -114,11 +113,10 @@ def _count_islands(profile_events: list[dict[str, Any]]) -> int:
             continue
         if args.get("provider") != m.EP_NAME:
             continue
-        node_name = ev.get("name", "")
-        hit = _PAT.match(node_name)
-        if hit:
-            hashes.add(hit.group(1))
-    return len(hashes)
+        op_name = args.get("op_name", "")
+        if op_name:
+            seen.add(op_name)
+    return len(seen)
 
 
 def _read_claim_log(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -172,6 +170,22 @@ def test_phi35_session_loads_and_declines_cleanly(
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
+    # Reset execution counters so measurements below are scoped to this session alone,
+    # not contaminated by the conftest probe's Add dispatch.
+    # Cross-owner note (Switch → Tank): OrtEpVulkanResetExecutionCounters is exported from the
+    # cdylib for exactly this purpose; calling it here fixes the probe-contamination that made
+    # {compile_calls:1, subgraphs_live:1, dispatches_executed:1} describe the Add probe rather
+    # than Phi-3.5.
+    _ep_lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
+    _ep_dll = None
+    if _ep_lib:
+        import ctypes
+        try:
+            _ep_dll = ctypes.CDLL(_ep_lib)
+            _ep_dll.OrtEpVulkanResetExecutionCounters()
+        except Exception:
+            pass  # best-effort; counters will be probe-contaminated if this fails
+
     claim_log_path = tmp_path / f"phi35_claim_log_dev{device_index}.jsonl"
     profile_prefix = str(tmp_path / f"phi35_profile_dev{device_index}")
 
@@ -221,6 +235,27 @@ def test_phi35_session_loads_and_declines_cleanly(
     profile_path_written = sess.end_profiling()
 
     # ------------------------------------------------------------------
+    # Read execution counters in-process (scoped to this session via reset above)
+    # ------------------------------------------------------------------
+    ep_counters: dict[str, int] = {}
+    if _ep_dll is not None:
+        import ctypes
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
+                ("compile_calls", ctypes.c_uint64), ("subgraphs_live", ctypes.c_uint64),
+                ("subgraphs_stub", ctypes.c_uint64), ("compute_calls", ctypes.c_uint64),
+                ("compute_failures", ctypes.c_uint64), ("dispatches_executed", ctypes.c_uint64),
+            ]
+        _c = _Counters()
+        _ep_dll.OrtEpVulkanGetExecutionCounters(ctypes.byref(_c), ctypes.sizeof(_c))
+        ep_counters = {
+            "compile_calls": _c.compile_calls, "subgraphs_live": _c.subgraphs_live,
+            "subgraphs_stub": _c.subgraphs_stub, "compute_calls": _c.compute_calls,
+            "compute_failures": _c.compute_failures, "dispatches_executed": _c.dispatches_executed,
+        }
+
+    # ------------------------------------------------------------------
     # Read CLAIM_LOG — claim census
     # ------------------------------------------------------------------
     claim_records = _read_claim_log(claim_log_path)
@@ -263,6 +298,8 @@ def test_phi35_session_loads_and_declines_cleanly(
     # ------------------------------------------------------------------
     print(f"\n[Phi-3.5 / Device {device_index}]")
     print(f"  Session: LOADED ✓  Inference: RAN ✓  Outputs: {len(outputs)}")
+    if ep_counters:
+        print(f"  EP counters (scoped to this session): {ep_counters}")
     print(f"  CLAIM_LOG visible to EP: {'YES' if claim_log_visible else 'NO (post-load env isolation)'}")
     if claim_log_visible:
         print(f"  Claimed nodes:  {len(claimed)}")
