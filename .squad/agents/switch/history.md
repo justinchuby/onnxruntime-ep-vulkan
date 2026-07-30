@@ -475,3 +475,58 @@ All three files are Tank's (cross-owner edits flagged to coordinator).
 **Verified (both devices, 2026-07-30):**
 compile_calls=1, subgraphs_live=161, compute_calls=161, compute_failures=0, dispatches_executed=161, islands=161
 cargo ci: GREEN (343 tests)
+
+---
+
+## Session 21 — Interior-pointer hazard + validation positive control (2026-07-30T02:30:00-07:00)
+
+**Coordinator tasks:**
+1. Respond to Tank's finding that ORT's memory-pattern planner produces interior pointers to our allocator handles from run 2 onward (52 pointers, max offset 48 KiB across 5 runs).
+2. Fix Step 1b `want` bug in session.rs (Tank's cross-owner code used compile-time byte sizes for dynamic inputs, silently bypassing the overflow guard).
+3. Add validation positive control for M0 criterion 3.
+
+**D-S21-01 — Step 1b `want` bug fixed (session.rs cross-owner, Tank's Step 1b code):**
+Tank's `host_backing_for` calls in Step 1b used `input_byte_sizes[i]` (the compile-time size,
+0 for dynamic-shape inputs). `host_bytes` guards with `len > available`; when `len=0`, the
+check is trivially false regardless of span size. Fix: changed to `actual_input_byte_sizes[i]`,
+which is resolved in Step 1.5 from the live ORT tensor. Now the overflow guard fires correctly
+for dynamic inputs from run 2 onward when ORT's planner places them as interior pointers.
+
+**D-S21-02 — Validation positive control added (dispatch_integration.rs, M0 criterion 3):**
+
+New module: `validation_positive_control` — `#[test] #[ignore]` test named
+`descriptor_set_updated_while_bound_fires_vuid_03047`.
+
+The test:
+- Creates a Vulkan instance with `VK_LAYER_KHRONOS_validation` + `VK_EXT_debug_utils`.
+- Installs a `VkDebugUtilsMessengerEXT` callback incrementing `static AtomicU32 VALIDATION_ERRORS`.
+- Deliberately violates **VUID-VkWriteDescriptorSet-descriptorType-00332** by creating a buffer
+  with `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT` only and writing it as a STORAGE_BUFFER descriptor
+  while the set is bound to a recording command buffer.
+- Asserts `VALIDATION_ERRORS > 0`.
+
+**Finding: VUID-03047 not reported pre-submit in SDK 1.4.350.0.**
+`VUID-vkUpdateDescriptorSets-None-03047` (the session-16 VUID) is checked lazily by the layer —
+at submit time, not at the `vkUpdateDescriptorSets` call. Without a `vkQueueSubmit`, it does not
+fire in a unit test. The test uses VUID-00332 instead, which fires unconditionally at the update call.
+Documented in `switch-positive-control.md` (main inbox). VUID-00332 is in the same validation
+domain (descriptor content lifetime).
+
+Confirmed on Intel Iris Xe (device 0):
+```
+[VALIDATION-POSITIVE-CONTROL] severity=ERROR: vkUpdateDescriptorSets():
+  pDescriptorWrites[0].pBufferInfo[0].buffer was created with VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT,
+  but descriptorType is VK_DESCRIPTOR_TYPE_STORAGE_BUFFER.
+[POSITIVE-CONTROL] validation errors captured: 31
+test ... ok
+```
+
+**Cross-owner edits:**
+- `rust/src/vk/session.rs` (Tank's Step 1b): `want` changed from `input_byte_sizes` to `actual_input_byte_sizes`.
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN (344 tests)
+- Step 1b overflow guard: ✅ fixed for dynamic inputs
+- Validation positive control: ✅ fires VUID-00332 reliably; documents VUID-03047 laziness
+- Decision records written to main inbox: `switch-positive-control.md`
+

@@ -655,8 +655,14 @@ impl VulkanSession {
         // handle — a reserved, inaccessible address, by design, so that mistaking it for memory
         // faults instead of reading someone else's tensor. `host_backing_for` returns `None` for
         // ordinary host memory (the default build, unchanged) and the readable bytes for a handle.
+        //
+        // Use `actual_input_byte_sizes` (not `input_byte_sizes`) here. For dynamic-shape inputs
+        // `input_byte_sizes[i] == 0` (the compile-time signal); `actual_input_byte_sizes[i]` was
+        // resolved in Step 1.5 from the live tensor. Passing 0 to `host_bytes` would skip the
+        // overflow check — `len > available` is trivially false for len=0 — allowing an upload
+        // of `actual_input_byte_sizes[i]` bytes from a span that may be too short.
         for (i, p) in input_cpu_ptrs.iter_mut().enumerate() {
-            let want = input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
+            let want = actual_input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
             match crate::transfer::host_backing_for(p.cast_mut().cast::<u8>(), want) {
                 None => {}
                 Some(Ok(backing)) => *p = backing as *const u8,
