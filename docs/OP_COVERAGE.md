@@ -1409,6 +1409,117 @@ hand-written predicate using `require!`/`deny!`.
   and decline when it is not.** This is a claim predicate, not a shader concern.
 - **Negative axes.** Normalized in the shared host-side `ShapePlan`. Never in a shader.
 
+#### 7.1.1 A row's `caps` is not evidence that its variants ran (2026-07-29)
+
+The first row went live this day and it exposed a gap in the rule as stated. `caps` is one column
+serving two consumers: the shared claim helpers check input dtypes against it, and the shader
+variant table generates exactly those variants. That is the leverage §5.7 claims, and it is right —
+but it means a row that declares `NUMERIC` and flips to `Live` claims **four** dtypes on the
+strength of however many actually executed.
+
+`Add` executed as `add_f32`, on two devices, through the ORT wire. `add_f16`, `add_i32` and
+`add_i64` compile and are shape-checked and have never run. Claiming them because they share a row
+is the same argument as claiming `Sub` because it shares a template — an argument this document
+exists to refuse.
+
+So the live-set discipline has two parts, and `ops/elementwise.rs` implements both:
+
+1. **`EXERCISED`, an `(op, dtype)` evidence list** naming the test and the devices. A test asserts
+   the live set and the evidence list are the same set, so going live is a two-place edit where the
+   second place demands a sentence claiming evidence.
+2. **A predicate narrowed to the exercised dtypes**, not to `caps`. `ew_binary_f32` is
+   `ew_binary` plus an f32 check, declining `[dtype]` for the rest. `caps` stays `NUMERIC` because
+   we still want those variants *compiled* — the point is to stop claiming them, not to stop
+   building them.
+
+**Be precise about what claiming `Add` now bets on.** Not the shader; that has executed under
+validation layers on an Intel Iris Xe and an NVIDIA RTX 4060 with zero errors. The bet is that the
+**wire** is correct — `Compile` → `OrtNodeComputeInfo` → `dispatch_ort` — and the wire has so far
+only carried a mock host's tensors. Flipping the row is what makes that bet *settleable*: an
+unexercised path that nothing can execute never gets proven. Expect the first differential run to
+fail; if it does, the failure is the deliverable and `EXERCISED` shrinks back.
+
+`Sub`, `Mul`, `Div` and `Pow` share the exact shader family and stay staged. M0 asks for one node
+to travel the wire and the differential assertion is per-op. Four rows flipped on one executed
+shader would mean three of them rode on "it's the same template".
+
+> **Superseded in part, same day, §7.1.2.** The wire was then proven end-to-end through real ORT on
+> two vendors, which is the fact the paragraph above was waiting for. The paragraph's *reasoning*
+> stands and is the reason §7.1.2 is a separate, weaker list rather than a widening of `EXERCISED`.
+
+#### 7.1.2 Template evidence — a second, weaker list, and its exact boundary (2026-07-29)
+
+Once `Add` was claimed and executing on both local devices through real ORT, the sentence "its
+shader compiles but has never executed" stopped being the binding constraint on the rest of the
+family. What had been unproven was the **wire**; the wire is now proven. What remains unproven per
+op is one line of GLSL.
+
+That is a genuinely different and much smaller bet, so it gets a genuinely different and much
+smaller list: `TEMPLATE_LIVE`, alongside `EXERCISED` rather than merged into it. Each entry names
+the op and the exercised op standing in for it.
+
+**A row may join `TEMPLATE_LIVE` only if all three hold:**
+
+1. its representative is in `EXERCISED` **and** currently `Live`;
+2. it reaches the device through that representative's *exact* `translate` handler, template,
+   descriptor layout and push-constant block; and
+3. its claim predicate is narrowed to the representative's dtype.
+
+All three are asserted by unit tests, including the one that matters most in a year: if `Add` is
+ever demoted — which flipping it exists to make possible — every row standing on it fails the build
+rather than quietly continuing to claim on withdrawn evidence.
+
+**What this does not buy.** Anything that is a different *code path* rather than a different
+expression:
+
+| stays staged | why |
+|---|---|
+| `Equal`, `Greater`, `Less`, … | bool output from float input — a different store path in the template |
+| `And`, `Or`, `Bitwise*`, `Not` | not f32 at all, so the narrowing that justifies the live rows says nothing about them |
+| `Sum`, `Mean`, `Max`, `Min` | `ew_variadic` issues several dispatches; the wire has carried one |
+| `Where` | third template (`ew_select`), never dispatched |
+| `PRelu` | binary with a broadcast form the arithmetic ops do not exercise |
+| any live op at f16/i32/i64 | the variant compiles, `caps` still generates it, and it has not run |
+| `Swish`, `Gelu`, `LeakyRelu`, … | carry attributes; `NEEDS_PARAMS`, unchanged |
+
+**Why this is worth doing rather than waiting for 34 individual dispatch tests.** While a row is
+`Staged`, its differential test does not compare anything — it fails with *"the EP executed no node;
+the CPU-match check would be a vacuous pass"*. That failure is loud and correct and proves nothing
+about the shader. Flipping the row is what converts it into an actual comparison against the CPU EP.
+The evidence is therefore produced *by* the flip, on the next run, and if a body is wrong the suite
+says so then. Waiting would mean holding 34 shaders unverifiable in order to avoid claiming them.
+
+**And the reason to take the family together rather than one row at a time** is §7.2, not the op
+count. These ops cluster: `Mul` is 64 nodes of Phi-3.5, `Add` 72 of gpt-oss, and they sit next to
+each other. Claiming a scattered op raises coverage and shreds the graph — the gpt-oss `Cast`
+result in §4.21 is 28 % → 54 % coverage against 52 → 125 islands. Coverage is not the metric;
+islands are.
+
+**Outcome, same day.** The flip was made and the suite run on both devices:
+
+| run | before the flip | after |
+|---|---|---|
+| `test_op_table.py`, device 0 (Iris Xe) | 1 passed / 76 failed | **39 passed** / 38 failed |
+| `test_op_table.py`, device 1 (RTX 4060) | 1 passed / 76 failed | **39 passed** / 38 failed |
+| `test_barrier_parity.py`, both devices | 0 passed / 74 skipped | **36 passed** / 38 skipped |
+
+Not one numerical mismatch against the CPU EP on either vendor, and the remaining 38 failures are
+all the vacuous-pass guard firing on rows that are still `Staged`. The coordinator's expectation
+was that the first real run would fail; it did not, and that is worth recording as plainly as a
+failure would have been.
+
+`TEMPLATE_LIVE` is consequently **empty again**: all 34 entries were promoted into `EXERCISED`,
+each naming `test_op_table[<Op>-fp32]` and the two devices. The list stays defined because that
+two-step — flip on template evidence, promote on dispatch evidence — is the mechanism the next
+family will use, not an accident of this one. An entry still sitting in `TEMPLATE_LIVE` after a
+differential run is itself a finding: it means the run is not covering that row.
+
+**Barrier parity was the other beneficiary.** It is M0 criterion 8 and had never executed a case,
+because it only runs on ops the EP claims. 36 cases now run on both the legacy and the sync2
+barrier backend, so the legacy path we carry for ~31 % of Android is finally exercised. That was
+not the goal of the flip; it is a consequence of §7.2's point that claims and coverage are
+different things from *tested* claims.
+
 ### 7.2 Death by fallback — the real failure mode
 
 A claim rate of 95% can be *slower* than 0%. If the 5% we decline are distributed through the graph,
@@ -1513,7 +1624,29 @@ optional `zero_points` (packed), optional `g_idx`, optional `bias`.
 | `bits = 8` | Yes (same kernel, different unpack) |
 | `bits ∈ {2, 3, 5, 6, 7}` | **No** — decline; nobody ships them |
 | `g_idx` present (act-order / desc_act) | **No** at T4 — it makes the `B` access pattern data-dependent and destroys the coalesced load. Revisit only if a target model needs it. |
-| `accuracy_level` | Honour as a *hint* for accumulator dtype; never as a correctness requirement |
+| `accuracy_level` | **0–3 yes, 4 no.** Corrected 2026-07-29 — see below |
+
+**`accuracy_level` is a hint at every value but one, and that was worth reading the kernel to
+establish.** The row above previously said "honour as a hint, never a correctness requirement",
+which is wrong at level 4 in the permissive direction. ORT's CPU kernel
+(`contrib_ops/cpu/quantization/matmul_nbits.cc`, `GetComputeType<T1>`) branches on the attribute
+exactly once:
+
+```cpp
+if (attr == Level4 && MlasIsQNBitGemmAvailable(nbits, block_size, SQNBIT_CompInt8))
+    return SQNBIT_CompInt8;
+return SQNBIT_CompFp32;          // <float>: every non-ARM64 host
+```
+
+So 0, 1, 2 and 3 all resolve to the same path and are indistinguishable in the output — declining
+them would decline every real graph for no numerical reason. **Level 4 quantizes the activation `A`
+to int8 at the weight's block size.** That is a different computation, not a wider accumulator, and
+a kernel that multiplies against `A` at storage precision returns a plausible wrong answer for it.
+The predicate now declines it with `[attribute]`.
+
+Note also that ORT `ORT_ENFORCE`s `bits ∈ {2,4,8}` and `block_size ∈ {16,32,64,128,256}` at kernel
+construction. Our claimed sets are strict subsets of both, which is the right direction: a node we
+claim is always one the CPU oracle can also build.
 
 **The kernel is a `GEMM` variant, not a new algorithm** (§5.4). The delta is the `B`-tile load:
 instead of reading `TK×TN` floats, read `TK×TN/2` bytes, unpack nibbles, and multiply by the
@@ -1678,6 +1811,55 @@ rendered as `"[tag] sentence"`, where the tag is a `DeclineCode` from a closed s
 One construction, three consumers: `CLAIM_DEBUG` prints the sentence, Trinity's harness asserts the
 code, Niobe histograms it. A reason that did not come from `decline` returns `None` and buckets as
 "other", which is why the histogram needs that bucket.
+
+#### 9.2.2 The claim record must follow the environment, not latch it (2026-07-29)
+
+`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` names a file the registry appends one JSON line to per claim
+decision. Its path was read through a `OnceLock` — read once per process — on the reasoning that an
+environment variable is set before a process starts and does not change.
+
+That reasoning is wrong for the only caller the record exists to serve. A pytest process loads the
+EP once and then runs hundreds of tests, and `_models.is_vulkan_claimed` sets the variable **per
+call**, around a single probe session. So the first claim decision in the process — made by
+whichever fixture happened to create a session first — latched `None`, and every probe afterwards
+found no file. The reader treats a missing file as *not claimed*, conservatively and reasonably.
+
+**The failure therefore did not look like a broken diagnostic. It looked like a claim result.**
+`test_barrier_parity` skipped with *"Add is not yet Ready — VulkanExecutionProvider did not claim
+this node form"* in the same run in which `test_claim_diagnostics::test_add_is_claimed` passed on
+`Add`. Both sentences were plausible; only one was true. Reproduced deterministically:
+
+| env var set | `Add` at `[4,4]` | `Add` at `[3,4]` |
+|---|---|---|
+| before the first session | claimed | claimed |
+| after one session had run | "not claimed" | "not claimed" |
+
+The node form was never the difference. Both forms claim. The difference was the **mechanism**:
+`assert_vulkan_claims` reads ORT's profiling JSON, which is ground truth about execution;
+`is_vulkan_claimed` reads our record, which was silently disabled.
+
+Three things follow, and the third is the general one:
+
+1. **Fixed in `ops/claim_log.rs`:** the path is re-read per decision and the open handle is stored
+   *with* the path it belongs to, so pointing the variable at a different file mid-process reopens.
+   Cost is one `getenv` per node during `GetCapability`, which is nothing beside the schema lookups
+   the same call already does. Pinned by a unit test that writes to two paths and back.
+2. **`test_domain_regression.py` (C1) uses the same mechanism** and was therefore degraded the same
+   way — it has an "if the EP wrote a log" guard, so it was passing without asserting. Flagged to
+   Trinity; the fix restores it. A guard that silently weakens an assertion when its input is
+   missing is the same shape of hazard as the skip.
+3. **A diagnostic whose failure mode is indistinguishable from a negative result is not a
+   diagnostic.** The record's own docs argued for JSON Lines flushed per record precisely so that a
+   reader needs no lifecycle knowledge — and then the enablement check acquired exactly the
+   lifecycle dependency that argument was avoiding. The absent-file case should have been
+   distinguishable from the not-claimed case at the file level; it now is, because the file is
+   always created when the variable names one.
+
+**What actually caught it was two of our own tests disagreeing.** Neither was individually
+suspicious: a skip saying "not Ready yet" is expected for most of the table, and a passing claim
+test is expected for `Add`. It is worth noting that this is the second defect this session found by
+cross-checking one artefact against another rather than by reading either on its own — §4.18's rule
+in a new setting.
 
 ### 9.3 Capability reporting
 

@@ -5,15 +5,25 @@
 //! a third of the op inventory, so the schedule is decided by how fast rows can be added, not by
 //! how fast kernels can be written.
 //!
-//! # Everything here is [`Staged`]
+//! # The elementwise f32 family is live; everything else is [`Staged`]
 //!
-//! The three GLSL templates now exist (`shaders/glsl/ew_{unary,binary,select}.comp`) and all 168
-//! variants compile, but the engine has no dispatch path yet and nothing has run one of them on a
-//! device. So every row still declines and the CPU EP runs every one of these nodes, which is
-//! always correct. What *does* exist is the full description — opset window, dtype capabilities,
-//! template, variant stems, claim predicate, translate handler, and now the shader itself — all of
-//! it unit tested. Flipping a row live once a differential test has executed its variant is a
-//! one-word diff.
+//! The three GLSL templates exist (`shaders/glsl/ew_{unary,binary,select}.comp`) and all 168
+//! variants compile. As of 2026-07-29, **35 of them have executed on both local devices and
+//! matched ORT's CPU EP** through the real ORT wire — see [`EXERCISED`], which names the test for
+//! each. `add_f32` went first, alone; the rest of the f32 elementwise arithmetic family followed in
+//! one step via [`TEMPLATE_LIVE`], because a `Staged` row's differential test cannot compare
+//! anything and so cannot produce the evidence that would justify flipping it.
+//!
+//! Every live row is live for **f32 only** ([`ew_binary_f32`], [`ew_unary_f32`]). Comparison and
+//! logic ops are not in the set: their output dtype differs from their input, which is a different
+//! store path in the shader rather than a different one-line expression. Nor are the variadic ops
+//! ([`claim::ew_variadic`] issues several dispatches) or `Where` ([`claim::ew_select`]). Every
+//! other row still declines and the CPU EP runs those nodes, which is always correct.
+//!
+//! What exists for the staged rows is the full description — opset window, dtype capabilities,
+//! template, variant stems, claim predicate, translate handler, and the shader itself — all of it
+//! unit tested. Flipping a row live once a differential test has executed its variant is a
+//! one-word diff, plus its dtype in [`EXERCISED`].
 //!
 //! Three staging reasons appear below and they mean different things:
 //!
@@ -27,9 +37,10 @@
 //!   is not a handled value, which is precisely why the row stays staged.
 //! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
 
+use crate::engine::DType;
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
-use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC};
+use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC, dtype_suffix};
 use crate::ops::common::templates;
 use crate::registry::OpStatus::{Live, Staged};
 use crate::registry::{NodeView, OPSET_ANY, OPSET_STD_SWISH, OpSpec, UNEXERCISED};
@@ -44,6 +55,150 @@ pub const NEEDS_PARAMS: &str = "it carries attributes the plain elementwise temp
 /// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
 pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
      dtype, so it needs its own template and manifest column";
+
+/// The `(op, dtype)` pairs that have actually executed on a device through the ORT wire.
+///
+/// This is the evidence list behind every [`Live`] row in this module, and it is deliberately a
+/// *list of pairs* rather than a flag on the row. A row's `caps` describes what the kernel family
+/// is written for and drives shader-variant generation; it is not a statement that every one of
+/// those variants has run. `Add` declares `NUMERIC`, so `add_{f32,f16,i32,i64}` are all compiled
+/// and all shape-checked — but only `add_f32` has been dispatched.
+///
+/// Evidence, as of 2026-07-29:
+///
+/// * `Add`/f32 — `add_f32_dispatches_end_to_end`, the crate's own device test: the shader executes
+///   and computes the right answer on both local devices (Intel Iris Xe 1.4.309, NVIDIA RTX 4060
+///   Laptop 1.4.325), validation layers on, zero errors on either. Then
+///   `tests/ops/test_claim_diagnostics.py::test_add_is_claimed`, which reads ORT's profiling JSON
+///   and requires the node to have run on `VulkanExecutionProvider` — verified by the coordinator
+///   on each device rather than reported.
+/// * **Every other pair here** — `tests/ops/test_op_table.py::test_op_table[<Op>-fp32]`, run on
+///   device 0 and device 1: 39 passed on each, no numerical mismatch against the CPU EP oracle.
+///   Each of those tests asserts placement on `VulkanExecutionProvider` *before* comparing, so a
+///   pass is not the vacuous CPU-fallback pass.
+///
+/// The wire — `Compile` → `OrtNodeComputeInfo` → `VulkanSession::dispatch_ort`, with the plan built
+/// from the **fused node** whose edge order `KernelContext_GetInput/GetOutput` index by — is what
+/// all of these travel, and it is now carried real ORT tensors on two vendors.
+///
+/// Adding a pair here without a named test that ran it on a device is the same category of error
+/// as widening a claim predicate to make a coverage number look better.
+pub const EXERCISED: &[(&str, &str)] = &[
+    // Binary arithmetic.
+    ("Add", "f32"),
+    ("Sub", "f32"),
+    ("Mul", "f32"),
+    ("Div", "f32"),
+    ("Pow", "f32"),
+    // Unary maths.
+    ("Abs", "f32"),
+    ("Neg", "f32"),
+    ("Reciprocal", "f32"),
+    ("Sqrt", "f32"),
+    ("Exp", "f32"),
+    ("Log", "f32"),
+    ("Sin", "f32"),
+    ("Cos", "f32"),
+    ("Tan", "f32"),
+    ("Asin", "f32"),
+    ("Acos", "f32"),
+    ("Atan", "f32"),
+    ("Sinh", "f32"),
+    ("Cosh", "f32"),
+    ("Tanh", "f32"),
+    ("Asinh", "f32"),
+    ("Acosh", "f32"),
+    ("Atanh", "f32"),
+    ("Ceil", "f32"),
+    ("Floor", "f32"),
+    ("Round", "f32"),
+    ("Sign", "f32"),
+    ("Erf", "f32"),
+    ("Identity", "f32"),
+    // Attribute-free activations.
+    ("Relu", "f32"),
+    ("Sigmoid", "f32"),
+    ("HardSwish", "f32"),
+    ("Softplus", "f32"),
+    ("Softsign", "f32"),
+    ("Mish", "f32"),
+];
+
+/// Rows that are live on **template evidence** rather than on their own dispatch.
+///
+/// Each entry is `(op, the EXERCISED op whose dispatch stands in for it)`. This is a deliberately
+/// weaker claim than [`EXERCISED`] and it is kept in a separate list so that nobody can mistake
+/// one for the other — including me, six weeks from now.
+///
+/// **Currently empty, and the reason is the point.** Thirty-four rows sat here for the length of
+/// one edit on 2026-07-29 — the f32 elementwise arithmetic family, standing on `Add` — and were
+/// promoted into [`EXERCISED`] the same day, because flipping them is what allowed the differential
+/// suite to execute them at all. It stays defined because that transition is the mechanism, not an
+/// accident: the next family (bool-output comparisons, the variadic ops, `Where`, or f16 across the
+/// board) will go through exactly the same two steps.
+///
+/// **What it asserts.** The ORT wire — `GetCapability` → `Compile` → `OrtNodeComputeInfo` →
+/// `VulkanSession::dispatch_ort` — has carried a real ORT tensor to a real device, and every row
+/// here reaches that wire through the *same* `translate` function, the *same* template, the *same*
+/// descriptor layout and the *same* push-constant block as its representative. What differs
+/// between `add_f32` and `mul_f32` is one line of GLSL inside a body the build pipeline generates
+/// from one source.
+///
+/// **What it does not assert.** That the one line is right. `Div` by zero, `Pow` of a negative
+/// base, `Log` of zero and the exact rounding of `Round` are each their own arithmetic, and no
+/// amount of `Add` passing says anything about them. That is what Trinity's differential suite
+/// against the CPU EP is for, and flipping these rows is what lets it run at all: while a row is
+/// `Staged`, its test fails with *"the EP executed no node — the CPU-match check would be a
+/// vacuous pass"*, which is loud but proves nothing. Those failures turn into real comparisons the
+/// moment the rows go live, and if a shader is wrong the suite says so on the next run.
+///
+/// **Why this is not the slippery slope [`EXERCISED`] exists to prevent.** The rule is narrow and
+/// checkable: a row may sit here only if (a) its representative is in [`EXERCISED`] and live, (b)
+/// it goes through that representative's exact template, and (c) its claim predicate is narrowed
+/// to the representative's dtype. It buys nothing for `Sub` at i64, for `Where`, for the variadic
+/// ops, or for anything whose output dtype differs from its input — those are different code
+/// paths, not different arithmetic, and they stay staged. And an entry that has not been promoted
+/// by the next differential run is evidence that the run is not covering it. See
+/// `OP_COVERAGE.md` §7.1.2.
+pub const TEMPLATE_LIVE: &[(&str, &str)] = &[];
+
+/// [`ew_binary`](claim::ew_binary), narrowed to the dtype that has executed.
+///
+/// `OP_COVERAGE.md` §7.1: claim an op only when the attribute/dtype/rank combination is genuinely
+/// handled. The rows using this are `NUMERIC` because the *template* is, and because the variant
+/// table reads `caps` to decide what to compile. Claiming on `caps` alone would mean claiming
+/// `add_i64` on the strength of `add_f32` having run, which is a bet on three unexecuted variants
+/// dressed up as a capability.
+///
+/// The decline is `[dtype]`, so an f16 decoder graph shows up in Niobe's histogram as a dtype
+/// bucket rather than as a mystery. That bucket emptying is the signal that the f16 variant is
+/// worth exercising next.
+fn ew_binary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_binary(view, spec)?;
+    only_f32(view, spec)
+}
+
+/// [`ew_unary`](claim::ew_unary), narrowed the same way and for the same reason.
+fn ew_unary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_unary(view, spec)?;
+    only_f32(view, spec)
+}
+
+/// The shared narrowing: input 0 must be f32.
+fn only_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    let edge = claim::input_edge(view, spec, 0)?;
+    let dt = edge.dtype;
+    crate::require!(
+        dt == Some(DType::F32),
+        DType,
+        "`{}` is live for f32 only; this node is {}. The {} variant of the elementwise \
+         shader compiles but has never executed on a device, and the CPU EP is correct for it",
+        spec.op_type,
+        dt.map_or("untyped", dtype_suffix),
+        dt.map_or("requested", dtype_suffix)
+    );
+    Ok(())
+}
 
 /// `ai.onnx::Swish` (opset 24) — claim only `alpha = 1`, i.e. SiLU.
 ///
@@ -62,11 +217,22 @@ crate::op_table! {
     //
     //  op            domain  opset window        caps      kernel                       claim               translate               status
     // ---------------------------------------------------------------------------------------
-    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_binary,   templates::ew_binary,   Live;
-    "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+
+    // `Add` is the one row live on its own dispatch: `add_f32_dispatches_end_to_end` ran it on
+    // both local devices. Live for **f32 only** — `caps` stays NUMERIC because that is what the
+    // template and the variant table are for, and `ew_binary_f32` narrows the claim to the variant
+    // that has actually run. See `EXERCISED`.
+    //
+    // The rows below it marked with `ew_binary_f32` / `ew_unary_f32` are live on *template*
+    // evidence: same template, same wire, same dtype, different one-line body. See `TEMPLATE_LIVE`
+    // for exactly what that does and does not assert. Comparison and logic ops are NOT in that set
+    // — their output dtype differs from their input, which is a different store path in the
+    // shader, not a different expression.
+    "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    ew_binary_f32,      templates::ew_binary,   Live;
+    "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    ew_binary_f32,      templates::ew_binary,   Live;
+    "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    ew_binary_f32,      templates::ew_binary,   Live;
+    "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    ew_binary_f32,      templates::ew_binary,   Live;
+    "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    ew_binary_f32,      templates::ew_binary,   Live;
     "Mod",            Ai,     10 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "mod"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
     "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
     "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
@@ -85,45 +251,45 @@ crate::op_table! {
     // ---------------------------------------------------------------------------------------
     // Unary maths — the longest run of pure table rows in the crate.
     // ---------------------------------------------------------------------------------------
-    "Abs",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "abs"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Neg",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "neg"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Reciprocal",     Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "recip"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Sqrt",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sqrt"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Exp",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "exp"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Log",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "log"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Sin",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sin"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Cos",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cos"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Tan",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tan"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Asin",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asin"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Acos",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acos"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Atan",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atan"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Sinh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sinh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Cosh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cosh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Tanh",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tanh"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Asinh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asinh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Acosh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acosh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Atanh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atanh"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Ceil",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "ceil"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Floor",          Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "floor"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Abs",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "abs"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Neg",            Ai,     6 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "neg"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Reciprocal",     Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "recip"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Sqrt",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sqrt"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Exp",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "exp"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Log",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "log"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Sin",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sin"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Cos",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cos"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Tan",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tan"),     ew_unary_f32,       templates::ew_unary,    Live;
+    "Asin",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asin"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Acos",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acos"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Atan",           Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atan"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Sinh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sinh"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Cosh",           Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "cosh"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Tanh",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "tanh"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Asinh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "asinh"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Acosh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "acosh"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Atanh",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "atanh"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Ceil",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "ceil"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Floor",          Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "floor"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   ew_unary_f32,       templates::ew_unary,    Live;
+    "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     ew_unary_f32,       templates::ew_unary,    Live;
     "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
     "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
     "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
     "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
+    "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), ew_unary_f32,      templates::ew_unary,    Live;
 
     // ---------------------------------------------------------------------------------------
     // Activations. Attribute-free ones ride the unary template; parameterised ones are staged
     // behind NEEDS_PARAMS rather than claimed with attributes we would silently ignore.
     // ---------------------------------------------------------------------------------------
-    "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "HardSwish",      Ai,     14 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "hardswish"), claim::ew_unary,  templates::ew_unary,    Staged(UNEXERCISED);
-    "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
-    "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), claim::ew_unary,   templates::ew_unary,    Staged(UNEXERCISED);
-    "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    ew_unary_f32,       templates::ew_unary,    Live;
+    "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), ew_unary_f32,       templates::ew_unary,    Live;
+    "HardSwish",      Ai,     14 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "hardswish"), ew_unary_f32,     templates::ew_unary,    Live;
+    "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), ew_unary_f32,      templates::ew_unary,    Live;
+    "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), ew_unary_f32,      templates::ew_unary,    Live;
+    "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    ew_unary_f32,       templates::ew_unary,    Live;
     "HardSigmoid",    Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "hardsigmoid"), claim::never,   templates::unimplemented, Staged(NEEDS_PARAMS);
     "LeakyRelu",      Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "leakyrelu"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
     "Elu",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "elu"),     claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
@@ -160,6 +326,121 @@ crate::op_table! {
 mod tests {
     use super::*;
     use crate::registry::{Domain, OpStatus};
+
+    /// Every [`Live`] row in this module must be justified by [`EXERCISED`] or [`TEMPLATE_LIVE`].
+    ///
+    /// This is the structural half of the "no unexecuted claims" rule. It cannot check that the
+    /// named test actually ran — nothing in a unit test can — but it makes going live a two-place
+    /// edit where the second place demands either a device and a test name, or a named
+    /// representative that has one. The cost of flipping a row on a hunch is that you have to
+    /// write a sentence claiming evidence that does not exist.
+    #[test]
+    fn every_live_row_is_justified_by_one_of_the_two_evidence_lists() {
+        let mut live: Vec<&str> = OPS
+            .iter()
+            .filter(|s| s.status == OpStatus::Live)
+            .map(|s| s.op_type)
+            .collect();
+        let mut justified: Vec<&str> = EXERCISED
+            .iter()
+            .map(|(op, _)| *op)
+            .chain(TEMPLATE_LIVE.iter().map(|(op, _)| *op))
+            .collect();
+        live.sort_unstable();
+        justified.sort_unstable();
+        assert_eq!(
+            live, justified,
+            "a Live row has no entry in EXERCISED or TEMPLATE_LIVE, or an entry has no Live row"
+        );
+    }
+
+    /// A template-live row is only as good as its representative, so the representative must hold.
+    ///
+    /// Without this the weaker list could quietly outlive the stronger one: if `Add` were ever
+    /// demoted — because the differential suite disproved the wire, which is exactly what flipping
+    /// it is meant to allow — thirty-four rows would still be claiming on evidence that had been
+    /// withdrawn. This turns that into a compile-time-adjacent failure instead of a silent one.
+    #[test]
+    fn every_template_live_row_stands_on_a_representative_that_is_itself_exercised_and_live() {
+        for (op, representative) in TEMPLATE_LIVE {
+            assert!(
+                EXERCISED.iter().any(|(e, _)| e == representative),
+                "{op} stands on {representative}, which is not in EXERCISED"
+            );
+            let rep = OPS
+                .iter()
+                .find(|s| s.op_type == *representative)
+                .unwrap_or_else(|| panic!("{representative} has no row"));
+            assert_eq!(
+                rep.status,
+                OpStatus::Live,
+                "{op} stands on {representative}, which is not Live"
+            );
+        }
+    }
+
+    /// Every live row is live for f32 only, and none of them claims on `caps` alone.
+    ///
+    /// The narrowing is the whole point. `Add`'s `caps` is `NUMERIC` so the variant table still
+    /// compiles `add_{f32,f16,i32,i64}` — but only `add_f32` has been dispatched, so only f32 is
+    /// claimed. Using the bare `claim::ew_{unary,binary}` on a live row would claim every variant
+    /// its `caps` allows on the strength of one that ran.
+    #[test]
+    fn live_rows_claim_f32_only_and_never_on_caps_alone() {
+        for spec in OPS.iter().filter(|s| s.status == OpStatus::Live) {
+            let narrowed =
+                std::ptr::fn_addr_eq(spec.claim, ew_binary_f32 as crate::registry::ClaimPredicate)
+                    || std::ptr::fn_addr_eq(
+                        spec.claim,
+                        ew_unary_f32 as crate::registry::ClaimPredicate,
+                    );
+            assert!(
+                narrowed,
+                "{} is Live with a predicate that is not dtype-narrowed; it would claim every \
+                 variant its caps allow on the strength of add_f32 having executed",
+                spec.op_type
+            );
+        }
+        assert!(
+            EXERCISED.contains(&("Add", "f32")),
+            "Add/f32 is the representative the whole family stood on"
+        );
+    }
+
+    /// The families that are *not* a one-line body change stay staged.
+    ///
+    /// Deliberate, and worth a test rather than a comment. `Equal`/`Greater`/… write a bool from a
+    /// float input, which is a different store path in the template, not a different expression.
+    /// `Sum`/`Mean`/`Max`/`Min` issue several dispatches through `ew_variadic`. `Where` is a third
+    /// template. `And`/`Or`/`BitwiseAnd` are not f32 at all, so the narrowing that justifies the
+    /// live rows says nothing about them. Each is a distinct bet and each needs its own evidence.
+    #[test]
+    fn families_that_are_not_a_one_line_body_change_are_still_staged() {
+        for op in [
+            "Equal",
+            "Greater",
+            "Less",
+            "And",
+            "Or",
+            "Xor",
+            "BitwiseAnd",
+            "Not",
+            "IsNaN",
+            "Sum",
+            "Mean",
+            "Max",
+            "Min",
+            "Where",
+            "PRelu",
+        ] {
+            let row = OPS.iter().find(|s| s.op_type == op).unwrap();
+            assert_eq!(
+                row.status,
+                OpStatus::Staged(UNEXERCISED),
+                "{op} is not a one-line body change away from add_f32; it needs its own evidence"
+            );
+        }
+    }
 
     /// `Swish` is new at opset 24 and is the SwiGLU activation `onnxruntime/mobius` emits.
     ///

@@ -143,9 +143,33 @@ fn matmul_nbits(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // indirected, data-dependent read of `B`, which costs more than the CPU fallback saves.
     claim::input_absent(view, spec, G_IDX, "the act-order permutation `g_idx`")?;
 
-    // `accuracy_level` is a hint about accumulator precision, never a correctness requirement, so
-    // any value is claimable — but say so explicitly rather than by omission.
-    let _hint = view.attr_int("accuracy_level").unwrap_or(0);
+    // `accuracy_level` selects the compute type for the **activation** matrix `A`. It is a hint at
+    // every value but one, and that exception is a correctness requirement, not a preference.
+    //
+    // Read off ORT's CPU kernel rather than the schema prose
+    // (`contrib_ops/cpu/quantization/matmul_nbits.cc`, `GetComputeType<T1>`), which has exactly one
+    // branch:
+    //
+    //     if (attr == Level4 && MlasIsQNBitGemmAvailable(nbits, block_size, SQNBIT_CompInt8))
+    //         return SQNBIT_CompInt8;
+    //     return SQNBIT_CompFp32;          // <float>, i.e. every non-ARM64 host
+    //
+    // So 0, 1, 2 and 3 all resolve to the same kernel path and are indistinguishable in the
+    // output — claiming them is safe and they need no predicate. **4 is the input quantized to
+    // int8 with the same `block_size`**, which is a different computation, not a different
+    // accumulator width. Our kernel dequantizes `B` and multiplies against `A` at storage
+    // precision; running that where the graph asked for int8 activations produces a plausible
+    // wrong answer, which is the exact failure mode §7 exists to prevent. Decline it.
+    match view.attr_int("accuracy_level") {
+        None | Some(0..=3) => {}
+        Some(level) => deny!(
+            Attribute,
+            "`{}` sets `accuracy_level` = {level}; level 4 quantizes the activation `A` to int8 \
+             at the weight's block size, and this EP multiplies against `A` at storage precision. \
+             Levels 0-3 are claimed because ORT resolves all of them to the same fp32 compute path",
+            spec.op_type
+        ),
+    }
 
     Ok(())
 }
@@ -375,6 +399,60 @@ mod tests {
             !MATMUL_NBITS.knows("g_idx"),
             "g_idx is an input, not an attribute"
         );
+    }
+
+    /// What `accuracy_level` actually controls, pinned so the reasoning survives the comment.
+    ///
+    /// Trinity's oracle pins `accuracy_level = 1` while both Foundry Local models emit `0` on
+    /// every `MatMulNBits` node (§4.21). The question was whether the pin diverges from the model.
+    /// It does not, and the reason is not that the attribute is cosmetic: ORT's CPU kernel branches
+    /// on it exactly once, for level 4, and returns the fp32 compute path for everything else. So
+    /// 0, 1, 2 and 3 are one path, and 4 is a genuinely different computation — int8 activations.
+    ///
+    /// `SUPPORTED_ACCURACY_LEVELS` is therefore not a preference list. It is the boundary between
+    /// "hint we may ignore" and "requirement we do not meet".
+    const SUPPORTED_ACCURACY_LEVELS: &[i64] = &[0, 1, 2, 3];
+
+    #[test]
+    fn accuracy_level_4_is_the_only_one_that_changes_the_computation() {
+        assert!(
+            !SUPPORTED_ACCURACY_LEVELS.contains(&4),
+            "level 4 quantizes the activation to int8; a kernel that multiplies at storage \
+             precision would return a plausible wrong answer for it"
+        );
+        for level in [0, 1, 2, 3] {
+            assert!(
+                SUPPORTED_ACCURACY_LEVELS.contains(&level),
+                "ORT resolves accuracy_level {level} to the same fp32 compute path, so declining \
+                 it would decline every real graph for no numerical reason"
+            );
+        }
+        // The census values, so a change to either end of this is visible.
+        assert!(
+            SUPPORTED_ACCURACY_LEVELS.contains(&0),
+            "both Foundry Local models emit 0 on every node"
+        );
+    }
+
+    /// ORT `ORT_ENFORCE`s these ranges at kernel construction, so a fixture outside them fails
+    /// before any comparison happens. Ours must be a subset, or we would claim nodes the oracle
+    /// cannot even build.
+    #[test]
+    fn our_bits_and_block_sizes_are_inside_what_ort_will_construct() {
+        assert!(
+            !supports_bits(2),
+            "2-bit is legal in ORT; we do not implement it"
+        );
+        assert!(supports_bits(4) && supports_bits(8));
+        assert!(!supports_bits(3) && !supports_bits(16));
+        for bs in [16, 32, 64, 128] {
+            assert!(supports_block_size(bs), "ORT accepts {bs} and so do we");
+        }
+        assert!(
+            !supports_block_size(256),
+            "256 is legal in ORT but our kernel has not been written for it"
+        );
+        assert!(!supports_block_size(48), "not a size ORT will construct");
     }
 
     #[test]

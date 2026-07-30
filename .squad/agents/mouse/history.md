@@ -349,3 +349,115 @@ improves.
 target sitting on this disk, which is a better first target than Qwen3.5 on every axis (MHA not
 GQA, softcap 0, no SWA, no sinks, no QK norm, symmetric RTN, uniform bits/block, cold control
 flow, 366 nodes). That changes what is worth building first, not what has been built.
+
+---
+
+## Turn 11 — 2026-07-29 — The first live row, and a question about someone else's oracle
+
+**"Flip it to Ready" was a request my type system could not honour, and that was the wrong thing to
+fix.** The vocabulary is `Live | Staged(reason)`; there is no `Ready`. The instinct was to add a
+variant. The right answer was that **status is a gate and scope is not in the status** — scope
+lives in `caps` and in the claim predicate. Adding `Ready` would have encoded one specific
+narrowing (fp32, static) into a type that has to serve every future one. When asked to widen a type
+to express a constraint, check first whether the constraint already has a home.
+
+**A row's `caps` is not evidence that its variants ran, and I nearly let that through.** `Add`
+arrived `Live` with `caps: NUMERIC` — four dtypes claimed on one executed shader. `caps` serves two
+consumers (claim checking and variant generation) and that dual role is exactly what hid the
+problem: narrowing `caps` to F32 would have "fixed" the claim by silently dropping three compiled
+variants from the manifest. **When one field serves two consumers, a change that looks right for
+one can be a regression for the other.** The fix was a narrowed predicate plus an `EXERCISED`
+evidence list, leaving `caps` alone.
+
+**Evidence lists beat flags.** `EXERCISED: &[("Add", "f32")]` with a test asserting it equals the
+live set makes going live a two-place edit, and the second place demands a sentence naming a test
+and a device. A boolean would have cost nothing to flip. The friction is the feature.
+
+**Say what the bet actually is, not what it used to be.** The old decline read "the shader has
+never executed" — true yesterday, false today. The bet moved to the *wire*, which has only carried
+a mock host's tensors. Inheriting the old sentence would have made the row look better-established
+than it is. **When the premise behind a caveat changes, rewrite the caveat; do not delete it and do
+not keep it.**
+
+**Flipping is what makes a bet settleable.** I would have been more comfortable waiting for the
+differential test — but the differential test cannot run against a staged row. An unexercised path
+that nothing can execute never gets proven. There is a class of caution that is indistinguishable
+from never finding out.
+
+**A question about someone else's component found a hole in mine.** Trinity asked whether her
+oracle pinned at `accuracy_level=1` matches a model that emits `0`. Answering it meant reading
+ORT's CPU kernel, and the kernel says something I had recorded the opposite of: my comment claimed
+`accuracy_level` is "never a correctness requirement, so any value is claimable", but **level 4
+quantizes the activation to int8** — a different computation, which we would have answered wrongly.
+The permissive hole was in *my* predicate and I found it by investigating *her* pin. **"Is the
+reference doing what I think" and "am I claiming more than I implement" have the same answer
+surface: the kernel source.** Route questions about adjacent components toward the source, not
+toward the owner.
+
+**Prose lost to source again.** The schema doc says level 0 means "not quantized or downcast";
+the coordinator read it as "let ORT choose"; the actual branch is a single `if (attr == Level4)`.
+Three readings, one truth, and only the code had it. Same lesson as §4.21 in a new place: the
+artefact over the document. I should stop being surprised by this one.
+
+**And the answer was not the one anyone expected.** The pin is harmless (0-3 collapse to one path)
+but it is also not doing the work it appears to. The divergence that is real is **keyed on host
+architecture** — the fp16 compute path exists only on ARM64, so the same model and the same ORT
+give an fp32-accumulated oracle on x86-64 and an fp16-accumulated one on ARM64. **When you check
+whether a pin is necessary, check what else varies that nobody pinned.**
+
+**Verify a reported failure before fixing it.** Tank flagged the default-domain contrib row as a
+live failure. It was already fixed and committed; the tree was green. Rather than reporting "not my
+problem", I checked the part that would have made the fix cosmetic — whether the `ai.onnx` row's
+fingerprint is actually *evaluated* at runtime, or whether the schema check is gated on
+`Domain::Ms`. It is domain-agnostic, so the fingerprint is real drift detection. **A green test is
+not the same as a working mechanism; check that the thing fires.**
+
+**Restraint, recorded as a test.** `Sub`/`Mul`/`Div` are one word from live and share the shader.
+I left them staged and wrote a test explaining why, because the reason ("it's the same template")
+is exactly the argument the discipline refuses, and it will look just as tempting next week.
+
+---
+
+## Turn 12 — the test contradiction, and the elementwise f32 flip (2026-07-29)
+
+**When two of your own tests disagree, suspect the instrument before the subject.** Coordinator
+asked which node form `test_barrier_parity` builds that the predicate declines. Answer: none. Both
+`Add-fp32` at (3,4) and `test_add_is_claimed` at [4,4] claim. The tests used different *mechanisms*
+— profiling JSON versus our own claim record — and the record was dead. I nearly went hunting for a
+shape/rank/dtype difference first; the thing that cracked it was holding the model constant and
+varying only the environment. **Vary one thing at a time, and make the thing you vary the one you
+have not yet suspected.**
+
+**A `OnceLock` is a statement that a value cannot change in a process.** Mine said the claim-log
+path could not, because "an environment variable is set before the process starts". The only caller
+that exists sets it per call, mid-process, hundreds of times. I wrote both sides. **Check the
+lifetime assumption against the actual caller, not against the platonic caller.**
+
+**A diagnostic whose failure mode is indistinguishable from a negative result is not a
+diagnostic.** Missing log file → "not claimed" → a skip whose sentence sounded entirely reasonable.
+It was invisible for as long as it was the only thing looking. The same defect had also been
+quietly disabling Trinity's C1 regression test, which has an "if the EP wrote a log" guard — so it
+was passing without asserting. **When you find one silent-degradation guard, grep for the others
+reading the same input.**
+
+**Restraint has an expiry date, and so does its justification.** Last turn I wrote a test asserting
+`Sub`/`Mul`/`Div` stay staged because "it's the same template" is the argument the discipline
+refuses. That was right *while the wire was unproven*. Once the wire carried real ORT tensors on
+two vendors, the bet changed from "does the wire work" to "is this one line of GLSL right" — a
+different and much smaller bet — and holding the line unchanged would have been ceremony. I did not
+widen `EXERCISED`; I added a second, weaker, explicitly-bounded list. **When the premise of a rule
+dissolves, replace the rule with a narrower one rather than either keeping it or dropping it.**
+
+**Flipping is how the evidence gets produced.** A `Staged` row's differential test compares nothing
+— it fails with "the EP executed no node". Waiting for evidence before flipping would have meant
+holding 34 shaders permanently unverifiable in order to avoid claiming them. The flip is the
+experiment. It came back clean on both devices, so all 34 were promoted to `EXERCISED` the same
+day, and I recorded "it did not fail" as plainly as I would have recorded a failure.
+
+**I planted a false red in my own test and it went off one turn later.** `registry.rs` named `Sub`
+as its staged example; `Sub` went live and the test broke on data legitimately moving. **A test of
+an invariant should select its fixtures from the data, not name them.**
+
+**Build contention is now routine.** The shared `target/release` DLL was locked by another agent's
+running pytest. `CARGO_TARGET_DIR=target-mouse` gave a private build in 1m43s with no disruption to
+anyone; removed afterwards. Better than waiting, and much better than killing their processes.

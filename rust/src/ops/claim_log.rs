@@ -63,6 +63,22 @@
 //! **Nothing here can fail a run.** Every I/O error is swallowed. A diagnostic that can break
 //! inference is worse than no diagnostic, and this code runs inside a C ABI callback where a panic
 //! would be undefined behaviour.
+//!
+//! **The path is re-read on every decision, not latched once per process.** It used to be a
+//! `OnceLock`, on the reasoning that an environment variable is set before a process starts and
+//! never changes. That reasoning is wrong for the one caller this module exists to serve: a pytest
+//! process loads the EP once and then runs many tests, and `_models.is_vulkan_claimed` sets the
+//! variable *per call*, around a single session. With a `OnceLock` the very first claim decision
+//! in the process — made by whatever fixture happened to create a session first — latched `None`,
+//! and every subsequent probe found no file. Because the reader treats a missing file as "not
+//! claimed" (conservatively, and reasonably), the failure did not surface as a broken diagnostic:
+//! it surfaced as `test_barrier_parity` skipping with *"Add is not yet Ready — the EP did not
+//! claim this node form"*, at the same time as `test_add_is_claimed` passed on the same op. Two of
+//! our own tests contradicting each other is what made it visible; a plausible-sounding skip on
+//! its own would have hidden indefinitely. See `docs/OP_COVERAGE.md` §9.2.2.
+//!
+//! Re-reading costs one `getenv` per claim decision — per *node*, during `GetCapability`, not per
+//! dispatch — which is nothing next to the schema lookups the same call already performs.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -74,35 +90,35 @@ use crate::registry::{DeclineCode, DeclineReason};
 /// The environment variable that turns the record on, by naming the file to append to.
 pub const CLAIM_LOG_ENV: &str = "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG";
 
-/// The path, read exactly once per process.
-fn path() -> Option<&'static PathBuf> {
-    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
-    PATH.get_or_init(|| {
-        std::env::var_os(CLAIM_LOG_ENV)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    })
-    .as_ref()
+/// The path to append to, as of *now*.
+///
+/// Deliberately not memoised: see the module docs. A test that enables the record mid-process
+/// must be able to, because that is the only way the record is ever used.
+fn path() -> Option<PathBuf> {
+    std::env::var_os(CLAIM_LOG_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
-/// Whether the claim record is enabled for this process.
+/// Whether the claim record is enabled right now.
 ///
 /// Exposed so that callers can skip building the strings when nobody is listening.
 pub fn enabled() -> bool {
     path().is_some()
 }
 
-/// The append handle, opened lazily and kept open.
+/// The append handle, opened lazily and kept open, together with the path it belongs to.
 ///
 /// `Mutex` rather than a per-record open: ORT calls `GetCapability` from one thread today, but
 /// nothing in the ABI promises that, and interleaved half-lines from two threads would produce a
 /// file that is not valid JSON Lines.
-fn sink() -> &'static Mutex<Option<File>> {
-    static SINK: OnceLock<Mutex<Option<File>>> = OnceLock::new();
-    SINK.get_or_init(|| {
-        let file = path().and_then(|p| OpenOptions::new().create(true).append(true).open(p).ok());
-        Mutex::new(file)
-    })
+///
+/// The path is stored alongside the handle so that a caller which points the variable at a
+/// *different* file mid-process — which `is_vulkan_claimed` does, once per probe, using a
+/// pid-stamped name — gets its own file rather than the first one we happened to open.
+fn sink() -> &'static Mutex<Option<(PathBuf, File)>> {
+    static SINK: OnceLock<Mutex<Option<(PathBuf, File)>>> = OnceLock::new();
+    SINK.get_or_init(|| Mutex::new(None))
 }
 
 /// Escape a string for inclusion in a JSON string literal.
@@ -163,16 +179,35 @@ pub(crate) fn line(
 ///
 /// Infallible by design: see the module docs.
 pub fn record(qualified: &str, node: &str, opset: i32, outcome: Result<(), &DeclineReason>) {
-    if !enabled() {
+    let Some(want) = path() else {
         return;
-    }
-    let text = line(qualified, node, opset, outcome);
-    if let Ok(mut guard) = sink().lock()
-        && let Some(file) = guard.as_mut()
-    {
-        // Both errors are deliberately dropped: a full disk must not fail an inference run.
-        let _ = writeln!(file, "{text}");
-        let _ = file.flush();
+    };
+    record_to(want, &line(qualified, node, opset, outcome));
+}
+
+/// Append one already-rendered line to `want`, reopening the sink if the path has changed.
+///
+/// Split out from [`record`] so that the redirect behaviour — the half of the fix that is not
+/// about environment variables — can be tested without mutating the process environment, which
+/// is unsound under a threaded test runner.
+fn record_to(want: PathBuf, text: &str) {
+    if let Ok(mut guard) = sink().lock() {
+        let stale = !matches!(guard.as_ref(), Some((have, _)) if *have == want);
+        if stale {
+            // A failed open leaves `None`, so the next decision retries. Retrying is the right
+            // behaviour for a transient failure and costs nothing for a permanent one.
+            *guard = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&want)
+                .ok()
+                .map(|f| (want, f));
+        }
+        if let Some((_, file)) = guard.as_mut() {
+            // Both errors are deliberately dropped: a full disk must not fail an inference run.
+            let _ = writeln!(file, "{text}");
+            let _ = file.flush();
+        }
     }
 }
 
@@ -259,5 +294,42 @@ mod tests {
         if std::env::var_os(CLAIM_LOG_ENV).is_none() {
             assert!(!enabled());
         }
+    }
+
+    #[test]
+    fn pointing_the_record_at_a_new_file_mid_process_redirects_it() {
+        // The regression this pins cost us a day of confusion: the sink used to be opened once
+        // per process from a `OnceLock` path, so the *second* consumer in a process — every
+        // `is_vulkan_claimed` probe after the first session — silently wrote nothing. The reader
+        // treats an absent file as "not claimed", so the broken diagnostic presented as
+        // `test_barrier_parity` skipping with "Add is not yet Ready" while `test_add_is_claimed`
+        // passed on the same op in the same run.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("claim_log_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let first = dir.join("first.jsonl");
+        let second = dir.join("second.jsonl");
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
+
+        record_to(first.clone(), "one");
+        record_to(second.clone(), "two");
+        record_to(first.clone(), "three");
+
+        let a = std::fs::read_to_string(&first).unwrap_or_default();
+        let b = std::fs::read_to_string(&second).unwrap_or_default();
+        assert!(a.contains("one"), "first file lost its first line: {a:?}");
+        assert!(
+            b.contains("two"),
+            "the second path was never opened — this is the OnceLock defect: {b:?}"
+        );
+        assert!(
+            a.contains("three"),
+            "switching back must reopen, not stay on the second file: {a:?}"
+        );
+        assert!(!b.contains("three"), "lines leaked across files: {b:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

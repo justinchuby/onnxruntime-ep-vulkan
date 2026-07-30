@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T09:47:45-07:00 (**first shader dispatch — §9.1.2 rewritten**, one kernel on two desktop GPUs, not via ORT; **M0 assessed criterion by criterion — NOT met**, §10 M0; **§7.9 capability probing must distinguish "not supported" from "not asked correctly"**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added; census indexed by producer) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T15:02:55-07:00 (**§8.5 third strengthening — builder source is intent, the model file is the fact**; **metric of record is now the triple `(coverage, island_count, largest_island_flops)`** — §10.0, §9.2; **T3 demonstration target is Phi-3.5**, §10.0.2, with the T4 one-island criterion; **§10.0.1 R5 — four of five census errors were permissive**; M0 still NOT met, enumeration clauses now satisfied) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch — §9.1.2 rewritten**, one kernel on two desktop GPUs, not via ORT; **M0 assessed criterion by criterion — NOT met**, §10 M0; **§7.9 capability probing must distinguish "not supported" from "not asked correctly"**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added; census indexed by producer) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**, SDK is a hard build prerequisite; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + release-gate + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**, and **§9.1.2 execution-status disclosure**: no shader has yet run on any device; **§10.0.1 milestone risk register — R1, the fused Q/K-norm GQA form**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -2289,7 +2289,8 @@ Binding constraints:
    with `ep.force_legacy_barriers=1` — with identical numerical results** (§7.5 item 5).
 9. Both sibling docs and this one are consistent; §12 lists every divergence.
 
-**M0 STATUS ASSESSMENT — 2026-07-29T09:47:45-07:00. M0 is NOT met.**
+**M0 STATUS ASSESSMENT — 2026-07-29T09:47:45-07:00, updated 2026-07-29T15:02:55-07:00. M0 is NOT
+met.**
 
 Assessed criterion by criterion, because a milestone reported in aggregate is a milestone reported
 dishonestly. The first dispatch (§9.1.2) is real and it moves exactly one criterion, partially.
@@ -2306,12 +2307,15 @@ dishonestly. The first dispatch (§9.1.2) is real and it moves exactly one crite
 | 8 | Full suite passes twice per lane, default and `force_legacy_barriers=1`, identical results | **Not met** | Requires the suite to run against a device at all |
 | 9 | Sibling docs consistent; §12 lists every divergence | **Met** as of this revision | Re-check at declaration |
 
-**Six met, one partial, two not met — and the two not met are the two that define M0.** M0's
+**Six met, two partial, one not met — and the unmet and partial ones are what define M0.** M0's
 sentence is *"a stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing a
-single `Add` node on that device, and the output matches the ORT CPU EP"*. Every clause after
-"enumerates" is still open. **I will not declare M0 on the strength of an integration test that
-bypasses the very integration M0 is about** — that would be the §1.5 error committed against our own
-milestone plan, and it would spend the credibility of every later milestone report.
+single `Add` node on that device, and the output matches the ORT CPU EP"*. As of
+2026-07-29T15:02:55-07:00 the first two clauses are **satisfied on two devices** — ORT 1.28
+enumerates the EP with full metadata for both local GPUs. **Every clause from "runs a graph" onward
+is still open**, which is the substance of the milestone. **I will not declare M0 on the strength of
+an integration test that bypasses the very integration M0 is about** — that would be the §1.5 error
+committed against our own milestone plan, and it would spend the credibility of every later
+milestone report. Enumeration working is real progress on the ABI seam and it is not the milestone.
 
 **What specifically remains, in order:** the compiled subgraph must be reachable from `Compile`
 through `Compute` with ORT-owned tensors (Tank + Switch); `tests/ops` must run against a real device
@@ -2383,8 +2387,8 @@ Sequenced by `OP_COVERAGE.md` §6, not re-sequenced here. **Entry precondition f
 
 | Tier | Target | Gating item |
 |---|---|---|
-| T3 | **Qwen3-0.6B fp16, decoder layer as one island for *both* the `mobius` and ORT GenAI producers**, KV cache, correct tokens end-to-end, ≤2 islands | `ai.onnx::Attention` **first** (§10.0.2), then `GroupQueryAttention` (XL); M2's allocator; fp16 (OQ-14); push-constant shapes + OQ-15 |
-| T4 | Qwen3-1.7B int4, correct tokens, ≤2 islands, beats ORT CPU on ≥2 vendors | `MatMulNBits` (XL) + weight prepacking |
+| T3 | **Qwen3-0.6B fp16, decoder layer as one island for *both* the `mobius` and ORT GenAI producers**, KV cache, correct tokens end-to-end, ≤2 islands. **Demonstration target: Phi-3.5 (Foundry Local) — §10.0.2** | `ai.onnx::Attention` **first** (§10.0.2), then `GroupQueryAttention` (XL); M2's allocator; fp16 (OQ-14); push-constant shapes + OQ-15 |
+| T4 | Qwen3-1.7B int4, correct tokens, ≤2 islands, beats ORT CPU on ≥2 vendors. **Measurable criterion: `MatMulNBits` claimed ⇒ Phi-3.5 partitions into one island of ≥360 nodes** | `MatMulNBits` (XL) + weight prepacking |
 | T5a | **Qwen3.5 hybrid end-to-end — the named target of the directive** | `LinearAttention` `gated_delta` (XL) + `CausalConvWithState` |
 | T5b | Qwen3-MoE int4 with the expert block on Vulkan | `QMoE`; likely needs indirect dispatch (OQ-15) |
 | T5c | Qwen-VL vision tower + projector feeding the decoder in one session | `Conv` (patch-embed form), `MultiHeadAttention` |

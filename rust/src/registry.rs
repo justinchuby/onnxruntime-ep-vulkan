@@ -1868,20 +1868,27 @@ mod tests {
         );
         assert!(spec_for(&add_desc).is_some());
 
-        // A staged row must never reach Compile.
-        let sub_desc = NodeDesc {
-            op_type: "Sub".into(),
+        // A staged row must never reach Compile. Picked from the table rather than named, because
+        // naming one meant this test broke the day that op went live — which is a false red about
+        // the invariant, not a finding about it.
+        let staged = all_specs()
+            .find(|s| !matches!(s.status, OpStatus::Live) && s.domain == Domain::Ai)
+            .expect("the table always has at least one staged row");
+        let staged_desc = NodeDesc {
+            op_type: staged.op_type.into(),
             ..Default::default()
         };
         assert!(
-            lookup(&sub_desc.qualified_name()).is_some(),
-            "Sub should be in the table"
+            lookup(&staged_desc.qualified_name()).is_some(),
+            "{} should be in the table",
+            staged.op_type
         );
         assert!(
-            !is_registered(&sub_desc),
-            "Sub is staged, so it is not translatable"
+            !is_registered(&staged_desc),
+            "{} is staged, so it is not translatable",
+            staged.op_type
         );
-        assert!(spec_for(&sub_desc).is_none());
+        assert!(spec_for(&staged_desc).is_none());
     }
 
     #[test]

@@ -226,3 +226,72 @@ it never rested on trust: it rests on our being a guest in ORT's address space, 
 `OrtGraph`/`OrtNode` across a C ABI and never seeing a protobuf. A reversal must defeat *that* or
 meet the named trigger. "The original objection has weakened" is a third thing and is not a reason.
 D24's insistence on triggered deferrals paid off on its first test.
+
+---
+
+## 2026-07-29T15:02:55-07:00 — reading the file instead of the builder, and errors that are not randomly signed
+
+**When a claim can be checked against an artifact, checking it against a description of the artifact
+is not checking it.** This is now the project's characteristic failure and I can name four
+instances: the CPU-EP oracle (§9.1), the fingerprint audit (C2 item 7), the capability probe (§7.9),
+and now the producer census. Each time we had a plausible derived answer and no check against the
+thing itself.
+
+**The recurrence is the finding, not the individual corrections.** The producer lesson arrived three
+times at successively finer grain — wrong producer, then right producer at the wrong revision, then
+right producer at a pinned revision *whose output had never been read*. Each pass I correctly
+narrowed the claim and each pass I landed one level short of the evidence. Three iterations with the
+same shape is one mistake, not three, and the tell was that every correction moved along the same
+axis. **If a fix makes the claim more precise without moving it closer to an artifact, expect to be
+back.** Mouse's formulation is now §8.5's rule of record: *builder source is intent; the model file
+is the fact.*
+
+**Coverage percentage is not merely a weak metric, it can be inverted.** I had `largest_island_flops`
+as the guard and thought it sufficient. Mouse's simulation showed claiming `Cast` on gpt-oss moving
+coverage 28%→54% while island count went 52→125 — more ops claimed, strictly worse partitioning.
+And Phi-3.5 sits at 34–35 islands from T1 through T3 until `MatMulNBits` collapses it to **one island
+of 364 nodes**: the useful transition is a **cliff, not a slope**, so partial coverage of that graph
+is worth exactly nothing. The metric of record is now the triple `(coverage, island_count,
+largest_island_flops)` and no member may appear alone. **A single-number guard is a number that can
+be gamed by accident** — I did not need a bad actor, only a plausible next step.
+
+**The corollary I did not expect: we may implement an op and decline it.** If claiming an op raises
+island count without raising largest-island FLOPs, declining it is the better answer for that graph.
+That is not a contradiction of "claimed never outruns translatable" — it is the reverse direction,
+and the reverse direction is a legitimate optimisation.
+
+**"Which kernel do we write first" and "which model proves it" are different questions, and I
+answered them with one decision.** §10.0.2 chose `ai.onnx::Attention` and also implied the
+demonstration target. Mouse separated them and was right. Phi-3.5 is a better *demonstration* — MHA,
+softcap 0, no SWA, no sinks, no Q/K norm, uniform RTN int4, five op types over 353 of 366 nodes —
+while `ai.onnx::Attention` remains the right *first kernel* for reasons untouched by the census.
+
+**Follow your own argument in both directions or drop it.** I justified §10.0.2 partly on "a path
+whose models we can run on the desk is worth materially more". Phi-3.5 is on the desk today and no
+Qwen3 graph is. An argument good enough to sequence a kernel is good enough to re-target a
+demonstration, and quietly letting it stop applying when it points somewhere inconvenient is how a
+rationale degrades into a preference.
+
+**Adopt a criterion that can only be met by the thing working.** `MatMulNBits` claimed ⇒ Phi-3.5
+partitions into one island of ≥360 nodes. One falsifiable number, unreachable gradually because of
+the 34→1 cliff, worth more than every coverage percentage in the document.
+
+**Our errors are not randomly signed — four of five census contradictions were permissive.** A
+random distribution does not land four-to-one. The worst: the GQA predicate never read inputs 1 and
+2, so it would have **claimed** a packed-QKV node and handed the kernel a fused tensor where it
+expected a query — and both real models pack on every layer, so this was the normal path, producing
+wrong numbers rather than a decline. Third independent observation of the same asymmetry (C2 item 7,
+§7.9, this). **Too-strict fails loudly; too-permissive fails silently and produces numbers.** So the
+audit question is not "is this right?" but **"in which direction is this wrong?"**, and an audit that
+finds nothing must say which permissive failures it looked for.
+
+**A predicate that does not read an input cannot reject on it.** Silence about an optional input is
+acceptance of it. Every optional input a schema defines must be enumerated and explicitly accepted
+or declined. This is the mechanical form of the lesson above and it is the one that would actually
+have stopped packed QKV.
+
+**Report progress on the ABI seam as progress on the ABI seam.** ORT now enumerates our EP on both
+GPUs with full metadata — M0's "loads and enumerates" clauses are satisfied. Criterion 2 moved from
+not-met to partial and the milestone did not move at all, because everything from "runs a graph"
+onward is still open. Good news that lands on a criterion you already listed is easy to report
+honestly precisely *because* you listed the criteria first.
