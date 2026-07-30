@@ -49,3 +49,66 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ### Performance metric is a TRIPLE
 `(claimed_op_coverage, island_count, largest_island_flops)` per producer at version. Portability floor = §7.2. `SUBGROUP_SIZE_IS_GUARANTEED=False`.
+
+---
+
+## Turn 5 — 2026-07-30 — the first honest measurement (Phi-3.5, both devices)
+
+### Coverage figures go stale fast — read the counter, never the briefing
+I was told 161 claimed nodes. The run reported **257 claimed of 363 probed**. Always re-read
+`ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` in the same run that produces the number.
+
+### Island count is `subgraphs_live`, not the claimed-node count
+They happened to be equal (257 == 257). Equality is a *coincidence to be falsified*, not a
+definition. The falsifier: `compute_calls == subgraphs_live x inferences` — 7967 == 257 x 31
+exactly, on both devices. Integer equality, no tolerance, free.
+
+### The Intel iGPU gets SLOWER with warmup — a "take the min" convention would lie 4x
+Iris Xe per-inference: 724 -> 695 -> 903 -> 1447 -> 2080 -> 2669 -> flat ~2790 ms. Monotone ramp
+into steady state, not out of it. Added `stats.drift()` (first/second-half median ratio +
+monotone fraction) and raised phi35 warmup default to 10. Spread cannot tell "noisy but stable"
+from "moving steadily"; they demand opposite responses.
+
+### Within-run spread is not run-to-run spread — carry both
+With warmup 10 the within-run rsd is 1.7% (Intel) / 2.6% (NVIDIA), yet two whole runs minutes
+apart differed by 28%. Added `--repeats` (default 3) launching whole processes.
+
+### The CPU baseline is not a constant
+218 ms then 665 ms for the same CPU-only session, minutes apart — page-cache pressure after a
+2.2 GB model. Hence: each device's vulkan-vs-cpu delta must be measured back-to-back in ONE
+process; `baseline_disagreement()` fires above 2x between workers.
+
+### The counters file in this path carries no `alloc_*` keys
+Only `abi_version, compile_calls, subgraphs_live, subgraphs_stub, compute_calls,
+compute_failures, dispatches_executed`. So the staging label derives from **configuration**
+(`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` unset => staging-bound), with observation as a weaker
+second ground. "unknown" would have invited the reader to assume the number was general.
+
+### Timestamp verdict: inputs VERIFIED, arithmetic VERIFIED, end-to-end UNMEASURED
+`bench/timestamp_audit.py` cross-checks `epctl --probe-loader` against `vulkaninfoSDK`. Agree on
+both devices: Intel 52.0833 ns / 36 valid bits / UMA true (wrap 3579 s ~= 0.99 h);
+NVIDIA 1.0 / 64 / UMA false. **No `VkQueryPool` exists yet**, so nothing end-to-end is measured.
+Crucially: lavapipe and NVIDIA both report 1.0/64, so dropping BOTH the period scale and the
+mask is green on the discrete GPU and green in CI while under-reporting every Intel duration by
+52x. **The Iris Xe is the only instrument on this desk for that bug class, and CI has none.**
+
+### The tracer is written and env-wired but NOT called
+Verified empirically, not by reading: with `ONNXRUNTIME_EP_VULKAN_TRACE` and `TRACE_GPU=1` set,
+a run that executed 257 islands over four inferences produced **no trace file**. Report adoption
+as four facts (pinned / written / env-wired / invoked), never as one word.
+
+### The number: we are 8-12x SLOWER, and that is the useful result
+Intel 2790.7 vs 229.8 ms (12.1x); NVIDIA 1465.9 vs 185.9 ms (7.9x). Both `MATCH`, staging-bound.
+Per island: >= 9.96 ms (Intel) / >= 4.98 ms (NVIDIA) — a lower bound, since the host delta nets
+boundary cost against the GEMV saved.
+**For Mouse:** fewer islands beats faster kernels by an order of magnitude right now.
+**For Switch:** Intel costs ~2x per island *with no bus to cross* => argues for a fixed
+per-submission cost (submit-and-wait per island), not per-boundary PCIe transfer. Hypothesis;
+the §3 timestamps decide it.
+
+### Tooling
+- `.squad/decisions/inbox/` is **gitignored inside a worktree** — decision records must be
+  written into the integration tree's inbox or they never reach the Scribe. `cargo ci` says so;
+  git never will.
+- Crate edition is 2024: `rustfmt --edition 2021 <file>` silently no-ops. Use `cargo fmt --all`.
+- PowerShell `Select-String` piped after a native command can return nothing; redirect to a file.

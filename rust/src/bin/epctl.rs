@@ -200,7 +200,14 @@ fn usage() {
     eprintln!(
         "                         ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE is set, and fail the lane"
     );
-    eprintln!("                         unless a claimed node actually executed on a device.");
+    eprintln!("                         unless a claimed node actually executed on a device");
+    eprintln!("                         AND the model-level correctness verdict is MATCH.");
+    eprintln!("                         §9.1.3 / §10.0 (Morpheus ruling): compute_failures:0 is");
+    eprintln!("                         an execution-status counter, never a correctness signal.");
+    eprintln!("                         The verdict field model_output_equivalence carries that");
+    eprintln!("                         signal; it is written by the Python comparison gate.");
+    eprintln!("                         DIVERGENT = exit 1 (wrong answer, hard fail).");
+    eprintln!("                         UNMEASURED = exit 3 (no answer, same as no report).");
     eprintln!("    --require-dispatches N");
     eprintln!("                         minimum executed dispatches to pass (default 1).");
     eprintln!("    --require-device-memory");
@@ -212,10 +219,12 @@ fn usage() {
     eprintln!("                         exit 0 — it cannot answer the question.");
     eprintln!();
     eprintln!("EXIT CODES:");
-    eprintln!("    0  pass");
-    eprintln!("    1  the lane reported, and the number was below the requirement");
+    eprintln!("    0  pass (dispatches ≥ required AND model_output_equivalence = MATCH)");
+    eprintln!("    1  the lane reported, and dispatches were below the requirement,");
+    eprintln!("       OR model_output_equivalence = DIVERGENT");
     eprintln!("    2  usage error");
-    eprintln!("    3  the lane did not report (file missing, unreadable, or unparseable)");
+    eprintln!("    3  the lane did not report (file missing, unreadable, or unparseable),");
+    eprintln!("       OR model_output_equivalence = UNMEASURED (comparison was not performed)");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -230,18 +239,37 @@ fn usage() {
 /// process died before teardown — which is what both CI lanes are doing today — and a crashed lane
 /// must not be able to look like any kind of answer at all. The same reasoning as
 /// [`probe_exit_code`]: a wrong answer is worse than a loud refusal to answer.
+///
+/// Two new variants (§9.1.3, §10.0 R9 — `model_output_equivalence` gate):
+/// A lane that passes its dispatch count but has not compared against the CPU oracle has not
+/// proven correctness — it has proven execution. Those are different claims. A lane that has
+/// compared and found DIVERGENT has proven incorrectness. The exit codes for each must be
+/// distinguishable from each other and from the dispatch variants:
+///   `Pass` (exit 0) — dispatches ≥ required AND MATCH
+///   `EquivalenceDivergent` (exit 1) — dispatches ≥ required but GPU output ≠ CPU output
+///   `EquivalenceUnmeasured` (exit 3) — dispatches ≥ required but no comparison was performed
 #[derive(Debug, PartialEq, Eq)]
 enum CounterVerdict {
+    /// Dispatches ≥ required **and** `model_output_equivalence = MATCH`. Exit 0.
     Pass {
         dispatches: u64,
     },
+    /// Dispatches below required. Exit 1.
     TooFew {
         dispatches: u64,
         required: u64,
     },
+    /// File not found, unreadable, wrong ABI, or missing required fields. Exit 3.
     NoReport(String),
-    /// ORT derived a pointer that ran off the end of one of our allocations.
+    /// ORT derived a pointer that ran off the end of one of our allocations. Exit 1.
     OutOfBounds {
+        count: u64,
+    },
+    /// A `Free` arrived after we released the allocator that owned the span.
+    ///
+    /// Unconditional, like [`CounterVerdict::OutOfBounds`], and for the same reason: it is not a
+    /// metric, it is ORT and this EP disagreeing about who owns 2 GB.
+    FreeAfterRelease {
         count: u64,
     },
     /// `--require-device-memory` was asked for and the run did not deliver it.
@@ -250,6 +278,22 @@ enum CounterVerdict {
         staged_bytes: u64,
         device_backed: u64,
         allocations: u64,
+    },
+    /// Dispatches ≥ required but `model_output_equivalence = DIVERGENT`. Exit 1.
+    ///
+    /// The GPU executed and produced an answer; the answer is wrong. This is not "no report"
+    /// (exit 3) — a wrong answer is worse than no answer and earns the harder exit code.
+    EquivalenceDivergent {
+        dispatches: u64,
+    },
+    /// Dispatches ≥ required but no CPU comparison was performed (`model_output_equivalence`
+    /// absent or `UNMEASURED`). Exit 3.
+    ///
+    /// This is the same exit code as `NoReport` because both represent the absence of an answer
+    /// on the correctness question: one because the process crashed, the other because the
+    /// comparison step was never run. Neither may be read as "the EP is correct."
+    EquivalenceUnmeasured {
+        dispatches: u64,
     },
 }
 
@@ -269,6 +313,20 @@ fn json_u64(doc: &str, key: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok()
+}
+
+/// Pull one string field out of the counters JSON.
+///
+/// Counterpart to [`json_u64`] for string-valued fields. Returns the bare string value
+/// (without surrounding quotes) or `None` if the field is absent or malformed.
+fn json_str<'a>(doc: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let start = doc.find(&needle)? + needle.len();
+    let rest = doc[start..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(&rest[..end])
 }
 
 /// `require_device_memory`: fail unless every device handle in the run was backed by a `VkBuffer`.
@@ -320,6 +378,15 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
         return CounterVerdict::OutOfBounds { count: oob };
     }
 
+    // Same class, same unconditional treatment: a Free arriving after the allocator that owned the
+    // span was released means ORT still believed it owned memory we had torn down. Absence of the
+    // key means a build or a run that cannot report it, which is not a zero.
+    if let Some(late) = json_u64(&doc, "alloc_frees_after_release")
+        && late > 0
+    {
+        return CounterVerdict::FreeAfterRelease { count: late };
+    }
+
     // Also ahead of the dispatch count, and for the same reason: a run whose tensors sat in host
     // memory executed dispatches against the wrong memory for the purpose it was measured for.
     if require_device_memory {
@@ -350,13 +417,31 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
         }
     }
 
-    if dispatches >= required {
-        CounterVerdict::Pass { dispatches }
-    } else {
-        CounterVerdict::TooFew {
+    if dispatches < required {
+        return CounterVerdict::TooFew {
             dispatches,
             required,
+        };
+    }
+
+    // §9.1.3 (Morpheus ruling): `compute_failures` is an execution-status counter and **never** a
+    // correctness signal. The correctness verdict is `model_output_equivalence`, which is written
+    // by the Python comparison gate (Trinity) after the session runs. The EP writes UNMEASURED by
+    // default; the gate upgrades it to MATCH or DIVERGENT. A lane that has enough dispatches but
+    // no comparison performed is not a passing lane — it is a lane that forgot to measure, and
+    // that must look different from both a passing lane and a crashing lane.
+    //
+    // R9: a named instrument that does not exist is exactly the thing R9 warns about. UNMEASURED
+    // exit 3 is the instrument that would go red if the comparison step were removed.
+    match json_str(&doc, counters::EQUIVALENCE_KEY) {
+        Some(ref s) if *s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
+        Some(ref s) if *s == counters::EQUIVALENCE_DIVERGENT => {
+            CounterVerdict::EquivalenceDivergent { dispatches }
         }
+        // Absent or unknown value both map to UNMEASURED per R7: absence of an instrument must
+        // not read as a negative result. `None` here means the comparison never ran; an unknown
+        // string means a future writer we do not understand. Both are "no answer".
+        _ => CounterVerdict::EquivalenceUnmeasured { dispatches },
     }
 }
 
@@ -427,6 +512,22 @@ fn check_counters_with(
             );
             std::process::ExitCode::from(1)
         }
+        CounterVerdict::FreeAfterRelease { count } => {
+            eprintln!(
+                "epctl: FAIL — {count} Free call(s) arrived after the allocator that owned the \
+                 span had been released.\n\
+                 \x20 ORT and this EP disagree about who owns that memory. This check exists \
+                 because the still-live-handles WARN used to end with an open disjunction — \
+                 \"either a leak on our side or a tensor the session outlived\" — which is honest \
+                 and undecidable by the reader, so it was never decided. This number decides it: \
+                 spans that are still live at release and are *never* freed afterwards are ORT \
+                 reclaiming them by destroying the session, which costs us nothing. Spans that are \
+                 freed afterwards mean ORT held a pointer into a registry we had torn down.\n\
+                 \x20 On a build that unmaps the reservation at release, this is a use-after-free \
+                 rather than a log line. Do not quote memory numbers from this run."
+            );
+            std::process::ExitCode::from(1)
+        }
         CounterVerdict::NotOnDevice {
             staged_spans,
             staged_bytes,
@@ -450,6 +551,40 @@ fn check_counters_with(
                  later is not a caveat. Set this flag on any lane that quotes a number."
             );
             std::process::ExitCode::from(1)
+        }
+        CounterVerdict::EquivalenceDivergent { dispatches } => {
+            eprintln!(
+                "epctl: FAIL — {dispatches} dispatch(es) executed, but model_output_equivalence = \
+                 DIVERGENT.\n\
+                 \x20 The GPU reached the kernel and produced an answer. The answer is wrong: it \
+                 does not match the CPU oracle. This is not 'no dispatches' (the EP ran) and not \
+                 'no report' (the comparison ran). It is a confirmed correctness failure.\n\
+                 \x20 §9.1.3 ruling: compute_failures:0 does not contradict this. A command \
+                 buffer that signals its fence but produces numerically wrong values is an \
+                 arithmetic bug, not a dispatch bug. The two counters are measuring different \
+                 things and both can be zero simultaneously with a wrong result.\n\
+                 \x20 See test_phi35_vulkan_matches_cpu_logits for the gate that produces this \
+                 verdict. It is currently xfail(strict=True) — when Mouse fixes the kernel it \
+                 will flip to MATCH and this lane will pass."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::EquivalenceUnmeasured { dispatches } => {
+            eprintln!(
+                "epctl: NO ANSWER — {dispatches} dispatch(es) executed, but \
+                 model_output_equivalence = UNMEASURED.\n\
+                 \x20 This is exit 3, the same code as NoReport, because both represent the \
+                 absence of an answer on the correctness question: one because the process crashed \
+                 before teardown, the other because the comparison gate was never run.\n\
+                 \x20 R9: a set of individually sound instruments can be jointly silent on the \
+                 property that matters. UNMEASURED means the instrument that would distinguish \
+                 'executed correctly' from 'executed and produced garbage' was not present in this \
+                 run. Do not quote coverage metrics from a run where this verdict appears.\n\
+                 \x20 To produce a MATCH or DIVERGENT verdict, the Python comparison gate must \
+                 write to ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE before session teardown. If that \
+                 env var is not set, no verdict can be written."
+            );
+            std::process::ExitCode::from(3)
         }
     }
 }
@@ -829,9 +964,43 @@ mod tests {
         .to_json()
     }
 
+    /// A snapshot carrying `model_output_equivalence = MATCH`, as a correctly-run comparison gate
+    /// would write it. This is the only state that produces `CounterVerdict::Pass`.
+    fn snapshot_match(dispatches: u64) -> String {
+        onnxruntime_vulkan_ep::counters::VulkanEpCounters {
+            struct_size: 0,
+            abi_version: counters::COUNTERS_ABI_VERSION,
+            compile_calls: 1,
+            subgraphs_live: 1,
+            subgraphs_stub: 0,
+            compute_calls: dispatches,
+            compute_failures: 0,
+            dispatches_executed: dispatches,
+        }
+        .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
+    }
+
+    /// A snapshot carrying `model_output_equivalence = DIVERGENT`, as a run where the GPU
+    /// reached the kernel but produced numerically wrong output.
+    fn snapshot_divergent(dispatches: u64) -> String {
+        onnxruntime_vulkan_ep::counters::VulkanEpCounters {
+            struct_size: 0,
+            abi_version: counters::COUNTERS_ABI_VERSION,
+            compile_calls: 1,
+            subgraphs_live: 1,
+            subgraphs_stub: 0,
+            compute_calls: dispatches,
+            compute_failures: 0,
+            dispatches_executed: dispatches,
+        }
+        .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
+    }
+
     /// A snapshot carrying the ledger keys, as a real run with device memory enabled writes it.
+    /// Uses MATCH as the base so the guard-band tests can test guard-band behavior independently
+    /// of the equivalence check.
     fn snapshot_with_guard_band(dispatches: u64, in_guard_band: u64) -> String {
-        let mut doc = snapshot(dispatches);
+        let mut doc = snapshot_match(dispatches);
         let cut = doc.rfind('}').expect("json");
         doc.truncate(cut);
         doc = doc.trim_end().trim_end_matches('\n').to_string();
@@ -840,6 +1009,63 @@ mod tests {
              \"pointers_in_guard_band\": {in_guard_band}\n}}\n"
         ));
         doc
+    }
+
+    fn snapshot_with_late_frees(dispatches: u64, late: u64, live_at_release: u64) -> String {
+        // Build on snapshot_match so the FreeAfterRelease test is self-contained.
+        // Without MATCH the equivalence check fires before this path is reached.
+        let mut doc = snapshot_match(dispatches);
+        let cut = doc.rfind('}').expect("json");
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        doc.push_str(&format!(
+            ",\n  \"alloc_allocations\": 427,\n  \"alloc_frees\": 105,\n  \
+             \"alloc_allocators_released\": 1,\n  \
+             \"alloc_live_at_release_spans\": {live_at_release},\n  \
+             \"alloc_frees_after_release\": {late}\n}}\n"
+        ));
+        doc
+    }
+
+    /// The still-live-handles warning used to end in an open disjunction. This is the number that
+    /// closes it, so it needs the same plant-break-confirm treatment the guard band got.
+    #[test]
+    fn a_free_after_release_fails_the_lane_but_merely_live_handles_do_not() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-late-free-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        // 322 handles live at release and never freed afterwards. This is the state the real
+        // 2.2 GB model produces on both vendors, and it must NOT fail a lane: ORT reclaims them
+        // by destroying the session, and our reservation goes with the registry.
+        let benign = dir.join("benign.json");
+        std::fs::write(&benign, snapshot_with_late_frees(30, 0, 322)).expect("write");
+        assert_eq!(
+            read_counters(benign.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "handles still live at release are ORT's lifetime, not our leak — failing on this \
+             would make the check fire on every healthy model run and be switched off"
+        );
+
+        // One late Free is the whole difference, and it outranks a healthy dispatch count.
+        let defect = dir.join("defect.json");
+        std::fs::write(&defect, snapshot_with_late_frees(30, 1, 322)).expect("write");
+        assert_eq!(
+            read_counters(defect.to_str().expect("utf8"), 1),
+            CounterVerdict::FreeAfterRelease { count: 1 },
+            "a single Free after release means ORT held a pointer into a torn-down registry"
+        );
+
+        // Absence is not zero: a snapshot predating the alloc_frees_after_release key must not
+        // read as a FreeAfterRelease fault. Use snapshot_match so the equivalence check doesn't
+        // fire first and obscure the FreeAfterRelease absence-is-not-fault signal.
+        let missing = dir.join("missing.json");
+        std::fs::write(&missing, snapshot_match(30)).expect("write");
+        assert_eq!(
+            read_counters(missing.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "a snapshot without the key predates it; absence is not a fault signal"
+        );
     }
 
     #[test]
@@ -866,13 +1092,16 @@ mod tests {
         );
 
         // A snapshot from a build without the ledger, or a run with device memory off, carries no
-        // such key. Absence must not be read as either a pass or a failure signal.
+        // guard-band key. Its absence is not zero and not a fault for the guard-band check.
+        // However, such a snapshot also predates `model_output_equivalence`, so it comes back
+        // UNMEASURED (exit 3), not Pass. R7: absence of the instrument is absence of an answer.
         let old = dir.join("old.json");
         std::fs::write(&old, snapshot(30)).expect("write");
         assert_eq!(
             read_counters(old.to_str().expect("utf8"), 1),
-            CounterVerdict::Pass { dispatches: 30 },
-            "a snapshot without the key predates the ledger; absence is not zero and not a fault"
+            CounterVerdict::EquivalenceUnmeasured { dispatches: 30 },
+            "a snapshot without model_output_equivalence predates the verdict field; \
+             absence = UNMEASURED (exit 3), not a pass"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -886,7 +1115,10 @@ mod tests {
     }
 
     fn snapshot_with_tally(dispatches: u64, staged: u64, backed: u64, allocs: u64) -> String {
-        let mut doc = snapshot(dispatches);
+        // Use MATCH as base so the device-memory tests are testing device-memory behaviour,
+        // not equivalence behaviour. The `mixed` and `host` cases exit before equivalence
+        // (NotOnDevice); the `good` case must reach Pass, which requires MATCH.
+        let mut doc = snapshot_match(dispatches);
         let cut = doc.rfind('}').expect("json");
         doc.truncate(cut);
         doc = doc.trim_end().trim_end_matches('\n').to_string();
@@ -952,9 +1184,13 @@ mod tests {
             ),
             "absent keys are not zero"
         );
-        // ...but without the flag, the same snapshot is a perfectly good criterion-8 pass.
+        // ...but without the flag, the same snapshot still fails on equivalence (UNMEASURED),
+        // because equivalence is always checked and the old snapshot has no verdict field.
+        // Use snapshot_match to test the pure "device memory not required, dispatch ok" path.
+        let old_match = dir.join("old_match.json");
+        std::fs::write(&old_match, snapshot_match(30)).expect("write");
         assert_eq!(
-            read_counters_with(old.to_str().expect("utf8"), 1, false),
+            read_counters_with(old_match.to_str().expect("utf8"), 1, false),
             CounterVerdict::Pass { dispatches: 30 },
         );
 
@@ -973,20 +1209,52 @@ mod tests {
         assert_eq!(json_u64(&doc, "not_a_field"), None);
     }
 
+    #[test]
+    fn json_str_reads_equivalence_field() {
+        assert_eq!(
+            json_str(&snapshot(7), counters::EQUIVALENCE_KEY).as_deref(),
+            Some(counters::EQUIVALENCE_UNMEASURED),
+            "to_json() always writes UNMEASURED by default"
+        );
+        assert_eq!(
+            json_str(&snapshot_match(7), counters::EQUIVALENCE_KEY).as_deref(),
+            Some(counters::EQUIVALENCE_MATCH)
+        );
+        assert_eq!(
+            json_str(&snapshot_divergent(7), counters::EQUIVALENCE_KEY).as_deref(),
+            Some(counters::EQUIVALENCE_DIVERGENT)
+        );
+        assert_eq!(json_str(&snapshot(7), "not_a_string_field"), None);
+    }
+
     /// The three outcomes of the criterion-8 gate must be distinguishable for the same reason the
     /// loader probe's are: a lane that crashed before reporting must not be mistakable for a lane
     /// that reported honestly.
+    ///
+    /// Now five outcomes after §9.1.3: MATCH (pass), DIVERGENT (fail), UNMEASURED (no answer),
+    /// TooFew (fail), and NoReport (no answer). UNMEASURED and NoReport share exit 3 because both
+    /// represent the absence of an answer on the correctness question.
     #[test]
     fn counter_verdicts_separate_zero_from_no_report() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target/epctl-counter-gate-test");
         std::fs::create_dir_all(&dir).expect("scratch dir");
 
+        // Pass requires MATCH, not just dispatches.
         let ran = dir.join("ran.json");
-        std::fs::write(&ran, snapshot(3)).expect("write");
+        std::fs::write(&ran, snapshot_match(3)).expect("write");
         assert_eq!(
             read_counters(ran.to_str().unwrap(), 1),
             CounterVerdict::Pass { dispatches: 3 }
+        );
+
+        // UNMEASURED with sufficient dispatches = exit 3 (no answer, not a pass).
+        let unmeasured = dir.join("unmeasured.json");
+        std::fs::write(&unmeasured, snapshot(3)).expect("write"); // to_json() → UNMEASURED
+        assert_eq!(
+            read_counters(unmeasured.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceUnmeasured { dispatches: 3 },
+            "enough dispatches but no comparison = exit 3; 'executed' ≠ 'executed correctly'"
         );
 
         let idle = dir.join("idle.json");
@@ -1043,8 +1311,7 @@ mod tests {
             .join("target/epctl-counter-threshold-test");
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let f = dir.join("c.json");
-        std::fs::write(&f, snapshot(5)).expect("write");
-
+        std::fs::write(&f, snapshot_match(5)).expect("write"); // MATCH so threshold test is pure
         assert_eq!(
             read_counters(f.to_str().unwrap(), 5),
             CounterVerdict::Pass { dispatches: 5 }
@@ -1056,6 +1323,63 @@ mod tests {
                 required: 6
             }
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §9.1.3: `compute_failures:0` and `DIVERGENT` are not contradictory. A command buffer that
+    /// signals its fence but produces wrong numbers is an arithmetic bug. The EP sees no wrong
+    /// answer at the dispatch level — only the Python oracle comparison can see it.
+    #[test]
+    fn divergent_equivalence_fails_even_with_sufficient_dispatches() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-divergent-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let f = dir.join("divergent.json");
+        std::fs::write(&f, snapshot_divergent(161)).expect("write");
+        assert_eq!(
+            read_counters(f.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceDivergent { dispatches: 161 },
+            "161 dispatches, compute_failures:0, but DIVERGENT = confirmed wrong answer, exit 1"
+        );
+
+        // This is the current state of the project: Phi-3.5 with 161 MatMulNBits dispatched,
+        // compute_failures:0, vk_range=[0,0] vs cpu_range=[-13, 13]. The test that names this
+        // state is test_phi35_vulkan_matches_cpu_logits (xfail strict=True).
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// R7 applied to the equivalence field: absence of the instrument must not read as either
+    /// a pass or a fail. UNMEASURED = "we do not know" = exit 3, same as no file at all.
+    #[test]
+    fn unmeasured_equivalence_is_no_answer_not_a_pass() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-unmeasured-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        // Explicit UNMEASURED string.
+        let f = dir.join("unmeasured.json");
+        std::fs::write(&f, snapshot(50)).expect("write"); // to_json() → UNMEASURED
+        assert_eq!(
+            read_counters(f.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceUnmeasured { dispatches: 50 },
+            "UNMEASURED with plenty of dispatches = no answer on correctness = exit 3"
+        );
+
+        // An unknown future string also maps to UNMEASURED (R7: unknown ≠ known negative).
+        let mut unknown_doc = snapshot_match(50);
+        unknown_doc = unknown_doc.replace(
+            counters::EQUIVALENCE_MATCH,
+            "SOME_FUTURE_STATE_WE_DO_NOT_UNDERSTAND",
+        );
+        let g = dir.join("future-equiv.json");
+        std::fs::write(&g, unknown_doc).expect("write");
+        assert_eq!(
+            read_counters(g.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceUnmeasured { dispatches: 50 },
+            "an unrecognised equivalence string from a newer writer maps to UNMEASURED, not fail"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -10,6 +10,33 @@ This module implements Mouse's three-regime quantization tolerance policy
 
 All tests skip cleanly when no Vulkan device is available.
 
+COVERAGE DIMENSIONS (Morpheus R9 — for each claim, name what goes red if it's false)
+======================================================================================
+The suite tracks correctness across the following axes. A proof of one form does NOT cover
+another. The binding-arity axis was the root cause of the 2026-07-30 all-zero-logit bug:
+push_dynamic_kernel built a 4-slot descriptor set for the 3-input form; the shader needed
+5 bindings; the output write fell outside the layout and was silently discarded.
+
+  bits           : {4, 8}
+  block_size     : {16, 32, 64, 128}
+  input arity    : 3-input (no zero_points, symmetric)   ← the Phi-3.5 form, and the bug
+                   4-input (with zero_points, asymmetric)
+  batch path     : static batch (M known at compile time) ← was green before the fix
+                   symbolic/dynamic batch (M symbolic)    ← the bug path
+  dtype          : fp32 activations
+                   fp16 activations (gated ORT >= 1.28)
+  rows           : 1 (decode / GEMV)
+                   >1 (prefill / GEMM-like tiling)
+  runs           : single-run (insufficient for dirty-arena detection)
+                   multi-run in same session (Tank's requirement)
+
+The 2026-07-30 bug lived at the intersection of (3-input) × (symbolic batch). Neither axis
+alone was a bug. Each axis must be independently covered:
+  ✓ input-arity parametrised: test_matmulnbits_form_matrix_fp32, test_matmulnbits_fp16_matrix
+  ✓ symbolic-batch gate: test_matmulnbits_fp16_dynamic_batch (non-zero assertion)
+  ✓ symbolic-batch multi-run: test_matmulnbits_fp16_dynamic_batch_multirun (dirty-arena check)
+  ✗ 4-input × symbolic-batch: not yet tested — absence declared, not silenced
+
 ORACLE INVESTIGATION FINDINGS (empirical, 2026-07-28, ORT 1.27.x on Justin's machine):
   fp32 activations:
     ORT CPU EP executes MatMulNBits correctly. ✓
@@ -73,6 +100,17 @@ def test_dequant_linear_bit_exact(vulkan_device_available):
     is a correctness bug, not a precision issue. Reference is NumPy, NOT ORT CPU EP,
     because a shared misreading of the schema would let both sides encode the same wrong
     answer (Morpheus C6 principle: the oracle must be independent).
+
+    ORACLE SAFETY NOTE (onnx#8182):
+    This test uses opset 18 and a NumPy oracle.  It is intentionally NOT using opset 23+
+    or onnx.reference.ReferenceEvaluator.  Reason: onnx#8182 documents that the opset-23
+    and opset-25 DequantizeLinear reference implementations are NOT registered in
+    onnx ≤ 1.22.0.  ReferenceEvaluator would silently fall back to the opset-21
+    implementation, which does not know ``output_dtype`` or ``block_size`` — producing
+    wrong expected outputs that the Vulkan kernel would be tested against.
+    NumPy is independent of ONNX opset registration and is immune to this class of defect.
+    See m.assert_qdq_reference_oracle_safe() for the guard that enforces this for any
+    future oracle path that might use ReferenceEvaluator.
     """
     rng = np.random.default_rng(42)
     x_data = rng.integers(-128, 127, size=(4, 8), dtype=np.int8)

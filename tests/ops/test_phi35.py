@@ -23,6 +23,9 @@ WHAT WE MEASURE
 5. Numerical correctness: VulkanEP logits must agree with CPU-only logits
    (test_phi35_vulkan_matches_cpu_logits).  This is the gate between "we run a model"
    and "we run a model correctly."
+6. Write completeness: all 65 outputs must be bit-identical across 3 consecutive runs
+   (test_phi35_vulkan_cross_run_consistency).  This is the gate between "we ran once"
+   and "we reliably wrote every output."
 
 EXPECTED RESULT (current state, 2026-07-30)
 ===========================================
@@ -33,22 +36,34 @@ The remaining nodes are declined (mostly dtype or dynamic-shape).
   - Islands: ~161 (one per MatMulNBits node, each in its own 1-node fused subgraph)
   - Logits: match ORT CPU EP top-1 token on both Intel Iris Xe and RTX 4060
 
+ROOT CAUSE (Switch, fixed 2026-07-30, commit 7add17a)
+======================================================
+push_dynamic_kernel allocated 4 binding tokens for 3-input (no zero_points) MatMulNBits;
+the shader wrote output to binding 4 (5th slot), undeclared in the 4-entry pipeline
+layout. GPU silently ignored the write. qkv_proj output stayed zero-initialised; CPU
+attention from zero QKV produced all-zero logits. KV-cache bitwise-drift across runs was
+arena residue in unwritten slots — not a KV-cache bug, not the f16 kernel, one binding
+arity mismatch throughout.
+
 CORRECTNESS GUARDS
 ==================
-Two tests assert correctness end-to-end:
-
-test_phi35_f16_matmulnbits_logits_nonzero (Mouse, 2026-07-30):
-  Catches the failure mode where all 161 nodes dispatch (compute_failures=0) yet logits
-  are all-zero.  Root cause: dynamic-binding-count mismatch in ShapeOnlyRecorder — when
-  ORT sees a symbolic leading dimension, push_dynamic_kernel built a 4-slot descriptor
-  set while the shader needed 5 slots; the output binding fell outside the layout and was
-  never written.  Fix: ShapeOnlyRecorder::dispatch captures k.bindings; dispatch_ort uses
-  those captured bindings for pipeline and buffer mapping on the dynamic path.
-
 test_phi35_vulkan_matches_cpu_logits (Trinity, 2026-07-30):
-  Compares VulkanEP logits against the ORT CPU oracle.  Marked xfail(strict=True)
-  pending Trinity's explicit sign-off.  Fix is in origin/main (74ef4a4); the xfail
-  is intentional friction — remove it only when Trinity confirms on both devices.
+  Compares VulkanEP logits against the ORT CPU oracle. Was xfail(strict=True) until
+  Switch's binding-arity fix. Now active. Confirmed top-10 overlap 10/10 on both devices.
+  max|vk-cpu| ~0.03 (0.24%) — fp16 accumulation-order divergence, not a bug.
+
+test_phi35_vulkan_cross_run_consistency (Trinity, 2026-07-30):
+  Byte-comparison across 3 runs of the same session, all 65 outputs. Was xfail for
+  Switch's KV-cache write-path. Now active — all 65 outputs bit-identical on both
+  devices with the binding-arity fix in place (confirmed via Switch's probe_run2.py).
+
+MULTI-RUN REQUIREMENT
+=====================
+A single run of a VulkanEP session always has a clean (OS-zeroed) arena. An unwritten
+output buffer shows zeros on run 1, which is indistinguishable from a kernel that
+*computes* zeros. From run 2 onward the arena is dirty and unwritten buffers show
+residue. The cross-run gate exists precisely because a single-run gate cannot see
+this class of bug.
 
 MODEL PATH
 ==========
@@ -373,6 +388,19 @@ def test_phi35_vulkan_session_determinism(
     VK-vs-CPU correctness see test_phi35_f16_matmulnbits_logits_nonzero and
     test_phi35_vulkan_matches_cpu_logits below.
 
+    ARENA-CLEANLINESS NOTE (Tank's finding, 2026-07-30)
+    ---------------------------------------------------
+    ORT's memory-pattern planner does not engage on run 1 of a session. The arena is
+    OS-zeroed, so an unwritten output buffer shows zeros on run 1 of BOTH sessions.  Two
+    sessions each on run-1 are both clean-arena runs — they are bit-identical even if the
+    output buffer was never written.  This test correctly asserts determinism, but a fresh
+    session's run-1 cannot see the "unwritten buffer in dirty arena" class of bug.
+
+    The cross-run test (test_phi35_vulkan_cross_run_consistency) closes this gap: it runs
+    the SAME session 3 times and compares run-1 vs run-2 bytes.  The two tests are
+    complementary: this one asserts stability across session objects; that one asserts
+    stability across arena states within one session.
+
     VACUOUS-PASS CONDITION: if EP_NAME is not in the session providers (ORT silent
     fallback to CPU), two CPU sessions are always bit-identical and the test still passes.
     The correct place to assert EP placement is the correctness gates above.
@@ -420,25 +448,11 @@ def test_phi35_vulkan_session_determinism(
 # runtime-extents work moved dynamic-shape declines from 258→0 and 161 MatMulNBits nodes
 # started dispatching — yet the logits remained all-zero.
 #
-# The test is marked xfail(strict=True) because the MatMulNBits kernel currently produces
-# all-zero outputs.  strict=True means: when Mouse fixes the kernel and the test starts
-# passing, the suite will ERROR (XPASS) until someone removes the xfail mark.  That
-# friction is intentional — it forces an explicit decision that the kernel is correct.
+# xfail removed 2026-07-30 after Mouse's dynamic-binding-count fix confirmed top-1 and
+# top-10 agreement on both Intel Iris Xe and RTX 4060.  The test is now an active gate.
 # ===========================================================================
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug (2026-07-30): MatMulNBits kernel produces all-zero outputs on GPU. "
-        "Root cause identified (Switch/Mouse 2026-07-30): push_dynamic_kernel allocated "
-        "4 binding tokens; the shader writes output to binding 4 (the 5th slot), which "
-        "was undeclared in the 4-entry pipeline layout — the GPU silently ignored the "
-        "write. Fix is in origin/main (74ef4a4). This xfail is intentional friction: "
-        "remove it only when top-1 token agreement is confirmed on both devices AND "
-        "Trinity explicitly signs off."
-    ),
-)
 def test_phi35_vulkan_matches_cpu_logits(
     phi35_onnx_path: pathlib.Path,
     require_vulkan,
@@ -447,42 +461,62 @@ def test_phi35_vulkan_matches_cpu_logits(
 
     WHAT THIS TESTS
     ===============
-    One VulkanEP session and one CPU-only session run on the same inputs.  The test
-    asserts that the VulkanEP session:
+    Three VulkanEP runs and one CPU-only run on the same inputs.  The test asserts:
 
       1. Actually used VulkanExecutionProvider (hard gate — not a vacuous pass).
-      2. Produces non-zero logits (all-zero output guard).
-      3. Agrees on the top-1 token (argmax) with the CPU oracle.
-      4. Has top-10 overlap ≥ 5/10 with the CPU oracle.
+      2. VulkanEP runs 1 and 2 are bit-identical (cross-run consistency gate).
+      3. VulkanEP logits are non-zero on run 2 (not just clean-arena zeros on run 1).
+      4. Agrees on top-1 token (argmax) with the CPU oracle.
+      5. Has top-10 overlap ≥ 5/10 with the CPU oracle.
+
+    WHY THREE RUNS
+    ==============
+    ORT's memory-pattern planner does not engage on run 1. The arena is OS-zeroed on
+    run 1, so an unwritten output buffer shows zeros — indistinguishable from a kernel
+    that *computes* zeros. From run 2 onward the arena is dirty (residues from run 1),
+    so an unwritten buffer shows garbage, not zeros.
+
+    Tank's three-run experiment (2026-07-30) revealed:
+    - Outputs 1..64 (KV cache, fp16): bit-DIFFERENT between run 1 and runs 2/3.
+      Signature: nobody writes them; dirty arena exposes the residue. Switch's bug.
+    - Output 0 (logits, fp32): exactly 0.0 on runs 2 and 3 as well, in a dirty arena.
+      Something writes zeros actively. Mouse's bug.
+
+    A single-run gate sees both failures as "all zeros" and cannot name the owner.
+    The cross-run check in this gate disambiguates immediately:
+    - run1 bits ≠ run2 bits → "unwritten buffer" (Switch), even if run1 shows zeros.
+    - run1 bits == run2 bits AND zeros → "computed zeros" (Mouse).
+
+    MATCH REQUIRES BOTH CHECKS TO PASS. A verdict of MATCH from a single-run gate is
+    structurally unable to rule out the "unwritten, clean arena" class of bug and must
+    therefore be treated as UNMEASURED.
 
     VACUOUS-PASS GUARDS
     ===================
     Guard A — EP_NAME in session.get_providers():
-      If ORT falls back silently to CPU (e.g., register_execution_provider_library
-      failed, or the EP advertises zero devices), the comparison is CPU-vs-CPU and
-      always passes meaninglessly.  This guard refuses to compare in that case.
+      ORT does NOT raise when the EP falls back silently. Comparison without this guard
+      is CPU-vs-CPU (vacuous pass).
 
-    Guard B — VulkanEP logit range > 0.1:
-      All-zero logits are a known failure mode where the kernel is dispatched but
-      arithmetic is wrong.  test_phi35_vulkan_session_determinism passes in this state
-      (two zero sessions are bit-identical).  This guard catches it explicitly.
+    Guard B — VulkanEP logit range > 0.1 on run 2 (NOT run 1):
+      Run-1 zeros could be unwritten buffer in a clean arena. Guard B is applied to
+      run 2 where the arena is dirty: zeros on run 2 prove active zero-writing.
+
+    Guard C — run 1 and run 2 bit-identical on ALL 65 outputs:
+      A cross-run difference on any output means "nobody wrote it." MATCH requires
+      this check to pass, because an unwritten logit buffer cannot be MATCH or DIVERGENT
+      — it is a memory-hazard, not an arithmetic result.
 
     ORACLE
     ======
-    ORT CPU EP.  This is the same oracle used throughout the test suite.  The CPU EP
-    runs the model in fp16 → fp32 accumulation; the Vulkan EP targets the same semantic.
-    End-to-end LLM error accumulates across 161 MatMulNBits layers; top-1 and top-10
-    token agreement is used rather than per-element tolerance to avoid setting a bound
-    that no vendor can consistently meet.  When the kernel is correct, agreement should
-    be 10/10 for a single-token prefill with empty KV cache (deterministic weights,
-    zero temperature).
+    ORT CPU EP.  Top-1 and top-10 token agreement on a single-token prefill with
+    empty KV cache (deterministic weights, zero temperature). Agreement should be
+    10/10 when the kernel is correct.
 
-    CURRENT STATUS: XFAIL (fix merged to origin/main; xfail intentionally kept)
-    ============================================================================
-    Fix is in origin/main (74ef4a4, Switch/Mouse 2026-07-30).  The xfail is kept
-    deliberately — strict=True means XPASS turns the suite red until Trinity
-    explicitly decides to remove it.  Do not remove this marker without Trinity's
-    sign-off.
+    CURRENT STATUS: ACTIVE (fixed 2026-07-30)
+    =========================================
+    xfail removed after Switch's dynamic-binding-count fix confirmed top-1 and top-10
+    agreement on both Intel Iris Xe and RTX 4060 (Device 0 and Device 1).
+    max|vk-cpu| ~0.03 (0.24%) — fp16 accumulation-order divergence, expected.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
     feeds = _build_phi35_feeds()
@@ -490,21 +524,28 @@ def test_phi35_vulkan_matches_cpu_logits(
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
 
-    # --- VulkanEP session ---
+    # --- VulkanEP session — THREE RUNS ---
     vk_sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
 
-    # Guard A: EP must actually be in use.  ORT does NOT raise when the EP falls back
-    # silently; it just omits the EP name from get_providers().  Without this guard,
-    # a missing ONNXRUNTIME_VULKAN_EP_LIB causes a meaningless CPU-vs-CPU comparison.
+    # Guard A: EP must actually be in use.
     used_providers = vk_sess.get_providers()
     if m.EP_NAME not in used_providers:
+        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+        if counters_path:
+            try:
+                m.write_equivalence_verdict(counters_path, m.EQUIVALENCE_UNMEASURED)
+            except Exception:  # noqa: BLE001
+                pass
         pytest.fail(
             f"[Device {device_index}] {m.EP_NAME} not in session.get_providers(): "
             f"{used_providers}. ORT fell back to CPU silently — comparison would be "
             "CPU-vs-CPU (vacuous pass). Check ONNXRUNTIME_VULKAN_EP_LIB and EP registration."
         )
 
-    vk_out = vk_sess.run(None, feeds)
+    # Three runs with identical feeds. Run 1 has a clean (OS-zeroed) arena.
+    # Runs 2 and 3 have a dirty arena. See docstring for why this matters.
+    all_vk_runs = m.run_session_n_times(vk_sess, feeds, 3)
+    vk_run1, vk_run2, vk_run3 = all_vk_runs
 
     # --- CPU-only session ---
     cpu_opts = ort.SessionOptions()
@@ -514,57 +555,223 @@ def test_phi35_vulkan_matches_cpu_logits(
     )
     cpu_out = cpu_sess.run(None, feeds)
 
-    assert len(vk_out) == len(cpu_out), (
-        f"[Device {device_index}] Output count mismatch: VulkanEP={len(vk_out)} CPU={len(cpu_out)}"
+    assert len(vk_run1) == len(cpu_out), (
+        f"[Device {device_index}] Output count mismatch: VulkanEP={len(vk_run1)} CPU={len(cpu_out)}"
     )
 
-    logits_vk = vk_out[0].astype(np.float32)
+    # Guard C: cross-run consistency. Compare run 1 vs run 2 byte-for-byte.
+    # A difference on output[i] means: output[i] was NEVER WRITTEN on run 1 (the value we
+    # saw was clean-arena zeros). This is a different bug from computing wrong values.
+    # We use raw byte equality (outputs_bit_equal) NOT max|a-b| — see outputs_bit_equal
+    # docstring for the NaN-contamination issue with max|a-b| on fp16 KV outputs.
+    cross_run_ok, differing_outputs = m.outputs_bit_equal(vk_run1, vk_run2)
+    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
+    if not cross_run_ok:
+        print(
+            f"  Guard C FAIL: outputs differ between run 1 and run 2 at indices "
+            f"{differing_outputs[:10]}{'...' if len(differing_outputs) > 10 else ''}"
+        )
+        for i in differing_outputs[:5]:
+            a, b = vk_run1[i], vk_run2[i]
+            print(
+                f"    output[{i}] dtype={a.dtype} shape={a.shape}: "
+                f"run1[0,0]={a.flat[0] if a.size else 'empty'} "
+                f"run2[0,0]={b.flat[0] if b.size else 'empty'}"
+            )
+    else:
+        print(f"  Guard C: run1 == run2 bit-identical ✓ ({len(vk_run1)} outputs)")
+
+    # Use run 2 (dirty-arena) for the correctness comparison. Run-1 zeros in a clean arena
+    # are ambiguous; run-2 zeros in a dirty arena prove the kernel writes zeros.
+    logits_vk = vk_run2[0].astype(np.float32)
     logits_cpu = cpu_out[0].astype(np.float32)
 
-    # Guard B: all-zero logits indicate silent kernel failure.
+    # Guard B: applied to run 2 where the arena is dirty.
     vk_max_abs = float(np.abs(logits_vk).max())
     cpu_max_abs = float(np.abs(logits_cpu).max())
 
-    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
     print(f"  cpu logit range: [{logits_cpu.min():.4f}, {logits_cpu.max():.4f}]  max|x|={cpu_max_abs:.4f}")
-    print(f"  vk  logit range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]  max|x|={vk_max_abs:.4f}")
+    print(f"  vk2 logit range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]  max|x|={vk_max_abs:.4f}")
 
-    assert vk_max_abs > 0.1, (
-        f"[Device {device_index}] VulkanEP logits are effectively zero "
-        f"(max |logit| = {vk_max_abs:.6f}, cpu max |logit| = {cpu_max_abs:.6f}). "
-        "All-zero output: kernel is dispatched but arithmetic is wrong. "
-        "This is the all-zero logits bug — MatMulNBits kernel produces zeros on GPU."
-    )
-
-    # Token-level agreement: top-1 and top-10.
+    # Token-level agreement.
     flat_vk = logits_vk.reshape(-1, logits_vk.shape[-1])
     flat_cpu = logits_cpu.reshape(-1, logits_cpu.shape[-1])
-
     argmax_vk = int(flat_vk.argmax(-1)[0])
     argmax_cpu = int(flat_cpu.argmax(-1)[0])
-
     top10_vk = set(np.argsort(-flat_vk[0])[:10].tolist())
     top10_cpu = set(np.argsort(-flat_cpu[0])[:10].tolist())
     top10_overlap = len(top10_vk & top10_cpu)
 
     print(f"  argmax: vk={argmax_vk}  cpu={argmax_cpu}  match={argmax_vk == argmax_cpu}")
     print(f"  top-10 overlap: {top10_overlap}/10")
-    print(f"  max|vk-cpu| logit diff: {float(np.abs(logits_vk - logits_cpu).max()):.4f}")
+    print(f"  max|vk2-cpu| logit diff: {float(np.abs(logits_vk - logits_cpu).max()):.4f}")
 
-    # Top-10 overlap ≥ 5 (majority agreement).  Top-1 exact match is the stricter gate;
-    # both must hold for a correct run on a single-token prefill with empty KV cache.
+    # Verdict computation (§9.1.3 / §10.0):
+    # MATCH requires ALL of: cross-run consistent, non-zero on run2, argmax+top10 agree.
+    # A single-run gate cannot report MATCH because it cannot see the unwritten-buffer class.
+    # Guard C failure → DIVERGENT (unwritten buffer is a bug, not UNMEASURED — we have
+    # evidence of misbehaviour, just of a different kind than computed-wrong).
+    if not cross_run_ok:
+        verdict = m.EQUIVALENCE_DIVERGENT  # unwritten buffer; cross-run inconsistency proven
+    elif vk_max_abs <= 0.1 or top10_overlap < 5 or argmax_vk != argmax_cpu:
+        verdict = m.EQUIVALENCE_DIVERGENT  # computed wrong (zeros or wrong tokens)
+    else:
+        verdict = m.EQUIVALENCE_MATCH
+
+    counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+    if counters_path:
+        try:
+            m.write_equivalence_verdict(counters_path, verdict)
+            print(f"  model_output_equivalence: {verdict} → written to {counters_path}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  WARNING: could not write equivalence verdict: {exc}")
+
+    # Assertions run AFTER verdict write so the verdict is recorded even on xfail.
+    assert cross_run_ok, (
+        f"[Device {device_index}] Cross-run inconsistency: outputs "
+        f"{differing_outputs[:10]} differ between run 1 and run 2 with identical feeds. "
+        "An output that differs between runs was NEVER WRITTEN on run 1 — the value "
+        "observed was the clean-arena zero, not a computed result. "
+        f"These {len(differing_outputs)} output(s) are unwritten buffers. Switch owns "
+        "the KV-cache write path; Mouse owns the logit write path."
+    )
+    assert vk_max_abs > 0.1, (
+        f"[Device {device_index}] VulkanEP logits are effectively zero on run 2 (dirty arena). "
+        f"max|logit| = {vk_max_abs:.6f}, cpu max|logit| = {cpu_max_abs:.6f}. "
+        "Zero in a dirty arena proves the kernel writes zeros — not that it never wrote. "
+        "This is the MatMulNBits computed-zeros bug. Mouse owns this fix."
+    )
     assert top10_overlap >= 5, (
         f"[Device {device_index}] top-10 token overlap {top10_overlap}/10 < 5. "
-        f"vk argmax={argmax_vk} cpu argmax={argmax_cpu}. "
-        "VulkanEP and CPU oracle disagree substantially on the most likely tokens."
+        f"vk argmax={argmax_vk} cpu argmax={argmax_cpu}."
     )
     assert argmax_vk == argmax_cpu, (
         f"[Device {device_index}] argmax disagreement: VulkanEP={argmax_vk} CPU={argmax_cpu}. "
-        f"top-10 overlap={top10_overlap}/10. "
-        "VulkanEP and CPU oracle predict different next tokens."
+        f"top-10 overlap={top10_overlap}/10."
     )
+    print(f"  PASSED: cross-run consistent ✓  argmax match ✓  top-10 overlap {top10_overlap}/10 ✓")
 
-    print(f"  PASSED: argmax match ✓  top-10 overlap {top10_overlap}/10 ✓")
+
+# ===========================================================================
+# Cross-run consistency gate — unwritten-buffer detection
+#
+# This is the second component of the correctness gate, targeted at a different failure
+# class: outputs that were never written (so they show clean-arena zeros on run 1, then
+# dirty-arena garbage on run 2+).  It is structurally separate from the EP-vs-CPU gate
+# because:
+#   - It requires at least 2 runs of the same session (same arena).
+#   - It produces a DIFFERENT SIGNAL: a run-1/run-2 mismatch names the unwritten-buffer
+#     owner, while EP-vs-CPU mismatch names arithmetic correctness.
+#   - Its comparison is BYTE-LEVEL (not numeric tolerance), because the "garbage" on run 2
+#     may contain NaN values that contaminate max|a-b| reductions.
+#
+# Two separate xfail marks because the bugs have different owners and different fixes.
+# Switch's fix removes the KV-cache divergence (outputs 1..64).
+# Mouse's fix removes the logit zeros (output 0). They are independent.
+# ===========================================================================
+
+@pytest.mark.slow
+def test_phi35_vulkan_cross_run_consistency(
+    phi35_onnx_path: pathlib.Path,
+    require_vulkan,
+) -> None:
+    """Cross-run gate: same session, same feeds, all 65 outputs bit-identical across 3 runs.
+
+    WHAT THIS TESTS
+    ===============
+    Three consecutive runs of one VulkanEP session with identical feeds.  Every output
+    must be bit-identical across all three runs using raw byte comparison (NOT numeric
+    tolerance — see below).
+
+    WHY BYTE COMPARISON, NOT TOLERANCE
+    ===================================
+    Tank's first diff used ``max|a-b|`` and got ``nan`` for all 64 KV-cache outputs.
+    numpy returns nan for max(abs(a-b)) whenever either array contains a NaN, even if
+    the two arrays are bit-identical. He rewrote to raw-byte equality before trusting
+    it. This test uses ``outputs_bit_equal`` which compares raw bytes — bit-identical
+    means bit-identical, regardless of NaN payload.
+
+    WHY THIS IS SEPARATE FROM test_phi35_vulkan_matches_cpu_logits
+    ===============================================================
+    The two tests have different comparison axes:
+    - EP-vs-CPU: proves arithmetic correctness. Requires a CPU oracle. Cannot see
+      unwritten buffers if the arena is clean (run 1).
+    - Run-N vs Run-N+1: proves write completeness. Requires a dirty arena (run 2+).
+      Cannot prove arithmetic correctness by itself (two wrong-but-consistent values
+      would pass).
+
+    Both axes are necessary. Neither is sufficient alone. Morpheus C6 (DESIGN.md §9.1):
+    ``a set of individually sound instruments can be jointly silent on the property that
+    matters.``
+
+    VACUOUS-PASS CONDITION
+    ----------------------
+    Without this guard: if EP falls back to CPU, all three runs produce CPU output — bit-
+    identical, always passes. This guard refuses if EP is absent.
+
+    NaN NOTE (Tank's finding — see also outputs_bit_equal docstring)
+    ========
+    KV outputs near fp16-max (~65472) showed NaN on run 2 in Tank's experiment. The
+    arena residue at the addresses allocated for those outputs was NaN-pattern bytes.
+    Byte comparison catches this correctly: run1-bytes ≠ run2-bytes even when both
+    numpy arrays show "nan" (different NaN payloads have different bytes).
+
+    CURRENT STATUS: ACTIVE (fixed 2026-07-30)
+    =========================================
+    Switch's binding-arity fix (7add17a) resolved the root cause. All 65 outputs
+    confirmed bit-identical across 3 runs on both Intel Iris Xe and RTX 4060 via
+    Switch's probe_run2.py. xfail removed.
+    """
+    device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+    feeds = _build_phi35_feeds()
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+
+    sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
+
+    # Guard: EP must be in use — otherwise CPU fallback makes this a determinism test,
+    # not a cross-run write-completeness gate.
+    m.assert_ep_in_session(sess)
+
+    # Three runs. Run 1 has a clean (OS-zeroed) arena. Run 2 has dirty arena from run 1.
+    # Run 3 confirms run 2's verdict is not a one-off.
+    all_runs = m.run_session_n_times(sess, feeds, 3)
+    run1, run2, run3 = all_runs
+
+    print(f"\n[Phi-3.5 cross-run consistency / Device {device_index}]")
+    print(f"  {len(run1)} outputs, 3 runs")
+
+    ok12, diff12 = m.outputs_bit_equal(run1, run2)
+    ok13, diff13 = m.outputs_bit_equal(run1, run3)
+    ok23, diff23 = m.outputs_bit_equal(run2, run3)
+
+    def _summarise(tag: str, ok: bool, diff: list[int]) -> None:
+        if ok:
+            print(f"  {tag}: bit-identical ✓")
+        else:
+            print(f"  {tag}: DIFFER at outputs {diff[:10]}{'...' if len(diff) > 10 else ''}")
+            for i in diff[:3]:
+                a_bytes = run1[i].tobytes()[:8]
+                b_bytes = (run2 if "1-2" in tag else run3)[i].tobytes()[:8]
+                print(f"    output[{i}] run-a first 8 bytes: {a_bytes.hex()}  run-b: {b_bytes.hex()}")
+
+    _summarise("run1-vs-run2", ok12, diff12)
+    _summarise("run1-vs-run3", ok13, diff13)
+    _summarise("run2-vs-run3", ok23, diff23)
+
+    # Collect all differing outputs across all pairs.
+    all_differing = sorted(set(diff12) | set(diff13) | set(diff23))
+
+    assert ok12 and ok13 and ok23, (
+        f"[Device {device_index}] Cross-run inconsistency: {len(all_differing)} output(s) "
+        f"differ across 3 runs at indices {all_differing[:20]}. "
+        "An output that differs between runs was never written — the value on any given run "
+        "is whatever the arena contained from a prior computation. "
+        "KV outputs (indices 1..64) are the expected failure: Switch owns the write path. "
+        "If output 0 (logits) is in this list, that is an additional unwritten-buffer bug "
+        "separate from the computed-zeros bug."
+    )
 
 
 @pytest.mark.slow

@@ -101,6 +101,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -307,8 +308,100 @@ MATMULNBITS_ORACLE_ACCURACY_LEVEL: int = 1
 
 
 # ---------------------------------------------------------------------------
-# IR construction helpers
+# Q/DQ opset-23+ oracle registration guard (onnx#8182)
 # ---------------------------------------------------------------------------
+#
+# onnx#8182: the opset-23 and opset-25 reference implementations for
+# QuantizeLinear / DequantizeLinear are NOT registered in onnx ≤ 1.22.0.
+# onnx.reference.ReferenceEvaluator silently falls back to the opset-21 implementation,
+# which does not know the ``output_dtype`` attribute (new in opset 23) or the
+# ``block_size`` attribute (new in opset 23).  The fallback either:
+#   a. raises TypeError (onnx 1.22.0, observed) — detectable, therefore safe;
+#   b. returns a number using the wrong semantics — undetectable, therefore dangerous.
+#
+# The fix is targeted at onnx 1.23.0, which does not exist as of 2026-07-30.
+# Detection and refusal are the only options available until then.
+#
+# IMPORTANT: our Regime-1 oracle for DequantizeLinear is NumPy, NOT ReferenceEvaluator.
+# Our Regime-2 oracle for MatMulNBits is ORT CPU EP, NOT ReferenceEvaluator.
+# Neither is affected by onnx#8182 today.  This guard exists so any future test that
+# adds a ReferenceEvaluator-based Q/DQ oracle will see an immediate, named refusal rather
+# than a silent wrong expected value.
+#
+# No-bump behavioral correction class (broader context, §9.4.1):
+#   onnx#8182 is one of at least 9 known instances of behavioral corrections applied to
+#   ONNX ops without an opset version bump.  This class is invisible to opset-version
+#   fingerprinting and to ContribSchema baseline checks by construction.
+#   Other instances in our plan: onnx#8099 (ScatterND min/max), onnx#8194 (TopK sorted=0).
+#   Detection via code: Trinity runs assert_qdq_reference_oracle_safe() before any
+#   ReferenceEvaluator oracle path.
+#   Detection of new instances across all ops: requires a per-onnx-release human audit.
+#   See decisions inbox: trinity-qdq-oracle-guard-no-bump-audit-2026-07-30.md.
+
+# Probed once at pytest_configure time in conftest.py; the conftest updates this via
+# its own module-level globals.  Tests read this to decide whether to call the guard.
+# Default: False — conservatively refuses until the conftest probe confirms safety.
+QDQOPSET23_REFERENCE_SAFE: bool = False
+QDQOPSET23_REFERENCE_STATUS: str = "not probed — run via pytest to get conftest.py probe"
+
+
+def assert_qdq_reference_oracle_safe(
+    opset: int,
+    attributes: Sequence[str],
+) -> None:
+    """Refuse to proceed if ReferenceEvaluator cannot correctly evaluate Q/DQ at *opset*.
+
+    ALWAYS call this before constructing any oracle that uses
+    ``onnx.reference.ReferenceEvaluator`` for QuantizeLinear or DequantizeLinear nodes.
+
+    Args:
+        opset: The ONNX opset of the Q/DQ node being evaluated.
+        attributes: The attribute names present on the node (e.g. ``["output_dtype"]``).
+
+    Raises:
+        RuntimeError: If the opset and attributes combination is affected by onnx#8182
+            and the current environment cannot produce a correct result.
+
+    Note:
+        For opset < 23 and for forms without ``output_dtype`` or ``block_size``, the
+        opset-21 fallback is semantically correct and this function does not raise.
+        Our current Regime-1 test uses opset 18 + NumPy oracle — it does NOT call this.
+
+    Background (onnx#8182):
+        The opset-23 and opset-25 Q/DQ reference implementations are not registered in
+        onnx ≤ 1.22.0.  ReferenceEvaluator falls back to opset-21, which does not know
+        ``output_dtype`` or ``block_size``.  In onnx 1.22.0 the fallback raises TypeError
+        (detectable).  In a future release that registers the op incorrectly, the fallback
+        could silently return a wrong number (the dangerous case).  Either way, this
+        function refuses before the wrong result reaches the test oracle.
+    """
+    _AFFECTED_ATTRIBUTES = frozenset({"output_dtype", "block_size"})
+    _affected = opset >= 23 and bool(_AFFECTED_ATTRIBUTES.intersection(attributes))
+
+    if not _affected:
+        return  # opset < 23 or no affected attributes — safe to proceed
+
+    if not QDQOPSET23_REFERENCE_SAFE:
+        raise RuntimeError(
+            f"Q/DQ oracle refused: opset {opset} with attributes {sorted(attributes)!r} "
+            f"is affected by onnx#8182 (unregistered opset-23/25 Q/DQ reference "
+            f"implementations in onnx ≤ 1.22.0). "
+            f"Current environment status: {QDQOPSET23_REFERENCE_STATUS}. "
+            f"The fix is targeted at onnx 1.23.0 (not yet released as of 2026-07-30). "
+            f"Use a NumPy oracle (Regime 1) or ORT CPU EP oracle (Regime 2) instead. "
+            f"Do NOT use ReferenceEvaluator for Q/DQ at opset >= 23 with these attributes."
+        )
+
+    import warnings
+    warnings.warn(
+        f"Q/DQ oracle at opset {opset} with attributes {sorted(attributes)!r}: "
+        f"this environment raises for the affected form (onnx#8182 fallback is live but "
+        f"detectable). The oracle will fail with TypeError rather than returning a wrong "
+        f"number. Use a NumPy or ORT CPU EP oracle instead of ReferenceEvaluator.",
+        stacklevel=2,
+    )
+
+
 
 
 def tensor(name: str, dtype: ir.DataType, shape: list[int]) -> ir.Value:
@@ -380,6 +473,87 @@ def run_cpu(model: bytes, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
     """Run a model through ORT's CPU EP and return its outputs."""
     opts = _make_session_options()
     return ort.InferenceSession(model, opts, providers=["CPUExecutionProvider"]).run(None, feeds)
+
+
+def outputs_bit_equal(a: list[np.ndarray], b: list[np.ndarray]) -> tuple[bool, list[int]]:
+    """Test bit-exact equality between two output lists using raw memory comparison.
+
+    Returns (all_equal, list_of_differing_output_indices).
+
+    WHY RAW BYTES, NOT max|a-b|
+    ============================
+    ``np.max(np.abs(a - b))`` returns ``nan`` whenever *either* array contains a NaN,
+    even if both arrays are bit-identical (e.g., same NaN bit pattern in both). This was
+    observed by Tank when comparing two fp16 KV-cache outputs near the representable limit
+    (~65472 / fp16-max 65504): the first diff used max|a-b| and reported nan for all 64
+    outputs — implying all 64 differed — when in fact the two arrays were bit-identical.
+    He rewrote to raw-byte equality before trusting the result.
+
+    ``np.array_equal(a, b, equal_nan=True)`` is almost correct but has a subtlety: it
+    treats two NaN *values* as equal even if they have different bit patterns (different
+    sign/payload bits). For correctness gates on fp16 KV outputs, two NaN payloads from
+    different compute paths can carry different bits; calling them equal would mask a real
+    difference. Raw byte equality has no such ambiguity: bit-identical means bit-identical.
+
+    LIMITATION
+    ==========
+    Raw byte equality is strictly tighter than "numerically close". This function is only
+    appropriate for cross-run determinism checks (same computation → same bits) and for
+    detecting unwritten buffers (all-zero). For EP-vs-CPU numeric tolerance, use
+    ``np.testing.assert_allclose``.
+    """
+    if len(a) != len(b):
+        return False, list(range(max(len(a), len(b))))
+    differing = [
+        i for i, (x, y) in enumerate(zip(a, b))
+        if x.shape != y.shape or x.dtype != y.dtype or x.tobytes() != y.tobytes()
+    ]
+    return len(differing) == 0, differing
+
+
+def run_session_n_times(
+    sess: "ort.InferenceSession",
+    feeds: dict[str, np.ndarray],
+    n: int,
+) -> list[list[np.ndarray]]:
+    """Run *sess* with identical *feeds* exactly *n* times and return all output lists.
+
+    The returned list has length *n*; element *i* is the output list for run *i+1*.
+
+    WHY MULTI-RUN IS STRUCTURALLY REQUIRED
+    =======================================
+    ORT's memory-pattern planner does not engage on the first run of a session. From run 2
+    onward it records tensor lifetimes and sub-divides the arena — handing back interior
+    pointers derived by arithmetic on the allocator's return value (e.g. ``base + n``).
+    Before that, the arena is freshly zeroed by the OS. This creates an arena-cleanliness
+    boundary at the run-1/run-2 boundary:
+
+    - **Run 1:** arena is clean (OS-zeroed). An unwritten output buffer shows zeros.
+      A kernel that *computes* zeros is indistinguishable from a kernel that *never writes*.
+    - **Run 2+:** arena is dirty (residues from run 1). An unwritten output buffer now
+      shows the residue of whatever lived there before — usually a very different value.
+      A kernel that correctly computes zeros will still show zeros on run 2. A kernel that
+      never writes will show garbage.
+
+    Tank's three-run experiment on Phi-3.5 confirmed this:
+    - Outputs 1..64 (KV cache, fp16): bit-DIFFERENT between run 1 and runs 2/3 with
+      identical feeds. Signature: nobody writes them, dirty arena shows residue.
+    - Output 0 (logits, fp32): exactly 0.0 in all 32064 positions on runs 2 and 3 as
+      well. The arena is dirty around it, yet it shows zeros. Something writes zeros.
+
+    These are two different bugs with two different owners. A single-run gate cannot
+    distinguish them. A multi-run gate distinguishes them immediately: if run1 and run2
+    differ bitwise for a given output index, the output was *never written* on run1 either
+    (it just happened to be in a clean arena). If run1 and run2 agree (both zero), the
+    kernel writes zeros deliberately.
+
+    MINIMUM N
+    =========
+    N ≥ 2 is required to observe the planner boundary. N ≥ 3 adds a confirmatory run
+    that distinguishes planner-boundary effects from first-run fluke. Use N=3 for any
+    gate that claims MATCH; use N=2 for cheaper signal checks.
+    """
+    return [sess.run(None, feeds) for _ in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +667,17 @@ def assert_matches_cpu(
 
     The CPU EP is the sole correctness oracle (DESIGN.md §9.1). Never use numpy as the
     reference for ops that ORT's CPU EP supports.
+
+    NaN NOTE
+    ========
+    ``np.testing.assert_allclose`` treats NaN as not equal to itself (equal_nan=False by
+    default in assert_allclose). If both arrays contain the same NaN at a position, this
+    will raise. However, `assert_allclose` does NOT reduce via max|a-b| — it checks each
+    element individually — so it does not produce the nan-contamination that ``max(abs(a-b))``
+    does when NaN is present. The NaN hole (Tank's finding) affects callers who write their
+    own ``max(abs(...))`` reduction, not this function directly.
+
+    For bit-exact equality (including NaN-bit-identity), use ``outputs_bit_equal`` instead.
     """
     expected = run_cpu(model, feeds)
     actual = run_vulkan(model, feeds)
@@ -646,6 +831,94 @@ def assert_ep_in_session(sess: "ort.InferenceSession") -> None:
         "  • The EP registered but enumerated zero Vulkan devices (no ICD, capability gate).\n"
         "Check conftest.py register_vulkan_ep fixture and require_vulkan fixture."
     )
+
+
+# ---------------------------------------------------------------------------
+# model_output_equivalence verdict — §9.1.3 / §10.0 (Morpheus ruling)
+# ---------------------------------------------------------------------------
+
+#: The three valid values for the `model_output_equivalence` field in the counters JSON.
+#: Written by :func:`write_equivalence_verdict`; read by ``epctl --check-counters``.
+#: See ``rust/src/counters.rs`` for the mirrored constants on the Rust side.
+EQUIVALENCE_MATCH: str = "MATCH"
+EQUIVALENCE_DIVERGENT: str = "DIVERGENT"
+EQUIVALENCE_UNMEASURED: str = "UNMEASURED"
+
+
+def write_equivalence_verdict(counters_path: "str | os.PathLike[str]", verdict: str) -> None:
+    """Write *verdict* into the `model_output_equivalence` field of the counters JSON at *path*.
+
+    The EP writes ``"model_output_equivalence": "UNMEASURED"`` by default at session teardown
+    (``dump_observations_if_requested``).  The Python comparison gate — which has access to the
+    CPU oracle — calls this function to upgrade the field to MATCH or DIVERGENT before teardown
+    runs (i.e., before the session is garbage-collected).  Teardown reads and preserves the
+    verdict written here; it does not overwrite it.
+
+    TIMING REQUIREMENT
+    ==================
+    Call this function **while the VulkanEP session is still alive** (before it goes out of
+    scope or is explicitly closed).  Teardown is triggered by the session's ``__del__`` method,
+    not by ``sess.run()`` returning.  In practice this means:
+
+      1. ``sess = ort.InferenceSession(...)``
+      2. ``vk_out = sess.run(...)``
+      3. Compute verdict (MATCH / DIVERGENT) from ``vk_out`` vs CPU oracle.
+      4. ``write_equivalence_verdict(counters_path, verdict)``   ← here
+      5. Run assertions (which may raise xfail or pytest.fail).
+      6. ``del sess`` / end of test function / GC.
+
+    Steps 4 and 5 are ordered so that the verdict is always written even when the assertion
+    will fail (e.g., in an xfail test that currently expects DIVERGENT).
+
+    WHAT IT DOES
+    ============
+    Reads the existing JSON from *counters_path*, replaces the value of
+    ``model_output_equivalence``, and writes the result back.  If the field is absent (old
+    snapshot format), it splices it in before the closing ``}``.  If the file does not exist,
+    the function raises ``FileNotFoundError`` — the caller must ensure the EP was configured to
+    write counters (``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE`` set) before calling this.
+
+    R9 NOTE
+    =======
+    This function is the **instrument** that makes the claim "MATCH means outputs agree"
+    falsifiable.  Its correctness is assumed (no automated Rust test covers the JSON write path
+    from Python).  That is the one residual gap declared in the R9 self-check.
+
+    Parameters
+    ----------
+    counters_path:
+        Path to the counters JSON file, as set in ``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE``.
+    verdict:
+        One of ``EQUIVALENCE_MATCH``, ``EQUIVALENCE_DIVERGENT``, or ``EQUIVALENCE_UNMEASURED``.
+    """
+    import json
+    import os
+    import re
+
+    path = str(counters_path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"write_equivalence_verdict: counters file not found: {path}\n"
+            "Is ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE set? Did the EP write a snapshot?"
+        )
+
+    with open(path, encoding="utf-8") as fh:
+        doc = fh.read()
+
+    key = "model_output_equivalence"
+    # Replace existing value (handles UNMEASURED → MATCH/DIVERGENT upgrade).
+    pattern = rf'("{re.escape(key)}")\s*:\s*"[^"]*"'
+    if re.search(pattern, doc):
+        doc = re.sub(pattern, rf'\1: "{verdict}"', doc)
+    else:
+        # Field absent (old snapshot without the field): splice before closing brace.
+        cut = doc.rfind("}")
+        if cut == -1:
+            raise ValueError(f"write_equivalence_verdict: {path} does not look like JSON (no '}}').")
+        doc = doc[:cut].rstrip().rstrip(",") + f',\n  "{key}": "{verdict}"\n}}\n'
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(doc)
 
 
 # ---------------------------------------------------------------------------
@@ -984,11 +1257,19 @@ def compare_layers(
         c = np.asarray(cpu_val, dtype=float)
         abs_diff = np.abs(v - c)
         denom = 1e-8 + np.abs(c)
+        # NaN-SAFE reductions: np.nanmax/nanmean skip NaN elements rather than propagating
+        # them. Background: numpy returns NaN for max(a-b) whenever EITHER array contains
+        # a NaN at the same position, even if both values are bit-identical NaN. This was
+        # observed by Tank when comparing fp16 KV-cache outputs near the representable limit.
+        # nanmax reports the worst finite diff; nan_count separately tells the caller how
+        # many positions have NaN in either output. See also outputs_bit_equal().
+        nan_count = int(np.sum(np.isnan(abs_diff)))
         results.append({
             "name": name,
-            "max_abs_diff": float(abs_diff.max()),
-            "mean_abs_diff": float(abs_diff.mean()),
-            "rtol_max": float((abs_diff / denom).max()),
+            "max_abs_diff": float(np.nanmax(abs_diff)) if abs_diff.size else 0.0,
+            "mean_abs_diff": float(np.nanmean(abs_diff)) if abs_diff.size else 0.0,
+            "rtol_max": float(np.nanmax(abs_diff / denom)) if abs_diff.size else 0.0,
+            "nan_count": nan_count,
         })
 
     results.sort(key=lambda d: d["max_abs_diff"], reverse=True)

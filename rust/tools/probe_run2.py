@@ -40,6 +40,7 @@ passed. A checker that verifies the value but not the provider is a gate that do
 
 from __future__ import annotations
 
+import gc
 import os
 import pathlib
 import sys
@@ -56,7 +57,7 @@ _MODEL = pathlib.Path(
     r"\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx"
 )
 
-RUNS = 3
+RUNS = int(os.environ.get("PROBE_RUNS", "3"))
 LAYERS = 32
 
 
@@ -175,6 +176,25 @@ def main() -> int:
             "mishandling as the cause of this failure. The bug is deterministic and\n"
             "independent of tensor placement — it is upstream of address handling."
         )
+
+    # Tear the session down *here*, while the process is still alive and the ORT logger is still
+    # attached. Dropping it at interpreter exit means the allocator release either never runs or
+    # runs with nothing listening, and the still-live-handle numbers then read 0 — an
+    # unfalsifiable zero rather than a clean one. Measured: without this, a run that leaves 322
+    # handles live reports `alloc_allocators_released: 0`.
+    print("\n--- teardown (allocator release happens here, not at exit) ---")
+    if os.environ.get("PROBE_NO_TEARDOWN") == "1":
+        print(
+            "PROBE_NO_TEARDOWN=1: leaking the session deliberately, so the allocator is released\n"
+            "at interpreter exit with the session's tensors still held. This is the control for\n"
+            "the still-live-handles warning: the only difference from the default path is WHEN\n"
+            "the session is destroyed, so any change in the live count is a property of the\n"
+            "observation point and not of our bookkeeping."
+        )
+        globals()["_leaked"] = sess
+        return 0
+    del sess
+    gc.collect()
     return 0
 
 

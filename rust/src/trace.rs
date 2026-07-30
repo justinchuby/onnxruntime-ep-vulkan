@@ -1332,6 +1332,88 @@ mod tests {
         assert_eq!(cal(40.0, 64).ticks_to_ns(100, 1100), Some(40_000.0));
     }
 
+    /// `timestampPeriod` and `timestampValidBits` as measured on the two devices on this desk,
+    /// 2026-07-30, by two independent instruments that agree: the EP's own capability probe
+    /// (`epctl --probe-loader`, i.e. `vk/caps.rs`) and `vulkaninfoSDK`. Cross-checked by
+    /// `bench/timestamp_audit.py`, which exits non-zero if they ever disagree.
+    ///
+    /// These are used instead of invented constants so that the tests below fail when the
+    /// arithmetic would be wrong *on hardware this project has*, rather than on hardware
+    /// somebody imagined. lavapipe (the CI rasteriser) reports 1.0 / 64 — the same as NVIDIA —
+    /// so **neither CI nor the discrete GPU can falsify the period or the mask**. The Intel
+    /// part is the only local instrument that can, which is the concrete form of "Intel is the
+    /// spec-conformance oracle".
+    const IRIS_XE_PERIOD_NS: f32 = 52.0833;
+    const IRIS_XE_VALID_BITS: u32 = 36;
+    const RTX_4060_PERIOD_NS: f32 = 1.0;
+    const RTX_4060_VALID_BITS: u32 = 64;
+
+    #[test]
+    fn treating_intel_ticks_as_nanoseconds_is_wrong_by_fifty_two_times() {
+        // The plausible-but-wrong reading: ticks reported as nanoseconds. It is exactly right on
+        // the RTX 4060 and on lavapipe, and it under-reports every Intel duration by ~52x. This
+        // is the constant-factor error described in the module docs: nothing is negative,
+        // nothing is absurd, and the number is wrong.
+        let ticks = 100_000u64;
+        let nvidia = cal(RTX_4060_PERIOD_NS, RTX_4060_VALID_BITS)
+            .ticks_to_ns(0, ticks)
+            .expect("usable");
+        let intel = cal(IRIS_XE_PERIOD_NS, IRIS_XE_VALID_BITS)
+            .ticks_to_ns(0, ticks)
+            .expect("usable");
+
+        // On the discrete part the naive reading and the correct one coincide — which is *why*
+        // this class of bug survives, and is asserted so that the coincidence is on the record.
+        assert_eq!(nvidia, ticks as f64);
+        // On the integrated part they do not, by more than a factor of fifty.
+        assert!(
+            (intel / ticks as f64 - 52.0833).abs() < 1e-3,
+            "period scaling not applied: {intel} ns for {ticks} ticks"
+        );
+        assert!(intel > nvidia * 50.0);
+    }
+
+    #[test]
+    fn an_intel_counter_wrap_does_not_produce_a_negative_or_absurd_duration() {
+        // 36 valid bits at 52.0833 ns/tick wraps roughly every 3579 s — about an hour of GPU
+        // uptime, which is not exotic for a benchmark session. A wrap *during* a measurement
+        // must yield the short true duration, not a negative one and not ~an hour.
+        let c = cal(IRIS_XE_PERIOD_NS, IRIS_XE_VALID_BITS);
+        let modulus = 1u64 << IRIS_XE_VALID_BITS;
+        let begin = modulus - 1_000;
+        let end = 500; // wrapped
+        let ns = c.ticks_to_ns(begin, end).expect("usable");
+        assert!(
+            (ns - 1_500.0 * f64::from(IRIS_XE_PERIOD_NS)).abs() < 1e-3,
+            "{ns}"
+        );
+        assert!(ns > 0.0, "a wrap must not produce a negative duration");
+        // The unrecovered reading would be an entire wrap period. Assert we are nowhere near it.
+        assert!(ns < 1e6, "{ns} ns is a wrap period, not a kernel");
+    }
+
+    #[test]
+    fn undefined_upper_bits_on_a_thirty_six_bit_counter_are_masked_away() {
+        // Vulkan leaves bits above `timestampValidBits` *undefined*, not zero. A driver that
+        // returns garbage there must not turn a microsecond kernel into a geological era.
+        let c = cal(IRIS_XE_PERIOD_NS, IRIS_XE_VALID_BITS);
+        let garbage = (0xDEADu64 << IRIS_XE_VALID_BITS) | 4_000;
+        let ns = c.ticks_to_ns(1_000, garbage).expect("usable");
+        assert!(
+            (ns - 3_000.0 * f64::from(IRIS_XE_PERIOD_NS)).abs() < 1e-3,
+            "{ns}"
+        );
+    }
+
+    #[test]
+    fn a_wrap_is_only_recoverable_when_the_counter_is_narrower_than_a_u64() {
+        // The 64-bit case has no modulus to add, so an end-before-start reading cannot be a
+        // recoverable wrap — it is a bad pair, and is reported as no measurement rather than as
+        // a very large positive one obtained by unsigned underflow.
+        let c = cal(RTX_4060_PERIOD_NS, RTX_4060_VALID_BITS);
+        assert_eq!(c.ticks_to_ns(1_000, 500), None);
+    }
+
     #[test]
     fn a_single_counter_wrap_is_recovered() {
         // 32 valid bits: begin near the top, end just after wrapping.
