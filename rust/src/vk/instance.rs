@@ -216,7 +216,13 @@ impl Instance {
     ///
     /// `enable_validation` requests `VK_LAYER_KHRONOS_validation`; if the layer is not
     /// installed the request is silently dropped (a warning is logged).
+    ///
+    /// The env var `ONNXRUNTIME_EP_VULKAN_VALIDATE` forces validation on regardless of the
+    /// session-option flag, so callers can enable it without modifying session config.
     pub(crate) fn create(enable_validation: bool) -> Option<Self> {
+        // Allow env-var override: ONNXRUNTIME_EP_VULKAN_VALIDATE=1 forces validation on.
+        let enable_validation =
+            enable_validation || std::env::var_os("ONNXRUNTIME_EP_VULKAN_VALIDATE").is_some();
         // ── Load the Vulkan library ───────────────────────────────────────────
         // SAFETY: ash::Entry::load() opens the system Vulkan loader (vulkan-1.dll on Windows,
         // libvulkan.so.1 on Linux) via libloading. There is no invariant we need to uphold
