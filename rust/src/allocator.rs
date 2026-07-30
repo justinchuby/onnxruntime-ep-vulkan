@@ -358,6 +358,55 @@ pub struct AllocStats {
     pub failed_lookups: u64,
     pub arena_bytes: u64,
     pub arena_used_bytes: u64,
+    /// Host bytes currently held as staging behind handles that have no device buffer.
+    ///
+    /// **Non-zero means part of this run's "device memory" was ordinary host memory.** See
+    /// [`HandleRegistry::staging_ptr`]. Reported so that no timing taken from such a run can be
+    /// mistaken for a device measurement.
+    pub staging_live_bytes: u64,
+    /// Handles that have ever been given host staging.
+    pub staging_spans: u64,
+}
+
+/// A host allocation standing in for device memory behind a handle that has no `VkBuffer` yet.
+///
+/// # Why this exists
+///
+/// Advertising a device allocator to ORT is a package deal: ORT then requires an
+/// `OrtDataTransferImpl`, and a data transfer must be able to *move bytes*. Until the engine layer
+/// attaches a real `VkBuffer` to a handle there are no device bytes to move, and every session
+/// fails at `Run` — which means the two properties this allocator exists to guarantee (that ORT's
+/// memory-pattern planner's `base + offset` resolves, and that a freed handle is rejected rather
+/// than aliased) can never be observed against a real host.
+///
+/// Host staging breaks that deadlock. It is not a shortcut around Vulkan: a CPU→device copy goes
+/// through host-visible staging memory anyway, so this is the near half of the real path, built
+/// first. When [`HandleRegistry::attach_buffer`] has supplied a `BufferView`, the device path takes
+/// over and staging is never consulted.
+///
+/// # Why it is counted
+///
+/// A run backed by staging is a *correctness* vehicle and never a performance one. It is reported
+/// in [`AllocStats::staging_live_bytes`], warned about once per registry, and named in the release
+/// summary, so a number taken from such a run cannot be quietly presented as a device result.
+struct HostStaging {
+    ptr: *mut u8,
+    layout: std::alloc::Layout,
+}
+
+// SAFETY: the pointer is a unique owning handle to a private heap allocation. It is only ever
+// reached through the registry's `Mutex`, and `HostStaging` hands out no aliases it does not
+// outlive (see `staging_ptr`, whose contract is documented on the caller side).
+unsafe impl Send for HostStaging {}
+
+impl Drop for HostStaging {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && self.layout.size() != 0 {
+            // SAFETY: `ptr` came from `alloc_zeroed` with exactly this layout and has not been
+            // freed — `HostStaging` is never cloned and is removed from the map by value.
+            unsafe { std::alloc::dealloc(self.ptr, self.layout) };
+        }
+    }
 }
 
 /// The handle table. One per device, shared by every allocator instance for that device.
@@ -380,6 +429,8 @@ struct RegistryInner {
     quarantine: std::collections::VecDeque<usize>,
     /// Retired spans available for reuse, keyed by padded size.
     free_list: BTreeMap<usize, Vec<usize>>,
+    /// Host staging behind handles with no device buffer, keyed by span base.
+    staging: BTreeMap<usize, HostStaging>,
     generation: u64,
     stats: AllocStats,
 }
@@ -419,6 +470,7 @@ impl HandleRegistry {
                 cursor: base,
                 quarantine: std::collections::VecDeque::new(),
                 free_list: BTreeMap::new(),
+                staging: BTreeMap::new(),
                 generation: 1,
                 stats: AllocStats {
                     arena_bytes,
@@ -530,6 +582,15 @@ impl HandleRegistry {
         inner.stats.total_frees += 1;
         inner.stats.live_spans = inner.stats.live_spans.saturating_sub(1);
         inner.stats.live_bytes = inner.stats.live_bytes.saturating_sub(requested as u64);
+        // Staging is released here, not at retirement: at model scale it is real host memory and
+        // holding it for the length of the quarantine window would multiply peak RSS by the
+        // quarantine depth. The *address space* stays quarantined, which is what detects the
+        // use-after-free; the bytes behind it do not need to.
+        if let Some(st) = inner.staging.remove(&addr) {
+            let n = st.layout.size() as u64;
+            drop(st);
+            inner.stats.staging_live_bytes = inner.stats.staging_live_bytes.saturating_sub(n);
+        }
         inner.quarantine.push_back(addr);
         inner.stats.quarantined_spans = inner.quarantine.len() as u64;
 
@@ -557,6 +618,17 @@ impl HandleRegistry {
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
         }
         r
+    }
+
+    /// Resolve without counting a miss.
+    ///
+    /// For *classifying* a pointer — "is this one of mine?" — where a miss is the expected answer
+    /// for every host pointer and for every handle belonging to another device. Counting those
+    /// would make `failed_lookups` grow on a healthy run, and a diagnostic that is non-zero when
+    /// nothing is wrong is a diagnostic people learn to ignore. `failed_lookups` is reserved for
+    /// lookups that *should* have succeeded.
+    pub fn classify(&self, addr: usize) -> Result<Resolved, LookupError> {
+        self.resolve_inner(addr)
     }
 
     fn resolve_inner(&self, addr: usize) -> Result<Resolved, LookupError> {
@@ -616,6 +688,58 @@ impl HandleRegistry {
         }
     }
 
+    /// Host staging bytes behind a handle that has no device buffer, created on first use.
+    ///
+    /// Returns the base of a zeroed host allocation of exactly `padded` bytes for the span
+    /// containing `addr`, or `None` if `addr` is not a live handle or the allocation fails.
+    ///
+    /// # Contract for the caller
+    ///
+    /// The returned pointer is valid until the handle is freed. Callers must therefore only use it
+    /// while holding an `OrtValue` that keeps the handle alive — which is exactly the lifetime of a
+    /// `CopyTensors` call, the only caller. It is deliberately not exposed beyond this crate's
+    /// data-transfer path.
+    ///
+    /// See [`HostStaging`] for why staging exists at all, and why a run that uses it is a
+    /// correctness run and never a performance one.
+    pub(crate) fn staging_ptr(&self, addr: usize) -> Option<*mut u8> {
+        let mut inner = self.inner.lock().ok()?;
+        let span = inner.spans.get(&addr).filter(|s| s.live)?.clone();
+        if span.buffer.is_some() {
+            // A device buffer is attached: staging must not shadow it, or a copy would land in
+            // host memory the device never reads and the wrong answer would be silent.
+            return None;
+        }
+        if let Some(existing) = inner.staging.get(&addr) {
+            return Some(existing.ptr);
+        }
+        let layout = std::alloc::Layout::from_size_align(span.padded.max(1), 64).ok()?;
+        // SAFETY: `layout` has a non-zero size (`padded` is at least `SPAN_GRANULARITY`) and a
+        // valid power-of-two alignment, which is `alloc_zeroed`'s requirement.
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            log::error!(
+                "VulkanExecutionProvider: could not allocate {} B of host staging for device \
+                 handle 0x{addr:x}. Reporting a copy failure to ORT.",
+                layout.size()
+            );
+            return None;
+        }
+        if inner.stats.staging_spans == 0 {
+            log::warn!(
+                "VulkanExecutionProvider: no VkBuffer is attached to device handle 0x{addr:x}, so \
+                 its contents are being held in HOST memory. This is the near half of the real \
+                 copy path and it produces correct results, but nothing in this run touched device \
+                 memory for staged tensors. Any timing from this run is a host measurement — see \
+                 `StagingLiveBytes` in the allocator stats."
+            );
+        }
+        inner.staging.insert(addr, HostStaging { ptr, layout });
+        inner.stats.staging_spans += 1;
+        inner.stats.staging_live_bytes += layout.size() as u64;
+        Some(ptr)
+    }
+
     pub fn stats(&self) -> AllocStats {
         let mut s = self
             .inner
@@ -630,10 +754,19 @@ impl HandleRegistry {
     /// prints is a number nobody checks.
     pub fn summary(&self) -> String {
         let s = self.stats();
+        let staging = if s.staging_spans == 0 {
+            String::new()
+        } else {
+            format!(
+                "; HOST STAGING: {} span(s) ever, {} B live — tensors on those handles never \
+                 reached device memory",
+                s.staging_spans, s.staging_live_bytes
+            )
+        };
         format!(
             "device handles: {} allocation(s), {} free(s), {} live ({} B); high-water {} B; \
              quarantine {} span(s), {} retired; {} failed lookup(s); arena {} MiB reserved, {} MiB \
-             carved",
+             carved{staging}",
             s.total_allocations,
             s.total_frees,
             s.live_spans,

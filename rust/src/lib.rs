@@ -55,6 +55,7 @@ pub mod logging;
 pub mod ops;
 pub mod registry;
 pub mod sys;
+pub mod transfer;
 // Observability (Niobe). Env-gated Chrome-Trace tracing + the GPU-timestamp ingest seam; inert
 // unless `ONNXRUNTIME_EP_VULKAN_TRACE` names a path. See `docs/PERF.md`.
 pub mod trace;
@@ -163,6 +164,30 @@ pub(crate) fn guard_ffi_void(body: impl FnOnce()) {
              failure channel, so this log line is the only record; treat it as a hard bug.",
             panic_payload_message(payload.as_ref())
         );
+    }
+}
+
+/// Catch a panic at a C-ABI entry point that returns a **bool** (`OrtDataTransferImpl::CanCopy`).
+///
+/// The only safe answer on the panic path is `fallback`, which every caller passes as "no": saying
+/// "yes, I can copy that" and then failing is worse than declining, because ORT can route the copy
+/// elsewhere but cannot un-route it.
+pub(crate) fn guard_ffi_bool(
+    what: &'static str,
+    fallback: bool,
+    body: impl FnOnce() -> bool,
+) -> bool {
+    // `AssertUnwindSafe`: on the panic path the captured state is discarded, never re-read.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(v) => v,
+        Err(payload) => {
+            log::error!(
+                "caught a panic in {what}: {} — answering {fallback}. This signature has no \
+                 failure channel, so declining is the only contract-legal way to fail.",
+                panic_payload_message(payload.as_ref())
+            );
+            fallback
+        }
     }
 }
 

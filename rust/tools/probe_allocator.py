@@ -71,6 +71,9 @@ def main() -> int:
         print("FAIL: no EP devices")
         return 1
 
+    failures: list[str] = []
+
+    ran = 0
     for idx, dev in enumerate(devices):
         print(f"\n=== session on device #{idx} ===", flush=True)
         so = ort.SessionOptions()
@@ -86,12 +89,45 @@ def main() -> int:
             expect = np.arange(1024, dtype=np.float32) + 8.0
             ok = np.allclose(out[0], expect)
             print(f"  run OK, numerically correct: {ok}")
+            if not ok:
+                failures.append(f"device #{idx}: numerically wrong")
+            ran += 1
         except Exception as e:  # noqa: BLE001
             print(f"  session/run raised: {type(e).__name__}: {e}")
+            failures.append(f"device #{idx}: {type(e).__name__}: {e}")
 
     if counters.is_file():
         print("\n--- counters ---")
-        print(json.dumps(json.loads(counters.read_text()), indent=2))
+        c = json.loads(counters.read_text())
+        print(json.dumps(c, indent=2))
+    else:
+        c = {}
+        failures.append("no counters file was written")
+
+    # Claim gate. A correct output value proves nothing on its own: ORT falls
+    # back to CPU when our EP fails, and the fallback produces exactly the same
+    # numbers under our provider's name. What has to be true is that *we*
+    # executed something. See history.md session 12 — this probe reported
+    # "numerically correct: True" through a run in which the EP never ran.
+    if ran == 0:
+        failures.append("no session ran at all")
+    if c.get("dispatches_executed", 0) == 0:
+        failures.append(
+            "dispatches_executed == 0 — nothing ran on the EP, so a correct "
+            "result here is ORT's CPU fallback, not ours"
+        )
+    if c.get("compute_failures", 0) != 0:
+        failures.append(f"compute_failures == {c.get('compute_failures')}")
+
+    if failures:
+        print("\nPROBE FAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(
+        f"\nPROBE PASSED: {c.get('dispatches_executed')} dispatch(es) executed "
+        f"across {ran} session(s), 0 compute failures."
+    )
     return 0
 
 

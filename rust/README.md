@@ -591,6 +591,59 @@ vacuously.
 
 ---
 
+## Data transfer and host staging
+
+Advertising `OrtDeviceMemoryType_DEFAULT` is a package deal. The moment we do, ORT requires an
+`OrtDataTransferImpl` and every `Run` fails with
+
+> There's no data transfer registered for copying tensors from Device:[DeviceType:0 …] to
+> Device:[DeviceType:1 … VendorId:… Alignment:4096]
+
+`src/transfer.rs` supplies it. `CanCopy` claims only copies with at least one end in our memory;
+`CopyTensors` classifies both ends against **every** registry — not just the one the
+`OrtMemoryDevice` names, because a mislabelled side would otherwise be `memcpy`d from an
+unreadable reserved page — and then moves bytes.
+
+A copy needs real bytes behind a handle, and no `VkBuffer` is attached yet (that is the engine's
+seam, `HandleRegistry::attach_buffer`). So each span lazily acquires **host staging**: an ordinary
+host allocation that stands in for device memory. This is not throwaway work — a CPU→device Vulkan
+copy goes through host-visible staging anyway, so it is the near half of the real path, built
+first. Once a `VkBuffer` is attached, `host_bytes` deliberately **refuses** and the copy becomes
+the engine's.
+
+Staging must never be mistaken for a device result, so it is loud in three places:
+
+* a one-shot `WARN` per registry saying explicitly that any timing from that run is a host
+  measurement;
+* `AllocStats::staging_spans` / `staging_live_bytes`;
+* the allocator's release summary — `HOST STAGING: … tensors on those handles never reached
+  device memory`.
+
+The whole path is behind `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` and off by default.
+
+`transfer::host_backing_for(ptr, len)` is the single public seam: the engine calls it after
+`GetTensorMutableData` to turn an EP-owned handle into readable bytes. Without it the process
+access-violates the instant ORT places a subgraph input in our memory.
+
+`transfer::copy_counters()` reports copies, bytes, and **how many landed at a non-zero offset into
+a handle**. That last number is the planner-arithmetic question, and it is honest about the answer:
+in every real ORT 1.28 session so far — including one with 1 MiB tensors and mem-pattern enabled —
+it reads **0**. ORT has not yet sub-divided one of our allocations. The reserved-address-space
+design makes `ptr + n` correct by construction if it ever does, and
+`a_copy_into_an_interior_offset_lands_at_that_offset_and_disturbs_nothing_before_it` proves the
+behaviour locally, but the property has **not** been observed in a real session and this README
+will not pretend otherwise.
+
+### Diagnostics must read zero when nothing is wrong
+
+`classify` probes every registry, so a miss is the *expected* answer for every host pointer.
+Routing that through `resolve` — which counts misses — made `failed_lookups` non-zero on a
+perfectly healthy run. `HandleRegistry::classify` is the non-counting twin, and `failed_lookups`
+is reserved for lookups that *should* have succeeded. A diagnostic that is non-zero when nothing
+is wrong is one people learn to ignore.
+
+---
+
 ## Environment variables
 
 | Variable | Effect |
