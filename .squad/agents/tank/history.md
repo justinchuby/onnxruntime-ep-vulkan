@@ -308,3 +308,26 @@ ORT pattern and I have said so; but "0" now means something.
 * Extend the counters *JSON*, never the `repr(C)` counters struct: the JSON reader looks keys up by
   name and ignores the rest, while the struct is an ABI other processes read.
 * Process-global tallies need a `test_lock()` or parallel tests flake.
+
+## Session 13b — 2026-07-30 — every mechanism casts a shadow
+
+The coordinator ruled that decision records must be written into the integration tree's inbox,
+because `.squad/decisions/inbox/` is gitignored and a record written in a worktree is invisible to
+everyone. Mine were never stranded — I checked rather than assumed, and my worktree has no inbox at
+all — but a rule that depends on remembering it is a habit, not a mechanism, so I made `cargo ci`
+warn when it finds stranded records in a linked worktree. Planted one to confirm it fires, removed
+it to confirm it goes quiet. Warning, not failure: the check is heuristic, and a lint that can be
+wrong must never be able to fail a build.
+
+**The pattern I want to carry forward.** Three times in one day: worktrees made edit collisions
+impossible and made losing the reasoning trail possible; the layering lint made one class of
+coupling impossible and was silent about another; my reserved-address design made a class of
+pointer bug impossible and left me blind to the fact that my *probe* was the broken thing. **Every
+mechanism that makes one class of error impossible tends to make a different one invisible.** The
+answer is not to distrust mechanisms — it is that each one needs its shadow made noisy. That is
+what the `cargo ci` caveat block is, what a positive control is, and what this warning is. It is
+the same instinct as "a false green sends you looking elsewhere", generalised.
+
+Also re-verified the planner numbers against a freshly built DLL on both devices rather than
+trusting this morning's green, per the standard Mouse set. Identical: 52 interior pointers, 0 guard
+band, max offset 49152 B, 30 dispatches, on device 0 and device 1.
