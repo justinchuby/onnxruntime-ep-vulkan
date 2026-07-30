@@ -91,7 +91,16 @@ def _ort_version_ge(major: int, minor: int) -> bool:
 # Regime 1 — DequantizeLinear bit-exact vs NumPy
 # ---------------------------------------------------------------------------
 
-
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DequantizeLinear is currently [staged] — VulkanExecutionProvider will not claim it, "
+        "and `assert_vulkan_claims` (the vacuous-pass guard) correctly refuses a CPU-vs-CPU "
+        "comparison. strict=True means: when DQ is promoted to Ready/Live and this test "
+        "starts passing, the suite errors (XPASS) until this marker is explicitly removed — "
+        "the same pattern as Trinity's Phi-3.5 logits gate."
+    ),
+)
 def test_dequant_linear_bit_exact(vulkan_device_available):
     """DequantizeLinear (int8 → fp32) must be bit-exact against a NumPy reference.
 

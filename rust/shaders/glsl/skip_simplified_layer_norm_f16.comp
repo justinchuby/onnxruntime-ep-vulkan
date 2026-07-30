@@ -1,0 +1,116 @@
+// SkipSimplifiedLayerNormalization (f16) — fused residual-add + RMSNorm, fp16 activations.
+//
+// Identical algorithm to skip_simplified_layer_norm_f32.comp. Storage is fp16 (packed into
+// uint buffers, two elements per word); arithmetic is promoted to fp32 throughout.
+//
+// Why fp16 is packed rather than declared as float16_t:
+//   `float16_t` compiles to `OpCapability StorageBuffer16BitAccess`, which is a device feature
+//   the engine does not enable. `unpackHalf2x16`/`packHalf2x16` are core GLSL 4.2, need no
+//   feature at all, and are the same trade q_gemv.comp already makes. See ENGINE.md §4.1 and
+//   indexing.glsl's header comment.
+//
+// Store race freedom:
+//   Pass 1 writes out3; pass 3 writes out0. Both use atomicAnd+atomicOr per half-word element
+//   (the same pattern as EW_DEFINE_STORE_HALF in indexing.glsl). Two threads may share the same
+//   uint word only when they hold the same even/odd pair of consecutive indices. Because the
+//   stride is lsz (256), threads tid and tid+1 own elements that are lsz apart, never adjacent
+//   in memory — they never share a word. The only threads that share a word are tid writing
+//   element i and tid+lsz writing element i+lsz; those are different words (distance lsz > 1).
+//   Conclusion: within a single pass, no two threads share a uint word. Atomics are still used
+//   rather than plain stores because the Vulkan specification does not guarantee that two
+//   concurrent writes to the same uint via non-atomic stores produce a defined result even if
+//   the writes target disjoint byte ranges. Using disjoint-lane atomics is the only portable
+//   race-free approach.
+//
+// Arithmetic note:
+//   All arithmetic (residual add, partial sum-of-squares, tree reduction, RMS normalisation,
+//   gamma multiply) is in fp32. The final outputs are converted back to fp16 on store. This
+//   matches ORT's SQNBIT_CompFp32 path and is the same choice q_gemv.comp makes for accumulation.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint batch_count;  // total rows = product of dims 0 .. rank-2
+    uint hidden_size;  // last dimension (elements per row)
+    uint eps_bits;     // reinterpret-cast: uintBitsToFloat(eps_bits) == epsilon
+    uint _pad;         // alignment padding, must be zero
+} pc;
+
+// fp16 activations packed as two half-float elements per uint.
+layout(set = 0, binding = 0) readonly  buffer Hidden { uint data[]; } u_hidden;
+layout(set = 0, binding = 1) readonly  buffer Skip   { uint data[]; } u_skip;
+// In a fully fp16 model (e.g. Phi-3.5-mini), gamma is also fp16 — the ORT contrib schema
+// declares gamma as type T (same as input X). Both shaders handle gamma with the same
+// load macro as the other inputs.
+layout(set = 0, binding = 2) readonly  buffer Gamma  { uint data[]; } u_gamma;
+layout(set = 0, binding = 3) buffer Out0   { uint data[]; } u_out0;
+layout(set = 0, binding = 4) buffer Out3   { uint data[]; } u_out3;
+
+shared float shmem[256];
+
+// Inline helpers — GLSL has no buffer-typed function parameters, so these are macros.
+
+// Load one fp16 element at logical index I from a packed-uint buffer BUF.
+#define LOAD_HALF(BUF, I) (unpackHalf2x16(BUF.data[(I) >> 1u])[(I) & 1u])
+
+// Store float V as fp16 at logical index I into a packed-uint buffer BUF.
+// Disjoint-lane atomics: thread that owns element I never touches the other half of the
+// same word that belongs to element I^1 — see the race-freedom note in the file header.
+#define STORE_HALF(BUF, I, V)                                                  \
+    {                                                                          \
+        uint _word  = (I) >> 1u;                                               \
+        uint _shift = ((I) & 1u) * 16u;                                        \
+        uint _bits  = packHalf2x16(vec2((V), 0.0)) & 0xFFFFu;                 \
+        atomicAnd(BUF.data[_word], ~(0xFFFFu << _shift));                      \
+        atomicOr (BUF.data[_word],   _bits    << _shift);                      \
+    }
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint lsz = gl_WorkGroupSize.x;
+
+    if (row >= pc.batch_count) return;
+
+    uint base = row * pc.hidden_size;
+
+    // Pass 1: write residual to out3, accumulate partial sum-of-squares.
+    float partial_sq = 0.0;
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float h = LOAD_HALF(u_hidden, base + i);
+        float s = LOAD_HALF(u_skip,   base + i);
+        float r = h + s;
+        partial_sq += r * r;
+        STORE_HALF(u_out3, base + i, r)
+    }
+
+    // Pass 2: binary tree reduction within the workgroup.
+    shmem[tid] = partial_sq;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] += shmem[tid + stride];
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    // Pass 3: normalise. Re-read inputs rather than out3 (inputs are L2-resident from pass 1;
+    // re-computing h+s is cheaper than reading out3 via load_half through the write-after-read
+    // hazard on a writeonly-marked buffer). The residual r is bit-identical to pass 1.
+    float eps     = uintBitsToFloat(pc.eps_bits);
+    float inv_rms = inversesqrt(shmem[0] / float(pc.hidden_size) + eps);
+
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float h = LOAD_HALF(u_hidden, base + i);
+        float s = LOAD_HALF(u_skip,   base + i);
+        float r = h + s;
+        float g = LOAD_HALF(u_gamma, i);
+        STORE_HALF(u_out0, base + i, r * inv_rms * g)
+    }
+}

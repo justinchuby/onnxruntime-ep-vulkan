@@ -1762,6 +1762,7 @@ mod tests {
             push_constants: Vec::new(),
             workgroups: [1, 1, 1],
             bindings: Vec::new(),
+            temp_byte_sizes: Vec::new(),
             n_plan_inputs: 2,
             dyn_recipe: None,
         });

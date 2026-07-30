@@ -72,6 +72,14 @@ pub(crate) struct CompiledKernel {
     pub(crate) workgroups: [u32; 3],
     /// Buffer index tokens. See struct doc for encoding.
     pub(crate) bindings: Vec<u64>,
+    /// Byte sizes of temporary GPU buffers allocated via `alloc_temp`.  These are scratch
+    /// buffers used by translate handlers (e.g. `skip_norm`'s slot-3 residual write when the
+    /// caller does not request slot 3).  They sit *above* the output-buffer range in the token
+    /// encoding: `token - n_plan_inputs >= n_ort_outputs` → temp buffer at that index.
+    ///
+    /// For static kernels this is filled during `CompileRecorder::alloc_temp`; for dynamic
+    /// kernels it is derived from `ShapeOnlyRecorder::temp_descs` at Compute time.
+    pub(crate) temp_byte_sizes: Vec<u64>,
     /// Number of subgraph-level inputs (= `plan.inputs.len()`).
     pub(crate) n_plan_inputs: usize,
     /// Recipe for recomputing push constants and workgroups at Compute time.
@@ -116,6 +124,9 @@ pub(crate) struct CompileRecorder {
     n_plan_inputs: usize,
     next_resolve: usize,
     next_bind: usize,
+    /// Temporary scratch buffer byte sizes accumulated between translate calls and flushed
+    /// into `CompiledKernel::temp_byte_sizes` on each `dispatch()` call.
+    pending_temp_sizes: Vec<u64>,
     pub(crate) kernels: Vec<CompiledKernel>,
 }
 
@@ -125,6 +136,7 @@ impl CompileRecorder {
             n_plan_inputs,
             next_resolve: 0,
             next_bind: 0,
+            pending_temp_sizes: Vec::new(),
             kernels: Vec::new(),
         }
     }
@@ -159,6 +171,7 @@ impl CompileRecorder {
             push_constants: vec![],
             workgroups: [0, 0, 0],
             bindings,
+            temp_byte_sizes: Vec::new(), // dynamic kernels derive temp sizes at Compute time
             n_plan_inputs: self.n_plan_inputs,
             dyn_recipe: Some(Box::new(DynKernelRecipe { node_desc, spec })),
         });
@@ -178,10 +191,10 @@ impl DispatchContext for CompileRecorder {
         Ok(BufferView::from_raw(token as u64))
     }
 
-    fn alloc_temp(&mut self, _desc: TensorDesc) -> EpResult<BufferView> {
-        // Intermediates get tokens above input+output range. No M0 op uses alloc_temp.
+    fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
         let token = self.n_plan_inputs + self.next_bind;
         self.next_bind += 1;
+        self.pending_temp_sizes.push(desc.byte_size().unwrap_or(0) as u64);
         Ok(BufferView::from_raw(token as u64))
     }
 
@@ -192,6 +205,7 @@ impl DispatchContext for CompileRecorder {
             push_constants: k.push_constants,
             workgroups: k.workgroups,
             bindings: k.bindings.iter().map(|b| b.as_raw()).collect(),
+            temp_byte_sizes: std::mem::take(&mut self.pending_temp_sizes),
             n_plan_inputs: self.n_plan_inputs,
             dyn_recipe: None,
         });
@@ -242,6 +256,8 @@ struct ShapeOnlyRecorder {
     pub captured_bindings: Option<Vec<u64>>,
     /// Output `TensorDesc`s collected from `bind_output()` calls, used to size output buffers.
     pub output_descs: Vec<TensorDesc>,
+    /// Descriptors from `alloc_temp()` calls — scratch buffers not tied to ORT outputs.
+    pub temp_descs: Vec<TensorDesc>,
 }
 
 impl ShapeOnlyRecorder {
@@ -253,6 +269,7 @@ impl ShapeOnlyRecorder {
             captured: None,
             captured_bindings: None,
             output_descs: Vec::new(),
+            temp_descs: Vec::new(),
         }
     }
 }
@@ -271,9 +288,10 @@ impl DispatchContext for ShapeOnlyRecorder {
         Ok(BufferView::from_raw(token as u64))
     }
 
-    fn alloc_temp(&mut self, _desc: TensorDesc) -> EpResult<BufferView> {
+    fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
         let token = self.n_plan_inputs + self.next_bind;
         self.next_bind += 1;
+        self.temp_descs.push(desc);
         Ok(BufferView::from_raw(token as u64))
     }
 
@@ -616,6 +634,8 @@ impl VulkanSession {
         // or the output binding slot falls outside the descriptor set and writes nowhere.
         type DynCaptured = (Vec<u8>, [u32; 3], Vec<u32>, &'static str, Vec<u64>);
         let mut dyn_captured: Vec<Option<DynCaptured>> = (0..kernels.len()).map(|_| None).collect();
+        // Per-kernel temp buffer sizes from the ShapeOnlyRecorder (dynamic kernels only).
+        let mut dyn_temp_sizes: Vec<Vec<u64>> = vec![Vec::new(); kernels.len()];
         let mut actual_output_byte_sizes: Vec<u64> = output_byte_sizes.to_vec();
         let mut actual_output_shapes: Vec<Vec<i64>> = output_shapes.to_vec();
 
@@ -671,6 +691,9 @@ impl VulkanSession {
                 if let (Some(cap), Some(cap_bi)) = (sor.captured, sor.captured_bindings) {
                     dyn_captured[ki] = Some((cap.0, cap.1, cap.2, cap.3, cap_bi));
                 }
+                dyn_temp_sizes[ki] = sor.temp_descs.iter()
+                    .map(|d| d.byte_size().unwrap_or(0) as u64)
+                    .collect();
             } else {
                 log::error!(
                     "dispatch_ort: dynamic re-run of translate for op '{}' failed",
@@ -726,6 +749,7 @@ impl VulkanSession {
         let mut staging_ups: Vec<GpuBuffer> = Vec::new();
         let mut gpu_outputs: Vec<GpuBuffer> = Vec::new();
         let mut staging_dls: Vec<GpuBuffer> = Vec::new();
+        let mut gpu_temps: Vec<GpuBuffer> = Vec::new();
 
         macro_rules! bail {
             ($msg:literal) => {{
@@ -734,6 +758,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and `$msg` is
                 // a 'static NUL-terminated literal. `free_all` above has already released every
@@ -784,6 +809,28 @@ impl VulkanSession {
             };
             gpu_outputs.push(buf);
             staging_dls.push(stg);
+        }
+
+        // Allocate scratch buffers for kernels that called alloc_temp at translate time.
+        // Dynamic kernels use dyn_temp_sizes (from the ShapeOnlyRecorder pre-pass); static kernels
+        // use temp_byte_sizes baked into the CompiledKernel at Compile time.
+        // Temps are appended to gpu_temps in kernel order; buf_bindings routes them by offset.
+        let mut temp_starts: Vec<usize> = Vec::with_capacity(kernels.len());
+        for (ki, kernel) in kernels.iter().enumerate() {
+            temp_starts.push(gpu_temps.len());
+            let temp_sizes: &[u64] = if dyn_captured[ki].is_some() || kernel.dyn_recipe.is_some() {
+                &dyn_temp_sizes[ki]
+            } else {
+                &kernel.temp_byte_sizes
+            };
+            for (j, &sz) in temp_sizes.iter().enumerate() {
+                let Some(buf) = (unsafe {
+                    self.alloc.alloc_device(&format!("ep_tmp_k{ki}_{j}"), sz)
+                }) else {
+                    bail!("alloc_device failed for temp buffer");
+                };
+                gpu_temps.push(buf);
+            }
         }
 
         // ── Step 4: record command buffer ─────────────────────────────────────
@@ -870,6 +917,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -902,6 +950,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -930,6 +979,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -957,7 +1007,13 @@ impl VulkanSession {
                         (b.buffer, b.size)
                     } else {
                         let j = (token - kernel.n_plan_inputs as u64) as usize;
-                        let b = &gpu_outputs[j];
+                        let n_ort = actual_output_byte_sizes.len();
+                        let b = if j < n_ort {
+                            &gpu_outputs[j]
+                        } else {
+                            // Temp buffer: j - n_ort indexes into this kernel's temp slice.
+                            &gpu_temps[temp_starts[ki] + (j - n_ort)]
+                        };
                         (b.buffer, b.size)
                     }
                 })
@@ -977,6 +1033,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
                 // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -1073,6 +1130,7 @@ impl VulkanSession {
                 &mut staging_ups,
                 &mut gpu_outputs,
                 &mut staging_dls,
+                &mut gpu_temps,
             );
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -1094,6 +1152,7 @@ impl VulkanSession {
                 &mut staging_ups,
                 &mut gpu_outputs,
                 &mut staging_dls,
+                &mut gpu_temps,
             );
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
@@ -1127,6 +1186,7 @@ impl VulkanSession {
             &mut staging_ups,
             &mut gpu_outputs,
             &mut staging_dls,
+            &mut gpu_temps,
         );
         status
     }
@@ -1251,7 +1311,7 @@ impl VulkanSession {
         std::ptr::null_mut() // success
     }
 
-    /// Free all GPU buffers in all four pools, draining them.
+    /// Free all GPU buffers in all five pools, draining them.
     ///
     /// Called on every error path. `GpuBuffer` has no `Drop` impl, so this must be explicit.
     fn free_all(
@@ -1260,6 +1320,7 @@ impl VulkanSession {
         staging_ups: &mut Vec<GpuBuffer>,
         gpu_outputs: &mut Vec<GpuBuffer>,
         staging_dls: &mut Vec<GpuBuffer>,
+        gpu_temps: &mut Vec<GpuBuffer>,
     ) {
         // Each buffer was produced by `self.alloc` and has not been freed. Every caller reaches
         // here either before submission or after `vkWaitForFences`, so no GPU work references
@@ -1277,6 +1338,10 @@ impl VulkanSession {
             unsafe { self.alloc.free(b) };
         }
         for b in staging_dls.drain(..) {
+            // SAFETY: as above.
+            unsafe { self.alloc.free(b) };
+        }
+        for b in gpu_temps.drain(..) {
             // SAFETY: as above.
             unsafe { self.alloc.free(b) };
         }

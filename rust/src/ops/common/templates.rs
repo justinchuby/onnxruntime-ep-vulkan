@@ -280,12 +280,7 @@ pub fn skip_norm(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     // -- Select shader stem by dtype ------------------------------------------------------
     let shader: &'static str = match dtype {
         DType::F32 => "skip_simplified_layer_norm_f32",
-        DType::F16 => {
-            return Err(EpError::Unsupported(format!(
-                "`{}` fp16 variant is not yet written; claim predicate should have checked this",
-                node.op_type
-            )));
-        }
+        DType::F16 => "skip_simplified_layer_norm_f16",
         _ => {
             return Err(EpError::Unsupported(format!(
                 "`{}` dtype {dtype:?} is not supported by the norm kernel",
@@ -735,6 +730,73 @@ mod tests {
             path.is_file(),
             "shaders/glsl/skip_simplified_layer_norm_f32.comp is missing; \
              the translate handler names it directly so it must exist at build time"
+        );
+    }
+
+    #[test]
+    fn skip_norm_f16_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("skip_simplified_layer_norm_f16.comp");
+        assert!(
+            path.is_file(),
+            "shaders/glsl/skip_simplified_layer_norm_f16.comp is missing; \
+             the translate handler names it directly so it must exist at build time"
+        );
+    }
+
+    #[test]
+    fn skip_norm_f16_produces_one_dispatch_with_correct_shader() {
+        // SkipSimplifiedLayerNormalization in fp16 — the path Phi-3.5 exercises.
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let node = NodeDesc {
+            op_type: "SkipSimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("hidden", DType::F16, &[2, 4, 64]),
+                tensor("skip",   DType::F16, &[2, 4, 64]),
+                tensor("gamma",  DType::F16, &[64]),
+            ],
+            outputs: vec![
+                out("out0", DType::F16, &[2, 4, 64]),
+                OutRef { name: String::new(), desc: None },
+                OutRef { name: String::new(), desc: None },
+                out("out3", DType::F16, &[2, 4, 64]),
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).expect("translate f16");
+
+        let k = &ctx.dispatches[0];
+        assert_eq!(ctx.dispatches.len(), 1);
+        assert_eq!(k.shader, "skip_simplified_layer_norm_f16");
+        assert_eq!(k.workgroups, [8, 1, 1], "batch×seq = 2×4 = 8 rows");
+        assert_eq!(k.bindings.len(), 5, "hidden, skip, gamma, out0, out3");
+    }
+
+    /// The f16 check is a *yesterday-red* test: before the f16 shader and handler path were
+    /// written, `skip_norm` returned `Err(Unsupported)` for DType::F16.  This test would have
+    /// failed on the unfixed code.
+    #[test]
+    fn skip_norm_f16_was_unsupported_before_this_commit() {
+        // Verify that the f16 path is now supported (the test name documents what it caught).
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let node = NodeDesc {
+            op_type: "SkipSimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("hidden", DType::F16, &[1, 1, 32]),
+                tensor("skip",   DType::F16, &[1, 1, 32]),
+                tensor("gamma",  DType::F16, &[32]),
+            ],
+            outputs: vec![out("out0", DType::F16, &[1, 1, 32])],
+            ..Default::default()
+        };
+        let mut ctx = Recorder::default();
+        // Must succeed — before the fix, this returned Err(Unsupported("fp16 variant is not yet written")).
+        skip_norm(spec, &node, &mut ctx).expect(
+            "f16 SkipSimplifiedLayerNorm must not return Unsupported after this commit; \
+             if it does, the f16 shader path was not wired in"
         );
     }
 }

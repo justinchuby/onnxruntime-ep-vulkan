@@ -31,7 +31,7 @@ use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
-use crate::registry::OpStatus::Staged;
+use crate::registry::OpStatus::{Ready, Staged};
 use crate::registry::{
     ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OPSET_STD_NORM_MAX, OpSpec, PINNED_BASELINE,
 };
@@ -115,7 +115,7 @@ fn skip_simplified_layer_norm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult
 crate::op_table! {
     //  op                                    domain  opsets                       caps    kernel          claim                       translate                  status                    schema
     "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
-    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SKIP_SIMPLIFIED_LAYER_NORM;
+    "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::skip_norm,      Ready,                    schema: &SKIP_SIMPLIFIED_LAYER_NORM;
     "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
 
     // The same op again, in the **default domain**. Not a duplicate and not defensive coding: the
@@ -188,15 +188,44 @@ mod tests {
 
     #[test]
     fn both_norms_share_one_blocker() {
-        // The point of a distinct staging reason: this reads as "write the reduction template and
-        // two rows go live", which is a schedule statement the table makes for you.
-        for s in OPS {
+        // SkipSimplifiedLayerNormalization is now Live/Ready with its own kernel.
+        // The remaining rows (SimplifiedLayerNormalization, RMSNormalization) still share
+        // the NEEDS_REDUCTION blocker — once the shared reduction template is written, they
+        // all go live together.
+        let staged: Vec<_> = OPS
+            .iter()
+            .filter(|s| matches!(s.status, OpStatus::Staged(_)))
+            .collect();
+        let live: Vec<_> = OPS
+            .iter()
+            .filter(|s| s.is_live())
+            .collect();
+        assert!(
+            !staged.is_empty(),
+            "some rows should still be staged (waiting for reduction template)"
+        );
+        assert!(!live.is_empty(), "SkipSimplifiedLayerNormalization should be live");
+        for s in &staged {
             assert!(
                 matches!(s.status, OpStatus::Staged(NEEDS_REDUCTION)),
                 "{} is staged behind something else",
                 s.op_type
             );
         }
+    }
+
+    /// `SkipSimplifiedLayerNormalization` is now Live/Ready — verify its status.
+    #[test]
+    fn skip_norm_is_live_not_staged() {
+        let skip = OPS
+            .iter()
+            .find(|s| s.op_type == "SkipSimplifiedLayerNormalization")
+            .expect("SkipSimplifiedLayerNormalization must be registered");
+        assert!(
+            skip.is_live(),
+            "SkipSimplifiedLayerNormalization must be Live or Ready; got {:?}",
+            skip.status
+        );
     }
 
     #[test]

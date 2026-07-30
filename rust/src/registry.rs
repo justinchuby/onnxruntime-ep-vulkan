@@ -1865,15 +1865,39 @@ mod tests {
                 spec_for(&desc).is_some(),
                 "{name} is live but spec_for returns None — is_live() and spec_for are inconsistent"
             );
-            // Every live row must have at least one compiled shader variant.
-            let has_shader = spec.caps.iter().any(|d| {
-                spec.kernel
-                    .stem(d)
-                    .is_some_and(|stem| shaders::find(stem).is_some())
-            });
+            // Every live row must have a dispatch path.  There are two kinds:
+            //
+            //   (a) Template rows: spec.kernel.template != None. The kernel system generates
+            //       shader variants and `spec.kernel.stem(d)` returns their names. We verify
+            //       that at least one variant is present in the compiled binary.
+            //
+            //   (b) Direct-shader rows: spec.kernel.template == None. The translate handler
+            //       dispatches to a hand-written shader by hardcoded stem (e.g. skip_norm).
+            //       These rows have no manifest entry, so the kernel.stem() check is the
+            //       wrong instrument. We verify instead that the translate handler is NOT
+            //       `templates::unimplemented` — proving that *some* dispatch path exists,
+            //       even though we cannot see the shader name from here. The per-translate-
+            //       handler unit tests (in ops::common::templates::tests) then verify the
+            //       stem is correct and the shader exists on disk.
+            //
+            // The two instruments are complementary: (a) proves the binary has the shader;
+            // (b) proves the dispatch path is non-trivial. Both are required for their class.
+            use crate::ops::common::templates;
+            use crate::ops::common::variants::Template;
+            let has_dispatch = if spec.kernel.template == Template::None {
+                // Direct-shader row: translate handler must be non-trivial.
+                !std::ptr::fn_addr_eq(spec.translate, templates::unimplemented as fn(_, _, _) -> _)
+            } else {
+                // Template row: at least one compiled shader variant must be present.
+                spec.caps.iter().any(|d| {
+                    spec.kernel
+                        .stem(d)
+                        .is_some_and(|stem| shaders::find(stem).is_some())
+                })
+            };
             assert!(
-                has_shader,
-                "{name} is live but has no compiled shader variant in the binary"
+                has_dispatch,
+                "{name} is live but has no compiled shader variant or non-trivial translate handler"
             );
         }
     }
