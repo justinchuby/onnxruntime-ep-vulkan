@@ -774,3 +774,52 @@ narrow deliberately, name the lift condition, and do not let the restriction out
 Baseline note: `test_op_table.py` is **28 failed / 63 passed** with my change and **28 failed / 49
 passed without it** — pre-existing, intentional per its docstring, +14 and no regressions from me.
 A suite red by design still trains people to stop reading it.
+
+---
+
+## 2026-07-30 (later) — the variant census, and finding my own guard had the hole in it
+
+**Two rulings landed.** Decision records go in `main`'s inbox, not the worktree's — my own finding,
+and the coordinator confirmed Switch nearly lost a record to it. Shader ownership is by op, not by
+directory: op kernels mine, `shaders/include/**` Switch's. Which means `indexing.glsl` — which I
+rewrote yesterday for the packed-f16 path — is his. The edit predates the ruling and is validated on
+both devices, so I flagged the hunk for review rather than reverting it; reverting removes the f16
+path entirely. From here I ask before touching that file.
+
+**Assignments were a turn behind: both items were already done.** So I went looking for the next
+real thing instead of re-reporting.
+
+**The next real thing was a question I had not thought to ask.** SS7.4's rule is that planning is
+driven by the decline histogram rather than the op histogram. There is a level below that. An op
+census says which op; a decline census says which op first; **neither says which *variant* is worth
+anything.** On an fp16 model that decides between 64 nodes and 0.
+
+So I censused the graph by dtype signature. Every staged node that matters is f16 end to end:
+`SkipSimplifiedLayerNormalization` x64, `GroupQueryAttention` x32, `SimplifiedLayerNormalization` x1.
+**`skip_simplified_layer_norm_f32.comp`, which is in flight right now, claims zero nodes of
+Phi-3.5.** That is exactly the mistake I made with elementwise, about to be repeated one kernel
+later, and catching it before the kernel is finished is worth more than anything else I did today.
+Two more things only the signature census shows: skip-norm's output count *varies* (63 nodes bind
+two, one binds one), and GQA mixes f16 tensors with i32 seqlens inside a single node.
+
+**Then the uncomfortable one.** The i64 variants declare `OpCapability Int64`, which needs
+`shaderInt64` enabled; the engine passes no `pEnabledFeatures` at all. Same bug as the f16 one,
+still live. **And the guard I wrote yesterday to catch that class allowed `Int64`** — with a comment
+of mine reading "core in Vulkan 1.0 via `shaderInt64`", which is true about the feature existing and
+irrelevant to whether it is enabled.
+
+A guard whose allowlist is written from the same misunderstanding as the bug it guards against
+inherits the bug. I wrote a plausible-sounding justification into the one place designed to reject
+plausible-sounding justifications, and it read as diligence. The general form: **the dangerous
+review comment is the one that sounds like a reason and is actually a restatement.**
+
+Fixed by splitting one list into two — `GENERATED_CAPABILITIES` (what may be built; wide on purpose)
+and `ENGINE_ENABLED_CAPABILITIES` (what a live claim may rest on; `Shader` only) — and by adding a
+claim-side test that walks every proved pair to its module. **I fired it deliberately** by adding
+`("Sub","i64")` to `EXERCISED`, watched it fail with the right message, and reverted. A guard that
+has never fired is a guard nobody has tested, and I had just written one.
+
+Generation and admission are different claims. GLSL compiling says nothing about whether a device
+can create the module, and the claim is the only place the two are reconciled.
+
+No cross-owner edits this turn.

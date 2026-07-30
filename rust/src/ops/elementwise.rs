@@ -467,8 +467,62 @@ mod tests {
         );
     }
 
-    /// A template-live row is only as good as its representative, so the representative must hold.
+    /// No live claim may rest on a variant no device can create.
     ///
+    /// The artifact-level guard in [`variants`](crate::ops::common::variants) allows a wider
+    /// capability set than this one, because generating an unloadable variant is harmless. This is
+    /// the rule that actually matters: a `(op, dtype)` pair in [`EXERCISED`] is a promise that the
+    /// pair *ran on a device*, so if its module declares a capability the engine never enables,
+    /// either the promise is false or the evidence was recorded against something else.
+    ///
+    /// Live today: the `_i64` variants declare `Int64`, which needs
+    /// `VkPhysicalDeviceFeatures::shaderInt64`; `vk::device` passes no `pEnabledFeatures` at all.
+    /// Nothing claims i64, so this passes — and the moment somebody adds `("Sub", "i64")` on the
+    /// strength of the variant existing, it fails here rather than as a device-lost on a user's
+    /// machine. That is the same trap the f16 rows sat in for their whole existence, pre-sprung.
+    #[test]
+    fn no_live_claim_rests_on_an_unloadable_variant() {
+        use crate::ops::common::variants::{ENGINE_ENABLED_CAPABILITIES, declared_capabilities};
+
+        let modules: std::collections::HashMap<&str, &[u8]> =
+            crate::engine::shaders::SHADER_MODULES
+                .iter()
+                .copied()
+                .collect();
+
+        let mut offenders: Vec<String> = Vec::new();
+        for spec in OPS.iter().filter(|s| s.status == OpStatus::Live) {
+            for d in crate::ops::common::dtype::ALL_DTYPES {
+                if !proved_at(spec.op_type, d) {
+                    continue;
+                }
+                let Some(stem) = spec.kernel.stem(d) else {
+                    continue;
+                };
+                let Some(bytes) = modules.get(stem) else {
+                    continue;
+                };
+                for cap in declared_capabilities(bytes) {
+                    if !ENGINE_ENABLED_CAPABILITIES.contains(&cap) {
+                        offenders.push(format!(
+                            "`{}` is claimed at {} via `{stem}`, which declares SPIR-V capability \
+                             {cap} — the engine enables no such feature, so that module cannot be \
+                             created on any device",
+                            spec.op_type,
+                            dtype_suffix(d),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a live claim rests on a variant no device can create:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// A template-live row is only as good as its representative, so the representative must hold.    ///
     /// Without this the weaker list could quietly outlive the stronger one: if `Add` were ever
     /// demoted — because the differential suite disproved the wire, which is exactly what flipping
     /// it is meant to allow — thirty-four rows would still be claiming on evidence that had been

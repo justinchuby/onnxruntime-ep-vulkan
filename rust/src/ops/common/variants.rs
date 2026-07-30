@@ -302,6 +302,69 @@ pub fn manifest_text() -> String {
 /// Path of the checked-in manifest, relative to the crate root.
 pub const MANIFEST_PATH: &str = "src/ops/shader_variants.txt";
 
+// ---------------------------------------------------------------------------
+// SPIR-V capability accounting — what we may build vs what we may claim on
+// ---------------------------------------------------------------------------
+//
+// A SPIR-V `OpCapability` is the module-level name for "this needs a device feature". Vulkan does
+// not grant features by being new enough: a feature must be *enabled* in `VkDeviceCreateInfo`
+// before a module declaring it can be created, whatever the device supports. So there are two
+// different sets here and conflating them is exactly the mistake that made every f16 module
+// unloadable for as long as they existed.
+
+/// `Shader` — declared by every compute module. Never optional.
+#[cfg(test)]
+pub(crate) const CAP_SHADER: u32 = 1;
+/// `Int64` — declared by every `_i64` variant. Requires `VkPhysicalDeviceFeatures::shaderInt64`,
+/// which the engine's feature chain does **not** currently enable.
+#[cfg(test)]
+pub(crate) const CAP_INT64: u32 = 11;
+
+/// Capabilities a *generated* variant may declare.
+///
+/// Wider than [`ENGINE_ENABLED_CAPABILITIES`] on purpose: building a variant no device can load
+/// costs a few kilobytes and nothing else, and the i64 variants have to exist before the feature
+/// that would make them loadable is worth adding. Building one is not the bug. Claiming on one is.
+#[cfg(test)]
+pub(crate) const GENERATED_CAPABILITIES: &[u32] = &[CAP_SHADER, CAP_INT64];
+
+/// Capabilities the engine actually enables at device creation, and therefore the only ones a
+/// **live claim** may rest on.
+///
+/// `vk::device` builds `VkDeviceCreateInfo` with a `DeviceFeatureChain` carrying only
+/// `synchronization2` and passes no `pEnabledFeatures` at all — so `shaderInt64` is off, and an
+/// `_i64` module cannot be created on any device we run on. Widening this list means three edits
+/// together, not one: enable the feature in the chain, probe it in `vk::caps`, and decline the
+/// variant on devices that lack it. A capability we generate is not a capability we have.
+#[cfg(test)]
+pub(crate) const ENGINE_ENABLED_CAPABILITIES: &[u32] = &[CAP_SHADER];
+
+/// Every `OpCapability` declared by a SPIR-V module, decoded from the binary.
+///
+/// Word 0 of an instruction packs `(word_count << 16) | opcode`; `OpCapability` is opcode 17 with
+/// a single operand. The five-word header is skipped. Capabilities must precede every other
+/// section, but scanning the whole module is simpler and cannot miss one.
+#[cfg(test)]
+pub(crate) fn declared_capabilities(spv: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = spv
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 5;
+    while i < words.len() {
+        let len = (words[i] >> 16) as usize;
+        if len == 0 {
+            break;
+        }
+        if words[i] & 0xFFFF == 17 && i + 1 < words.len() {
+            out.push(words[i + 1]);
+        }
+        i += len;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,31 +491,6 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders")
     }
 
-    /// Every `OpCapability` declared by a SPIR-V module, decoded from the binary.
-    ///
-    /// Word 0 of an instruction packs `(word_count << 16) | opcode`; `OpCapability` is opcode 17
-    /// with a single operand. The five-word header is skipped. Capabilities must precede every
-    /// other section, but scanning the whole module is simpler and cannot miss one.
-    fn declared_capabilities(spv: &[u8]) -> Vec<u32> {
-        let words: Vec<u32> = spv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let mut out = Vec::new();
-        let mut i = 5;
-        while i < words.len() {
-            let len = (words[i] >> 16) as usize;
-            if len == 0 {
-                break;
-            }
-            if words[i] & 0xFFFF == 17 && i + 1 < words.len() {
-                out.push(words[i + 1]);
-            }
-            i += len;
-        }
-        out
-    }
-
     /// No embedded shader may require a device feature the engine does not enable.
     ///
     /// This is the general form of a bug that reached two devices undetected: the f16 elementwise
@@ -467,28 +505,23 @@ mod tests {
     /// checkable statement of the §7.2 baseline, and any future kernel that reaches for a device
     /// feature fails in CI on a developer's machine rather than on a user's phone.
     ///
-    /// Adding an entry is legitimate — but it must be accompanied by the matching feature in the
-    /// device feature chain *and* a probe that declines the variant when the device lacks it.
+    /// This list is what may be **generated**, which is deliberately wider than what may be
+    /// **claimed**. Generating an unloadable variant is harmless; claiming on one is the bug. That
+    /// second, narrower rule is
+    /// [`elementwise::no_live_claim_rests_on_an_unloadable_variant`](crate::ops::elementwise).
     #[test]
     fn no_shader_requires_a_device_feature_the_engine_does_not_enable() {
-        /// `Shader` — every compute module.
-        const SHADER: u32 = 1;
-        /// `Int64` — the i64 variants; core in Vulkan 1.0 via `shaderInt64`.
-        const INT64: u32 = 11;
-        const ALLOWED: &[u32] = &[SHADER, INT64];
-
         let mut offenders: Vec<String> = Vec::new();
         for (stem, bytes) in crate::engine::shaders::SHADER_MODULES {
             for cap in declared_capabilities(bytes) {
-                if !ALLOWED.contains(&cap) {
+                if !GENERATED_CAPABILITIES.contains(&cap) {
                     offenders.push(format!("{stem} requires SPIR-V capability {cap}"));
                 }
             }
         }
         assert!(
             offenders.is_empty(),
-            "these modules need device features the engine never enables, so they would fail to \
-             load on every device:\n  {}",
+            "these modules need device features nothing in the engine enables or probes:\n  {}",
             offenders.join("\n  ")
         );
     }
