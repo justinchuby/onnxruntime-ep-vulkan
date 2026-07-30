@@ -8,11 +8,12 @@
 // deliberate accuracy gain over computing in half, and it removes any dependency on f16 overloads
 // of the transcendental builtins.
 //
-// Ops carrying attributes (LeakyRelu's alpha, Elu's alpha, Shrink's bias/lambd, ...) are compiled
-// here with their **ONNX default** attribute values. Their registry rows stay `Staged(NEEDS_PARAMS)`
-// and claim nothing until the parameterised template can carry real values in push constants —
-// `OP_COVERAGE.md` §7.1: an op is claimed only when the attribute combination is genuinely handled,
-// and a default is not a handled value, it is a guess.
+// Ops carrying attributes (LeakyRelu's alpha, Elu's alpha, Shrink's bias/lambd, ...) read their
+// values from the push-constant parameter tail, `pc.params[0..4]`, which the host fills from the
+// node's real attributes. They were previously compiled with the ONNX *default* values baked in
+// and staged `NEEDS_PARAMS`, claiming nothing — `OP_COVERAGE.md` §7.1: an op is claimed only when
+// the attribute combination is genuinely handled, and a default is not a handled value, it is a
+// guess. The tail is what turned the guess into a handled value; see §5.1.1.
 
 #version 450
 #extension GL_GOOGLE_include_directive : require
@@ -166,9 +167,9 @@ COMPUTE_T apply(COMPUTE_T x) {
 #elif EW_OP == OP_SIGMOID
     return ew_sigmoid(x);
 #elif EW_OP == OP_SWISH
-    // ONNX opset 24 `Swish`: x * sigmoid(alpha * x). The claim predicate admits only alpha = 1,
-    // which is SiLU — the activation every SwiGLU MLP in the LLM tiers uses.
-    return x * ew_sigmoid(x);
+    // ONNX opset 24 `Swish`: x * sigmoid(alpha * x). params[0]=alpha. alpha = 1 is SiLU, the
+    // activation every SwiGLU MLP in the LLM tiers uses; the general form costs one multiply.
+    return x * ew_sigmoid(pc.params[0] * x);
 #elif EW_OP == OP_HARDSWISH
     return x * clamp(x / 6.0 + 0.5, 0.0, 1.0);
 #elif EW_OP == OP_SOFTPLUS
@@ -180,20 +181,34 @@ COMPUTE_T apply(COMPUTE_T x) {
 #elif EW_OP == OP_GELU
     // approximate="none" (the default): the exact erf form.
     return 0.5 * x * (1.0 + ew_erf(x * 0.70710678118654752));
+// --- parameterised activations ------------------------------------------------------------
+// Everything below reads its attributes from `pc.params`, filled by the host from the node's
+// real attribute values (`ops::common::params`). The slot assignment is duplicated in that
+// module's doc comment and asserted by its tests; nothing here may reorder a slot.
 #elif EW_OP == OP_HARDSIGMOID
-    return clamp(0.2 * x + 0.5, 0.0, 1.0);          // alpha=0.2, beta=0.5
+    // params[0]=alpha, params[1]=beta.
+    return clamp(pc.params[0] * x + pc.params[1], 0.0, 1.0);
 #elif EW_OP == OP_LEAKYRELU
-    return x < 0.0 ? 0.01 * x : x;                  // alpha=0.01
+    // params[0]=alpha.
+    return x < 0.0 ? pc.params[0] * x : x;
 #elif EW_OP == OP_ELU
-    return x < 0.0 ? (exp(x) - 1.0) : x;            // alpha=1.0
+    // params[0]=alpha.
+    return x < 0.0 ? pc.params[0] * (exp(x) - 1.0) : x;
 #elif EW_OP == OP_SELU
-    return 1.05070102 * (x > 0.0 ? x : 1.67326319 * (exp(x) - 1.0));
+    // params[0]=alpha, params[1]=gamma.
+    return pc.params[1] * (x > 0.0 ? x : pc.params[0] * (exp(x) - 1.0));
 #elif EW_OP == OP_CELU
-    return max(0.0, x) + min(0.0, exp(x) - 1.0);    // alpha=1.0
+    // params[0]=alpha. Note the division: unlike Elu, Celu scales the *argument* too, so an
+    // alpha of 0 is a division by zero and the claim predicate rejects it rather than relying
+    // on the implementation-defined result.
+    return max(0.0, x) + min(0.0, pc.params[0] * (exp(x / pc.params[0]) - 1.0));
 #elif EW_OP == OP_TRELU
-    return x > 1.0 ? x : 0.0;                       // alpha=1.0
+    // params[0]=alpha.
+    return x > pc.params[0] ? x : 0.0;
 #elif EW_OP == OP_SHRINK
-    return x < -0.5 ? x : (x > 0.5 ? x : 0.0);      // bias=0.0, lambd=0.5
+    // params[0]=lambd, params[1]=bias.
+    return x < -pc.params[0] ? x + pc.params[1]
+         : (x > pc.params[0] ? x - pc.params[1] : 0.0);
 #else
 #error "ew_unary.comp has no case for this EW_OP"
 #endif

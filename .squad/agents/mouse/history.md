@@ -461,3 +461,63 @@ an invariant should select its fixtures from the data, not name them.**
 **Build contention is now routine.** The shared `target/release` DLL was locked by another agent's
 running pytest. `CARGO_TARGET_DIR=target-mouse` gave a private build in 1m43s with no disruption to
 anyone; removed afterwards. Better than waiting, and much better than killing their processes.
+
+
+## 2026-07-29 — the parameter tail: sixteen bytes that retired a whole blocker
+
+**Fourteen rows were staged for months behind a blocker that cost one afternoon to remove.**
+`LeakyRelu`, `Elu`, `Selu`, `Celu`, `ThresholdedRelu`, `Shrink`, `HardSigmoid`, `Swish`, plus
+`Gelu` and `Clip` by adjacency. Every shader existed and compiled; each was one float away. The
+blocker was correct — their GLSL had the ONNX default baked in as a literal, and claiming on that
+answers `alpha=0.2` with `alpha=0.01` — but I had recorded it as a *property of the ops* rather
+than as *one missing mechanism*. Four floats appended to the push-constant block unblocked all of
+them at once. **When N rows share a blocker, the blocker is the work item, not the rows.** I should
+have asked "what is the one thing all of these are waiting for" the first time I wrote
+`NEEDS_PARAMS` fourteen times.
+
+**The cost of the mechanism was the interesting part, and it was structural, not numeric.** Adding
+the tail was trivial. Deciding it should be *unconditional* — parameterless ops push four zeros
+they never read — was the real call, and it turned on a fact I had to go and check rather than
+assume: `vk/pipeline.rs` declares a fixed 128-byte push-constant range for **every** pipeline. So
+an under-filled block is not caught by the layout; the shader just reads bytes nobody wrote. Two
+layouts would have been a silent-corruption generator. **I nearly wrote this into a decision record
+as "pipeline.rs sizes the range from the supplied bytes" — which is false — and caught it only
+because I went to verify a claim I was about to publish.** Verify the sentence you are about to
+assert about someone else's file.
+
+**I declined to use my own `TEMPLATE_LIVE` shortcut for the rows it literally permits.** These
+satisfy every stated condition: same template, same translate, same descriptor layout, same
+push-constant block, f32 predicate, exercised representative. I still made them earn their own
+dispatch, because the tail is a **new code path**, not a new expression inside an exercised one —
+a wrong offset for `params[0]` is invisible to every live op, since they all push zeros there and
+read none of them. The sharpened rule: *template evidence covers a different expression in an
+exercised path, never a different path.* The test to apply: **ask what a plausible bug in the new
+code would do to the representative. If the answer is "nothing", the representative is not
+evidence.**
+
+**The float/selector distinction is the durable part.** `alpha` is a coefficient and rides the
+tail. `Gelu.approximate`, `Mod.fmod`, `BitShift.direction`, `IsInf.detect_*` choose a different
+*expression*, so they need a shader variant, not a value. I rewrote `NEEDS_PARAMS`'s text to say
+this, so the blocker now names an obstacle that still exists. A staging reason that has been half
+retired is worse than no staging reason: it reads as a to-do that someone already did.
+
+**`Clip` was the case that looked like the others and was not.** Its bounds are optional *inputs*
+from opset 11, not attributes, so the tail cannot carry them **in principle** — `TensorRef` exposes
+`is_initializer` but not the contents, and a bound may be computed at runtime. But it did not need
+the tail: three-input `Clip` is an ordinary ternary elementwise op whose rank-0 bounds broadcast
+with stride zero, which the shared indexing helper already does. The right question was not "how do
+I get the values into push constants" but "why did I think these were values". One- and two-input
+`Clip` still decline `[arity]`: an omitted bound is a different **dispatch shape** — a descriptor
+bound to nothing — not a different value, so widening the predicate would bind a buffer that does
+not exist.
+
+**Trinity's suite already tested the thing I built, before I built it.** `LeakyRelu(alpha=0.1)`,
+`Elu(alpha=1.5)`, `HardSigmoid(alpha=0.15, beta=0.4)` were sitting in `test_op_table.py` failing
+loudly. That meant the flip was verified against **non-default** values on the first run — what
+passed was the mechanism, not the defaults that were already in the shader. A harness that fails
+loudly on staged rows is what makes a flip a real experiment instead of a hope.
+
+**Numbers, both devices, identical:** `test_elementwise` 25/11 → **33 passed / 3 failed**;
+`test_op_table` 39 → **49 passed** / 28 failed; `test_barrier_parity` 36 → **46 passed** / 28
+skipped. The three remaining elementwise failures are `Min`/`Max` (variadic) and
+`test_clip_no_bounds` (my deliberate decline) — the table still reads as "what is left to do".

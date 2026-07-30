@@ -28,13 +28,13 @@
 //! Three staging reasons appear below and they mean different things:
 //!
 //! * [`UNEXERCISED`] — the row and its shader are complete; nothing has executed it yet.
-//! * [`NEEDS_PARAMS`] — the op carries attributes (`alpha`, `beta`, `fmod`, `direction`,
-//!   `approximate`) that the plain unary/binary template has nowhere to put. Claiming it with
-//!   [`claim::never`] is the honest answer: `OP_COVERAGE.md` §7's rule is that an op is claimed
-//!   only when the *attribute* combination is genuinely handled, and here it is not. These become
-//!   a parameterised template variant, not a bespoke kernel each. Their shader variants are
-//!   compiled with the ONNX **default** attribute values so the template stays uniform — a default
-//!   is not a handled value, which is precisely why the row stays staged.
+//! * [`NEEDS_PARAMS`] — the op's attribute is a **selector** (`fmod`, `direction`,
+//!   `detect_negative`) rather than a coefficient: it chooses a different expression, so it needs
+//!   its own shader variant and cannot ride the push-constant parameter tail that retired this
+//!   blocker for the float-parameter activations. Claiming it with [`claim::never`] is the honest
+//!   answer: `OP_COVERAGE.md` §7's rule is that an op is claimed only when the *attribute*
+//!   combination is genuinely handled, and here it is not. See §5.1.1 for the float/selector
+//!   distinction.
 //! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
 
 use crate::engine::DType;
@@ -48,9 +48,15 @@ use crate::registry::{NodeView, OPSET_ANY, OPSET_STD_SWISH, OpSpec, UNEXERCISED}
 /// `Equal` compares booleans as well as numbers.
 const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
 
-/// Staging reason for ops whose attributes the plain template cannot carry.
-pub const NEEDS_PARAMS: &str = "it carries attributes the plain elementwise template has no push-constant slot for; it needs \
-     the parameterised template variant";
+/// Staging reason for ops whose attribute *selects an expression* rather than supplying a value.
+///
+/// The push-constant parameter tail (`ops::common::params`, `OP_COVERAGE.md` §5.1.1) carries
+/// floats, which retired this blocker for `LeakyRelu`, `Elu`, `Selu`, `Celu`, `ThresholdedRelu`,
+/// `Shrink`, `HardSigmoid` and `Swish`. It does nothing for `Mod`'s `fmod`, `BitShift`'s
+/// `direction` or `IsInf`'s two detect flags: each picks between two different arithmetics, which
+/// is a shader variant, not a value.
+pub const NEEDS_PARAMS: &str = "its attribute selects a different expression rather than supplying a value, so it needs its own \
+     shader variant rather than a push-constant parameter";
 
 /// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
 pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
@@ -122,6 +128,22 @@ pub const EXERCISED: &[(&str, &str)] = &[
     ("Softplus", "f32"),
     ("Softsign", "f32"),
     ("Mish", "f32"),
+    // Parameterised activations — attributes carried in the push-constant tail
+    // (`ops::common::params`). These are listed here rather than in `TEMPLATE_LIVE` because the
+    // tail is a *new code path*, not a new line of arithmetic inside an exercised one: a wrong
+    // offset for `params[0]` would be invisible to every op above, all of which push zeros there
+    // and read none of them. They earned their place by executing, with non-default attribute
+    // values, on both devices.
+    ("HardSigmoid", "f32"),
+    ("LeakyRelu", "f32"),
+    ("Elu", "f32"),
+    ("Selu", "f32"),
+    ("Celu", "f32"),
+    ("ThresholdedRelu", "f32"),
+    ("Shrink", "f32"),
+    ("Gelu", "f32"),
+    // Three-input `Clip` — the ternary template's first execution.
+    ("Clip", "f32"),
 ];
 
 /// Rows that are live on **template evidence** rather than on their own dispatch.
@@ -200,15 +222,34 @@ fn only_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
-/// `ai.onnx::Swish` (opset 24) — claim only `alpha = 1`, i.e. SiLU.
+/// `ai.onnx::Swish` (opset 24) — any `alpha`, now that the parameter tail carries it.
 ///
-/// The generic unary template has no push-constant slot for an attribute, so a general `alpha`
-/// would be [`NEEDS_PARAMS`]. But `alpha = 1` is what every SwiGLU MLP emits and it is a distinct,
-/// fully-handled shader, so the honest row is "claimed at 1, declined elsewhere" rather than
-/// either claiming everything or staging the whole op behind a parameter we do not need yet.
-fn swish(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+/// This row was previously pinned to `alpha = 1` (SiLU) because the unary template had no
+/// push-constant slot for an attribute. It now has one, so the honest row is the general op.
+/// The pin is kept in the tests as a record of *why* it existed, not as a constraint.
+fn ew_unary_params_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_unary_params(view, spec)?;
+    only_f32(view, spec)
+}
+
+/// `Gelu` — claim `approximate = "none"` (the exact erf form), decline `"tanh"`.
+///
+/// `approximate` is a **string**, so unlike `alpha` it cannot ride the parameter tail: it selects
+/// a different expression, not a different coefficient. The right answer is a second shader
+/// variant, which is a shader-table change rather than a predicate one. Until then the default
+/// form is claimed — and it is claimed honestly, because `"none"` is the value the shader
+/// actually implements rather than a value we assumed because it was the default.
+fn gelu(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary(view, spec)?;
-    claim::attr_float_is(view, spec, "alpha", 1.0)
+    claim::attr_string_in(view, spec, "approximate", &["none"], "none")?;
+    only_f32(view, spec)
+}
+
+/// `Clip` — the three-input form only, f32. See [`claim::ew_clip`] for why the shorter forms
+/// decline rather than defaulting the omitted bound.
+fn clip_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_clip(view, spec)?;
+    only_f32(view, spec)
 }
 
 crate::op_table! {
@@ -281,8 +322,9 @@ crate::op_table! {
     "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), ew_unary_f32,      templates::ew_unary,    Live;
 
     // ---------------------------------------------------------------------------------------
-    // Activations. Attribute-free ones ride the unary template; parameterised ones are staged
-    // behind NEEDS_PARAMS rather than claimed with attributes we would silently ignore.
+    // Activations. The parameterised ones read their attributes from the push-constant tail
+    // (`ops::common::params`); before that tail existed they were staged behind NEEDS_PARAMS
+    // rather than claimed with the ONNX default silently substituted for whatever the graph set.
     // ---------------------------------------------------------------------------------------
     "Relu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "relu"),    ew_unary_f32,       templates::ew_unary,    Live;
     "Sigmoid",        Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "sigmoid"), ew_unary_f32,       templates::ew_unary,    Live;
@@ -290,20 +332,20 @@ crate::op_table! {
     "Softplus",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softplus"), ew_unary_f32,      templates::ew_unary,    Live;
     "Softsign",       Ai,     1 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "softsign"), ew_unary_f32,      templates::ew_unary,    Live;
     "Mish",           Ai,     18 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "mish"),    ew_unary_f32,       templates::ew_unary,    Live;
-    "HardSigmoid",    Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "hardsigmoid"), claim::never,   templates::unimplemented, Staged(NEEDS_PARAMS);
-    "LeakyRelu",      Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "leakyrelu"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Elu",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "elu"),     claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Selu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "selu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Celu",           Ai,     12 ..= OPSET_ANY,   F32,      kernel!(EwUnary, "celu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "ThresholdedRelu", Ai,    10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "trelu"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Shrink",         Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "shrink"),  claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Gelu",           Ai,     20 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "gelu"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "HardSigmoid",    Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "hardsigmoid"), ew_unary_params_f32, templates::ew_unary, Live;
+    "LeakyRelu",      Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "leakyrelu"), ew_unary_params_f32, templates::ew_unary, Live;
+    "Elu",            Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "elu"),     ew_unary_params_f32, templates::ew_unary,   Live;
+    "Selu",           Ai,     6 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "selu"),    ew_unary_params_f32, templates::ew_unary,   Live;
+    "Celu",           Ai,     12 ..= OPSET_ANY,   F32,      kernel!(EwUnary, "celu"),    ew_unary_params_f32, templates::ew_unary,   Live;
+    "ThresholdedRelu", Ai,    10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "trelu"),   ew_unary_params_f32, templates::ew_unary,   Live;
+    "Shrink",         Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "shrink"),  ew_unary_params_f32, templates::ew_unary,   Live;
+    "Gelu",           Ai,     20 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "gelu"),    gelu,               templates::ew_unary,    Live;
 
     // `Swish` is new at opset 24 and is what `onnxruntime/mobius` emits for the SwiGLU gate of
-    // every LLM MLP. `Swish(x) = x * sigmoid(alpha * x)`; the shader implements `alpha = 1`, which
-    // is SiLU, and the predicate declines any other alpha rather than pretending the default is
-    // the only value. Window closed at 24 because that is the only schema version that exists.
-    "Swish",          Ai,     OPSET_STD_SWISH ..= OPSET_STD_SWISH, FLOAT, kernel!(EwUnary, "swish"), swish, templates::ew_unary, Staged(UNEXERCISED);
+    // every LLM MLP. `Swish(x) = x * sigmoid(alpha * x)`; `alpha` now rides the parameter tail,
+    // so the general op is claimed rather than only SiLU. Window closed at 24 because that is
+    // the only schema version that exists.
+    "Swish",          Ai,     OPSET_STD_SWISH ..= OPSET_STD_SWISH, FLOAT, kernel!(EwUnary, "swish"), ew_unary_params_f32, templates::ew_unary, Staged(UNEXERCISED);
 
     // ---------------------------------------------------------------------------------------
     // Variadic elementwise — composed from the binary template, never an N-input shader.
@@ -317,7 +359,7 @@ crate::op_table! {
     // Selection and type conversion.
     // ---------------------------------------------------------------------------------------
     "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Staged(UNEXERCISED);
-    "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   clip_f32,           templates::ew_clip,     Live;
     "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(None),               claim::cast,        templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
     "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
 }
@@ -387,13 +429,17 @@ mod tests {
     /// its `caps` allows on the strength of one that ran.
     #[test]
     fn live_rows_claim_f32_only_and_never_on_caps_alone() {
+        let narrowed_predicates: &[crate::registry::ClaimPredicate] = &[
+            ew_binary_f32,
+            ew_unary_f32,
+            ew_unary_params_f32,
+            gelu,
+            clip_f32,
+        ];
         for spec in OPS.iter().filter(|s| s.status == OpStatus::Live) {
-            let narrowed =
-                std::ptr::fn_addr_eq(spec.claim, ew_binary_f32 as crate::registry::ClaimPredicate)
-                    || std::ptr::fn_addr_eq(
-                        spec.claim,
-                        ew_unary_f32 as crate::registry::ClaimPredicate,
-                    );
+            let narrowed = narrowed_predicates
+                .iter()
+                .any(|p| std::ptr::fn_addr_eq(spec.claim, *p));
             assert!(
                 narrowed,
                 "{} is Live with a predicate that is not dtype-narrowed; it would claim every \
@@ -537,31 +583,100 @@ mod tests {
         }
     }
 
+    /// The blocker `NEEDS_PARAMS` still means what it says, now that the *unary* half of it has
+    /// been retired by the push-constant tail.
+    ///
+    /// The tail carries floats. `Mod`'s `fmod`, `BitShift`'s `direction` and `IsInf`'s two detect
+    /// flags are not floats — they select a different expression, so each needs a shader variant
+    /// rather than a value, and they keep the blocker. Recording that here stops the next reader
+    /// from concluding that because `LeakyRelu` moved, these were simply overlooked.
     #[test]
     fn parameterised_ops_are_staged_behind_their_own_reason() {
-        // The honest-claiming rule in table form: an op whose attributes the template cannot
-        // carry is staged with a *different* blocker from one that is merely waiting on a shader,
-        // so "what is left to do" is readable straight off the table.
-        for op in [
-            "LeakyRelu",
-            "Elu",
-            "Selu",
-            "Clip",
-            "Mod",
-            "BitShift",
-            "Gelu",
-        ] {
+        for op in ["Mod", "BitShift", "IsInf"] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
             assert_eq!(
                 s.status,
                 OpStatus::Staged(NEEDS_PARAMS),
-                "{op} should be staged behind the parameterised template"
+                "{op}'s attribute is a selector, not a float; it cannot ride the parameter tail"
             );
         }
         for op in ["Cast", "CastLike"] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
             assert_eq!(s.status, OpStatus::Staged(NEEDS_CAST_MATRIX), "{op}");
         }
+    }
+
+    /// Every op with a slot-table entry must use a predicate that actually reads that table, and
+    /// every op whose predicate reads it must have an entry.
+    ///
+    /// This is the failure the whole mechanism is exposed to: a row wired to
+    /// `templates::ew_unary` with a plain predicate would be claimed, dispatched with a zeroed
+    /// tail, and answer `LeakyRelu(alpha=0.2)` with `0.0 * x` for the negative half — a wrong
+    /// answer, silently, on a graph we said we could run.
+    #[test]
+    fn every_slot_table_op_claims_through_the_parameter_predicate() {
+        use crate::ops::common::params;
+
+        for (op, _) in params::SLOTS {
+            let s = OPS
+                .iter()
+                .find(|s| s.op_type == *op)
+                .unwrap_or_else(|| panic!("`{op}` is in the slot table but not in the op table"));
+            assert!(
+                std::ptr::fn_addr_eq(
+                    s.claim,
+                    ew_unary_params_f32 as crate::registry::ClaimPredicate
+                ),
+                "`{op}` has parameter slots but claims through a predicate that never resolves \
+                 them; it would dispatch with a zeroed tail"
+            );
+        }
+
+        for s in OPS.iter().filter(|s| {
+            std::ptr::fn_addr_eq(
+                s.claim,
+                ew_unary_params_f32 as crate::registry::ClaimPredicate,
+            )
+        }) {
+            assert!(
+                params::slots_for(s.op_type).is_some(),
+                "`{}` claims through the parameter predicate but has no slots; it is either a \
+                 plain unary op or its slots were forgotten",
+                s.op_type
+            );
+        }
+    }
+
+    /// `Gelu`'s attribute is a string that selects an expression, so it does not ride the tail;
+    /// the row must decline `approximate="tanh"` rather than answer it with the erf form.
+    #[test]
+    fn gelu_claims_only_the_form_its_shader_implements() {
+        let s = OPS.iter().find(|s| s.op_type == "Gelu").unwrap();
+        assert_eq!(s.status, OpStatus::Live);
+        assert!(
+            crate::ops::common::params::slots_for("Gelu").is_none(),
+            "Gelu's `approximate` is a string; putting it in the float tail would be a category \
+             error, not a shortcut"
+        );
+        assert!(std::ptr::fn_addr_eq(
+            s.claim,
+            gelu as crate::registry::ClaimPredicate
+        ));
+    }
+
+    /// `Clip` rides the ternary template, not the parameter tail, because its bounds are optional
+    /// *inputs*. The row must therefore use the ternary translate — using `ew_select`'s would
+    /// take the dtype from input 1 (`Where`'s convention) and using `ew_unary`'s would bind one
+    /// buffer where three are needed.
+    #[test]
+    fn clip_uses_the_ternary_template_and_not_the_parameter_tail() {
+        let s = OPS.iter().find(|s| s.op_type == "Clip").unwrap();
+        assert_eq!(s.status, OpStatus::Live);
+        assert!(crate::ops::common::params::slots_for("Clip").is_none());
+        assert!(std::ptr::fn_addr_eq(
+            s.translate,
+            templates::ew_clip as crate::registry::TranslateHandler
+        ));
     }
 
     #[test]

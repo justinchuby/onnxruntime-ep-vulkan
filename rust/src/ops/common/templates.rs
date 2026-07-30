@@ -18,6 +18,7 @@ use crate::engine::{
 };
 use crate::registry::OpSpec;
 
+use super::params;
 use super::shape_plan::ShapePlan;
 
 /// Workgroup size every elementwise template is compiled with.
@@ -134,7 +135,14 @@ fn dispatch_elementwise(
     ctx.dispatch(KernelRequest {
         shader,
         spec_constants: vec![EW_LOCAL_SIZE, u32::from(plan.all_identical)],
-        push_constants: plan.push_constants(),
+        push_constants: plan.push_constants_with_params(
+            params::resolve(&node.op_type, node).map_err(|e| {
+                // Claim already validated these, so reaching here means the claim predicate and
+                // this resolver disagreed — an internal inconsistency, not a graph we should
+                // have declined.
+                EpError::Internal(format!("`{}` {e}", node.op_type))
+            })?,
+        ),
         bindings,
         workgroups: plan.workgroups_1d(EW_LOCAL_SIZE),
     })
@@ -153,6 +161,12 @@ pub fn ew_binary(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) 
 /// Translate `Where` — three inputs, the first of which selects.
 pub fn ew_select(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
     dispatch_elementwise(spec, node, ctx, 3, 1)
+}
+
+/// Translate `Clip` — three inputs that all share the value dtype, unlike `Where` whose first
+/// input is `bool`. Same template, different `dtype_from`.
+pub fn ew_clip(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
+    dispatch_elementwise(spec, node, ctx, 3, 0)
 }
 
 /// Translate a variadic elementwise op by chaining the binary template.

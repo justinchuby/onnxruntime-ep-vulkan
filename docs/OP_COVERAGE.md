@@ -1020,6 +1020,89 @@ A **fully-contiguous, identical-shape fast path** is selected by a specializatio
 compiles the loop away entirely — the common LLM case (`Add` of two identically-shaped residuals)
 must not pay a 6-iteration index decode per element.
 
+#### 5.1.1 The parameter tail — sixteen bytes that retired a whole blocker (2026-07-29)
+
+Fourteen rows — `LeakyRelu`, `Elu`, `Selu`, `Celu`, `ThresholdedRelu`, `Shrink`, `HardSigmoid`,
+`Swish` and their kin — were staged behind `NEEDS_PARAMS` for the whole of this project's life.
+Their shaders were written and compiling from the start; each was one float away from claimable.
+The blocker was §7.1's rule, correctly applied: their GLSL had the ONNX **default** attribute
+value baked in as a literal, and claiming on that would have answered a graph setting
+`alpha = 0.2` with `alpha = 0.01` — a wrong answer, not an error, on a graph we said we could run.
+
+The fix was **one mechanism, not fourteen**. The push-constant block gained a fixed four-float
+tail after the stride arrays:
+
+```text
+offset  size  field
+0       4     rank
+4       4     elem_count
+8       24    out_shape[6]
+32      24    strides[0][6]
+56      24    strides[1][6]      (arity >= 2)
+80      24    strides[2][6]      (arity >= 3)
+<after last stride array>
+        16    params[4]          (f32; all zero when the op has no attributes)
+```
+
+Worst case moves from 104 to 120 bytes, still inside the 128-byte `maxPushConstantsSize` floor
+Vulkan 1.1 guarantees. Three decisions in it are load-bearing:
+
+1. **The tail is unconditional.** Ops with no attributes push four zeros they never read. The
+   alternative — a short block and a long one — means the shader's declared block and the bytes
+   actually pushed can disagree, and `vk/pipeline.rs` declares a **fixed 128-byte** push-constant
+   range for every pipeline, so the layout will not catch the disagreement: the shader would read
+   bytes nobody wrote. Sixteen bytes of zeros is much cheaper than that bug class. (The fixed
+   range is also why this change needed nothing from the engine layer — growing the block by 16
+   bytes changes no pipeline layout.)
+2. **Slot assignment lives in exactly one table**, `ops::common::params::SLOTS`, read by *both*
+   the claim predicate and the translate handler through a small `FloatAttrs` trait implemented
+   for `NodeView` (borrowed from ORT, seen at claim time) and `NodeDesc` (owned, seen at translate
+   time). If those two ever read different tables we would claim on one set of values and dispatch
+   with another. Slot order is the contract with the GLSL, and getting it wrong is invisible to
+   both compilers — hence the test that `HardSigmoid` fills `alpha` then `beta` regardless of the
+   attribute map's own ordering.
+3. **A default read on the host is not the same as a default baked into a shader.** The tail still
+   resolves an omitted attribute to the ONNX default — but it does so once, per node, and pushes
+   it explicitly, so the *same* compiled shader is correct for every value. That is what turns the
+   guess into a handled value and the row from `Staged` into `Live`.
+
+Which attributes this does **not** cover, and why each is a different kind of thing rather than a
+missing feature:
+
+| op | attribute | why the tail does not apply |
+|---|---|---|
+| `Gelu` | `approximate` ∈ {`none`,`tanh`} | a **string selecting an expression**, not a coefficient. Needs a second shader variant. Claimed at `none` (the form the shader implements), declines `tanh` with `[attribute]`. |
+| `Mod` | `fmod` | integer selector between two different arithmetics. |
+| `BitShift` | `direction` | string selector. |
+| `IsInf` | `detect_negative`/`detect_positive` | integer selectors, and the op has a bool output — a different store path (§7.1.2). |
+| `Clip` | `min`/`max` | **optional inputs, not attributes**, from opset 11. See §5.1.2. |
+
+The general rule this leaves behind: *a float parameter rides the tail; a selector needs a
+variant.* The distinction is whether the attribute changes a coefficient or changes the
+expression. Only the first is a value.
+
+#### 5.1.2 `Clip` — why the bounds are not parameters (2026-07-29)
+
+`Clip` looks like the parameterised activations and is not one. Since opset 11 its bounds are
+**optional inputs**, so a bound may be a graph initializer or a value computed at runtime, and we
+can read neither at Compile time — `TensorRef` carries `is_initializer` but not the initializer's
+*contents*. The push-constant route is therefore unavailable in principle, not merely unbuilt.
+
+But it does not need it. Three-input `Clip` is an ordinary ternary elementwise op: the bounds are
+rank-0 tensors that broadcast against the value with a stride of zero, which the shared indexing
+helper already does for free. So `Clip` is claimed in its three-input form, through the same
+`ew_select` template `Where` uses, differing only in which input the common dtype is taken from
+(`Where`'s first input is `bool`; `Clip`'s three are all the value dtype — hence a separate
+`ew_clip` translate rather than a reuse that would silently take the dtype from input 1).
+
+The one- and two-input forms **decline `[arity]`**, and this is a real loss: a min-only `Clip`
+(`Relu6`-style clamping) is common in conv graphs. The fix is a shader variant substituting ±∞ for
+the omitted bound, because an omitted bound is a different *dispatch shape* — a buffer that does
+not exist — not a different value. Widening the predicate to cover it would mean binding a
+descriptor to nothing. Tracked for T5; `tests/ops/test_elementwise.py::test_clip_no_bounds` fails
+loudly against this decline today, which is the correct state: the harness is reporting a form we
+decline rather than passing vacuously.
+
 ### 5.2 Template `EW-U` / `EW-B` / `EW-T` — 66 ops, one kernel family
 
 `§4.1 (23) + §4.2 (27) + §4.3 (16)` = 66 ops, plus `Where`/`Cast` = 69 nodes of ONNX surface, from
@@ -1480,7 +1563,7 @@ expression:
 | `Where` | third template (`ew_select`), never dispatched |
 | `PRelu` | binary with a broadcast form the arithmetic ops do not exercise |
 | any live op at f16/i32/i64 | the variant compiles, `caps` still generates it, and it has not run |
-| `Swish`, `Gelu`, `LeakyRelu`, … | carry attributes; `NEEDS_PARAMS`, unchanged |
+| `Mod`, `BitShift`, `IsInf` | selector attributes, not float parameters — `NEEDS_PARAMS`, unchanged (§5.1.1) |
 
 **Why this is worth doing rather than waiting for 34 individual dispatch tests.** While a row is
 `Staged`, its differential test does not compare anything — it fails with *"the EP executed no node;
@@ -1507,6 +1590,42 @@ Not one numerical mismatch against the CPU EP on either vendor, and the remainin
 all the vacuous-pass guard firing on rows that are still `Staged`. The coordinator's expectation
 was that the first real run would fail; it did not, and that is worth recording as plainly as a
 failure would have been.
+
+#### 7.1.3 The parameterised activations went into `EXERCISED`, not `TEMPLATE_LIVE` (2026-07-29)
+
+The fourteen ops §5.1.1 unblocked look like the exact case `TEMPLATE_LIVE` was built for: same
+template, same translate, same descriptor layout, same push-constant block, f32-narrowed
+predicate, and a representative (`Relu`, `HardSwish`) already in `EXERCISED`. Condition (b) is
+satisfied to the letter.
+
+They were still put in `EXERCISED`, on their own dispatch evidence, because the letter is not the
+point. `TEMPLATE_LIVE`'s argument is that *the only difference is one line of arithmetic inside a
+body the pipeline generates from one source*. The parameter tail is not that: it is a **new code
+path**. A wrong offset for `params[0]` — the arity-dependence of the tail's position makes that a
+live possibility — would be invisible to every op already live, because all of them push zeros
+there and read none of them. `Relu` passing says nothing whatsoever about whether `LeakyRelu`
+reads the float the host wrote.
+
+So the rule stands as written, with the boundary sharpened: **`TEMPLATE_LIVE` covers a different
+expression in an exercised path, never a different path.** When in doubt, ask what a plausible bug
+in the new code would do to the representative — if the answer is "nothing", the representative is
+not evidence.
+
+They were flipped, run, and promoted in the same turn:
+
+| run | before | after |
+|---|---|---|
+| `test_elementwise.py`, device 0 (Iris Xe) | 25 passed / 11 failed | **33 passed** / 3 failed |
+| `test_elementwise.py`, device 1 (RTX 4060) | 25 passed / 11 failed | **33 passed** / 3 failed |
+| `test_barrier_parity.py`, both devices | 36 passed / 38 skipped | **46 passed** / 28 skipped |
+
+The three remaining `test_elementwise` failures are `Min`, `Max` (variadic — several dispatches,
+still staged) and `test_clip_no_bounds` (§5.1.2, deliberately declined). `test_op_table.py` is
+unchanged at 28 failures, all of them the vacuous-pass guard on staged families. Crucially, the
+suite covers **non-default** attribute values — `LeakyRelu(alpha=0.1)`, `Elu(alpha=1.5)`,
+`HardSigmoid(alpha=0.15, beta=0.4)` — so what passed is the mechanism, not the defaults that were
+already baked into the shader.
+
 
 `TEMPLATE_LIVE` is consequently **empty again**: all 34 entries were promoted into `EXERCISED`,
 each naming `test_op_table[<Op>-fp32]` and the two devices. The list stays defined because that

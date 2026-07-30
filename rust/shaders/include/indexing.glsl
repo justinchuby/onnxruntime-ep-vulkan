@@ -18,8 +18,13 @@
 //     32      24    strides[0][6]   (u32, element strides; 0 == broadcast)
 //     56      24    strides[1][6]   (arity >= 2)
 //     80      24    strides[2][6]   (arity >= 3)
+//     <after the last stride array>
+//             16    params[4]       (f32, op attributes; all zero when the op has none)
 //
-// Worst case 104 bytes, inside the 128-byte `maxPushConstantsSize` floor guaranteed by Vulkan 1.1.
+// The params tail sits at an arity-dependent offset because `strides` is declared as
+// `uint strides[EW_ARITY * EW_MAX_RANK]`. Nothing may be inserted between the two.
+//
+// Worst case 120 bytes, inside the 128-byte `maxPushConstantsSize` floor guaranteed by Vulkan 1.1.
 //
 // Specialisation constants, in the order `KernelRequest::spec_constants` supplies them:
 //
@@ -79,6 +84,11 @@
 
 #define EW_MAX_RANK 6
 
+// Attribute slots carried in the push-constant tail. Must equal `EW_PARAM_COUNT` in
+// `ops/common/shape_plan.rs`; the host always pushes this many floats, zeroed for ops that have
+// no attributes, so that one pipeline layout serves every variant of this template.
+#define EW_PARAM_COUNT 4
+
 layout(constant_id = 1) const uint EW_IDENTICAL = 0;
 
 layout(push_constant, std430) uniform EwParams {
@@ -86,6 +96,7 @@ layout(push_constant, std430) uniform EwParams {
     uint elem_count;
     uint out_shape[EW_MAX_RANK];
     uint strides[EW_ARITY * EW_MAX_RANK];
+    float params[EW_PARAM_COUNT];
 } pc;
 
 // The whole of broadcasting: walk the output coordinate from the innermost axis outwards,

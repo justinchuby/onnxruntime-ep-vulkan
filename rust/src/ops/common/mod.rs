@@ -4,6 +4,7 @@
 
 pub mod claim;
 pub mod dtype;
+pub mod params;
 pub mod shape_plan;
 pub mod templates;
 pub mod variants;

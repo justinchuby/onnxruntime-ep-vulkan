@@ -25,6 +25,7 @@ use crate::registry::{DeclineReason, EdgeType, NodeView, OpSpec};
 use crate::{deny, require};
 
 use super::dtype::dtype_suffix;
+use super::params;
 use super::shape_plan::{MAX_RANK, ShapePlan};
 
 /// What every claim predicate returns.
@@ -206,6 +207,44 @@ fn elementwise(
 /// One input, one output, shape-preserving. `Sqrt`, `Relu`, `Neg`, `Not`, ...
 pub fn ew_unary(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     elementwise(view, spec, 1, 0)
+}
+
+/// One input, one output, shape-preserving, **with attributes carried in push constants**.
+///
+/// `LeakyRelu`, `Elu`, `Selu`, `Celu`, `ThresholdedRelu`, `Shrink`, `HardSigmoid`, `Swish`. These
+/// were staged behind `NEEDS_PARAMS` while their shaders had the ONNX defaults baked in, because
+/// claiming then would have meant answering a graph that sets `alpha = 0.2` with `alpha = 0.01`
+/// — a wrong answer, not an error, which is the failure mode §7.1 exists to prevent.
+///
+/// The predicate is the plain unary one plus a resolve of the slot table, so an attribute value
+/// the shader cannot evaluate declines with `[attribute]` naming the attribute and the value
+/// rather than dispatching something undefined.
+pub fn ew_unary_params(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    ew_unary(view, spec)?;
+    params::resolve(spec.op_type, view).map_err(|e| {
+        crate::registry::decline(
+            crate::registry::DeclineCode::Attribute,
+            format_args!("`{}` {e}", spec.op_type),
+        )
+    })?;
+    Ok(())
+}
+
+/// `Clip` in its three-input form — value, min, max, all present and all the same dtype.
+///
+/// `Clip`'s bounds are **optional inputs** from opset 11 on, not attributes, so the
+/// push-constant route this module's `ew_unary_params` uses does not apply: a bound may be a
+/// graph initializer or a value computed at runtime, and we cannot read either at Compile time.
+/// The three-input form needs neither — the bounds are ordinary tensors that broadcast against
+/// the value with a stride of zero, which is exactly what the shared indexing helper already
+/// does — so it is claimed and the other forms are declined.
+///
+/// A one- or two-input `Clip` declines `[arity]`. That is a real loss (a min-only `Clip` is
+/// common) and the fix is a shader variant that substitutes ±infinity for the omitted bound, not
+/// a widening of this predicate: an omitted bound is a different *dispatch shape*, not a
+/// different value, and claiming it here would bind a buffer that does not exist.
+pub fn ew_clip(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    elementwise(view, spec, 3, 0)
 }
 
 /// Two inputs with numpy broadcasting. `Add`, `Mul`, `Pow`, `Greater`, `And`, ...

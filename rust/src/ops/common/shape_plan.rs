@@ -23,12 +23,30 @@
 //! 32      24    strides_in0[6]  (u32, element strides; 0 == broadcast)
 //! 56      24    strides_in1[6]  (present only for arity >= 2)
 //! 80      24    strides_in2[6]  (present only for arity >= 3)
+//! <after the last stride array>
+//!         16    params[4]       (f32, op attributes; zero when the op has none)
 //! ```
 //!
-//! Worst case (ternary) is 104 bytes, inside the 128-byte `maxPushConstantsSize` floor every
+//! Note the parameter tail's offset is *arity-dependent*, because the stride arrays are declared
+//! in GLSL as `uint strides[EW_ARITY * EW_MAX_RANK]`. Host and shader agree because both size the
+//! stride region from the same arity; nothing may be inserted between the strides and the params.
+//!
+//! Worst case (ternary) is 120 bytes, inside the 128-byte `maxPushConstantsSize` floor every
 //! Vulkan 1.1 implementation guarantees, which is why this is push constants and not a UBO.
 
 use std::fmt;
+
+/// Number of `f32` attribute slots in the push-constant parameter tail.
+///
+/// Four is not arbitrary: it is the widest parameterised elementwise op we claim (`Selu`, which
+/// needs `alpha` and `gamma`, and `Clip`, whose bounds ride the same slots) rounded up to leave
+/// one spare, while keeping the ternary block at 120 of the 128 guaranteed bytes. Widening it
+/// past four would overrun that floor at arity 3, so a fifth parameter is a design decision and
+/// not an edit — see `OP_COVERAGE.md` §5.1.1.
+pub const EW_PARAM_COUNT: usize = 4;
+
+/// The parameter tail for an op that has no attributes.
+pub const EW_PARAMS_NONE: [f32; EW_PARAM_COUNT] = [0.0; EW_PARAM_COUNT];
 
 /// Maximum tensor rank the shared indexing helper handles.
 ///
@@ -234,7 +252,33 @@ impl ShapePlan {
     }
 
     /// Serialise into the push-constant block documented at the top of this module.
+    ///
+    /// The parameter tail is always present and always zero here. See
+    /// [`push_constants_with_params`](Self::push_constants_with_params) for why it exists at all,
+    /// and why it is unconditional rather than a second layout.
     pub fn push_constants(&self) -> Vec<u8> {
+        self.push_constants_with_params(EW_PARAMS_NONE)
+    }
+
+    /// Serialise the block with `params` filled in from the node's attributes.
+    ///
+    /// # Why the tail is unconditional
+    ///
+    /// Roughly a dozen ops — `LeakyRelu`, `Elu`, `Selu`, `Celu`, `HardSigmoid`,
+    /// `ThresholdedRelu`, `Shrink`, `Swish` — are one float away from the plain unary template.
+    /// They were staged behind `NEEDS_PARAMS` because a shader compiled with the ONNX *default*
+    /// attribute value is a guess, not a handled value, and `OP_COVERAGE.md` §7.1 forbids claiming
+    /// on a guess. Four floats at the end of the block retires that whole blocker at once, which
+    /// is the same leverage argument as §5.1: pay once in the shared layer, not once per op.
+    ///
+    /// It is **one** layout rather than two because the alternative — a short block for ops with
+    /// no attributes and a long one for ops with them — lets the shader's declared block and the
+    /// bytes actually pushed disagree, and `vk/pipeline.rs` declares a fixed 128-byte
+    /// push-constant range for *every* pipeline, so the layout will not catch it: the shader
+    /// would read bytes nobody wrote. Sixteen bytes of zeros is a much cheaper price than that
+    /// class of bug. Worst case is now arity 3 at 120 bytes, still inside the 128-byte
+    /// `maxPushConstantsSize` floor Vulkan 1.1 guarantees.
+    pub fn push_constants_with_params(&self, params: [f32; EW_PARAM_COUNT]) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + (1 + self.strides.len()) * MAX_RANK * 4);
         out.extend_from_slice(&(self.rank as u32).to_le_bytes());
         out.extend_from_slice(&(self.elem_count as u32).to_le_bytes());
@@ -245,6 +289,9 @@ impl ShapePlan {
             for d in *s {
                 out.extend_from_slice(&d.to_le_bytes());
             }
+        }
+        for p in params {
+            out.extend_from_slice(&p.to_le_bytes());
         }
         out
     }
@@ -417,7 +464,7 @@ mod tests {
     fn push_constants_have_the_documented_layout() {
         let p = plan(&[&[2, 3], &[3]]);
         let pc = p.push_constants();
-        assert_eq!(pc.len(), 8 + 3 * MAX_RANK * 4);
+        assert_eq!(pc.len(), 8 + 3 * MAX_RANK * 4 + EW_PARAM_COUNT * 4);
         assert_eq!(u32::from_le_bytes(pc[0..4].try_into().unwrap()), 2); // rank
         assert_eq!(u32::from_le_bytes(pc[4..8].try_into().unwrap()), 6); // elem_count
         // Last entry of out_shape is the innermost extent, 3.
@@ -435,6 +482,39 @@ mod tests {
             p.push_constants().len() <= 128,
             "ternary push block must fit maxPushConstantsSize's 128-byte guaranteed floor"
         );
+    }
+
+    /// The parameter tail is the last thing in the block, at an arity-dependent offset, and the
+    /// values arrive in slot order. Both halves matter: the shader indexes `pc.params[i]` by
+    /// slot, so a silent reordering here would apply `beta` where `alpha` was meant and produce
+    /// a wrong answer rather than an error.
+    #[test]
+    fn params_land_at_the_end_of_the_block_in_slot_order() {
+        for arity in 1..=3usize {
+            let shapes = vec![&[2i64, 3i64][..]; arity];
+            let p = plan(&shapes);
+            let pc = p.push_constants_with_params([1.5, -2.5, 0.25, 8.0]);
+            let tail = pc.len() - EW_PARAM_COUNT * 4;
+            assert_eq!(tail, 8 + MAX_RANK * 4 + arity * MAX_RANK * 4);
+            for (slot, expected) in [1.5f32, -2.5, 0.25, 8.0].iter().enumerate() {
+                let at = tail + slot * 4;
+                assert_eq!(
+                    f32::from_le_bytes(pc[at..at + 4].try_into().unwrap()),
+                    *expected,
+                    "param slot {slot} at arity {arity}"
+                );
+            }
+        }
+    }
+
+    /// An op with no attributes must still push the tail, so that every pipeline built from this
+    /// template can declare one push-constant range. A short block would leave the shader reading
+    /// bytes that were never written.
+    #[test]
+    fn the_parameterless_block_still_carries_a_zeroed_tail() {
+        let pc = plan(&[&[2, 3]]).push_constants();
+        assert_eq!(pc.len(), 8 + 2 * MAX_RANK * 4 + EW_PARAM_COUNT * 4);
+        assert!(pc[pc.len() - EW_PARAM_COUNT * 4..].iter().all(|b| *b == 0));
     }
 
     #[test]
