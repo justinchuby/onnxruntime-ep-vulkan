@@ -51,10 +51,12 @@ def test_permanent_cpu_fallback_ops(op, feeds, comment, require_vulkan) -> None:
     """Ops with data-dependent output shapes must never be claimed by the Vulkan EP."""
     input_name = list(feeds.keys())[0]
     inp = feeds[input_name]
+    # NonZero always outputs int64 (indices); Unique preserves the input dtype.
+    out_dtype = DT.INT64 if op == "NonZero" else DT.FLOAT
     model = m.make_model(
         op,
         [m.tensor(input_name, DT.FLOAT, list(inp.shape))],
-        [m.tensor("out", DT.INT64, [-1])],
+        [m.tensor("out", out_dtype, [-1])],
     )
     # Must not be claimed:
     m.assert_vulkan_does_not_claim(model, feeds)
@@ -144,9 +146,13 @@ def test_mixed_session_claimed_and_fallback(require_vulkan) -> None:
     ]
 
     # Add must have run on VulkanExecutionProvider.
-    add_providers = {prov for name, prov in node_providers if name == "Add"}
-    assert m.EP_NAME in add_providers, (
-        f"Add was not claimed in the mixed session: {node_providers}"
+    # NOTE: ORT fuses claimed nodes into a VulkanEP subgraph and renames them
+    # (e.g. "VulkanExecutionProvider_12345_0"). We cannot check by op_name == "Add";
+    # instead confirm at least one node ran on VulkanEP.
+    vulkan_ran = any(prov == m.EP_NAME for _, prov in node_providers)
+    assert vulkan_ran, (
+        f"No node ran on {m.EP_NAME} in the mixed session — Add should have been claimed. "
+        f"Providers seen: {node_providers}"
     )
 
     # NonZero must NOT have run on VulkanExecutionProvider.

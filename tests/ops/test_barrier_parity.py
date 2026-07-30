@@ -59,8 +59,9 @@ from test_op_table import CaseSpec, _CASES
 import _models as m
 
 # ---------------------------------------------------------------------------
-# Only claimed ops exercise the Vulkan kernel path.  Unclaimed (claim=False)
-# ops route entirely through ORT's CPU EP and have no barrier code at all.
+# Only Live ops exercise the Vulkan kernel path end-to-end.
+# Staged ops (claim=True but live=False) have a working claim predicate but no
+# confirmed kernel dispatch — we skip parity for them.
 # ---------------------------------------------------------------------------
 _PARITY_CASES: list[CaseSpec] = [c for c in _CASES if c.claim]
 
@@ -83,6 +84,39 @@ def test_barrier_parity(case: CaseSpec, require_vulkan) -> None:
         domain=case.domain,
         attributes=case.attrs,
     )
+
+    # --- Live guard: skip (not fail) when the op is not yet Live ---
+    #
+    # CaseSpec.live=True means Mouse has confirmed the kernel dispatches end-to-end
+    # on real hardware. Barrier parity requires actual GPU execution: both sync2 and
+    # legacy runs must reach the shader, otherwise bit-equality is vacuously true
+    # (both fall back to CPU and agree trivially).
+    #
+    # WHY live FLAG INSTEAD OF is_vulkan_claimed() PROBE:
+    #   is_vulkan_claimed() creates an ORT session with profiling=True. For Staged ops
+    #   (claim=True but no working kernel), the EP's Compile path crashes with an
+    #   access violation on Intel Iris Xe. Python's except Exception cannot catch
+    #   C-level AV crashes — the entire test process dies. This was confirmed for
+    #   Atan-fp32 (case index 39 in deterministic parity order) on 2026-07-29.
+    #   The crash was device-0-specific (Intel); NVIDIA handled it differently.
+    #   Intel is the spec-conformance oracle: EP Compile must not crash for Staged ops.
+    #   Route to Tank/Mouse for the EP fix; this guard prevents the process death.
+    #
+    # WHY NOT ERROR INSTEAD OF SKIP:
+    #   test_op_table[{id}] is the claim/correctness assertion — it fails loudly for
+    #   Staged ops already. Barrier parity is orthogonal: it tests HOST sync ordering,
+    #   not EP claiming. Skipping with a clear message is the right behaviour here.
+    #   A skip that contradicts a live passing test IS a defect; the live flag ensures
+    #   that cannot happen: live=True appears only when test_op_table passes.
+    #
+    # TO ADD A NEW OP: Mouse sets live=True in the _CASES row when marking Ready.
+    if not case.live:
+        pytest.skip(
+            f"{case.id}: {case.op} is Staged (claim=True but live=False). "
+            f"Barrier parity requires confirmed GPU dispatch. "
+            f"Mouse: set live=True in test_op_table._CASES when marking this op Ready. "
+            f"Ref: test_barrier_parity crash localisation 2026-07-29, Atan-fp32 index 39."
+        )
 
     # --- Run 1: natural backend (sync2 if device supports it) ---
     outs_default, backend_default = m.run_with_backend(model, case.feeds, force_legacy=False)

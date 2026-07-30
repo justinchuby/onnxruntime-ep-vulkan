@@ -4,7 +4,7 @@ HOW TO ADD AN OP
 ================
 Add a single row to ``_CASES``. That is all. No new file, no new fixture, no new function.
 
-Each row is an ``OpCase`` with:
+Each row is a ``CaseSpec`` with:
   - ``id``      : unique pytest identifier, e.g. ``"Add-fp32"``
   - ``op``      : ONNX op name
   - ``domain``  : ``""`` for ai.onnx, ``"com.microsoft"`` for contrib ops
@@ -14,6 +14,7 @@ Each row is an ``OpCase`` with:
   - ``outputs`` : list of ``(name, DataType, shape)`` triples
   - ``tol``     : tolerance dict from ``_models`` (``FP32_ELEMENTWISE``, etc.)
   - ``claim``   : ``True`` → assert EP claims the node; ``False`` → assert EP does NOT claim
+  - ``live``    : ``True`` → kernel is confirmed working end-to-end; enables barrier parity
 
 For ``claim=True``: the test calls ``m.check()`` which asserts:
   1. VulkanExecutionProvider actually executed the node (vacuous-pass guard).
@@ -22,6 +23,19 @@ For ``claim=True``: the test calls ``m.check()`` which asserts:
 For ``claim=False``: the test calls ``m.assert_vulkan_does_not_claim()`` + ``m.assert_matches_cpu()``.
   This is the conservative-claiming guard: proves the EP declined the node AND CPU produced
   correct results — catches over-claiming before silent wrong results reach a user.
+
+LIVE FLAG — BARRIER PARITY GATE
+=================================
+``live=True`` means Mouse has confirmed the kernel dispatches end-to-end on real hardware.
+The barrier-parity test (``test_barrier_parity.py``) reads this flag to decide whether to
+run rather than creating an ORT probe session. This prevents Intel Iris Xe AV crashes in
+the EP's Compile path for Staged ops (C-level crash, not catchable by Python's except).
+Crash was localised to Atan-fp32 (case index 39, deterministic order) on 2026-07-29.
+
+HOW TO MARK AN OP LIVE:
+  1. Mouse marks the op Ready in ``rust/src/ops/registry.rs`` (kernel dispatches correctly).
+  2. Add ``live=True`` to the corresponding ``CaseSpec`` row here.
+  3. ``test_op_table[{id}]`` must pass; ``test_barrier_parity[{id}]`` will then run instead of skip.
 
 TOLERANCE POLICY
 ================
@@ -68,6 +82,16 @@ class CaseSpec:
     op: str
     feeds: dict[str, np.ndarray]
     claim: bool = True
+    # live=True means the kernel is confirmed working end-to-end (dispatch succeeds on real
+    # hardware). Set to True by Mouse when marking an op Ready in rust/src/ops/registry.rs.
+    # The barrier-parity test uses this flag — not a probe session — to decide whether to run.
+    # This prevents Intel-only AV crashes in the EP's Compile path for Staged ops when the
+    # parity guard creates a profiling ORT session (C-level crash, not catchable by Python).
+    #
+    # INVARIANT: live=True must not be set without claim=True.
+    # VALIDATION: test_op_table[{id}] passes only when live=True is correct — a live=True
+    # row that doesn't actually execute on VulkanEP will fail the claim assertion.
+    live: bool = False
     domain: str = ""
     attrs: dict[str, object] = dataclasses.field(default_factory=dict)
     inputs: list[tuple[str, DT, list[int]]] = dataclasses.field(default_factory=list)
@@ -115,6 +139,7 @@ def _ew2(
     attrs: dict | None = None,
     tol: dict | None = None,
     claim: bool = True,
+    live: bool = False,
     domain: str = "",
 ) -> CaseSpec:
     """Two-input elementwise op: output shape = a.shape."""
@@ -127,6 +152,7 @@ def _ew2(
         outputs=[("out", out_dt, shape)],
         tol=tol or dict(m.FP32_ELEMENTWISE),
         claim=claim,
+        live=live,
     )
 
 
@@ -140,6 +166,7 @@ def _ew1(
     attrs: dict | None = None,
     tol: dict | None = None,
     claim: bool = True,
+    live: bool = False,
 ) -> CaseSpec:
     """One-input elementwise op: output shape = x.shape."""
     shape = list(x.shape)
@@ -151,6 +178,7 @@ def _ew1(
         outputs=[("out", out_dt, shape)],
         tol=tol or dict(m.FP32_ELEMENTWISE),
         claim=claim,
+        live=live,
     )
 
 
@@ -168,11 +196,11 @@ _CASES: list[CaseSpec] = [
     # ======================================================================
 
     # --- fp32 arithmetic (all S, all EW-B) ---
-    _ew2("Add-fp32",  "Add",  _f32(_S), _f32(_S)),
-    _ew2("Sub-fp32",  "Sub",  _f32(_S), _f32(_S)),
-    _ew2("Mul-fp32",  "Mul",  _f32(_S), _f32(_S)),
-    _ew2("Div-fp32",  "Div",  _f32(_S), _f32_pos(_S)),        # avoid div-by-zero
-    _ew2("Pow-fp32",  "Pow",  _f32_pos(_S), _f32_pos(_S)),    # pow(pos, pos) stays real
+    _ew2("Add-fp32",  "Add",  _f32(_S), _f32(_S), live=True),
+    _ew2("Sub-fp32",  "Sub",  _f32(_S), _f32(_S), live=True),
+    _ew2("Mul-fp32",  "Mul",  _f32(_S), _f32(_S), live=True),
+    _ew2("Div-fp32",  "Div",  _f32(_S), _f32_pos(_S), live=True),        # avoid div-by-zero
+    _ew2("Pow-fp32",  "Pow",  _f32_pos(_S), _f32_pos(_S), live=True),    # pow(pos, pos) stays real
     _ew2("Min-fp32",  "Min",  _f32(_S), _f32(_S)),
     _ew2("Max-fp32",  "Max",  _f32(_S), _f32(_S)),
     _ew2("PRelu-fp32","PRelu",_f32(_S), _f32_pos((4,)),        # slope broadcast on last dim
@@ -221,29 +249,29 @@ _CASES: list[CaseSpec] = [
     # §4.2  Unary elementwise — EW-U (27 ops)
     # ======================================================================
 
-    _ew1("Neg-fp32",        "Neg",        _f32(_S)),
-    _ew1("Abs-fp32",        "Abs",        _f32(_S)),
-    _ew1("Sign-fp32",       "Sign",       _f32(_S), tol=dict(m.FP32_EXACT)),
-    _ew1("Floor-fp32",      "Floor",      _f32(_S), tol=dict(m.FP32_EXACT)),
-    _ew1("Ceil-fp32",       "Ceil",       _f32(_S), tol=dict(m.FP32_EXACT)),
-    _ew1("Round-fp32",      "Round",      _f32(_S), tol=dict(m.FP32_EXACT)),
-    _ew1("Sqrt-fp32",       "Sqrt",       _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Reciprocal-fp32", "Reciprocal", _f32_pos(_S)),
-    _ew1("Exp-fp32",        "Exp",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Log-fp32",        "Log",        _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Erf-fp32",        "Erf",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Sin-fp32",        "Sin",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Cos-fp32",        "Cos",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Tan-fp32",        "Tan",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Asin-fp32",       "Asin",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Acos-fp32",       "Acos",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Atan-fp32",       "Atan",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Sinh-fp32",       "Sinh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Cosh-fp32",       "Cosh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Tanh-fp32",       "Tanh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Asinh-fp32",      "Asinh",      _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Acosh-fp32",      "Acosh",      _f32_ge1(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Atanh-fp32",      "Atanh",      _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+    _ew1("Neg-fp32",        "Neg",        _f32(_S), live=True),
+    _ew1("Abs-fp32",        "Abs",        _f32(_S), live=True),
+    _ew1("Sign-fp32",       "Sign",       _f32(_S), tol=dict(m.FP32_EXACT), live=True),
+    _ew1("Floor-fp32",      "Floor",      _f32(_S), tol=dict(m.FP32_EXACT), live=True),
+    _ew1("Ceil-fp32",       "Ceil",       _f32(_S), tol=dict(m.FP32_EXACT), live=True),
+    _ew1("Round-fp32",      "Round",      _f32(_S), tol=dict(m.FP32_EXACT), live=True),
+    _ew1("Sqrt-fp32",       "Sqrt",       _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Reciprocal-fp32", "Reciprocal", _f32_pos(_S), live=True),
+    _ew1("Exp-fp32",        "Exp",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Log-fp32",        "Log",        _f32_pos(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Erf-fp32",        "Erf",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Sin-fp32",        "Sin",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Cos-fp32",        "Cos",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Tan-fp32",        "Tan",        _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Asin-fp32",       "Asin",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Acos-fp32",       "Acos",       _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Atan-fp32",       "Atan",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Sinh-fp32",       "Sinh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Cosh-fp32",       "Cosh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Tanh-fp32",       "Tanh",       _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Asinh-fp32",      "Asinh",      _f32(_S),     tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Acosh-fp32",      "Acosh",      _f32_ge1(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Atanh-fp32",      "Atanh",      _f32_unit(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
     _ew1("Not-bool",        "Not",        _bool(_S),
          in_dt=DT.BOOL, out_dt=DT.BOOL, tol=dict(m.FP32_EXACT)),
     _ew1("BitwiseNot-i32",  "BitwiseNot", _i32(_S),
@@ -257,27 +285,27 @@ _CASES: list[CaseSpec] = [
     # §4.3  Activations — EW-U with push-constant params (16 ops)
     # ======================================================================
 
-    _ew1("Relu-fp32",            "Relu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
-    _ew1("Sigmoid-fp32",         "Sigmoid",         _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Tanh-act-fp32",        "Tanh",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("LeakyRelu-default",    "LeakyRelu",       _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+    _ew1("Relu-fp32",            "Relu",            _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
+    _ew1("Sigmoid-fp32",         "Sigmoid",         _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Tanh-act-fp32",        "Tanh",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("LeakyRelu-default",    "LeakyRelu",       _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
     _ew1("LeakyRelu-alpha0.1",   "LeakyRelu",       _f32(_S), tol=dict(m.FP32_ACTIVATION),
-         attrs={"alpha": 0.1}),
-    _ew1("Elu-default",          "Elu",             _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+         attrs={"alpha": 0.1}, live=True),
+    _ew1("Elu-default",          "Elu",             _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
     _ew1("Elu-alpha1.5",         "Elu",             _f32(_S), tol=dict(m.FP32_ACTIVATION),
-         attrs={"alpha": 1.5}),
-    _ew1("Selu-default",         "Selu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
-    _ew1("Celu-default",         "Celu",            _f32(_S), tol=dict(m.FP32_ACTIVATION)),
-    _ew1("HardSigmoid-default",  "HardSigmoid",     _f32(_S), tol=dict(m.FP32_ACTIVATION)),
+         attrs={"alpha": 1.5}, live=True),
+    _ew1("Selu-default",         "Selu",            _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
+    _ew1("Celu-default",         "Celu",            _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
+    _ew1("HardSigmoid-default",  "HardSigmoid",     _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
     _ew1("HardSigmoid-custom",   "HardSigmoid",     _f32(_S), tol=dict(m.FP32_ACTIVATION),
-         attrs={"alpha": 0.15, "beta": 0.4}),
-    _ew1("HardSwish-fp32",       "HardSwish",       _f32(_S), tol=dict(m.FP32_ACTIVATION)),
-    _ew1("Softplus-fp32",        "Softplus",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Softsign-fp32",        "Softsign",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Gelu-fp32",            "Gelu",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
-    _ew1("Mish-fp32",            "Mish",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL)),
+         attrs={"alpha": 0.15, "beta": 0.4}, live=True),
+    _ew1("HardSwish-fp32",       "HardSwish",       _f32(_S), tol=dict(m.FP32_ACTIVATION), live=True),
+    _ew1("Softplus-fp32",        "Softplus",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Softsign-fp32",        "Softsign",        _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Gelu-fp32",            "Gelu",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
+    _ew1("Mish-fp32",            "Mish",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
     _ew1("ThresholdedRelu-fp32", "ThresholdedRelu", _f32(_S), tol=dict(m.FP32_ACTIVATION),
-         attrs={"alpha": 1.0}),
+         attrs={"alpha": 1.0}, live=True),
 
     # ======================================================================
     # §4.4  Select / cast — EW-T (3 ops)
@@ -346,7 +374,7 @@ _CASES: list[CaseSpec] = [
     # ======================================================================
 
     # Identity: passthrough, no kernel, always claimed as an island-welder.
-    _ew1("Identity-fp32", "Identity", _f32(_S)),
+    _ew1("Identity-fp32", "Identity", _f32(_S), live=True),
 
     # Flatten (to 1D by default, axis=1 → [3, 4])
     CaseSpec(
@@ -390,7 +418,7 @@ _CASES: list[CaseSpec] = [
     # NonZero: data-dependent output shape — permanent CPU fallback (OP_COVERAGE §4.7).
     CaseSpec(
         id="NonZero-declined", op="NonZero",
-        inputs=[("x", DT.FLOAT, [3, 4])],
+        inputs=[("x", DT.FLOAT, [2, 4])],
         feeds={"x": np.array([[0.0, 1.5, 0.0, 2.0], [0.0, 0.0, -1.0, 0.0]], dtype=np.float32)},
         outputs=[("out", DT.INT64, [2, -1])],
         tol=dict(m.FP32_EXACT),

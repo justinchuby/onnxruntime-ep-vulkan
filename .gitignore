@@ -49,3 +49,6 @@ dist/
 
 # Bench: transient Vulkan device-probe scratch dirs
 bench/vkfacts-*/
+
+# Test: local pytest capture files
+tests/_run_*.txt
