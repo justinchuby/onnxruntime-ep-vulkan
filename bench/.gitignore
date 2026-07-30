@@ -1,0 +1,5 @@
+# Scratch from bench/devices.py (vulkaninfo dumps) and bench/phi35.py (per-worker JSON,
+# claim logs, counters files). Swept automatically, but an interrupted run leaves them behind
+# and one of them has been committed by accident before.
+_scratch/
+vkfacts-*/

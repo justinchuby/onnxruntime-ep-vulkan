@@ -22,11 +22,15 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import pytest  # noqa: E402
+import numpy as np  # noqa: E402
 
 import compare  # noqa: E402
 import devices as D  # noqa: E402
+import phi35  # noqa: E402
 import portability as P  # noqa: E402
 import producers  # noqa: E402
+import stats  # noqa: E402
+import timestamp_audit  # noqa: E402
 from stats import Sample  # noqa: E402
 
 # Measured with vulkaninfo on this machine, 2026-07-29. Not invented, not rounded.
@@ -580,3 +584,246 @@ def test_unrecorded_configs_are_called_out_rather_than_passing_silently():
     pr["cases"][0]["portability"] = P.evaluate(P.Configuration()).to_dict()
     banner = "\n".join(compare.portability_banner(pr))
     assert "do not record the configuration" in banner
+
+
+
+# ===========================================================================================
+# Phi-3.5 model benchmark — the gates that stand between a real run and a fabricated number.
+#
+# Every test below is named for the *wrong reading* it prevents, not for the function it calls.
+# The three fabricated results this project has already produced (1.70x through an EP that
+# could not load, 1.45x through an EP that claimed nothing, and argmax 0 through 161 dispatches
+# that computed zeros while `compute_failures` stayed at 0) were each individually plausible,
+# and in each case the instrument that would have gone red did not exist yet.
+# ===========================================================================================
+
+
+def test_timing_is_refused_when_the_ep_is_not_in_get_providers():
+    """The 1.70x shape: ORT prints a version complaint, does not raise, and runs on CPU."""
+    assert phi35.refuse_if_ep_absent(["VulkanExecutionProvider", "CPUExecutionProvider"]) is None
+    refusal = phi35.refuse_if_ep_absent(["CPUExecutionProvider"])
+    assert refusal and "1.70x" in refusal
+
+
+def test_timing_is_refused_when_the_ep_claimed_nothing():
+    """The 1.45x shape: the EP loads, declines every node, and CPU jitter becomes a speedup."""
+    assert phi35.refuse_if_nothing_claimed(257) is None
+    assert phi35.refuse_if_nothing_claimed(0)
+    # Unknown is not zero and is not fine: it means the harness cannot tell.
+    assert phi35.refuse_if_nothing_claimed(None)
+
+
+def test_a_divergent_verdict_voids_the_timing_it_does_not_discount_it():
+    """DESIGN.md §10.0: a wrong answer voids the triple rather than trading against it."""
+    assert phi35.refuse_if_not_match(phi35.MATCH) is None
+    refusal = phi35.refuse_if_not_match(phi35.DIVERGENT)
+    assert refusal and "fabricated" in refusal
+
+
+def test_unmeasured_is_not_a_soft_match():
+    """The default is UNMEASURED and it refuses just as hard as DIVERGENT does."""
+    refusal = phi35.refuse_if_not_match(phi35.UNMEASURED)
+    assert refusal and "UNMEASURED" in refusal and "not a soft MATCH" in refusal
+
+
+def test_all_zero_logits_are_divergent_not_a_small_difference():
+    """The actual bug: dispatches ran, no failure was reported, and the output was all zeros.
+
+    A tolerance-based comparison could be argued into calling a zero vector "close" when the
+    oracle's values are small. The explicit zero guard cannot be.
+    """
+    cpu = [np.linspace(-5, 13, 32064, dtype=np.float32).reshape(1, 1, 32064)]
+    vk = [np.zeros((1, 1, 32064), dtype=np.float32)]
+    v = phi35.classify_outputs(vk, cpu)
+    assert v["model_output_equivalence"] == phi35.DIVERGENT
+    assert v["outputs"][0]["vk_is_effectively_zero"] is True
+
+
+def test_a_run_that_agrees_on_argmax_but_not_top_k_is_still_divergent():
+    """Half-right is not right. A partially wrong kernel is the next bug, not the last one."""
+    rng = np.random.default_rng(7)
+    base = rng.standard_normal((1, 1, 4096)).astype(np.float32)
+    cpu = [base.copy()]
+    perturbed = base.copy()
+    # Keep the argmax, scramble the rest of the top-k.
+    top = np.argsort(-base[0, 0])[:phi35.TOP_K]
+    perturbed[0, 0, top[1:]] = -50.0
+    v = phi35.classify_outputs([perturbed], cpu)
+    assert v["outputs"][0]["argmax_agrees"] is True
+    assert v["outputs"][0]["top_k_agrees"] is False
+    assert v["model_output_equivalence"] == phi35.DIVERGENT
+
+
+def test_a_genuine_match_carries_its_evidence_not_just_its_verdict():
+    """A MATCH with a max-abs-diff of exactly 0.0 is a different (more suspicious) event."""
+    rng = np.random.default_rng(11)
+    base = rng.standard_normal((1, 1, 4096)).astype(np.float32) * 5.0
+    v = phi35.classify_outputs([base + 1e-4], [base])
+    assert v["model_output_equivalence"] == phi35.MATCH
+    assert v["outputs"][0]["max_abs_diff"] > 0.0
+    assert v["outputs"][0]["top_k_overlap"] == phi35.TOP_K
+
+
+def test_no_per_island_cost_is_produced_without_a_measured_island_count():
+    """Dividing by an assumed island count is how a plausible-but-wrong number gets made."""
+    known = phi35.boundary_cost(1465.9, 185.9, 257)
+    assert known["per_island_ms_lower_bound"] == pytest.approx(4.9805, rel=1e-3)
+    unknown = phi35.boundary_cost(1465.9, 185.9, None)
+    assert unknown["per_island_ms_lower_bound"] is None
+
+
+def test_the_per_island_figure_is_declared_a_lower_bound_not_an_estimate():
+    """It nets the boundary cost against the GPU's saving; separating them needs timestamps."""
+    b = phi35.boundary_cost(1465.9, 185.9, 257)
+    assert b["bound_direction"] == "lower"
+    assert "VkQueryPool" in b["separating_instrument"]
+
+
+def test_an_island_that_never_ran_is_caught_by_dispatch_accounting():
+    """`compute_failures: 0` cannot see this; integer accounting can (DESIGN.md §9.1.3)."""
+    ok = phi35.dispatch_accounting({"compute_calls": 7967, "compute_failures": 0}, 257, 31)
+    assert ok["consistent"] is True
+    # One island silently skipped on every inference: 256 x 31.
+    bad = phi35.dispatch_accounting({"compute_calls": 7936, "compute_failures": 0}, 257, 31)
+    assert bad["consistent"] is False
+    assert "does not measure what it claims" in bad["detail"]
+
+
+def test_dispatch_accounting_refuses_to_pass_when_it_cannot_check():
+    assert phi35.dispatch_accounting(None, 257, 31)["consistent"] is None
+    assert phi35.dispatch_accounting({"compute_calls": 10}, None, 31)["consistent"] is None
+
+
+def test_a_staging_bound_run_is_labelled_even_when_the_counters_are_silent(monkeypatch):
+    """The configuration is off by default, so the label does not depend on a counter existing."""
+    monkeypatch.delenv(phi35.DEVICE_MEMORY_ENV, raising=False)
+    label = phi35.staging_label(None)
+    assert label["configuration"] == "staging-bound"
+    assert label["basis"] == "configuration"
+    assert "may not be quoted" in label["note"]
+
+
+def test_device_memory_on_but_uninstrumented_is_unknown_not_device_backed(monkeypatch):
+    """Absence of evidence is the third state, again."""
+    monkeypatch.setenv(phi35.DEVICE_MEMORY_ENV, "1")
+    assert phi35.staging_label({"compute_calls": 1})["configuration"] == "unknown"
+    assert phi35.staging_label(
+        {"alloc_staged_spans": 2510, "alloc_device_backed_spans": 0}
+    )["configuration"] == "staging-bound"
+
+
+# -------------------------------------------------------------------------------------------
+# Wrong reading: "the spread is small, so the number is stable."
+# -------------------------------------------------------------------------------------------
+
+
+def test_a_monotone_ramp_is_drift_not_jitter():
+    """Measured on the Iris Xe: the first Phi-3.5 run got steadily *slower*, 724 -> 2809 ms.
+
+    A median over these samples reports a number the device never sustains and the minimum
+    reports one it reached only while cold. Neither is absurd on its face.
+    """
+    measured = [724, 695, 903, 1447, 2080, 2669, 2821, 2765, 2802, 2718,
+                2750, 2803, 2765, 2755, 2809]
+    d = stats.drift([float(x) for x in measured])
+    assert d["steady"] is False
+    assert d["direction"] == "slower"
+    assert d["ratio"] > 1.5
+
+
+def test_jitter_around_a_stable_value_is_not_called_drift():
+    """The detector must not fire on an ordinary noisy-but-stationary run."""
+    rng = np.random.default_rng(3)
+    samples = list(1000.0 + rng.normal(0, 30, 20))
+    assert stats.drift(samples)["steady"] is True
+
+
+def test_drift_is_not_asserted_from_too_few_samples():
+    assert stats.drift([1.0, 2.0, 3.0])["steady"] is None
+
+
+def test_within_run_spread_cannot_see_run_to_run_variation():
+    """Two runs, each internally tight, whose medians differ by 28%. Measured, not invented."""
+    records = [
+        {"vulkan": {"median_ms": 2028.8}, "cpu": {"median_ms": 186.8}},
+        {"vulkan": {"median_ms": 1461.8}, "cpu": {"median_ms": 190.4}},
+    ]
+    spread = phi35.repeat_spread(records)
+    assert spread["vulkan_run_to_run_ratio"] == pytest.approx(1.388, rel=1e-2)
+    assert "fewer than three repeats" in spread["note"]
+
+
+def test_a_cpu_baseline_that_moved_between_workers_is_called_out():
+    """Same CPU, same artifact, minutes apart: 218 ms and 665 ms. Both were really measured."""
+    results = [
+        {"device_index": 0, "cpu": {"median_ms": 218.3}},
+        {"device_index": 1, "cpu": {"median_ms": 664.7}},
+    ]
+    warn = phi35.baseline_disagreement(results)
+    assert warn and "3.0x" in warn
+    steady = [
+        {"device_index": 0, "cpu": {"median_ms": 229.8}},
+        {"device_index": 1, "cpu": {"median_ms": 185.9}},
+    ]
+    assert phi35.baseline_disagreement(steady) is None
+
+
+# -------------------------------------------------------------------------------------------
+# Wrong reading: "the timestamp conversion is fine, CI is green."
+# -------------------------------------------------------------------------------------------
+
+
+def test_the_period_mistake_is_invisible_on_nvidia_and_on_ci():
+    """Both report 1.0 ns/tick, so treating ticks as nanoseconds is *correct* there.
+
+    This is the whole reason the bug class survives, and it is asserted so that nobody
+    concludes from a green CI lane that the conversion has been exercised.
+    """
+    nv = timestamp_audit.conversion_self_check(1.0, 64)
+    assert nv["period_mistake_is_detectable_here"] is False
+    assert nv["wrap_case_ns"] is None  # 64 valid bits: the mask cannot be exercised either
+
+
+def test_the_period_mistake_is_detectable_on_the_intel_part():
+    xe = timestamp_audit.conversion_self_check(52.0833, 36)
+    assert xe["period_mistake_is_detectable_here"] is True
+    assert xe["period_error_factor"] == pytest.approx(52.0833, rel=1e-4)
+    # A wrap during a measurement must come back as the short true duration, not a negative
+    # one and not an hour.
+    assert xe["wrap_unmasked_would_be_negative"] is True
+    assert xe["wrap_case_ns"] == pytest.approx(xe["wrap_case_expected_ns"], rel=1e-9)
+    assert xe["garbage_upper_bits_masked_ns"] == pytest.approx(
+        xe["garbage_upper_bits_expected_ns"], rel=1e-9)
+
+
+def test_the_intel_counter_wrap_period_is_about_an_hour_which_is_reachable():
+    """2^36 ticks at 52.0833 ns is ~3579 s. A long benchmark session crosses it."""
+    secs = timestamp_audit.wrap_period_seconds(52.0833, 36)
+    assert 3500 < secs < 3650
+    assert timestamp_audit.wrap_period_seconds(1.0, 64) is None
+
+
+def test_an_ep_that_misreads_the_timestamp_period_is_caught_by_the_audit():
+    """The red instrument: EP-reported caps cross-checked against the SDK's own dump."""
+    sdk = _facts(**IRIS_XE)
+    agreeing = {"timestamp_period_ns": 52.0833, "timestamp_valid_bits": 36, "uma": True}
+    assert timestamp_audit.cross_check(agreeing, sdk)["agree"] is True
+
+    # The classic: the EP reads the field but never applies it, or reads a default of 1.0.
+    wrong_period = dict(agreeing, timestamp_period_ns=1.0)
+    r = timestamp_audit.cross_check(wrong_period, sdk)
+    assert r["agree"] is False
+    assert "timestampPeriod disagrees" in r["problems"][0]
+
+    # A 32-bit mask on a 36-bit counter: plausible, and drops four bits of every reading.
+    wrong_bits = dict(agreeing, timestamp_valid_bits=32)
+    assert timestamp_audit.cross_check(wrong_bits, sdk)["agree"] is False
+
+
+def test_a_uma_misclassification_is_caught_too():
+    """It misfiles the whole transfer-cost model, which is fitted per transfer class."""
+    sdk = _facts(**RTX_4060)
+    ep = {"timestamp_period_ns": 1.0, "timestamp_valid_bits": 64, "uma": True}
+    r = timestamp_audit.cross_check(ep, sdk)
+    assert r["agree"] is False
+    assert "UMA classification disagrees" in r["problems"][0]

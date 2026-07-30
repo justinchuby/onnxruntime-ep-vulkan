@@ -484,6 +484,28 @@ constant tuned on one and applied to the other is worse than the placeholder.
 
 ## 5. What is real
 
+**Status changed on 2026-07-30.** Everything below §5.0 was written while no shader in this
+repository had ever executed on any device. That is no longer true, and the section is kept
+rather than rewritten because the reasoning in it is what earned the right to report §6.
+
+### 5.0 What is true as of 2026-07-30T08:21-07:00
+
+* Shaders execute on both local devices, and the model they compute is **correct**: Phi-3.5 at
+  the pinned producer-at-version returns `model_output_equivalence = MATCH` against a CPU-only
+  run of the same artifact in the same process, on device 0 and on device 1 (§6).
+* Therefore §10.0's gate is open and the metric of record may be reported for this artifact.
+* **No GPU kernel time exists on any device.** No `VkQueryPool` is created and no
+  `vkCmdWriteTimestamp` is recorded — the hooks are still comments in `rust/src/vk/session.rs`
+  and `rust/src/vk/dispatch_integration.rs`. Every number in §6 is host wall time. §3 remains a
+  specification.
+* Device-backed allocation is off by default, so every tensor is host-staged. §6 is a
+  measurement of a **staging-bound** configuration.
+
+The paragraph that follows was written before all of that and is retained verbatim, because a
+document that quietly edits its own past is the least trustworthy instrument in the room.
+
+---
+
 From `docs/DESIGN.md` §9.1.2, restated here because this is the document where the temptation
 lives:
 
@@ -553,3 +575,274 @@ measurement of the CPU.**
   GPU kernel time separate from host latency.
 
 The instrument is built and calibrated. It has not yet been pointed at anything.
+
+---
+
+## 6. The first measurement — Phi-3.5, both devices, 2026-07-30
+
+This is the first performance measurement this project has. **It is not a speedup and it is not
+good news.** It is a measurement, with its correctness verdict attached, of a configuration that
+is known to be pathological in two specific ways that are named with the numbers.
+
+Reproduce with:
+
+```
+$env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"; $env:PATH="$env:VULKAN_SDK\Bin;$env:PATH"
+$env:ONNXRUNTIME_VULKAN_EP_LIB="rust\target\release\onnxruntime_vulkan_ep.dll"
+python bench\phi35.py --iters 20 --warmup 10 --repeats 3 --out bench\results\phi35.json
+```
+
+### 6.1 What was measured
+
+| | |
+|---|---|
+| artifact | `Phi-3.5-mini-instruct/cuda-int4-rtn-block-32`, Foundry cache, never committed |
+| producer | `onnxruntime-genai/builder.py@Phi-3.5-mini-instruct/cuda-int4-rtn-block-32#8e5005d36bbd` (`com.microsoft` contrib graph) |
+| workload | single-token prefill, empty KV cache — `tests/ops/test_phi35.py::_build_phi35_feeds` |
+| host ORT | 1.28.0 |
+| build | `cargo build --release`, Vulkan SDK 1.4.350.0, all 168 shader variants compiled |
+| coverage | **257 claimed of 363 nodes probed** |
+| islands | **257** (EP counter `subgraphs_live`) — every claimed node is its own single-node island |
+| memory | **staging-bound**: `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` unset, so every tensor is host-staged by construction |
+| GPU kernel time | **none** — no `VkQueryPool` exists; all figures are host wall time |
+| tile config | not reported by the engine; `portability` verdict is `unknown` (§2.2) |
+
+Note the coverage number: the metric of record for this artifact is now
+`(claimed_op_coverage = 257, island_count = 257, largest_island_flops = null)`, gated on `MATCH`.
+`largest_island_flops` is null because the EP does not emit it, and it would not currently
+discriminate anything if it did — with every island a single node, the largest island is one
+`MatMulNBits`.
+
+### 6.2 Correctness verdict — the gate, not a footnote
+
+Measured **in the same process, in the same run, on the same session objects that were then
+timed**, because §10.0's `UNMEASURED` is defined as "no CPU-only comparison was performed on this
+artifact in this run", and a verdict from an earlier run of an earlier build is exactly that.
+
+| | device 0 — Intel Iris Xe | device 1 — RTX 4060 |
+|---|---|---|
+| `model_output_equivalence` | **MATCH** | **MATCH** |
+| argmax (vk / cpu) | 30751 / 30751 | 30751 / 30751 |
+| top-10 overlap | 10/10 | 10/10 |
+| max abs diff, logits | 0.0312 (0.24%) | 0.0352 (0.27%) |
+| KV outputs, max abs diff | 6.1e-05 and below | 6.1e-05 and below |
+
+This independently reproduces the coordinator's numbers to the last digit, through a different
+code path. Per **R9** that raises confidence and not evidence — the falsifier is that the same
+harness returns `DIVERGENT` on all-zero logits and on top-k disagreement, which is asserted in
+`bench/test_plausible_but_wrong.py`.
+
+### 6.3 The numbers
+
+Median of 20 timed iterations after 10 discarded, three whole-process repeats per device.
+**The devices are not compared with each other** — different transfer class, different shared
+memory budget, different `timestampPeriod`; `bench/compare.py` refuses it structurally.
+
+#### Device 0 — Intel(R) Iris(R) Xe Graphics, UMA, driver 101.6737, Vulkan 1.4.309
+
+```
+vulkan   median 2790.7 ms   MAD 31.9   p05-p95 2719.9-2842.8   rsd 1.7%   n=20
+cpu-only median  229.8 ms   MAD 24.3   p05-p95  224.4- 349.0   rsd 14.3%  n=20
+run-to-run medians (3 repeats): vulkan 2755.9 / 2790.7 / 2827.8 ms  (spread 1.03x)
+                                cpu     204.1 /  229.8 /  251.1 ms  (spread 1.23x)
+```
+
+**Vulkan is 2561 ms slower — 12.1x slower — than pure CPU on this artifact.**
+
+#### Device 1 — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
+
+```
+vulkan   median 1465.9 ms   MAD 26.2   p05-p95 1418.4-1590.7   rsd 2.6%   n=20
+cpu-only median  185.9 ms   MAD  6.7   p05-p95  177.6- 230.9   rsd 5.4%   n=20
+run-to-run medians (3 repeats): vulkan 1410.2 / 1471.5 / 1465.9 ms  (spread 1.04x)
+                                cpu     220.4 /  181.5 /  185.9 ms  (spread 1.21x)
+```
+
+**Vulkan is 1280 ms slower — 7.9x slower — than pure CPU on this artifact.**
+
+### 6.4 Where the time goes — pricing the 257-island boundary
+
+Attributing the entire host-side difference to the island boundaries:
+
+| device | delta | islands | per island |
+|---|---|---|---|
+| Intel Iris Xe | +2561 ms | 257 | **≥ 9.96 ms** |
+| RTX 4060 | +1280 ms | 257 | **≥ 4.98 ms** |
+
+**This is a lower bound, not an estimate, and the direction is counter-intuitive.** The same
+difference also contains whatever the GPU *saved* on the 257 GEMVs it took over. If the Vulkan
+`MatMulNBits` is faster than the CPU's, that saving is netted against the boundary cost, so the
+true per-crossing cost is **larger** than the figure above. Separating them requires GPU kernel
+time, which requires the §3 timestamps, which do not exist. That is recorded as a missing
+instrument rather than approximated.
+
+Five milliseconds per island crossing on a discrete GPU is far more than a PCIe copy of a few
+KiB of activations. Two hypotheses, and the instrument that separates them:
+
+1. **Per-island submit-and-wait.** Each `Compute` records, submits and blocks on a fence, so the
+   graph pays a full round trip 257 times per inference rather than pipelining. Predicts a cost
+   roughly independent of tensor size.
+2. **Per-island staging round trip.** Each boundary copies host→staging→device and back, with
+   an allocation each way. Predicts a cost that scales with tensor bytes, and that is
+   *qualitatively different on the two devices* — the Iris Xe is UMA, so the "copy" is a copy
+   within one memory pool, while the 4060 crosses PCIe.
+
+The Intel part being **2x more expensive per island than the discrete part while having no bus
+to cross** argues against (2) being dominant and for (1), or for a fixed per-submission cost
+that the weaker integrated queue pays more of. **Instrument that decides it:** the §3 timestamps
+plus `Phase::Submit`/`Phase::Readback` spans in `trace.rs`, which would show submit-to-completion
+directly. Until then this is a hypothesis, labelled as one.
+
+**What this tells Mouse.** The cheapest large win available is not a faster `MatMulNBits`; it is
+*fewer islands*. Every `SkipSimplifiedLayerNormalization` (128 of them) and
+`GroupQueryAttention` (32) that lands on the GPU merges neighbouring islands and removes two
+crossings each. At ≥5 ms a crossing on the fast device, merging the graph is worth an order of
+magnitude more than any kernel tuning.
+
+### 6.5 What these numbers may not be used for
+
+* **Not a speedup, in either direction.** They are one configuration of one artifact from one
+  producer on one desk.
+* **Not "what the Vulkan EP does".** The staging-bound label is part of the number.
+  `epctl --check-counters --require-device-memory` exits 1 on this configuration.
+* **Not a device comparison.** 12.1x and 7.9x are not commensurable: different transfer class,
+  different tile selection, different driver, and the CPU baselines were measured in different
+  processes minutes apart.
+* **Not portability evidence.** Both devices are Windows desktop-class; `portability` is
+  `unknown` for every row because the engine does not report the configuration that produced it.
+
+### 6.6 Instruments — for each claim, what goes red if it is false
+
+**R9 (§10.0.1): confidence scales with agreeing instruments; evidence scales only with
+falsifying ones.** Each row names the instrument, and the silence set says what it cannot see.
+
+| Claim | Instrument that goes red if false | What it cannot see |
+|---|---|---|
+| The EP was actually used | `refuse_if_ep_absent` — `EP_NAME in get_providers()`, checked before anything is timed | An EP that loads and does nothing |
+| The EP did work | `refuse_if_nothing_claimed` — claimed-node count from the EP's own claim log | Work that is claimed but wrong |
+| The answer is correct | `classify_outputs` → `DIVERGENT`; explicit all-zero guard and top-k equality | Errors that preserve argmax *and* the whole top-10 |
+| Coverage is 257 nodes | claim log vs `subgraphs_live` — two independent counters | Both being wrong in the same way |
+| Islands is 257 | `dispatch_accounting`: `compute_calls == islands x inferences`, integer equality, no tolerance | An island that runs but computes nothing (that is the correctness gate's job) |
+| The run is staging-bound | `staging_label` basis `configuration` — the env var is off, so it cannot be otherwise | Nothing; it is a property of the configuration, not an observation |
+| The median describes a steady state | `stats.drift` — half-medians and monotone fraction | A run that is steady but steadily wrong |
+| The number is reproducible | `--repeats`: three whole-process runs, spread reported alongside | Systematic error common to all repeats |
+| The CPU baseline is comparable | `baseline_disagreement` — fires above 2x between workers | Drift smaller than 2x |
+| No GPU kernel time is claimed | `timestamp_audit` reports `gpu_kernel_time_status: UNMEASURED` and there is no code path that can produce one | — |
+
+Two of these went red during this session and changed the result:
+
+* `stats.drift` caught the Intel run ramping 724 → 903 → 1447 → 2080 → 2669 ms before flattening
+  near 2790. Three warmup iterations produced a median of 2639 ms with a p05 of 646 ms — a
+  bimodal sample whose median is an artefact of when measurement stopped. The warmup default is
+  now 10. **Note the direction: the device got slower, not faster.** A "take the minimum"
+  convention would have reported ~700 ms here, four times too fast, and looked entirely
+  reasonable.
+* `baseline_disagreement` caught the CPU-only baseline moving 218 ms → 665 ms between the two
+  device workers in the first run — same CPU, same artifact, 3x apart, from page-cache pressure
+  after loading a 2.2 GB model. Both were real measurements. Neither was comparable to the
+  other.
+
+---
+
+## 7. GPU timestamp verdict on both devices
+
+Run: `python bench/timestamp_audit.py`. Exits non-zero on any disagreement.
+
+### 7.1 Inputs to the conversion — VERIFIED on both devices
+
+Two instruments that read the driver by different routes are cross-checked: the EP's own
+capability probe (`epctl --probe-loader`, i.e. `rust/src/vk/caps.rs` — the values the conversion
+will actually be handed) and `vulkaninfoSDK`.
+
+| | Intel Iris Xe | RTX 4060 | lavapipe (CI) |
+|---|---|---|---|
+| `timestampPeriod`, EP | 52.0833 | 1.0 | 1.0 |
+| `timestampPeriod`, vulkaninfo | 52.0833 | 1.0 | 1.0 |
+| `timestampValidBits`, EP | 36 | 64 | 64 |
+| `timestampValidBits`, vulkaninfo | 36 | 64 | 64 |
+| UMA, EP vs derived | true / true | false / false | — |
+| counter wraps every | **3579 s (0.99 h)** | never | never |
+
+**Verdict: agree on both devices, on all three properties.** The EP is reading the right fields
+from the right queue family.
+
+### 7.2 The arithmetic — VERIFIED against these values, by unit test
+
+`rust/src/trace.rs` now tests the conversion with the *measured* constants rather than invented
+ones:
+
+* `treating_intel_ticks_as_nanoseconds_is_wrong_by_fifty_two_times`
+* `an_intel_counter_wrap_does_not_produce_a_negative_or_absurd_duration`
+* `undefined_upper_bits_on_a_thirty_six_bit_counter_are_masked_away`
+* `a_wrap_is_only_recoverable_when_the_counter_is_narrower_than_a_u64`
+
+### 7.3 The cross-platform hazard, stated precisely
+
+**Neither the RTX 4060 nor CI can falsify this code.** lavapipe and NVIDIA both report
+`timestampPeriod = 1.0` and `timestampValidBits = 64`, so on both of them:
+
+* treating ticks as nanoseconds is *correct*, and
+* the valid-bit mask is a no-op.
+
+A build that dropped the period scaling and the mask entirely would be green on the discrete GPU
+and green in CI, and would under-report every Intel duration by **52x** while looking completely
+reasonable — nothing negative, nothing absurd, wrong by a constant. This is the same shape as
+the tracer-epoch hazard in §1.1, and it is why *"Intel is the spec-conformance oracle"* is not a
+slogan: on this property the Iris Xe is the **only** instrument on this desk, and in CI there is
+none at all.
+
+`bench/timestamp_audit.py` reports `period_mistake_detectable_on` and `mask_exercisable_on` for
+exactly this reason, and adds a problem — non-zero exit — when neither list has a member. On a
+CI runner with only lavapipe, that fires.
+
+Mobile makes it worse, not better: Adreno and Mali report periods in the tens of nanoseconds and
+valid bits well under 64, so this is the *common* case in the targets that justify the project,
+and the desktop configuration is the outlier.
+
+### 7.4 End-to-end GPU timing — UNMEASURED
+
+Not "passing". Not "probably fine". `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` sets a flag that nothing
+consumes: no `VkQueryPool` is created, no `vkCmdWriteTimestamp` is recorded, no
+`vkGetQueryPoolResults` is called, and `VulkanTracer::record_gpu_intervals` has never been handed
+a tick produced by a GPU. §3 is a specification with verified inputs and verified arithmetic and
+no plumbing. `trace.rs` already emits the caveat in the trace itself when the flag is off; it
+should be read as applying whether it is off or on, until the query pool exists.
+
+---
+
+## 8. `onnx-runtime-tracer` adoption status
+
+Justin's own crate, already used by the sibling project `onnxruntime-mlx` in `rust/src/trace.rs`.
+Status here, stated as three separate facts because they are at three different levels of done:
+
+| | status |
+|---|---|
+| Dependency adopted and pinned | **done** — `rust/Cargo.toml`: `onnx-runtime-tracer = { version = "0.1.0-dev.5", default-features = false }`, with the pin rationale in §1.1 (absolute UNIX-microsecond clock, so a trace emitted from inside the plugin dylib overlays the host's own trace with no offset negotiation) |
+| Module written, structured as MLX's sibling | **done** — `rust/src/trace.rs`, `pub mod trace;` in `lib.rs`, span vocabulary in §1.2, 16 unit tests green |
+| Environment wiring | **done** — `ONNXRUNTIME_EP_VULKAN_TRACE=<path>` and `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1`, inert and zero-cost when unset |
+| **Called from the execution path** | **NOT DONE** |
+
+**The last row is the one that matters and it is not done.** No span is opened anywhere outside
+`trace.rs`'s own tests: `ep.rs`, `factory.rs`, `vk/session.rs` and `vk/dispatch_integration.rs`
+contain no call into it. Verified empirically rather than by reading — with both env vars set, a
+Phi-3.5 run that executed 257 islands over four inferences produced **no trace file at all**:
+
+```
+$env:ONNXRUNTIME_EP_VULKAN_TRACE="...\trace_probe.json"
+$env:ONNXRUNTIME_EP_VULKAN_TRACE_GPU="1"
+python bench\phi35.py --device 1 --iters 2 --warmup 1 --repeats 1
+Test-Path $env:ONNXRUNTIME_EP_VULKAN_TRACE   ->   False
+```
+
+That is the falsifier for "the tracer is adopted": if it were wired, the file would exist. It
+does not. The remaining work is in files owned by Switch (`vk/**`, `engine.rs`) and Tank
+(`ep.rs`, `factory.rs`), so it is a routed requirement and not something this document can close:
+
+* `Phase::Compile` around subgraph compilation (`ep.rs` `Compile`).
+* `Phase::Prepack` / `Phase::Upload` around weight prepack and upload.
+* `Phase::Record` around command-buffer recording, `Phase::Submit` around the submit itself, and
+  `Phase::Readback` around the result copy — noting §1.3: **host wall time around a submit
+  measures almost nothing**, which is why `Phase::Submit` has a unit test asserting it observes
+  no GPU work.
+* `VulkanTracer::record_gpu_intervals` fed from the §3 query pool, which is the only thing that
+  turns any of this into GPU time.
