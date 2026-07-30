@@ -530,5 +530,179 @@ test ... ok
 - Validation positive control: ✅ fires VUID-00332 reliably; documents VUID-03047 laziness
 - Decision records written to main inbox: `switch-positive-control.md`
 
+---
+
+## Session 22 — EP-side messenger, fence-leak plant, multi-run census (2026-07-30T03:52:28-07:00)
+
+**Coordinator tasks:**
+1. Plant `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION` env-gated fence leak (VUID-05137).
+2. Attach `VkDebugUtilsMessengerEXT` to the EP's own Vulkan instance.
+3. Provide a test that proves the two work together (EP's messenger captures the plant).
+4. Multi-run census — run 5 times in one session to exercise the interior-pointer planner.
+5. Confirm the four-number reconciliation is on the record.
+
+**D-S22-01 — EP-side messenger (instance.rs):**
+- `EP_VALIDATION_ERROR_COUNT: AtomicU32` static added to `instance.rs`.
+- `validation_log_callback` increments the counter on ERROR and calls `log::error!`.
+- `Instance::create` requests `VK_EXT_debug_utils` when `enable_validation=true`.
+- `Instance` struct stores `debug_messenger: Option<...>`, destroyed before `vkDestroyInstance`.
+- `probe_loader_report` sets `debug_messenger: None` (diagnostic path, no session).
+
+**D-S22-02 — Fence-leak plant (dispatch_integration.rs):**
+```rust
+if std::env::var_os("ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION").is_some() {
+    let _ = unsafe { device.ash().create_fence(&vk::FenceCreateInfo::default(), None) };
+}
+```
+Placed in `run_add_on_device` before RAII cleanup. Fence handle is leaked; `Device::drop`
+calls `vkDestroyDevice`, firing VUID-vkDestroyDevice-device-05137 through the EP's messenger.
+
+**D-S22-03 — Plant verification test (dispatch_integration.rs):**
+`ep_messenger_fires_for_planted_fence_leak` — `#[ignore]` test, confirmed:
+```
+[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = 1
+test vk::dispatch_integration::ep_messenger_fires_for_planted_fence_leak ... ok
+```
+(RTX 4060, SDK 1.4.350.0)
+
+**D-S22-04 — Multi-run census (tests/ops/test_phi35.py — Tank's file, cross-owner):**
+`test_phi35_multi_run_same_session_interior_pointer_safety`:
+- 5 consecutive runs on one session.
+- Asserts bit-identical output across all 5 runs.
+- Asserts `dispatches_executed == 5 × subgraphs_live` (all runs reach GPU).
+
+**Four-number reconciliation (from session 20, on record):**
+- "Claimed: 161" = GetCapability offers (written before Compile, before ORT partitions).
+- "{1,1,1}" = probe contamination (conftest Add dispatch fired FIRST_DISPATCH_DUMPED).
+- "islands: 0" = broken regex (`^EP_NAME_(\d+)_\d+$` never matched ORT's 64-bit hash format).
+- After fixes: all agree at 161. ORT accepted 100% of offers.
+
+**Cross-owner edits:**
+- `tests/ops/test_phi35.py` (Tank): multi-run test added.
+- `rust/src/vk/instance.rs` — Switch's file.
+- `rust/src/vk/dispatch_integration.rs` — Switch's file.
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN (344 tests + 2 new `#[ignore]` tests)
+- EP-side messenger: ✅ installed on EP's own instance; `EP_VALIDATION_ERROR_COUNT` observable
+- Fence-leak plant: ✅ VUID-05137 fired and captured by EP messenger (count=1)
+- Multi-run census test: ✅ added; asserts 5×161=805 dispatches for Phi-3.5
+- Decision records: `switch-ep-messenger-and-plant.md` in main inbox
+
+
 
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+## Session 23 — Dynamic-kernel binding mismatch: all-zero logits root cause and fix (2026-07-30T09:14:00-07:00)
+
+**Coordinator task:** Investigate all-zero logits in Phi-3.5 (161 dispatches, compute_failures=0, but argmax=0 on both devices). Discriminate "kernel writes zeros" from "copy is broken" from "wrong binding". Confirm descriptor-set fix holds at N=161 scale. Confirm EP messenger armed and listening.
+
+**D-S23-01 — ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES probe:**
+Added to `write_outputs_to_ort`: when env var is set, logs first 16 bytes of each staging buffer
+before `copy_nonoverlapping`. This immediately distinguished fault location:
+- 33 of 257 staging buffers are all-zero (the GPU kernel wrote zeros to device memory)
+- 224 of 257 are non-zero (kernel computed correct values)
+- Zero outputs: 18432-byte (N=9216, qkv_proj × 32 layers) and 64128-byte (N=32064, lm_head × 1)
+- Non-zero outputs: 16384-byte (N=8192, gate/up_proj) and 6144-byte (N=3072, o/down_proj)
+
+Conclusion: the GPU kernel IS writing zeros into device memory. The readback/copy path is correct.
+
+**D-S23-02 — Push-constant and workgroup dump:**
+Same env var dumps `push_u32=[m, K, N, blocks_per_col]` and `workgroups=[N, 1, 1]` for each dispatch.
+Confirmed: all parameters correct for zero-output kernels — `[1, 3072, 9216, 96]` with 9216 groups.
+Dispatches are real. Fault is not in dispatch geometry.
+
+**D-S23-03 — ONNXRUNTIME_EP_VULKAN_VALIDATE env-var override for Instance::create:**
+`enable_validation` was only read from ORT session config (`ep.enable_validation`), never from an
+env var. The phi35 comparison script didn't set session config, so the EP messenger was silent
+during the 161-dispatch session. Fix: added env-var check at the top of `Instance::create`:
+```rust
+let enable_validation =
+    enable_validation || std::env::var_os("ONNXRUNTIME_EP_VULKAN_VALIDATE").is_some();
+```
+With messenger armed (`ONNXRUNTIME_EP_VULKAN_VALIDATE=1`), validation layer reported:
+```
+vkCreateComputePipelines(): pCreateInfos[0].stage SPIR-V uses descriptor [Set 0, Binding 4]
+but the binding was not declared in the VkPipelineLayoutCreateInfo::pSetLayouts[0].
+vkCmdDispatch(): VkDescriptorSet ... [Set 0, Binding 4] is invalid.
+```
+This was the direct pointer to the root cause.
+
+**D-S23-04 — ROOT CAUSE: push_dynamic_kernel binding token mismatch:**
+`push_dynamic_kernel` (called at Compile time for symbolic-shape nodes) creates
+`n_inputs + n_outputs` binding tokens positionally. For MatMulNBits without `zero_points`
+(3 inputs + 1 output = 4 tokens), kernel.bindings = [0, 1, 2, 3].
+
+But the `q_gemv_matmul_nbits_f16` shader declares **5** descriptor bindings (0-4):
+- binding 0: A (activations)
+- binding 1: B (packed weights)
+- binding 2: scales
+- binding 3: zero_points or scales-as-placeholder (QB_HAS_ZP=0 folds it away)
+- binding 4: Y (output)
+
+The translate handler correctly handles this (documented in q_gemv.comp and quant.rs):
+`zp = scales` (reuses the scales token at position 3), then `bind_output(y)` → token 3 output.
+KernelRequest.bindings = [0, 1, 2, 2, 3] (5 entries). But this runs ONLY at Compute time
+(through ShapeOnlyRecorder), never at Compile time. kernel.bindings stays at [0, 1, 2, 3].
+
+Pipeline layout created with n_bindings=4 (from kernel.bindings.len()). Shader writes to
+binding 4 (undefined) → driver silently ignores → output buffer stays at zero-initialized value.
+
+Nodes WITH zero_points have 4 inputs → n_bindings=5 → works correctly (o_proj, gate/up/down_proj).
+Nodes WITHOUT zero_points have 3 inputs → n_bindings=4 → binding 4 undefined → zeros (qkv_proj, lm_head).
+
+**D-S23-05 — FIX: ShapeOnlyRecorder captures KernelRequest.bindings:**
+`ShapeOnlyRecorder::dispatch()` now captures `k.bindings` as the 5th element of `captured`:
+```rust
+pub captured: Option<(Vec<u8>, [u32; 3], Vec<u32>, &'static str, Vec<u64>)>
+//                    pc      wg      sc     shader  bindings
+```
+`dispatch_ort` extracts `eff_bindings` from captured for dynamic kernels (or from
+`kernel.bindings` for static). Both `n_bindings = eff_bindings.len()` and `buf_bindings`
+iteration use `eff_bindings`. This ensures the pipeline layout has the correct number of
+bindings and every descriptor slot is filled correctly.
+
+**Results:**
+- phi35_vk_vs_cpu.py: argmax vk=[30751] == cpu=[30751], top-10 overlap 10/10, both devices ✅
+- max|vk-cpu| = 0.035156 (RTX 4060), 0.031250 (Intel) — fp16 precision, expected ✅
+- No validation errors via EP messenger on either device ✅
+- cargo ci: 346 passed, 0 failed ✅
+
+**Files changed:**
+- `rust/src/vk/session.rs` — ShapeOnlyRecorder.captured now includes bindings; DynCaptured type alias updated; eff_bindings extracted in dispatch loop; DUMP_OUTPUT_BYTES probe; workgroup/push-constant dump.
+- `rust/src/vk/instance.rs` — env-var override for enable_validation.
+
+**Decision record:** `switch-binding-mismatch-fix.md` in main inbox.
+
+**Cross-owner note:** The fix is purely in Switch's `session.rs` and `instance.rs`. The shader
+and translate are correct (documented behavior). The fault was in `push_dynamic_kernel`'s
+assumption that `n_inputs + n_outputs` equals the shader's declared binding count.
+
+## Session 23 addendum — KV-cache "unwritten" explained (2026-07-30T08:16:02-07:00)
+
+**Tank's two-bug report (pre-fix):** Tank ran probe_run2.py BEFORE my fix was merged and found:
+- Outputs 1..64 (KV cache) differ bitwise between run 1 and runs 2/3 with identical feeds.
+- Output 0 (logits) exactly 0.0 on runs 2 and 3.
+Coordinator relayed this as two separate bugs.
+
+**Post-fix probe_run2.py (3 runs, both devices):**
+```
+Device 1 (RTX 4060):  BIT-IDENTICAL across all 65 outputs — run 1 vs 2 and run 1 vs 3
+Device 0 (Intel Xe):  BIT-IDENTICAL across all 65 outputs — run 1 vs 2 and run 1 vs 3
+```
+Memory-pattern planner EXCLUDED as a factor. Both observations were one bug manifesting twice.
+
+**Causal chain:** qkv_proj wrote zeros (binding 4 undefined) → CPU attention saw zero QKV →
+attention's internal scratch became dirty on run 1 → on run 2+, ORT arena reuse caused KV outputs
+to read dirty data, appearing "unwritten" rather than zero. The KV cache is entirely CPU-side;
+our EP subgraphs have 1 output each and correctly write it.
+
+**Instruments that would go red if claim is false:**
+- probe_run2.py: any differing output printed
+- phi35_vk_vs_cpu.py: argmax mismatch or top-10 < 10/10
+- EP messenger: validation errors if descriptor binding mismatch recurs
+
+**Decision record:** `switch-kv-cache-explained.md` in main inbox.
+
