@@ -1,0 +1,64 @@
+{
+  "epctl": "C:\\Users\\justinchu\\dev\\ep-vulkan-niobe\\rust\\target\\release\\epctl.exe",
+  "vulkaninfo_source": "",
+  "gpu_kernel_time_available": false,
+  "gpu_kernel_time_status": "UNMEASURED",
+  "gpu_kernel_time_reason": "no VkQueryPool is created and no vkCmdWriteTimestamp is recorded \u2014 the hooks in rust/src/vk/session.rs and rust/src/vk/dispatch_integration.rs are comments. There is no device tick to convert, so the conversion is verified on its inputs and by unit test, and end-to-end GPU timing is UNMEASURED, not passing.",
+  "devices": [
+    {
+      "index": 0,
+      "name": "Intel(R) Iris(R) Xe Graphics",
+      "ep_period_ns": 52.0833,
+      "sdk_period_ns": 52.0833,
+      "ep_valid_bits": 36,
+      "sdk_valid_bits": 36,
+      "ep_uma": true,
+      "sdk_uma": true,
+      "wrap_period_s": 3579.137122684109,
+      "agree": true,
+      "problems": [],
+      "conversion": {
+        "ticks": 100000,
+        "correct_ns": 5208330.0,
+        "unscaled_ns": 100000.0,
+        "period_error_factor": 52.0833,
+        "period_mistake_is_detectable_here": true,
+        "wrap_case_ns": 78124.95,
+        "wrap_case_expected_ns": 78124.95,
+        "wrap_unmasked_would_be_negative": true,
+        "garbage_upper_bits_masked_ns": 156249.9,
+        "garbage_upper_bits_expected_ns": 156249.9,
+        "wrap_period_s": 3579.137122684109
+      }
+    },
+    {
+      "index": 1,
+      "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ep_period_ns": 1.0,
+      "sdk_period_ns": 1,
+      "ep_valid_bits": 64,
+      "sdk_valid_bits": 64,
+      "ep_uma": false,
+      "sdk_uma": false,
+      "wrap_period_s": null,
+      "agree": true,
+      "problems": [],
+      "conversion": {
+        "ticks": 100000,
+        "correct_ns": 100000,
+        "unscaled_ns": 100000.0,
+        "period_error_factor": 1.0,
+        "period_mistake_is_detectable_here": false,
+        "wrap_case_ns": null,
+        "note": "valid_bits == 64: no mask and no wrap are exercisable on this device. It cannot falsify the masking path."
+      }
+    }
+  ],
+  "problems": [],
+  "period_mistake_detectable_on": [
+    "Intel(R) Iris(R) Xe Graphics"
+  ],
+  "mask_exercisable_on": [
+    "Intel(R) Iris(R) Xe Graphics"
+  ]
+}
