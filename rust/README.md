@@ -621,6 +621,58 @@ something adjacent to the claim is the failure mode this whole section is about.
 
 ---
 
+## The 2.09 GB "still live" warning: it was a scope error in the instrument
+
+For a while the allocator printed, on the real model, on both vendors:
+
+```
+WARN: 322 device handle(s) (2093838336 B) were still live when the allocator was released.
+ORT frees what it allocated, so this is either a leak on our side or a tensor the session outlived.
+```
+
+That wording is honest and useless. **An open disjunction in a warning is a decision deferred to
+whoever reads it**, which in practice means it is decided later, by someone with less context — or
+never, because a warning that has always been there reads as furniture. 2.09 GB is not furniture.
+
+It is neither branch. Measured on Phi-3.5 under pytest, both devices:
+
+| | |
+| --- | --- |
+| `alloc_allocations` | 2511 |
+| `alloc_frees` | **2511** |
+| `alloc_frees_after_release` | 0 |
+
+**ORT hands back every span.** Three things were true at once and only their combination looked
+alarming:
+
+1. `HandleRegistry` is **process-global per device** (`factory::REGISTRIES`), shared by every
+   allocator and data transfer for that device. `registry.stats().live_spans` read at *one*
+   allocator's release counts spans that other, still-running sessions own. That run released seven
+   allocators; summed, they reported 1257 "still live" spans, every one of which was freed later.
+   The warning named this allocator as the owner of its neighbours' memory.
+2. The registry **outlives every allocator by construction** — `REGISTRIES` holds an `Arc` for the
+   process lifetime — so the hazard the warning gestured at, a late `Free` landing in a torn-down
+   registry, cannot occur. Nothing is reclaimed at allocator release.
+3. The counters file was written only from `VulkanDataTransfer::release`, which ORT calls **before**
+   releasing allocators, so the file could never have shown any of this. It reported
+   `alloc_allocators_released: 0` no matter what happened afterwards — an unfalsifiable zero rather
+   than a clean one. It is now rewritten at allocator release too.
+
+The warning is now scoped: `debug!` while other holders of the shared registry are still running,
+`warn!` only for the last allocator on a device, where "still live" finally means what it says.
+
+### The replacement counter reproduced the same bug, and that is worth recording
+
+`alloc_frees_after_release` was written to close the disjunction. Its first version tested
+`allocators_released > 0`, which is **monotone** — so once any one allocator went away, every
+subsequent `Free` from every *other* live allocator counted as late. It reported **2508 late frees
+on a run where nothing was wrong**: the identical scope error, reproduced inside its own
+replacement, in the same hour. It now requires `allocators_live == 0`, which is the condition that
+means something — a `Free` arriving when no allocator of ours exists is a span nobody is left to
+own. `epctl --check-counters` fails on it unconditionally, ranked with the guard band.
+
+---
+
 ## Loading the plugin
 
 ### Python
@@ -799,6 +851,18 @@ This was an argument for a long time and is now a measurement.
 > | `tools/probe_planner.py` | 1 | 5 | **52** | 49152 B |
 > | `tools/probe_run2.py` (Phi-3.5, 2.2 GB) | 1 | 3 | **1192** | 65536 B |
 >
+> **The run-count sweep is the falsifier for that reading**, and it was run: the *same* probe on
+> the *same* model and device, varying only `PROBE_RUNS`, gives
+>
+> | runs | 1 | 2 | 3 | 4 |
+> | --- | --- | --- | --- | --- |
+> | `pointers_interior` | **0** | 596 | 1192 | 1788 |
+> | `alloc_frees` | 101 | 103 | 105 | 107 |
+>
+> Exactly 596 interior pointers per run after the first, and **0 at one run** — which reproduces
+> the pytest suite's zero exactly. So 1192 is a property of the run count, not of the probe. If it
+> were a property of the probe, `PROBE_RUNS=1` would still have shown interior pointers.
+>
 > So the suite that runs most often is structurally blind to the interior-pointer path, and its
 > zero is not evidence of anything. `probe_planner.py --require-interior` is the standing check
 > that the instrument still reaches the path at all: we have measured that it sees 52 interior
@@ -907,6 +971,15 @@ separates the two: it frees a handle and presents it through the same `classify`
 session uses, and requires the ledger to count it and `host_bytes` to refuse it. Break the
 detector and that test fails — verified by planting the break. Generation-stamped rejection is
 therefore proven only against frees in an order *we* chose.
+
+**And multi-run does not improve the odds — it makes them worse.** The obvious next question is
+whether ORT's *free* ordering changes from run 2 the way its allocation pattern demonstrably does,
+which would mean quarantine had been unexercised in the only regime where it could plausibly fire.
+Measured, same sweep: free traffic grows by **2 per additional run** while interior-pointer
+derivation grows by **596**. That is the planner working as designed — from run 2 it makes one
+allocation per pattern and stops allocating and freeing almost entirely. So the multi-run regime is
+the one *least* likely to present a stale handle, not the most. Quarantine's exercise gap is not a
+gap that more runs will close.
 
 ---
 

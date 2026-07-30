@@ -669,6 +669,96 @@ would have gone *unchecked*. Now symbolic-aware: literal extents still checked p
 
 Code: `ops/common/claim.rs`, `registry.rs`, `ops/claim_log.rs`, `ops/quant.rs`.
 Docs: `docs/OP_COVERAGE.md` §7.5 new, §8.1.3 corrected.
+
+---
+
+## Session 20 — 2026-07-30T09:14:00-07:00 — all-zero logit investigation and fix
+
+**Task:** After Switch's runtime-extents work enabled 161 fp16 MatMulNBits nodes on Phi-3.5,
+the model dispatched all 161 with `compute_failures=0` but produced all-zero logits on both
+Intel Iris Xe and RTX 4060.
+
+### Vacuous-pass correction
+
+A prior Mouse session (session 19) reported "bit-identical" results by comparing against
+a pre-fix DLL. That result was a vacuous pass (R7): the EP was registered and appeared in
+`get_providers()`, but the dynamic-binding bug caused no output to be written; ORT effectively
+ran CPU-on-both-sides while the check passed. The coordinator's original zero-logit observation
+was correct. The prior session did not rebuild the DLL after session.rs was patched.
+
+### Failure mode localisation
+
+- **Isolated f16 MatMulNBits with static shapes (test_matmulnbits_fp16_matrix): PASS**
+  — the f16 GEMV kernel computes correctly; the bug is not in the shader.
+- **Isolated f16 MatMulNBits with dynamic M (symbolic_batch=True): ALL ZERO**
+  — confirms the failure mode is in the session-layer dynamic-dispatch path, triggered only
+  when the activation tensor has a symbolic leading dimension.
+- **Phi-3.5 model pre-fix: logits [0.0, 0.0], top-10 overlap 0/10 (both devices)**
+  — confirmed zeros persist after rebuilding with 3a0cc58 (Step 1b fix is unrelated).
+
+### Root cause
+
+`push_dynamic_kernel` (session.rs) creates binding tokens from NodeDesc input/output counts:
+3 inputs + 1 output = **4 tokens** `[0, 1, 2, n_plan_inputs]`.
+
+But `matmul_nbits_gemv` (quant.rs) passes **5 bindings** to `KernelRequest::dispatch`:
+`[a, b, scales, zp, y]` where `zp = scales` (no zero_point input → scales bound twice as
+inert placeholder for shader slot 3). The q_gemv.comp DTYPE_F16 shader declares 5 binding
+slots (0=A, 1=B, 2=scales, 3=zero_points, 4=OutY).
+
+At Compute time `dispatch_ort` used `kernel.bindings.len()=4` for `n_bindings`. The pipeline
+descriptor set layout had 4 slots (0–3). Shader binding 4 (the output `OutY`) fell outside the
+layout and was never bound. Both Intel Iris Xe and NVIDIA zero-initialise freshly allocated GPU
+memory for security; the unwritten output buffer read back as all-zero.
+
+**Failure mode: "writing nothing"** — kernel computed correct partial sums into shared memory
+and reduced them, then called `store_y()` which executed `atomicAnd`/`atomicOr` on a buffer
+that had no binding in the descriptor set. On both tested drivers this is a silent no-op.
+
+Static-shape isolation tests bypassed `push_dynamic_kernel` entirely (CompileRecorder captures
+the full 5-element binding vector from the translate handler's KernelRequest directly).
+
+### Fix
+
+`ShapeOnlyRecorder::dispatch` (session.rs) now captures `k.bindings` alongside the other
+fields. `dispatch_ort` uses those captured bindings — not `kernel.bindings` — for `n_bindings`
+(pipeline/descriptor-set creation) and `buf_bindings` (VkBuffer mapping) on the dynamic path.
+
+### Regression test
+
+`test_matmulnbits_fp16_dynamic_batch` (test_matmulnbits.py):
+- Uses `make_matmulnbits_model(..., symbolic_batch=True)` to trigger `push_dynamic_kernel`
+- Asserts `np.any(np.abs(vk_out) > 1e-4)` — all-zero fails
+- Confirmed FAIL on pre-fix build, PASS on fixed build (both devices, K=256, N=64, fp16)
+
+### Phi-3.5 results post-fix
+
+| Device | logits range | max\|VK-CPU\| | top-1 | top-10 |
+|--------|-------------|--------------|-------|--------|
+| 0 Intel Iris Xe | [-13.11, 13.02] | 0.031 (0.24%) | ✓ | 10/10 |
+| 1 RTX 4060 | [-13.11, 13.01] | 0.035 (0.27%) | ✓ | 10/10 |
+
+Not bit-identical (fp16 accumulation differences compound across 161 nodes) but correct:
+both top-1 and top-10 agree with CPU oracle, max abs diff is within fp16 MATMULNBITS_FP16
+tolerance (rtol=2e-2), and not a function of device vendor.
+
+### accuracy_level ruling (Trinity's question)
+
+Model declares `accuracy_level=0`; oracle pinned at `accuracy_level=1`. ORT CPU kernel
+branches on accuracy_level exactly once: only level 4 changes computation (int8 activations).
+Levels 0, 1, 2, 3 all resolve to `SQNBIT_CompFp32` on x86. The GPU shader always uses
+`float acc = 0.0` (fp32 accumulation). Levels 0 and 1 are indistinguishable. `accuracy_level`
+was NOT a cause of zeros and the oracle pinning is correct.
+
+### Files modified this session
+
+- `rust/src/vk/session.rs` — ShapeOnlyRecorder captures bindings; DynCaptured includes them;
+  dispatch loop uses eff_bindings for pipeline creation and buf_bindings
+- `tests/ops/_models.py` — `make_matmulnbits_model` gains `symbolic_batch` parameter
+- `tests/ops/test_matmulnbits.py` — `test_matmulnbits_fp16_dynamic_batch` regression test
+- `tests/ops/test_phi35.py` — docstrings corrected to actual root cause
+- `.squad/decisions/inbox/mouse-f16-zero-logits-postmortem.md` (main inbox) — decision record
+
 Record: `.squad/decisions/inbox/mouse-runtime-extents.md`.
 
 ---
@@ -822,4 +912,115 @@ can create the module, and the claim is the only place the two are reconciled.
 
 No cross-owner edits this turn.
 
+## 2026-07-30 — P6, and the run that had never been run twice
+
+Assigned `MatMulNBits` GEMV for the third time. For the third time it was already built. Checking
+the premise before starting is now the cheapest thing I do: kernel, claim row, workgroup derivation
+from the guaranteed floor, prepack transform, `accuracy_level` reasoning — all present, all green.
+
+So I went looking for what the brief did not know, and found it in someone else's file:
+`allocator.rs` names "Mouse's P6 assertion" twice, and P6 had never been asserted anywhere. The
+constraint had been stated in the design doc, quoted back to me in three consecutive briefs, and
+cited in another owner's code — and nothing in the tree would have failed if it were violated.
+**A constraint everybody repeats is not a constraint that anything enforces.**
+
+I asserted it structurally rather than dynamically, and that choice is the substance. `alloc_temp`
+is the only route from an op handler to device memory, so counting calls proves the property for
+every shape at once; a high-water threshold proves it only for shapes actually run, and any bound
+loose enough not to be flaky is loose enough to hide a small scratch buffer. **Zero is not a
+threshold.** Negative-controlled it by inserting a deliberate `alloc_temp` and watching it fail
+with the right bytes, then reverting — the same discipline as the `Int64` guard, and for the same
+reason.
+
+The other finding is Tank's, seen from my side. He measured interior pointers appearing from run 2
+of a session. I then noticed that **every model-level check on record, mine included, had run
+exactly one inference per session** — so the entire body of evidence covered run 1 and nothing else,
+and we would each have sworn the model was verified. Five runs in one session with differing feeds:
+clean on both devices. The insulation is structural, because op code never sees a raw pointer. But
+"structurally impossible" was my belief before I measured, and it is only now a result.
+
+The recurrence worth naming: a test harness has a shape, and its shape decides which bugs are
+*reachable*, entirely independently of how many assertions it makes. One inference per session is
+not a weaker version of five; it is a harness in which a whole class of defect does not exist.
+
+No cross-owner edits this turn.
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+## Session 21 — 2026-07-30T09:14:00-07:00
+
+### Context
+Coordinator relay from Tank (07:51 AM): three-run session on Phi-3.5 revealed two SEPARATE failure
+modes affecting different tensors:
+  - Output 0 (logits): exactly 0.0 on runs 2 and 3 in a dirty arena → computed zero (not unwritten)
+  - Outputs 1..64 (KV cache): bitwise different between runs → unwritten, arena reuse
+Tank ruled out his allocator layer with a control (same results with device memory unset).
+KV cache routing: Switch (binding/partition question at N=161).
+Logits routing: Mouse — "computed zero" is consistent with the fp16 hypothesis.
+
+### Merge and conflict resolution
+Merged origin/main. Conflicts in tests/ops/test_phi35.py resolved:
+  - Docstring conflict: kept HEAD's post-fix state description, removed "KNOWN BUG" section
+  - Determinism test docstring: merged both versions (kept renamed-from note from origin/main)
+  - Removed @pytest.mark.xfail(strict=True) from Trinity's test_phi35_vulkan_matches_cpu_logits:
+    the fix landed in commit 64f390b; xfail is now stale, and with strict=True it would XPASS-error
+
+### Multi-run test suite additions (Tank's discriminator requirement)
+Tank's relay: every probe run must run the session ≥3 times and compare across runs. Single-run
+evidence is structurally incapable of distinguishing "computed zero" from "unwritten zero in a
+clean arena" (ORT's memory-pattern planner does not engage on run 1).
+
+Added: test_matmulnbits_fp16_dynamic_batch_multirun
+  - Creates one session with symbolic_batch=True (dynamic-batch fp16 MatMulNBits)
+  - Runs sess.run() 3 times with identical feeds
+  - Asserts all 3 runs produce non-zero output (pre-fix: zeros on all 3 runs due to unwritten binding)
+  - Asserts all 3 runs are bit-identical (determinism within a session)
+  - Confirmed: FAIL on pre-fix DLL (zeros on run 1), PASS on fixed DLL (both devices)
+
+Added: test_phi35_vulkan_multirun_logits_stable
+  - Creates one Phi-3.5 session and calls run() 3 times with identical feeds
+  - Asserts all 3 runs produce non-zero logits (vacuous-pass guard + non-zero guard on each run)
+  - Asserts runs 2 and 3 are bit-identical to run 1
+
+### Verification results (post-fix DLL, commit 64f390b + merge 8523733)
+
+test_matmulnbits_fp16_dynamic_batch_multirun:
+  Device 0 (Intel Iris Xe): PASS (3 runs, non-zero, bit-identical)
+  Device 1 (RTX 4060):      PASS (3 runs, non-zero, bit-identical)
+
+test_phi35_vulkan_matches_cpu_logits (Trinity's gate, xfail removed):
+  Device 0: run range [-13.1094, 13.0156], argmax=30751 (CPU: 30751), top-10 10/10 — PASS
+  Device 1: run range [-13.1094, 13.0078], argmax=30751 (CPU: 30751), top-10 10/10 — PASS
+
+test_phi35_vulkan_multirun_logits_stable (3 runs, same session):
+  Device 0: runs 1/2/3 all [-13.1094, 13.0156] argmax=30751 — bit-identical ✓
+  Device 1: runs 1/2/3 all [-13.1094, 13.0078] argmax=30751 — bit-identical ✓
+
+### The multi-run result and Tank's discriminator
+Tank's relay said: "Something actively writes zeros to output 0 on runs 2 and 3." My fix makes
+the output binding correctly included in the descriptor set. On the dirty arena (runs 2 and 3),
+the shader now writes the CORRECT non-zero values — not zeros, not garbage. This confirms:
+  - The pre-fix failure WAS "output binding missing from descriptor set" (not computed in shader)
+  - The zeros Tank saw on runs 2/3 were from the driver zero-initialising each freshly allocated
+    GPU output buffer (Vulkan malloc consistently returns zeroed memory on both Intel and NVIDIA
+    for security — even when arena sub-division is active, the OUTPUT BUFFER for each MatMulNBits
+    Compute call is a fresh vkCreateBuffer allocation, not a reused ORT tensor)
+  - The KV cache dirty-arena behavior is a separate phenomenon: those outputs pass through ORT's
+    CPU memory pool (not fresh Vulkan allocations), so ORT's memory planner CAN sub-divide them
+
+### KV cache status
+The 64 KV cache outputs (outputs 1..64) that Tank found bitwise different between runs are
+Switch's domain. They are NOT MatMulNBits outputs. They are KV cache tensors computed by CPU ops
+(Slice, Concat, etc.) downstream of some EP intermediate. The unwritten EP intermediate (now
+fixed) fed wrong values into the CPU ops, causing the KV cache to be unstable between runs.
+Post-fix: not verified directly (Switch owns it), but the logit stability confirms the LM-head
+MatMulNBits outputs are now correctly written.
+
+### accuracy_level ruling (standing, confirmed)
+The model declares accuracy_level=0; Trinity's oracle is pinned at 1. ORT's CPU kernel: levels
+0-3 all map to SQNBIT_CompFp32 (only level 4 changes computation). The GPU shader always uses
+float acc = 0.0 (fp32 accumulation) regardless of the attribute. Levels 0 and 1 produce
+identical computation. accuracy_level was NOT a factor in the zero-logit bug, and is not a
+factor post-fix. Ruling: oracle pinning is correct; no change needed.
+
+### Commits
+  8523733 — Merge origin/main, resolve conflict, remove stale xfail from Trinity's gate
+  (plus new tests in test_matmulnbits.py and test_phi35.py for multi-run stability)

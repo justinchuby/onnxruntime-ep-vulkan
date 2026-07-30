@@ -2472,6 +2472,56 @@ move it was not.
 The second gate, which this section missed entirely, is dtype: once shapes are pinned the 97
 elementwise nodes decline on **f16**, not on shape. See §7.4.5.
 
+### 8.1.4 P6 asserted structurally, and the multi-run verification
+
+**P6** — *no dequantised weight is ever materialised in device memory* — has been the stated
+constraint on this kernel since §8 was written, and until now it was aspirational: `allocator.rs`
+carries `AllocStats::high_water_bytes` with two comments naming "Mouse's P6 assertion", and no such
+assertion existed anywhere in the tree.
+
+It is now asserted, and **not** as a high-water threshold. The argument for the structural form:
+
+- `DispatchContext::alloc_temp` is the **only** way an op handler can obtain device memory. A
+  handler that never calls it cannot have materialised anything, for **every** shape at once.
+- A high-water threshold only proves the property for the shapes actually run, and needs a bound
+  loose enough not to be flaky — which is loose enough to hide a small scratch buffer.
+- **Zero is not a threshold.** `the_gemv_materialises_no_dequantised_weight` asserts exactly zero
+  `alloc_temp` calls, exactly one dispatch, and that the only bound output is *activation*-sized
+  (`n` elements), across `(K,N)` of (3072, 8192), (8192, 3072) and (3072, 3072) — the shapes all
+  161 real nodes take. `gemv_allocation_is_independent_of_the_reduction_extent` quadruples `K` at
+  fixed `N` and asserts the allocation record is byte-identical, which is the property that would
+  break first if a dequantised `[K, N]` buffer ever appeared.
+- The structural form also needs nothing from anyone: `high_water_bytes` is not in the counters
+  JSON, and putting it there means editing Tank's `counters.rs`.
+
+The numbers that make it matter: at K=8192, N=3072 the packed weight is 12 MiB and its f32
+expansion is 96 MiB — times 161 nodes.
+
+**Negative control.** A `ctx.alloc_temp(TensorDesc::new(dtype, vec![k, n]))` was temporarily
+inserted into `matmul_nbits_gemv`; the test failed with *"the GEMV asked for 1 scratch buffer(s)
+totalling 50331648 bytes"*, and was reverted. A guard that has never been seen to fail is a guard
+whose failure mode is unknown.
+
+**Multi-run verification, against Tank's interior-pointer finding.** Tank measured that from the
+**second** run of a session, ORT's memory-pattern planner hands back interior pointers
+(`handle + 48 KiB`, 52 of them across five runs, both devices) — a *wrong answer*, not a crash.
+Every model-level check on record, mine included, had run exactly one inference per session, so
+none of them could have seen it. `MatMulNBits` carries by far the largest bound buffers in the
+graph, so it would meet the hazard first.
+
+Five inferences in **one** session, with **different feeds per run** plus a late repeat of run 0's
+feeds, every run compared against the CPU EP:
+
+| device | worst `max abs diff` | argmax agreement | late repeat |
+|---|---|---|---|
+| 0 — Intel Iris Xe | 0.08984 | 5/5 runs | bit-identical to run 0 |
+| 1 — RTX 4060 | 0.09473 | 5/5 runs | bit-identical to run 0 |
+
+Clean on both. The insulation is structural rather than lucky: op code never sees a raw pointer —
+the typed `DispatchContext` is the whole of the interface, and `transfer::host_backing_for`
+resolves the offset below it. That was the design intent; this is the first time it has been
+*measured* rather than assumed, and the distinction is the point.
+
 ### 8.2 Prepacking and the memory model
 
 **Status 2026-07-28 — prepacking is on the critical path, not a tuning pass.** The XL-kernel ruling

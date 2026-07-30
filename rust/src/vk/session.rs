@@ -228,10 +228,18 @@ struct ShapeOnlyRecorder {
     n_plan_inputs: usize,
     next_resolve: usize,
     next_bind: usize,
-    /// Filled by `dispatch()` with push-constant bytes, workgroup counts, spec constants, shader
-    /// stem, and the correct descriptor-binding token sequence for this kernel.
+    /// Filled by `dispatch()` with push-constant bytes, workgroup counts, spec constants, and
+    /// shader stem.  Binding tokens are in `captured_bindings`.
     #[allow(clippy::type_complexity)]
-    pub captured: Option<(Vec<u8>, [u32; 3], Vec<u32>, &'static str, Vec<u64>)>,
+    pub captured: Option<(Vec<u8>, [u32; 3], Vec<u32>, &'static str)>,
+    /// Binding tokens from the translate handler's `KernelRequest`, in descriptor-slot order.
+    ///
+    /// `push_dynamic_kernel` creates one token per NodeDesc input plus one per output, but some
+    /// translate handlers pass a different number of slots to `dispatch` — most notably
+    /// `matmul_nbits_gemv`, which binds `scales` a second time as an inert placeholder for
+    /// `zero_points` when the node has no zero-point input. The descriptor set layout must have
+    /// exactly this many slots or the output binding falls outside the layout and writes nowhere.
+    pub captured_bindings: Option<Vec<u64>>,
     /// Output `TensorDesc`s collected from `bind_output()` calls, used to size output buffers.
     pub output_descs: Vec<TensorDesc>,
 }
@@ -243,6 +251,7 @@ impl ShapeOnlyRecorder {
             next_resolve: 0,
             next_bind: 0,
             captured: None,
+            captured_bindings: None,
             output_descs: Vec::new(),
         }
     }
@@ -269,14 +278,8 @@ impl DispatchContext for ShapeOnlyRecorder {
     }
 
     fn dispatch(&mut self, k: KernelRequest) -> EpResult<()> {
-        let raw_bindings = k.bindings.iter().map(|b| b.as_raw()).collect();
-        self.captured = Some((
-            k.push_constants,
-            k.workgroups,
-            k.spec_constants,
-            k.shader,
-            raw_bindings,
-        ));
+        self.captured = Some((k.push_constants, k.workgroups, k.spec_constants, k.shader));
+        self.captured_bindings = Some(k.bindings.iter().map(|b| b.as_raw()).collect());
         Ok(())
     }
 
@@ -603,6 +606,14 @@ impl VulkanSession {
         //
         // Type alias for captured per-kernel dynamic dispatch data:
         //   (push_constants, workgroups, spec_constants, shader, bindings)
+        //
+        // The bindings vector is captured from the translate handler's KernelRequest and may differ
+        // in length from kernel.bindings (which was built by push_dynamic_kernel from NodeDesc
+        // input/output counts). Translate handlers can pass fewer or more bindings than there are
+        // NodeDesc inputs+outputs — most notably matmul_nbits_gemv, which binds `scales` twice,
+        // once as its natural slot and once as the inert zero_point placeholder. The pipeline and
+        // descriptor set must be sized from this captured length, not from kernel.bindings.len(),
+        // or the output binding slot falls outside the descriptor set and writes nowhere.
         type DynCaptured = (Vec<u8>, [u32; 3], Vec<u32>, &'static str, Vec<u64>);
         let mut dyn_captured: Vec<Option<DynCaptured>> = (0..kernels.len()).map(|_| None).collect();
         let mut actual_output_byte_sizes: Vec<u64> = output_byte_sizes.to_vec();
@@ -639,7 +650,8 @@ impl VulkanSession {
                 attributes: recipe.node_desc.attributes.clone(),
             };
 
-            // Re-run translate through ShapeOnlyRecorder to capture push constants and workgroups.
+            // Re-run translate through ShapeOnlyRecorder to capture push constants, workgroups,
+            // and the full binding list (which may include duplicate slots not in kernel.bindings).
             let mut sor = ShapeOnlyRecorder::new(kernel.n_plan_inputs);
             if (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor).is_ok() {
                 // Update actual output byte sizes and shapes from the re-run.
@@ -656,7 +668,9 @@ impl VulkanSession {
                         }
                     }
                 }
-                dyn_captured[ki] = sor.captured;
+                if let (Some(cap), Some(cap_bi)) = (sor.captured, sor.captured_bindings) {
+                    dyn_captured[ki] = Some((cap.0, cap.1, cap.2, cap.3, cap_bi));
+                }
             } else {
                 log::error!(
                     "dispatch_ort: dynamic re-run of translate for op '{}' failed",
@@ -823,6 +837,11 @@ impl VulkanSession {
         // For each kernel: build pipeline + descriptor set, bind and dispatch.
         for (ki, kernel) in kernels.iter().enumerate() {
             // For dynamic kernels, use the pre-pass capture; for static, use baked values.
+            // `eff_bindings` is the authoritative descriptor-slot list: for dynamic kernels it
+            // comes from the translate handler's KernelRequest (which may include duplicate slots
+            // such as the zero_point placeholder in matmul_nbits_gemv); for static kernels it is
+            // `kernel.bindings` (recorded directly from the translate handler at Compile time, so
+            // it is already correct). Both forms are in the same u64 token encoding.
             let (eff_shader, eff_spec_constants, eff_push_constants, eff_workgroups, eff_bindings): (
                 &str,
                 &[u32],
@@ -830,7 +849,7 @@ impl VulkanSession {
                 [u32; 3],
                 &[u64],
             ) = match dyn_captured[ki].as_ref() {
-                Some((pc, wg, sc, sh, b)) => (sh, sc.as_slice(), pc.as_slice(), *wg, b.as_slice()),
+                Some((pc, wg, sc, sh, bi)) => (sh, sc.as_slice(), pc.as_slice(), *wg, bi.as_slice()),
                 None => (
                     kernel.shader,
                     kernel.spec_constants.as_slice(),
