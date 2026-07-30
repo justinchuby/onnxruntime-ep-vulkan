@@ -812,8 +812,24 @@ pub enum DeclineCode {
     Rank,
     /// Shapes are known but incompatible (e.g. not broadcastable).
     Shape,
-    /// Shape inference produced nothing, or the shape is symbolic where we need it static.
+    /// **Rank is known; at least one extent is symbolic.**
+    ///
+    /// A *floor*, not a ceiling: a node in this bucket has already passed registration, opset,
+    /// contrib schema and status, so shape is its sole remaining blocker. It becomes claimable
+    /// with no kernel change once extents are runtime parameters
+    /// (`claim::ENGINE_ACCEPTS_RUNTIME_EXTENTS`). Kept strictly separate from
+    /// [`DeclineCode::UnknownRank`], which no amount of that work reaches.
     DynamicShape,
+    /// **No shape at all — even the rank is unknown.**
+    ///
+    /// Rank determines indexing arithmetic and descriptor layout, which live in the pipeline
+    /// rather than in a push constant, so this is not unlocked by runtime extents. Split out of
+    /// [`DeclineCode::DynamicShape`] on 2026-07-29 because merging them made the histogram
+    /// unreadable: one bucket was work we had costed and the other never was.
+    UnknownRank,
+    /// The op's output shape depends on input **values**, so the output cannot be sized before
+    /// the kernel that determines it has run. Permanent under one-command-buffer-per-subgraph.
+    DataDependentShape,
     /// An attribute value or combination we do not handle.
     Attribute,
     /// A `com.microsoft` node does not match the contrib schema this row was written against.
@@ -842,6 +858,8 @@ impl DeclineCode {
             DeclineCode::Rank => "rank",
             DeclineCode::Shape => "shape",
             DeclineCode::DynamicShape => "dynamic-shape",
+            DeclineCode::UnknownRank => "unknown-rank",
+            DeclineCode::DataDependentShape => "data-dependent-shape",
             DeclineCode::Attribute => "attribute",
             DeclineCode::ContribSchema => "contrib-schema",
             DeclineCode::Partition => "partition",
@@ -860,6 +878,8 @@ impl DeclineCode {
         DeclineCode::Rank,
         DeclineCode::Shape,
         DeclineCode::DynamicShape,
+        DeclineCode::UnknownRank,
+        DeclineCode::DataDependentShape,
         DeclineCode::Attribute,
         DeclineCode::ContribSchema,
         DeclineCode::Partition,
@@ -1453,40 +1473,103 @@ fn lookup(qualified: &str) -> Option<&'static OpSpec> {
 /// `ep.rs` so that the reason survives `ep.rs`'s per-op-type aggregation, which keeps only the
 /// first reason per op type.
 pub fn claim_decision(view: &NodeView<'_>) -> Result<(), DeclineReason> {
-    let decision = claim_decision_uninstrumented(view);
-    if crate::ops::claim_log::enabled() {
-        crate::ops::claim_log::record(
+    let logging = crate::ops::claim_log::enabled();
+    let audit = claim_audit(view, logging);
+    if logging {
+        crate::ops::claim_log::record_audit(
             &view.qualified_name(),
             &view.name(),
             view.since_version(),
-            decision.as_ref().map(|_| ()),
+            &audit,
         );
     }
-    decision
+    audit.decision()
 }
 
-/// The decision itself.
+/// The decision itself, plus **every** check that failed rather than only the first.
 ///
-/// Separated from [`claim_decision`] only so that the record is impossible to forget: there is one
-/// place that answers the question and one place that observes the answer.
+/// # Why this is not first-match
+///
+/// `DESIGN.md` R8: *a decline code names the first failing check, not the only one — early codes
+/// are ceilings, late codes are floors, and two decline counts are not comparable without knowing
+/// the check order.* The Phi-3.5 census learned that the hard way: `staged: 100` was read as "100
+/// nodes that only need a kernel", when in fact those nodes were rejected at the status check and
+/// **never reached the shape check at all**, so their shape viability was simply unknown. Meanwhile
+/// `dynamic-shape: 258` had already passed registration, opset, schema and status, making it the
+/// only number in that histogram that was not an upper bound.
+///
+/// A first-match histogram looks exactly like a complete one, which is why this is fixed in the
+/// producer rather than in each consumer.
+///
+/// # What is recorded
+///
+/// * `primary` — the first failure in canonical check order. Unchanged semantics, so every
+///   existing assertion on `code` keeps its meaning.
+/// * `failures` — every check that failed, in the same order.
+/// * `unevaluated` — checks that could not run because an earlier one made them meaningless.
+///   Only non-empty when the op has no row at all: without a row there is no opset window, no
+///   schema, no status and no predicate to ask.
+/// * `shape_class` — computed from the node's edges **independently of its row**, which is what
+///   makes a staged node's shape viability knowable at all.
+/// * `predicate_ok` / `predicate_ok_with_runtime_extents` — the row's own predicate, asked twice:
+///   as things are, and counterfactually with extents assumed to arrive at `Compute`. The
+///   difference between the two is the measured answer to "what does the runtime-extent work
+///   unlock", asked of the predicate itself rather than of a re-implementation of it.
+#[derive(Debug, Clone)]
+pub struct ClaimAudit {
+    pub primary: Option<DeclineReason>,
+    pub failures: Vec<DeclineReason>,
+    pub unevaluated: Vec<&'static str>,
+    pub shape_class: crate::ops::common::claim::ShapeClass,
+    pub predicate_ok: bool,
+    pub predicate_ok_with_runtime_extents: bool,
+}
+
+impl ClaimAudit {
+    /// The claim answer. Identical to what the old first-match path returned.
+    pub fn decision(&self) -> Result<(), DeclineReason> {
+        match &self.primary {
+            None => Ok(()),
+            Some(r) => Err(r.clone()),
+        }
+    }
+}
+
+/// Run every check and report all of them.
 ///
 /// The order of checks is deliberate — key, then opset, then contrib schema, then status, then the
-/// predicate — so the decline histogram attributes a node to the *first* thing that is wrong with
-/// it rather than to whichever check happened to run first. The schema check runs *before* the
-/// staged check on purpose: "the contrib schema moved under us" is a signal we want visible even
-/// while the kernel behind the row is still being written, because it invalidates the row itself
-/// rather than merely deferring it.
-fn claim_decision_uninstrumented(view: &NodeView<'_>) -> Result<(), DeclineReason> {
+/// predicate — so that `primary` attributes a node to the *first* thing that is wrong with it. The
+/// schema check runs *before* the staged check on purpose: "the contrib schema moved under us" is
+/// a signal we want visible even while the kernel behind the row is still being written, because
+/// it invalidates the row itself rather than merely deferring it.
+///
+/// `with_counterfactual` is `false` on the hot path: the second predicate evaluation is only worth
+/// paying for when something is listening.
+pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit {
+    use crate::ops::common::claim::{AssumeRuntimeExtents, classify_shapes};
+
     let qualified = view.qualified_name();
+    let shape_class = classify_shapes(view);
+
     let Some(spec) = lookup(&qualified) else {
-        return Err(decline(
+        let reason = decline(
             DeclineCode::NotRegistered,
             format_args!(
                 "no Vulkan handler is registered for `{qualified}` (opset {})",
                 view.since_version()
             ),
-        ));
+        );
+        return ClaimAudit {
+            primary: Some(reason.clone()),
+            failures: vec![reason],
+            unevaluated: vec!["opset", "contrib-schema", "status", "predicate"],
+            shape_class,
+            predicate_ok: false,
+            predicate_ok_with_runtime_extents: false,
+        };
     };
+
+    let mut failures: Vec<DeclineReason> = Vec::new();
 
     let since = view.since_version();
     if since != 0 && (since < spec.min_opset || since > spec.max_opset) {
@@ -1495,7 +1578,7 @@ fn claim_decision_uninstrumented(view: &NodeView<'_>) -> Result<(), DeclineReaso
         } else {
             spec.max_opset.to_string()
         };
-        return Err(decline(
+        failures.push(decline(
             DeclineCode::Opset,
             format_args!(
                 "`{qualified}` opset {since} is outside the supported window {}..={upper}",
@@ -1505,11 +1588,13 @@ fn claim_decision_uninstrumented(view: &NodeView<'_>) -> Result<(), DeclineReaso
     }
 
     if let Some(schema) = spec.schema {
-        schema.check(view, &qualified)?;
+        if let Err(e) = schema.check(view, &qualified) {
+            failures.push(e);
+        }
     }
 
     if let OpStatus::Staged(blocker) = spec.status {
-        return Err(decline(
+        failures.push(decline(
             DeclineCode::Staged,
             format_args!(
                 "`{qualified}` is in the op table but not enabled: {blocker}. It runs on the CPU \
@@ -1518,7 +1603,29 @@ fn claim_decision_uninstrumented(view: &NodeView<'_>) -> Result<(), DeclineReaso
         ));
     }
 
-    (spec.claim)(view, spec)
+    let predicate = (spec.claim)(view, spec);
+    let predicate_ok = predicate.is_ok();
+    if let Err(e) = predicate {
+        failures.push(e);
+    }
+
+    let predicate_ok_with_runtime_extents = if !with_counterfactual {
+        predicate_ok
+    } else if predicate_ok {
+        true
+    } else {
+        let _guard = AssumeRuntimeExtents::on();
+        (spec.claim)(view, spec).is_ok()
+    };
+
+    ClaimAudit {
+        primary: failures.first().cloned(),
+        failures,
+        unevaluated: Vec::new(),
+        shape_class,
+        predicate_ok,
+        predicate_ok_with_runtime_extents,
+    }
 }
 
 /// Convenience wrapper for the boolean question.

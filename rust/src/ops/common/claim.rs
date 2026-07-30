@@ -31,17 +31,171 @@ use super::shape_plan::{MAX_RANK, ShapePlan};
 /// What every claim predicate returns.
 pub type ClaimResult = Result<(), DeclineReason>;
 
-/// Whether a fully static shape is required before an op may be claimed.
+/// Whether the **engine** can carry a tensor extent that is not known until `Compute`.
 ///
-/// `true` today, and deliberately so. Push constants are filled at `Compile` time from the
-/// extracted `NodeDesc`, so an op whose extents are only known at execution cannot yet be
-/// dispatched correctly. Shape-agnostic recording (`OP_COVERAGE.md` OQ-M1) is what flips this, and
-/// when it does it flips **here**, once, rather than in sixty predicates.
+/// `false` today, and the value is a statement about `vk::session`, not about this module.
+/// `CompiledKernel` stores `push_constants: Vec<u8>` and `workgroups: [u32; 3]` baked during
+/// `Compile`, and `dispatch_ort` sizes its allocations from `input_byte_sizes` captured at the
+/// same time and never calls `GetTensorTypeAndShape`. Until those three things change, a node
+/// whose extents are symbolic cannot be dispatched *correctly* — it would be dispatched with
+/// garbage extents, which is a wrong answer rather than an error, and wrong answers are the one
+/// failure mode this project has decided it will not ship.
 ///
-/// The honest consequence: until OQ-M1 lands, a decoder graph with symbolic `batch`/`seq` declines
-/// with `[dynamic-shape]`. That shows up in the decline histogram as a single dominant bucket,
-/// which is exactly the signal we want it to produce.
-pub const REQUIRE_STATIC_SHAPES: bool = true;
+/// So this is the flip point for `DESIGN.md` §8.8 / R8 and `OP_COVERAGE.md` §7.4.4, and flipping
+/// it is gated on exactly three engine changes, none of them in this file:
+///
+/// 1. `vk::session::CompiledKernel::{push_constants, workgroups}` stop being baked at `Compile`.
+/// 2. `VulkanSession::dispatch_ort` reads real shapes at `Compute` instead of reusing the
+///    compile-time byte sizes.
+/// 3. The translate handlers are re-run (or replayed) against those real shapes.
+///
+/// **It flips here, once, rather than in sixty predicates** — that was the point of putting it in
+/// one place, and it survives the design correction below.
+///
+/// # The design correction (2026-07-29)
+///
+/// The previous constant was `REQUIRE_STATIC_SHAPES`, and it collapsed three genuinely different
+/// situations into one decline bucket. Requiring fully static shapes was **right for a
+/// static-shape EP and is wrong for an LLM EP**: in a decoder the sequence length varies per call
+/// by definition, so an EP that only claims static shapes claims nothing on the second token.
+/// This is a change of target, not a defect that was shipped. What replaces it is
+/// [`ShapeClass`]: rank-known-extents-symbolic is a *floor* that this flag unlocks, rank-unknown
+/// is a hard decline, and data-dependent output shape is permanent.
+pub const ENGINE_ACCEPTS_RUNTIME_EXTENTS: bool = false;
+
+/// Measurement-only override of [`ENGINE_ACCEPTS_RUNTIME_EXTENTS`].
+///
+/// Set **only** by [`AssumeRuntimeExtents`], which the registry's audit pass uses to ask each
+/// predicate a counterfactual question: *would you claim this node if extents arrived at
+/// `Compute`?* The answer is recorded in the claim log and never influences a claim.
+///
+/// This exists because the alternative — estimating the answer in a Python simulation over the
+/// ONNX file — is how `OP_COVERAGE.md` §7.4 got its numbers, and a simulation of our own predicate
+/// is a re-implementation of our own predicate. Asking the predicate itself cannot drift from it.
+static ASSUME_RUNTIME_EXTENTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True when extents that are only known at `Compute` are acceptable *right now*.
+pub fn runtime_extents_ok() -> bool {
+    ENGINE_ACCEPTS_RUNTIME_EXTENTS
+        || ASSUME_RUNTIME_EXTENTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// RAII guard that turns the counterfactual on for the current thread's audit pass and restores
+/// the previous value on drop, including on unwind.
+///
+/// Deliberately not `pub`: nothing outside the registry audit may ask a predicate to lie.
+pub(crate) struct AssumeRuntimeExtents(bool);
+
+impl AssumeRuntimeExtents {
+    pub(crate) fn on() -> Self {
+        Self(ASSUME_RUNTIME_EXTENTS.swap(true, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Drop for AssumeRuntimeExtents {
+    fn drop(&mut self) {
+        ASSUME_RUNTIME_EXTENTS.store(self.0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// How well determined a node's shapes are, independent of which op it is.
+///
+/// `DESIGN.md` §8.8 requires the claim path to distinguish three cases that the old
+/// static-or-not test collapsed into one. The distinction matters for planning, not just for
+/// diagnostics: only the middle case is unlocked by moving extents to `Compute`, so a histogram
+/// that merges them cannot tell you what that work buys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShapeClass {
+    /// Every edge has a known rank and every extent is a literal. Dispatchable today.
+    Static,
+    /// Every edge has a known rank; at least one extent is symbolic. **This is the LLM case.**
+    /// Claimable once extents are runtime parameters; nothing about the kernel changes.
+    ExtentsSymbolic,
+    /// At least one edge has no shape at all, so even the rank is unknown. Not claimable: rank
+    /// determines the indexing arithmetic and the descriptor layout, which are baked into the
+    /// pipeline, not into a push constant. No amount of runtime extent handling reaches this.
+    RankUnknown,
+    /// The op's *output* shape depends on input **values**, not input shapes. Permanently
+    /// declined: the output allocation cannot be sized before the kernel that determines it has
+    /// run, which the one-command-buffer-per-subgraph model (`ENGINE.md` §1) does not allow.
+    DataDependent,
+}
+
+impl ShapeClass {
+    /// Stable lowercase tag for the claim log and for census tooling.
+    pub const fn tag(self) -> &'static str {
+        match self {
+            ShapeClass::Static => "static",
+            ShapeClass::ExtentsSymbolic => "extents-symbolic",
+            ShapeClass::RankUnknown => "rank-unknown",
+            ShapeClass::DataDependent => "data-dependent",
+        }
+    }
+
+    /// Every class, for exhaustive tests.
+    pub const ALL: &'static [ShapeClass] = &[
+        ShapeClass::Static,
+        ShapeClass::ExtentsSymbolic,
+        ShapeClass::RankUnknown,
+        ShapeClass::DataDependent,
+    ];
+}
+
+/// Ops whose output shape is a function of input **values** rather than input shapes.
+///
+/// Hand-maintained and deliberately short. Membership is a property of the ONNX operator, not of
+/// our implementation, so it does not change when we write a kernel — which is exactly why it is
+/// separate from [`OpStatus::Staged`](crate::registry::OpStatus).
+///
+/// `Reshape`, `Slice` and `Expand` are **not** here: their shape input is very often a graph
+/// initializer, in which case the shape is known at `Compile` and
+/// [`DispatchContext::read_const_i64`](crate::engine::DispatchContext::read_const_i64) reads it.
+/// They are data-dependent only when that input is computed, which is a per-node fact and belongs
+/// in a predicate rather than in this list.
+const DATA_DEPENDENT_OUTPUT_SHAPE: &[&str] = &[
+    "NonZero",
+    "Unique",
+    "Compress",
+    "StringSplit",
+    "TopK",     // K is an input tensor
+    "RoiAlign", // output count follows the roi tensor's row count
+    "NonMaxSuppression",
+];
+
+/// Whether this op type's output shape is value-dependent. See [`DATA_DEPENDENT_OUTPUT_SHAPE`].
+pub fn is_data_dependent_shape(op_type: &str) -> bool {
+    DATA_DEPENDENT_OUTPUT_SHAPE.contains(&op_type)
+}
+
+/// Classify a node's shapes, independent of its registry row.
+///
+/// Deliberately **not** routed through the op's own predicate: the point of this function is to
+/// answer "is this node shape-viable?" for nodes whose predicate never ran because an earlier
+/// check rejected them. A `[staged]` node's shape viability is otherwise unknowable, which is the
+/// defect R8 names.
+pub fn classify_shapes(view: &NodeView<'_>) -> ShapeClass {
+    if is_data_dependent_shape(&view.op_type()) {
+        return ShapeClass::DataDependent;
+    }
+    let mut worst = ShapeClass::Static;
+    let edges = view
+        .input_types()
+        .into_iter()
+        .chain(view.output_types())
+        .flatten();
+    for edge in edges {
+        let Some(shape) = edge.shape.as_ref() else {
+            // An omitted optional input reports no type at all and is filtered out above; a
+            // present edge with no shape means inference did not reach it.
+            return ShapeClass::RankUnknown;
+        };
+        if shape.iter().any(|d| *d < 0) {
+            worst = ShapeClass::ExtentsSymbolic;
+        }
+    }
+    worst
+}
 
 /// Fetch input `i`'s type, declining if the slot is absent.
 ///
@@ -86,12 +240,25 @@ pub(crate) fn check_dtype(spec: &OpSpec, edge: &EdgeType, what: &str) -> ClaimRe
     Ok(())
 }
 
-/// Check one edge's rank and staticness.
+/// Check one edge's rank and extents.
+///
+/// Three outcomes, deliberately carrying three different [`DeclineCode`]s (`DESIGN.md` §8.8):
+///
+/// * **no shape at all** → `[unknown-rank]`. Rank determines the indexing arithmetic and the
+///   descriptor layout, both baked into the pipeline. Runtime extents do not reach this.
+/// * **rank known, extents symbolic** → `[dynamic-shape]`, and only while the engine still bakes
+///   extents at `Compile`. This is the LLM case and it is a *floor*: every node in this bucket
+///   has already passed registration, opset, schema and status, so shape is its sole blocker.
+/// * **rank too large** → `[rank]`, permanent for the shared indexing helper.
+///
+/// Merging the first two into one bucket is what made the Phi-3.5 histogram unreadable: one is
+/// unlocked by work we have costed, the other never is.
 pub(crate) fn check_shape(spec: &OpSpec, edge: &EdgeType, what: &str) -> ClaimResult {
     let Some(rank) = edge.rank() else {
         deny!(
-            DynamicShape,
-            "`{}` {what} has no shape; shape inference did not reach this node",
+            UnknownRank,
+            "`{}` {what} has no shape at all; shape inference did not reach this node, so even \
+             its rank is unknown and no runtime-extent handling can recover it",
             spec.op_type
         );
     };
@@ -101,15 +268,14 @@ pub(crate) fn check_shape(spec: &OpSpec, edge: &EdgeType, what: &str) -> ClaimRe
         "`{}` {what} has rank {rank}; the shared indexing helper handles at most {MAX_RANK}",
         spec.op_type
     );
-    if REQUIRE_STATIC_SHAPES {
-        require!(
-            edge.is_static(),
-            DynamicShape,
-            "`{}` {what} has a symbolic dimension; this EP fills push constants at compile time, \
-             so extents must be known then",
-            spec.op_type
-        );
-    }
+    require!(
+        edge.is_static() || runtime_extents_ok(),
+        DynamicShape,
+        "`{}` {what} has rank {rank} but a symbolic extent; the kernel takes extents as push \
+         constants, but the engine still bakes them at compile time, so this node is claimable \
+         only once extents are runtime parameters",
+        spec.op_type
+    );
     Ok(())
 }
 
@@ -139,23 +305,74 @@ fn check_single_output(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 }
 
 /// The shapes of `n` inputs must broadcast together.
+///
+/// Symbolic-aware, because "extents symbolic" must not silently become "unchecked". A symbolic
+/// extent is compatible with anything — it may turn out to be 1 or `n` at run time and the
+/// generic broadcast path handles both — but the *rank* relationship and every pair of **literal**
+/// extents are still checked here, at `Compile`, where a mismatch is a decline rather than a wrong
+/// answer.
+///
+/// The consequence for dispatch, and it is the one thing the caller must know: when any extent is
+/// symbolic the `all_identical` fast path cannot be decided at `Compile` (`-1` and `-1` are not
+/// provably equal from inside the EP — ORT reports symbolic dims as `-1` and this view does not
+/// carry the `dim_param` name). The handler must therefore select the general broadcast path.
+/// That is a performance choice, not a correctness one.
 fn check_broadcast(view: &NodeView<'_>, spec: &OpSpec, n: usize) -> ClaimResult {
-    if !REQUIRE_STATIC_SHAPES {
-        return Ok(());
-    }
     let mut shapes: Vec<Vec<i64>> = Vec::with_capacity(n);
     for i in 0..n {
         let edge = input_edge(view, spec, i)?;
         let Some(s) = edge.shape else {
-            deny!(DynamicShape, "`{}` input {i} has no shape", spec.op_type);
+            deny!(
+                UnknownRank,
+                "`{}` input {i} has no shape at all, so the broadcast relationship cannot be \
+                 decided",
+                spec.op_type
+            );
         };
         shapes.push(s);
     }
     let refs: Vec<&[i64]> = shapes.iter().map(Vec::as_slice).collect();
-    match ShapePlan::broadcast(&refs) {
-        Ok(_) => Ok(()),
-        Err(e) => deny!(Shape, "`{}` inputs do not broadcast: {e}", spec.op_type),
+
+    if refs.iter().all(|s| s.iter().all(|d| *d >= 0)) {
+        return match ShapePlan::broadcast(&refs) {
+            Ok(_) => Ok(()),
+            Err(e) => deny!(Shape, "`{}` inputs do not broadcast: {e}", spec.op_type),
+        };
     }
+
+    // At least one symbolic extent: check what is checkable.
+    let rank = refs.iter().map(|s| s.len()).max().unwrap_or(0);
+    require!(
+        rank <= MAX_RANK,
+        Rank,
+        "`{}` broadcasts to rank {rank}; the shared indexing helper handles at most {MAX_RANK}",
+        spec.op_type
+    );
+    for axis_from_right in 0..rank {
+        let mut literal: Option<i64> = None;
+        for s in &refs {
+            let Some(idx) = s.len().checked_sub(axis_from_right + 1) else {
+                continue; // this input is shorter; it broadcasts as 1
+            };
+            let d = s[idx];
+            if d < 0 || d == 1 {
+                continue;
+            }
+            match literal {
+                None => literal = Some(d),
+                Some(prev) if prev != d => {
+                    deny!(
+                        Shape,
+                        "`{}` inputs do not broadcast: axis {axis_from_right} from the right is \
+                         {prev} on one input and {d} on another",
+                        spec.op_type
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The generic elementwise predicate, parameterised entirely by the row.
@@ -504,16 +721,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_shape_is_tagged_dynamic_shape() {
+    fn missing_shape_is_tagged_unknown_rank_not_dynamic_shape() {
+        // The distinction is the whole point of DESIGN.md §8.8: `unknown-rank` is never unlocked
+        // by runtime extents, `dynamic-shape` always is. Merging them made the Phi-3.5 histogram
+        // unreadable.
         let spec = &crate::ops::elementwise::OPS[0];
         let edge = EdgeType {
             dtype: Some(DType::F32),
             shape: None,
         };
         let err = check_shape(spec, &edge, "input 0").unwrap_err();
+        assert_eq!(DeclineCode::of_reason(&err), Some(DeclineCode::UnknownRank));
+        let _guard = AssumeRuntimeExtents::on();
+        let still = check_shape(spec, &edge, "input 0").unwrap_err();
         assert_eq!(
-            DeclineCode::of_reason(&err),
-            Some(DeclineCode::DynamicShape)
+            DeclineCode::of_reason(&still),
+            Some(DeclineCode::UnknownRank),
+            "runtime extents must not rescue an unknown rank"
         );
     }
 
@@ -530,6 +754,96 @@ mod tests {
             Some(DeclineCode::DynamicShape)
         );
         assert!(err.contains("symbolic"), "{err}");
+    }
+
+    #[test]
+    fn symbolic_extents_are_accepted_once_extents_are_runtime_parameters() {
+        // The counterfactual the audit asks. A symbolic *extent* on a known rank is exactly the
+        // LLM case: nothing about the kernel changes, only where the number comes from.
+        let spec = &crate::ops::elementwise::OPS[0];
+        let edge = EdgeType {
+            dtype: Some(DType::F32),
+            shape: Some(vec![-1, -1, 8]),
+        };
+        assert!(check_shape(spec, &edge, "input 0").is_err());
+        let _guard = AssumeRuntimeExtents::on();
+        assert!(check_shape(spec, &edge, "input 0").is_ok());
+    }
+
+    #[test]
+    fn the_counterfactual_guard_restores_the_previous_value() {
+        assert!(!runtime_extents_ok());
+        {
+            let _outer = AssumeRuntimeExtents::on();
+            assert!(runtime_extents_ok());
+            {
+                let _inner = AssumeRuntimeExtents::on();
+                assert!(runtime_extents_ok());
+            }
+            assert!(runtime_extents_ok(), "inner guard clobbered the outer one");
+        }
+        assert!(
+            !runtime_extents_ok(),
+            "the counterfactual leaked out of its scope; a claim could be taken on a lie"
+        );
+    }
+
+    #[test]
+    fn shape_classes_are_ordered_by_how_hard_they_are() {
+        // Static < ExtentsSymbolic < RankUnknown < DataDependent, so `max` over a node's edges
+        // yields the worst class, which is what `classify_shapes` relies on for readability.
+        assert!(ShapeClass::Static < ShapeClass::ExtentsSymbolic);
+        assert!(ShapeClass::ExtentsSymbolic < ShapeClass::RankUnknown);
+        assert!(ShapeClass::RankUnknown < ShapeClass::DataDependent);
+        let tags: Vec<&str> = ShapeClass::ALL.iter().map(|c| c.tag()).collect();
+        assert_eq!(
+            tags,
+            [
+                "static",
+                "extents-symbolic",
+                "rank-unknown",
+                "data-dependent"
+            ]
+        );
+    }
+
+    #[test]
+    fn data_dependent_ops_are_a_property_of_onnx_not_of_our_progress() {
+        // These never become claimable by writing a kernel, which is why membership lives here
+        // and not in `OpStatus::Staged`.
+        assert!(is_data_dependent_shape("NonZero"));
+        assert!(is_data_dependent_shape("TopK"));
+        assert!(!is_data_dependent_shape("Add"));
+        // Reshape's shape input is usually an initializer, so it is decided per node.
+        assert!(!is_data_dependent_shape("Reshape"));
+    }
+
+    #[test]
+    fn symbolic_extents_do_not_disable_broadcast_checking() {
+        // A symbolic extent is compatible with anything, but two *literal* extents that disagree
+        // are still a decline — otherwise "extents symbolic" quietly becomes "unchecked".
+        let spec = &crate::ops::elementwise::OPS[0];
+        let a: Vec<i64> = vec![-1, 3, 8];
+        let b: Vec<i64> = vec![-1, 5, 8];
+        let refs: Vec<&[i64]> = vec![&a, &b];
+        // Mirrors the symbolic branch of `check_broadcast` without needing a NodeView.
+        let mut clash = false;
+        for axis in 0..3 {
+            let mut lit: Option<i64> = None;
+            for s in &refs {
+                let d = s[s.len() - 1 - axis];
+                if d < 0 || d == 1 {
+                    continue;
+                }
+                match lit {
+                    None => lit = Some(d),
+                    Some(p) if p != d => clash = true,
+                    Some(_) => {}
+                }
+            }
+        }
+        assert!(clash, "3 vs 5 on the same axis must not broadcast");
+        let _ = spec;
     }
 
     #[test]
@@ -580,8 +894,11 @@ mod tests {
     }
 
     #[test]
-    fn static_shape_policy_is_a_single_switch() {
-        // If this ever flips, OQ-M1 landed and the decline histogram's dominant bucket changes.
-        const { assert!(REQUIRE_STATIC_SHAPES) };
+    fn runtime_extent_support_is_a_single_switch() {
+        // If this ever flips, `DESIGN.md` §8.8 landed and the decline histogram's dominant bucket
+        // changes. It must not flip before the engine stops baking extents at Compile: a claim
+        // taken on a symbolic extent against a plan that baked one produces a *wrong answer*, not
+        // an error. See `ENGINE_ACCEPTS_RUNTIME_EXTENTS` for the three engine preconditions.
+        const { assert!(!ENGINE_ACCEPTS_RUNTIME_EXTENTS) };
     }
 }

@@ -30,6 +30,23 @@
 //! | `claimed` | bool            | `true` iff this EP took the node                                |
 //! | `code`    | string \| null  | the [`DeclineCode`](crate::registry::DeclineCode) tag; `null` when claimed |
 //! | `reason`  | string \| null  | the full human-readable decline sentence; `null` when claimed   |
+//! | `codes`   | array\<string\> | **every** check that failed, in canonical order; `[]` when claimed |
+//! | `reasons` | array\<string\> | the sentence for each entry in `codes`, same order              |
+//! | `unevaluated` | array\<string\> | checks that could not run at all (only for an unregistered op) |
+//! | `shape_class` | string      | `static` \| `extents-symbolic` \| `rank-unknown` \| `data-dependent` |
+//! | `predicate_ok` | bool           | the row's predicate accepts this node *today*, ignoring status  |
+//! | `predicate_ok_runtime_extents` | bool | the row's predicate accepts it if extents arrive at `Compute` |
+//!
+//! # `code` is first-match; `codes` is the whole truth
+//!
+//! `code` names the **first** failing check, not the only one. That is what `DESIGN.md` R8 is
+//! about, and it is not a cosmetic distinction: on Phi-3.5, `staged: 100` was read as "100 nodes
+//! that only need a kernel" when in fact those nodes were rejected at the status check and never
+//! reached the shape check, so their shape viability was unknown. `codes`, `shape_class` and
+//! `predicate_ok_runtime_extents` exist so that no future census has to guess.
+//!
+//! `shape_class` is computed from the node's edges **without consulting its registry row**, which
+//! is the only way a staged node's shape viability can be known at all.
 //!
 //! Assertions this supports, which are the two Trinity asked for:
 //!
@@ -175,6 +192,50 @@ pub(crate) fn line(
     )
 }
 
+/// Render one JSON array of already-escaped-as-strings items.
+fn json_str_array<'a>(items: impl Iterator<Item = &'a str>) -> String {
+    let body: Vec<String> = items.map(|s| format!("\"{}\"", escape(s))).collect();
+    format!("[{}]", body.join(","))
+}
+
+/// Render one full-audit record.
+///
+/// Extends [`line`] rather than replacing it: `code` and `reason` keep first-match semantics so
+/// every existing assertion still means what it meant, and the complete picture arrives in the
+/// new fields. See the module docs on why first-match alone is not usable for planning.
+pub(crate) fn audit_line(
+    qualified: &str,
+    node: &str,
+    opset: i32,
+    audit: &crate::registry::ClaimAudit,
+) -> String {
+    let base = line(
+        qualified,
+        node,
+        opset,
+        audit.primary.as_ref().map_or(Ok(()), Err),
+    );
+    let codes = json_str_array(
+        audit
+            .failures
+            .iter()
+            .map(|r| DeclineCode::of_reason(r).map_or("other", DeclineCode::tag)),
+    );
+    let reasons = json_str_array(audit.failures.iter().map(std::convert::AsRef::as_ref));
+    let unevaluated = json_str_array(audit.unevaluated.iter().copied());
+    format!(
+        "{},\"codes\":{},\"reasons\":{},\"unevaluated\":{},\"shape_class\":\"{}\",\
+         \"predicate_ok\":{},\"predicate_ok_runtime_extents\":{}}}",
+        base.trim_end_matches('}'),
+        codes,
+        reasons,
+        unevaluated,
+        audit.shape_class.tag(),
+        audit.predicate_ok,
+        audit.predicate_ok_with_runtime_extents,
+    )
+}
+
 /// Append one decision to the record, if the record is enabled.
 ///
 /// Infallible by design: see the module docs.
@@ -183,6 +244,14 @@ pub fn record(qualified: &str, node: &str, opset: i32, outcome: Result<(), &Decl
         return;
     };
     record_to(want, &line(qualified, node, opset, outcome));
+}
+
+/// Append one full-audit decision to the record, if the record is enabled.
+pub fn record_audit(qualified: &str, node: &str, opset: i32, audit: &crate::registry::ClaimAudit) {
+    let Some(want) = path() else {
+        return;
+    };
+    record_to(want, &audit_line(qualified, node, opset, audit));
 }
 
 /// Append one already-rendered line to `want`, reopening the sink if the path has changed.
@@ -214,10 +283,109 @@ fn record_to(want: PathBuf, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::common::claim::ShapeClass;
+    use crate::registry::ClaimAudit;
     use std::borrow::Cow;
 
     fn reason(code: DeclineCode, detail: &str) -> DeclineReason {
         crate::registry::decline(code, detail)
+    }
+
+    fn audit(failures: Vec<DeclineReason>, shape_class: ShapeClass) -> ClaimAudit {
+        ClaimAudit {
+            primary: failures.first().cloned(),
+            failures,
+            unevaluated: Vec::new(),
+            shape_class,
+            predicate_ok: false,
+            predicate_ok_with_runtime_extents: false,
+        }
+    }
+
+    #[test]
+    fn the_audit_line_keeps_first_match_semantics_for_code() {
+        // Every existing assertion reads `code`. It must keep meaning "the first failing check"
+        // even though the record now also carries the complete set.
+        let a = audit(
+            vec![
+                reason(DeclineCode::Staged, "kernel not written"),
+                reason(DeclineCode::DynamicShape, "symbolic extent"),
+            ],
+            ShapeClass::ExtentsSymbolic,
+        );
+        let l = audit_line(
+            "com.microsoft::SkipSimplifiedLayerNormalization",
+            "n0",
+            1,
+            &a,
+        );
+        assert!(l.contains(r#""code":"staged""#), "{l}");
+        assert!(l.contains(r#""claimed":false"#), "{l}");
+    }
+
+    #[test]
+    fn the_audit_line_reports_every_failing_check_not_only_the_first() {
+        // DESIGN.md R8. This is the record that makes a staged node's shape viability knowable:
+        // without it the node above looks like "needs a kernel" and nothing more.
+        let a = audit(
+            vec![
+                reason(DeclineCode::Staged, "kernel not written"),
+                reason(DeclineCode::DynamicShape, "symbolic extent"),
+            ],
+            ShapeClass::ExtentsSymbolic,
+        );
+        let l = audit_line(
+            "com.microsoft::SkipSimplifiedLayerNormalization",
+            "n0",
+            1,
+            &a,
+        );
+        assert!(l.contains(r#""codes":["staged","dynamic-shape"]"#), "{l}");
+        assert!(l.contains(r#""shape_class":"extents-symbolic""#), "{l}");
+        assert!(l.contains(r#""predicate_ok":false"#), "{l}");
+        assert!(l.contains(r#""predicate_ok_runtime_extents":false"#), "{l}");
+    }
+
+    #[test]
+    fn a_claimed_node_records_an_empty_failure_set() {
+        let a = audit(Vec::new(), ShapeClass::Static);
+        let l = audit_line("Add", "n0", 14, &a);
+        assert!(l.contains(r#""claimed":true"#), "{l}");
+        assert!(l.contains(r#""code":null"#), "{l}");
+        assert!(l.contains(r#""codes":[]"#), "{l}");
+        assert!(l.contains(r#""shape_class":"static""#), "{l}");
+    }
+
+    #[test]
+    fn an_unregistered_op_records_what_could_not_be_evaluated() {
+        // Without a row there is no opset window, no schema, no status and no predicate. Saying
+        // so is the difference between "these checks passed" and "these checks never ran", which
+        // is the same distinction R8 is about, one level down.
+        let mut a = audit(
+            vec![reason(DeclineCode::NotRegistered, "no handler")],
+            ShapeClass::Static,
+        );
+        a.unevaluated = vec!["opset", "contrib-schema", "status", "predicate"];
+        let l = audit_line("Gather", "n0", 13, &a);
+        assert!(
+            l.contains(r#""unevaluated":["opset","contrib-schema","status","predicate"]"#),
+            "{l}"
+        );
+    }
+
+    #[test]
+    fn the_audit_line_is_one_line_of_valid_json_lines() {
+        let a = audit(
+            vec![reason(
+                DeclineCode::DynamicShape,
+                "has a \"symbolic\" extent\nwith a newline",
+            )],
+            ShapeClass::ExtentsSymbolic,
+        );
+        let l = audit_line("Mul", "node\"with\"quotes", 14, &a);
+        assert!(!l.contains('\n'), "a record must never span lines: {l}");
+        assert_eq!(l.matches("{\"op\"").count(), 1);
+        assert!(l.starts_with('{') && l.ends_with('}'), "{l}");
     }
 
     #[test]
