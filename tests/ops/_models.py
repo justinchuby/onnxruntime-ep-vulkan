@@ -734,6 +734,7 @@ def make_matmulnbits_model(
     activation_dtype: ir.DataType = ir.DataType.FLOAT,
     with_zero_points: bool = True,
     rows: int = 1,
+    symbolic_batch: bool = False,
 ) -> tuple[bytes, dict[str, np.ndarray]]:
     """Build a minimal MatMulNBits ONNX graph and return (model_bytes, feeds).
 
@@ -761,6 +762,13 @@ def make_matmulnbits_model(
     rows :
         Number of activation rows. 1 is decode; >1 is prefill, which the GEMV handles by
         running one workgroup per output element rather than by tiling.
+    symbolic_batch :
+        If `True`, declare the leading activation dimension as a symbolic string ("batch")
+        rather than the concrete `rows` integer. This triggers ORT's dynamic-shape path,
+        which exercises the session-layer runtime-extents dispatch in `session.rs`. The feeds
+        are unchanged (rows-row activation). Use this to catch bugs where a kernel computes
+        correctly with static shapes but produces zeros when the leading dim is symbolic —
+        the exact failure mode found in the 2026-07-30 all-zero-logits investigation.
 
     Returns
     -------
@@ -822,8 +830,9 @@ def make_matmulnbits_model(
     )
 
     # Build graph.
-    x_info = oh.make_tensor_value_info("X", act_tp_dtype, [rows, K])
-    y_info = oh.make_tensor_value_info("Y", act_tp_dtype, [rows, N])
+    batch_dim = "batch" if symbolic_batch else rows
+    x_info = oh.make_tensor_value_info("X", act_tp_dtype, [batch_dim, K])
+    y_info = oh.make_tensor_value_info("Y", act_tp_dtype, [batch_dim, N])
 
     graph = oh.make_graph(
         [node],

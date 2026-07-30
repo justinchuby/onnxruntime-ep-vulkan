@@ -706,3 +706,59 @@ our EP subgraphs have 1 output each and correctly write it.
 
 **Decision record:** `switch-kv-cache-explained.md` in main inbox.
 
+---
+
+## Session 24 — Mouse's independent fix merged; messenger positive control confirmed (2026-07-30T08:35:04-07:00)
+
+**Coordinator task:** Resolve merge conflict between `squad/switch` (HEAD, my binding fix from session 23) and `squad/mouse` (Mouse's independent fix for the same root cause). Confirm the two fixes are genuinely equivalent — specifically that `eff_bindings` correctly reproduces the duplicate-`scales`-at-slot-3 placeholder. Run Mouse's regression tests. Confirm the EP messenger is a positive control, not just silent.
+
+**D-S24-01 — Equivalence of the two fixes:**
+Both fixes capture `k.bindings` from `ShapeOnlyRecorder::dispatch()` and use those captured tokens for both `n_bindings` (pipeline layout) and `buf_bindings` (descriptor writes). The *structural* difference is cosmetic:
+- Mine (session 23): 5-tuple `captured: Option<(pc, wg, sc, shader, Vec<u64>)>`
+- Mouse's: 4-tuple `captured` + separate `captured_bindings: Option<Vec<u64>>`
+
+Mouse's split is cleaner (separation of concerns). Adopted his structural form in the resolution.
+
+**D-S24-02 — duplicate-`scales` placeholder verified correct:**
+`ShapeOnlyRecorder::dispatch` receives `k: KernelRequest` where `k.bindings` was assembled by the translate handler. For MatMulNBits without `zero_points`, the translate rebinds `scales` as an inert ZP placeholder: `KernelRequest.bindings = [A=0, B=1, scales=2, zp-placeholder=2, Y=3]` (5 entries). `captured_bindings` captures this exactly. The pipeline layout gets 5 slots; Y is at binding index 4; the shader writes there correctly. The duplicate-2 token maps to the same `gpu_inputs[2]` (scales buffer) twice in `buf_bindings`, which is harmless. This is the right answer for the right reason.
+
+**Falsifier named:** the instrument that would go red if "equivalent for the right reason" were false is Mouse's `test_matmulnbits_fp16_dynamic_batch_multirun` — a node without zero_points in a multi-run session on both devices. Result: PASSED on device 0 (Intel Iris Xe) and device 1 (RTX 4060).
+
+**D-S24-03 — Resolution approach:**
+- `session.rs`: adopted Mouse's structural split (`captured` 4-tuple + `captured_bindings`) + kept my struct-level `# Binding correction` docstring (Mouse's struct docstring was incorrectly written to say "need not be recomputed") + kept my `buf_bindings` comment + kept my `DUMP_OUTPUT_BYTES` diagnostic probe (Mouse removed it; useful for future debugging). Mouse's added comments on `eff_bindings` and Step 1.6 bindings note adopted.
+- `dispatch_integration.rs`: kept my version entirely (plant + `ep_messenger_fires_for_planted_fence_leak` test — Mouse removed both; coordinator requires the plant for M0 criterion 3).
+- `instance.rs`: no conflict (auto-merged).
+- `test_phi35.py`: auto-merged cleanly; fixed stale comment block that said "marked xfail(strict=True)" (the decorator had been removed by Mouse's changes; the prose was left behind).
+- `test_matmulnbits.py`: auto-merged cleanly (Mouse's fp16 regression tests adopted).
+
+**D-S24-04 — Mouse's test_phi35.py changes (for coordinator/Trinity):**
+Mouse made four categories of edits to Trinity's file:
+1. **Header docstring rewritten** — updated EXPECTED RESULT section to reflect 161 nodes claimed, islands 161, logits correct. Added CORRECTNESS GUARDS section crediting `test_phi35_f16_matmulnbits_logits_nonzero` (Mouse) and `test_phi35_vulkan_matches_cpu_logits` (Trinity).
+2. **`xfail(strict=True)` removed** from `test_phi35_vulkan_matches_cpu_logits` — correct (coordinator confirmed top-1 agreement on both devices satisfies the condition the marker named). Trinity should confirm.
+3. **`test_phi35_vulkan_session_determinism` docstring rewritten** — trimmed the "RENAMED FROM" and "VACUOUS-PASS CONDITION" sections; added reference to the new nonzero/multirun tests as the correctness gates.
+4. **Two new slow tests added:**
+   - `test_phi35_f16_matmulnbits_logits_nonzero`: guards against the 2026-07-30 failure mode (dispatches with compute_failures=0 but all-zero logits); has hard EP-presence gate; asserts logit range > 1.0 AND top-1 token matches CPU.
+   - `test_phi35_vulkan_multirun_logits_stable`: 3-run session, asserts non-zero and bit-identical across runs; replaces `test_phi35_multi_run_same_session_interior_pointer_safety` (session 22 cross-owner from Switch).
+   
+   The `test_phi35_multi_run_same_session_interior_pointer_safety` test is REMOVED in Mouse's version, replaced by the simpler `test_phi35_vulkan_multirun_logits_stable` which drops the counter/ctypes machinery. The new test is cleaner and covers the same ground (multi-run bit-identical) without owning counters (Tank's domain).
+
+**D-S24-05 — Messenger positive control confirmed:**
+```
+[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = 1
+test vk::dispatch_integration::ep_messenger_fires_for_planted_fence_leak ... ok
+```
+`ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION` fires VUID-vkDestroyDevice-device-05137 through the EP's own `VkDebugUtilsMessengerEXT`, incrementing `EP_VALIDATION_ERROR_COUNT` to 1. The messenger is not merely silent — it is wired and capturing. Test confirmed on RTX 4060 (device 1) with SDK 1.4.350.0. (Device 0 not rerun separately but the `run_add_on_device` path runs all capable devices.)
+
+**Also fixed:** stranded decision record `switch-dynamic-shape.md` was in the worktree's gitignored inbox. Moved to the integration tree's inbox (`C:\Users\justinchu\dev\onnxruntime-ep-vulkan\.squad\decisions\inbox\`).
+
+**Results:**
+- Mouse's regression tests: `test_matmulnbits_fp16_dynamic_batch` and `test_matmulnbits_fp16_dynamic_batch_multirun` — PASSED on device 0 and device 1 ✅
+- `cargo ci`: ✅ ALL CHECKS PASSED
+- Messenger positive control: ✅ `EP_VALIDATION_ERROR_COUNT = 1`
+
+**Files changed:**
+- `rust/src/vk/session.rs` — conflict resolution: Mouse's struct split adopted; my docstrings, comments, and DUMP_OUTPUT_BYTES probe retained; stale conflict markers cleared.
+- `tests/ops/test_phi35.py` — stale xfail comment block at line ~422 updated to reflect active status.
+- `.squad/agents/switch/history.md` — this session appended.
+- Decision inbox: stranded `switch-dynamic-shape.md` moved to integration tree.
+
