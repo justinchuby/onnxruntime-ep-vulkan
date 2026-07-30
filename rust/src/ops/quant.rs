@@ -785,4 +785,159 @@ mod tests {
         assert_eq!(implied_zero_points(8, 96, 2).len(), 96 * 2);
         assert!(implied_zero_points(4, 4, 1).iter().all(|&b| b == 0x88));
     }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    // P6 — no dequantised weight is ever materialised in device memory
+    // ──────────────────────────────────────────────────────────────────────────────────────
+
+    use crate::engine::DType;
+
+    /// A `DispatchContext` that records what the handler asked the engine to allocate.
+    ///
+    /// The high-water number in `AllocStats` is the *dynamic* form of the P6 assertion and needs a
+    /// live ORT session to mean anything. This is the *structural* form, and it is the stronger of
+    /// the two for this property: a dequantised weight can only reach device memory if some
+    /// handler asks for the memory, and there is exactly one call that does so — `alloc_temp`.
+    /// Counting it proves the absence for every shape at once, where a high-water threshold only
+    /// ever proves it for the shapes that were run.
+    #[derive(Default)]
+    struct AllocRecorder {
+        next: u64,
+        temp_bytes: Vec<u64>,
+        output_bytes: Vec<u64>,
+        dispatches: Vec<crate::engine::KernelRequest>,
+    }
+
+    fn desc_bytes(d: &crate::engine::TensorDesc) -> u64 {
+        let elems: i64 = d.shape.iter().product();
+        let width = match d.dtype {
+            DType::F16 => 2,
+            DType::U8 | DType::Bool => 1,
+            DType::I64 => 8,
+            _ => 4,
+        };
+        (elems.max(0) as u64) * width
+    }
+
+    impl crate::engine::DispatchContext for AllocRecorder {
+        fn resolve(
+            &mut self,
+            _r: &crate::engine::TensorRef,
+        ) -> crate::engine::EpResult<crate::engine::BufferView> {
+            self.next += 1;
+            Ok(crate::engine::BufferView::from_raw(self.next))
+        }
+        fn bind_output(
+            &mut self,
+            _o: &crate::engine::OutRef,
+            desc: crate::engine::TensorDesc,
+        ) -> crate::engine::EpResult<crate::engine::BufferView> {
+            self.output_bytes.push(desc_bytes(&desc));
+            self.next += 1;
+            Ok(crate::engine::BufferView::from_raw(self.next))
+        }
+        fn alloc_temp(
+            &mut self,
+            desc: crate::engine::TensorDesc,
+        ) -> crate::engine::EpResult<crate::engine::BufferView> {
+            self.temp_bytes.push(desc_bytes(&desc));
+            self.next += 1;
+            Ok(crate::engine::BufferView::from_raw(self.next))
+        }
+        fn dispatch(&mut self, k: crate::engine::KernelRequest) -> crate::engine::EpResult<()> {
+            self.dispatches.push(k);
+            Ok(())
+        }
+        fn read_const_i64(&self, _r: &crate::engine::TensorRef) -> Option<Vec<i64>> {
+            None
+        }
+    }
+
+    /// Build a `MatMulNBits` node in the exact form all 161 Phi-3.5 nodes take.
+    fn phi35_shaped_node(k: i64, n: i64, m: i64) -> crate::engine::NodeDesc {
+        use crate::engine::{AttrValue, NodeDesc, OutRef, TensorDesc, TensorRef};
+        let blocks = k / 32;
+        let input = |name: &str, dtype: DType, shape: Vec<i64>| TensorRef {
+            name: name.to_string(),
+            desc: Some(TensorDesc::new(dtype, shape)),
+            is_initializer: name != "A",
+        };
+        NodeDesc {
+            op_type: "MatMulNBits".to_string(),
+            name: "phi35".to_string(),
+            domain: "com.microsoft".to_string(),
+            since_version: 1,
+            attributes: [
+                ("K".to_string(), AttrValue::Int(k)),
+                ("N".to_string(), AttrValue::Int(n)),
+                ("bits".to_string(), AttrValue::Int(4)),
+                ("block_size".to_string(), AttrValue::Int(32)),
+            ]
+            .into_iter()
+            .collect(),
+            inputs: vec![
+                input("A", DType::F16, vec![1, m, k]),
+                input("B", DType::U8, vec![n, blocks, 16]),
+                input("scales", DType::F16, vec![n * blocks]),
+            ],
+            outputs: vec![OutRef {
+                name: "Y".to_string(),
+                desc: Some(TensorDesc::new(DType::F16, vec![1, m, n])),
+            }],
+        }
+    }
+
+    /// **P6.** The GEMV allocates nothing, so no dequantised weight can exist in device memory.
+    ///
+    /// The number that makes this worth asserting: at `K=8192, N=3072` the packed weight is 12 MiB
+    /// and its f32 expansion is 96 MiB. Per node, times 161 nodes. A backend that dequantises into
+    /// a scratch buffer does not merely run slower — on a 4 GiB mobile device it does not run.
+    ///
+    /// Stated as *zero allocations* rather than as a byte threshold on purpose. A threshold has to
+    /// be chosen, and any threshold generous enough not to be flaky is generous enough to hide a
+    /// small scratch buffer. Zero is not a threshold.
+    #[test]
+    fn the_gemv_materialises_no_dequantised_weight() {
+        let spec = row("MatMulNBits");
+        for (k, n) in [(3072_i64, 8192_i64), (8192, 3072), (3072, 3072)] {
+            let node = phi35_shaped_node(k, n, 1);
+            let mut rec = AllocRecorder::default();
+            (spec.translate)(spec, &node, &mut rec).expect("translate");
+
+            assert!(
+                rec.temp_bytes.is_empty(),
+                "K={k} N={n}: the GEMV asked for {} scratch buffer(s) totalling {} bytes; \
+                 dequantisation must happen in registers, never through device memory",
+                rec.temp_bytes.len(),
+                rec.temp_bytes.iter().sum::<u64>(),
+            );
+            assert_eq!(rec.dispatches.len(), 1, "one dispatch per node");
+            assert_eq!(
+                rec.output_bytes,
+                vec![(n as u64) * 2],
+                "K={k} N={n}: the only bound output must be the activation-sized result"
+            );
+        }
+    }
+
+    /// The bytes this handler causes to be written do not grow with `K`.
+    ///
+    /// This is the same property from the other side, and it is the one a reader can check without
+    /// knowing what `alloc_temp` is: `K` is the reduction extent, so anything proportional to it
+    /// is an expanded weight. Quadrupling `K` while holding `N` must change nothing at all.
+    #[test]
+    fn gemv_allocation_is_independent_of_the_reduction_extent() {
+        let spec = row("MatMulNBits");
+        let mut sizes = Vec::new();
+        for k in [1024_i64, 4096] {
+            let mut rec = AllocRecorder::default();
+            let node = phi35_shaped_node(k, 2048, 1);
+            (spec.translate)(spec, &node, &mut rec).expect("translate");
+            sizes.push((rec.output_bytes.clone(), rec.temp_bytes.clone()));
+        }
+        assert_eq!(
+            sizes[0], sizes[1],
+            "allocation grew with K, which is what an expanded weight looks like"
+        );
+    }
 }

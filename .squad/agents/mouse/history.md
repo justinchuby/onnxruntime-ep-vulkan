@@ -821,3 +821,36 @@ Generation and admission are different claims. GLSL compiling says nothing about
 can create the module, and the claim is the only place the two are reconciled.
 
 No cross-owner edits this turn.
+
+## 2026-07-30 — P6, and the run that had never been run twice
+
+Assigned `MatMulNBits` GEMV for the third time. For the third time it was already built. Checking
+the premise before starting is now the cheapest thing I do: kernel, claim row, workgroup derivation
+from the guaranteed floor, prepack transform, `accuracy_level` reasoning — all present, all green.
+
+So I went looking for what the brief did not know, and found it in someone else's file:
+`allocator.rs` names "Mouse's P6 assertion" twice, and P6 had never been asserted anywhere. The
+constraint had been stated in the design doc, quoted back to me in three consecutive briefs, and
+cited in another owner's code — and nothing in the tree would have failed if it were violated.
+**A constraint everybody repeats is not a constraint that anything enforces.**
+
+I asserted it structurally rather than dynamically, and that choice is the substance. `alloc_temp`
+is the only route from an op handler to device memory, so counting calls proves the property for
+every shape at once; a high-water threshold proves it only for shapes actually run, and any bound
+loose enough not to be flaky is loose enough to hide a small scratch buffer. **Zero is not a
+threshold.** Negative-controlled it by inserting a deliberate `alloc_temp` and watching it fail
+with the right bytes, then reverting — the same discipline as the `Int64` guard, and for the same
+reason.
+
+The other finding is Tank's, seen from my side. He measured interior pointers appearing from run 2
+of a session. I then noticed that **every model-level check on record, mine included, had run
+exactly one inference per session** — so the entire body of evidence covered run 1 and nothing else,
+and we would each have sworn the model was verified. Five runs in one session with differing feeds:
+clean on both devices. The insulation is structural, because op code never sees a raw pointer. But
+"structurally impossible" was my belief before I measured, and it is only now a result.
+
+The recurrence worth naming: a test harness has a shape, and its shape decides which bugs are
+*reachable*, entirely independently of how many assertions it makes. One inference per session is
+not a weaker version of five; it is a harness in which a whole class of defect does not exist.
+
+No cross-owner edits this turn.
