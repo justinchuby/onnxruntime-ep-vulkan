@@ -559,6 +559,144 @@ def test_phi35_vulkan_matches_cpu_logits(
     print(f"  PASSED: argmax match ✓  top-10 overlap {top10_overlap}/10 ✓")
 
 
+@pytest.mark.slow
+def test_phi35_multi_run_same_session_interior_pointer_safety(
+    phi35_onnx_path: pathlib.Path,
+    require_vulkan,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Five consecutive runs on the same session verify interior-pointer safety.
+
+    ORT's memory-pattern planner records tensor-reuse patterns on run 1 and starts
+    sub-dividing allocations from run 2 onward, handing back *interior pointers*
+    (base_handle + offset) instead of span bases.  Tank measured 52 interior pointers
+    across 5 runs, max offset 48 KiB (run 1 → 0, run 2 → 13, run 3 → 26, run 5 → 52).
+
+    If the dispatch path assumes bound pointers are span bases, the failure surfaces from
+    run 2 as a wrong answer rather than a crash.  This test catches that by requiring
+    bit-identical output across all 5 runs — if any run diverges, the planner's offset
+    introduction is corrupting the result.
+
+    It also verifies that dispatches_executed scales with the number of runs: if counter
+    does not grow from run 1 to run 5, something in the dispatch path short-circuits on
+    interior pointers rather than executing through them.
+
+    Cross-owner note (Switch → Tank): test_phi35.py is Tank's file.  This function added by
+    Switch as specified by the coordinator (CURRENT_DATETIME: 2026-07-30T03:52:28-07:00).
+    """
+    device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+
+    _ep_lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
+    _ep_dll = None
+    if _ep_lib:
+        import ctypes
+
+        try:
+            _ep_dll = ctypes.CDLL(_ep_lib)
+            _ep_dll.OrtEpVulkanResetExecutionCounters()
+        except Exception:
+            pass
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+
+    try:
+        sess = ort.InferenceSession(
+            str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS
+        )
+    except Exception as exc:
+        pytest.fail(
+            f"[Device {device_index}] Session creation FAILED: {exc}"
+        )
+
+    feeds = _build_phi35_feeds()
+    N_RUNS = 5
+    all_outputs: list[list] = []
+
+    for run_idx in range(N_RUNS):
+        try:
+            out = sess.run(None, feeds)
+        except Exception as exc:
+            pytest.fail(
+                f"[Device {device_index}] sess.run() FAILED on run {run_idx + 1}/{N_RUNS}: {exc}\n"
+                "Interior-pointer planner engages from run 2 — if this is run ≥2, the "
+                "dispatch path is likely treating an interior pointer as a span base."
+            )
+        all_outputs.append(out)
+
+    # Read counters after all 5 runs.
+    ep_counters: dict[str, int] = {}
+    if _ep_dll is not None:
+        import ctypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("struct_size", ctypes.c_uint32),
+                ("abi_version", ctypes.c_uint32),
+                ("compile_calls", ctypes.c_uint64),
+                ("subgraphs_live", ctypes.c_uint64),
+                ("subgraphs_stub", ctypes.c_uint64),
+                ("compute_calls", ctypes.c_uint64),
+                ("compute_failures", ctypes.c_uint64),
+                ("dispatches_executed", ctypes.c_uint64),
+            ]
+
+        _c = _Counters()
+        _ep_dll.OrtEpVulkanGetExecutionCounters(
+            ctypes.byref(_c), ctypes.sizeof(_c)
+        )
+        ep_counters = {
+            "compile_calls": _c.compile_calls,
+            "subgraphs_live": _c.subgraphs_live,
+            "subgraphs_stub": _c.subgraphs_stub,
+            "compute_calls": _c.compute_calls,
+            "compute_failures": _c.compute_failures,
+            "dispatches_executed": _c.dispatches_executed,
+        }
+
+    # ── Assert output consistency across all runs ─────────────────────────────
+    reference = all_outputs[0]
+    for run_idx in range(1, N_RUNS):
+        out = all_outputs[run_idx]
+        assert len(out) == len(reference), (
+            f"[Device {device_index}] run {run_idx + 1}: output count changed "
+            f"({len(out)} vs {len(reference)})"
+        )
+        for tensor_idx, (a, b) in enumerate(zip(reference, out)):
+            np.testing.assert_array_equal(
+                a,
+                b,
+                err_msg=(
+                    f"[Device {device_index}] Output[{tensor_idx}] differs on run "
+                    f"{run_idx + 1} vs run 1.  ORT's memory-pattern planner sub-divides "
+                    "allocations from run 2 onward (interior pointers).  A divergence here "
+                    "means the dispatch path treated an interior pointer as a span base."
+                ),
+            )
+
+    # ── Assert counter scaling with N_RUNS ────────────────────────────────────
+    if ep_counters:
+        dispatches = ep_counters["dispatches_executed"]
+        subgraphs_live = ep_counters["subgraphs_live"]
+        # After N_RUNS on this session, dispatches_executed should be N_RUNS × subgraphs_live.
+        expected_dispatches = N_RUNS * subgraphs_live
+        assert dispatches == expected_dispatches, (
+            f"[Device {device_index}] dispatches_executed={dispatches} after {N_RUNS} runs, "
+            f"expected {expected_dispatches} ({N_RUNS} × {subgraphs_live} subgraphs_live). "
+            "A lower count means some runs did not execute on the GPU — possibly the dispatch "
+            "path short-circuited on an interior pointer from the memory-pattern planner."
+        )
+
+    print(f"\n[Phi-3.5 multi-run / Device {device_index}]")
+    print(f"  Runs: {N_RUNS} — all outputs bit-identical ✓")
+    if ep_counters:
+        print(f"  EP counters after {N_RUNS} runs: {ep_counters}")
+        print(
+            f"  dispatches_executed={ep_counters['dispatches_executed']} = "
+            f"{N_RUNS} × {ep_counters['subgraphs_live']} subgraphs ✓"
+        )
+
+
 # ===========================================================================
 # GPT-OSS-20B integration tests
 # ===========================================================================

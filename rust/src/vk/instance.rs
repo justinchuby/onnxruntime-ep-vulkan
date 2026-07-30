@@ -35,8 +35,73 @@ use std::ffi::{CStr, CString};
 
 use ash::vk;
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use super::caps::{self, Capabilities};
 use crate::engine::{DeviceInfo, DeviceKind};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Validation messenger callback
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Running count of ERROR-severity validation messages received by the EP's messenger.
+///
+/// Incremented by [`validation_log_callback`] on every ERROR message.  Tests that plant a
+/// deliberate validation violation (via `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION`)
+/// read this counter to confirm the messenger is wired and the layer fired.
+///
+/// Reset with [`reset_ep_validation_errors`] before each assertion.
+pub(crate) static EP_VALIDATION_ERROR_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Reset [`EP_VALIDATION_ERROR_COUNT`] to zero.  Call before running the planted violation so
+/// any pre-existing warnings from instance/device creation don't contaminate the assertion.
+#[allow(dead_code)] // used only in tests, but always compiled in so the counter is always live
+pub(crate) fn reset_ep_validation_errors() {
+    EP_VALIDATION_ERROR_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// `VkDebugUtilsMessengerCallbackEXT` installed by `Instance::create` whenever
+/// `enable_validation = true` and `VK_EXT_debug_utils` is available.
+///
+/// Routes every validation message through the Rust `log` facade so ORT's session-level
+/// logging configuration (log level, output sink) controls where they appear — the same
+/// place every other EP log message goes.  This is the property Tank's finding required:
+/// the layer must be loaded *and* something in-process must be listening.
+///
+/// Also increments [`EP_VALIDATION_ERROR_COUNT`] on ERROR messages so test assertions can
+/// observe the callback without relying on a log subscriber being installed.
+///
+/// # Safety
+/// Called by the Vulkan loader on an arbitrary thread.  The callback must not call any Vulkan
+/// functions and must be safe to invoke concurrently.  Atomics and `log::*` are both safe here.
+unsafe extern "system" fn validation_log_callback(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    _message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+    _user_data: *mut std::ffi::c_void,
+) -> vk::Bool32 {
+    let msg = if data.is_null() {
+        "(empty message)".to_owned()
+    } else {
+        // SAFETY: `data` is a live pointer for the duration of this callback; `p_message`
+        // is a NUL-terminated string owned by the validation layer.
+        unsafe { CStr::from_ptr((*data).p_message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        EP_VALIDATION_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
+        log::error!("[Vulkan validation] {msg}");
+    } else if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        log::warn!("[Vulkan validation] {msg}");
+    } else {
+        log::debug!("[Vulkan validation] {msg}");
+    }
+
+    // Must return VK_FALSE; VK_TRUE is reserved for layer developers.
+    vk::FALSE
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Device-selection environment variable
@@ -115,10 +180,24 @@ pub(crate) struct Instance {
     // The _entry must be dropped AFTER handle — so _entry is declared FIRST (dropped LAST).
     _entry: ash::Entry,
     handle: ash::Instance,
+    /// Optional debug messenger, present when `enable_validation = true` and
+    /// `VK_EXT_debug_utils` was available at instance creation.
+    ///
+    /// The messenger is destroyed explicitly in `Drop` before `vkDestroyInstance`; the
+    /// `ash::ext::debug_utils::Instance` caches function pointers that are only valid while
+    /// `handle` is alive, so this order is load-bearing.
+    debug_messenger: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        // Destroy the messenger before the instance — the messenger extension's function
+        // pointers are resolved against `handle`, which must still be live.
+        if let Some((ref du, m)) = self.debug_messenger {
+            // SAFETY: `du` was created from `handle`, which is still live here.
+            // `m` was created by `create_debug_utils_messenger` and has not been freed.
+            unsafe { du.destroy_debug_utils_messenger(m, None) };
+        }
         // SAFETY: handle was created by _entry. Both are still live inside drop(), so
         // vkDestroyInstance is called with a valid entry-point and a valid instance handle.
         unsafe { self.handle.destroy_instance(None) };
@@ -217,6 +296,10 @@ impl Instance {
         let mut layer_ptrs: Vec<*const std::os::raw::c_char> = Vec::new();
         let validation_layer_name = c"VK_LAYER_KHRONOS_validation";
 
+        // Whether VK_EXT_debug_utils was found and should be requested.
+        let mut want_debug_utils = false;
+        let mut ext_ptrs: Vec<*const std::os::raw::c_char> = Vec::new();
+
         if enable_validation {
             // SAFETY: entry is live; this is a simple property query with no side effects.
             let available =
@@ -232,6 +315,26 @@ impl Instance {
                 log::warn!(
                     "ep.enable_validation=true but VK_LAYER_KHRONOS_validation is not installed; \
                      validation is disabled."
+                );
+            }
+
+            // Also request VK_EXT_debug_utils so we can install a messenger and route
+            // validation errors through the Rust log facade (the layer being loaded is not
+            // enough — without a messenger nothing in-process is listening).
+            let ext_name = c"VK_EXT_debug_utils";
+            // SAFETY: entry is live; this is a simple property query with no side effects.
+            let available_exts =
+                unsafe { entry.enumerate_instance_extension_properties(None) }.unwrap_or_default();
+            want_debug_utils = available_exts.iter().any(|e| {
+                // SAFETY: extension_name is a NUL-terminated array from the driver.
+                unsafe { CStr::from_ptr(e.extension_name.as_ptr()) == ext_name }
+            });
+            if want_debug_utils {
+                ext_ptrs.push(ext_name.as_ptr());
+            } else {
+                log::warn!(
+                    "ep.enable_validation=true but VK_EXT_debug_utils is not available; \
+                     validation errors will not be routed through the Rust log facade."
                 );
             }
         }
@@ -251,10 +354,11 @@ impl Instance {
 
         let create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
-            .enabled_layer_names(&layer_ptrs);
+            .enabled_layer_names(&layer_ptrs)
+            .enabled_extension_names(&ext_ptrs);
 
         // ── Create the instance ───────────────────────────────────────────────
-        // SAFETY: entry is live; app_name/engine_name/layer_ptrs outlive create_info.
+        // SAFETY: entry is live; app_name/engine_name/layer_ptrs/ext_ptrs outlive create_info.
         let handle = match unsafe { entry.create_instance(&create_info, None) } {
             Ok(h) => h,
             Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => {
@@ -287,9 +391,43 @@ impl Instance {
             }
         };
 
+        // ── Optionally install validation messenger ───────────────────────────
+        // The messenger is only useful when both the layer and the extension loaded.  Without a
+        // messenger, the layer may write to stderr via its own default handler but nothing
+        // in-process is listening — validation errors are invisible to the Rust log facade and
+        // to any test assertion that reads log output.
+        let debug_messenger = if want_debug_utils {
+            let du = ash::ext::debug_utils::Instance::new(&entry, &handle);
+            let messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+                .message_severity(
+                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                        | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
+                )
+                .message_type(vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION)
+                .pfn_user_callback(Some(validation_log_callback));
+            // SAFETY: `du` was built from `handle` which is live; `messenger_info` is valid.
+            match unsafe { du.create_debug_utils_messenger(&messenger_info, None) } {
+                Ok(m) => {
+                    log::debug!(
+                        "VkDebugUtilsMessengerEXT installed; validation errors routed to log::error!"
+                    );
+                    Some((du, m))
+                }
+                Err(e) => {
+                    log::warn!(
+                        "create_debug_utils_messenger failed ({e:?}); validation errors will not be captured in-process."
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Some(Instance {
             _entry: entry,
             handle,
+            debug_messenger,
         })
     }
 
@@ -768,6 +906,7 @@ pub(crate) fn probe_loader_report() -> String {
     let inst = Instance {
         _entry: entry,
         handle: inst_handle,
+        debug_messenger: None,
     };
 
     // Step 4: enumerate all physical devices and run the §7.2 gate assessment.

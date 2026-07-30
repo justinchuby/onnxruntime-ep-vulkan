@@ -350,12 +350,30 @@ fn run_add_on_device(
         alloc.free(staging_out);
     }
 
+    // ── Env-gated validation plant (VUID-vkDestroyDevice-device-05137) ───────
+    // When ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION is set, leak one VkFence.
+    // The object tracker reports the leak at vkDestroyDevice, which happens in Device::drop
+    // below via RAII.  No invalid call ever reaches the driver: we only create the fence and
+    // abandon its handle.  The validation layer fires for the abandoned object at teardown.
+    //
+    // Tank designed this specifically so that "a machine with no capable GPU" is
+    // distinguishable from "a machine with no validation": both paths reach this plant site,
+    // but only the path with a real device (and therefore a real messenger) fires the VUID.
+    if std::env::var_os("ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION").is_some() {
+        // SAFETY: deliberately leaked; validation must report it at vkDestroyDevice.
+        let _ = unsafe {
+            device
+                .ash()
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+        };
+    }
+
     // RAII drop order (reverse declaration):
     //   desc_pool → vkDestroyDescriptorPool
     //   pipeline_cache → vkDestroyPipeline + layout + dsl + vkDestroyPipelineCache
     //   cmd_pool → vkDestroyCommandPool
     //   alloc → gpu-allocator verifies zero live allocations
-    //   device → vkDestroyDevice
+    //   device → vkDestroyDevice (validation layer reports the leaked fence here)
 
     match mismatch {
         Some(msg) => Err(msg),
@@ -437,6 +455,86 @@ fn add_f32_dispatches_end_to_end() {
         "add_f32 dispatch failed on {} device(s):\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// Confirm that the EP's own `VkDebugUtilsMessengerEXT` (installed by `Instance::create` when
+/// `enable_validation = true`) fires when a deliberate validation violation occurs in the EP's
+/// dispatch path.
+///
+/// This test covers the half of M0 criterion 3 that the module-level positive control does not:
+/// the module-level control uses its own raw Vulkan instance and messenger to prove the validation
+/// layer is loaded; *this* test proves that the messenger on the **EP's instance** (the one that
+/// runs `add_f32` / `dispatch_ort` in production) is also wired and reports errors in-process.
+///
+/// The plant: `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION` causes `run_add_on_device` to
+/// create a `VkFence` and immediately leak its handle.  At `vkDestroyDevice` (called by
+/// `Device::drop`), the validation layer object tracker fires
+/// VUID-vkDestroyDevice-device-05137 through the EP's messenger, which increments
+/// `EP_VALIDATION_ERROR_COUNT`.
+///
+/// Run with:
+///   `cargo test --lib --release ep_messenger_fires_for_planted_fence_leak -- --nocapture --ignored`
+#[test]
+#[ignore = "positive-control: deliberately triggers VUID-vkDestroyDevice-device-05137 via the \
+            EP's own VkDebugUtilsMessengerEXT to prove the messenger is wired. \
+            Run with: cargo test --lib --release -- --nocapture --ignored ep_messenger_fires_for_planted_fence_leak"]
+fn ep_messenger_fires_for_planted_fence_leak() {
+    use crate::vk::instance::{EP_VALIDATION_ERROR_COUNT, reset_ep_validation_errors};
+    use std::sync::atomic::Ordering;
+
+    if !crate::engine::shaders::has_any() {
+        eprintln!("[SKIP] ep_messenger_fires_for_planted_fence_leak: no shaders compiled in");
+        return;
+    }
+    let Some(spirv) = crate::engine::shaders::find("ew_binary_add_f32") else {
+        eprintln!(
+            "[SKIP] ep_messenger_fires_for_planted_fence_leak: ew_binary_add_f32 not compiled in"
+        );
+        return;
+    };
+
+    // Create instance with validation + debug_utils messenger.
+    let Some(instance) = Instance::create(true) else {
+        eprintln!("[SKIP] ep_messenger_fires_for_planted_fence_leak: no Vulkan instance");
+        return;
+    };
+    let devices = instance.enumerate_capable_devices();
+    if devices.is_empty() {
+        eprintln!("[SKIP] ep_messenger_fires_for_planted_fence_leak: no capable device");
+        return;
+    }
+
+    // Reset the counter after instance creation (loader INFO messages arrive at create time).
+    reset_ep_validation_errors();
+
+    // Activate the plant for this dispatch run.
+    // SAFETY: setting an env var is not thread-safe on all platforms.  This test is `#[ignore]`
+    // and run in isolation, so there is no concurrent test that would race on this variable.
+    unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION", "1") };
+
+    let result = run_add_on_device(&instance, &devices[0], spirv);
+
+    // SAFETY: same isolation guarantee as the set_var call above.
+    unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION") };
+
+    // The test dispatch itself must still compute correctly (the fence leak is invisible to
+    // the shader; only the object tracker notices it at device teardown).
+    if let Err(e) = result {
+        panic!("run_add_on_device failed unexpectedly (separate from the plant): {e}");
+    }
+
+    // After Device::drop (which calls vkDestroyDevice), the object tracker should have fired
+    // VUID-vkDestroyDevice-device-05137 and the messenger should have incremented the counter.
+    let n = EP_VALIDATION_ERROR_COUNT.load(Ordering::Relaxed);
+    eprintln!("[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = {n}");
+    assert!(
+        n > 0,
+        "expected EP_VALIDATION_ERROR_COUNT > 0 after a leaked fence at vkDestroyDevice, got 0. \
+         Either the EP's VkDebugUtilsMessengerEXT was not installed (VK_EXT_debug_utils \
+         unavailable or messenger creation failed) or VUID-vkDestroyDevice-device-05137 is \
+         not checked by the installed validation layer. Check that VK_LAYER_KHRONOS_validation \
+         is installed and VK_EXT_debug_utils is supported."
     );
 }
 

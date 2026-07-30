@@ -530,5 +530,65 @@ test ... ok
 - Validation positive control: ✅ fires VUID-00332 reliably; documents VUID-03047 laziness
 - Decision records written to main inbox: `switch-positive-control.md`
 
+---
+
+## Session 22 — EP-side messenger, fence-leak plant, multi-run census (2026-07-30T03:52:28-07:00)
+
+**Coordinator tasks:**
+1. Plant `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION` env-gated fence leak (VUID-05137).
+2. Attach `VkDebugUtilsMessengerEXT` to the EP's own Vulkan instance.
+3. Provide a test that proves the two work together (EP's messenger captures the plant).
+4. Multi-run census — run 5 times in one session to exercise the interior-pointer planner.
+5. Confirm the four-number reconciliation is on the record.
+
+**D-S22-01 — EP-side messenger (instance.rs):**
+- `EP_VALIDATION_ERROR_COUNT: AtomicU32` static added to `instance.rs`.
+- `validation_log_callback` increments the counter on ERROR and calls `log::error!`.
+- `Instance::create` requests `VK_EXT_debug_utils` when `enable_validation=true`.
+- `Instance` struct stores `debug_messenger: Option<...>`, destroyed before `vkDestroyInstance`.
+- `probe_loader_report` sets `debug_messenger: None` (diagnostic path, no session).
+
+**D-S22-02 — Fence-leak plant (dispatch_integration.rs):**
+```rust
+if std::env::var_os("ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION").is_some() {
+    let _ = unsafe { device.ash().create_fence(&vk::FenceCreateInfo::default(), None) };
+}
+```
+Placed in `run_add_on_device` before RAII cleanup. Fence handle is leaked; `Device::drop`
+calls `vkDestroyDevice`, firing VUID-vkDestroyDevice-device-05137 through the EP's messenger.
+
+**D-S22-03 — Plant verification test (dispatch_integration.rs):**
+`ep_messenger_fires_for_planted_fence_leak` — `#[ignore]` test, confirmed:
+```
+[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = 1
+test vk::dispatch_integration::ep_messenger_fires_for_planted_fence_leak ... ok
+```
+(RTX 4060, SDK 1.4.350.0)
+
+**D-S22-04 — Multi-run census (tests/ops/test_phi35.py — Tank's file, cross-owner):**
+`test_phi35_multi_run_same_session_interior_pointer_safety`:
+- 5 consecutive runs on one session.
+- Asserts bit-identical output across all 5 runs.
+- Asserts `dispatches_executed == 5 × subgraphs_live` (all runs reach GPU).
+
+**Four-number reconciliation (from session 20, on record):**
+- "Claimed: 161" = GetCapability offers (written before Compile, before ORT partitions).
+- "{1,1,1}" = probe contamination (conftest Add dispatch fired FIRST_DISPATCH_DUMPED).
+- "islands: 0" = broken regex (`^EP_NAME_(\d+)_\d+$` never matched ORT's 64-bit hash format).
+- After fixes: all agree at 161. ORT accepted 100% of offers.
+
+**Cross-owner edits:**
+- `tests/ops/test_phi35.py` (Tank): multi-run test added.
+- `rust/src/vk/instance.rs` — Switch's file.
+- `rust/src/vk/dispatch_integration.rs` — Switch's file.
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN (344 tests + 2 new `#[ignore]` tests)
+- EP-side messenger: ✅ installed on EP's own instance; `EP_VALIDATION_ERROR_COUNT` observable
+- Fence-leak plant: ✅ VUID-05137 fired and captured by EP messenger (count=1)
+- Multi-run census test: ✅ added; asserts 5×161=805 dispatches for Phi-3.5
+- Decision records: `switch-ep-messenger-and-plant.md` in main inbox
+
+
 
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
