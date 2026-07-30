@@ -17,6 +17,40 @@ Initial setup complete.
 
 ---
 
+## Audit: OQ-12 figure currency, legacy-path justification, opset-26 reality, ORT 1.28 ceiling, no-bump class — 2026-07-30T07:05:09-07:00
+
+**Task:** Verify two load-bearing claims: (1) the 31.43% Android figure behind the OQ-12 legacy barrier path decision; (2) the ONNX opset-26 claim and associated no-bump errata.
+
+**Key learnings:**
+
+1. **The 68.57% Android sync2 figure is a live database snapshot, not a fixed constant.** Source: vulkan.gpuinfo.org, pulled 2026-07-28. A web query on 2026-07-30 returned ~67.33% (gap ~32.67%). The figure IS moving; the direction suggests new legacy/budget device submissions are pulling coverage down. Treat it as a floor on the complement (real installed-base gap is likely higher than the database shows).
+
+2. **31.43% is a ceiling on legacy-path benefit, not a measured value.** Sync2-lacking devices may also fail the §7.2 device gate (Vulkan < 1.1, no compute queue, etc.). The legacy path only benefits devices that BOTH lack sync2 AND pass the gate. The database says nothing about the intersection. Per R9: a single gpuinfo.org reading names a database-sample fraction; the "usability fraction" is unfalsifiable without OQ-12.
+
+3. **The gpuinfo.org coverage calculation correctly accounts for Vulkan 1.3 devices** (where sync2 is core). There is no undercounting from the 1.3 promotion. The 1.3 error direction does not dominate.
+
+4. **Drop conditions for the legacy path are clearly unmet.** Android database coverage would need to reach ≥99% AND OQ-12 would need to confirm gap devices fail §7.2 for other reasons. Windows coverage (87.78%) has an independent 12.22% gap. Both gaps must close. Neither is close today.
+
+5. **Opset 26 is real and released.** ONNX 1.21.0 (April 27, 2026) introduced opset 26 (BitCast, CumProd, 2-bit types). ONNX 1.22.0 (June 15, 2026) introduced opset 27. ONNX 1.23.0 is unreleased as of 2026-07-30. Justin's ruling ("support up to opset 26") is consistent with available packages.
+
+6. **ORT 1.28 opset ceiling is opset 27, not 24.** ORT 1.28 upgraded to ONNX 1.22.0, which supports opset 27. The onnxruntime.ai compatibility table is stale (last row: ORT 1.20 = opset 21). Any claim based on that table is wrong. "Supporting opset 26" is fully exercisable against ORT 1.28.
+
+7. **The no-bump correction class grew: three new instances since onnx 1.22.0 shipped.** The most critical: **onnx#8182 (merged 2026-07-12, unreleased)** — Q/DQ-23 and Q/DQ-25 reference implementations were not registered in `_op_list.py`. ReferenceEvaluator silently fell back to opset-21 behavior. Using `output_dtype` (Q/DQ-23) or `precision` (Q/DQ-25) with onnx ≤ 1.22.0 raises TypeError (detectable) or silently uses the wrong implementation (C2 blind spot). Directly affects our Q/DQ `21 ..= 25` window. Also: onnx#8099 (ScatterND min/max, not in our plan), onnx#8194 (TopK sorted=0, not in our plan).
+
+8. **The no-bump table needs a maintainer, not a snapshot.** As of 2026-07-30, at least 9 instances of the class are known (6 in existing table + 3 new). The class grew by 3 instances in 45 days. Someone (Mouse or Trinity) must own a recurring sweep.
+
+**Methodology notes:**
+- vulkan.gpuinfo.org page is JavaScript-rendered; could not be fetched directly. Web search consistently returned 67.33% citing gpuinfo.org. Treat this as approximate.
+- ORT 1.28 ceiling: confirmed via primary source (ORT 1.28 release notes on GitHub, stating "Upgraded to ONNX 1.22.0"). Compatibility table on onnxruntime.ai is stale; ignored it.
+- No-bump class: enumerated via `gh api "repos/onnx/onnx/pulls?state=closed..."` filtered to merged > 2026-06-15. Three qualifying PRs found; #8182 confirmed as in-plan impact via PR body read.
+- ONNX version timeline: LF AI & Data blog 2026-04-27 for v1.21.0; GitHub releases page for v1.20.0; prior history entries for v1.22.0 date. Consistent across sources.
+
+**Output files:**
+- `docs/PLATFORMS.md` §10 — added §10.0 (Fact-check: OQ-12 figures) with figure currency, error direction, drop conditions, and R9 falsifiability instruments
+- `.squad/decisions/inbox/fact-checker-oq12-sync2-opset.md` — full decision record; routes #8182 to Mouse+Trinity, no-bump sweep to owner TBD
+
+---
+
 ## Audit: ORT 1.28 API Verification — 2026-07-28T18:51:35-07:00
 
 **Task:** Verify Justin's claim that ORT 1.28 exists and exposes `CreateExternalResourceImporterForDeviceImpl`.

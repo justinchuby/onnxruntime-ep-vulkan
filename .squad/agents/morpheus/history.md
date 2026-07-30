@@ -61,3 +61,169 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ### Performance metric is a TRIPLE
 `(claimed_op_coverage, island_count, largest_island_flops)` per producer at version. Portability floor = §7.2. `SUBGROUP_SIZE_IS_GUARANTEED=False`.
+
+---
+
+## Session 23 — R9, the correctness gate, and reopening met criteria (2026-07-30T05:48:29-07:00)
+
+### The event
+Coordinator ran the comparison nobody had run: real 2.2 GB Phi-3.5, VulkanEP vs CPU-only, both devices.
+`cpu argmax 30751` / `vk argmax 0`, top-10 overlap 0/10, `vk logits [0.0000, 0.0000]`. Output #64
+(KV-cache) differs by 25.27 and is NOT zero — the session is not uniformly zeroed, the logits path is
+dead. 161 MatMulNBits claimed AND accepted by ORT. `compile_calls:1, subgraphs_live:161,
+compute_calls:161, compute_failures:0, dispatches_executed:161, islands:161`. Identical on Iris Xe and
+RTX 4060 → deterministic logic fault. **Test suite entirely green.**
+
+### R9 — the rule (DESIGN.md §10.0.1)
+> A set of individually sound instruments can be jointly silent on the property that matters, and their
+> agreement raises confidence without raising evidence. Therefore: **for every claim, name the instrument
+> that would go red if the claim were false.** If no such instrument exists, the claim is not evidenced,
+> however much telemetry surrounds it.
+
+Named **the red-instrument test**. Key insight to carry forward: **confidence scales with the number of
+agreeing instruments; evidence scales only with the number of falsifying ones.** A set with zero
+falsifiers has zero evidential weight no matter how large. R9 gets WORSE as telemetry gets BETTER —
+Switch's counter repairs made the false conclusion more persuasive. R6/R7 are defeated by
+corroboration; **R9 is not** — the second device agreed and both were right about the wrong question.
+Also: every instrument has a **silence set**, recorded when the instrument is added.
+`test_matmulnbits.py` mentions f16 exactly twice; Phi-3.5 is entirely fp16 — the suite's silence set
+contained the defect.
+
+### §9.1.3 — `compute_failures` ruled
+Execution-status counter. Licensed reading is exactly: *no dispatch reported an error it was able to
+detect.* Not licensed for correctness. **Prose cannot close this** (R7: derive, do not declare; R6: a
+written rationale carried a false number for weeks). Mechanism: a `model_output_equivalence` verdict
+emitted next to the counters, default `UNMEASURED`; no counters summary quotable without it. **Counter
+NOT renamed** — `VulkanEpCounters` is published C ABI used by epctl / probe_allocator.py / test_phi35.py;
+compatibility outranks API elegance. Precedent named: `Compute` returning `null` = SUCCESS to ORT —
+absence of a report IS the success report, same defect one layer down.
+
+### Metric of record — gated, not extended (§10.0)
+Triple stays a triple. Gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}, default
+UNMEASURED. Rejected making it a quadruple: **a wrong answer does not discount the other three numbers,
+it voids them**; a fourth column invites the trade the triple exists to prevent. Coverage 0→161 and
+islands 0→161 while the model went correct-via-CPU → wrong-via-GPU.
+
+### M0 criteria — reopened
+Applied my own drafting rule to the MET rows. **M0 as written could be fully met by an EP that computes
+zeros on every real model.** Defect in the criteria, not the engineering, and mine.
+- **Criterion 10 ADDED** — model-level correctness at producer-at-version. NOT MET (DIVERGENT).
+- **Criterion 2 REOPENED** — only correctness criterion, bottoms out in a single `Add`.
+- **Criteria 4 & 5 REOPENED** — negative-space, no positive control; an always-broken EP passes both.
+- **Criterion 8 relabelled** — parity only; two backends agreeing on a wrong value satisfies it.
+- Criterion 7 untouched — the only M0 criterion with a falsifier from day one; now the pattern.
+- **4 met / 4 partial / 2 not met**, down from 7/1/1. Said plainly: M0 is further away than yesterday,
+  and none of that movement is a code regression.
+
+### Sequencing
+Criterion 10 outranks the M0 tail (Windows+Linux, software rasteriser, CI) **in order, not as a gate**.
+Tail stays in M0's sentence unsoftened. Reasons: certifying a defect onto three more platforms; a green
+CI lane is itself an R9 composite (adds agreeing instruments to a falsifier-free set); the engineers are
+already on criterion 10. Link NOT blocked — lane bring-up is a prerequisite for running criterion 10 off
+this desk. When the lanes run they must carry criterion 10's gate.
+
+### Carry forward
+- Ask the red-instrument question before quoting any number.
+- `UNMEASURED` is first-class everywhere and is always the default.
+- Do not rename published C ABI to fix a documentation problem.
+
+📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+## Session 24 — correctness-gated claiming (2026-07-30T06:32:18-07:00)
+
+### The situation ruled on
+`main` at `557bf24` shipped an EP that claims 161 nodes on Phi-3.5 and computes zeros. Before this
+week that was impossible: the EP declined everything, so it was useless but never wrong. Coverage
+work crossed a line §7.0 does not describe.
+
+### §7.0.1 — the third category
+§7.0 (frozen) contemplates ops we CANNOT run. Third category: ops we CAN dispatch and have NOT
+proven. Companion rule, does NOT touch the frozen gate or §7.2:
+> Evidence shortfalls degrade op coverage, not device availability, and they degrade it identically
+> to capability shortfalls. An op we have not proven correct on a form is, for claiming purposes, an
+> op we cannot run on that form.
+
+### §8.9 — the ruling
+**Yes, claiming is gated on proof.** Argument that decided it: a decline is LOUD (claim-rate drop,
+island-count rise, CPU-fallback line, voided triple); a wrong claim is SILENT by construction (R5).
+A fast wrong answer is more dangerous than a slow right one because it does not announce itself.
+Compatibility ruling REQUIRES the gate rather than merely permitting it — silently-wrong output is
+the most severe compatibility failure available, since the only contract a user has is "ORT computes
+this graph". §1.3 said all this on 2026-07-28 and we shipped its exact failure anyway: **a prose
+commitment without a mechanism is not a commitment.**
+
+### Mechanism — `Live` stops being written down
+Hand-written `OpStatus::Live` is a duplicate of a machine-known fact → R7 "derive, do not declare".
+Table declares only source facts: `Staged(why)` (no kernel) / `Ready` (kernel exists). Claimability
+DERIVED per form from a harness-generated **proof ledger**. No entry ⇒ decline `[unproven]` naming
+the missing key. Ledger never hand-edited; regeneration check in CI. Promotion AND demotion
+automatic — a `DIVERGENT` model verdict demotes every participating form. epctl JSON extended
+ADDITIVELY (`status` unchanged, new `claimable` + `proof`) — compat outranks elegance.
+
+**Proof key** = (domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key incl.
+code-changing spec constants, shape_class, populated_optional_input_set). The point: it makes §8.7
+MECHANICAL — **an expression difference leaves the key equal; a path difference changes the key** —
+so an f32 proof can never be returned for an f16 node. Lookup is by key, no judgement call left.
+
+**Two tiers:** Tier 1 per-form op proof gates CLAIMING; Tier 2 per-producer-at-version model proof
+gates REPORTING and can RETRACT Tier 1. Op-level proof would likely not have caught a defect that
+reproduces at N=161 descriptors/readbacks.
+
+### Escape hatch — C1's shape
+`CLAIM_UNPROVEN` takes **a list of proof keys and nothing else**. No boolean, no `1`, no `*`. A
+parser that can express "everything" MUST NOT EXIST — enforced as a test (planted `*`, `1`, bare
+op-type all rejected). Default safe, requires no act. Three disclosures so no build is silently
+unsafe: WARN at session creation naming keys; `unproven_forms_enabled` in counters; `epctl
+--check-counters` FAILS on non-empty without `--allow-unproven`. Available in release builds —
+availability is not the risk, silence is; a feature gate would fork the shipped artifact from the
+tested one. Bootstrapping answered by construction: the ledger comes from the ordinary differential
+run, so unproven→proven IS the dev loop.
+
+### Cost — stated first, not afterwards
+Phi-3.5 claimed count **161 → 0**. Regression in the reported number, not the code. And per my own
+§10.0 gate the 161 was ALREADY void (`DIVERGENT` voids the triple). Honest number was already zero;
+the ruling only makes behaviour agree with reporting. Rather an honest zero than a dishonest 161.
+
+### M0
+Criterion 11 added (ledger + the three planted controls). **4 met / 4 partial / 3 not met.** M0 got
+worse twice in one day; none of it a code regression. Sequencing: **the gate goes FIRST, ahead of
+fixing the fp16 defect** — fixing the kernel removes today's defect, the gate stops the next one
+shipping.
+
+### Link's lanes — precondition, precisely scoped
+Split the word: **operational** (exists, executes, reports — Link may declare this without the gate;
+it is a prerequisite for running criterion 10 off this desk) vs **green** (admissible as evidence /
+satisfies a criterion / quoted — requires the gate). Made unrepresentable: a lane's pass condition
+includes the verdict field; `UNMEASURED` reports UNMEASURED, not PASS, not FAIL. Feasibility: the
+gate is the MECHANISM not the model — per-lane **gate artifact** = smallest real
+producer-at-version model that claims non-zero, has an island of >=2 nodes, and exercises >=1 proof
+key per dtype that lane claims. Not Phi-3.5 on a rasteriser.
+
+### Rai
+Pre-recorded independence: ruling does NOT depend on his RAI verdict. If he agrees, load-bearing
+reason stays the engineering one (R6 rule 1). If he disagrees, ruling stands and the disagreement is
+recorded, not compromised.
+
+### Carry forward
+- Anything hand-written in the registry that the harness already knows is an R7 fork waiting to drift.
+- When designing a switch, ask whether it can express "everything" — if yes, it will.
+- State the cost of a ruling on the day the number goes down, not afterwards.
+
+### Addendum — Rai converged, and RAI-009 named a gap I missed
+Rai returned RAI-008 CRITICAL (class: architecture permits silently-wrong output with no disclosure)
+and RAI-007 ADVISORY (the fp16 kernel instance) — correctly splitting instance from class. Converged
+INDEPENDENTLY: his load-bearing reason is autoregressive amplification (one zeroed-logit dispatch →
+unbounded stream of fluent wrong tokens, indistinguishable from "bad model"); mine is the
+claim/decline asymmetry + compatibility. Per R6 rule 1 the load-bearing reason stays the engineering
+one. **Two independent arguments are worth more than either only because they are DIFFERENT
+arguments** — R9 read the right way round: a second reading is evidence only if it could have come
+out differently.
+
+**RAI-009 was a real gap in my ruling.** §8.9.4 discloses only when the escape hatch is on; §9.1.3's
+verdict lives in a counters file no user sees. Closed as §8.9.7: at session creation, one INFO line
+per claimed form naming its proof key and backing ledger entry; WARN if any claimed form is
+UNMEASURED; explicit INFO naming top decline codes when the EP claims zero. Same mechanism at two
+severities, not a second thing to maintain. **Disclosure, not a gate — a log line is an instrument
+with no red state (R9) and may never substitute for the ledger.** Folded into M0 criterion 11.
