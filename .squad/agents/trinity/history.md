@@ -62,3 +62,75 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ### Performance metric is a TRIPLE (Niobe — critical)
 `(claimed_op_coverage, island_count, largest_island_flops)` per producer at version. Portability floor = §7.2. `SUBGROUP_SIZE_IS_GUARANTEED=False`.
+
+---
+
+## Round 18 (2026-07-30T09:14:00-07:00) — False-premise test audit + correctness gate
+
+**Trigger:** Switch's runtime-extents merge moved 258 dynamic-shape declines to 0.
+161 MatMulNBits nodes are now claimed, compiled, dispatched (`compute_failures: 0`)
+on both Intel Iris Xe and RTX 4060.  The entire test suite was green.
+Coordinator's `phi35_vk_vs_cpu.py` script revealed: `vk range [0.0000, 0.0000]` vs
+`cpu range [-13.0859, 13.0312]`.  argmax 0 vs 30751.  top-10 overlap 0/10.
+
+**Root cause:** `test_phi35_cpu_output_matches_between_sessions` compared two VulkanEP
+sessions against each other.  Its docstring premise ("0 claimed nodes, both fall back to
+CPU") became false.  Two all-zero GPU sessions are bit-identical — vacuous pass.
+Classic R7: absence of instrument reads as negative.
+
+**What I did (squad/trinity branch):**
+
+1. **New correctness gate:** `test_phi35_vulkan_matches_cpu_logits`
+   - One VulkanEP session vs one CPU-only session.
+   - Guard A: `EP_NAME in sess.get_providers()` before comparison.
+   - Guard B: `max|logit_vk| > 0.1` before token comparison.
+   - Asserts: argmax match + top-10 overlap ≥ 5/10.
+   - `xfail(strict=True)` — fails on current main (all-zero logits).
+   - When Mouse's fix lands: XPASS → suite errors → forced xfail removal.
+
+2. **Renamed `test_phi35_cpu_output_matches_between_sessions`** →
+   `test_phi35_vulkan_session_determinism`. New premise: "same inputs, two VulkanEP
+   sessions → bit-identical outputs." Valid property regardless of claimed count.
+   Docstring explains the history.
+
+3. **Renamed `test_phi35_variable_seqlen_fallback`** → `test_phi35_variable_seqlen`.
+   "fallback" label removed; false "0 claimed nodes" docstring corrected.
+
+4. **`assert_ep_in_providers(sess)`** added to `_models.py` — fast provider-list
+   guard for tests that own their sessions.  Documents when to use it vs
+   `assert_vulkan_claims`.
+
+5. **Docstrings updated:** module docstring, `test_phi35_session_loads_and_declines_cleanly`,
+   `test_gptoss_session_loads_and_declines_cleanly` — all false "0 claims expected" text
+   removed or corrected.
+
+**Full audit result — same defect class across the suite:**
+
+| Test | Was false premise present? | Fix |
+|---|---|---|
+| `test_phi35_cpu_output_matches_between_sessions` | Yes — "0 claimed / CPU fallback" | Renamed; new gate (xfail) |
+| `test_phi35_session_loads_and_declines_cleanly` docstring | Yes — "all 366 declined" | Corrected |
+| `test_phi35_variable_seqlen_fallback` docstring | Yes — "0 nodes claimed" | Renamed + corrected |
+| `test_gptoss_session_loads_and_declines_cleanly` docstring | Yes — "0 claims (all fp16)" | Corrected |
+| `test_matmulnbits_*` | No — `assert_vulkan_claims` present | OK |
+| `test_barrier_parity` | No — `live` flag guard correct | OK |
+| `test_permanent_cpu_fallback_ops` | No — `assert_vulkan_does_not_claim` | OK |
+
+**Unguarded paths that remain (by design):**
+- `test_phi35_vulkan_session_determinism`: compares two VulkanEP sessions. Determinism is
+  a valid property; correctness is a companion test's job.
+- `test_phi35_variable_seqlen`: crash-absence test. Shape-driven "outputs differ" is
+  acceptable; documented explicitly.
+- `test_gptoss_session_loads_and_declines_cleanly`: no CPU oracle for gpt-oss-20b
+  (QMoE issue). Deferred until Mouse confirms gpt-oss MatMulNBits numerics.
+
+**New standing rule (supplements R7):**
+Any test comparing two `EP_PROVIDERS` sessions is a DETERMINISM gate, not a CORRECTNESS
+gate. A correctness gate requires one `EP_PROVIDERS` session + one `["CPUExecutionProvider"]`
+session + Guard A (provider list check) before comparing.
+
+**Mouse dependency still open:** `accuracy_level` — model declares 0, oracle is pinned
+at 1. Mouse has been asked twice for confirmation.
+
+
+📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.

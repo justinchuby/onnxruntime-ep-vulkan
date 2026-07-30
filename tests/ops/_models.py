@@ -574,6 +574,63 @@ def assert_vulkan_does_not_claim(model: bytes, feeds: dict[str, np.ndarray]) -> 
 
 
 # ---------------------------------------------------------------------------
+# EP provider placement guard — universal vacuous-pass prevention
+# ---------------------------------------------------------------------------
+
+
+def assert_ep_in_session(sess: "ort.InferenceSession") -> None:
+    """Assert that EP_NAME is listed in *sess*.get_providers().
+
+    ORT does NOT raise when a plugin EP fails to load or advertises zero devices.
+    It silently falls back to CPUExecutionProvider and returns an empty provider list
+    for the plugin.  Any test that compares a VulkanEP session against a CPU oracle
+    WITHOUT calling this guard is comparing CPU-vs-CPU when the EP is absent — a
+    guaranteed spurious pass.
+
+    WHEN TO CALL
+    ============
+    Call this immediately after ``ort.InferenceSession(... providers=EP_PROVIDERS)``
+    and before ``sess.run()`` in any test that:
+      (a) compares the VulkanEP session output against a CPU oracle, OR
+      (b) intends to assert that GPU dispatch actually occurred.
+
+    Tests that only assert crash-absence (session loads, run returns output) do NOT
+    need this guard — the session is useful even in pure CPU fallback for those purposes.
+
+    NOTE ON ``assert_vulkan_claims``
+    ================================
+    ``assert_vulkan_claims`` (above) is more expensive: it runs a separate profiling
+    session to detect which nodes ran on the EP.  Use ``assert_ep_in_session`` as a
+    fast pre-check in tests that own the session; use ``assert_vulkan_claims`` when
+    you need to verify device placement for a model passed in as bytes.
+
+    COORDINATOR REFERENCE
+    =====================
+    The coordinator's ``phi35_vk_vs_cpu.py`` script includes this same guard as its
+    "HARD GATE":
+
+        used = vk_sess.get_providers()
+        if EP_NAME not in used:
+            print("FAIL ... Refusing to compare.")
+            return 1
+
+    That script discovered the all-zero logits bug *because* it had the guard; the
+    earlier ``test_phi35_cpu_output_matches_between_sessions`` did not and so it
+    passed vacuously while reporting nothing meaningful.
+    """
+    used = sess.get_providers()
+    assert EP_NAME in used, (
+        f"{EP_NAME} not in session.get_providers(): {used}.\n"
+        "ORT fell back to CPU silently — the comparison would be CPU-vs-CPU (vacuous pass).\n"
+        "Possible causes:\n"
+        "  • ONNXRUNTIME_VULKAN_EP_LIB not set or file not found.\n"
+        "  • ort.register_execution_provider_library was not called before session creation.\n"
+        "  • The EP registered but enumerated zero Vulkan devices (no ICD, capability gate).\n"
+        "Check conftest.py register_vulkan_ep fixture and require_vulkan fixture."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Barrier-backend parity helper — used by test_barrier_parity.py
 # ---------------------------------------------------------------------------
 

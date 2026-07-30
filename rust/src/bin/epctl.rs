@@ -172,7 +172,9 @@ fn usage() {
     eprintln!("    epctl --dump-capabilities [--json]");
     eprintln!("    epctl --probe-loader");
     eprintln!("    epctl --probe-validation [--plant-violation]");
-    eprintln!("    epctl --check-counters <file> [--require-dispatches N]");
+    eprintln!(
+        "    epctl --check-counters <file> [--require-dispatches N] [--require-device-memory]"
+    );
     eprintln!();
     eprintln!("    --dump-capabilities  every registered op, its opset window, dtypes, status,");
     eprintln!("                         backing shader, and (for contrib ops) the ORT release");
@@ -200,6 +202,13 @@ fn usage() {
     eprintln!("                         unless a claimed node actually executed on a device.");
     eprintln!("    --require-dispatches N");
     eprintln!("                         minimum executed dispatches to pass (default 1).");
+    eprintln!("    --require-device-memory");
+    eprintln!("                         fail unless every device handle was backed by a VkBuffer,");
+    eprintln!("                         i.e. nothing was host-staged. Set this on any lane that");
+    eprintln!("                         quotes a timing: a partially staged run is not a slow");
+    eprintln!("                         device measurement, it is an average over two memories.");
+    eprintln!("                         A snapshot with no allocation tally fails as exit 3, not");
+    eprintln!("                         exit 0 — it cannot answer the question.");
     eprintln!();
     eprintln!("EXIT CODES:");
     eprintln!("    0  pass");
@@ -234,6 +243,13 @@ enum CounterVerdict {
     OutOfBounds {
         count: u64,
     },
+    /// `--require-device-memory` was asked for and the run did not deliver it.
+    NotOnDevice {
+        staged_spans: u64,
+        staged_bytes: u64,
+        device_backed: u64,
+        allocations: u64,
+    },
 }
 
 /// Pull one unsigned integer field out of the counters JSON.
@@ -254,7 +270,15 @@ fn json_u64(doc: &str, key: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-fn read_counters(path: &str, required: u64) -> CounterVerdict {
+/// `require_device_memory`: fail unless every device handle in the run was backed by a `VkBuffer`.
+///
+/// This exists because the staging path's caveat cannot survive as prose. A one-shot WARN saying
+/// "any timing from this run is a host measurement" is right until some allocations are
+/// device-backed and wrong afterwards; deleting it is worse, because a partially staged run would
+/// then say nothing at all and its numbers would look like device numbers. The durable form of the
+/// caveat is an assertion a performance lane sets and a machine evaluates, so nobody has to
+/// remember a log line an hour after reading it.
+fn read_counters_with(path: &str, required: u64, require_device_memory: bool) -> CounterVerdict {
     let doc = match std::fs::read_to_string(path) {
         Ok(d) => d,
         Err(e) => {
@@ -295,6 +319,36 @@ fn read_counters(path: &str, required: u64) -> CounterVerdict {
         return CounterVerdict::OutOfBounds { count: oob };
     }
 
+    // Also ahead of the dispatch count, and for the same reason: a run whose tensors sat in host
+    // memory executed dispatches against the wrong memory for the purpose it was measured for.
+    if require_device_memory {
+        let staged_spans = json_u64(&doc, "alloc_staged_spans");
+        let allocations = json_u64(&doc, "alloc_allocations");
+        let device_backed = json_u64(&doc, "alloc_device_backed_spans");
+        match (staged_spans, allocations, device_backed) {
+            // Absent keys are not zero. A snapshot from a build with no tally cannot answer this
+            // question, and must not pass a check it did not perform.
+            (None, _, _) | (_, None, _) | (_, _, None) => {
+                return CounterVerdict::NoReport(format!(
+                    "{path} carries no `alloc_staged_spans`/`alloc_allocations`/\
+                     `alloc_device_backed_spans`, so --require-device-memory cannot be evaluated \
+                     against it. This snapshot predates the allocation tally. Refusing to pass a \
+                     check that did not run."
+                ));
+            }
+            (Some(staged), Some(allocs), Some(backed)) => {
+                if staged > 0 || (allocs > 0 && backed == 0) {
+                    return CounterVerdict::NotOnDevice {
+                        staged_spans: staged,
+                        staged_bytes: json_u64(&doc, "alloc_staged_bytes").unwrap_or(0),
+                        device_backed: backed,
+                        allocations: allocs,
+                    };
+                }
+            }
+        }
+    }
+
     if dispatches >= required {
         CounterVerdict::Pass { dispatches }
     } else {
@@ -305,7 +359,11 @@ fn read_counters(path: &str, required: u64) -> CounterVerdict {
     }
 }
 
-fn check_counters(path: &str, required: u64) -> std::process::ExitCode {
+fn check_counters_with(
+    path: &str,
+    required: u64,
+    require_device_memory: bool,
+) -> std::process::ExitCode {
     // Echo whatever the file does contain before judging it — a lane that fails here is a lane
     // someone has to diagnose from the log alone.
     if let Ok(doc) = std::fs::read_to_string(path) {
@@ -314,7 +372,7 @@ fn check_counters(path: &str, required: u64) -> std::process::ExitCode {
             println!("  {line}");
         }
     }
-    match read_counters(path, required) {
+    match read_counters_with(path, required, require_device_memory) {
         CounterVerdict::Pass { dispatches } => {
             println!(
                 "epctl: PASS — {dispatches} dispatch(es) executed on a real device in this lane \
@@ -365,6 +423,30 @@ fn check_counters(path: &str, required: u64) -> std::process::ExitCode {
                  silently wrong answer instead of a failing lane. Treat it as a bug in shape or \
                  size accounting, not as an allocator tuning knob, and read the `*.trace.txt` \
                  beside the counters file for the exact addresses."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::NotOnDevice {
+            staged_spans,
+            staged_bytes,
+            device_backed,
+            allocations,
+        } => {
+            eprintln!(
+                "epctl: FAIL — --require-device-memory was asked for and this run did not deliver \
+                 it: {staged_spans} host-staged span(s) ({staged_bytes} B), {device_backed} \
+                 device-backed, out of {allocations} allocation(s).\n\
+                 \x20 Host staging produces correct results, so nothing here says the run was \
+                 wrong. It says the run's tensors were not where you asked them to be, which \
+                 disqualifies any timing taken from it — a partially staged run is not a slow \
+                 device measurement, it is an average over two different memories and comparable \
+                 with neither.\n\
+                 \x20 This assertion exists because the alternative was a log line. The staging \
+                 WARN was accurate while nothing was device-backed and becomes wrong in both \
+                 directions afterwards: kept, it over-warns on a nearly-all-device run until \
+                 readers discount it; removed, a partially staged run says nothing at all and its \
+                 numbers look like device numbers. A caveat that has to be remembered an hour \
+                 later is not a caveat. Set this flag on any lane that quotes a number."
             );
             std::process::ExitCode::from(1)
         }
@@ -621,6 +703,7 @@ fn main() -> std::process::ExitCode {
     let probe = args.iter().any(|a| a == "--probe-loader");
     let probe_validation_flag = args.iter().any(|a| a == "--probe-validation");
     let plant_violation = args.iter().any(|a| a == "--plant-violation");
+    let require_device_memory = args.iter().any(|a| a == "--require-device-memory");
 
     // `--check-counters` and `--require-dispatches` take a value, so the flat "every argument must
     // be a known flag" check below has to know to skip the values. Parse them out first.
@@ -666,6 +749,7 @@ fn main() -> std::process::ExitCode {
                 && a.as_str() != "--probe-loader"
                 && a.as_str() != "--probe-validation"
                 && a.as_str() != "--plant-violation"
+                && a.as_str() != "--require-device-memory"
         })
     {
         eprintln!("epctl: unrecognised argument `{bad}`");
@@ -674,7 +758,7 @@ fn main() -> std::process::ExitCode {
     }
 
     if let Some(path) = counters_file {
-        return check_counters(&path, required_dispatches);
+        return check_counters_with(&path, required_dispatches, require_device_memory);
     }
 
     if probe_validation_flag {
@@ -788,6 +872,89 @@ mod tests {
             read_counters(old.to_str().expect("utf8"), 1),
             CounterVerdict::Pass { dispatches: 30 },
             "a snapshot without the key predates the ledger; absence is not zero and not a fault"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The default-flags spelling, which is what every check other than the device-memory one
+    /// wants. Kept in the test module rather than beside the real function so production has
+    /// exactly one entry point and cannot accidentally call the lenient one.
+    fn read_counters(path: &str, required: u64) -> CounterVerdict {
+        read_counters_with(path, required, false)
+    }
+
+    fn snapshot_with_tally(dispatches: u64, staged: u64, backed: u64, allocs: u64) -> String {
+        let mut doc = snapshot(dispatches);
+        let cut = doc.rfind('}').expect("json");
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        doc.push_str(&format!(
+            ",\n  \"alloc_allocations\": {allocs},\n  \"alloc_staged_spans\": {staged},\n  \
+             \"alloc_staged_bytes\": {},\n  \"alloc_device_backed_spans\": {backed}\n}}\n",
+            staged * 4096
+        ));
+        doc
+    }
+
+    /// The durable form of the staging caveat.
+    ///
+    /// The one-shot WARN cannot stay truthful as device memory arrives: kept as written it
+    /// over-warns on a nearly-all-device run, removed it under-warns on a partially staged one.
+    /// So the claim moves to a flag a lane sets and a machine evaluates.
+    #[test]
+    fn require_device_memory_fails_a_staged_run_and_refuses_a_snapshot_that_cannot_answer() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-device-memory-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        // Fully device-backed: the only shape that passes.
+        let good = dir.join("good.json");
+        std::fs::write(&good, snapshot_with_tally(30, 0, 12, 12)).expect("write");
+        assert_eq!(
+            read_counters_with(good.to_str().expect("utf8"), 1, true),
+            CounterVerdict::Pass { dispatches: 30 },
+        );
+
+        // Mixed. This is the state no fixed warning wording covers, and the one we are heading
+        // into: most tensors on device, a few staged, and a timing that looks like a device
+        // number.
+        let mixed = dir.join("mixed.json");
+        std::fs::write(&mixed, snapshot_with_tally(30, 2, 10, 12)).expect("write");
+        assert_eq!(
+            read_counters_with(mixed.to_str().expect("utf8"), 1, true),
+            CounterVerdict::NotOnDevice {
+                staged_spans: 2,
+                staged_bytes: 8192,
+                device_backed: 10,
+                allocations: 12,
+            },
+            "a partially staged run must fail the flag: it is not a slow device measurement"
+        );
+
+        // Allocations happened and nothing was device-backed.
+        let host = dir.join("host.json");
+        std::fs::write(&host, snapshot_with_tally(30, 0, 0, 12)).expect("write");
+        assert!(matches!(
+            read_counters_with(host.to_str().expect("utf8"), 1, true),
+            CounterVerdict::NotOnDevice { .. }
+        ));
+
+        // A snapshot with no tally cannot answer the question, and must not pass a check it did
+        // not perform. Exit 3, the same distinction as everywhere else in this binary.
+        let old = dir.join("old.json");
+        std::fs::write(&old, snapshot(30)).expect("write");
+        assert!(
+            matches!(
+                read_counters_with(old.to_str().expect("utf8"), 1, true),
+                CounterVerdict::NoReport(_)
+            ),
+            "absent keys are not zero"
+        );
+        // ...but without the flag, the same snapshot is a perfectly good criterion-8 pass.
+        assert_eq!(
+            read_counters_with(old.to_str().expect("utf8"), 1, false),
+            CounterVerdict::Pass { dispatches: 30 },
         );
 
         let _ = std::fs::remove_dir_all(&dir);

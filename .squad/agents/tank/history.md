@@ -384,3 +384,152 @@ line teaches a reader to discount all of it. **It is an assertion aimed at a hum
 same maintenance as one aimed at a compiler.** I now expect that every mechanism I add will falsify
 some caveat I wrote earlier, and I should check for that as a matter of routine rather than
 noticing it by luck.
+
+---
+
+## Session 15 — the allocator through a claimed path, and a caveat that could not stay prose
+**2026-07-30T05:01:09-07:00**, worktree `ep-vulkan-tank`, branch `squad/tank`, rebased on `main`.
+`cargo ci` green twice, 346 tests.
+
+### The result I did not expect, and the one I should have
+
+Expected: the allocator is exercised through a claimed path. It is, and more heavily than I
+guessed — 648 at-base pointer observations across 255 allocations and 255 matched frees in one
+`test_op_table.py` run. The ORT-facing half of the design is genuinely in ORT's path.
+
+Not expected: **`alloc_device_backed_spans: 0`. Every one of those 255 spans was host memory.**
+`attach_buffer` is never called today, so `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` buys host memory
+wearing a device handle. Nothing is broken — staging is deliberate and correct — but *"device
+memory is on"* and *"tensors are on the device"* are different claims and only the first is true.
+
+What makes that worth carrying is how invisible it was. 63 op-table passes and 33 elementwise
+passes, all numerically correct, none of which touched device memory. **A green suite is compatible
+with the entire device half of the system being absent.** I only saw it because I had just added a
+counter that could say so; before this session there was no number anywhere that distinguished the
+two states, only a WARN nobody was obliged to read.
+
+### The caveat problem, which is the interesting one
+
+The coordinator asked how the staging WARN stays truthful as device memory arrives. Working it
+through, the trap is that **both obvious answers are wrong, and the state that breaks them is
+neither of the two the wording contemplates.**
+
+Keep the warning and it over-warns: a 99%-device run still prints "host measurement", so it is
+false, readers discount it, and it stops protecting the 1% case. Delete it and it under-warns: a
+partially staged run says nothing and its numbers look like device numbers. The dangerous state is
+the **mixed** one, which no fixed sentence covers and which arrives by default if nobody decides.
+
+So the whole-run claim stopped being prose: a per-handle WARN that says only what it locally knows,
+a teardown verdict computed from the ratio with its own sentence for mixed, and
+`epctl --check-counters --require-device-memory` as the actual gate.
+
+**The generalisation is the part I want to keep: a caveat that has to be remembered an hour later
+is not a caveat.** A log line needs a human who is present, recalls it correctly, and is honest
+when quoting the number. An assertion needs none of those. This is the third mechanism this week
+built on that move — guard band, positive control, staging — and in every case the prose version
+already existed and had already failed to protect anything. I should stop writing careful warnings
+and start writing flags.
+
+It failed a real snapshot within a minute of existing: 255 staged, 0 device-backed — a lane that
+`--require-dispatches 1` passes cleanly. Both true, different questions.
+
+### The blindness I found by measuring instead of assuming
+
+184 single-run sessions across two suites: **0 interior pointers.** One five-run session: **52,
+max offset 49152 B.** Same machine, same DLL, same hour. Every helper in `_models.py` is
+`_session(...).run(...)` — built, run once, dropped.
+
+So the suite that runs most often is structurally blind to the pointer arithmetic the whole
+allocator design exists to survive, and its `pointers_interior: 0` sits in the counters file right
+next to numbers that do mean something. That adjacency is the hazard. I nearly reported "0 interior
+pointers on both devices" as a result before noticing it was a property of the harness.
+
+`probe_planner.py --require-interior` now fails on zero, and the reasoning runs backwards from
+usual: we have *measured* 52 here, so a later zero means the probe broke, not that ORT changed.
+**Once you know what a healthy instrument reads, its silence becomes assertable.** That is the
+cheapest positive control I have built yet — no plant needed, just a prior measurement.
+
+### Quarantine, still not verified, and I am still saying so
+
+`pointers_use_after_free: 0` everywhere. The detector sat in front of 255 frees and 648 lookups and
+did not fire. What changed is that the zero can no longer mean "the registry is not in ORT's path"
+— that reading is excluded now. So the honest claim is *"ORT does not hand back freed pointers
+under the patterns we have run"*, which is a real finding about ORT, and **not** "quarantine is
+verified". Stronger surrounding evidence does not convert an absence into a presence. Third session
+running I have written a version of this sentence; the temptation gets stronger each time the
+evidence improves, which is presumably how it eventually wins.
+
+### Process notes
+
+Ran the control before reporting failures: 3 elementwise and 28 op-table failures reproduce with
+device memory *unset*, so they are pre-existing claim declines, not my regression. A new flag plus
+new failures is the exact shape that gets misattributed, and it costs one 15-second run to rule out.
+
+The `edit` tool bit me again — I inserted a module between a doc comment and its item, silently
+reattaching the ledger's documentation to my new module. It compiled. Fourth time; always view the
+region after an insert near a doc comment.
+📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+## Session 16 — model-scale allocator verification, and a discriminator for the zeros
+
+`main` merged at `eb08204`. Two verifications the coordinator has asked for repeatedly finally
+became real, because with `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` the 2.2 GB Phi-3.5 model now
+routes 427 allocations and 2.09 GB through my registry.
+
+### The thing I nearly got wrong, in my own tool
+
+My first run of `probe_run2.py` printed "64 output(s) DIFFER, max|delta| = nan" for every output.
+I did not report it. `np.max(np.abs(a - b))` is `nan` whenever *either* array holds a `NaN`, even
+when the two are bit-identical — so that instrument could not distinguish "changed" from "both
+contain NaN". I rewrote the comparison as raw-byte equality and reported the magnitude only over
+the finite subset.
+
+The corrected version returned the same verdict, so the finding survived. That is exactly why it
+was worth fixing: **a number that is right by luck is indistinguishable from the three flattering
+numbers this project has already produced.** Had the outputs been stable, the old code would have
+reported change anyway and sent two people chasing an address bug that did not exist. I was one
+`print` away from being the fourth entry on that list, in the same session where I was warned about
+it. The warning worked, but only because I re-read my own diff rather than my own output.
+
+### VERIFICATION 1 — done, and the design held
+
+1192 interior pointers on the real model, identical on both vendors, `pointers_in_guard_band: 0`,
+`pointer_max_offset` 65536 B. The reserved-VA argument (`ptr + n` stays in-span by construction)
+was a first-principles claim for weeks; it has now met a real planner at 2 GB and not been dented.
+The instrument that would go red is `pointers_in_guard_band`, and it is an `epctl` exit-1 assertion
+ahead of the dispatch check — not a log line. It has had 21 460 chances to fire.
+
+`alloc_device_backed_spans` is still 0 everywhere. Device memory on ≠ tensors on the device.
+
+### VERIFICATION 2 — quarantine, still unexercised, and I am still saying so
+
+Zero use-after-free across 18 460 observations and 210 frees. The registry is unambiguously in
+ORT's path now, so the zero is no longer explained away by disconnection — and it is still not a
+pass. The honest sentence is "ORT has not handed us a freed handle under any pattern we have run".
+Third session in a row I have written that instead of an upgrade. If it is never exercised, that
+sentence is the answer, not a placeholder for a better one.
+
+### What I actually contributed to the zeros
+
+The control that mattered took ten minutes: run the same probe with device memory **unset**, which
+removes the allocator and the transfer object from the path entirely (confirmed — the 14
+`pointers_*`/`alloc_*` keys vanish from the counters file, because they are spliced only from
+`VulkanDataTransfer::release`). Logits still exactly zero, KV outputs still differ bitwise, 771
+dispatches either way, both vendors. **The phenomenon is invariant to whether my layer is present.**
+Not "I looked and found nothing" — a control with a stated red condition that did not go red.
+
+Then the part I did not expect. The three-run probe splits the 65 outputs into two different
+failures. Outputs 1..64 differ bitwise between runs with deltas pressed against the fp16 maximum
+and NaN appearing only from run 2 — the signature of uninitialised arena reuse, i.e. **nobody wrote
+them**. Output 0 is exactly zero on *runs 2 and 3*, when its neighbours prove the arena is dirty —
+an unwritten buffer in a dirty arena shows garbage, so **something wrote zeros there**. Both
+hypotheses the coordinator posed are true, of different tensors.
+
+The general lesson: I only got that discriminator because I ran the session three times. A
+single-run probe sees zeros and garbage side by side and cannot tell which buffer was written,
+because on run 1 the arena is clean and *everything* unwritten looks like zeros. **Run 1 is the run
+where "unwritten" and "written zero" are indistinguishable.** That is the same structural blindness
+as the interior-pointer one, arrived at from a completely different direction, and the whole
+`tests/ops/` suite runs exactly one run per session.
