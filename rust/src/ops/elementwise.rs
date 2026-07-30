@@ -144,6 +144,28 @@ pub const EXERCISED: &[(&str, &str)] = &[
     ("Gelu", "f32"),
     // Three-input `Clip` — the ternary template's first execution.
     ("Clip", "f32"),
+    // ---- f16, 2026-07-30 ------------------------------------------------------------------
+    // The dtype that actually matters: a Phi-3.5 decoder is f16 throughout, so the f32 rows above
+    // are worth zero nodes on it. Evidence: `tests/ops/test_op_table.py::test_op_table[<Op>-fp16]`
+    // on device 0 (Intel Iris Xe) and device 1 (NVIDIA RTX 4060), each asserting placement on
+    // `VulkanExecutionProvider` before comparing against the CPU EP at `FP16_ANY` tolerance.
+    //
+    // These are listed as their own pairs rather than inferred from the f32 rows because f16 is a
+    // **different storage path**, not a different expression: the tensors are packed two to a
+    // `uint` word and stored through `atomicAnd`/`atomicOr` on disjoint 16-bit lanes. A wrong lane
+    // or a wrong word index is invisible to every f32 row here. Same reasoning as the parameter
+    // tail above.
+    ("Add", "f16"),
+    ("Sub", "f16"),
+    ("Mul", "f16"),
+    ("Div", "f16"),
+    ("Relu", "f16"),
+    ("Sigmoid", "f16"),
+    ("Sqrt", "f16"),
+    ("Exp", "f16"),
+    ("Tanh", "f16"),
+    ("Erf", "f16"),
+    ("Gelu", "f16"),
 ];
 
 /// Rows that are live on **template evidence** rather than on their own dispatch.
@@ -197,29 +219,73 @@ pub const TEMPLATE_LIVE: &[(&str, &str)] = &[];
 /// worth exercising next.
 fn ew_binary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_binary(view, spec)?;
-    only_f32(view, spec)
+    only_proved_dtypes(view, spec)
 }
 
 /// [`ew_unary`](claim::ew_unary), narrowed the same way and for the same reason.
 fn ew_unary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary(view, spec)?;
-    only_f32(view, spec)
+    only_proved_dtypes(view, spec)
 }
 
-/// The shared narrowing: input 0 must be f32.
-fn only_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+/// The shared narrowing: input 0's dtype must be one this op has been *proved* at.
+///
+/// Reads [`EXERCISED`] directly rather than hardcoding f32. That is the whole mechanism: the
+/// evidence list and the claim predicate can no longer disagree, because they are the same list.
+/// Adding `("Mul", "f16")` after a differential run against the CPU EP is then the single act that
+/// widens the claim — there is no second place to remember, and no way to widen a claim without
+/// writing down the evidence that justifies it.
+///
+/// A [`TEMPLATE_LIVE`] row inherits its representative's proved dtypes and nothing more, which is
+/// the same weaker-but-explicit claim that list has always made.
+///
+/// The decline is `[dtype]`, so an f16 decoder graph shows up in Niobe's histogram as a dtype
+/// bucket rather than as a mystery. That bucket emptying is the signal that the variant is worth
+/// exercising next.
+fn only_proved_dtypes(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     let edge = claim::input_edge(view, spec, 0)?;
     let dt = edge.dtype;
+    let proved = dt.is_some_and(|d| proved_at(spec.op_type, d));
     crate::require!(
-        dt == Some(DType::F32),
+        proved,
         DType,
-        "`{}` is live for f32 only; this node is {}. The {} variant of the elementwise \
-         shader compiles but has never executed on a device, and the CPU EP is correct for it",
+        "`{}` is live for {}; this node is {}. That variant of the elementwise shader compiles \
+         but has never executed on a device, and the CPU EP is correct for it",
         spec.op_type,
+        proved_list(spec.op_type),
         dt.map_or("untyped", dtype_suffix),
-        dt.map_or("requested", dtype_suffix)
     );
     Ok(())
+}
+
+/// Has `op` executed at dtype `d` on a device, directly or through its template representative?
+pub fn proved_at(op: &str, d: DType) -> bool {
+    let suffix = dtype_suffix(d);
+    let representative = TEMPLATE_LIVE
+        .iter()
+        .find(|(row, _)| *row == op)
+        .map_or(op, |(_, rep)| *rep);
+    EXERCISED
+        .iter()
+        .any(|(e, dt)| *e == representative && *dt == suffix)
+}
+
+/// The dtypes `op` is proved at, for the decline message.
+fn proved_list(op: &str) -> String {
+    let representative = TEMPLATE_LIVE
+        .iter()
+        .find(|(row, _)| *row == op)
+        .map_or(op, |(_, rep)| *rep);
+    let mut got: Vec<&str> = EXERCISED
+        .iter()
+        .filter(|(e, _)| *e == representative)
+        .map(|(_, dt)| *dt)
+        .collect();
+    got.sort_unstable();
+    if got.is_empty() {
+        return "no dtype".to_string();
+    }
+    got.join("/")
 }
 
 /// `ai.onnx::Swish` (opset 24) — any `alpha`, now that the parameter tail carries it.
@@ -229,7 +295,7 @@ fn only_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 /// The pin is kept in the tests as a record of *why* it existed, not as a constraint.
 fn ew_unary_params_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary_params(view, spec)?;
-    only_f32(view, spec)
+    only_proved_dtypes(view, spec)
 }
 
 /// `Gelu` — claim `approximate = "none"` (the exact erf form), decline `"tanh"`.
@@ -242,14 +308,14 @@ fn ew_unary_params_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 fn gelu(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary(view, spec)?;
     claim::attr_string_in(view, spec, "approximate", &["none"], "none")?;
-    only_f32(view, spec)
+    only_proved_dtypes(view, spec)
 }
 
 /// `Clip` — the three-input form only, f32. See [`claim::ew_clip`] for why the shorter forms
 /// decline rather than defaulting the omitted bound.
 fn clip_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_clip(view, spec)?;
-    only_f32(view, spec)
+    only_proved_dtypes(view, spec)
 }
 
 crate::op_table! {
@@ -376,6 +442,10 @@ mod tests {
     /// edit where the second place demands either a device and a test name, or a named
     /// representative that has one. The cost of flipping a row on a hunch is that you have to
     /// write a sentence claiming evidence that does not exist.
+    ///
+    /// The evidence lists are keyed by `(op, dtype)`, so one op legitimately appears once per
+    /// dtype it has been exercised at. The set of *ops* is what has to match the set of live rows;
+    /// which dtypes each one carries is [`only_proved_dtypes`]'s business, not this test's.
     #[test]
     fn every_live_row_is_justified_by_one_of_the_two_evidence_lists() {
         let mut live: Vec<&str> = OPS
@@ -390,14 +460,69 @@ mod tests {
             .collect();
         live.sort_unstable();
         justified.sort_unstable();
+        justified.dedup();
         assert_eq!(
             live, justified,
             "a Live row has no entry in EXERCISED or TEMPLATE_LIVE, or an entry has no Live row"
         );
     }
 
-    /// A template-live row is only as good as its representative, so the representative must hold.
+    /// No live claim may rest on a variant no device can create.
     ///
+    /// The artifact-level guard in [`variants`](crate::ops::common::variants) allows a wider
+    /// capability set than this one, because generating an unloadable variant is harmless. This is
+    /// the rule that actually matters: a `(op, dtype)` pair in [`EXERCISED`] is a promise that the
+    /// pair *ran on a device*, so if its module declares a capability the engine never enables,
+    /// either the promise is false or the evidence was recorded against something else.
+    ///
+    /// Live today: the `_i64` variants declare `Int64`, which needs
+    /// `VkPhysicalDeviceFeatures::shaderInt64`; `vk::device` passes no `pEnabledFeatures` at all.
+    /// Nothing claims i64, so this passes — and the moment somebody adds `("Sub", "i64")` on the
+    /// strength of the variant existing, it fails here rather than as a device-lost on a user's
+    /// machine. That is the same trap the f16 rows sat in for their whole existence, pre-sprung.
+    #[test]
+    fn no_live_claim_rests_on_an_unloadable_variant() {
+        use crate::ops::common::variants::{ENGINE_ENABLED_CAPABILITIES, declared_capabilities};
+
+        let modules: std::collections::HashMap<&str, &[u8]> =
+            crate::engine::shaders::SHADER_MODULES
+                .iter()
+                .copied()
+                .collect();
+
+        let mut offenders: Vec<String> = Vec::new();
+        for spec in OPS.iter().filter(|s| s.status == OpStatus::Live) {
+            for d in crate::ops::common::dtype::ALL_DTYPES {
+                if !proved_at(spec.op_type, d) {
+                    continue;
+                }
+                let Some(stem) = spec.kernel.stem(d) else {
+                    continue;
+                };
+                let Some(bytes) = modules.get(stem) else {
+                    continue;
+                };
+                for cap in declared_capabilities(bytes) {
+                    if !ENGINE_ENABLED_CAPABILITIES.contains(&cap) {
+                        offenders.push(format!(
+                            "`{}` is claimed at {} via `{stem}`, which declares SPIR-V capability \
+                             {cap} — the engine enables no such feature, so that module cannot be \
+                             created on any device",
+                            spec.op_type,
+                            dtype_suffix(d),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a live claim rests on a variant no device can create:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// A template-live row is only as good as its representative, so the representative must hold.    ///
     /// Without this the weaker list could quietly outlive the stronger one: if `Add` were ever
     /// demoted — because the differential suite disproved the wire, which is exactly what flipping
     /// it is meant to allow — thirty-four rows would still be claiming on evidence that had been

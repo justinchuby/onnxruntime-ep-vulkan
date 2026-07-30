@@ -123,10 +123,18 @@ def _f32_ge1(shape: tuple[int, ...]) -> np.ndarray:
 def _bool(shape: tuple[int, ...]) -> np.ndarray:
     return _RNG.integers(0, 2, shape).astype(bool)
 
+def _f16(shape: tuple[int, ...]) -> np.ndarray:
+    return _RNG.standard_normal(shape).astype(np.float16)
+
+def _f16_pos(shape: tuple[int, ...]) -> np.ndarray:
+    """Strictly positive fp16 — for Sqrt, Div denominators, Log."""
+    return (np.abs(_RNG.standard_normal(shape)) + 0.05).astype(np.float16)
+
 def _i32(shape: tuple[int, ...]) -> np.ndarray:
     return _RNG.integers(-100, 100, shape, dtype=np.int32)
 
 _S = (3, 4)  # standard test shape
+_S16 = (3, 5)  # odd element count: exercises the high half of the final packed fp16 word
 
 def _ew2(
     op_id: str,
@@ -306,6 +314,58 @@ _CASES: list[CaseSpec] = [
     _ew1("Mish-fp32",            "Mish",            _f32(_S), tol=dict(m.FP32_TRANSCENDENTAL), live=True),
     _ew1("ThresholdedRelu-fp32", "ThresholdedRelu", _f32(_S), tol=dict(m.FP32_ACTIVATION),
          attrs={"alpha": 1.0}, live=True),
+
+    # ======================================================================
+    # §4.3b  fp16 elementwise — the dtype a real decoder is actually made of
+    # ======================================================================
+    #
+    # Phi-3.5 is fp16 throughout: 64 Mul and 32 Sigmoid nodes, and the fp32 rows above are worth
+    # zero of them. These exercise a genuinely different storage path, not a different expression
+    # — f16 tensors are packed two to a uint word and stored through atomicAnd/atomicOr on
+    # disjoint 16-bit lanes, so a wrong lane or word index is invisible to every fp32 row here.
+    #
+    # An odd element count is deliberate on the odd rows below (_S16 = (3, 5) = 15 elements): it
+    # puts a live element in a partial final word, which is exactly where the packing breaks.
+    _ew2("Add-fp16",  "Add",  _f16(_S), _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew2("Sub-fp16",  "Sub",  _f16(_S), _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew2("Mul-fp16",  "Mul",  _f16(_S), _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew2("Div-fp16",  "Div",  _f16(_S), _f16_pos(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    # Broadcast at fp16: b is rank-1 over the last axis, so the general indexing path runs rather
+    # than the EW_IDENTICAL fast path. That distinction is what the whole 258-node dynamic-shape
+    # story turns on, and it has never been exercised at fp16.
+    _ew2("Mul-fp16-bcast", "Mul", _f16(_S), _f16((_S[1],)), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+
+    # An odd element count is deliberately declined, not claimed: _S16 = (3, 5) = 15 elements puts
+    # a live element in a partial final word, whose store lands outside the bound buffer range.
+    # Device 1 absorbed that and returned the right answer; device 0 applied robustBufferAccess and
+    # left a zero. These rows are here as the regression guard for that vendor split — claim=False
+    # asserts the EP declines rather than answering differently on two GPUs.
+    _ew1("Relu-fp16-odd", "Relu", _f16(_S16), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), claim=False),
+    _ew1("Sigmoid-fp16-odd", "Sigmoid", _f16(_S16), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), claim=False),
+
+    _ew1("Relu-fp16",    "Relu",    _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew1("Sigmoid-fp16", "Sigmoid", _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew1("Sqrt-fp16",    "Sqrt",    _f16_pos(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew1("Exp-fp16",     "Exp",     _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew1("Tanh-fp16",    "Tanh",    _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    _ew1("Erf-fp16",     "Erf",     _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
+    # Gelu carries no attribute but travels the parameter tail; proving it at fp16 proves the tail
+    # offset is dtype-independent.
+    _ew1("Gelu-fp16",    "Gelu",    _f16(_S), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
+         tol=dict(m.FP16_ANY), live=True),
 
     # ======================================================================
     # §4.4  Select / cast — EW-T (3 ops)

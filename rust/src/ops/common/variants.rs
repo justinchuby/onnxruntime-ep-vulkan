@@ -115,13 +115,15 @@ impl Template {
 
 /// The GLSL scalar type a dtype maps to inside a template.
 ///
-/// `u8` and `bool` are stored packed in `uint` buffers (`ENGINE.md` §4.1: buffer-only storage,
-/// `storageBuffer8BitAccess` is not part of the baseline capability set), so both map to `uint`
-/// and the template is responsible for the pack/unpack.
+/// `u8`, `bool` **and `f16`** are stored packed in `uint` buffers (`ENGINE.md` §4.1: buffer-only
+/// storage; neither `storageBuffer8BitAccess` nor `storageBuffer16BitAccess` is in the baseline
+/// capability set), so all three map to `uint` and the template is responsible for the
+/// pack/unpack. Declaring f16 as `float16_t` instead makes the SPIR-V require a device feature the
+/// engine does not enable — see `indexing.glsl`'s header.
 pub const fn dtype_glsl(d: DType) -> &'static str {
     match d {
         DType::F32 => "float",
-        DType::F16 => "float16_t",
+        DType::F16 => "uint",
         DType::I64 => "int64_t",
         DType::I32 => "int",
         DType::U8 => "uint",
@@ -300,6 +302,69 @@ pub fn manifest_text() -> String {
 /// Path of the checked-in manifest, relative to the crate root.
 pub const MANIFEST_PATH: &str = "src/ops/shader_variants.txt";
 
+// ---------------------------------------------------------------------------
+// SPIR-V capability accounting — what we may build vs what we may claim on
+// ---------------------------------------------------------------------------
+//
+// A SPIR-V `OpCapability` is the module-level name for "this needs a device feature". Vulkan does
+// not grant features by being new enough: a feature must be *enabled* in `VkDeviceCreateInfo`
+// before a module declaring it can be created, whatever the device supports. So there are two
+// different sets here and conflating them is exactly the mistake that made every f16 module
+// unloadable for as long as they existed.
+
+/// `Shader` — declared by every compute module. Never optional.
+#[cfg(test)]
+pub(crate) const CAP_SHADER: u32 = 1;
+/// `Int64` — declared by every `_i64` variant. Requires `VkPhysicalDeviceFeatures::shaderInt64`,
+/// which the engine's feature chain does **not** currently enable.
+#[cfg(test)]
+pub(crate) const CAP_INT64: u32 = 11;
+
+/// Capabilities a *generated* variant may declare.
+///
+/// Wider than [`ENGINE_ENABLED_CAPABILITIES`] on purpose: building a variant no device can load
+/// costs a few kilobytes and nothing else, and the i64 variants have to exist before the feature
+/// that would make them loadable is worth adding. Building one is not the bug. Claiming on one is.
+#[cfg(test)]
+pub(crate) const GENERATED_CAPABILITIES: &[u32] = &[CAP_SHADER, CAP_INT64];
+
+/// Capabilities the engine actually enables at device creation, and therefore the only ones a
+/// **live claim** may rest on.
+///
+/// `vk::device` builds `VkDeviceCreateInfo` with a `DeviceFeatureChain` carrying only
+/// `synchronization2` and passes no `pEnabledFeatures` at all — so `shaderInt64` is off, and an
+/// `_i64` module cannot be created on any device we run on. Widening this list means three edits
+/// together, not one: enable the feature in the chain, probe it in `vk::caps`, and decline the
+/// variant on devices that lack it. A capability we generate is not a capability we have.
+#[cfg(test)]
+pub(crate) const ENGINE_ENABLED_CAPABILITIES: &[u32] = &[CAP_SHADER];
+
+/// Every `OpCapability` declared by a SPIR-V module, decoded from the binary.
+///
+/// Word 0 of an instruction packs `(word_count << 16) | opcode`; `OpCapability` is opcode 17 with
+/// a single operand. The five-word header is skipped. Capabilities must precede every other
+/// section, but scanning the whole module is simpler and cannot miss one.
+#[cfg(test)]
+pub(crate) fn declared_capabilities(spv: &[u8]) -> Vec<u32> {
+    let words: Vec<u32> = spv
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 5;
+    while i < words.len() {
+        let len = (words[i] >> 16) as usize;
+        if len == 0 {
+            break;
+        }
+        if words[i] & 0xFFFF == 17 && i + 1 < words.len() {
+            out.push(words[i + 1]);
+        }
+        i += len;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,14 +399,18 @@ mod tests {
         assert_eq!(before, p.len());
     }
 
+    /// f16's `SCALAR_T` is `uint`, not `float16_t`, and that is load-bearing rather than
+    /// cosmetic: `float16_t` storage makes the SPIR-V declare `StorageBuffer16BitAccess`, a device
+    /// feature the engine's `VkDeviceCreateInfo` chain does not enable, so every f16 module was
+    /// unloadable. Pinned here so the packing decision cannot be reverted by a tidy-up.
     #[test]
-    fn defines_are_deterministic() {
+    fn f16_is_packed_into_uint_words_rather_than_typed() {
         let k = kernel!(EwUnary, "sqrt");
         assert_eq!(
             k.defines(DType::F16),
             vec![
                 "EW_OP=OP_SQRT".to_string(),
-                "SCALAR_T=float16_t".to_string(),
+                "SCALAR_T=uint".to_string(),
                 "DTYPE_F16".to_string(),
             ]
         );
@@ -420,6 +489,41 @@ mod tests {
 
     fn shaders_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders")
+    }
+
+    /// No embedded shader may require a device feature the engine does not enable.
+    ///
+    /// This is the general form of a bug that reached two devices undetected: the f16 elementwise
+    /// variants were compiled with `SCALAR_T = float16_t`, which made every one of them declare
+    /// `StorageBuffer16BitAccess` (capability 4433). The engine's `VkDeviceCreateInfo` feature
+    /// chain carries only `synchronization2`, so those modules could never have been loaded — yet
+    /// nothing failed, because no test had ever asked a device to load one. The census reported
+    /// the resulting nodes as declining on `[dtype]`, which was true and completely uninformative.
+    ///
+    /// Asserting on the *capability set* rather than on one shader is the point. A capability is
+    /// exactly the SPIR-V-level name for "this module needs a feature", so an allowlist here is a
+    /// checkable statement of the §7.2 baseline, and any future kernel that reaches for a device
+    /// feature fails in CI on a developer's machine rather than on a user's phone.
+    ///
+    /// This list is what may be **generated**, which is deliberately wider than what may be
+    /// **claimed**. Generating an unloadable variant is harmless; claiming on one is the bug. That
+    /// second, narrower rule is
+    /// [`elementwise::no_live_claim_rests_on_an_unloadable_variant`](crate::ops::elementwise).
+    #[test]
+    fn no_shader_requires_a_device_feature_the_engine_does_not_enable() {
+        let mut offenders: Vec<String> = Vec::new();
+        for (stem, bytes) in crate::engine::shaders::SHADER_MODULES {
+            for cap in declared_capabilities(bytes) {
+                if !GENERATED_CAPABILITIES.contains(&cap) {
+                    offenders.push(format!("{stem} requires SPIR-V capability {cap}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these modules need device features nothing in the engine enables or probes:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     /// Every template the registry names must have a source file `build.rs` can find.

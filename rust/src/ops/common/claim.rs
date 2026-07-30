@@ -220,6 +220,51 @@ pub(crate) fn input_edge(
     }
 }
 
+/// Can we *prove* this tensor's element count is even?
+///
+/// Sound under symbolic extents: a product is even as soon as any one factor is even, so a single
+/// literal even extent settles it regardless of what the symbolic dims turn out to be. Returns
+/// `false` when unprovable, never a guess.
+fn provably_even_elements(shape: &[i64]) -> bool {
+    shape.iter().any(|&d| d > 0 && d % 2 == 0)
+}
+
+/// Sub-word tensors must end on a whole `uint` word.
+///
+/// **Measured, on Intel, 2026-07-30.** `f16` tensors are packed two to a `uint` and stored with
+/// `atomicAnd`/`atomicOr` on disjoint 16-bit lanes (`indexing.glsl`). When the element count is
+/// odd the final word is *partial*: a 15-element f16 tensor occupies 30 bytes, but the store for
+/// element 14 addresses bytes 28..31. That access is out of the bound descriptor range. The RTX
+/// 4060 absorbs it and returns the right answer; the Iris Xe applies `robustBufferAccess` and
+/// discards the write, leaving a zero in the last element — six of twelve fp16 differential cases
+/// failed on device 0 and *passed* on device 1, on exactly and only that element.
+///
+/// `indexing.glsl` already asked the allocator to round sub-word buffers up to four bytes. That
+/// request cannot be honoured for ORT-owned tensors: ORT sizes them exactly, and the EP binds what
+/// it is given. So the requirement has to be met by declining, not by asking.
+///
+/// This is a claim restriction with a named lift condition, not a permanent one: bind sub-word
+/// tensors with their range rounded up to a multiple of four bytes (engine-side, `vk::session`'s
+/// descriptor setup) and this check can go.
+pub(crate) fn check_subword_tail(spec: &OpSpec, edge: &EdgeType, what: &str) -> ClaimResult {
+    if edge.dtype != Some(crate::engine::DType::F16) {
+        return Ok(());
+    }
+    let Some(shape) = edge.shape.as_deref() else {
+        return Ok(());
+    };
+    require!(
+        provably_even_elements(shape),
+        DType,
+        "`{}` {what} is f16 with an element count this EP cannot prove is even; f16 is packed two \
+         elements to a 32-bit word, so an odd count makes the final word partial and its store \
+         lands outside the bound buffer range — device 0 discards it and device 1 does not, which \
+         is a wrong answer on one vendor only",
+        spec.op_type
+    );
+    Ok(())
+}
+
 /// Check one edge's dtype against the row's capability set.
 pub(crate) fn check_dtype(spec: &OpSpec, edge: &EdgeType, what: &str) -> ClaimResult {
     let Some(dt) = edge.dtype else {
@@ -301,7 +346,8 @@ fn check_single_output(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
         "`{}` output 0 has no element type this EP recognises",
         spec.op_type
     );
-    check_shape(spec, &out, "output 0")
+    check_shape(spec, &out, "output 0")?;
+    check_subword_tail(spec, &out, "output 0")
 }
 
 /// The shapes of `n` inputs must broadcast together.
@@ -402,6 +448,7 @@ fn elementwise(
             continue;
         }
         check_dtype(spec, &edge, &format!("input {i}"))?;
+        check_subword_tail(spec, &edge, &format!("input {i}"))?;
         match (common, edge.dtype) {
             (None, dt) => common = dt,
             (Some(a), Some(b)) if a != b => {

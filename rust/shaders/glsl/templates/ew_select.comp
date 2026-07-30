@@ -20,12 +20,15 @@ layout(local_size_x_id = 0, local_size_x = 256) in;
 // the variant is otherwise compiled for.
 layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
 EW_DEFINE_LOAD_BYTE(load_cond, in0)
+#elif defined(EW_PACKED_HALF)
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_HALF(load0, in0)
 #else
 layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
 EW_DEFINE_LOAD(load0, in0)
 #endif
 
-#ifdef EW_PACKED_BYTES
+#if defined(EW_PACKED_BYTES)
 layout(set = 0, binding = 1) readonly buffer In1 { uint data[]; } in1;
 layout(set = 0, binding = 2) readonly buffer In2 { uint data[]; } in2;
 EW_DEFINE_LOAD_BYTE(load1, in1)
@@ -33,6 +36,14 @@ EW_DEFINE_LOAD_BYTE(load2, in2)
 
 layout(set = 0, binding = 3) buffer Out { uint data[]; } outb;
 EW_DEFINE_STORE_BYTE(store_out, outb)
+#elif defined(EW_PACKED_HALF)
+layout(set = 0, binding = 1) readonly buffer In1 { uint data[]; } in1;
+layout(set = 0, binding = 2) readonly buffer In2 { uint data[]; } in2;
+EW_DEFINE_LOAD_HALF(load1, in1)
+EW_DEFINE_LOAD_HALF(load2, in2)
+
+layout(set = 0, binding = 3) buffer Out { uint data[]; } outb;
+EW_DEFINE_STORE_HALF(store_out, outb)
 #else
 layout(set = 0, binding = 1) readonly buffer In1 { SCALAR_T data[]; } in1;
 layout(set = 0, binding = 2) readonly buffer In2 { SCALAR_T data[]; } in2;
