@@ -49,3 +49,48 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ### Performance metric is a TRIPLE
 `(claimed_op_coverage, island_count, largest_island_flops)` per producer at version. Portability floor = §7.2. `SUBGROUP_SIZE_IS_GUARANTEED=False`.
+
+---
+
+## Session 7 (2026-07-30T05:48-07:00) — Linux lavapipe first claimed-node execution
+
+### What was done
+Full build and test run on WSL2 Ubuntu 24.04 (Mesa 25.2.8 / LLVM 20.1.2, lavapipe 1.4.318). First execution of a claimed node end-to-end on a Linux Vulkan stack with lavapipe.
+
+### Build chain findings
+- `glslc` is in Ubuntu 24.04 repos directly (package `glslc`, v2023.8). Ubuntu 22.04 CI lane must still use LunarG `shaderc` apt repo — the two paths diverge.
+- Vendored ORT headers at `third_party/onnxruntime/include/` work without setting `ORT_INCLUDE_DIR`. Do not set it to a missing path.
+- `CARGO_TARGET_DIR=/root/ep-build` required to avoid systemd private-tmp recycling between WSL invocations.
+- `PATH` must be set explicitly in WSL root bash subshells (it is empty otherwise → "linker `cc` not found").
+- `sudo` requires password for `justinchu` in this WSL install. Use `wsl -d Ubuntu -u root` for all privileged operations.
+- Build: CLEAN. Artifacts: `libonnxruntime_vulkan_ep.so` (1.78 MB), `epctl` (904 KB).
+
+### Gate and capability results (lavapipe, new)
+All R1–R6 PASS. Key new data:
+- `subgroup_size = 8` (confirmed — prediction was correct; this is a real portability surface)
+- `is_uma = true`; `maxComputeSharedMemorySize = 32 KiB`; `timestamp_period_ns = 1.0`; `timestamp_valid_bits = 64`
+- `apiVersion = 1.4.318`
+- See §7.5 of PLATFORMS.md for full three-way diff (lavapipe vs Intel Iris Xe vs RTX 4060).
+
+### Barrier path: sync2 (expected)
+lavapipe Vulkan 1.4 → sync2 is core → `Barriers::select` → `Sync2Backend::Core`. Probe file confirms `"sync2"`. Forced-legacy path validated by parity suite.
+
+### Test suite results (lavapipe)
+- M0 canonical: `test_binary_elementwise[Add-fp32]` PASSED ✅
+- `test_barrier_parity.py`: 58 passed / 0 failed / 28 skipped — **third independent implementation** (after Intel Iris Xe and RTX 4060) confirming barrier parity bit-exactly.
+- Full suite: 196 passed / 34 failed (all staged ops, platform-independent) / 32 skipped.
+- Provider assertion confirmed: no silent CPU fallbacks.
+
+### Subgroup size audit
+Zero of 168+ compiled shader variants use subgroup intrinsics. All use shared-memory tree reductions. `q_gemv.comp` lines 9–12 document this explicitly. The subgroup-size-8 difference has zero affected variants today. Future shaders must be authored to handle `subgroupSize ∈ [4, 128]`.
+
+### OQ-12 constraint
+lavapipe results DO NOT provide Android evidence. UMA topology matches, but ISA, driver bugs, and command-submission model are entirely different. The 31.43% Android usability figure remains fully unverified.
+
+### PLATFORMS.md sections updated this session
+- §5: WSL Ubuntu 24.04 row added
+- §7.4.2: WSL local-dev lane row added; lanes table restructured with claimed-node execution column
+- §7.5 (new): Three-way capability diff table
+- §7.6 (new): Subgroup-size audit, zero variants affected
+- §7.7 (new): Lavapipe execution record — build, gate, barrier path, test results, OQ-12 scope
+- §9: lavapipe barrier parity result added

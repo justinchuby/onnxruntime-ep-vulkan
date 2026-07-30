@@ -1,8 +1,8 @@
 # Platform Support Matrix — onnxruntime-ep-vulkan
 
 > **Document owner:** Link (Platform & Hardware Support Engineer)
-> **Last updated:** 2026-07-29T20:26:56-07:00
-> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); both CI lanes working as of 2026-07-29T09:19:35-07:00. LVP2 **retracted** 2026-07-29T20:26:56-07:00 (instrument failure — was never a real quirk); see §6.3.
+> **Last updated:** 2026-07-30T05:54:13-07:00
+> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); both CI lanes working as of 2026-07-29T09:19:35-07:00. LVP2 **retracted** 2026-07-29T20:26:56-07:00 (instrument failure — was never a real quirk); see §6.3. Linux lavapipe **first claimed-node execution** completed 2026-07-30T07:52-07:00 (WSL, Mesa 25.2.8); see §7.5–§7.7.
 
 This document is the evidence base for the project's platform support decisions. §1–§7 record the investigation and reasoning leading to the frozen capability set. §8 records what was decided, the data behind it, and the outstanding experiment needed to validate the Android half of that decision. §9 specifies the CI requirement for the dual barrier-backend parity lane. §10 documents the OQ-12 hardware validation experiment.
 
@@ -245,6 +245,7 @@ Vulkan 1.3 as a baseline is **acceptable** if the project explicitly targets des
 | Windows 10/11 | Intel (iGPU, 11th gen+) | 30.0.101.1325 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
 | Windows Server 2025 | CPU (lavapipe, mesa-dist-win 26.1.3, **ICD registered in registry**) | mesa-dist-win 26.1.3 | 1.3 (llvmpipe, driverID MESA_LLVMPIPE) | **UMA** (probe: is_uma=true; all memory types HOST_VISIBLE; UMA path exercised in CI) | R1–R6 PASS; subgroup: `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD, size=8 | fp16/int8: unverified (probe reading provisional — taken before push_next fix; re-observation recommended) | **CI-verified (lavapipe)** |
 | Linux Ubuntu 22.04 | CPU (lavapipe, Mesa 23.2.1 / LLVM 15.0.7) | Mesa 23.2.1 | **1.3.255** (apiVersion observed) | **UMA** (probe: is_uma=true; UMA path exercised in CI) | R1–R6 PASS; `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`; subgroup: `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD, size=8 | fp16/int8: unverified (probe reading provisional — taken before push_next fix; re-observation recommended) | **CI-verified (lavapipe)** |
+| Linux Ubuntu 24.04 / WSL2 | CPU (lavapipe, Mesa 25.2.8 / LLVM 20.1.2) | Mesa 25.2.8 | **1.4.318** (observed 2026-07-30) | **UMA** (probe: is_uma=true; all memory types HOST_VISIBLE) | R1–R6 PASS; `deviceName = llvmpipe (LLVM 20.1.2, 256 bits)`; subgroup: `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|CLUSTERED\|QUAD\|ROTATE_KHR\|ROTATE_CLUSTERED_KHR, size=**8**; `maxComputeSharedMemorySize=32 KiB`; `maxComputeWorkGroupInvocations=1024`; `timestamp_period_ns=1.0`; `timestamp_valid_bits=64` | fp16/int8: unverified (probe does not test feature flags from chained structs on this device) | **local-dev verified 2026-07-30** (WSL2, not CI; sudo requires password for justinchu — run as root); all claimed ops execute end-to-end; 196 tests pass |
 | Linux (Ubuntu 22.04+) | NVIDIA proprietary (470+ LTS or 535+) | Driver 470.x | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: generally present | untested (no CI GPU runner) |
 | Linux (Ubuntu 22.04+) | AMD (Mesa RADV, Mesa 22.0+) | Mesa 22.0 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
 | Linux (Ubuntu 22.04+) | Intel iGPU (Mesa ANV, Mesa 22.0+, Gen11+) | Mesa 22.0 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
@@ -443,12 +444,15 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdPath -V
 
 #### 7.4.2 Current CI lane state
 
-| Lane | Primary ICD | Vulkan version | Validation layers | Parity lane | Subgroup |
-|---|---|---|---|---|---|
-| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | **1.3.255** (observed) | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) | **subgroup_basic_in_compute=true**; ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD; size=8 (probe-verified, 2026-07-29T20:26:56-07:00) |
-| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC, **registry-registered**) | 1.3 (observed) | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) | Consistent with Linux (same Mesa/LLVM backend); LVP2 retracted |
+| Lane | Primary ICD | Vulkan version | Validation layers | Parity lane | Claimed-node execution | Subgroup |
+|---|---|---|---|---|---|---|
+| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | **1.3.255** (observed) | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) | loader + probe only (CI lane does not yet run `test_elementwise`) | **subgroup_basic_in_compute=true**; ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD; size=8 (probe-verified, 2026-07-29T20:26:56-07:00) |
+| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC, **registry-registered**) | 1.3 (observed) | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) | loader + probe only | Consistent with Linux (same Mesa/LLVM backend); LVP2 retracted |
+| **WSL Ubuntu 24.04 (local-dev)** | lavapipe (Mesa 25.2.8 / LLVM 20.1.2, `lvp_icd.json`) | **1.4.318** (observed 2026-07-30) | ✗ (validation layers not loaded in this run) | ✓ confirmed — 58 passed / 28 skipped (§7.7.4) | **✅ CONFIRMED 2026-07-30** — M0 canonical `Add` (fp32) and 195 further tests; 196 total; zero lavapipe-specific failures | size=8; ops=BASIC\|VOTE\|ARITH\|BALLOT\|SHUFFLE\|SHUFFLE_REL\|CLUSTERED\|QUAD\|ROTATE_KHR\|ROTATE_CLUSTERED_KHR |
 
-Both lanes expose `VK_KHR_synchronization2` and support subgroup arithmetic in compute (probe-verified on Linux lane). The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available; the subgroup arithmetic path is now exercised in both normal CI runs.
+> **The WSL lane is not a CI lane.** It provides first-claimed-node evidence and a three-way capability diff. CI must be updated to run `test_elementwise` and `test_barrier_parity` on both CI lanes (Linux and Windows) to make this evidence continuous rather than one-time. The §7.5 CI lane spec reflects what the CI lanes need to become.
+
+Both CI lanes expose `VK_KHR_synchronization2` and support subgroup arithmetic in compute (probe-verified on Linux lane). The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available; the subgroup arithmetic path is now exercised in both normal CI runs.
 
 **What GPU-less CI does NOT cover:**
 - Subgroup arithmetic **hardware** semantics (CI exercises the subgroup arithmetic code path via lavapipe software emulation, which is a valid correctness test but not a performance or hardware-conformance test)
@@ -462,6 +466,151 @@ For anything in the matrix column labeled **untested**, the project must either 
 
 - Run `epctl --dump-capabilities` in both Windows and Linux lanes immediately after the smoke-check step. This reports device state without ORT and makes the next instance-creation failure self-diagnosing.
 - Switch's EP diagnostic (`ONNXRUNTIME_VULKAN_EP_VALIDATE=1`) already logs what the loader sees before instance creation — ensure this log appears in the CI step output, not only in the test harness stderr.
+
+---
+
+## 7.5 Three-Way Capability Diff (lavapipe WSL 25.2.8 × Intel Iris Xe × RTX 4060 Laptop)
+
+**Measurement date:** 2026-07-30T07:52-07:00. All values are from `epctl --probe-loader` on the same binary built from `squad/link`. All three readings were taken with the corrected probe (push_next rebind bug corrected, see §6.3). LVP2 retraction applies only to readings taken *before* that fix; these readings are sound.
+
+| Property | lavapipe (Ubuntu 24.04 WSL, Mesa 25.2.8 / LLVM 20.1.2) | Intel Iris Xe (Win 11, driver 31.0.101.5590) | RTX 4060 Laptop (Win 11, driver 572.x) |
+|---|---|---|---|
+| `deviceName` | llvmpipe (LLVM 20.1.2, 256 bits) | Intel(R) Iris(R) Xe Graphics | NVIDIA GeForce RTX 4060 Laptop GPU |
+| `apiVersion` | 1.4.318 | 1.4.309 | 1.4.325 |
+| `subgroup_size` | **8** | **32** | **32** |
+| `subgroup_ops` | BASIC\|VOTE\|ARITH\|BALLOT\|SHUFFLE\|SHUFFLE_REL\|CLUSTERED\|QUAD\|ROTATE_KHR\|ROTATE_CLUSTERED_KHR | same | same **+ PARTITIONED_NV** |
+| `subgroup_stages (compute)` | ✅ | ✅ | ✅ |
+| `subgroup_stages (non-compute)` | FRAGMENT\|TASK\|MESH (no VERTEX/TESS/GEOM) | + VERTEX\|TESS\|GEOM | + VERTEX\|TESS\|GEOM\|RAY_*\|TASK\|MESH |
+| `is_uma` | true | true | **false** |
+| `maxComputeSharedMemorySize` | 32 KiB | 32 KiB | **48 KiB** |
+| `maxComputeWorkGroupInvocations` | 1024 | 1024 | 1024 |
+| `timestamp_period_ns` | 1.0 | **52.0833** | 1.0 |
+| `timestamp_valid_bits` | 64 | **36** | 64 |
+| §7.2 gate result | PASS | PASS | PASS |
+
+**Notable differences and portability implications:**
+
+1. **`subgroup_size: 8` on lavapipe vs 32 on both Windows GPUs.** Confirmed. Any shader that baked 32 would produce wrong results on lavapipe and on Android devices with `subgroupSize < 32`. See §7.6 for the shader-variant audit.
+
+2. **`PARTITIONED_NV` on RTX 4060 only.** No EP shader uses this. If any future shader used `subgroupPartitionNV` it would fail on lavapipe and on 100% of non-NVIDIA hardware. Flagged for Switch.
+
+3. **`maxComputeSharedMemorySize: 48 KiB` on RTX 4060 vs 32 KiB on the other two.** Current shaders allocate at most 1 KiB (`shared float red[256]` in `q_gemv.comp`). Switch and Mouse must not exceed 32 KiB in new shaders without a capability guard.
+
+4. **`timestamp_period_ns: 52.0833` on Intel Iris Xe vs 1.0 ns on others.** Already documented in `trace.rs`; no portability issue in current code.
+
+5. **`timestamp_valid_bits: 36` on Intel Iris Xe vs 64 on others.** Already documented. `trace.rs` handles masking.
+
+6. **All three pass the §7.2 gate.** No property in the three-way diff causes one device to pass and another to fail.
+
+---
+
+## 7.6 Subgroup Size: Audit of Affected Shader Variants
+
+**Measured fact:** lavapipe reports `subgroup_size = 8`; both Windows development GPUs report `subgroup_size = 32`. First direct confirmation from a non-Windows platform (2026-07-30).
+
+**Audit scope:** All shader templates in v0.28.0 (build from `squad/link`, 2026-07-30):
+
+| Shader template | Variant count | Subgroup ops? | Uses `gl_SubgroupSize`? | Affected by subgroup_size diff? |
+|---|---|---|---|---|
+| `ew_unary.comp` | ~92 | **No** | No | **No** |
+| `ew_binary.comp` | ~66 | **No** | No | **No** |
+| `ew_select.comp` | ~10 | **No** | No | **No** |
+| `q_gemv.comp` | ~16 | **No** | No | **No** |
+| `skip_simplified_layer_norm_f32.comp` | 1 | **No** | No | **No** |
+
+**Audit result: zero variants affected.**
+
+All shaders use shared-memory tree reductions (`shared float red[256]; barrier();`) rather than subgroup intrinsics. `q_gemv.comp` (lines 9–12) explicitly documents this:
+
+> "No subgroup operations. Both development GPUs report a subgroup size of 32, which is the strongest possible invitation to bake 32 in and pass every local test. `VkPhysicalDeviceSubgroupProperties::subgroupSize` is not guaranteed to be anything, so the cross-workgroup reduction is a shared-memory tree sized by `gl_WorkGroupSize.x`."
+
+The test suite confirms analytically: all MatMulNBits and elementwise tests pass on lavapipe with `subgroup_size = 8`, zero numerical differences.
+
+**Subgroup size 8 is a portability risk this codebase currently avoids.** An Android device with any `subgroup_size < 32` would be silently broken by any shader that assumed `subgroupSize == 32`. The fact that it does not bite today depends on every shader being written defensively. This must be maintained as new shaders are added.
+
+**Notice to Switch and Mouse:** Any new shader using `subgroupBroadcast`, `subgroupAdd`, `subgroupOR`, `gl_SubgroupSize`, or any other subgroup intrinsic must be authored to handle `subgroupSize` in `[4, 128]`. The `q_gemv.comp` design comment is the template. Do not assume 32 even when both development GPUs report 32.
+
+---
+
+## 7.7 Linux / lavapipe Execution Record (2026-07-30)
+
+**Context:** First execution of a claimed node end-to-end on a Linux Vulkan stack with lavapipe. Previous CI-verified entries (§7.4.1) confirmed lavapipe enumerates and the probe passes; they did not confirm dispatch of a real compute pipeline.
+
+### 7.7.1 Build chain
+
+| Step | Result |
+|---|---|
+| OS | Ubuntu 24.04.1 LTS, WSL2 |
+| Rust | installed via `rustup` into `/root/.cargo/` (toolchain: stable-x86_64-unknown-linux-gnu) |
+| `glslc` | version 2023.8 — Ubuntu 24.04 `glslc` package (**note:** CI Ubuntu 22.04 must use LunarG `shaderc` apt repo; Ubuntu 24.04 ships `glslc` directly) |
+| `libclang` | `llvm-18-dev` (LLVM 18.1.3) |
+| ORT headers | vendored at `third_party/onnxruntime/include/` — no `ORT_INCLUDE_DIR` override needed |
+| `CARGO_TARGET_DIR` | `/root/ep-build` (persistent across WSL invocations — avoids systemd private-tmp recycling) |
+| Build status | **CLEAN** — zero warnings, zero errors |
+| Artifacts | `libonnxruntime_vulkan_ep.so` (1.78 MB), `epctl` (904 KB) |
+
+**WSL note:** `sudo` requires a password for the `justinchu` user. All root-requiring operations must be run as `wsl -d Ubuntu -u root`. The elevated-runner ICD-enumeration trap (§7.4.1 Windows note) does not apply here — WSL bash sessions are not elevated; `VK_ICD_FILENAMES` works as expected.
+
+### 7.7.2 §7.2 Gate check on lavapipe (epctl --probe-loader)
+
+```
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json epctl --probe-loader
+
+Device 0: llvmpipe (LLVM 20.1.2, 256 bits) [Vulkan 1.4.318]
+  R1  Vulkan API version (req. >= 1.1)              1.4.318          PASS
+  R2  compute queue family                           family 0         PASS
+  R3  maxComputeWorkGroupInvocations (req. >= 256)   1024             PASS
+  R4  maxComputeSharedMemorySize (req. >= 16384 B)   32768 B (32 KiB) PASS
+  R6a DEVICE_LOCAL memory heap                       heap 0           PASS
+  R6b HOST_VISIBLE memory type                       type 0           PASS
+  subgroup_size: 8  |  subgroup_basic_in_compute: true
+  is_uma: true  |  timestamp_period_ns: 1.0  |  timestamp_valid_bits: 64
+  Gate result: PASS
+```
+
+### 7.7.3 Barrier path selection on lavapipe
+
+`ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE=/root/backend_probe.txt` set before session creation. After the first ORT session: file contains **`sync2`**.
+
+Derivation: lavapipe Vulkan 1.4.318 → `VK_KHR_synchronization2` promoted to core at 1.3 → `caps.synchronization2 = true`, `caps.synchronization2_is_core = true` → `force_legacy = false` (default) → `Barriers::select` → `Sync2Backend::Core`. This is the expected and correct result.
+
+The forced-legacy path (`ep.force_legacy_barriers=1`) is exercised by the barrier parity test (§7.7.4).
+
+### 7.7.4 Test suite results on lavapipe (2026-07-30)
+
+Environment: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`, `ONNXRUNTIME_VULKAN_EP_LIB=/root/ep-build/release/libonnxruntime_vulkan_ep.so`; validation layers not loaded.
+
+| Test file | Passed | Failed | Skipped | Notes |
+|---|---|---|---|---|
+| `test_elementwise.py` | 33 | 3 | 0 | 3 failures = staged ops (Min, Max, Clip-no-bounds) — platform-independent |
+| `test_op_table.py` | 61 | 30 | 0 | 30 failures = staged ops — platform-independent |
+| `test_matmulnbits.py` | 29 | 1 | 0 | 1 failure = staged DequantizeLinear — platform-independent |
+| `test_barrier_parity.py` | **58** | **0** | 28 | **58 = 29 live ops × 2 paths (sync2 + forced-legacy)**; bit-exact; 28 skipped = staged. Prior Windows: 46/28 — increase from newly-landed ops, not a platform difference. |
+| **Full suite** (excl. `test_shape_inference_delta.py`\*) | **196** | **34** | **32** | All 34 failures = staged ops ("EP did not execute any node"); zero lavapipe-specific failures; zero numerical failures |
+
+\* `test_shape_inference_delta.py` has a collection-time import error unrelated to Vulkan. Same error on Windows. Not investigated here.
+
+**M0 canonical test:** `test_binary_elementwise[Add-fp32]` **PASSED** — the first execution of a claimed node on a Linux Vulkan stack with lavapipe.
+
+**Provider assertion:** `VulkanExecutionProvider in session.get_providers()` confirmed true for all 196 passing tests. The `assert_vulkan_claims` conftest guard triggered correctly on all 34 staged-op failures. No silent-fallback false-positives.
+
+**Barrier parity detail:** 29 live ops ran sync2 then forced-legacy. Outputs bit-identical in all 58 cases. This is the **third independent implementation** (after Intel Iris Xe and RTX 4060) agreeing on barrier semantic equivalence.
+
+### 7.7.5 What this does and does not say about OQ-12
+
+**What it says:**
+- The EP's claim predicates, shader SPIR-V, memory staging, and barrier logic are correct on a CPU-software Vulkan stack with `subgroup_size = 8`.
+- The shared-memory reduction design in `q_gemv.comp` is portable to devices with `subgroup_size = 8`.
+- The forced-legacy barrier path produces bit-identical results to the sync2 path on a UMA device — the strongest pre-hardware confirmation of barrier parity on UMA topology.
+- The EP loads correctly on Linux and shared library dependencies resolve correctly.
+
+**What it does not say:**
+- lavapipe is not an Adreno or Mali driver. Its UMA topology matches, but its ISA, cache hierarchy, command-submission model, and driver bugs are entirely different from a real Android GPU. lavapipe results cannot be quoted as Android evidence.
+- The 31.43% Android usability figure (OQ-12, §10) remains **entirely unverified**. A lavapipe pass does not de-risk Adreno 5xx / Mali Bifrost memory access patterns, cache coherence, or the device-specific bugs in §6.3 (A1, A2, A3, M1, M2).
+- lavapipe does not exercise `storageBuffer16BitAccess`, `shaderFloat16`, or any fp16-specific code path. fp16/int8 capability flags are not confirmed on lavapipe.
+- The `synchronization2_is_core = true` path (Vulkan 1.4 core, exercised here) is different from the Vulkan 1.1/1.2 + `VK_KHR_synchronization2` extension path that some Android devices would use.
+
+**OQ-12 is unchanged.** No mobile hardware has been tested.
 
 ---
 
@@ -594,6 +743,8 @@ Every CI lane that runs the test suite must run it **twice**:
 - Zero validation-layer errors in both runs.
 
 **Lanes covered:** at minimum, the Linux lavapipe lane and the Windows SwiftShader lane. Both already expose sync2, so forced-legacy on these lanes is the only way the legacy `vkCmdPipelineBarrier` code path is exercised before real Android hardware is available.
+
+**Local-dev lavapipe result (2026-07-30):** `test_barrier_parity.py` ran on WSL Ubuntu 24.04 lavapipe (Mesa 25.2.8, Vulkan 1.4). 29 live ops executed on both sync2 and forced-legacy paths. **58 passed / 0 failed / 28 skipped.** Outputs bit-identical between both paths. This is the third independent implementation (after Intel Iris Xe and RTX 4060 on Windows) to confirm barrier semantic equivalence. CI must replicate this in both CI lanes by adding `test_barrier_parity.py` to the CI test invocation.
 
 **Failure mode this detects:** a bug in `LegacyBackend` — a mismatched stage mask, a missing barrier, an access flag not translated — that causes a different numerical result under the legacy path. This is the most valuable possible failure mode to catch, and it is the failure mode the parity lane was specifically designed for.
 
