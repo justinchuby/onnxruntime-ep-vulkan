@@ -466,6 +466,26 @@ At teardown the EP also logs a one-line summary through ORT's logger, and emits 
 count is zero — so the signal is in the log even for a lane that never set the environment
 variable.
 
+### The contract for CI (Trinity)
+
+The counters file is a stable, additive contract, so a workflow can assert on it directly rather
+than inferring execution from a pass count:
+
+* **The gate:** `epctl --check-counters <file> --require-dispatches 1`. Exit 0 / 1 / 3 mean what
+  the table above says, and the distinction between 1 and 3 is the point — a lane that crashed
+  before reporting must not be able to look like a lane that reported zero.
+* **The keys** are looked up by name and unknown keys are ignored, so the document can grow
+  without breaking a reader. Present today: `abi_version`, `compile_calls`, `subgraphs_live`,
+  `subgraphs_stub`, `compute_calls`, `compute_failures`, `dispatches_executed`, and — added
+  after the planner verification — `pointers_observed`, `pointers_host`, `pointers_at_base`,
+  `pointers_interior`, `pointers_in_guard_band`, `pointers_use_after_free`,
+  `pointer_max_offset`.
+* **`pointers_in_guard_band > 0` is a hard failure worth asserting**, not a diagnostic. It means
+  ORT derived a pointer that ran off the end of one of our allocations, which is a
+  silent-wrong-answer bug in any allocator design that cannot detect it.
+* `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` must be set **before** the process that loads the EP
+  starts; the file is written on the first successful dispatch and again at teardown.
+
 ---
 
 ## Loading the plugin
@@ -625,14 +645,73 @@ The whole path is behind `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` and off by defa
 `GetTensorMutableData` to turn an EP-owned handle into readable bytes. Without it the process
 access-violates the instant ORT places a subgraph input in our memory.
 
-`transfer::copy_counters()` reports copies, bytes, and **how many landed at a non-zero offset into
-a handle**. That last number is the planner-arithmetic question, and it is honest about the answer:
-in every real ORT 1.28 session so far — including one with 1 MiB tensors and mem-pattern enabled —
-it reads **0**. ORT has not yet sub-divided one of our allocations. The reserved-address-space
-design makes `ptr + n` correct by construction if it ever does, and
-`a_copy_into_an_interior_offset_lands_at_that_offset_and_disturbs_nothing_before_it` proves the
-behaviour locally, but the property has **not** been observed in a real session and this README
-will not pretend otherwise.
+`transfer::copy_counters()` reports copies, bytes, and how many landed at a non-zero offset into
+a handle.
+
+---
+
+## What ORT's planner actually does with our handles
+
+This was an argument for a long time and is now a measurement.
+
+**It does pointer arithmetic on them, and only from the second run of a session onward.**
+
+ORT's memory-pattern planner does not engage on the first `Run`. It *records* the allocation
+pattern during run 1, and from run 2 onward it makes **one** allocation per pattern and hands out
+sub-ranges of it. Every probe we had ran each session exactly once, which is why the interior
+counter read 0 for so long: the instrument was pointed at a moment the phenomenon cannot occur in.
+
+`tools/probe_planner.py` is the probe that catches it — static shapes, `enable_mem_pattern`, and
+several runs of one session. The run count is the whole experiment:
+
+| runs | `pointers_interior` | `pointer_max_offset` |
+|------|--------------------|----------------------|
+| 1    | 0                  | 0 B                  |
+| 2    | 13                 | 49152 B              |
+| 3    | 26                 | 49152 B              |
+| 5    | 52                 | 49152 B              |
+
+Thirteen derived pointers per run after the first, on **both** the RTX 4060 and the Iris Xe. The
+trace says exactly what happened: six 16 KiB tensors were packed into a **single 64 KiB handle**
+and ORT handed back `base + 16384`, `base + 32768`, `base + 49152`.
+
+```
+INTERIOR 0x1e65dcbc000 = handle 0x1e65dcb8000 + 16384 (span 65536 B)
+INTERIOR 0x1e65dcc0000 = handle 0x1e65dcb8000 + 32768 (span 65536 B)
+INTERIOR 0x1e65dcc4000 = handle 0x1e65dcb8000 + 49152 (span 65536 B)
+```
+
+**`pointers_in_guard_band` was 0 across every run on both devices.** That is the result that
+matters: every derived pointer stayed inside the span it was derived from, which is what the
+reserved-address-space design promises by construction. Had handles been opaque integers, each of
+those 52 pointers would have been an unrecognisable value — not a crash, a *wrong answer*.
+
+### The ledger
+
+`allocator::ledger` classifies every pointer that crosses back to us and tallies it by
+`LookupError` taxonomy: at-base, interior, guard-band, use-after-free, host. It observes both
+endpoints of every `CopyTensors` and every `GetTensorMutableData` result the engine resolves.
+It does **not** see arithmetic ORT performs internally and never shows us, so a zero means "ORT
+never handed us a derived pointer", not "ORT never computed one".
+
+The numbers are written to `$ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` at teardown as
+`pointers_observed`, `pointers_host`, `pointers_at_base`, `pointers_interior`,
+`pointers_in_guard_band`, `pointers_use_after_free`, `pointer_max_offset`, with the verbatim trace
+beside it in `*.trace.txt`. They are written to the file rather than logged because by teardown
+ORT's logger is usually already gone — and a process cannot read its own teardown, which is why
+`probe_planner.py` runs the session in a child and reads what it left behind.
+
+### Quarantine: armed, never fired, and proven able to fire
+
+`pointers_use_after_free` was **0** in every real session. ORT did not present a stale handle, so
+the quarantine remains unobserved under a real allocation pattern — and that number on its own is
+worth nothing, because it is exactly what a dead detector reports.
+`the_quarantine_detector_fires_when_a_stale_handle_is_presented` is the positive control that
+separates the two: it frees a handle and presents it through the same `classify` funnel a real
+session uses, and requires the ledger to count it and `host_bytes` to refuse it. Break the
+detector and that test fails — verified by planting the break.
+
+---
 
 ### Diagnostics must read zero when nothing is wrong
 

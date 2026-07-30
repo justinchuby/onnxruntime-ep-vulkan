@@ -782,6 +782,204 @@ impl HandleRegistry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// The pointer-observation ledger
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What ORT actually does with the pointers we hand it.
+///
+/// The reserved-address-space design argues that `ptr + n` stays in-span *by construction*. That
+/// is an argument, not an observation, and an argument has never met a real planner. This ledger
+/// is the instrument that turns it into a measurement: every pointer ORT hands back to us is
+/// classified against the registry and tallied here, so the question "did the planner do
+/// arithmetic on our handles?" has a number rather than an inference.
+///
+/// **What it observes, precisely.** Pointers at the boundary where they come *back* to us — both
+/// endpoints of every `CopyTensors`, and every `GetTensorMutableData` result the engine resolves
+/// through [`crate::transfer::host_backing_for`]. It does **not** see arithmetic ORT performs
+/// internally and never shows us. A zero here therefore means "ORT never handed us a derived
+/// pointer", not "ORT never computed one". That distinction is the whole reason this is worth
+/// writing down rather than asserting.
+///
+/// The taxonomy is [`LookupError`]'s, because those three failures demand three different fixes:
+/// * **base** — the pointer we returned, unmodified.
+/// * **interior** — `base + n`, in-span. This is the planner-arithmetic case the design defends.
+/// * **guard band** — in the arena but between spans. Arithmetic that ran off the end. A real bug,
+///   caught rather than faulted.
+/// * **freed** — a stale handle. This is the quarantine detector firing, and it is the *only*
+///   evidence that would prove the quarantine under a real allocation pattern.
+/// * **host** — not ours, the expected answer for most pointers.
+pub mod ledger {
+    use super::LookupError;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    const ORD: Ordering = Ordering::Relaxed;
+
+    static OBSERVED: AtomicU64 = AtomicU64::new(0);
+    static HOST: AtomicU64 = AtomicU64::new(0);
+    static AT_BASE: AtomicU64 = AtomicU64::new(0);
+    static INTERIOR: AtomicU64 = AtomicU64::new(0);
+    static IN_GUARD_BAND: AtomicU64 = AtomicU64::new(0);
+    static USE_AFTER_FREE: AtomicU64 = AtomicU64::new(0);
+    static MAX_OFFSET: AtomicUsize = AtomicUsize::new(0);
+
+    /// The first few observations, verbatim. A tally says how many; a trace says what, and the
+    /// unanticipated-arithmetic finding the coordinator asked about would show up in the shape of
+    /// individual entries rather than in a count.
+    static TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    const TRACE_LIMIT: usize = 64;
+
+    fn trace(line: String) {
+        if let Ok(mut t) = TRACE.lock() {
+            if t.len() < TRACE_LIMIT {
+                t.push(line);
+            }
+        }
+    }
+
+    /// Record one pointer ORT handed back, already classified.
+    pub fn observe(addr: usize, outcome: &Result<super::Resolved, LookupError>) {
+        OBSERVED.fetch_add(1, ORD);
+        match outcome {
+            Ok(r) if r.offset == 0 => {
+                AT_BASE.fetch_add(1, ORD);
+            }
+            Ok(r) => {
+                INTERIOR.fetch_add(1, ORD);
+                MAX_OFFSET.fetch_max(r.offset, ORD);
+                trace(format!(
+                    "INTERIOR 0x{addr:x} = handle 0x{:x} + {} (span {} B) — the planner did \
+                     arithmetic on one of our handles",
+                    r.base, r.offset, r.size
+                ));
+            }
+            Err(LookupError::InGuardBand { .. }) => {
+                IN_GUARD_BAND.fetch_add(1, ORD);
+                trace(format!(
+                    "GUARD BAND 0x{addr:x} — arithmetic ran off the end of an allocation"
+                ));
+            }
+            Err(LookupError::Freed {
+                base,
+                freed_at_generation,
+                ..
+            }) => {
+                USE_AFTER_FREE.fetch_add(1, ORD);
+                trace(format!(
+                    "USE-AFTER-FREE 0x{addr:x} = freed handle 0x{base:x} (generation \
+                     {freed_at_generation}) — quarantine caught a stale pointer"
+                ));
+            }
+            Err(LookupError::NotAHandle { .. }) => {
+                HOST.fetch_add(1, ORD);
+            }
+        }
+    }
+
+    /// Snapshot for tests and reporting.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct Observations {
+        pub observed: u64,
+        pub host: u64,
+        pub at_base: u64,
+        pub interior: u64,
+        pub in_guard_band: u64,
+        pub use_after_free: u64,
+        pub max_offset: usize,
+    }
+
+    /// The recorded trace, verbatim. Written beside the counters file at teardown, because by
+    /// then ORT's logger is usually gone and a log line reaches nobody.
+    pub fn trace_lines() -> Vec<String> {
+        TRACE.lock().map(|t| t.clone()).unwrap_or_default()
+    }
+
+    pub fn snapshot() -> Observations {
+        Observations {
+            observed: OBSERVED.load(ORD),
+            host: HOST.load(ORD),
+            at_base: AT_BASE.load(ORD),
+            interior: INTERIOR.load(ORD),
+            in_guard_band: IN_GUARD_BAND.load(ORD),
+            use_after_free: USE_AFTER_FREE.load(ORD),
+            max_offset: MAX_OFFSET.load(ORD),
+        }
+    }
+
+    /// A report that states what was *not* seen as loudly as what was. A verification that only
+    /// prints its positives reads as a pass when the instrument never fired at all.
+    pub fn report() -> String {
+        let o = snapshot();
+        let mut s = format!(
+            "pointer observations: {} pointer(s) crossed back to us — {} host, {} at a handle \
+             base, {} interior (max offset {} B), {} in a guard band, {} use-after-free",
+            o.observed,
+            o.host,
+            o.at_base,
+            o.interior,
+            o.max_offset,
+            o.in_guard_band,
+            o.use_after_free
+        );
+        if o.observed == 0 {
+            s.push_str(
+                ". NOTHING WAS OBSERVED: no pointer of ours ever came back, so this run verifies \
+                 nothing about the allocator contract — it is not a pass.",
+            );
+            return s;
+        }
+        if o.interior == 0 {
+            s.push_str(
+                ". ORT's planner never handed back a derived pointer in this run, so in-span \
+                 `base + n` remains correct by construction but UNOBSERVED.",
+            );
+        }
+        if o.use_after_free == 0 {
+            s.push_str(
+                " The quarantine detector was armed and never fired: no stale handle was \
+                 presented, so quarantine remains UNOBSERVED under this pattern.",
+            );
+        }
+        if let Ok(t) = TRACE.lock() {
+            for line in t.iter() {
+                s.push_str("\n    ");
+                s.push_str(line);
+            }
+        }
+        s
+    }
+
+    /// Serialise tests that assert on these process-global tallies.
+    ///
+    /// The ledger is deliberately process-wide — it observes an ABI boundary, not an object — so
+    /// two tests asserting on it concurrently would flake. A mutex here is cheaper and more
+    /// honest than making the counters per-registry purely to suit the test harness.
+    #[cfg(test)]
+    pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(test)]
+    pub fn reset() {
+        for c in [
+            &OBSERVED,
+            &HOST,
+            &AT_BASE,
+            &INTERIOR,
+            &IN_GUARD_BAND,
+            &USE_AFTER_FREE,
+        ] {
+            c.store(0, ORD);
+        }
+        MAX_OFFSET.store(0, ORD);
+        if let Ok(mut t) = TRACE.lock() {
+            t.clear();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // The ORT-facing allocator
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
