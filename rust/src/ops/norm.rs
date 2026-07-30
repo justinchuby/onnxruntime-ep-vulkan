@@ -196,15 +196,15 @@ mod tests {
             .iter()
             .filter(|s| matches!(s.status, OpStatus::Staged(_)))
             .collect();
-        let live: Vec<_> = OPS
-            .iter()
-            .filter(|s| s.is_live())
-            .collect();
+        let live: Vec<_> = OPS.iter().filter(|s| s.is_live()).collect();
         assert!(
             !staged.is_empty(),
             "some rows should still be staged (waiting for reduction template)"
         );
-        assert!(!live.is_empty(), "SkipSimplifiedLayerNormalization should be live");
+        assert!(
+            !live.is_empty(),
+            "SkipSimplifiedLayerNormalization should be live"
+        );
         for s in &staged {
             assert!(
                 matches!(s.status, OpStatus::Staged(NEEDS_REDUCTION)),

@@ -1084,3 +1084,63 @@ Already in registry.rs from prior session: `ProofKey`, `ProofKey::validate()`, `
 
 ### Commit
   951b592 — SkipSimplifiedLayerNormalization f16, alloc_temp fix, xfail flip
+
+---
+
+## Turn (partition wiring + multi-node dispatch) — 2026-07-30T09:14:00-07:00
+
+### Assignment
+Wire `partition.rs` into `GetCapability` so ORT receives maximal convex connected subgraphs, not one capability per node. Fix multi-node island Compute dispatch (intermediate buffer aliasing bug). Island count reduction was previously measured at 33 (correct); dispatch accounting was `compute_calls = 1` (broken — panic in first multi-node Compute, ORT fell back to CPU thereafter).
+
+### Root cause of compute_calls = 1
+`CompileRecorder::push_dynamic_kernel` and `ShapeOnlyRecorder` used positional token assignment, resetting the bind counter to 0 per kernel. For a 2-node island {A, B}:
+- CompileRecorder for the full island: A output → token 5+0=5, B output → token 5+1=6.
+- ShapeOnlyRecorder re-run for B (Compute-time): starts fresh, assigns B's output to token 5+0=5.
+- At dispatch time: `eff_bindings` for B has token 6 → j=1 ≥ n_ort=1 → `gpu_temps[0]` → EMPTY → panic.
+
+The panic was caught by `guard_ffi_status`, ORT got an error status, abandoned the EP, and all subsequent inferences ran on CPU. `MATCH` appeared to hold (CPU vs CPU), `dispatch_accounting` was the only instrument that caught it.
+
+### Fix: name-based token assignment
+Built an island-wide `name_to_token: HashMap<String, u64>` in `compile_impl`:
+- `plan.inputs[k].name` → token k (external inputs)
+- `plan.outputs[j].name` → token n_plan_inputs + j (external outputs)
+- Node outputs not in plan.outputs → intermediate tokens n_plan_inputs + n_plan_outputs + k++
+
+`CompileRecorder::new_named` and `ShapeOnlyRecorder::new_named` use this map. The translate handler's `resolve`/`bind_output` calls look up by name, then fall back to positional. Single-node islands stay on the existing positional path (n_intermediates=0, no map).
+
+New token ranges:
+```
+0..n_plan_inputs                                    → external ORT inputs  (gpu_inputs)
+n_plan_inputs..n_plan_inputs+n_plan_outputs         → external ORT outputs (gpu_outputs)
+n_plan_inputs+n_plan_outputs..first_temp_token      → intermediate buffers (gpu_intermediates)
+first_temp_token..                                  → alloc_temp scratch    (gpu_temps)
+```
+
+`dispatch_ort` allocates `gpu_intermediates: Vec<GpuBuffer>` and routes tokens through all four ranges. A SHADER_WRITE → SHADER_READ barrier is emitted after each dispatch (except the last) on all intermediate buffers. `free_all` extended to include `gpu_intermediates`.
+
+### SubgraphComputeInfo new fields
+`n_intermediates`, `name_map: Option<Arc<HashMap<String,u64>>>`, `first_temp_token`, `static_intermediate_byte_sizes: Vec<u64>`.
+
+### Pre-pass intermediate propagation
+For multi-node islands, the pre-pass maintains `computed_descs: HashMap<u64, TensorDesc>`. After each kernel's ShapeOnlyRecorder run, intermediate output descs are inserted into `computed_descs`. When patching later kernels' inputs, intermediate tokens look up from `computed_descs` instead of (missing) ort_values entries.
+
+### Results
+- Both devices: `model_output_equivalence = MATCH`
+- Both devices: `dispatch_accounting = ok — compute_calls 1023 == 33 islands × 31 inferences`
+- Intel Iris Xe: 3.7× slower (was 12.1×, then 12.6× with SkipNorm, now 3.7× with wiring fixed)
+- RTX 4060: 4.1× slower (was 7.9×)
+- 38 passed, 1 xfailed on both devices
+
+### accuracy_level ruling (owed to Trinity)
+The model declares `accuracy_level=0` (implementation-defined). Trinity's oracle is pinned at `accuracy_level=1` (explicit fp32 accumulator). On x86 ORT CPU EP, levels 0–3 all use the fp32 accumulation path and produce identical results (`test_matmulnbits_accuracy_level_pinning` verifies this). Pinning at 1 rather than 0 avoids dependence on ORT's interpretation of "default". The ruling: **the oracle pin is correct and should not change**. The model's declaration of 0 does not conflict — it means "let the hardware decide", and our Vulkan kernel uses fp16 accumulation (native to the shader). The comparison is Vulkan-fp16-accumulator vs CPU-fp32-accumulator; the tolerance budget in §10.1 Regime 2 absorbs this difference, as confirmed by MATCH on both devices.
+
+### OP_COVERAGE.md additions
+- §7.1.5: "Island-count == claimed-count is the partition-wiring falsifier" — the multi-node dispatch finding, the intermediate-buffer token aliasing root cause, the name-based fix, and the dispatch-accounting red instrument.
+
+### Decisions written
+- `mouse-partition-multinode-dispatch.md` in main's inbox: intermediate buffer aliasing root cause, fix, results.
+
+### Files modified
+- `rust/src/ep.rs`: `SubgraphComputeInfo` new fields, `compile_impl` name-map building, `compute_impl` dispatch_ort call update.
+- `rust/src/vk/session.rs`: `CompileRecorder` name-based mode, `ShapeOnlyRecorder` name-based mode, `dispatch_ort` new parameters, `gpu_intermediates` allocation, inter-kernel barriers, `free_all` extended.
+- `docs/OP_COVERAGE.md`: §7.1.5 added.

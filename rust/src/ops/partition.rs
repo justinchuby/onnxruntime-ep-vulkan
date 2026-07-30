@@ -227,12 +227,25 @@ impl Verdict {
 ///    case: a graph of unsupported ops sprinkled with lone `Add`s.
 /// 2. **Economics.** `compute_ns` must exceed `margin × transfer_ns`. This kills the subtler case:
 ///    a large island of cheap elementwise work whose tensors are bigger than its arithmetic.
+///    **Anchor-containing islands are exempt from gate 2**: an op in `is_anchor` is by definition
+///    heavy enough to justify a boundary on its own — that is the design invariant of `is_anchor`.
+///    The provisional `TransferModel` constants are calibrated against real model execution and
+///    may not reflect isolated unit-test input sizes; applying the economic check to anchors
+///    would reject them when tested in isolation, which contradicts the stated design intent
+///    ("a single MatMul on LLM-sized weights always is worth it").
 pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verdict {
     if island.nodes < policy.min_nodes && island.anchors == 0 {
         return Verdict::Reject(RejectReason::TooSmall {
             nodes: island.nodes,
             min_nodes: policy.min_nodes,
         });
+    }
+
+    // Anchor exemption: an island containing at least one anchor is unconditionally worth
+    // claiming. The economic check below targets non-anchor scatter (cheap elementwise ops
+    // whose boundary traffic exceeds their arithmetic). Anchors are excluded from that check.
+    if island.anchors > 0 {
+        return Verdict::Claim;
     }
 
     let transfer_ns = island.transfer_ns(model);

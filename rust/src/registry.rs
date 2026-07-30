@@ -1560,10 +1560,8 @@ impl ProofKey {
         // A bare op-type (no '/' separating the required fields) is not a valid key —
         // it would silently cover all forms of that op type.
         if !t.contains('/') {
-            return Err(
-                "bare op-type is not a valid proof key; use the full \
-                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form",
-            );
+            return Err("bare op-type is not a valid proof key; use the full \
+                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
         }
         Ok(ProofKey(t.to_owned()))
     }
@@ -1603,7 +1601,10 @@ pub fn claim_unproven_keys() -> Vec<ProofKey> {
             "[VulkanEP WARN] ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN is set with {} key(s): {}. \
              Unproven forms enabled for development. Do not ship this configuration.",
             keys.len(),
-            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")
+            keys.iter()
+                .map(|k| k.0.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     keys
@@ -1621,7 +1622,6 @@ pub fn claim_unproven_keys() -> Vec<ProofKey> {
 pub fn ledger_contains(_key: &ProofKey) -> bool {
     false
 }
-
 
 ///
 /// `Ok(())` means claim it. `Err(reason)` means leave it to the CPU EP and report `reason` under
