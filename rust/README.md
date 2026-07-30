@@ -498,11 +498,80 @@ than inferring execution from a pass count:
   after the planner verification — `pointers_observed`, `pointers_host`, `pointers_at_base`,
   `pointers_interior`, `pointers_in_guard_band`, `pointers_use_after_free`,
   `pointer_max_offset`.
-* **`pointers_in_guard_band > 0` is a hard failure worth asserting**, not a diagnostic. It means
-  ORT derived a pointer that ran off the end of one of our allocations, which is a
-  silent-wrong-answer bug in any allocator design that cannot detect it.
+* **`pointers_in_guard_band > 0` is a hard failure, and `--check-counters` now asserts it.** It
+  means ORT derived a pointer that ran off the end of one of our allocations — a
+  silent-wrong-answer bug in any allocator design that cannot detect it. The check sits **ahead of**
+  the `--require-dispatches` comparison and outranks it, because thirty dispatches producing wrong
+  answers is not a better outcome than zero dispatches. Exit code 1, with the address trace in the
+  `*.trace.txt` written beside the counters file.
+  The key is **optional**: a snapshot from a build without the ledger does not carry it, and
+  **absence must not be read as zero** — so a missing key passes and a present non-zero one fails.
 * `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` must be set **before** the process that loads the EP
   starts; the file is written on the first successful dispatch and again at teardown.
+
+---
+
+## Proving the validation layer is actually watching
+
+```console
+$ cargo run --bin epctl -- --probe-validation                     # expect: VALIDATION ARMED, exit 0
+$ cargo run --bin epctl -- --probe-validation --plant-violation   # expect: EPCTL-VALIDATION-CAUGHT lines
+$ cargo test --test validation_control                            # the harness that asserts both
+```
+
+M0 criterion 3 originally read "the Vulkan validation layer surfaces no errors". That was refused,
+correctly, because **"no errors surfaced" is precisely what a run with the validation layer *not
+loaded* reports.** A green lane and an absent check are indistinguishable.
+
+Investigating it found the gap was wider than the objection stated. The engine requests
+`VK_LAYER_KHRONOS_validation` but attaches no `VkDebugUtilsMessengerEXT`, so even when the layer
+*is* loaded, nothing in-process observes its output — it goes to the layer's default handler,
+wherever that points on a given machine. A clean run was uninformative twice over: the layer might
+not be there, **and we were not listening**.
+
+`--probe-validation` closes both halves. It creates an instance with the layer enabled *and* a
+debug messenger attached, and reports three states apart rather than collapsing them into a
+boolean:
+
+| State | Exit | Meaning |
+| --- | --- | --- |
+| `VALIDATION ARMED` | 0 | Layer installed, enabled, and its output is reaching our callback. **Only this state licenses any claim about validation cleanliness.** |
+| `VALIDATION LAYER ABSENT` | 3 | Loader present, layer not installed. The absence of an answer, not a failing one. |
+| `NO VULKAN LOADER` | 3 | Ditto. |
+
+`--plant-violation` is the positive control, the same mechanism the [layering lint](#layering-lint)
+uses for criterion 7: it deliberately calls `vkCreateDebugUtilsMessengerEXT` with zero
+`messageSeverity` and `messageType` masks
+(`VUID-VkDebugUtilsMessengerCreateInfoEXT-messageSeverity-requiredbitmask`). Every message the
+layer hands back is printed with the literal marker `EPCTL-VALIDATION-CAUGHT:`.
+
+That violation was chosen for four properties, all of which matter:
+
+1. It is a **stateless parameter check**, so any build of the layer catches it on any ICD,
+   including lavapipe on a CI runner with no GPU.
+2. Nothing is allocated, bound, submitted or executed, so it cannot corrupt anything.
+3. It needs **no logical device and no physical device.** This is the important one: a plant that
+   needed a device would make *a machine with no capable GPU* look identical to *a machine with no
+   validation* — the exact conflation the control exists to prevent.
+4. It exercises the debug-utils extension itself, so a pass proves the capture path is live rather
+   than merely that an instance was created.
+
+`tests/validation_control.rs` asserts both directions — the planted violation must be caught, and
+the clean run must be silent. A control that fires unconditionally is as useless as one that never
+fires. The failure message on the positive control says so in as many words, because the tempting
+misreading of that red is "our code is clean"; it is not, it is "the check does not work, so no
+green from it means anything."
+
+**Skips are loud, and CI can forbid them.** On a machine with no layer both tests skip with an
+explanation rather than passing. Set `ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=1` — which CI
+should — and the skip becomes a failure, so a lane that quietly loses the layer cannot keep
+reporting green forever.
+
+**Scope, stated honestly.** The plant lives inside `epctl`'s *own* instance. Passing proves the
+layer is loadable here and our capture works. It does **not** prove the EP's dispatch path has
+validation armed on *its* instance — that one is created in `vk/instance.rs` and needs its own
+env-gated plant. That gap is named rather than papered over; a control that quietly proves
+something adjacent to the claim is the failure mode this whole section is about.
 
 ---
 
@@ -749,6 +818,7 @@ is wrong is one people learn to ignore.
 | `ONNXRUNTIME_EP_VULKAN_TRACE=1` | per-node trace during capability and compile |
 | `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` | log every node the EP declined **and why**, aggregated by op type |
 | `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE=<path>` | write the execution-counter snapshot here on the first successful dispatch and at factory teardown; read it back with `epctl --check-counters` |
+| `ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=1` | turn "the Vulkan validation layer is unavailable here" from a loud skip into a failure, so a lane cannot silently drop its own positive control. CI should set this |
 | `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` | **opt-in.** Advertise a device allocator to ORT, so ORT allocates tensors through us. Off by default — see *The device allocator* below |
 | `ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB=<n>` | size of the reserved virtual-address arena per device (default 65536 MiB, halved until the OS agrees) |
 | `ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS=<n>` | how many freed handles are held before their address space is reused (default 4096) |

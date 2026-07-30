@@ -23,7 +23,9 @@
 //! * On a machine without the Vulkan SDK the shaders are not even *compiled* — `build.rs` needs
 //!   `glslc`. This binary detects that, sets the documented escape hatch so the build can
 //!   proceed, and reports the reduced coverage rather than hiding it.
-//! * It runs no pytest lane, no lavapipe lane, no validation layers, and no Linux/macOS build.
+//! * It runs no pytest lane, no lavapipe lane, no dispatch, and no Linux/macOS build. It *does*
+//!   run the validation-layer positive control (`tests/validation_control.rs`), which is the only
+//!   thing here that creates a `VkInstance`.
 //!
 //! Every one of those absences is printed at the end of a successful run. A developer who reads
 //! the output cannot come away believing more was verified than was.
@@ -274,8 +276,14 @@ fn print_caveats(env: &Env) {
         println!("  * Shaders were compiled to SPIR-V, but not run and not validated on a device.");
     }
     println!(
-        "  * No Vulkan device was touched: no lavapipe lane, no validation layers, no\n\
-         \x20   `vkCreateInstance`. CI runs those on Linux and Windows."
+        "  * No Vulkan *device* was touched: no lavapipe lane, no dispatch, no queue submit.\n\
+         \x20   `tests/validation_control.rs` is the one exception to \"no vkCreateInstance\": it\n\
+         \x20   creates an instance with the validation layer and a debug messenger, plants a\n\
+         \x20   deliberate violation, and fails if the layer does not catch it. That establishes\n\
+         \x20   the *check* works on this machine — it does not establish that the EP's own\n\
+         \x20   dispatch path is validation-clean, which needs a real session. On a machine with\n\
+         \x20   no layer installed those tests SKIP loudly; set\n\
+         \x20   ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=1 to make the skip a failure."
     );
     println!(
         "  * No real ONNX Runtime. `tests/cdylib_load.rs` does load the shipped library and drive\n\
