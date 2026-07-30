@@ -9,9 +9,7 @@ use 3-node graphs; this exercises things they cannot:
     initialisers that live outside the model file is completely unexercised by the unit suite.
   - ``If`` control flow (one node in the cold prologue).  Partitioning has never met a
     subgraph body; ``GetCapability`` must not crash or corrupt on encountering one.
-  - Real partitioning at scale — 366 nodes, 32 transformer layers, fp16 throughout.  Every
-    node is expected to be DECLINED on dtype (our live ops are fp32).  The "decline all cleanly"
-    path is exactly the fallback that must not crash.
+  - Real partitioning at scale — 366 nodes, 32 transformer layers, fp16 throughout.
   - Session creation and first inference at production size — this is where lifetime and
     allocator problems actually appear.
 
@@ -24,14 +22,38 @@ WHAT WE MEASURE
    Mouse's simulation predicted 34–35 at current coverage; measure and compare.
 4. Both devices exercised separately (Intel Iris Xe = stricter, NVIDIA = secondary).
 
-EXPECTED RESULT (current state)
-================================
-All 366 nodes are declined on dtype (fp16; live ops are fp32-only). Expected:
-  - Claimed: 0
-  - Islands: 0
-  - Session produces output identical to CPU EP
+EXPECTED RESULT (current state, 2026-07-30)
+===========================================
+161 MatMulNBits nodes (fp16, bits=4, block_size=32) are claimed by the Vulkan EP.
+The remaining nodes are declined (mostly dtype or dynamic-shape).
 
-If any node is unexpectedly claimed, that is worth noting separately.
+  - Claimed: ~161 (MatMulNBits, 3-input symmetric, accuracy_level=0)
+  - Islands: ~161 (one per MatMulNBits node, each in its own 1-node fused subgraph)
+  - Logits: match ORT CPU EP top-1 token on both Intel Iris Xe and RTX 4060
+
+CORRECTNESS GUARD (test_phi35_f16_matmulnbits_logits_nonzero)
+===============================================================
+Catches the failure mode observed on 2026-07-30: the EP dispatched all 161 MatMulNBits
+nodes (compute_failures=0) yet produced all-zero logits on both Intel and NVIDIA —
+deterministic, silent, wrong.
+
+Root cause (Mouse, 2026-07-30): dynamic-binding-count mismatch in ShapeOnlyRecorder.
+
+When ORT sees a symbolic leading dimension on an activation tensor (the Phi-3.5 model
+has dynamic batch/seq), compile_impl routes the kernel through push_dynamic_kernel, which
+builds a binding-token list from the NodeDesc input/output counts (3 inputs + 1 output =
+4 tokens).  But matmul_nbits_gemv passes 5 bindings to KernelRequest — scales appears
+twice: once as its natural slot and once as the inert zero_point placeholder for shader
+binding slot 3.  The pipeline was therefore created with only 4 descriptor slots (0–3);
+the output buffer was bound to shader slot 4 which fell outside the descriptor set and
+was not written.  Both Intel Iris Xe and NVIDIA drivers zero-initialise freshly allocated
+GPU buffers for security, so the unwritten output read back as all-zero.
+
+Fix (session.rs): ShapeOnlyRecorder::dispatch now also captures k.bindings alongside the
+other fields, and dispatch_ort uses those captured bindings — not kernel.bindings — for
+both n_bindings (pipeline/descriptor-set size) and buf_bindings (VkBuffer mapping) on the
+dynamic path.  See test_matmulnbits_fp16_dynamic_batch in test_matmulnbits.py for the
+unit-level regression guard that confirms the test fails before the fix and passes after.
 
 MODEL PATH
 ==========
@@ -343,11 +365,20 @@ def test_phi35_cpu_output_matches_between_sessions(
     require_vulkan,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Two runs with VulkanEP registered produce identical outputs (stability check).
+    """Two independent VulkanEP sessions produce identical outputs (stability check).
 
-    With 0 claimed nodes (all fp16 declined), both runs fall back entirely to CPU.
-    The outputs must be bit-identical across runs — a non-determinism failure here
-    means the session has a side-effect, memory corruption, or non-deterministic op.
+    With 161 MatMulNBits nodes claimed (fp16, bits=4, block_size=32), both sessions
+    execute on the Vulkan EP.  Outputs must be bit-identical across sessions — a
+    non-determinism failure here means the kernel has a data race, memory corruption,
+    or a non-deterministic atomic op path.
+
+    Historical note: before 2026-07-30 this test said "0 claimed nodes, both fall back
+    to CPU".  That premise was true when only fp32 was live; it became false when
+    ENGINE_ACCEPTS_RUNTIME_EXTENTS was enabled and 161 fp16 MatMulNBits nodes were
+    claimed.  The test remains valid regardless: if VK→VK disagrees with itself, that
+    is a correctness bug whether or not CPU is involved.
+
+    For VK-vs-CPU correctness see test_phi35_f16_matmulnbits_logits_nonzero below.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
@@ -372,8 +403,8 @@ def test_phi35_cpu_output_matches_between_sessions(
             a, b,
             err_msg=(
                 f"[Device {device_index}] Output[{idx}] differs between two VulkanEP sessions. "
-                "With 0 claimed nodes the result should be bit-identical CPU output. "
-                "Non-determinism or memory corruption."
+                "Outputs must be bit-identical across sessions — non-determinism or memory "
+                "corruption in the kernel."
             ),
         )
 
@@ -381,8 +412,144 @@ def test_phi35_cpu_output_matches_between_sessions(
 
 
 # ===========================================================================
-# GPT-OSS-20B integration tests
+# f16 logits correctness — the guard that would have caught the 2026-07-30 zero-logit bug
 # ===========================================================================
+
+
+@pytest.mark.slow
+def test_phi35_f16_matmulnbits_logits_nonzero(
+    phi35_onnx_path: pathlib.Path,
+    require_vulkan,
+) -> None:
+    """VulkanEP must produce non-zero logits when it actually claims MatMulNBits nodes.
+
+    WHAT THIS GUARDS
+    ----------------
+    On 2026-07-30, the Vulkan EP dispatched all 161 MatMulNBits nodes for Phi-3.5
+    (compute_failures=0) yet produced logits = [0.0, …, 0.0] on both Intel Iris Xe
+    and RTX 4060 — deterministic, silent, wrong.
+
+    Root cause (Mouse, 2026-07-30): when ORT sees a symbolic leading dimension on the
+    activation tensor (dynamic batch/seq), compile_impl routes through push_dynamic_kernel
+    which builds binding tokens from NodeDesc input/output counts (4 tokens for the
+    3-input+1-output MatMulNBits). But matmul_nbits_gemv passes 5 bindings to dispatch —
+    scales appears twice (natural slot + zero_point placeholder). The pipeline was created
+    with 4 descriptor slots; shader binding 4 (the output) was not in the set and nothing
+    was written. Both drivers zero-initialise GPU memory for security, so the unwritten
+    output read back as all-zero. Isolation tests (static M) passed throughout because
+    static shapes bypass push_dynamic_kernel entirely.
+
+    Fix: ShapeOnlyRecorder::dispatch now captures k.bindings; dispatch_ort uses those
+    captured bindings (not kernel.bindings) for pipeline creation and buffer mapping on the
+    dynamic path. Unit regression guard: test_matmulnbits_fp16_dynamic_batch.
+
+    A VulkanEP-vs-VulkanEP stability test (test_phi35_cpu_output_matches_between_sessions)
+    was already green during the bug — two zero-output sessions are trivially equal.  This
+    test is the missing guard: it compares VulkanEP against ORT CPU EP and asserts that
+    both the logit range is non-zero AND the top-1 token matches.
+
+    HARD GATE (R7, DESIGN.md §9.1)
+    --------------------------------
+    The EP is asserted to be in session.get_providers() before any comparison.  ORT does
+    not raise when an EP is not loaded — it silently falls back to CPU, prints a warning,
+    and produces a "correct" (CPU-vs-CPU) result.  That trap has burned this project three
+    times.  The assertion makes the guard non-vacuous.
+    """
+    import ctypes
+
+    device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+
+    try:
+        vk_sess = ort.InferenceSession(
+            str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS
+        )
+    except Exception as exc:
+        pytest.fail(f"[Device {device_index}] VulkanEP session creation failed: {exc}")
+
+    # HARD GATE — refuse to compare if the EP is not in the provider list.
+    # ORT falls back silently without raising; a CPU-vs-CPU comparison is always
+    # "correct" and always meaningless.  This exact trap produced a flattering result
+    # the first time the coordinator ran phi35_vk_vs_cpu.py.
+    used = vk_sess.get_providers()
+    assert m.EP_NAME in used, (
+        f"[Device {device_index}] VulkanExecutionProvider is not in session providers: {used}.\n"
+        "ORT silently fell back to CPU without raising.  Any comparison below would be "
+        "CPU-vs-CPU and vacuously correct.  Check that ONNXRUNTIME_VULKAN_EP_LIB is set "
+        "and that at least one device passes the §7.2 capability gate."
+    )
+
+    feeds = _build_phi35_feeds()
+    try:
+        vk_out = vk_sess.run(None, feeds)
+    except Exception as exc:
+        pytest.fail(f"[Device {device_index}] VulkanEP inference failed: {exc}")
+
+    # CPU reference — pure CPU, no VulkanEP.
+    cpu_opts = ort.SessionOptions()
+    cpu_opts.log_severity_level = 3
+    try:
+        cpu_out = ort.InferenceSession(
+            str(phi35_onnx_path), cpu_opts, providers=["CPUExecutionProvider"]
+        ).run(None, feeds)
+    except Exception as exc:
+        pytest.fail(f"[Device {device_index}] CPU reference inference failed: {exc}")
+
+    # Output count must agree.
+    assert len(vk_out) == len(cpu_out), (
+        f"[Device {device_index}] VulkanEP returned {len(vk_out)} outputs, "
+        f"CPU returned {len(cpu_out)} — structural mismatch."
+    )
+
+    # Logits are output[0], shape [1, 1, vocab_size=32064].
+    logits_vk = vk_out[0].astype(np.float32)
+    logits_cpu = cpu_out[0].astype(np.float32)
+
+    # Guard 1: logit range must not be all-zero.
+    # When push_dynamic_kernel creates fewer descriptor slots than the translate handler
+    # passes to dispatch (the dynamic-binding-count bug), the output buffer falls outside
+    # the descriptor set and is never written.  The output buffer, zero-initialised by both
+    # Intel Iris Xe and NVIDIA drivers for security, reads back as all-zero.
+    # A non-zero range proves the output binding was correctly included in the descriptor set.
+    vk_range = float(logits_vk.max()) - float(logits_vk.min())
+    assert vk_range > 1.0, (
+        f"[Device {device_index}] Vulkan logit range is {vk_range:.4f} — indistinguishable "
+        "from all-zero output.  This is the 2026-07-30 failure mode: the f16 GEMV dispatched "
+        "without error but wrote to the wrong buffer (session-layer bug).  "
+        f"VK logit min={logits_vk.min():.4f} max={logits_vk.max():.4f}."
+    )
+
+    # Guard 2: top-1 token must match the CPU oracle.
+    # A non-zero logit range is necessary but not sufficient — the kernel could produce
+    # non-zero garbage.  The top-1 token being correct is a strong correctness signal.
+    flat_vk = logits_vk.reshape(-1, logits_vk.shape[-1])
+    flat_cpu = logits_cpu.reshape(-1, logits_cpu.shape[-1])
+    top1_vk = int(np.argmax(flat_vk[0]))
+    top1_cpu = int(np.argmax(flat_cpu[0]))
+    assert top1_vk == top1_cpu, (
+        f"[Device {device_index}] VulkanEP top-1 token {top1_vk} != CPU top-1 {top1_cpu}.\n"
+        f"  VK  logits range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]\n"
+        f"  CPU logits range: [{logits_cpu.min():.4f}, {logits_cpu.max():.4f}]\n"
+        f"  max |VK-CPU| logit diff: {np.abs(logits_vk - logits_cpu).max():.6f}"
+    )
+
+    # Report — printed always so CI captures it.
+    top5_vk = set(int(x) for x in np.argsort(-flat_vk[0])[:5])
+    top5_cpu = set(int(x) for x in np.argsort(-flat_cpu[0])[:5])
+    top10_overlap = len(
+        set(int(x) for x in np.argsort(-flat_vk[0])[:10])
+        & set(int(x) for x in np.argsort(-flat_cpu[0])[:10])
+    )
+    print(
+        f"\n[Phi-3.5 f16 logits / Device {device_index}]\n"
+        f"  VK  logits range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]\n"
+        f"  CPU logits range: [{logits_cpu.min():.4f}, {logits_cpu.max():.4f}]\n"
+        f"  top-1 match: {'✓' if top1_vk == top1_cpu else '✗'} (vk={top1_vk} cpu={top1_cpu})\n"
+        f"  top-5 overlap: {len(top5_vk & top5_cpu)}/5\n"
+        f"  top-10 overlap: {top10_overlap}/10"
+    )
 
 _GPT_OSS_DIR = pathlib.Path(
     r"C:\Users\justinchu\.foundry\cache\models"

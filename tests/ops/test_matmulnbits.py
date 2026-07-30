@@ -341,3 +341,51 @@ def test_matmulnbits_fp16_matrix(vulkan_device_available, with_zero_points, rows
     )
     m.assert_vulkan_claims(model_bytes, feeds)
     m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)
+
+
+@pytest.mark.skipif(
+    not _ort_version_ge(1, 28),
+    reason="fp16 MatMulNBits needs an ORT >= 1.28 oracle (see the module docstring).",
+)
+def test_matmulnbits_fp16_dynamic_batch(vulkan_device_available):
+    """Dynamic-batch (symbolic M) f16 MatMulNBits must produce non-zero output.
+
+    This is the regression guard for the 2026-07-30 all-zero-logit bug: when ORT sees a
+    symbolic leading dimension on the activation tensor, compile_impl routes the kernel through
+    push_dynamic_kernel (session.rs), which builds a binding-token list from the NodeDesc
+    input/output counts. For MatMulNBits without zero_points the NodeDesc has 3 inputs + 1
+    output = 4 tokens, but matmul_nbits_gemv passes 5 bindings to KernelRequest (scales bound
+    twice: once as scales, once as the inert zero_point placeholder for the 5th shader slot).
+    The pipeline was therefore created with only 4 descriptor slots; shader binding 4 (the
+    output) fell outside the descriptor set and wrote nowhere. The output buffer, which drivers
+    zero-initialise for security, read back as all-zero on both Intel Iris Xe and RTX 4060.
+
+    The fix (ShapeOnlyRecorder::dispatch now captures k.bindings alongside the other fields,
+    and dispatch_ort uses those captured bindings — not kernel.bindings — for n_bindings and
+    buf_bindings on the dynamic path) is tested here by asserting that a single dynamic-batch
+    fp16 MatMulNBits at a Phi-3.5-representative shape produces a non-zero output.
+
+    static_batch variants (test_matmulnbits_fp16_matrix) already passed before this fix, so
+    they do NOT guard this path. Only the symbolic-batch form triggers push_dynamic_kernel.
+    """
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256,
+        N=64,
+        rows=1,
+        with_zero_points=False,
+        activation_dtype=ir.DataType.FLOAT16,
+        symbolic_batch=True,
+    )
+    cpu_out = m.run_cpu(model_bytes, feeds)[0]
+    assert not np.any(np.isnan(cpu_out)) and not np.any(np.isinf(cpu_out)), (
+        "CPU EP oracle produced NaN/Inf for fp16 MatMulNBits — the oracle is not usable."
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    # The primary guard: a symbolic-batch f16 dispatch must write actual values. All-zero
+    # means the output binding was missing from the descriptor set and nothing was written.
+    vk_out = m.run_vulkan(model_bytes, feeds)[0]
+    assert np.any(np.abs(vk_out) > 1e-4), (
+        "VK output is all-zero for symbolic-batch f16 MatMulNBits: the output binding was "
+        "not in the descriptor set. This is the dynamic-binding-count bug."
+    )
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)

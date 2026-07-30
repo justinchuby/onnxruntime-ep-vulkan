@@ -669,6 +669,96 @@ would have gone *unchecked*. Now symbolic-aware: literal extents still checked p
 
 Code: `ops/common/claim.rs`, `registry.rs`, `ops/claim_log.rs`, `ops/quant.rs`.
 Docs: `docs/OP_COVERAGE.md` §7.5 new, §8.1.3 corrected.
+
+---
+
+## Session 20 — 2026-07-30T09:14:00-07:00 — all-zero logit investigation and fix
+
+**Task:** After Switch's runtime-extents work enabled 161 fp16 MatMulNBits nodes on Phi-3.5,
+the model dispatched all 161 with `compute_failures=0` but produced all-zero logits on both
+Intel Iris Xe and RTX 4060.
+
+### Vacuous-pass correction
+
+A prior Mouse session (session 19) reported "bit-identical" results by comparing against
+a pre-fix DLL. That result was a vacuous pass (R7): the EP was registered and appeared in
+`get_providers()`, but the dynamic-binding bug caused no output to be written; ORT effectively
+ran CPU-on-both-sides while the check passed. The coordinator's original zero-logit observation
+was correct. The prior session did not rebuild the DLL after session.rs was patched.
+
+### Failure mode localisation
+
+- **Isolated f16 MatMulNBits with static shapes (test_matmulnbits_fp16_matrix): PASS**
+  — the f16 GEMV kernel computes correctly; the bug is not in the shader.
+- **Isolated f16 MatMulNBits with dynamic M (symbolic_batch=True): ALL ZERO**
+  — confirms the failure mode is in the session-layer dynamic-dispatch path, triggered only
+  when the activation tensor has a symbolic leading dimension.
+- **Phi-3.5 model pre-fix: logits [0.0, 0.0], top-10 overlap 0/10 (both devices)**
+  — confirmed zeros persist after rebuilding with 3a0cc58 (Step 1b fix is unrelated).
+
+### Root cause
+
+`push_dynamic_kernel` (session.rs) creates binding tokens from NodeDesc input/output counts:
+3 inputs + 1 output = **4 tokens** `[0, 1, 2, n_plan_inputs]`.
+
+But `matmul_nbits_gemv` (quant.rs) passes **5 bindings** to `KernelRequest::dispatch`:
+`[a, b, scales, zp, y]` where `zp = scales` (no zero_point input → scales bound twice as
+inert placeholder for shader slot 3). The q_gemv.comp DTYPE_F16 shader declares 5 binding
+slots (0=A, 1=B, 2=scales, 3=zero_points, 4=OutY).
+
+At Compute time `dispatch_ort` used `kernel.bindings.len()=4` for `n_bindings`. The pipeline
+descriptor set layout had 4 slots (0–3). Shader binding 4 (the output `OutY`) fell outside the
+layout and was never bound. Both Intel Iris Xe and NVIDIA zero-initialise freshly allocated GPU
+memory for security; the unwritten output buffer read back as all-zero.
+
+**Failure mode: "writing nothing"** — kernel computed correct partial sums into shared memory
+and reduced them, then called `store_y()` which executed `atomicAnd`/`atomicOr` on a buffer
+that had no binding in the descriptor set. On both tested drivers this is a silent no-op.
+
+Static-shape isolation tests bypassed `push_dynamic_kernel` entirely (CompileRecorder captures
+the full 5-element binding vector from the translate handler's KernelRequest directly).
+
+### Fix
+
+`ShapeOnlyRecorder::dispatch` (session.rs) now captures `k.bindings` alongside the other
+fields. `dispatch_ort` uses those captured bindings — not `kernel.bindings` — for `n_bindings`
+(pipeline/descriptor-set creation) and `buf_bindings` (VkBuffer mapping) on the dynamic path.
+
+### Regression test
+
+`test_matmulnbits_fp16_dynamic_batch` (test_matmulnbits.py):
+- Uses `make_matmulnbits_model(..., symbolic_batch=True)` to trigger `push_dynamic_kernel`
+- Asserts `np.any(np.abs(vk_out) > 1e-4)` — all-zero fails
+- Confirmed FAIL on pre-fix build, PASS on fixed build (both devices, K=256, N=64, fp16)
+
+### Phi-3.5 results post-fix
+
+| Device | logits range | max\|VK-CPU\| | top-1 | top-10 |
+|--------|-------------|--------------|-------|--------|
+| 0 Intel Iris Xe | [-13.11, 13.02] | 0.031 (0.24%) | ✓ | 10/10 |
+| 1 RTX 4060 | [-13.11, 13.01] | 0.035 (0.27%) | ✓ | 10/10 |
+
+Not bit-identical (fp16 accumulation differences compound across 161 nodes) but correct:
+both top-1 and top-10 agree with CPU oracle, max abs diff is within fp16 MATMULNBITS_FP16
+tolerance (rtol=2e-2), and not a function of device vendor.
+
+### accuracy_level ruling (Trinity's question)
+
+Model declares `accuracy_level=0`; oracle pinned at `accuracy_level=1`. ORT CPU kernel
+branches on accuracy_level exactly once: only level 4 changes computation (int8 activations).
+Levels 0, 1, 2, 3 all resolve to `SQNBIT_CompFp32` on x86. The GPU shader always uses
+`float acc = 0.0` (fp32 accumulation). Levels 0 and 1 are indistinguishable. `accuracy_level`
+was NOT a cause of zeros and the oracle pinning is correct.
+
+### Files modified this session
+
+- `rust/src/vk/session.rs` — ShapeOnlyRecorder captures bindings; DynCaptured includes them;
+  dispatch loop uses eff_bindings for pipeline creation and buf_bindings
+- `tests/ops/_models.py` — `make_matmulnbits_model` gains `symbolic_batch` parameter
+- `tests/ops/test_matmulnbits.py` — `test_matmulnbits_fp16_dynamic_batch` regression test
+- `tests/ops/test_phi35.py` — docstrings corrected to actual root cause
+- `.squad/decisions/inbox/mouse-f16-zero-logits-postmortem.md` (main inbox) — decision record
+
 Record: `.squad/decisions/inbox/mouse-runtime-extents.md`.
 
 ---
