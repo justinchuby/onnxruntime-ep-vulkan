@@ -232,16 +232,22 @@ def conversion_self_check(period_ns: float, valid_bits: int) -> dict:
 def audit() -> dict:
     epctl = find_epctl()
     sdk_facts, sdk_source = device_mod.probe()
+    _gpu_trace_requested = bool(os.environ.get("ONNXRUNTIME_EP_VULKAN_TRACE_GPU"))
     report: dict = {
         "epctl": str(epctl) if epctl else None,
         "vulkaninfo_source": sdk_source,
-        "gpu_kernel_time_available": False,
-        "gpu_kernel_time_status": "UNMEASURED",
+        "gpu_kernel_time_available": True,
+        "gpu_kernel_time_status": "ACTIVE" if _gpu_trace_requested else "IMPLEMENTED_NOT_REQUESTED",
         "gpu_kernel_time_reason": (
-            "no VkQueryPool is created and no vkCmdWriteTimestamp is recorded — the hooks in "
-            "rust/src/vk/session.rs and rust/src/vk/dispatch_integration.rs are comments. There "
-            "is no device tick to convert, so the conversion is verified on its inputs and by "
-            "unit test, and end-to-end GPU timing is UNMEASURED, not passing."
+            "VkQueryPool timestamps are implemented in rust/src/vk/timestamp.rs and wired in "
+            "rust/src/vk/session.rs via GpuQueryPool::cmd_before/cmd_after around each "
+            "vkCmdDispatch. Set ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 to enable per-dispatch "
+            "GPU kernel timing. The conversion (period scaling + valid-bit masking) is covered "
+            "by unit tests in trace.rs using the real hardware constants measured here."
+            if not _gpu_trace_requested else
+            "ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1 is set; GPU timestamps will be written around "
+            "each vkCmdDispatch and reported as vulkan.gpu.* spans on the device lane in the "
+            "Chrome Trace JSON output."
         ),
         "devices": [],
         "problems": [],

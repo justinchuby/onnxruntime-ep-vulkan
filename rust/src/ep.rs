@@ -326,6 +326,9 @@ impl Drop for VulkanEp {
         // allocator arena, command/descriptor pools, pipeline cache) all hang off this struct and
         // are destroyed by this drop, in field order, exactly once.
         log::debug!("VulkanExecutionProvider session released");
+        // Export the Chrome Trace JSON. The tracer accumulates across sessions and rewrites the
+        // full file on each EP teardown; the final teardown leaves the complete trace on disk.
+        crate::trace::tracer().export();
     }
 }
 
@@ -549,6 +552,25 @@ unsafe fn get_capability_impl(
         num_nodes,
         declined.len()
     );
+
+    // --- Record partition metrics in the tracer (cross-owner edit, declared to coordinator) ---
+    // island_count and largest_island_flops are 0 until Mouse wires partition.rs into the fusing
+    // path (OP_COVERAGE.md §7.3). This call site is the owner of total_nodes, claimed_nodes, and
+    // the declined backlog; those three are populated correctly now.
+    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
+        total_nodes: num_nodes as u64,
+        claimed_nodes: claimed.len() as u64,
+        island_count: 0,         // Mouse: pending partition.rs wiring
+        largest_island_nodes: 0, // Mouse: pending partition.rs wiring
+        largest_island_flops: 0, // Mouse: pending partition.rs wiring
+        concentration: 0.0,
+        boundary_bytes_per_inference: 0,
+        boundary_time_fraction: 0.0,
+        declined: declined
+            .iter()
+            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
+            .collect(),
+    });
 
     if claimed.is_empty() {
         return ptr::null_mut();

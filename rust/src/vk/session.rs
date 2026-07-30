@@ -14,10 +14,11 @@ use ash::vk;
 use super::{
     alloc::{Allocator, GpuBuffer, MemClass, record_download, record_upload},
     barrier::{Access, BufferDep},
-    cmd::{CommandPool, submit_and_wait},
+    cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::Device,
     instance::{CapableDevice, Instance, select_device},
     pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
+    timestamp::GpuQueryPool,
 };
 use crate::{
     engine::{
@@ -26,6 +27,7 @@ use crate::{
     },
     ep::EpOptions,
     sys::ort,
+    trace::{self, GpuInterval, GpuTimestampCalibration, GpuTimestampReport, Phase, Transfer},
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -194,7 +196,8 @@ impl DispatchContext for CompileRecorder {
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
         let token = self.n_plan_inputs + self.next_bind;
         self.next_bind += 1;
-        self.pending_temp_sizes.push(desc.byte_size().unwrap_or(0) as u64);
+        self.pending_temp_sizes
+            .push(desc.byte_size().unwrap_or(0) as u64);
         Ok(BufferView::from_raw(token as u64))
     }
 
@@ -531,6 +534,14 @@ impl VulkanSession {
         api: *const ort::OrtApi,
         kernel_ctx: *mut ort::OrtKernelContext,
     ) -> *mut ort::OrtStatus {
+        // ── Observability ──────────────────────────────────────────────────────
+        // Grab the tracer once (one atomic load) and open the subgraph-level span.
+        // All phase guards below are children of this span on the Chrome Trace timeline.
+        // When tracing and verbose are both off, every entry point below is a no-op atomic load
+        // and an early return — there is no allocation and no clock read.
+        let t = trace::tracer();
+        let _sg = t.subgraph_region(kernels.len());
+
         // ── Step 1: read ORT input tensor data pointers ──────────────────────
         // Also retain the OrtValue pointers for the dynamic pre-pass below.
         let mut input_cpu_ptrs: Vec<*const u8> = Vec::with_capacity(input_byte_sizes.len());
@@ -691,7 +702,9 @@ impl VulkanSession {
                 if let (Some(cap), Some(cap_bi)) = (sor.captured, sor.captured_bindings) {
                     dyn_captured[ki] = Some((cap.0, cap.1, cap.2, cap.3, cap_bi));
                 }
-                dyn_temp_sizes[ki] = sor.temp_descs.iter()
+                dyn_temp_sizes[ki] = sor
+                    .temp_descs
+                    .iter()
                     .map(|d| d.byte_size().unwrap_or(0) as u64)
                     .collect();
             } else {
@@ -824,9 +837,10 @@ impl VulkanSession {
                 &kernel.temp_byte_sizes
             };
             for (j, &sz) in temp_sizes.iter().enumerate() {
-                let Some(buf) = (unsafe {
-                    self.alloc.alloc_device(&format!("ep_tmp_k{ki}_{j}"), sz)
-                }) else {
+                // SAFETY: `self.alloc` is live; size comes from compiled shader metadata.
+                let Some(buf) =
+                    (unsafe { self.alloc.alloc_device(&format!("ep_tmp_k{ki}_{j}"), sz) })
+                else {
                     bail!("alloc_device failed for temp buffer");
                 };
                 gpu_temps.push(buf);
@@ -834,13 +848,36 @@ impl VulkanSession {
         }
 
         // ── Step 4: record command buffer ─────────────────────────────────────
+        // Phase::Record wraps everything from vkBeginCommandBuffer through vkEndCommandBuffer.
+        // The upload CPU-memcopy time is reported separately via record_transfer so Niobe's
+        // harness can attribute it without mixing recording and copy costs.
+        let _record_guard = t.phase(Phase::Record);
+
         // SAFETY: cmd_pool is live; no previous recording is in flight.
         let Some(recorder) = (unsafe { self.cmd_pool.begin() }) else {
             bail!("vkBeginCommandBuffer failed");
         };
         let cmd = recorder.cmd;
 
+        // Create GPU timestamp query pool and reset all queries before any barrier or dispatch.
+        // `timestamp_valid_bits == 0` means the queue does not support timestamps; skip entirely.
+        let query_pool: Option<GpuQueryPool> =
+            if t.wants_gpu_timestamps() && self.capable.caps.timestamp_valid_bits > 0 {
+                // SAFETY: device is live; n_kernels is the dispatch count for this call.
+                let qp = unsafe { GpuQueryPool::new(self.device.ash(), kernels.len()) };
+                if let Some(ref qp) = qp {
+                    // vkCmdResetQueryPool must precede all vkCmdWriteTimestamp calls in this CB.
+                    // SAFETY: cmd is recording; qp was just created.
+                    unsafe { qp.cmd_reset(cmd) };
+                }
+                qp
+            } else {
+                None
+            };
+
         // Write CPU data into staging buffers and record staging→device copies.
+        // Time the CPU memcopy portion so record_transfer can report upload bandwidth.
+        let upload_t0 = std::time::Instant::now();
         for (i, (stg, &cpu_ptr)) in staging_ups.iter().zip(input_cpu_ptrs.iter()).enumerate() {
             // SAFETY: `cpu_ptr` is the tensor data pointer ORT just gave us for input `i`; it is
             // valid for at least `actual_input_byte_sizes[i]` bytes and stays live for this call.
@@ -848,6 +885,13 @@ impl VulkanSession {
                 unsafe { std::slice::from_raw_parts(cpu_ptr, actual_input_byte_sizes[i] as usize) };
             // SAFETY: cmd is recording; stg is Upload, gpu_inputs[i] is DeviceLocal.
             unsafe { record_upload(self.device.ash(), cmd, stg, &gpu_inputs[i], data) };
+        }
+        // Record upload bytes + duration in the tracer summary.
+        // record_transfer (not phase(Phase::Upload)) so the byte/bandwidth counters are emitted
+        // without double-counting the duration in phase_us[Upload].
+        if t.active() {
+            let upload_bytes: u64 = actual_input_byte_sizes.iter().sum();
+            t.record_transfer(Transfer::Upload, upload_bytes, upload_t0.elapsed());
         }
 
         // Barrier: TRANSFER_WRITE → SHADER_READ on all input buffers.
@@ -880,6 +924,9 @@ impl VulkanSession {
         // that is bound, because each pool is fresh and its handle is distinct from every
         // previously bound set.
         let mut desc_pools: Vec<DispatchDescriptorPool> = Vec::with_capacity(kernels.len());
+        // Shader name for each kernel, captured inside the loop so the GPU timestamp report can
+        // label each interval. Populated in lock-step with desc_pools.
+        let mut shader_names: Vec<&str> = Vec::with_capacity(kernels.len());
 
         // For each kernel: build pipeline + descriptor set, bind and dispatch.
         for (ki, kernel) in kernels.iter().enumerate() {
@@ -1072,7 +1119,12 @@ impl VulkanSession {
                         eff_push_constants,
                     );
                 }
-                // Niobe timestamp hook (BEFORE): cmd_write_timestamp(cmd, stage, ts_pool, before_idx)
+                // GPU timestamp BEFORE this dispatch — placed after push_constants so
+                // the timestamp fires at COMPUTE_SHADER stage, after all prior state is set.
+                if let Some(ref qp) = query_pool {
+                    // SAFETY: cmd is recording; ki < n_kernels; cmd_reset was called above.
+                    qp.cmd_before(cmd, ki);
+                }
                 let [wg_x, wg_y, wg_z] = eff_workgroups;
                 if std::env::var_os("ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES").is_some() {
                     // Decode push constants as u32 words for diagnostic.
@@ -1086,10 +1138,15 @@ impl VulkanSession {
                     );
                 }
                 self.device.ash().cmd_dispatch(cmd, wg_x, wg_y, wg_z);
-                // Niobe timestamp hook (AFTER): cmd_write_timestamp(cmd, stage, ts_pool, after_idx)
+                // GPU timestamp AFTER this dispatch.
+                if let Some(ref qp) = query_pool {
+                    // SAFETY: cmd is recording; ki < n_kernels.
+                    qp.cmd_after(cmd, ki);
+                }
             }
             // Keep this pool alive until after the fence signals.  See the `desc_pools`
             // declaration above for the full lifetime reasoning.
+            shader_names.push(eff_shader);
             desc_pools.push(desc_pool);
         }
 
@@ -1143,10 +1200,27 @@ impl VulkanSession {
                 )
             };
         };
-        // SAFETY: cmd_buf is in executable state; queue is idle; device is live.
-        let ok =
-            unsafe { submit_and_wait(self.device.ash(), self.device.compute_queue(), cmd_buf) };
-        if !ok {
+        // Phase::Record ends when the recording guard is dropped (before we submit).
+        drop(_record_guard);
+
+        // Bracket the GPU execution in host monotonic time for the calibration anchor.
+        // host_t0 = just before queue_submit; host_t1 = just after wait_for_fences.
+        // The GPU kernel(s) execute somewhere in [host_t0, host_t1]; the midpoint is the
+        // anchor, and half the bracket width is the reported uncertainty.
+        let host_t0 = onnx_runtime_tracer::absolute_now_us();
+
+        // Phase::Submit — wraps only vkQueueSubmit. Measures driver bookkeeping; measures NO
+        // GPU work (the call returns before any shader runs).
+        let fence = {
+            let _submit_guard = t.phase(Phase::Submit);
+            // SAFETY: cmd_buf is in executable state; queue is idle; device is live.
+            let fence_opt = unsafe {
+                create_and_submit(self.device.ash(), self.device.compute_queue(), cmd_buf)
+            };
+            // _submit_guard drops here, ending the Submit span.
+            fence_opt
+        };
+        let Some(fence) = fence else {
             self.free_all(
                 &mut gpu_inputs,
                 &mut staging_ups,
@@ -1154,19 +1228,99 @@ impl VulkanSession {
                 &mut staging_dls,
                 &mut gpu_temps,
             );
-            // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
-            // message is a 'static NUL-terminated literal. Every buffer allocated by
-            // this frame has been released above, so nothing outlives the return.
+            // SAFETY: `api` is a valid ORT API pointer for this EP invocation.
+            return unsafe {
+                crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, "vkQueueSubmit failed")
+            };
+        };
+
+        // Phase::FenceWait — queue latency + GPU execution + any concurrently-scheduled work.
+        // This is an UPPER BOUND on kernel time, not kernel time. Real GPU time comes from the
+        // VkQueryPool path below.
+        let fence_ok = {
+            let _fence_guard = t.phase(Phase::FenceWait);
+            // SAFETY: fence was submitted above; device is live.
+            let ok = unsafe { wait_fence_then_destroy(self.device.ash(), fence) };
+            // _fence_guard drops here, ending the FenceWait span.
+            ok
+        };
+        let host_t1 = onnx_runtime_tracer::absolute_now_us();
+
+        if !fence_ok {
+            self.free_all(
+                &mut gpu_inputs,
+                &mut staging_ups,
+                &mut gpu_outputs,
+                &mut staging_dls,
+                &mut gpu_temps,
+            );
+            // SAFETY: `api` is a valid ORT API pointer for this EP invocation.
             return unsafe {
                 crate::sys::make_status(
                     api,
                     ort::OrtErrorCode_ORT_EP_FAIL,
-                    "vkQueueSubmit or vkWaitForFences failed",
+                    "vkWaitForFences failed",
                 )
             };
         }
 
+        // ── GPU timestamp report ───────────────────────────────────────────────
+        // Read timestamp query results and emit per-kernel GPU spans to the tracer.
+        // The fence has signalled, so vkGetQueryPoolResults with WAIT_BIT is guaranteed to
+        // return immediately.
+        //
+        // Calibration: bracketing fallback (VK_EXT_calibrated_timestamps is not used in v0).
+        // The anchor places the first dispatch's begin-tick at the midpoint of the host bracket;
+        // anchor_uncertainty_us = half the bracket width tells viewers how imprecise that is.
+        //
+        // Key invariant: the conversion reads timestamp_period_ns (52.0833 on Intel Iris Xe,
+        // not 1.0) and applies the 36-valid-bit mask. Both come from caps.rs and are
+        // cross-checked by bench/timestamp_audit.py against vulkaninfoSDK. If this conversion
+        // is wrong, the audit exits non-zero.
+        if let Some(ref qp) = query_pool {
+            // SAFETY: fence has signalled; command buffer execution is complete.
+            let results = unsafe { qp.read_results() };
+            let device_anchor_ticks = results
+                .iter()
+                .flatten()
+                .next()
+                .map(|&(b, _)| b)
+                .unwrap_or(0);
+            let cal = GpuTimestampCalibration {
+                timestamp_period_ns: self.capable.caps.timestamp_period_ns,
+                valid_bits: self.capable.caps.timestamp_valid_bits,
+                host_anchor_us: (host_t0 + host_t1) / 2,
+                device_anchor_ticks,
+                anchor_uncertainty_us: host_t1.saturating_sub(host_t0) / 2,
+            };
+            let intervals: Vec<GpuInterval> = shader_names
+                .iter()
+                .zip(results.iter())
+                .enumerate()
+                .filter_map(|(ki, (name, r))| {
+                    let &(begin, end) = r.as_ref()?;
+                    Some(GpuInterval {
+                        label: name.to_string(),
+                        begin_ticks: begin,
+                        end_ticks: end,
+                        node_index: Some(ki as u64),
+                        flops: None, // TODO: from op spec (Mouse owns flop estimates)
+                        bytes: None, // TODO: from compiled kernel metadata
+                    })
+                })
+                .collect();
+            if !intervals.is_empty() {
+                t.record_gpu_intervals(&GpuTimestampReport {
+                    calibration: cal,
+                    queue_family: self.device.compute_queue_family(),
+                    intervals,
+                });
+            }
+        }
+
         // ── Step 5: write outputs back to ORT-allocated CPU memory ────────────
+        // Readback: time the CPU memcopy from mapped staging_dls to ORT's output tensors.
+        let readback_t0 = std::time::Instant::now();
         // SAFETY: `api` and `kernel_ctx` are live for this call (fn contract); the fence above has
         // been waited on, so every `staging_dls` buffer is mapped and its download has completed;
         // `output_byte_sizes` and `output_shapes` are the compile-time values for this subgraph.
@@ -1179,6 +1333,10 @@ impl VulkanSession {
                 &actual_output_shapes,
             )
         };
+        if t.active() {
+            let readback_bytes: u64 = actual_output_byte_sizes.iter().sum();
+            t.record_transfer(Transfer::Readback, readback_bytes, readback_t0.elapsed());
+        }
 
         // Cleanup regardless of output-write outcome.
         self.free_all(
