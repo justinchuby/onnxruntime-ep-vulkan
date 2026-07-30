@@ -692,6 +692,125 @@ def test_phi35_f16_matmulnbits_logits_nonzero(
         f"  top-10 overlap: {top10_overlap}/10"
     )
 
+
+# ===========================================================================
+# Multi-run stability — Tank's discriminator (2026-07-30)
+#
+# Single-run sessions cannot distinguish "computed zeros" from "unwritten zeros in
+# a clean arena."  From run 2, ORT's memory-pattern planner sub-divides allocations
+# (measured: 0 interior pointers on run 1, 13 on run 2, 26 on run 3 for Phi-3.5).
+# An unwritten buffer in a dirty arena returns dirty values; a computed-zero buffer
+# returns exactly 0.0 regardless.  Running ≥3 times in the SAME session is the only
+# way to distinguish the two failure modes.
+#
+# Tank's three-run probe found (pre-fix):
+#   - Logits (output 0): exactly 0.0 on runs 2 and 3 in a dirty arena → computed zero.
+#   - KV cache (outputs 1..64): bitwise different between runs → unwritten / arena reuse.
+#
+# After Mouse's dynamic-binding-count fix:
+#   - All three logit runs must be non-zero and bit-identical.
+#   - KV cache consistency is Switch's domain (binding/partition question at N=161).
+# ===========================================================================
+
+@pytest.mark.slow
+def test_phi35_vulkan_multirun_logits_stable(
+    phi35_onnx_path: pathlib.Path,
+    require_vulkan,
+) -> None:
+    """Three runs in one Phi-3.5 session: logits must be non-zero and bit-identical.
+
+    WHY THREE RUNS
+    ==============
+    ORT's memory-pattern planner does not engage on run 1.  It records on run 1 and
+    sub-divides from run 2 (measured by Tank: 0/13/26 interior pointers at 1/2/3 runs
+    on Phi-3.5).  On run 1 the arena is clean — unwritten and computed-zero outputs are
+    indistinguishable.  On runs 2 and 3, the arena is dirty: an unwritten buffer returns
+    dirty garbage, a correctly-written buffer returns its computed value.
+
+    WHAT GOES RED ON UNFIXED CODE (pre 2026-07-30 dynamic-binding-count fix)
+    =========================================================================
+    All three runs return all-zero logits (the output binding was outside the descriptor
+    set; drivers zero-init fresh buffers).  The non-zero assertion fails on run 1.
+
+    AFTER THE FIX
+    =============
+    All three runs return the same non-zero logits (matching the CPU oracle's argmax and
+    top-10).  Bit-identical across runs confirms no arena-reuse corruption.
+
+    THIS TEST VS test_phi35_vulkan_session_determinism
+    ==================================================
+    The determinism test creates TWO SEPARATE SESSIONS.  This test creates ONE SESSION and
+    calls run() three times.  Those are orthogonal checks: separate-session stability
+    catches initialisation-time non-determinism; same-session multi-run stability catches
+    ORT arena-reuse corruption and the interior-pointer class of bug.
+    """
+    _RUNS = 3
+    device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    try:
+        vk_sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
+    except Exception as exc:
+        pytest.fail(f"[Device {device_index}] VulkanEP session creation failed: {exc}")
+
+    # Vacuous-pass guard: must refuse if the EP is absent.
+    used = vk_sess.get_providers()
+    if m.EP_NAME not in used:
+        pytest.fail(
+            f"[Device {device_index}] {m.EP_NAME} not in session providers: {used}. "
+            "Multi-run comparison would be CPU-vs-CPU (vacuous pass). "
+            "Check ONNXRUNTIME_VULKAN_EP_LIB and EP registration."
+        )
+
+    feeds = _build_phi35_feeds()
+    logit_runs: list[np.ndarray] = []
+
+    for run_idx in range(_RUNS):
+        try:
+            out = vk_sess.run(None, feeds)
+        except Exception as exc:
+            pytest.fail(
+                f"[Device {device_index}] Run {run_idx + 1}/{_RUNS} failed: {exc}"
+            )
+        logits = np.array(out[0], copy=True, dtype=np.float32)
+        vk_max_abs = float(np.abs(logits).max())
+
+        # Non-zero guard on EVERY run, not just run 1.  On the dirty arena (run 2+),
+        # an unwritten buffer shows garbage; zeros in a dirty arena means something
+        # actively wrote zeros (computed-zero failure mode).
+        assert vk_max_abs > 0.1, (
+            f"[Device {device_index}] Run {run_idx + 1}/{_RUNS}: logits are all-zero "
+            f"(max|x|={vk_max_abs:.6f}). "
+            "On a dirty arena (run 2+), computed zeros confirm the output binding was "
+            "present but the shader produced zero — or the descriptor set is still wrong. "
+            "On run 1 (clean arena), this is consistent with the pre-fix unwritten-output bug."
+        )
+        logit_runs.append(logits)
+        print(
+            f"  run {run_idx + 1}/{_RUNS}: logits [{logits.min():.4f}, {logits.max():.4f}] "
+            f"argmax={int(logits.reshape(-1, logits.shape[-1]).argmax(-1)[0])}"
+        )
+
+    # Bit-identical across all three runs.  Same session, same feeds, deterministic hardware.
+    for run_idx in range(1, _RUNS):
+        np.testing.assert_array_equal(
+            logit_runs[0],
+            logit_runs[run_idx],
+            err_msg=(
+                f"[Device {device_index}] Logits differ between run 1 and run {run_idx + 1}. "
+                "Same session, same feeds — divergence means arena-reuse corruption, a data "
+                "race, or non-deterministic kernel scheduling.  Route to Switch if this "
+                "only appears on run 2+."
+            ),
+        )
+
+    print(
+        f"\n[Phi-3.5 multi-run / Device {device_index}] "
+        f"All {_RUNS} runs non-zero and bit-identical ✓"
+    )
+
+
 _GPT_OSS_DIR = pathlib.Path(
     r"C:\Users\justinchu\.foundry\cache\models"
     r"\Microsoft\gpt-oss-20b-cuda-gpu\v1"

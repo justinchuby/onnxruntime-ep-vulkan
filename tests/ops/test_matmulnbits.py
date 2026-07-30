@@ -389,3 +389,105 @@ def test_matmulnbits_fp16_dynamic_batch(vulkan_device_available):
         "not in the descriptor set. This is the dynamic-binding-count bug."
     )
     m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)
+
+
+@pytest.mark.skipif(
+    not _ort_version_ge(1, 28),
+    reason="fp16 MatMulNBits needs an ORT >= 1.28 oracle (see the module docstring).",
+)
+def test_matmulnbits_fp16_dynamic_batch_multirun(vulkan_device_available):
+    """Dynamic-batch f16 MatMulNBits: 3 runs in one session must produce non-zero, identical outputs.
+
+    WHY THIS TEST EXISTS (Tank's multi-run discriminator, 2026-07-30)
+    ----------------------------------------------------------------
+    On 2026-07-30, Tank ran the Phi-3.5 model three times in one session with identical
+    feeds and found:
+
+      - Output 0 (logits): exactly 0.0 on runs 2 and 3 — in a dirty arena. An unwritten
+        buffer in a dirty arena shows garbage; zeros in a dirty arena means something
+        actively wrote zeros there. That confirmed "computed zero", not "unwritten zero".
+      - Outputs 1..64 (KV cache): bitwise different between runs — the dirty-arena signature
+        of an unwritten tensor.
+
+    A single-run session probe cannot distinguish these two failure modes: on run 1 the arena
+    is clean, so "unwritten" and "computed zero" both look like zeros. This is the same
+    structural blindness that produced the flattering CPU-vs-CPU comparisons on this project.
+
+    The fix (ShapeOnlyRecorder captures k.bindings; dispatch_ort uses those on the dynamic
+    path) makes all three runs produce the SAME correct non-zero output, because the output
+    binding is now correctly included in the descriptor set on every call.
+
+    WHAT GOES RED ON UNFIXED CODE
+    ------------------------------
+    On the pre-fix DLL:
+      - All three runs produce all-zero output (unwritten output buffer, driver zero-init).
+      - The "non-zero" assertion fails on run 1.
+      - The "bit-identical" assertion might pass (zeros == zeros) but is vacuously correct.
+
+    On the fixed DLL:
+      - All three runs produce non-zero, CPU-oracle-matching output.
+      - Both assertions pass.
+    """
+    import onnxruntime as ort
+
+    _RUNS = 3
+
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256,
+        N=64,
+        rows=1,
+        with_zero_points=False,
+        activation_dtype=ir.DataType.FLOAT16,
+        symbolic_batch=True,
+    )
+
+    # Validate the oracle is usable for this configuration.
+    cpu_out = m.run_cpu(model_bytes, feeds)[0]
+    assert not np.any(np.isnan(cpu_out)) and not np.any(np.isinf(cpu_out)), (
+        "CPU EP oracle produced NaN/Inf for fp16 MatMulNBits — the oracle is not usable."
+    )
+    assert np.any(np.abs(cpu_out) > 1e-4), (
+        "CPU EP oracle itself is all-zero — the model or feeds are invalid."
+    )
+
+    # Create ONE session and run it _RUNS times.
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    sess = ort.InferenceSession(model_bytes, opts, providers=m.EP_PROVIDERS)
+
+    # Vacuous-pass guard (R7, DESIGN.md §9.1): refuse to compare if the EP is absent.
+    # ORT falls back silently without raising; all runs would be CPU-vs-CPU.
+    used = sess.get_providers()
+    if m.EP_NAME not in used:
+        pytest.skip(
+            f"VulkanExecutionProvider not in providers ({used}) — no Vulkan device available. "
+            "Skipping multi-run test rather than comparing CPU-vs-CPU."
+        )
+
+    run_outputs: list[np.ndarray] = []
+    for run_idx in range(_RUNS):
+        out = sess.run(None, feeds)
+        arr = np.array(out[0], copy=True, dtype=np.float32)
+        # Non-zero guard: the pre-fix code writes nothing to the output (binding outside
+        # the descriptor set layout). Drivers zero-initialise GPU buffers, so the result is
+        # all-zero regardless of which run number we're on.
+        assert np.any(np.abs(arr) > 1e-4), (
+            f"VK output is all-zero on run {run_idx + 1}/{_RUNS} for symbolic-batch f16 "
+            "MatMulNBits. This is the dynamic-binding-count bug: the output binding was not "
+            "included in the descriptor set and nothing was written."
+        )
+        run_outputs.append(arr)
+
+    # Bit-identical across all runs: same session, same feeds, deterministic hardware.
+    # A correct kernel writes the same computed values every time.  Any divergence is
+    # a data race, arena-reuse corruption, or non-deterministic dispatch.
+    for run_idx in range(1, _RUNS):
+        np.testing.assert_array_equal(
+            run_outputs[0],
+            run_outputs[run_idx],
+            err_msg=(
+                f"Run 1 vs run {run_idx + 1}: outputs differ. Same session, same feeds, "
+                "same hardware — divergence indicates a data race, arena-reuse corruption, "
+                "or non-deterministic atomic dispatch in the f16 GEMV kernel."
+            ),
+        )
