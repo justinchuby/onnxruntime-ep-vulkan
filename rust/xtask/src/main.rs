@@ -307,6 +307,71 @@ fn print_caveats(env: &Env) {
     println!(
         "\n  `cargo ci` green means: CI's *Rust* lanes should pass. It does not mean the EP works."
     );
+    warn_if_decisions_are_stranded_in_a_worktree();
+}
+
+/// Warn when decision records exist in a *linked* worktree's inbox.
+///
+/// `.squad/decisions/inbox/` is gitignored by design — the Scribe merges it into `decisions.md` on
+/// the integration tree. That is fine while everyone works in one checkout, and became a trap the
+/// day we moved to per-agent worktrees: a record written in a worktree is invisible to `main`, to
+/// the Scribe, and to every other agent, and nothing reports it. One was found stranded that way
+/// within hours of the switch.
+///
+/// It is the same shape as this file's other caveats, and worth naming as a category: **isolation
+/// that is good for code is bad for shared state, and the failure is silent.** Worktrees made edit
+/// collisions impossible and quietly made lost reasoning possible. The fix for a silent failure is
+/// not care, it is a noise.
+///
+/// This is a warning and not a failure on purpose: the check is heuristic (it infers "linked
+/// worktree" from a `.git` *file* rather than a directory), and a lint that can be wrong must not
+/// be able to fail a build, or people learn to ignore it — which is the failure mode we are
+/// already fighting.
+fn warn_if_decisions_are_stranded_in_a_worktree() {
+    let Some(root) = repo_root() else {
+        return;
+    };
+    // In a linked worktree `.git` is a file containing `gitdir: …`; in the main checkout it is a
+    // directory. Only the former can strand a record.
+    if root.join(".git").is_dir() {
+        return;
+    }
+    let inbox = root.join(".squad").join("decisions").join("inbox");
+    let Ok(entries) = std::fs::read_dir(&inbox) else {
+        return;
+    };
+    let stranded: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    if stranded.is_empty() {
+        return;
+    }
+    println!(
+        "\n  ! DECISION RECORDS ARE STRANDED IN THIS WORKTREE. `.squad/decisions/inbox/` is\n\
+         \x20   gitignored, so these files will never reach `main`, the Scribe, or anyone else:"
+    );
+    for f in &stranded {
+        println!("      - {f}");
+    }
+    println!(
+        "\x20   Write decision records into the integration tree's inbox instead. Nothing in git\n\
+         \x20   will tell you about this, which is why `cargo ci` does."
+    );
+}
+
+/// The repository (or worktree) root, by walking up from the manifest directory.
+fn repo_root() -> Option<std::path::PathBuf> {
+    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 fn usage() {

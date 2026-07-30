@@ -58,6 +58,24 @@ commit.
 Clippy is run with `--workspace`, which is deliberately one notch stricter than CI: the tool
 that tells you CI will be green must not itself be the dirty thing.
 
+### It also warns about stranded decision records
+
+`.squad/decisions/inbox/` is gitignored by design — the Scribe merges it into `decisions.md` on
+the integration tree. That was fine while everyone shared one checkout, and became a trap the day
+we moved to per-agent worktrees: **a decision record written in a worktree is invisible to `main`,
+to the Scribe and to every other agent, and nothing in git reports it.** One was found stranded
+that way within hours of the switch.
+
+So `cargo ci` names them. It is a warning rather than a failure — the check infers "linked
+worktree" from `.git` being a file rather than a directory, and a heuristic that can be wrong must
+not be able to fail a build, or people learn to ignore it.
+
+Worth naming as a category, because it is the third instance today: **isolation that is good for
+code is bad for shared state, and the failure is silent.** Worktrees made edit collisions
+impossible and quietly made lost reasoning possible. Every mechanism that makes one class of error
+impossible tends to make a different one invisible, which is an argument for making the new one
+noisy rather than for abandoning the mechanism.
+
 ### It finds an installed Vulkan SDK, and works without one
 
 `glslc` is looked for in three places, in order: `$VULKAN_SDK/bin/glslc`, then `PATH`, then — on
