@@ -903,6 +903,75 @@ implementation required before QMoE's fast path is usable.
 
 ---
 
+### 9.6 Dynamic-Shape Dispatch (implemented 2026-07-30)
+
+**`ENGINE_ACCEPTS_RUNTIME_EXTENTS = true`** — the engine now resolves push constants and
+workgroup counts at `Compute` time rather than baking them at `Compile` time. This was
+`DESIGN.md §8.8 / R8`'s single flip point and it landed here, once, rather than in sixty
+claim predicates.
+
+#### How the dynamic path works
+
+At `Compile` time, `compile_impl` detects symbolic-extent nodes by the presence of
+`TensorRef::desc == None` on any input slot. Instead of calling the translate handler
+(which would fail on a `ShapePlan::broadcast` of symbolic dims), it calls
+`CompileRecorder::push_dynamic_kernel(node_desc, spec)`, which:
+1. Allocates binding tokens positionally (same as a static translate would have).
+2. Stores `DynKernelRecipe { node_desc, spec }` on the `CompiledKernel` (shader, push
+   constants and workgroups are left blank).
+
+`compile_impl` still computes `input_byte_sizes[i] = 0` for dynamic inputs via
+`TensorDesc::byte_size() → None → unwrap_or(0)`. This 0 is the dynamic signal carried
+into the `SubgraphComputeInfo`.
+
+At `Compute` time, `dispatch_ort` runs a three-step pre-pass **before** buffer allocation:
+
+**Step 1.5 — actual byte sizes.** For any input where `input_byte_sizes[i] == 0`, call
+`GetTensorSizeInBytes` on the live ORT tensor to get the real size.
+
+**Step 1.6 — translate re-run.** For each kernel with a `DynKernelRecipe`:
+1. Call `read_tensor_desc_from_ort(api, ort_values[binding_token])` for each input slot
+   to obtain a concrete `TensorDesc` (`GetTensorTypeAndShape` + `GetTensorElementType` +
+   `GetDimensions` + `ReleaseTensorTypeAndShapeInfo`).
+2. Patch the stored `NodeDesc`'s inputs with those concrete descs.
+3. Re-run the translate handler via `ShapeOnlyRecorder` — a lightweight `DispatchContext`
+   that ignores `resolve`/`bind_output` calls but captures `push_constants`, `workgroups`,
+   `spec_constants`, and `shader` from the `dispatch()` call.
+4. From `ShapeOnlyRecorder::output_descs`, compute `actual_output_byte_sizes[i]` and
+   `actual_output_shapes[i]` for each output.
+
+Buffer allocation (Step 2) and all downstream stages use `actual_input_byte_sizes` and
+`actual_output_byte_sizes` — static kernels behave identically to before.
+
+`check_bound_input_sizes` skips the size check when `planned == 0` (the dynamic signal),
+so the guard remains effective for static inputs while not refusing dynamic ones.
+
+#### OQ-15: Re-record per shape vs. bucketing vs. `vkCmdDispatchIndirect`
+
+**Decision: re-record per shape, for M1.** The command buffer is already re-recorded on
+every `Compute` call (there is no command buffer caching). The dynamic path adds only:
+- ORT shape reads via `GetTensorTypeAndShape` (host, µs)
+- `ShapePlan::broadcast` on concrete dims (host, µs)
+
+Both are negligible against the staging transfers (ms). Bucketing and `vkCmdDispatchIndirect`
+are M2+ optimisations for persistent-buffer mode where staging is eliminated.
+
+The M1 exit criterion is: *same session, two different concrete values of a symbolic dim,
+correct results, no ORT-level re-compile.* This is satisfied: `Compile` runs once, `Compute`
+re-runs translate per call with whatever shapes ORT provides. Confirmed on both devices:
+`seq_len=1` and `seq_len=5` in the same session, correct and differing outputs.
+
+#### Why re-running translate is safe
+
+The translate handlers are **pure** with respect to `ShapeOnlyRecorder`: they read
+`node_desc.inputs[*].desc.as_ref().unwrap().shape` and call `ctx.dispatch()` once. The
+`ShapeOnlyRecorder` captures only the KernelRequest and discards the binding tokens
+(they were already fixed at Compile time). Parallel `Compute` calls on the same compiled
+subgraph are therefore safe: `dispatch_ort` takes `&mut self` (session-level, not subgraph-
+level), so ORT serialises calls through the same session anyway.
+
+---
+
 ## 10. Cross-Cutting Concerns Not Covered Here
 
 | Topic | Owner |
