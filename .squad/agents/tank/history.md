@@ -469,3 +469,67 @@ The `edit` tool bit me again — I inserted a module between a doc comment and i
 reattaching the ledger's documentation to my new module. It compiled. Fourth time; always view the
 region after an insert near a doc comment.
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+## Session 16 — model-scale allocator verification, and a discriminator for the zeros
+
+`main` merged at `eb08204`. Two verifications the coordinator has asked for repeatedly finally
+became real, because with `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` the 2.2 GB Phi-3.5 model now
+routes 427 allocations and 2.09 GB through my registry.
+
+### The thing I nearly got wrong, in my own tool
+
+My first run of `probe_run2.py` printed "64 output(s) DIFFER, max|delta| = nan" for every output.
+I did not report it. `np.max(np.abs(a - b))` is `nan` whenever *either* array holds a `NaN`, even
+when the two are bit-identical — so that instrument could not distinguish "changed" from "both
+contain NaN". I rewrote the comparison as raw-byte equality and reported the magnitude only over
+the finite subset.
+
+The corrected version returned the same verdict, so the finding survived. That is exactly why it
+was worth fixing: **a number that is right by luck is indistinguishable from the three flattering
+numbers this project has already produced.** Had the outputs been stable, the old code would have
+reported change anyway and sent two people chasing an address bug that did not exist. I was one
+`print` away from being the fourth entry on that list, in the same session where I was warned about
+it. The warning worked, but only because I re-read my own diff rather than my own output.
+
+### VERIFICATION 1 — done, and the design held
+
+1192 interior pointers on the real model, identical on both vendors, `pointers_in_guard_band: 0`,
+`pointer_max_offset` 65536 B. The reserved-VA argument (`ptr + n` stays in-span by construction)
+was a first-principles claim for weeks; it has now met a real planner at 2 GB and not been dented.
+The instrument that would go red is `pointers_in_guard_band`, and it is an `epctl` exit-1 assertion
+ahead of the dispatch check — not a log line. It has had 21 460 chances to fire.
+
+`alloc_device_backed_spans` is still 0 everywhere. Device memory on ≠ tensors on the device.
+
+### VERIFICATION 2 — quarantine, still unexercised, and I am still saying so
+
+Zero use-after-free across 18 460 observations and 210 frees. The registry is unambiguously in
+ORT's path now, so the zero is no longer explained away by disconnection — and it is still not a
+pass. The honest sentence is "ORT has not handed us a freed handle under any pattern we have run".
+Third session in a row I have written that instead of an upgrade. If it is never exercised, that
+sentence is the answer, not a placeholder for a better one.
+
+### What I actually contributed to the zeros
+
+The control that mattered took ten minutes: run the same probe with device memory **unset**, which
+removes the allocator and the transfer object from the path entirely (confirmed — the 14
+`pointers_*`/`alloc_*` keys vanish from the counters file, because they are spliced only from
+`VulkanDataTransfer::release`). Logits still exactly zero, KV outputs still differ bitwise, 771
+dispatches either way, both vendors. **The phenomenon is invariant to whether my layer is present.**
+Not "I looked and found nothing" — a control with a stated red condition that did not go red.
+
+Then the part I did not expect. The three-run probe splits the 65 outputs into two different
+failures. Outputs 1..64 differ bitwise between runs with deltas pressed against the fp16 maximum
+and NaN appearing only from run 2 — the signature of uninitialised arena reuse, i.e. **nobody wrote
+them**. Output 0 is exactly zero on *runs 2 and 3*, when its neighbours prove the arena is dirty —
+an unwritten buffer in a dirty arena shows garbage, so **something wrote zeros there**. Both
+hypotheses the coordinator posed are true, of different tensors.
+
+The general lesson: I only got that discriminator because I ran the session three times. A
+single-run probe sees zeros and garbage side by side and cannot tell which buffer was written,
+because on run 1 the arena is clean and *everything* unwritten looks like zeros. **Run 1 is the run
+where "unwritten" and "written zero" are indistinguishable.** That is the same structural blindness
+as the interior-pointer one, arrived at from a completely different direction, and the whole
+`tests/ops/` suite runs exactly one run per session.
