@@ -9,9 +9,7 @@ use 3-node graphs; this exercises things they cannot:
     initialisers that live outside the model file is completely unexercised by the unit suite.
   - ``If`` control flow (one node in the cold prologue).  Partitioning has never met a
     subgraph body; ``GetCapability`` must not crash or corrupt on encountering one.
-  - Real partitioning at scale — 366 nodes, 32 transformer layers, fp16 throughout.  Every
-    node is expected to be DECLINED on dtype (our live ops are fp32).  The "decline all cleanly"
-    path is exactly the fallback that must not crash.
+  - Real partitioning at scale — 366 nodes, 32 transformer layers, fp16 throughout.
   - Session creation and first inference at production size — this is where lifetime and
     allocator problems actually appear.
 
@@ -21,17 +19,24 @@ WHAT WE MEASURE
 2. Claim census via ONNXRUNTIME_EP_VULKAN_CLAIM_LOG — claimed count, declined count,
    decline-code distribution.  Compared against Mouse's static prediction.
 3. Island count from ORT profiling — unique VulkanExecutionProvider subgraph hashes.
-   Mouse's simulation predicted 34–35 at current coverage; measure and compare.
 4. Both devices exercised separately (Intel Iris Xe = stricter, NVIDIA = secondary).
+5. Numerical correctness: VulkanEP logits must agree with CPU-only logits
+   (test_phi35_vulkan_matches_cpu_logits).  This is the gate between "we run a model"
+   and "we run a model correctly."
 
-EXPECTED RESULT (current state)
-================================
-All 366 nodes are declined on dtype (fp16; live ops are fp32-only). Expected:
-  - Claimed: 0
-  - Islands: 0
-  - Session produces output identical to CPU EP
+CURRENT CLAIM STATE (as of 2026-07-30, Switch's runtime-extents merged)
+=========================================================================
+161 MatMulNBits nodes are claimed and dispatched (compute_failures: 0).
+The remaining nodes are declined — Cast, Add, etc. are fp16 and not yet live.
+Mouse's 34–35 island prediction was for a different coverage scenario; the
+current measured island count is 161 (one 1-node island per MatMulNBits).
 
-If any node is unexpectedly claimed, that is worth noting separately.
+KNOWN BUG (tracked in test_phi35_vulkan_matches_cpu_logits xfail)
+=================================================================
+Despite 161 claimed nodes dispatching successfully, the MatMulNBits kernel produces
+all-zero outputs: ``vk range [0.0000, 0.0000]`` vs ``cpu range [-13.0859, 13.0312]``.
+The sessions do not crash and dispatch counts are non-zero — the kernel is reached but
+the arithmetic is wrong. Mouse owns this fix.
 
 MODEL PATH
 ==========
@@ -165,8 +170,9 @@ def test_phi35_session_loads_and_declines_cleanly(
     Primary assertion: no crash, no hang, no corrupted output.
     Secondary measurements: claim census and island count.
 
-    Because all ops are fp16 and our live kernels are fp32, we expect 0 claims and 0 islands.
-    The important thing is that 366 nodes all decline gracefully — none triggers a Compile crash.
+    As of 2026-07-30 (Switch's runtime-extents merged): 161 MatMulNBits nodes are claimed
+    and dispatched; the remaining nodes are declined on dtype.  The census reported here
+    reflects the live state — compare against Mouse's RESULTS.md for any prediction delta.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
@@ -338,16 +344,37 @@ def test_phi35_session_loads_and_declines_cleanly(
 
 
 @pytest.mark.slow
-def test_phi35_cpu_output_matches_between_sessions(
+def test_phi35_vulkan_session_determinism(
     phi35_onnx_path: pathlib.Path,
     require_vulkan,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Two runs with VulkanEP registered produce identical outputs (stability check).
+    """Two VulkanEP sessions with the same inputs must produce bit-identical outputs.
 
-    With 0 claimed nodes (all fp16 declined), both runs fall back entirely to CPU.
-    The outputs must be bit-identical across runs — a non-determinism failure here
-    means the session has a side-effect, memory corruption, or non-deterministic op.
+    This tests determinism, not correctness. The VulkanEP may claim and execute nodes on
+    GPU; those executions must be deterministic — same session configuration, same inputs,
+    same hardware must produce the same bits on every run.
+
+    The test DOES NOT assert that the output is correct relative to the CPU oracle. That is
+    the responsibility of test_phi35_vulkan_matches_cpu_logits.  A broken kernel that
+    consistently produces all-zero outputs will pass this test (two zero sessions are
+    bit-identical); the correctness gate catches that independently.
+
+    VACUOUS-PASS CONDITION
+    ----------------------
+    If EP_NAME is not in the session providers (ORT silent fallback to CPU), the test still
+    passes — two CPU sessions are always bit-identical.  This is intentional: the correct
+    place to assert EP placement is the correctness gate (test_phi35_vulkan_matches_cpu_logits),
+    which refuses to compare unless EP_NAME is in the provider list.  Determinism must hold
+    regardless of which EP executes.
+
+    RENAMED FROM: test_phi35_cpu_output_matches_between_sessions
+    REASON: The former name's docstring claimed "with 0 claimed nodes (all fp16 declined),
+    both runs fall back entirely to CPU."  That premise became false when Switch's
+    runtime-extents work merged (161 MatMulNBits now claimed and dispatched on GPU).  The
+    test continued passing because two all-zero GPU sessions are bit-identical — an example
+    of the determinism check masking a correctness failure.  The correctness failure is
+    captured by the xfail test_phi35_vulkan_matches_cpu_logits.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
@@ -372,12 +399,164 @@ def test_phi35_cpu_output_matches_between_sessions(
             a, b,
             err_msg=(
                 f"[Device {device_index}] Output[{idx}] differs between two VulkanEP sessions. "
-                "With 0 claimed nodes the result should be bit-identical CPU output. "
-                "Non-determinism or memory corruption."
+                "Non-determinism or memory corruption — same inputs must produce same outputs. "
+                "If outputs differ only after a kernel fix, that indicates a non-deterministic "
+                "GPU dispatch; route to Switch."
             ),
         )
 
-    print(f"\n[Phi-3.5 stability / Device {device_index}] Two sessions: bit-identical ✓")
+    print(f"\n[Phi-3.5 determinism / Device {device_index}] Two sessions: bit-identical ✓")
+
+
+# ===========================================================================
+# Correctness gate — VulkanEP logits vs CPU-only logits
+#
+# This is the test that distinguishes "we run a model" from "we run a model correctly."
+# Nothing in the suite did this before 2026-07-30.  The need was exposed when Switch's
+# runtime-extents work moved dynamic-shape declines from 258→0 and 161 MatMulNBits nodes
+# started dispatching — yet the logits remained all-zero.
+#
+# The test is marked xfail(strict=True) because the MatMulNBits kernel currently produces
+# all-zero outputs.  strict=True means: when Mouse fixes the kernel and the test starts
+# passing, the suite will ERROR (XPASS) until someone removes the xfail mark.  That
+# friction is intentional — it forces an explicit decision that the kernel is correct.
+# ===========================================================================
+
+@pytest.mark.slow
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known bug (2026-07-30): MatMulNBits kernel produces all-zero outputs on GPU. "
+        "Observed: vk range [0.0000, 0.0000] vs cpu range [-13.0859, 13.0312]. "
+        "All 161 MatMulNBits nodes dispatch with compute_failures=0, so the kernel is "
+        "reached; the arithmetic is wrong. Mouse owns this fix. "
+        "Remove this xfail when top-1 token agreement is confirmed on both devices."
+    ),
+)
+def test_phi35_vulkan_matches_cpu_logits(
+    phi35_onnx_path: pathlib.Path,
+    require_vulkan,
+) -> None:
+    """Correctness gate: VulkanEP logits must agree with CPU-only logits on Phi-3.5.
+
+    WHAT THIS TESTS
+    ===============
+    One VulkanEP session and one CPU-only session run on the same inputs.  The test
+    asserts that the VulkanEP session:
+
+      1. Actually used VulkanExecutionProvider (hard gate — not a vacuous pass).
+      2. Produces non-zero logits (all-zero output guard).
+      3. Agrees on the top-1 token (argmax) with the CPU oracle.
+      4. Has top-10 overlap ≥ 5/10 with the CPU oracle.
+
+    VACUOUS-PASS GUARDS
+    ===================
+    Guard A — EP_NAME in session.get_providers():
+      If ORT falls back silently to CPU (e.g., register_execution_provider_library
+      failed, or the EP advertises zero devices), the comparison is CPU-vs-CPU and
+      always passes meaninglessly.  This guard refuses to compare in that case.
+
+    Guard B — VulkanEP logit range > 0.1:
+      All-zero logits are a known failure mode where the kernel is dispatched but
+      arithmetic is wrong.  test_phi35_vulkan_session_determinism passes in this state
+      (two zero sessions are bit-identical).  This guard catches it explicitly.
+
+    ORACLE
+    ======
+    ORT CPU EP.  This is the same oracle used throughout the test suite.  The CPU EP
+    runs the model in fp16 → fp32 accumulation; the Vulkan EP targets the same semantic.
+    End-to-end LLM error accumulates across 161 MatMulNBits layers; top-1 and top-10
+    token agreement is used rather than per-element tolerance to avoid setting a bound
+    that no vendor can consistently meet.  When the kernel is correct, agreement should
+    be 10/10 for a single-token prefill with empty KV cache (deterministic weights,
+    zero temperature).
+
+    CURRENT STATUS: XFAIL
+    =====================
+    See @pytest.mark.xfail above.  The test is expected to fail on current main.
+    When Mouse's MatMulNBits fix lands, remove the xfail and verify on both devices.
+    """
+    device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+    feeds = _build_phi35_feeds()
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+
+    # --- VulkanEP session ---
+    vk_sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
+
+    # Guard A: EP must actually be in use.  ORT does NOT raise when the EP falls back
+    # silently; it just omits the EP name from get_providers().  Without this guard,
+    # a missing ONNXRUNTIME_VULKAN_EP_LIB causes a meaningless CPU-vs-CPU comparison.
+    used_providers = vk_sess.get_providers()
+    if m.EP_NAME not in used_providers:
+        pytest.fail(
+            f"[Device {device_index}] {m.EP_NAME} not in session.get_providers(): "
+            f"{used_providers}. ORT fell back to CPU silently — comparison would be "
+            "CPU-vs-CPU (vacuous pass). Check ONNXRUNTIME_VULKAN_EP_LIB and EP registration."
+        )
+
+    vk_out = vk_sess.run(None, feeds)
+
+    # --- CPU-only session ---
+    cpu_opts = ort.SessionOptions()
+    cpu_opts.log_severity_level = 3
+    cpu_sess = ort.InferenceSession(
+        str(phi35_onnx_path), cpu_opts, providers=["CPUExecutionProvider"]
+    )
+    cpu_out = cpu_sess.run(None, feeds)
+
+    assert len(vk_out) == len(cpu_out), (
+        f"[Device {device_index}] Output count mismatch: VulkanEP={len(vk_out)} CPU={len(cpu_out)}"
+    )
+
+    logits_vk = vk_out[0].astype(np.float32)
+    logits_cpu = cpu_out[0].astype(np.float32)
+
+    # Guard B: all-zero logits indicate silent kernel failure.
+    vk_max_abs = float(np.abs(logits_vk).max())
+    cpu_max_abs = float(np.abs(logits_cpu).max())
+
+    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
+    print(f"  cpu logit range: [{logits_cpu.min():.4f}, {logits_cpu.max():.4f}]  max|x|={cpu_max_abs:.4f}")
+    print(f"  vk  logit range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]  max|x|={vk_max_abs:.4f}")
+
+    assert vk_max_abs > 0.1, (
+        f"[Device {device_index}] VulkanEP logits are effectively zero "
+        f"(max |logit| = {vk_max_abs:.6f}, cpu max |logit| = {cpu_max_abs:.6f}). "
+        "All-zero output: kernel is dispatched but arithmetic is wrong. "
+        "This is the all-zero logits bug — MatMulNBits kernel produces zeros on GPU."
+    )
+
+    # Token-level agreement: top-1 and top-10.
+    flat_vk = logits_vk.reshape(-1, logits_vk.shape[-1])
+    flat_cpu = logits_cpu.reshape(-1, logits_cpu.shape[-1])
+
+    argmax_vk = int(flat_vk.argmax(-1)[0])
+    argmax_cpu = int(flat_cpu.argmax(-1)[0])
+
+    top10_vk = set(np.argsort(-flat_vk[0])[:10].tolist())
+    top10_cpu = set(np.argsort(-flat_cpu[0])[:10].tolist())
+    top10_overlap = len(top10_vk & top10_cpu)
+
+    print(f"  argmax: vk={argmax_vk}  cpu={argmax_cpu}  match={argmax_vk == argmax_cpu}")
+    print(f"  top-10 overlap: {top10_overlap}/10")
+    print(f"  max|vk-cpu| logit diff: {float(np.abs(logits_vk - logits_cpu).max()):.4f}")
+
+    # Top-10 overlap ≥ 5 (majority agreement).  Top-1 exact match is the stricter gate;
+    # both must hold for a correct run on a single-token prefill with empty KV cache.
+    assert top10_overlap >= 5, (
+        f"[Device {device_index}] top-10 token overlap {top10_overlap}/10 < 5. "
+        f"vk argmax={argmax_vk} cpu argmax={argmax_cpu}. "
+        "VulkanEP and CPU oracle disagree substantially on the most likely tokens."
+    )
+    assert argmax_vk == argmax_cpu, (
+        f"[Device {device_index}] argmax disagreement: VulkanEP={argmax_vk} CPU={argmax_cpu}. "
+        f"top-10 overlap={top10_overlap}/10. "
+        "VulkanEP and CPU oracle predict different next tokens."
+    )
+
+    print(f"  PASSED: argmax match ✓  top-10 overlap {top10_overlap}/10 ✓")
 
 
 # ===========================================================================
@@ -441,7 +620,14 @@ def test_gptoss_session_loads_and_declines_cleanly(
     across model families.
 
     Model: 374 nodes, opset ai.onnx=21 + com.microsoft=1, fp16, GQA-8 (not GQA-32).
-    Expected: 0 claims (all fp16), 0 islands.  Every node must decline gracefully.
+    The model contains 73 MatMulNBits nodes.  As of Switch's runtime-extents merge
+    (2026-07-30), MatMulNBits is claimed — so the expected claim count is no longer 0.
+    The CLAIM_LOG census measured here is the ground truth; compare it against
+    Mouse's RESULTS.md for any prediction delta.
+
+    NOTE: This test does NOT assert a specific claim count.  The census is measured and
+    reported for diagnostic purposes.  "Expected: 0 claims" was written when all fp16
+    nodes were declined; that premise changed with runtime-extents.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
@@ -542,31 +728,44 @@ def test_gptoss_session_loads_and_declines_cleanly(
 
 
 # ===========================================================================
-# Variable sequence-length fallback test
+# Variable sequence-length test
 #
 # Motivation (coordinator 2026-07-29T21:14): "two sessions with *different* sequence
 # lengths is the real test."  The two sessions above use seq_len=1.  This test runs
-# with two different seq_lens in the *same session* to exercise the fallback path when
-# input shapes change between calls — the actual decoder pattern.
+# with two different seq_lens in the *same session* to exercise the shape-change path
+# when input shapes differ between calls — the actual decoder pattern.
 #
-# When 0 nodes are claimed (current state: all fp16), our EP never sees Compute at all,
-# so the fallback is a property of ORT's CPU EP path.  The test still verifies that
-# (a) neither call crashes, (b) outputs differ (different inputs → different logits),
-# and (c) our EP's GetCapability is not called for the second run's shapes in a way
-# that could cause a crash.
+# NOTE (2026-07-30): The block comment below was written when 0 nodes were claimed.
+# As of Switch's runtime-extents merge, 161 MatMulNBits nodes are claimed and dispatched.
+# The test's primary assertions (no crash, outputs differ by shape) remain valid, but the
+# "outputs differ" assertion is shape-driven ([1,1,vocab] vs [1,5,vocab]) — it passes even
+# when all outputs are zero.  Correctness is tested separately by
+# test_phi35_vulkan_matches_cpu_logits.
 # ===========================================================================
 
 @pytest.mark.slow
-def test_phi35_variable_seqlen_fallback(
+def test_phi35_variable_seqlen(
     phi35_onnx_path: pathlib.Path,
     require_vulkan,
 ) -> None:
     """Run Phi-3.5 inference with two different sequence lengths in the same session.
 
-    Verifies that shape changes between calls do not crash or produce incorrect output.
-    This is the decoder pattern: seq_len=1 is the decode step, seq_len=5 is a short prompt.
-    With 0 claimed nodes the EP is not dispatching, but the session must still survive
-    re-evaluation at different shapes without lifetime errors or AV crashes.
+    Verifies that shape changes between calls do not crash.  This is the decoder pattern:
+    seq_len=1 is the decode step, seq_len=5 is a short prompt.
+
+    The EP may claim and dispatch MatMulNBits nodes on GPU (161 as of 2026-07-30).
+    The primary assertion is crash-absence: the session must survive re-evaluation at
+    different shapes without lifetime errors or AV crashes, regardless of which EP is
+    dispatching compute.
+
+    NOTE: The "outputs must differ" assertion below is satisfied by shape difference alone
+    ([1,1,vocab] vs [1,5,vocab]).  It does not prove numerical correctness.  See
+    test_phi35_vulkan_matches_cpu_logits for the correctness gate.
+
+    RENAMED FROM: test_phi35_variable_seqlen_fallback
+    REASON: The former name and block comment described this as a "fallback" path
+    (0 claimed nodes, EP never sees Compute).  That premise went false when runtime-extents
+    landed (161 MatMulNBits now dispatched).  Renamed to remove the false "fallback" label.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
