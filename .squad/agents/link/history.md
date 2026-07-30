@@ -52,7 +52,36 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ---
 
-## Session 7 (2026-07-30T05:48-07:00) — Linux lavapipe first claimed-node execution
+## Session 8 (2026-07-30T08:21-07:00) — Gate artifact design, is_uma verification, subgroup red instrument, lane classification
+
+### Context received from coordinator
+- DESIGN.md §8.9 ruling (b7c2305): `operational` vs `green` distinction. A lane that runs is operational; a lane with a gate artifact and MATCH verdict is green. UNMEASURED is the default — not PASS, not FAIL. 
+- Tank's single-run blindness finding: ORT arena reuse starts from run 2; every `tests/ops/` helper runs exactly once → 196-pass count is blind to interior-pointer bugs.
+- Rai 🔴 on the class: silently-wrong output at any layer, architecture-level concern.
+- Fact Checker OQ-12 figure correction: ~67.33% have sync2 (gap ~32.67%) as of 2026-07-30 vs 68.57% (31.43%) on 2026-07-28. Figure is moving.
+
+### Decisions made this session
+
+**1. Gate artifact for criterion 10:** `gate_chain_fp32` — a 2-node `Add → Relu` fp32 chain on [256] tensors. Meets Morpheus's three criteria: claims non-zero nodes, has a 2-node island, exercises the fp32 proof keys for both template families (ew_binary, ew_unary). fp16 artifact deferred until `storageBuffer16BitAccess` confirmed on lavapipe. UNMEASURED by default — verdict file written before session open, overwritten with MATCH/DIVERGENT after comparison. Trinity implements mechanism; Link owns artifact spec.
+
+**2. UNMEASURED-by-default enforcement:** verdict file created at run start. If process exits before comparison → UNMEASURED remains. CI gate check (`epctl --check-verdict` or equivalent) exits non-zero on UNMEASURED unless `--allow-unmeasured` passed explicitly. `--allow-unmeasured` must not appear in CI step definitions. Coordinate with Trinity on file format and vocab (same as model_output_equivalence: MATCH/DIVERGENT/UNMEASURED).
+
+**3. Subgroup-32 red instrument — closed:** Executing on `subgroup_size = 8` IS sufficient by construction. The falsifier is the numerical correctness suite (test_elementwise.py + test_matmulnbits.py) running on lavapipe. A baked-32 shader produces wrong reduction outputs on subgroup_size=8, diverging from CPU reference, failing assert_matches_cpu. The risk item is NOT open — instrument exists. New rule: new shader templates must have a lavapipe numerical test before the op is moved to Ready.
+
+**4. is_uma predicate — verified correct:** `is_uma_memory` in caps.rs uses "every heap is DEVICE_LOCAL" — the corrected predicate. Unit tests cover the ReBAR false-positive case (two heaps, one without DEVICE_LOCAL → false). lavapipe has one heap (DEVICE_LOCAL|HOST_VISIBLE); the corrected predicate returns true for the right reason. Not the old bug agreeing by coincidence.
+
+**5. Single-run blindness documented:** Added to §7.4.2 "What GPU-less CI does NOT cover". The 196-pass count is not evidence about multi-run behaviour. The instrument for the multi-run failure class is probe_run2.py (local-dev only, not yet in CI).
+
+**6. OQ-12 figure corrected:** Updated to ~32.67% (2026-07-30 Fact Checker revision) in §7.7.5 and §10.0.3 table. Figure now carries date and error direction in all primary references. The figure is a ceiling (some gap devices fail §7.2) and a floor (gpuinfo.org under-represents budget hardware). 
+
+### PLATFORMS.md sections updated this session
+- §7.4.2: single-run blindness note added
+- §7.7.5: OQ-12 figure updated to ~32.67% with date and provenance reference
+- §7.7.6 (new): `operational` vs `green` lane classification
+- §7.8 (new): gate artifact design for criterion 10, verdict mechanism, coordination with Trinity
+- §7.9 (new): is_uma predicate verification — corrected predicate confirmed, unit tests cited
+- §7.10 (new): subgroup-32 red instrument — YES, instrument exists by construction, risk item closed, maintenance rule stated
+- §10.0.3 table: Android figure updated to ~67.33%/~32.67% with date
 
 ### What was done
 Full build and test run on WSL2 Ubuntu 24.04 (Mesa 25.2.8 / LLVM 20.1.2, lavapipe 1.4.318). First execution of a claimed node end-to-end on a Linux Vulkan stack with lavapipe.
