@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T19:42:07-07:00 (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**, §10 M0; **45 op rows `Live` through ORT**, §9.1.2; **criterion 3 ruled *not* discharged — a validation lane needs a positive control**, because "no errors surfaced" is what a disabled layer reports; **criterion 9 moved to not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, and *derive, do not declare*; **§8.7 — template evidence covers a different expression, never a different path**; M0 still NOT met, everything green is green on one desk) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, the lavapipe premise was our own probe bug, decision re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening — builder source is intent, the model file is the fact**; **metric of record is the triple `(coverage, island_count, largest_island_flops)`** — §10.0, §9.2; **T3 demonstration target is Phi-3.5**, §10.0.2; **§10.0.1 R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch — §9.1.2**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**; **OQ-M6 accelerant ruling**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 **item 7**; `retain_viable` in §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **§10.0.1 R1**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T21:14:03-07:00 (**§8.8 RULING — dynamic shapes are a claim-path capability, not a kernel feature**, and move **ahead of** the three kernels, §10.0.3; measured on the first end-to-end real-model run: **258 nodes declined on symbolic shapes vs 100 on missing kernels**, and the decline codes are first-match so 258 is a *floor*; **§1.2's dynamic-shape non-goal reversed**; **M1 gains a second-token exit criterion** — one session, two concrete values of a symbolic dimension; **OQ-15 promoted to blocking**; **§10.0.1 R8 — we planned against the ops a model contains, having never measured why its nodes are declined**) · *prior revision 2026-07-29T19:42:07-07:00* (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**; **45 op rows `Live`**; **criterion 3 ruled not discharged — a validation lane needs a positive control**; **criterion 9 not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, *derive, do not declare*; **§8.7 template evidence covers a different expression, never a different path**) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening**; **metric triple `(coverage, island_count, largest_island_flops)`**; **T3 demonstration target is Phi-3.5**; **R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 *producer **at version***; R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 producer-relative**; **§8.6 crate evaluations**; **§10.0.2 `ai.onnx::Attention` first**; R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 §7.8**; **OQ-M6 ruling** §8.4; **OQ-3 §6.4** reserved-VA, no BDA; C2 **item 7**; `retain_viable` §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **R1**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -88,7 +88,7 @@ a decision record.
 |---|---|
 | **Training / gradients** | ORT training EPs are a different ABI surface and a different correctness problem. Inference only. |
 | **ONNX opset completeness** | Still a non-goal *as stated* — we do not chase the spec index. But see §8: coverage is now driven to ~174 inventoried ops by model family, and the reason the original row gave ("Vulkan supplies nothing — every op is a shader we write") is answered by kernel-template leverage, not by refusing breadth. What remains a non-goal is claiming ops **no target graph contains**. |
-| **Dynamic shapes in the fast path (M0–M2)** | **PARTIALLY REVERSED.** Still a non-goal for M0–M2 generally. But **LLM-path kernels take their dimensions in push constants from tier 3 onward**, so a recorded command buffer is length-agnostic for the decode loop. This is structural, not an optimization: KV length grows every token. See OQ-M1 / §1.4. |
+| **Dynamic shapes in the fast path (M0–M2)** | **REVERSED — 2026-07-29T21:14:03-07:00, on measurement.** This row has now been wrong twice, each time in the same direction. It was first narrowed (A5: LLM-path kernels take dimensions in push constants from tier 3). It is now **removed as a non-goal for the claim path entirely**: on the first real model we ran end to end, **symbolic dimensions declined 258 of 363 nodes while missing kernels declined 100** — and the 258 are nodes that had already passed registration, opset, schema and status, so shape is the *sole remaining blocker* for every one of them. See §8.8 for the ruling and §10.0.3 for the sequencing. What remains a non-goal: **data-dependent** shapes (next row), which is a different problem with a different answer. |
 | **Data-dependent output shapes** | `NonZero`, `Unique`, value-dependent `Reshape` targets, `NonMaxSuppression`. These need a mid-graph host readback that a recorded command buffer cannot express. Permanent CPU fallback. Mouse inventoried and permanently declined these. |
 | **fp64** | Most consumer GPUs have no usable double precision and Vulkan makes `shaderFloat64` optional. Permanent CPU fallback. |
 | **Quantized ops (int4/int8 matmul, `MatMulNBits`, `GatherBlockQuantized`)** | **REVERSED — in scope, tier 4 (M3).** An int4 Qwen graph is the variant people actually run; without `MatMulNBits` it shatters into hundreds of islands and the EP is worse than useless on it. Constraints in §1.4. |
@@ -1854,6 +1854,66 @@ verified) is exactly what would be eroded. It is also the same shape as R7's "de
 declare" one level up: **similarity is not a measurement**, and a status derived from a family
 resemblance is a declaration wearing a derivation's clothes.
 
+### 8.8 Dynamic shapes are a **claim-path capability**, not a kernel feature — RULING
+
+*Decided 2026-07-29T21:14:03-07:00, on the first end-to-end run of a real model through the EP.*
+
+**The measurement.** Phi-3.5 (2.2 GB, external data, fp16) loaded through the EP on the RTX 4060,
+ran, produced 65 outputs, declined every node with a machine-readable reason, fell back to CPU
+cleanly, and was bit-identical across two sessions. The decline histogram: **`dynamic-shape` 258**,
+`staged` (no kernel yet) 100, `not-registered` 5.
+
+**Read the histogram correctly before ruling on it — the codes are first-match, not a partition.**
+`claim_decision_uninstrumented` checks key → opset → contrib schema → **status** → predicate, and
+attributes a node to the *first* thing wrong with it. Two consequences, pointing in opposite
+directions:
+
+- The `staged: 100` nodes were declined at the **status** check and **never reached the shape
+  check**. Their shape viability is *unknown*. Landing all three planned kernels therefore unlocks
+  **at most** 100 nodes, and plausibly far fewer, because an unknown number of them are also
+  symbolic.
+- The `dynamic-shape: 258` nodes had already passed registration, opset, schema **and** status.
+  Every one is a node we have a registered, released, non-staged row for. **Shape is the sole
+  remaining blocker on 258 of 363 nodes.**
+
+So the asymmetry is not 2.5× — it is **larger than 2.5×**, and the 258 is the only figure in the
+histogram that is not an upper bound. Worth stating precisely, because the naive reading understates
+the case against the plan we had.
+
+**RULING.** Dynamic-shape handling is **not** a tier-3 kernel feature and **not** an optimisation.
+It is a capability of the **claim path and the dispatch path**, it is a precondition for claiming
+anything at all on a decoder, and it moves **ahead of** the three planned kernels in sequencing.
+Concretely:
+
+1. **The claim predicate's shape contract changes.** A symbolic dimension is no longer *per se* a
+   decline. The predicate must distinguish (a) **rank known, extents symbolic** — claimable if the
+   kernel takes its extents as runtime parameters; (b) **rank unknown** — decline; (c)
+   **data-dependent** extents (`NonZero`, `Unique`, value-dependent `Reshape`) — permanently
+   declined, unchanged, and §1.2's next row still governs them. The current `claim::` helpers reject
+   (a) together with (b) and (c). **That was correct for a static-shape EP and is wrong for an LLM
+   EP** — and it is being amended because it was measured, not because it was argued.
+2. **§8.4 A5 is generalised.** "LLM-path kernels take their dimensions in push constants from tier
+   3" becomes **"shape extents are runtime parameters for every kernel whose claim depends on them,
+   from M1"**. Switch's push-constant path already does this for the elementwise family, which is
+   why option (c) may be much closer than it looks for a large share of the 258.
+3. **Workgroup count is the open mechanism and it is now on the critical path.** A
+   push-constant-parameterised dispatch still needs a group count derived from the extents: either
+   the command buffer is re-recorded per shape bucket, or `vkCmdDispatchIndirect` computes it on
+   device. That is **OQ-15** (Switch), hereby promoted from "evaluate before tier 3" to **"answered
+   before M1's shape criterion can be met"**.
+4. **`onnx-shape-inference` does not solve this and must not be allowed to look like it does.**
+   §8.6 adopted it as an oracle and it remains the cheapest coverage in the harness — but it
+   resolves symbolic dims **statically**, which converts declines into claims *for a fixed-shape
+   test artifact*. **In real inference the sequence length genuinely varies per call**, so an EP
+   that claims only statically-resolved shapes claims nothing on the second token. A preprocessing
+   step that improves our test numbers without making inference work is the purest form of the
+   §9.1.2 hazard; §8.6's row is qualified accordingly.
+
+**What this ruling is not.** It is not a licence to widen predicates to reach a number. Report the
+**cost** of each option — extents known at `Compile`, known at `Compute`, or fully dynamic in-kernel
+— and how many of the 258 each reaches. A node claimed on a shape the kernel cannot actually handle
+is R5's permissive direction with a graph-sized blast radius.
+
 ---
 
 ## 9. Testing and benchmarking strategy
@@ -1970,6 +2030,13 @@ headline.**
 - **Intel and NVIDIA produce identical results across all of it.** The stricter implementation
   raising nothing extra is the informative half: it is evidence that these kernels are not leaning
   on anything the specification leaves undefined. It is not evidence about Adreno, Mali or MoltenVK.
+- **A 2.2 GB production model has been through the EP end to end.** *2026-07-29T21:14:03-07:00.*
+  Phi-3.5 (external data, fp16, an `If` in its prologue) loaded on the RTX 4060, ran, produced 65
+  outputs, declined **all 363** nodes with machine-readable reasons, fell back to CPU cleanly, and
+  was bit-identical across two sessions. **Zero nodes claimed** — so this is not an execution result
+  at all; it is the *conservative-claiming machinery* (§1.3, C6) working at a scale nothing else has
+  tested, and the decline histogram is what it produced (§8.8, §10.0.1 R8). Nothing about this run
+  put a Phi-3.5 node on the GPU.
 - **What this is not.** Windows only. Real hardware only. **This desk only.** The Linux lane has
   never executed a claimed node, the lavapipe CI lanes have not run since these changes landed, and
   CI still has no GPU hardware. **A result obtained only on this desk is not a result this project
@@ -2321,6 +2388,41 @@ produced green numbers. **When a fix produces a second, unrelated-looking failur
 diagnosis before extending the fix.** The cost of a fabricated negative is never the negative; it is
 everything built on top of it.
 
+**R8 — we planned against the ops the model contains, having never measured why its nodes are
+declined.** *Added 2026-07-29T21:14:03-07:00. §8.5's lesson landing a fourth time, in a new place.*
+
+The roadmap was built around three kernels — `MatMulNBits`, `SkipSimplifiedLayerNormalization`,
+`GroupQueryAttention` — on the premise that missing kernels are what stand between us and a model.
+The first end-to-end run of a real model says otherwise: **258 nodes declined on symbolic shapes and
+100 on missing kernels**, and because the codes are first-match with status checked before the
+predicate (§8.8), the 258 is a floor and the 100 is a ceiling. Landing all three kernels tomorrow
+would leave most of the graph declined.
+
+**The inventory was never wrong.** Phi-3.5 does contain those ops, in those counts; §8.5's census
+was accurate. The census answered *"which ops does this graph contain?"* and the roadmap needed
+*"why does this graph's nodes get declined?"* — **a different question, asked of the same artifact,
+with a different answer.** That is the fourth instance of the same shape: the wrong producer, the
+wrong revision, the unread model file, and now the unasked question. Each time the artifact was
+available and each time we reasoned about it instead of measuring it.
+
+**The rule.** **Coverage planning is driven by the decline histogram of a real graph, not by its op
+histogram.** An op census tells us what to build; only a decline census tells us what to build
+*first*. Every tier plan and every milestone that names a model now carries the decline histogram
+for that model alongside the op counts, and the metric triple (§10.0) is reported next to it.
+
+**And read the histogram as first-match.** A decline code names the **first** failing check, not the
+only one. A category checked early absorbs nodes that would also have failed later — so counts for
+early codes are ceilings and counts for late codes are floors, and **the two are not comparable
+without the check order**. Mouse should additionally report, for each declined node, the **full set**
+of checks that would have failed, not only the first. Until that exists, no plan may be sequenced on
+a difference between two decline counts without stating which is the floor.
+
+**One thing this incident also shows working.** A 2.2 GB fp16 production model with external data
+and an `If` prologue loaded, ran, declined all 363 nodes with machine-readable reasons, fell back to
+CPU, and was bit-identical across sessions. **The conservative-claiming machinery (§1.3, C6) did
+exactly what it was designed to do at a scale nothing else has tested.** The roadmap was wrong; the
+safety net was not.
+
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
@@ -2431,6 +2533,40 @@ Binding constraints:
 - **`ai.onnx::Attention` does not become optional** because Phi-3.5 does not need it. It is the
   standard-domain path, it is the lower-risk claim surface, and dropping it would leave us serving
   exactly one producer well.
+
+### 10.0.3 Sequencing — RULING: shape support goes **ahead of** the three kernels
+
+*Decided 2026-07-29T21:14:03-07:00, on the Phi-3.5 decline histogram (§8.8, §10.0.1 R8).*
+
+**Ahead of, not alongside — and the reason is dependency, not priority.** The three planned kernels
+(`MatMulNBits`, `SkipSimplifiedLayerNormalization`, `GroupQueryAttention`) sit on the LLM decode
+path, where **every** interesting extent is symbolic: sequence length, total sequence length, past
+KV length. A kernel written against static extents is not a partial version of the kernel we need;
+it is a **different kernel**, and every hour spent on one is an hour spent on work that must be
+redone. **Shape handling is not competing with the kernels for priority — it is upstream of them.**
+
+Three practical consequences:
+
+1. **T3/T4 sequencing (§10.0.2) is unchanged in *content* and re-dated in *precondition*.**
+   `ai.onnx::Attention` remains T3's implementation entry point; Phi-3.5 remains T3's demonstration
+   target; the T4 one-island criterion stands. What changes is that **the runtime-extent contract
+   (§8.8 items 1–3) is now a precondition of starting T3**, not a tier-3 deliverable discovered
+   inside it.
+2. **This does not stall Mouse.** The 100 `staged` nodes and the shape work are separable and land
+   with different people: the claim-path contract and the extent plumbing are Mouse + Switch +
+   Tank; the kernels remain Mouse's. What is forbidden is **writing a decode-path kernel against
+   static extents** on the theory that shapes are a later concern.
+3. **M1 gains the second-token criterion** (see M1's exit criteria) and **OQ-15 is promoted to a
+   blocking question** for it. Indirect dispatch versus per-bucket re-recording is now a decision
+   with a date attached rather than an evaluation to be scheduled.
+
+**Whether this holds is an empirical question with a scheduled answer.** The ruling is made on one
+model. Trinity is running the same census on device 0 and on gpt-oss-20b. **If gpt-oss shows the
+opposite distribution — kernels dominating shapes — I revisit this ruling rather than defend it**;
+the pre-committed condition is a `dynamic-shape` share below the `staged` share on that graph. I do
+not expect it, because the mechanism (a decoder's sequence dimension is symbolic by construction)
+is architecture-independent — but "I do not expect it" is what produced R8, and the whole content of
+R8 is that expectation is not measurement.
 
 ### M0 — "It loads, it runs, it matches"
 
@@ -2560,11 +2696,22 @@ coverage table as the authoritative contract.
 
 **Exit criteria.** Every T1 op green vs CPU on ≥2 platforms; **a pure-elementwise graph of ≥20 nodes
 compiles to one island, one submission**; a shape change re-records once and then replays;
+**a node is claimed and correctly executed on a graph carrying a *symbolic* dimension, and the same
+session produces correct results for two different concrete values of that dimension without
+re-compiling the session** (§8.8 — added 2026-07-29T21:14:03-07:00);
+**the Phi-3.5 decline histogram is re-measured and the `dynamic-shape` count has fallen**, reported
+as a histogram and not as a coverage percentage (§10.0.1 R8);
 `OP_SUPPORT.md` is generated from the registry and matches it by construction; **`graph_census.py`
 exists, is indexed by producer, and has produced histograms for the full corpus**; **the census
 reports GQA input counts and populated optional slots per producer for every artifact, resolving
 §10.0.1 R1 for the ORT GenAI column**; and
 **the ops-per-hand-written-kernel ratio is reported and is ≥ 8** (§8.4 A2).
+
+**The symbolic-dimension criterion is deliberately worded to be unsatisfiable by a static
+workaround.** *Two different concrete values in one session* cannot be met by resolving shapes ahead
+of time, which is exactly the substitution §8.8 item 4 warns against. It is the second-token test,
+written as an M1 exit criterion because a decoder that works only on the first token is not a
+decoder.
 
 ### M2 — "Real memory, real compute" (`OP_COVERAGE.md` tier T2 — 33 ops, cum. 121)
 
@@ -2625,7 +2772,7 @@ another that is near zero.
 | **OQ-3** | ~~The ORT allocator's pointer problem (§6.3): ORT allocators return `void*`, a Vulkan allocation is a `(VkBuffer, offset)` pair.~~ **RESOLVED 2026-07-28T22:28:08-07:00 — see §6.4.** `Alloc` returns a span of **reserved, never-dereferenceable virtual address space** (`VirtualAlloc(MEM_RESERVE, PAGE_NOACCESS)` / `mmap(PROT_NONE, MAP_NORESERVE)`), resolved to `(VkBuffer, offset)` through an opaque-handle registry once per descriptor binding. **`VK_KHR_buffer_device_address` is not carried at all** — Tank's argument that BDA is a second *shader architecture* rather than an optimization is correct and superseded my "registry primary, BDA on top" framing. Reserved VA makes ORT's pointer arithmetic correct by construction and turns a stray dereference into an MMU fault instead of silent corruption. Android's narrower address space is handled by **probe-and-halve at construction**, not by a platform constant — a tuning parameter, not a blocking dependency on Link. | Tank proposed → **Morpheus decided** | — |
 | **OQ-13** | **Zero-copy IO binding via `OrtEpFactory::CreateExternalResourceImporterForDevice`.** *New, 2026-07-28T19:16:08-07:00.* Verified by Fact Checker: the public vtable member is `CreateExternalResourceImporterForDevice` (the `…Impl` suffix is a local static in test code, not API), it landed in **ORT 1.24** — not 1.28 — and Tank has already set `ORT_API_VERSION_MIN = 24` with version negotiation, so **it costs us no ABI floor movement.** It is **orthogonal to OQ-3**: it is an OS-handle external-memory path in which the *caller* exports their `VkDeviceMemory` via `vkGetMemoryWin32HandleKHR` / `vkGetMemoryFdKHR` and we re-import it, answering "how does an external caller hand us their buffer as a graph input/output", not "what does our `Alloc()` return". Tank and Fact Checker independently reached this and Tank has recorded it as evaluated-and-rejected for OQ-3; **it is not to be re-proposed there.** Tracked here on its own merits: it is real, supported upstream, has an in-tree reference (`onnxruntime/test/providers/nv_tensorrt_rtx/nv_vulkan_test.cc`), and is the complete answer to zero-copy IO binding. **Scope: post-M2**, because it presupposes the device-memory tensor path exists. Known constraint to design around: the caller's memory must have been allocated with `VkExportMemoryAllocateInfo` up front — it cannot be retrofitted onto an ordinary allocation, so this is an integration contract we must document, not a transparent optimization. | **Tank** designs → Morpheus reviews | post-M2 |
 | **OQ-14** | **What fraction of target devices support `shaderFloat16` + `storageBuffer16BitAccess`?** *Escalated from Mouse's OQ-M2, 2026-07-28T19:16:08-07:00.* Under the frozen §7.2 both are probed, not required. An fp32-upcast LLM path is a memory-footprint failure, not a slow path (§8.4 A4), so a low Android number means the LLM story is **desktop-first as a product boundary**, regardless of op coverage. This decides a product scope, which is why it is not a shader-variant detail. | **Link** measures → **Morpheus** rules on scope | tier 3 / M3 |
-| **OQ-15** | **Indirect dispatch.** *New, 2026-07-28T19:16:08-07:00.* Shape-agnostic push-constant kernel parameters (§8.4 A5) make the *shader* length-agnostic but not the **workgroup count**, which still depends on sequence length — so either we re-record per shape bucket anyway, or we use `vkCmdDispatchIndirect` with a device-computed count. The same mechanism is what `QMoE`'s data-dependent expert routing needs on a pre-recorded command buffer. One evaluation should serve both. Evaluate, do not assume. | **Switch** evaluates → Morpheus decides | tier 3, tier 5b |
+| **OQ-15** | **Indirect dispatch. PROMOTED TO BLOCKING, 2026-07-29T21:14:03-07:00 (§8.8, §10.0.3).** *New, 2026-07-28T19:16:08-07:00.* Shape-agnostic push-constant kernel parameters (§8.4 A5) make the *shader* length-agnostic but not the **workgroup count**, which still depends on sequence length — so either we re-record per shape bucket anyway, or we use `vkCmdDispatchIndirect` with a device-computed count. The same mechanism is what `QMoE`'s data-dependent expert routing needs on a pre-recorded command buffer. One evaluation should serve both. Evaluate, do not assume. **No longer a tier-3 evaluation: it now gates M1's second-token exit criterion**, because symbolic extents were measured to be the dominant decline cause on a real model. | **Switch** evaluates → Morpheus decides | **M1**, tier 3, tier 5b |
 | **OQ-4** | ~~Shader compilation: build-time `glslc` vs checked-in pre-generated SPIR-V vs both with SDK preferred. Provisionally: build-time with checked-in fallback.~~ **RESOLVED 2026-07-28T22:28:08-07:00 — §7.8. The provisional decision is *changed*, not implemented: the Vulkan SDK is a hard build prerequisite and there is no checked-in SPIR-V fallback.** Found by the coordinator building on a machine without the SDK — `build.rs` panics with an escape hatch, which contradicted this row. The doc was wrong, not the code: a checked-in `.spv` that drifts from its `.comp` changes what runs with no signal, "reviewable diffs" is not true of SPIR-V binaries, and the variant table already generates 168 modules. Five binding conditions in §7.8, of which one is new work for Switch: **a shader-less artifact must advertise zero devices and claim nothing**. If the prerequisite ever proves to block contribution, the remedy is vendoring `shaderc`/`naga`, not checked-in binaries. | Switch proposed → coordinator found the divergence → **Morpheus decided** | — |
 | **OQ-5** | `gpu-allocator` vs a hand-rolled suballocator. `ENGINE.md` §3.1 picks `gpu-allocator`; I concur provisionally. Confirm it cross-compiles cleanly for Android and works under MoltenVK. | **Switch** owns → Link validates | M0/M3 |
 | **OQ-6** | What vendor ID does the factory report when it advertises zero devices, or before a device is bound? ORT calls `GetVendorId` on the factory, not per device. | **Tank** proposes → Morpheus decides | M0 |

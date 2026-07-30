@@ -18,6 +18,10 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 > Runtime, with `VulkanExecutionProvider` in the profiling JSON and output matched against the ORT
 > CPU EP — on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060), under **both** barrier backends,
 > agreeing bit-exactly. Every one of those results is **Windows, on local hardware, on one desk**.
+> A 2.2 GB production model (Phi-3.5, fp16, external data) now also loads through the EP, runs, and
+> falls back to CPU cleanly with a machine-readable reason for every one of its 363 nodes — of which
+> **zero are currently claimed**, because symbolic tensor dimensions, not missing kernels, are the
+> dominant blocker on a real decoder (`docs/DESIGN.md` §8.8).
 > The Linux lane has never executed a claimed node, the software-rasteriser CI lanes have not run
 > since these changes landed, and CI has no GPU hardware — and M0's own sentence requires all three.
 > Everything else — every contrib op, all quantized paths, and every platform in the table below
