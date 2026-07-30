@@ -364,6 +364,87 @@ def run_cpu(model: bytes, feeds: dict[str, np.ndarray]) -> list[np.ndarray]:
     return ort.InferenceSession(model, opts, providers=["CPUExecutionProvider"]).run(None, feeds)
 
 
+def outputs_bit_equal(a: list[np.ndarray], b: list[np.ndarray]) -> tuple[bool, list[int]]:
+    """Test bit-exact equality between two output lists using raw memory comparison.
+
+    Returns (all_equal, list_of_differing_output_indices).
+
+    WHY RAW BYTES, NOT max|a-b|
+    ============================
+    ``np.max(np.abs(a - b))`` returns ``nan`` whenever *either* array contains a NaN,
+    even if both arrays are bit-identical (e.g., same NaN bit pattern in both). This was
+    observed by Tank when comparing two fp16 KV-cache outputs near the representable limit
+    (~65472 / fp16-max 65504): the first diff used max|a-b| and reported nan for all 64
+    outputs — implying all 64 differed — when in fact the two arrays were bit-identical.
+    He rewrote to raw-byte equality before trusting the result.
+
+    ``np.array_equal(a, b, equal_nan=True)`` is almost correct but has a subtlety: it
+    treats two NaN *values* as equal even if they have different bit patterns (different
+    sign/payload bits). For correctness gates on fp16 KV outputs, two NaN payloads from
+    different compute paths can carry different bits; calling them equal would mask a real
+    difference. Raw byte equality has no such ambiguity: bit-identical means bit-identical.
+
+    LIMITATION
+    ==========
+    Raw byte equality is strictly tighter than "numerically close". This function is only
+    appropriate for cross-run determinism checks (same computation → same bits) and for
+    detecting unwritten buffers (all-zero). For EP-vs-CPU numeric tolerance, use
+    ``np.testing.assert_allclose``.
+    """
+    if len(a) != len(b):
+        return False, list(range(max(len(a), len(b))))
+    differing = [
+        i for i, (x, y) in enumerate(zip(a, b))
+        if x.shape != y.shape or x.dtype != y.dtype or x.tobytes() != y.tobytes()
+    ]
+    return len(differing) == 0, differing
+
+
+def run_session_n_times(
+    sess: "ort.InferenceSession",
+    feeds: dict[str, np.ndarray],
+    n: int,
+) -> list[list[np.ndarray]]:
+    """Run *sess* with identical *feeds* exactly *n* times and return all output lists.
+
+    The returned list has length *n*; element *i* is the output list for run *i+1*.
+
+    WHY MULTI-RUN IS STRUCTURALLY REQUIRED
+    =======================================
+    ORT's memory-pattern planner does not engage on the first run of a session. From run 2
+    onward it records tensor lifetimes and sub-divides the arena — handing back interior
+    pointers derived by arithmetic on the allocator's return value (e.g. ``base + n``).
+    Before that, the arena is freshly zeroed by the OS. This creates an arena-cleanliness
+    boundary at the run-1/run-2 boundary:
+
+    - **Run 1:** arena is clean (OS-zeroed). An unwritten output buffer shows zeros.
+      A kernel that *computes* zeros is indistinguishable from a kernel that *never writes*.
+    - **Run 2+:** arena is dirty (residues from run 1). An unwritten output buffer now
+      shows the residue of whatever lived there before — usually a very different value.
+      A kernel that correctly computes zeros will still show zeros on run 2. A kernel that
+      never writes will show garbage.
+
+    Tank's three-run experiment on Phi-3.5 confirmed this:
+    - Outputs 1..64 (KV cache, fp16): bit-DIFFERENT between run 1 and runs 2/3 with
+      identical feeds. Signature: nobody writes them, dirty arena shows residue.
+    - Output 0 (logits, fp32): exactly 0.0 in all 32064 positions on runs 2 and 3 as
+      well. The arena is dirty around it, yet it shows zeros. Something writes zeros.
+
+    These are two different bugs with two different owners. A single-run gate cannot
+    distinguish them. A multi-run gate distinguishes them immediately: if run1 and run2
+    differ bitwise for a given output index, the output was *never written* on run1 either
+    (it just happened to be in a clean arena). If run1 and run2 agree (both zero), the
+    kernel writes zeros deliberately.
+
+    MINIMUM N
+    =========
+    N ≥ 2 is required to observe the planner boundary. N ≥ 3 adds a confirmatory run
+    that distinguishes planner-boundary effects from first-run fluke. Use N=3 for any
+    gate that claims MATCH; use N=2 for cheaper signal checks.
+    """
+    return [sess.run(None, feeds) for _ in range(n)]
+
+
 # ---------------------------------------------------------------------------
 # Claim assertion — the vacuous-pass guard
 # ---------------------------------------------------------------------------
@@ -475,6 +556,17 @@ def assert_matches_cpu(
 
     The CPU EP is the sole correctness oracle (DESIGN.md §9.1). Never use numpy as the
     reference for ops that ORT's CPU EP supports.
+
+    NaN NOTE
+    ========
+    ``np.testing.assert_allclose`` treats NaN as not equal to itself (equal_nan=False by
+    default in assert_allclose). If both arrays contain the same NaN at a position, this
+    will raise. However, `assert_allclose` does NOT reduce via max|a-b| — it checks each
+    element individually — so it does not produce the nan-contamination that ``max(abs(a-b))``
+    does when NaN is present. The NaN hole (Tank's finding) affects callers who write their
+    own ``max(abs(...))`` reduction, not this function directly.
+
+    For bit-exact equality (including NaN-bit-identity), use ``outputs_bit_equal`` instead.
     """
     expected = run_cpu(model, feeds)
     actual = run_vulkan(model, feeds)
@@ -1045,11 +1137,19 @@ def compare_layers(
         c = np.asarray(cpu_val, dtype=float)
         abs_diff = np.abs(v - c)
         denom = 1e-8 + np.abs(c)
+        # NaN-SAFE reductions: np.nanmax/nanmean skip NaN elements rather than propagating
+        # them. Background: numpy returns NaN for max(a-b) whenever EITHER array contains
+        # a NaN at the same position, even if both values are bit-identical NaN. This was
+        # observed by Tank when comparing fp16 KV-cache outputs near the representable limit.
+        # nanmax reports the worst finite diff; nan_count separately tells the caller how
+        # many positions have NaN in either output. See also outputs_bit_equal().
+        nan_count = int(np.sum(np.isnan(abs_diff)))
         results.append({
             "name": name,
-            "max_abs_diff": float(abs_diff.max()),
-            "mean_abs_diff": float(abs_diff.mean()),
-            "rtol_max": float((abs_diff / denom).max()),
+            "max_abs_diff": float(np.nanmax(abs_diff)) if abs_diff.size else 0.0,
+            "mean_abs_diff": float(np.nanmean(abs_diff)) if abs_diff.size else 0.0,
+            "rtol_max": float(np.nanmax(abs_diff / denom)) if abs_diff.size else 0.0,
+            "nan_count": nan_count,
         })
 
     results.sort(key=lambda d: d["max_abs_diff"], reverse=True)
