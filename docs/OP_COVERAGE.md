@@ -1639,60 +1639,57 @@ barrier backend, so the legacy path we carry for ~31 % of Android is finally exe
 not the goal of the flip; it is a consequence of §7.2's point that claims and coverage are
 different things from *tested* claims.
 
-#### 7.1.4 Optional-input arity is a coverage axis, not a form simplification (2026-07-30)
+#### 7.1.4 Optional-input population is a coverage axis — not a simpler expression of the same form (2026-07-30)
 
-On 2026-07-30, `push_dynamic_kernel` allocated **4 binding tokens** for `MatMulNBits`-without-
-`zero_points` (3 inputs + 1 output from NodeDesc).  The translate handler (`matmul_nbits_gemv`)
-passes **5 bindings** to `KernelRequest` — `scales` appears twice, once as its natural slot and
-once as the inert placeholder for the absent `zero_points` at shader binding 3.  The pipeline
-layout had 4 entries; the shader's write to binding 4 (the output) was undefined-behavior-silent
-on both Intel and NVIDIA and was discarded.  All 161 Phi-3.5 `MatMulNBits` dispatches completed
-with `compute_failures: 0` and left the output buffer at its zero-initialised value.
+This section exists because of a silent defect that was found only after Phi-3.5 ran end-to-end
+with all-zero logits, `compute_failures: 0`, and no validation error on either vendor.
 
-The diagnostic that would have caught it, and did not exist, is:
+**The defect.** `MatMulNBits` has an optional `zero_points` input (slot 3). Switch's translate
+handler allocated **4 binding tokens** for the 3-input form (without `zero_points`). The shader
+writes its output to **binding 4** — the fifth slot — which was undeclared in the 4-entry pipeline
+layout. The GPU silently ignored the write. The unit tests in `test_matmulnbits.py` all exercised
+the form *with* `zero_points`; Phi-3.5 has none. A test of the 4-input form is not evidence for
+the 3-input form, because the two forms have different pipeline layout entry counts.
 
-> *A proof of `MatMulNBits` with `zero_points` present tells you nothing about `MatMulNBits`
-> without `zero_points`, because the two forms have different binding arities.*
+**The structural point.** §7.1.2 condition (b) says:
 
-The f32/f16 dtype axis was the obvious candidate and was a red herring: the failure was
-orthogonal to dtype.  The actual uncovered axis was `populated_optional_input_set`.
+> a row may join `TEMPLATE_LIVE` only if it reaches the device through that representative's *exact*
+> `translate` handler, template, descriptor layout and push-constant block.
 
-**The rule, stated as a coverage axis alongside the axes that already existed:**
+An op with an optional input absent takes a *different code path in the translate handler* — it
+produces a different binding count, a different pipeline layout, and often a different push-constant
+block. Morpheus's proof-ledger key (`§8.9`) captures this exactly: the final dimension of the key
+is `populated_optional_input_set`. A proof keyed on `{0,1,2,3}` cannot be returned for a query
+keyed on `{0,1,2}`. The silence set was always there; nobody was reading it.
 
-An op with an optional input **absent** exercises a different dispatch path from the same op with
-that input **present**, for two independent reasons:
+**The rule this adds.** §7.1.2 condition (b) now carries an explicit corollary:
 
-1. **The translate handler branches.** `matmul_nbits_gemv` takes a different code path when
-   `zero_points` is `None` vs `Some` — different binding list, potentially different spec
-   constants, potentially different shader variant.  §8.7's rule applies: a different branch is
-   a different path, not a different expression.
+> **An op with an optional input absent is a different form, not a simpler expression of the same
+> form.** It must be separately exercised. A proof of `(op, dtype, shape_class, {full inputs})` is
+> not a proof of `(op, dtype, shape_class, {inputs minus optional slot k})`.
 
-2. **The binding arity changes.** The number of descriptor slots in the pipeline layout is
-   determined by `n_bindings = eff_bindings.len()`, and the two forms produce different lengths.
-   A proof of one length is not evidence about the other.  The pre-proof-ledger era's `Live` flag
-   was per-op; it was blind to arity.
+This is true even when the absent input triggers a code path that re-uses the slot (as `MatMulNBits`
+does, binding `scales` twice as an inert `zero_points` placeholder). That placeholder is invisible
+to the test that never exercises the no-`zero_points` form.
 
-**Under the §8.9 proof key this is not an editorial decision.**  The key includes
-`populated_optional_input_set`, so a proof of the `{scales, zero_points}` form is stored under
-a different key than a proof of the `{scales}` form.  The predicate looks evidence up *by key*;
-it is not possible for proof of one form to be returned for another.  Yesterday's mistake is
-unrepresentable, not just discouraged.
+**What would have caught this before the logit failure.** A probe that runs the session more than
+once (Tank's multi-run discriminator is what made the KV-cache signal observable). Any probe that
+checks `binding_count(pipeline_layout) == binding_count(translate output)`. The proof ledger
+(§8.9), by construction: `populated_optional_input_set` in the key means the 3-input and 4-input
+forms are different keys and can never satisfy each other's proof obligation.
 
-**Applied immediately**: `test_matmulnbits.py` now covers both the with-`zero_points` and
-without-`zero_points` forms explicitly.  The regression guard (`test_matmulnbits_fp16_dynamic_batch`)
-uses the without-`zero_points` form at `symbolic_batch=True` and would have gone red on the day
-of the defect.  The multi-run variant (`test_matmulnbits_fp16_dynamic_batch_multirun`) additionally
-confirms that runs 2 and 3 — when ORT's memory-pattern planner engages and arena sub-division is
-live — produce the same non-zero output as run 1.
-
-**What to check when writing a new translate handler with optional inputs:**
-
-- For each optional-input population pattern (absent vs present, and combinations if there are
-  multiple): does the binding list have a different length?  If yes, it is a different key and
-  requires separate proof.
-- Does the shader declaration match the binding list the handler produces?  The GLSL binding
-  index of the output must be `len(eff_bindings) − 1`, not `n_inputs_from_schema`.
-- Run the differential harness on both forms, not just the form the model happens to use.
+**Island measurement note, 2026-07-30.** After `SkipSimplifiedLayerNormalization` was promoted from
+`Staged` to `Ready`, the bench run showed `claimed 321 of 363, islands 321` — up from `257` on the
+prior run. The island count increased, not decreased. This is the falsifier the coordinator's
+prediction specified: "if `subgraphs_live` drops by less than 128, some SkipNorm nodes are not
+between two claimed nodes." The result was that *none* of the newly claimed SkipNorm nodes merged
+neighbouring islands — each became its own island. The coordinator's hypothesis about SkipNorm
+sitting between two MatMulNBits islands was wrong on the Phi-3.5 graph as ORT partitions it.
+The correct reading: **claiming a new op type adds islands before it removes them**, unless the
+newly claimed op is the sole unclaimed gap between two existing islands. Op priority order should
+be chosen by what *removes* gaps, not by what adds the most nodes. `declined_nodes` histogram
+(§7.3) is the right instrument for this — each declined op's island-removal potential is computable
+before the op is implemented.
 
 ### 7.2 Death by fallback — the real failure mode
 
@@ -2638,6 +2635,60 @@ predicate must not depend on which of the two paths is used.**
 - `QLinearMatMul` / `MatMulInteger` / `ConvInteger` / `QLinearConv` — **tier 6**. These are the
   *activation*-quantized (QDQ CNN) path, a different world from weight-only LLM quantization. No
   target model family needs them.
+
+---
+
+### 8.9 The proof ledger — claimability is derived, not hand-written (2026-07-30)
+
+**Background.** Every `OpStatus::Live` row was previously hand-written by the op author who also
+authored the test. That is a conflict of interest: the person who decides the test counts is the
+person whose row benefits from it. The MatMulNBits defect (§7.1.4) is the sharpest example — the
+4-input form was exercised, the author marked the row `Live`, and the 3-input form (Phi-3.5's
+actual form) silently computed nothing for weeks. `compute_failures: 0` throughout.
+
+**The ruling (Morpheus).** `OpStatus::Live` is no longer hand-written. Claimability is derived per
+form from a harness-generated, never-hand-edited ledger. The ledger is the only source of truth for
+which forms have been proven; `registry.rs` is the consumer; Trinity's differential harness
+generates it from actual dispatch runs on both local devices.
+
+**The proof key.** A form is a tuple:
+
+```
+(domain, op_type, opset_bucket, input_dtypes, output_dtypes, kernel_variant_key,
+ shape_class, populated_optional_input_set)
+```
+
+Where:
+- `opset_bucket` groups opset versions that share the same schema (e.g. `7..=12`, `13..=18`);
+- `kernel_variant_key` is the shader stem without the dtype suffix (e.g. `"ew_binary"`, `"matmul_nbits_gemv"`);
+- `shape_class` is `"static"` or `"dynamic"` (ORT-side symbolic axes present at Compile time);
+- `populated_optional_input_set` is the frozenset of slot indices that are non-null (`{0,1,2}` vs `{0,1,2,3}`).
+
+Two forms that differ in any dimension are different proof obligations. A proof of the 4-input
+`MatMulNBits` form cannot satisfy the proof obligation for the 3-input form.
+
+**The escape hatch — `CLAIM_UNPROVEN`.** When a form is needed in production before the harness has
+run it — e.g. an op just shipped but Trinity's next run hasn't landed yet — the author may add a
+`CLAIM_UNPROVEN` entry in `rust/src/ops/claim_unproven.rs`. The constraint:
+
+- `CLAIM_UNPROVEN` takes a list of **explicit proof keys** and nothing else.
+- A parser that can express "everything" (wildcards, ranges, regexes) must not exist.
+- This is enforced by planted rejection tests: `test_claim_unproven_wildcard_is_rejected`,
+  `test_claim_unproven_star_is_rejected`. These tests must go red if the parser is ever widened.
+- Each entry expires when the harness adds the corresponding key to the ledger; a stale
+  `CLAIM_UNPROVEN` is a warning (`CLAIM_UNPROVEN_STALE`), not a silence.
+
+**What `registry.rs` reads.** At startup, it merges the ledger file (path from
+`ONNXRUNTIME_EP_VULKAN_PROOF_LEDGER`, defaulting to `proof_ledger.json` next to the binary) with
+`CLAIM_UNPROVEN`. A form is claimable iff its key appears in either. If the ledger file is absent
+and `CLAIM_UNPROVEN` is empty, no form is claimable — but `OpStatus::Staged` rows remain as before
+(they decline with `[staged]` regardless). This means the ledger is additive: a build without
+the ledger file is safe, not broken. The transition from hand-written `Live` to ledger-derived `Live`
+is gated on Trinity's first harness run producing a non-empty ledger.
+
+**Falsifier for the ledger itself.** `test_no_live_row_without_ledger_key`: walks every `Live` row,
+computes its proof key, and asserts it appears in the merged (ledger ∪ CLAIM_UNPROVEN) set. Must go
+red if a row is marked `Live` and its key is in neither source.
 
 ---
 
