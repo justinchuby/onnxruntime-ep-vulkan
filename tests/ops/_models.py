@@ -631,6 +631,94 @@ def assert_ep_in_session(sess: "ort.InferenceSession") -> None:
 
 
 # ---------------------------------------------------------------------------
+# model_output_equivalence verdict — §9.1.3 / §10.0 (Morpheus ruling)
+# ---------------------------------------------------------------------------
+
+#: The three valid values for the `model_output_equivalence` field in the counters JSON.
+#: Written by :func:`write_equivalence_verdict`; read by ``epctl --check-counters``.
+#: See ``rust/src/counters.rs`` for the mirrored constants on the Rust side.
+EQUIVALENCE_MATCH: str = "MATCH"
+EQUIVALENCE_DIVERGENT: str = "DIVERGENT"
+EQUIVALENCE_UNMEASURED: str = "UNMEASURED"
+
+
+def write_equivalence_verdict(counters_path: "str | os.PathLike[str]", verdict: str) -> None:
+    """Write *verdict* into the `model_output_equivalence` field of the counters JSON at *path*.
+
+    The EP writes ``"model_output_equivalence": "UNMEASURED"`` by default at session teardown
+    (``dump_observations_if_requested``).  The Python comparison gate — which has access to the
+    CPU oracle — calls this function to upgrade the field to MATCH or DIVERGENT before teardown
+    runs (i.e., before the session is garbage-collected).  Teardown reads and preserves the
+    verdict written here; it does not overwrite it.
+
+    TIMING REQUIREMENT
+    ==================
+    Call this function **while the VulkanEP session is still alive** (before it goes out of
+    scope or is explicitly closed).  Teardown is triggered by the session's ``__del__`` method,
+    not by ``sess.run()`` returning.  In practice this means:
+
+      1. ``sess = ort.InferenceSession(...)``
+      2. ``vk_out = sess.run(...)``
+      3. Compute verdict (MATCH / DIVERGENT) from ``vk_out`` vs CPU oracle.
+      4. ``write_equivalence_verdict(counters_path, verdict)``   ← here
+      5. Run assertions (which may raise xfail or pytest.fail).
+      6. ``del sess`` / end of test function / GC.
+
+    Steps 4 and 5 are ordered so that the verdict is always written even when the assertion
+    will fail (e.g., in an xfail test that currently expects DIVERGENT).
+
+    WHAT IT DOES
+    ============
+    Reads the existing JSON from *counters_path*, replaces the value of
+    ``model_output_equivalence``, and writes the result back.  If the field is absent (old
+    snapshot format), it splices it in before the closing ``}``.  If the file does not exist,
+    the function raises ``FileNotFoundError`` — the caller must ensure the EP was configured to
+    write counters (``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE`` set) before calling this.
+
+    R9 NOTE
+    =======
+    This function is the **instrument** that makes the claim "MATCH means outputs agree"
+    falsifiable.  Its correctness is assumed (no automated Rust test covers the JSON write path
+    from Python).  That is the one residual gap declared in the R9 self-check.
+
+    Parameters
+    ----------
+    counters_path:
+        Path to the counters JSON file, as set in ``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE``.
+    verdict:
+        One of ``EQUIVALENCE_MATCH``, ``EQUIVALENCE_DIVERGENT``, or ``EQUIVALENCE_UNMEASURED``.
+    """
+    import json
+    import os
+    import re
+
+    path = str(counters_path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"write_equivalence_verdict: counters file not found: {path}\n"
+            "Is ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE set? Did the EP write a snapshot?"
+        )
+
+    with open(path, encoding="utf-8") as fh:
+        doc = fh.read()
+
+    key = "model_output_equivalence"
+    # Replace existing value (handles UNMEASURED → MATCH/DIVERGENT upgrade).
+    pattern = rf'("{re.escape(key)}")\s*:\s*"[^"]*"'
+    if re.search(pattern, doc):
+        doc = re.sub(pattern, rf'\1: "{verdict}"', doc)
+    else:
+        # Field absent (old snapshot without the field): splice before closing brace.
+        cut = doc.rfind("}")
+        if cut == -1:
+            raise ValueError(f"write_equivalence_verdict: {path} does not look like JSON (no '}}').")
+        doc = doc[:cut].rstrip().rstrip(",") + f',\n  "{key}": "{verdict}"\n}}\n'
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(doc)
+
+
+# ---------------------------------------------------------------------------
 # Barrier-backend parity helper — used by test_barrier_parity.py
 # ---------------------------------------------------------------------------
 

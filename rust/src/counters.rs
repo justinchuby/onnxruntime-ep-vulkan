@@ -63,6 +63,53 @@ pub const COUNTERS_ABI_VERSION: u32 = 1;
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
 
+// ---------------------------------------------------------------------------
+// model_output_equivalence — §9.1.3 / §10.0 verdict
+//
+// This is a JSON-only field. It is NOT part of VulkanEpCounters (the C ABI struct) because:
+//   1. The struct is published and consumed by epctl, probe_allocator.py, and test_phi35.py.
+//      Renaming or growing it breaks callers. Compatibility outranks API elegance (standing ruling).
+//   2. The EP has no access to the CPU oracle. The verdict is set by Trinity's Python harness
+//      after running a VulkanEP-vs-CPU comparison on the same artifact.
+//   3. Absent means UNMEASURED — not MATCH. This is R7: absence of an instrument is not a
+//      negative result. A run that did not compare says so explicitly.
+//
+// Cross-owner note (counters.rs is Switch's file; Trinity adds these constants and the
+// corresponding JSON emission in to_json/dump_observations_if_requested):
+//   - to_json() gains a default "UNMEASURED" verdict so every counter dump is self-describing.
+//   - dump_observations_if_requested() reads the existing file's verdict before overwriting,
+//     so Trinity's Python write (MATCH or DIVERGENT) survives the teardown rebuild.
+//   - No abi_version bump: the C struct is unchanged; this is a JSON-only addition.
+// ---------------------------------------------------------------------------
+
+/// The JSON key for the model-level correctness verdict.
+pub const EQUIVALENCE_KEY: &str = "model_output_equivalence";
+/// Verdict value: VulkanEP and CPU oracle agree within §9.1 tolerance on all outputs.
+pub const EQUIVALENCE_MATCH: &str = "MATCH";
+/// Verdict value: at least one output disagrees — the kernel is wrong.
+pub const EQUIVALENCE_DIVERGENT: &str = "DIVERGENT";
+/// Verdict value (default): no CPU comparison was performed in this run.
+pub const EQUIVALENCE_UNMEASURED: &str = "UNMEASURED";
+
+/// Extract the `model_output_equivalence` value from an existing JSON snapshot string.
+///
+/// Returns one of the `EQUIVALENCE_*` constants. Returns `EQUIVALENCE_UNMEASURED` if the
+/// field is absent, unreadable, or carries an unrecognised value — so the caller never has
+/// to special-case the absent-field case.
+///
+/// Hand-rolled for the same reason as [`json_u64`] in `epctl.rs`: no serialiser dependency
+/// at an ABI boundary.
+pub fn extract_equivalence(doc: &str) -> &'static str {
+    let needle = format!("\"{EQUIVALENCE_KEY}\"");
+    let Some(start) = doc.find(&needle) else { return EQUIVALENCE_UNMEASURED };
+    let rest = doc[start + needle.len()..].trim_start();
+    let Some(rest) = rest.strip_prefix(':').map(str::trim_start) else { return EQUIVALENCE_UNMEASURED };
+    let Some(rest) = rest.strip_prefix('"') else { return EQUIVALENCE_UNMEASURED };
+    if rest.starts_with(EQUIVALENCE_MATCH) { return EQUIVALENCE_MATCH; }
+    if rest.starts_with(EQUIVALENCE_DIVERGENT) { return EQUIVALENCE_DIVERGENT; }
+    EQUIVALENCE_UNMEASURED
+}
+
 /// The wire format of [`snapshot`], and the C ABI `OrtEpVulkanGetExecutionCounters` fills in.
 ///
 /// `#[repr(C)]` with `struct_size` and `abi_version` first so a reader can validate before it
@@ -166,11 +213,26 @@ pub fn reset() {
 impl VulkanEpCounters {
     /// The JSON `epctl --check-counters` reads. Hand-rolled because every value is a `u64` and
     /// pulling in a serialiser for eight integers would be the wrong trade at an ABI boundary.
+    ///
+    /// Calls [`to_json_with_equiv`] with `UNMEASURED` as the default verdict. The Python
+    /// comparison harness overwrites that default by calling `write_equivalence_verdict()` after
+    /// running the VulkanEP-vs-CPU comparison.
     pub fn to_json(&self) -> String {
+        self.to_json_with_equiv(EQUIVALENCE_UNMEASURED)
+    }
+
+    /// Emit the counters JSON with an explicit `model_output_equivalence` verdict.
+    ///
+    /// `equiv` must be one of `EQUIVALENCE_MATCH`, `EQUIVALENCE_DIVERGENT`, or
+    /// `EQUIVALENCE_UNMEASURED`. The field is always present so a reader never has to distinguish
+    /// "absent" from "UNMEASURED" — absence and UNMEASURED have the same meaning (R7: absence of
+    /// an instrument is not a negative result), but the explicit value makes the state visible.
+    pub fn to_json_with_equiv(&self, equiv: &str) -> String {
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
-             \"dispatches_executed\": {}\n}}\n",
+             \"dispatches_executed\": {},\n  \
+             \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
             self.subgraphs_live,
@@ -178,6 +240,7 @@ impl VulkanEpCounters {
             self.compute_calls,
             self.compute_failures,
             self.dispatches_executed,
+            equiv,
         )
     }
 
@@ -224,14 +287,29 @@ pub fn dump_if_requested() {
 ///
 /// This exists because the observations are only complete at teardown, and a process that has torn
 /// down cannot print to a test's captured stdout. A file survives the process; a log line does not.
+///
+/// **Verdict preservation (§9.1.3):** Trinity's Python harness writes `model_output_equivalence`
+/// (MATCH or DIVERGENT) to this file during the test, before the session is destroyed. This
+/// function is called at transfer teardown — after the Python comparison but before the process
+/// exits. To avoid overwriting Trinity's verdict with the default UNMEASURED, this function reads
+/// the existing file's verdict first and preserves it in the rebuilt document.
 pub fn dump_observations_if_requested() {
     let Some(path) = std::env::var_os(ENV_COUNTERS_FILE) else {
         return;
     };
+
+    // Preserve any verdict that Trinity wrote during the comparison run.
+    // Default to UNMEASURED if the file is absent or the field is missing.
+    let existing_equiv = std::fs::read_to_string(&path)
+        .ok()
+        .as_deref()
+        .map(extract_equivalence)
+        .unwrap_or(EQUIVALENCE_UNMEASURED);
+
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
     let snap = snapshot();
-    let mut doc = snap.to_json();
+    let mut doc = snap.to_json_with_equiv(existing_equiv);
     // Splice the observation keys in before the closing brace rather than appending after it, so
     // the file stays valid JSON for anything less forgiving than our own reader.
     if let Some(cut) = doc.rfind('}') {
@@ -345,6 +423,8 @@ mod tests {
         let json = snapshot().to_json();
         assert!(json.contains("\"dispatches_executed\": 3"));
         assert!(json.contains("\"compute_failures\": 1"));
+        assert!(json.contains("\"model_output_equivalence\": \"UNMEASURED\""),
+            "to_json() must include UNMEASURED by default — an uncompared run says so explicitly");
 
         // A short buffer gets a correct prefix, not a stomp.
         let mut buf = [0u8; 8];
@@ -366,5 +446,34 @@ mod tests {
 
         reset();
         assert_eq!(snapshot().compute_calls, 0);
+    }
+
+    #[test]
+    fn extract_equivalence_parses_the_three_states() {
+        let match_doc = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
+        let div_doc   = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
+        let unm_doc   = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);
+        // Build a document that physically lacks the field (old snapshot format).
+        // to_json() writes `"model_output_equivalence": "UNMEASURED"` — strip both key and value.
+        let without_field = {
+            let raw = snapshot().to_json();
+            let key_prefix = format!(",\n  \"{EQUIVALENCE_KEY}\"");
+            if let Some(pos) = raw.find(&key_prefix) {
+                // Remove key through the closing quote of the value.
+                let after_key = &raw[pos + key_prefix.len()..];
+                let value_end = after_key.find('\n').unwrap_or(after_key.len());
+                format!("{}{}", &raw[..pos], &after_key[value_end..])
+            } else {
+                raw
+            }
+        };
+
+        assert_eq!(extract_equivalence(&match_doc), EQUIVALENCE_MATCH);
+        assert_eq!(extract_equivalence(&div_doc),   EQUIVALENCE_DIVERGENT);
+        assert_eq!(extract_equivalence(&unm_doc),   EQUIVALENCE_UNMEASURED);
+        // Absence must be treated the same as UNMEASURED (R7: absence ≠ negative).
+        assert_eq!(extract_equivalence(&without_field), EQUIVALENCE_UNMEASURED,
+            "a snapshot without the field predates the verdict; absence = UNMEASURED");
+        assert_eq!(extract_equivalence("{}"), EQUIVALENCE_UNMEASURED);
     }
 }

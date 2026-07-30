@@ -490,6 +490,14 @@ def test_phi35_vulkan_matches_cpu_logits(
     # a missing ONNXRUNTIME_VULKAN_EP_LIB causes a meaningless CPU-vs-CPU comparison.
     used_providers = vk_sess.get_providers()
     if m.EP_NAME not in used_providers:
+        # Write UNMEASURED before failing: no comparison can be performed, so the verdict
+        # is "no answer", consistent with the counters file's default.
+        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+        if counters_path:
+            try:
+                m.write_equivalence_verdict(counters_path, m.EQUIVALENCE_UNMEASURED)
+            except Exception:  # noqa: BLE001
+                pass  # best-effort; file may not exist if EP did not initialise at all
         pytest.fail(
             f"[Device {device_index}] {m.EP_NAME} not in session.get_providers(): "
             f"{used_providers}. ORT fell back to CPU silently — comparison would be "
@@ -521,13 +529,6 @@ def test_phi35_vulkan_matches_cpu_logits(
     print(f"  cpu logit range: [{logits_cpu.min():.4f}, {logits_cpu.max():.4f}]  max|x|={cpu_max_abs:.4f}")
     print(f"  vk  logit range: [{logits_vk.min():.4f}, {logits_vk.max():.4f}]  max|x|={vk_max_abs:.4f}")
 
-    assert vk_max_abs > 0.1, (
-        f"[Device {device_index}] VulkanEP logits are effectively zero "
-        f"(max |logit| = {vk_max_abs:.6f}, cpu max |logit| = {cpu_max_abs:.6f}). "
-        "All-zero output: kernel is dispatched but arithmetic is wrong. "
-        "This is the all-zero logits bug — MatMulNBits kernel produces zeros on GPU."
-    )
-
     # Token-level agreement: top-1 and top-10.
     flat_vk = logits_vk.reshape(-1, logits_vk.shape[-1])
     flat_cpu = logits_cpu.reshape(-1, logits_cpu.shape[-1])
@@ -542,6 +543,42 @@ def test_phi35_vulkan_matches_cpu_logits(
     print(f"  argmax: vk={argmax_vk}  cpu={argmax_cpu}  match={argmax_vk == argmax_cpu}")
     print(f"  top-10 overlap: {top10_overlap}/10")
     print(f"  max|vk-cpu| logit diff: {float(np.abs(logits_vk - logits_cpu).max()):.4f}")
+
+    # §9.1.3 / §10.0: Compute and write model_output_equivalence verdict BEFORE assertions.
+    # The verdict must be written while the vk_sess is still alive (teardown preserves it).
+    # Writing before assertions ensures the verdict is in the file even when the test xfails.
+    #
+    # Verdict rules:
+    #   DIVERGENT — logits non-zero but argmax or top-10 disagrees, OR logits all-zero (Guard B).
+    #   MATCH     — argmax agrees AND top-10 overlap ≥ 5.
+    #   UNMEASURED — EP not in providers (Guard A failed, comparison not performed).
+    #               Written by Guard A branch above; this branch is only reached if Guard A passed.
+    #
+    # R9 self-check: the instrument that goes red if "MATCH means outputs agree" is false
+    # is this test itself (xfail lifts → XPASS → suite errors).
+    if vk_max_abs <= 0.1 or top10_overlap < 5 or argmax_vk != argmax_cpu:
+        verdict = m.EQUIVALENCE_DIVERGENT
+    else:
+        verdict = m.EQUIVALENCE_MATCH
+
+    counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+    if counters_path:
+        try:
+            m.write_equivalence_verdict(counters_path, verdict)
+            print(f"  model_output_equivalence: {verdict} → written to {counters_path}")
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: writing the verdict is best-effort. The counters file may not yet
+            # exist (EP may still be initialising). Log and continue; teardown will write
+            # UNMEASURED if we could not write here.
+            print(f"  WARNING: could not write equivalence verdict: {exc}")
+
+    # Assertions run AFTER verdict write so the verdict is always recorded.
+    assert vk_max_abs > 0.1, (
+        f"[Device {device_index}] VulkanEP logits are effectively zero "
+        f"(max |logit| = {vk_max_abs:.6f}, cpu max |logit| = {cpu_max_abs:.6f}). "
+        "All-zero output: kernel is dispatched but arithmetic is wrong. "
+        "This is the all-zero logits bug — MatMulNBits kernel produces zeros on GPU."
+    )
 
     # Top-10 overlap ≥ 5 (majority agreement).  Top-1 exact match is the stricter gate;
     # both must hold for a correct run on a single-token prefill with empty KV cache.
