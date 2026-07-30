@@ -680,3 +680,29 @@ bindings and every descriptor slot is filled correctly.
 and translate are correct (documented behavior). The fault was in `push_dynamic_kernel`'s
 assumption that `n_inputs + n_outputs` equals the shader's declared binding count.
 
+## Session 23 addendum — KV-cache "unwritten" explained (2026-07-30T08:16:02-07:00)
+
+**Tank's two-bug report (pre-fix):** Tank ran probe_run2.py BEFORE my fix was merged and found:
+- Outputs 1..64 (KV cache) differ bitwise between run 1 and runs 2/3 with identical feeds.
+- Output 0 (logits) exactly 0.0 on runs 2 and 3.
+Coordinator relayed this as two separate bugs.
+
+**Post-fix probe_run2.py (3 runs, both devices):**
+```
+Device 1 (RTX 4060):  BIT-IDENTICAL across all 65 outputs — run 1 vs 2 and run 1 vs 3
+Device 0 (Intel Xe):  BIT-IDENTICAL across all 65 outputs — run 1 vs 2 and run 1 vs 3
+```
+Memory-pattern planner EXCLUDED as a factor. Both observations were one bug manifesting twice.
+
+**Causal chain:** qkv_proj wrote zeros (binding 4 undefined) → CPU attention saw zero QKV →
+attention's internal scratch became dirty on run 1 → on run 2+, ORT arena reuse caused KV outputs
+to read dirty data, appearing "unwritten" rather than zero. The KV cache is entirely CPU-side;
+our EP subgraphs have 1 output each and correctly write it.
+
+**Instruments that would go red if claim is false:**
+- probe_run2.py: any differing output printed
+- phi35_vk_vs_cpu.py: argmax mismatch or top-10 < 10/10
+- EP messenger: validation errors if descriptor binding mismatch recurs
+
+**Decision record:** `switch-kv-cache-explained.md` in main inbox.
+
