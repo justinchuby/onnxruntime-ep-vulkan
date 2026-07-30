@@ -14,17 +14,15 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 
 > **Status: early implementation.** The architecture is settled and written down; the crate
 > scaffolding, the test harness and CI have landed and M0 is in progress. **M0 is not met.** As of
-> 2026-07-29 a single `Add` node **is claimed by the EP and executes on the GPU through ONNX
-> Runtime**, on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060), with `VulkanExecutionProvider` in
-> the profiling JSON and output matching the ORT CPU EP. That is the first result traversing the
-> whole stack, and its scope is exactly one op, **fp32, static shapes, one OS, two devices**.
-> Everything else — every other kernel, every contrib op, all quantized paths, every fused
-> multi-node island, and the legacy barrier backend — is unexecuted; CI has no GPU hardware; and on
-> real hardware the differential suite currently reports 125 failures, every one of them the harness
-> refusing to score a CPU-fallback run as a pass. M0 also requires this on Windows **and** Linux, on
-> a software rasterizer, in CI, under both barrier backends — none of which is done. See
-> [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the full execution status and §10 for the
-> criterion-by-criterion M0 assessment.
+> 2026-07-29 **45 op rows are `Live`** — claimed by the EP and executing on the GPU through ONNX
+> Runtime, with `VulkanExecutionProvider` in the profiling JSON and output matched against the ORT
+> CPU EP — on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060), under **both** barrier backends,
+> agreeing bit-exactly. Every one of those results is **Windows, on local hardware, on one desk**.
+> The Linux lane has never executed a claimed node, the software-rasteriser CI lanes have not run
+> since these changes landed, and CI has no GPU hardware — and M0's own sentence requires all three.
+> Everything else — every contrib op, all quantized paths, and every platform in the table below
+> that is not this machine — is unexecuted. See [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the
+> full execution status and §10 for the criterion-by-criterion M0 assessment.
 
 | | |
 |---|---|

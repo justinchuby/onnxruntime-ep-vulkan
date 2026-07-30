@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T16:00:55-07:00 (**`Add` executes through ORT on two devices — M0 criterion 2 MET**, §9.1.2, §10 M0; **§7.2's R5 rationale corrected — the lavapipe `supportedStages = 0` premise was our own probe bug**, decision unchanged and re-grounded on §7.0; **§10.0.1 R6 — right decision, reasonable steps, evidence manufactured by our own tooling**; **M0 criterion 8 amended — a skip does not satisfy it**, non-zero executed-dispatch count now required; §7.9 rules recorded as enforced; M0 still NOT met) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening — builder source is intent, the model file is the fact**; **metric of record is now the triple `(coverage, island_count, largest_island_flops)`** — §10.0, §9.2; **T3 demonstration target is Phi-3.5**, §10.0.2, with the T4 one-island criterion; **§10.0.1 R5 — four of five census errors were permissive**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch — §9.1.2 rewritten**, one kernel on two desktop GPUs, not via ORT; **M0 assessed criterion by criterion — NOT met**, §10 M0; **§7.9 capability probing must distinguish "not supported" from "not asked correctly"**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed to the ORT GenAI producer + R3 added) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**; **OQ-M6 accelerant ruling — estimates hold**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 shape confirmed + **item 7, fingerprint self-audit**; `retain_viable` placement fixed in §5.4; eleven contrib ops; OQ-16 raised; **quantized-path oracle empirically validated — §9.1.1**; **§10.0.1 R1**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-29T19:42:07-07:00 (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**, §10 M0; **45 op rows `Live` through ORT**, §9.1.2; **criterion 3 ruled *not* discharged — a validation lane needs a positive control**, because "no errors surfaced" is what a disabled layer reports; **criterion 9 moved to not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, and *derive, do not declare*; **§8.7 — template evidence covers a different expression, never a different path**; M0 still NOT met, everything green is green on one desk) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, the lavapipe premise was our own probe bug, decision re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening — builder source is intent, the model file is the fact**; **metric of record is the triple `(coverage, island_count, largest_island_flops)`** — §10.0, §9.2; **T3 demonstration target is Phi-3.5**, §10.0.2; **§10.0.1 R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch — §9.1.2**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 amended to *producer **at version***; §10.0.1 R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 coverage is producer-relative**; **§8.6 external crate evaluations**; **§10.0.2 T3 begins with `ai.onnx::Attention`**; §10.0.1 R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 resolved — §7.8**; **OQ-M6 accelerant ruling**, §8.4; **OQ-3 resolved — §6.4**, reserved-VA handle registry, no BDA; C2 **item 7**; `retain_viable` in §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **§10.0.1 R1**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -1821,6 +1821,39 @@ position in the process (we are a guest inside ORT's address space, working from
 view) rather than a maturity judgement that would be obsolete in six months, and it names the
 trigger that would reverse it. Deferrals in this project should look like that one.
 
+### 8.7 What template evidence covers — a different *expression*, never a different *path*
+
+*Added 2026-07-29T19:42:07-07:00, adopting Mouse's sharpening (`OP_COVERAGE.md` §7.1.3) as a design
+rule because it constrains what §8.4 A2's template infrastructure is allowed to buy.*
+
+§8.4 A2 makes the kernel-template infrastructure a milestone deliverable on the argument that ~87
+tier-1 ops are served by ~5 templates. That argument has an obvious and dangerous corollary — *if
+one instance of a template is verified, its siblings are verified* — and the corollary is only
+sometimes true. The boundary:
+
+> **Template evidence covers a different expression inside an already-exercised code path. It never
+> covers a different code path.**
+
+The case that produced it: the attribute-carrying activations (`Elu`, `LeakyRelu`, `Selu` and
+friends) satisfy every stated condition for promotion by template evidence, and Mouse declined to
+promote them, because they introduce a **push-constant tail** — a new code path, not a new
+expression inside an exercised one. **A wrong offset for `params[0]` is invisible to every currently
+`Live` op**, since they all push zeros there and read none of them. The verified ops cannot fail in
+the way the new ops would fail, so their greenness carries no information about it.
+
+**The operational test, applied before any promotion by template evidence:** *what could be wrong
+with the new op that the exercised ops are structurally incapable of detecting?* If the answer is
+"nothing", the template evidence is real. If it names anything — a new push-constant, a new binding,
+a new descriptor layout, a new dispatch geometry, a new dtype width — that thing needs its own first
+execution, and the op is `Staged` until it has one.
+
+**Why this belongs in the design record and not only in `OP_COVERAGE.md`.** Template leverage is the
+whole basis of the M1 estimate; it is therefore the place where the project is most tempted to
+convert *structural similarity* into *evidence*, and §1.5's split (what we claim vs what we have
+verified) is exactly what would be eroded. It is also the same shape as R7's "derive, do not
+declare" one level up: **similarity is not a measurement**, and a status derived from a family
+resemblance is a declaration wearing a derivation's clothes.
+
 ---
 
 ## 9. Testing and benchmarking strategy
@@ -1917,63 +1950,58 @@ runtime assertion that an unregistered contrib op declines like any other unregi
 constraint checked only statically can be satisfied by code that never runs; a constraint checked
 only at runtime can be reintroduced in a path no test reaches. C1 now has neither hole.
 
-#### 9.1.2 Execution status — what has actually run, as of 2026-07-29T16:00:55-07:00
+#### 9.1.2 Execution status — what has actually run, as of 2026-07-29T19:42:07-07:00
 
 This document describes a design and a partially-implemented crate. It must not be read as
 describing a working GPU pipeline, and the following is stated here so that no reader has to infer
-it. **This section changed materially twice on 2026-07-29 and both changes are small — read the
-boundaries, not the headline.**
+it. **This section changed materially three times on 2026-07-29 — read the boundaries, not the
+headline.**
 
-- **`Add` now executes on the GPU through ONNX Runtime.** *2026-07-29T16:00:55-07:00.* The
-  coordinator verified `test_add_is_claimed` on **both** local devices — Intel Iris Xe (1.4.309) and
-  NVIDIA RTX 4060 (1.4.325): `Add` is claimed, the fused node runs via
-  `Compile` → `OrtNodeComputeInfo` → dispatch on ORT-owned tensors, the profiling JSON attributes it
-  to `VulkanExecutionProvider`, and the output matches the CPU EP. **This is the first result in the
-  project that traverses the whole stack**, and it retires the "does the ABI seam carry a real
-  tensor" risk that no host-side test could touch. `Add` is `Live` for **fp32, static shapes only**.
-- **What that is not.** It is **one op**, in **one dtype**, at **static shape**, on **one OS**, on
-  **two desktop GPUs**, in **one lane** (default barrier backend). It is not a model, not a fused
-  island of more than one node, and not a claim about any other op.
-- **The earlier standalone dispatch** — `add_f32_dispatches_end_to_end`, 1024 f32 against a CPU
-  reference, run from a Rust integration test with `VK_LAYER_KHRONOS_validation` and **zero
-  validation errors on either device** — remains the record for the innermost layer. The Intel
-  result is the more informative half: it is the stricter implementation, which makes it a
-  spec-conformance oracle rather than a second sample.
-- **Still entirely unexecuted:** every other kernel, every contrib op, all quantized paths, every
-  fused multi-node island, and the legacy barrier backend (§7.5 item 5 — see the M0 criterion 8
-  note, which is currently *skipping*, not passing). **Trinity's differential suite has run against
-  a real device for exactly one op.** CI still has no hardware.
-- **125 failures on real hardware, and every one is the harness refusing a vacuous pass.** The full
-  suite on this machine reports *"VulkanExecutionProvider did not execute any node of this model —
-  the CPU-match check would be a vacuous pass"* for every model whose ops are not yet `Live`. **A
-  weaker harness would have reported ~240 green today**, because a graph that silently fell back to
-  CPU matches the CPU EP perfectly. That is this section's discipline implemented in the test layer
-  rather than asserted in prose, and it is worth more than the prose: **a differential test that
-  does not verify the EP ran is a test of ORT, not of us.**
-- **Trinity's lavapipe lanes remain the only *CI* place anything executes on a device**, on a
-  software rasterizer, which §9.1 qualifies as a smoke test rather than a correctness claim. The two
-  local GPUs are a development loop, not coverage: nothing they run is recorded, gated, or
-  reproducible by anyone else, and **a result obtained only on this desk is not a result this
-  project has.** That line is now *more* load-bearing, not less — two desktop GPUs say nothing about
-  Adreno, Mali or MoltenVK, and **OQ-12 is completely untouched by this result** (§11.1).
-- Every "green" count reported to date — 227 at the `cbb1a0d` level, ~300 at the 2026-07-29 level,
-  206 collected / 8 passing in the no-EP configuration — still measures **host-side logic**: claim
-  predicates, registry invariants, the layering lint, decline paths, and the harness itself. Two of
-  those tests now reach a device; the rest do not.
+- **45 op rows are `Live` and executing on the GPU through ONNX Runtime**, up from one that morning.
+  Coordinator-verified on **both** local devices, with identical results on each: `test_elementwise`
+  33 passed / 3 failed, `test_op_table` 49 passed / 28 failed. The claimed nodes run via
+  `Compile` → `OrtNodeComputeInfo` → dispatch on ORT-owned tensors, attributed to
+  `VulkanExecutionProvider` in the profiling JSON, matched against the ORT CPU EP.
+- **Both barrier backends have now executed, and they agree bit-exactly.** Barrier parity: 46 passed
+  / 28 skipped (the skips are `Staged` rows) on each device, under the default `synchronization2`
+  path and under `ep.force_legacy_barriers=1`. **This is the first execution of the legacy backend
+  we carry for ~31% of Android** (§7.3), and until it ran, that entire compatibility argument was
+  untested code.
+- **Intel and NVIDIA produce identical results across all of it.** The stricter implementation
+  raising nothing extra is the informative half: it is evidence that these kernels are not leaning
+  on anything the specification leaves undefined. It is not evidence about Adreno, Mali or MoltenVK.
+- **What this is not.** Windows only. Real hardware only. **This desk only.** The Linux lane has
+  never executed a claimed node, the lavapipe CI lanes have not run since these changes landed, and
+  CI still has no GPU hardware. **A result obtained only on this desk is not a result this project
+  has** — that line was written when the news was thin and it applies unchanged now that the news is
+  good, which is the only way a standard is worth anything.
+- **Still entirely unexecuted:** every contrib op, all quantized paths, every fused multi-node
+  island beyond what the elementwise tests build, and every platform other than Windows-on-this-
+  machine. 28 rows remain `Staged` by design.
+- **The failures are load-bearing and must not be tidied away.** The differential harness refuses to
+  score a CPU-fallback run as a pass — *"VulkanExecutionProvider did not execute any node of this
+  model — the CPU-match check would be a vacuous pass"*. **A weaker harness would report every one
+  of those as green**, because a graph that silently falls back to CPU matches the CPU EP perfectly.
+  That refusal is this section's discipline implemented in the test layer rather than asserted in
+  prose, and it is worth more than the prose: **a differential test that does not verify the EP ran
+  is a test of ORT, not of us.** It has already paid for itself once — see §10.0.1 R7, where a
+  declared liveness flag would have bought exactly such a vacuous pass on `Add-i32`.
+- Every "green" count reported to date at the ~300 level still measures mostly **host-side logic**:
+  claim predicates, registry invariants, the layering lint, decline paths, and the harness itself.
+  A growing minority now reach a device.
 
-**The failure mode has inverted, and this section's job with it.** Until 2026-07-29 the risk this
-disclosure guarded against was **overclaiming execution we had not performed**. From 2026-07-29 the
-risk is the opposite shape: letting *"`Add` runs through ORT on two GPUs"* quietly stand in for
-*"the EP works"*. The gap between those two statements is the entire project — 120 op rows, every
-quantized path, every fused island, and every platform that is not this desk. Anyone citing the
-result must state the qualifiers with it — one op, fp32, static shape, one OS — or they are citing
-something else.
+**The failure mode has inverted twice, and this section's job with it.** Until 2026-07-29 the risk
+was **overclaiming execution we had not performed**. It then became letting *"a kernel dispatches"*
+stand in for *"the EP works"*. It is now the subtler version of the same thing: letting **45 Live
+rows on two GPUs on one desk** stand in for *coverage*. The gap is every contrib op, every quantized
+path, Linux, CI, and every platform in `PLATFORMS.md` we have never touched. Anyone citing today's
+numbers must state the qualifiers — Windows, local hardware, no CI, 45 of ~174 inventoried rows.
 
 The rule this encodes, and it applies to every document in `docs/`: **a test count is a claim about
 what was executed, and it must not be allowed to imply more execution than occurred.** The same
 discipline that produced the RAI-003 platform disclosure in `README.md` and Link's
 unverified-usability statement in `PLATFORMS.md` §8 applies to our own test numbers, and it applies
-hardest to good news. **The 125 failures are the healthiest number in this section.**
+hardest to good news.
 
 ### 9.2 Benchmarking — Niobe
 
@@ -2250,7 +2278,50 @@ a written rationale. **The characteristic failure of this project is checking a 
 description of an artifact rather than the artifact** (§8.5) — R6 is the version where the
 description was generated by us, which is the hardest version to notice and the easiest to trust.
 
+**R7 — our instruments fabricate negatives, and a negative is the answer nobody questions.**
+*Added 2026-07-29T19:42:07-07:00. R6's twin: there the tooling manufactured a number, here it
+manufactured a **negative result**, which is worse because a negative asks for no explanation.*
 
+The barrier-parity criterion (M0 #8) skipped every case while criterion 2's test passed on the same
+machine. The anatomy was three layers, each **caused by the previous** and each individually
+reasonable:
+
+1. **A dead instrument read as a claim result.** `claim_log::path()` cached the environment variable
+   in a `OnceLock`. A pytest process loads the EP **once** and runs hundreds of tests while setting
+   that variable **per call**, so the first decision latched `None` and every later probe found no
+   file — and a missing file was read as *"not claimed"*. The instrument was not merely wrong, it
+   was switched off, and being switched off is indistinguishable from a true negative.
+2. **A workaround around a phantom.** Believing the probe unimplemented, the harness moved to
+   profiling JSON, which reaches `Compile` — and hit a hard access violation on Intel. A second
+   failure, investigated on its own terms, caused entirely by the first.
+3. **A declaration that recreated the hazard it replaced.** The harness then used a hand-declared
+   `live` flag: a duplicate of `OpStatus::Live` in a second language, and **per-op while our claims
+   are per-form**. `Add-i32` carried `live=True` against an f32-only predicate, so parity would have
+   compared two CPU-fallback runs and agreed trivially — **the vacuous pass the flag existed to
+   prevent** (§9.1.2).
+
+**Two rules, both binding beyond the incident.**
+
+- **Absence of an instrument must not read as a negative result.** A probe that cannot find its data
+  **raises**; it does not return `False`. `is_vulkan_claimed` with no claim log is an error, not a
+  "no". This is §7.9 rule 1 (*not determined* is a third state) applied to the test harness rather
+  than to the capability probe, and it is the **third distinct layer** at which the same confusion
+  has bitten: device capabilities, the claim probe, and lavapipe's `supportedStages`.
+- **Derive, do not declare** (Mouse's formulation, adopted as a rule of record). Any fact the code
+  already knows is **computed from the code**, never restated in a second place — harness liveness
+  now comes from `epctl --dump-capabilities --json`, **per form**, because our claims are per form.
+  A hand-written duplicate of a machine-known fact is a fork that drifts, and it drifts in the
+  permissive direction (R5): a stale `live=True` buys a vacuous pass, a stale `live=False` merely
+  skips.
+
+**Why layer 2 is the part worth remembering.** Layer 1 was a bug. Layers 2 and 3 were *competent
+engineering applied to a false premise*, and each made the system worse — the workaround introduced
+a crash, and the workaround's workaround reintroduced the original hazard in a form that would have
+produced green numbers. **When a fix produces a second, unrelated-looking failure, suspect the
+diagnosis before extending the fix.** The cost of a fabricated negative is never the negative; it is
+everything built on top of it.
+
+**R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
 
@@ -2409,41 +2480,62 @@ Binding constraints:
    makes the reconciliation checkable rather than asserted.
 9. Both sibling docs and this one are consistent; §12 lists every divergence.
 
-**M0 STATUS ASSESSMENT — 2026-07-29T09:47:45-07:00, updated 2026-07-29T15:02:55-07:00, updated
-2026-07-29T16:00:55-07:00. M0 is NOT met.**
+**M0 STATUS ASSESSMENT — last updated 2026-07-29T19:42:07-07:00. M0 is NOT met.**
 
 Assessed criterion by criterion, because a milestone reported in aggregate is a milestone reported
-dishonestly. `Add` executing through ORT (§9.1.2) is the largest single advance the project has
-made and it moves exactly one criterion, to met.
+dishonestly. Two criteria moved this revision, one of them the criterion that had blocked the
+milestone all day.
 
 | # | Criterion | Status | What remains |
 |---|---|---|---|
 | 1 | build + clippy clean, Windows & Linux | **Met** on Windows; Linux via CI | Nothing; hold it |
-| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **MET — 2026-07-29T16:00:55-07:00** | `test_add_is_claimed` passes on **both** local devices (Intel 1.4.309, NVIDIA 1.4.325), coordinator-verified: `Add` claimed, executed through `Compile`→`OrtNodeComputeInfo`→dispatch on ORT-owned tensors, `VulkanExecutionProvider` in the profiling JSON, output matches the CPU EP. Scope of the claim: **fp32, static shapes, one op**. Not yet demonstrated on the lavapipe CI lanes, which is criterion 3's and CI's business, not this one's |
-| 3 | Validation layers clean in the debug lane | **Partially met** | Zero errors on both local GPUs for the standalone dispatch. The ORT-mediated path now exists and must be run under the validation layer in the debug lane, and in CI on lavapipe, before this closes |
+| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **Met** — 2026-07-29T16:00:55-07:00 | Claimed, executed through `Compile`→`OrtNodeComputeInfo`→dispatch on ORT-owned tensors, `VulkanExecutionProvider` in the profiling JSON, matching the CPU EP, on both local devices. Now 45 rows `Live` |
+| 3 | Validation layers clean in the debug lane | **Partially met — and blocked on a positive-control, not on more running** | The ORT-mediated path ran with `ONNXRUNTIME_EP_VULKAN_VALIDATE=1` on both devices with **no errors surfaced**. That is one word short of the criterion: *no errors surfaced* is what a **disabled** validation layer also reports. See the ruling below. Needs (a) proof the layer was loaded and reporting, (b) the same on the lavapipe CI lanes |
 | 4 | No-ICD machine advertises zero devices, session runs on CPU | **Met** — enforced and tested | Nothing |
 | 5 | Shader-less build advertises zero devices and claims nothing (§7.8 condition 3) | **Met** — enforced and tested | Nothing |
 | 6 | `CLAIM_DEBUG=1` prints per-op decline reasons | **Met** | Nothing |
 | 7 | Layering lint in CI, fails a planted violation incl. a planted `cmd_pipeline_barrier` | **Met** | Nothing |
-| 8 | Full suite passes twice per lane, default and `force_legacy_barriers=1`, identical results, **with a non-zero executed-dispatch count in each lane** | **Not met — and currently *skipping*, which is worse than failing** | The barrier-parity test declares `Add` "not yet Ready (did not claim this node form)" while criterion 2's test passes on the same machine: **the two tests build different node forms**. Nothing has yet exercised the legacy barrier backend we carry for ~31% of Android (§7.3). Mouse + Trinity to reconcile; the amended criterion now requires the executed count |
-| 9 | Sibling docs consistent; §12 lists every divergence | **Partially met** | §7.2's R5 rationale was corrected this revision and `PLATFORMS.md` LVP2 / `ENGINE.md` / `caps.rs` comments still carry the false premise (§10.0.1 R6). Re-check at declaration |
+| 8 | Full suite twice per lane, default and `force_legacy_barriers=1`, identical results, **non-zero executed-dispatch count in each lane** | **MET on the local lane — 2026-07-29T19:42:07-07:00** | 46 passed / 28 skipped (`Staged` rows) under **both** backends on **each** device, bit-exact agreement, coordinator-verified. The amended executed-count requirement is satisfied: this is the **first execution of the legacy backend** in the project's history. Open: the same twice-per-lane run on the **lavapipe CI lanes**, which is criterion 1's and CI's territory rather than a defect in this criterion |
+| 9 | Sibling docs consistent; §12 lists every divergence | **Not met** | **`PLATFORMS.md` still carries §7.2's false premise** — quirk LVP2 is recorded as *"observed in CI, 2026-07-29"* and as *"the reason §7.2 removed subgroup BASIC from the device gate"*. `ENGINE.md` and the `caps.rs` / `instance.rs` comments **have** been corrected. Owner: Link (§10.0.1 R6) |
 
-**Seven met, two partial, one not met — and criterion 8 is the one that defines what M0 was for.**
-M0's sentence is *"a stock ORT loads the plugin, enumerates a Vulkan device, runs a graph containing
-a single `Add` node on that device, and the output matches the ORT CPU EP within tolerance — on both
-Windows and Linux, on a software rasterizer, in CI"*. **The first four clauses are now satisfied on
-two local devices.** What remains is the tail of that sentence, and the tail is not decoration:
-*on both Windows and Linux, on a software rasterizer, in CI*, plus the barrier-parity lane that
-criterion 8 requires. **A result on this desk is not a result this project has** (§9.1.2), and that
-line applies to the best news we have had as much as it applied to the thinnest.
+**RULING ON CRITERION 3 — it does not discharge, and the reason is R7, not pedantry.** *"Ran with
+validation enabled and no errors surfaced"* is the same observation a run with the layer **not
+loaded** produces. That is precisely R7's fabricated negative and §7.9's *"a failed probe is
+indistinguishable from a device with no capabilities"*, and it would be incoherent to write both of
+those rules this week and then accept a silent instrument as a clean result. **Criterion 3 closes
+when the validation lane carries a positive control**: either a deliberately-planted violation that
+the lane catches and fails on (the mechanism criterion 7 already uses for the layering lint), or the
+layer's own startup banner asserted in the log. Cheap, one-off, and it converts *"we saw nothing"*
+into *"we would have seen something"*. Owners: Switch and Trinity.
 
-**What specifically remains, in order:** reconcile the two node forms so that the barrier-parity
-lane runs rather than skips, and land the executed-dispatch count so the lane can never silently
-skip again (Mouse + Trinity); run the ORT-mediated path under the validation layer in the debug lane
-(Switch + Trinity); get `test_add_is_claimed` green on both lavapipe CI lanes, on Windows and Linux
-(Link + Trinity); then the twice-per-lane barrier parity with identical numerics. **When those four
-land I will declare M0 without hesitation** — the criteria were written down in advance precisely so
-that declaring it needs no judgement call.
+**Seven met, one partial, one not met.** M0's sentence is *"a stock ORT loads the plugin, enumerates
+a Vulkan device, runs a graph containing a single `Add` node on that device, and the output matches
+the ORT CPU EP within tolerance — **on both Windows and Linux, on a software rasteriser, in CI**"*.
+Every clause up to the dash is satisfied, on two vendors, under both barrier backends, and with 44
+op rows more than the milestone asked for. **Everything after the dash is untouched.** The Linux
+lane has never executed a claimed node; the lavapipe lanes have not run since these changes landed;
+CI has no GPU hardware and never will under the current plan, which is why the software-rasteriser
+clause exists.
+
+**I am not declaring M0, and I want the reason on record in the strongest available form.**
+Everything green today is green **on this desk** — my own §9.1.2 standard, written when the news was
+thin. A standard that yields the first time it costs something was never a standard. The
+software-rasteriser and CI clauses were put into M0's sentence deliberately, on the first day,
+precisely because local hardware success is the easiest thing in this project to obtain and the
+least transferable thing to claim. **The work is nearly done; the milestone is not the work, it is
+the evidence that the work reproduces off this machine.**
+
+**What specifically remains, in order — three items, all small, none skippable:**
+1. **Positive control on the validation lane** (Switch + Trinity) — criterion 3.
+2. **`PLATFORMS.md` LVP2 re-observed with the fixed probe and restated or retracted** (Link) —
+   criterion 9. This one is a documentation fix on a wrong premise we ourselves introduced, and it
+   would be the worst possible thing to leave open while declaring a milestone.
+3. **The CI lanes run**: `test_add_is_claimed`, the elementwise suite and the twice-per-lane barrier
+   parity green on lavapipe, on **Windows and Linux** (Link + Trinity). This is the whole tail of
+   M0's sentence and it is the only remaining item of substance.
+
+When those three land, M0 is met and I will say so in one line without qualification — which is what
+writing the criteria down in advance was for.
 
 ### M1 — "A useful elementwise EP" (`OP_COVERAGE.md` tier T1 — 87 ops)
 

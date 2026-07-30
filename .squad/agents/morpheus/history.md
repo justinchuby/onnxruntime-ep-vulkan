@@ -347,3 +347,59 @@ the harness refusing to score a CPU-fallback run as a pass. A weaker harness wou
 ~240 green. **A differential test that does not verify the EP ran is a test of ORT, not of us** —
 Trinity implemented in the harness what §9.1.2 had only asserted in prose, and the implementation is
 worth more than the prose.
+
+---
+
+## 2026-07-29T19:42:07-07:00 — a standard that yields the first time it costs something was never a standard
+
+**I did not declare M0 on the best day the project has had.** 45 op rows live through ORT, both
+barrier backends executed and bit-exact on two vendors, the legacy path that carries ~31% of Android
+exercised for the first time in the project's history. Every clause of M0's sentence up to the dash
+is satisfied. Everything after the dash — *on both Windows and Linux, on a software rasteriser, in
+CI* — is untouched, and all of today's results are on one desk. **My own §9.1.2 line was written when
+the news was thin, and its whole value is that it applies unchanged when the news is good.** The
+CI and software-rasteriser clauses went into M0's sentence on day one precisely because local
+hardware success is the easiest result here to obtain and the least transferable to claim.
+
+**Writing exit criteria in advance is what makes good news cheap to report honestly.** Two criteria
+moved this revision, one to met and one *down* to not met, and neither required a judgement call. I
+could downgrade criterion 9 on a defect this document introduced without it feeling like a
+concession, because the criterion was already written.
+
+**"No errors surfaced" is what a disabled instrument reports.** I declined to close criterion 3 on a
+validation run that raised nothing, and required a **positive control** — a planted violation the
+lane catches, or the layer's startup banner asserted. The general rule: **a clean result from an
+instrument whose liveness was not established is not a result.** Converting "we saw nothing" into
+"we would have seen something" is nearly free and is the only version that carries information. I
+had written two rules of exactly this shape this week (§7.9's failed probe, R7's dead claim log);
+accepting a silent validation layer days later would have made both of them decorative.
+
+**Our instruments fabricate negatives, and a negative asks for no explanation.** R7. A `OnceLock`
+cached the claim-log path, a pytest process set the variable per-call, and a missing file read as
+"not claimed" — a dead instrument returning a plausible answer.
+
+**The lesson was not layer 1, it was layer 2.** Layer 1 was a bug. Layers 2 and 3 were **competent
+engineering applied to a false premise**, and each made things worse: the workaround hit an access
+violation, and the workaround's workaround (a hand-declared per-op `live` flag against per-form
+claims) would have bought exactly the vacuous pass it was introduced to prevent. **When a fix
+produces a second, unrelated-looking failure, suspect the diagnosis before extending the fix.** The
+cost of a fabricated negative is never the negative; it is everything built on top of it.
+
+**Derive, do not declare.** Any fact the code already knows must be computed from the code, never
+restated in a second language — and at the same granularity the code uses. The `live` flag was
+per-op while our claims are per-form, which is how `Add-i32` carried `live=True` against an f32-only
+predicate. A hand-written duplicate of a machine-known fact is a fork, and it drifts permissively:
+stale `True` buys a pass, stale `False` merely skips. R5's asymmetry again.
+
+**Similarity is not a measurement.** §8.7, from Mouse declining to promote the attribute-carrying
+activations despite their satisfying every stated condition: a push-constant tail is **a new code
+path, not a new expression inside an exercised one**, and a wrong `params[0]` offset is invisible to
+every live op because they all push zeros there and read none of them. The operational test I wrote
+down: *what could be wrong with the new op that the exercised ops are structurally incapable of
+detecting?* Template leverage is the basis of the M1 estimate, which makes it the place where this
+project is most tempted to convert structural similarity into evidence.
+
+**Corrections must be chased to every file that inherited them, or they are not corrections.** §7.2's
+false lavapipe premise reached `PLATFORMS.md` as an *observed device fact*. `ENGINE.md` and the Rust
+comments were fixed; LVP2 was not, so criterion 9 is not met. Stopping a correction at the file where
+it was noticed is the exact failure R6 exists to name.
