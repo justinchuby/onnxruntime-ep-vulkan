@@ -33,18 +33,28 @@
 //
 // Descriptor set 0 holds the inputs in order followed by the single output, per `ENGINE.md` §5.2.
 //
-// # Byte-typed tensors
+// # Sub-word tensors — `bool`, `uint8` **and `float16`**
 //
-// ONNX stores `bool` and `uint8` as one byte per element and the baseline capability set does not
-// include `storageBuffer8BitAccess` (`ENGINE.md` §4.1), so those tensors are addressed as packed
-// `uint` words. Loads shift and mask. Stores use `atomicAnd` + `atomicOr` on **disjoint bit lanes**
-// of the shared word, which is race-free in any interleaving precisely because the lanes are
-// disjoint: each invocation only ever clears and sets the eight bits belonging to its own element.
+// ONNX stores `bool` and `uint8` as one byte per element and `float16` as two, and the baseline
+// capability set (`ENGINE.md` §4.1) includes neither `storageBuffer8BitAccess` nor
+// `storageBuffer16BitAccess`. All three are therefore addressed as packed `uint` words. Loads
+// shift and mask (or `unpackHalf2x16`). Stores use `atomicAnd` + `atomicOr` on **disjoint bit
+// lanes** of the shared word, which is race-free in any interleaving precisely because the lanes
+// are disjoint: each invocation only ever clears and sets the bits belonging to its own element.
+//
+// **Why f16 is packed rather than typed.** `SCALAR_T = float16_t` compiles and is more readable,
+// but it makes the SPIR-V declare `OpCapability StorageBuffer16BitAccess`, which is a *device
+// feature* that must be enabled at `vkCreateDevice`. The engine's feature chain carries only
+// `synchronization2`, so every such module was unloadable — and a graph that is 96 nodes of f16
+// `Mul` and `Sigmoid` is precisely the graph we exist to run. `unpackHalf2x16`/`packHalf2x16` are
+// core GLSL 4.2 and need no feature at all, which is the same trade `q_gemv.comp` already makes
+// and the reason its f16 path works today. Arithmetic is in `float` either way, so nothing is
+// lost but a cast.
 //
 // This imposes one requirement on the allocator, stated here because it is invisible from the Rust
-// side: **a buffer holding a byte-typed tensor must be allocated and bound rounded up to a
-// multiple of 4 bytes**, since the last word is written whole. Any sane allocator alignment
-// satisfies this; it is written down so it cannot be broken silently.
+// side: **a buffer holding a sub-word tensor must be allocated and bound rounded up to a multiple
+// of 4 bytes**, since the last word is written whole. Any sane allocator alignment satisfies this;
+// it is written down so it cannot be broken silently.
 
 #ifndef INDEXING_GLSL
 #define INDEXING_GLSL
@@ -56,15 +66,13 @@
 // -- element type mapping -------------------------------------------------------------------
 //
 // `SCALAR_T` arrives as a -D define and is the *storage* type. `COMPUTE_T` is what the op
-// arithmetic runs in: f16 tensors are stored as `float16_t` but computed in `float`, which costs
-// nothing on any GPU that supports 16-bit storage and avoids depending on f16 overloads of the
-// transcendental builtins.
+// arithmetic runs in. Sub-word types (`bool`, `uint8`, `float16`) are stored packed in `uint`
+// words and carry `SCALAR_T = uint`; see the header note on why f16 is packed rather than typed.
 
 #if defined(DTYPE_F16)
-#extension GL_EXT_shader_16bit_storage : require
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #define COMPUTE_T float
 #define EW_FLOAT 1
+#define EW_PACKED_HALF 1
 #elif defined(DTYPE_F32)
 #define COMPUTE_T float
 #define EW_FLOAT 1
@@ -136,6 +144,10 @@ uint ew_index(uint input_index, uint linear) {
 #define EW_DEFINE_LOAD_BYTE(FN, BUF)                                                              \
     uint FN(uint i) { return (BUF.data[i >> 2u] >> ((i & 3u) * 8u)) & 0xFFu; }
 
+// Load an element of a half-packed (`float16`) buffer, promoted to `float`.
+#define EW_DEFINE_LOAD_HALF(FN, BUF)                                                              \
+    float FN(uint i) { return unpackHalf2x16(BUF.data[i >> 1u])[i & 1u]; }
+
 // Store a COMPUTE_T value into a `SCALAR_T`-typed buffer.
 #define EW_DEFINE_STORE(FN, BUF)                                                                  \
     void FN(uint i, COMPUTE_T v) { BUF.data[i] = SCALAR_T(v); }
@@ -147,6 +159,19 @@ uint ew_index(uint input_index, uint linear) {
         uint shift = (i & 3u) * 8u;                                                               \
         atomicAnd(BUF.data[word], ~(0xFFu << shift));                                             \
         atomicOr(BUF.data[word], (v & 0xFFu) << shift);                                           \
+    }
+
+// Store one `float16` lane into a packed buffer. Same disjoint-lane argument as the byte store:
+// the two halves of a word belong to two different invocations, and neither touches the other's
+// sixteen bits. `packHalf2x16` performs the round-to-nearest-even conversion, so the result is
+// bit-identical to what the CPU EP writes for any value it can represent.
+#define EW_DEFINE_STORE_HALF(FN, BUF)                                                             \
+    void FN(uint i, float v) {                                                                    \
+        uint word = i >> 1u;                                                                      \
+        uint shift = (i & 1u) * 16u;                                                              \
+        uint bits = packHalf2x16(vec2(v, 0.0)) & 0xFFFFu;                                         \
+        atomicAnd(BUF.data[word], ~(0xFFFFu << shift));                                           \
+        atomicOr(BUF.data[word], bits << shift);                                                  \
     }
 
 #endif // INDEXING_GLSL

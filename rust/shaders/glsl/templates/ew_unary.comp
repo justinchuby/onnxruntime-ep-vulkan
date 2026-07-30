@@ -26,9 +26,12 @@ layout(local_size_x_id = 0, local_size_x = 256) in;
 
 // -- bindings ---------------------------------------------------------------------------------
 
-#ifdef EW_PACKED_BYTES
+#if defined(EW_PACKED_BYTES)
 layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
 EW_DEFINE_LOAD_BYTE(load0, in0)
+#elif defined(EW_PACKED_HALF)
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_HALF(load0, in0)
 #else
 layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
 EW_DEFINE_LOAD(load0, in0)
@@ -37,6 +40,9 @@ EW_DEFINE_LOAD(load0, in0)
 #if defined(EW_BOOL_RESULT) || defined(EW_PACKED_BYTES)
 layout(set = 0, binding = 1) buffer Out { uint data[]; } outb;
 EW_DEFINE_STORE_BYTE(store_out, outb)
+#elif defined(EW_PACKED_HALF)
+layout(set = 0, binding = 1) buffer Out { uint data[]; } outb;
+EW_DEFINE_STORE_HALF(store_out, outb)
 #else
 layout(set = 0, binding = 1) writeonly buffer Out { SCALAR_T data[]; } outb;
 EW_DEFINE_STORE(store_out, outb)

@@ -2116,6 +2116,121 @@ form.
 
 ---
 
+### 7.6 The fp16 elementwise path — the second gate, and two bugs it was hiding (2026-07-30)
+
+§7.5.5 named a second gate behind `dynamic-shape`: with the symbolic dims pinned, 97 nodes of
+Phi-3.5 declined on **`dtype`** — `Mul`×64 and `Sigmoid`×32 at f16, `Sub`×1 at i64. Those 96 f16
+nodes are now claimed. The `Sub` is i64 and remains declined; that is correct, not pending.
+
+This section records the work because *how* the gate was shut matters more than that it opened.
+
+#### 7.6.1 The claim narrowing was hardcoded where the evidence already lived
+
+The elementwise rows advertise `NUMERIC`/`FLOAT` capability sets, and the build pipeline was already
+emitting f16 SPIR-V for every one of them. The claim was nevertheless f32-only, because the
+predicate called a helper literally named `only_f32`. The evidence list `EXERCISED` — the record of
+which `(op, dtype)` pairs have actually run against the CPU oracle on a device — sat beside it and
+was consulted by nothing in the claim path.
+
+Two sources of truth for the same question, and the weaker one won. Replaced by
+`only_proved_dtypes`, which **reads `EXERCISED` directly** (falling through `TEMPLATE_LIVE` to the
+representative op). The change is semantics-preserving on introduction, because every live row was
+listed at f32 and nothing else. Its value is forward: widening a claim is now the *single* act of
+adding a differential result to the evidence list, and the two can no longer disagree, because
+there is only one of them.
+
+**Rule.** A predicate that narrows a claim must derive the narrowing from the evidence, not restate
+it. A restated narrowing is a copy that will drift, and drift in this direction is invisible: it
+declines nodes we can serve, which no test fails on.
+
+#### 7.6.2 Bug 1 — every f16 shader required a device feature the engine never enables
+
+`indexing.glsl` defined `SCALAR_T = float16_t` under `GL_EXT_shader_16bit_storage`. `spirv-dis`
+on `ew_binary_mul_f16.spv` shows the consequence: `OpCapability StorageBuffer16BitAccess`. The
+engine's `VkDeviceCreateInfo` feature chain carries **only `synchronization2`**. Every f16 module
+in the binary was therefore unloadable on every device we support.
+
+Nothing had ever failed, because nothing had ever asked a device to load one — the claim was
+f32-only, so the f16 variants were compiled, embedded, shipped and never bound. The census reported
+the resulting nodes as declining on `[dtype]`: true, and completely uninformative about the fact
+that the alternative would not have worked either.
+
+**Fix:** f16 becomes a *packed* storage path — `uint` buffers with `unpackHalf2x16`/`packHalf2x16`,
+which are core GLSL 4.2 and require no device feature at all. Arithmetic was already carried in
+`float`, so the only cost is a cast per element. This is exactly the trade `q_gemv.comp` documented
+and is why its f16 path worked while the elementwise family's did not.
+
+**Generalised as a test, not a fix.** `no_shader_requires_a_device_feature_the_engine_does_not_enable`
+decodes `OpCapability` out of every embedded SPIR-V module and asserts an allowlist. The class of
+bug — a shader whose requirements exceed what the device was created with — is silent by
+construction whenever the corresponding claim is closed, so it must be caught by inspecting the
+artifact rather than by running it.
+
+> This is §8.5's lesson in a new place: a capability we *generate* is not a capability we *have*.
+> Generation is cheap and proves nothing; the binding is where the claim is tested.
+
+#### 7.6.3 Bug 2 — a partial final word, which Intel catches and NVIDIA hides
+
+The fp16 differential ran green on device 1 (NVIDIA, 12/12) and **6/12 on device 0** (Intel). Every
+failure was the **last element of an odd-length tensor**, and only on the unary rows, whose shape
+was `(3, 5)` = 15 elements.
+
+Packed two to a word, 15 f16 elements occupy 30 bytes. The store for element 14 addresses bytes
+28..31 — outside the bound buffer range. The RTX 4060 absorbs the overrun and returns the right
+answer. The Iris Xe applies `robustBufferAccess`, discards the write, and leaves a zero.
+
+`indexing.glsl` already *asked* the allocator to round sub-word buffers up to four bytes. That
+request is unenforceable for ORT-owned tensors: ORT sizes them exactly and the EP binds what it is
+given. **A requirement the EP cannot enforce has to be met by declining, not by asking.**
+
+`claim::check_subword_tail` therefore declines any f16 edge whose element count this EP cannot
+*prove* even. `provably_even_elements` is sound under symbolic extents — a product is even as soon
+as any one factor is even, so a single literal even extent settles it whatever the symbolic dims
+turn out to be, and it returns `false` when unprovable rather than guessing. This is why the
+restriction costs nothing on Phi-3.5: its f16 tensors have symbolic leading dims and literal even
+last axes (3072, 8192).
+
+**Named lift condition** (engine-side, Switch): bind sub-word tensors with
+`VkDescriptorBufferInfo.range` rounded up to a multiple of four. Then `check_subword_tail` is
+deleted, not relaxed.
+
+**The same latent defect exists on the byte-packed `bool`/`uint8` path.** It has not bitten only
+because every row using it is `Staged`. It must not be allowed to become the first thing a future
+reader discovers when they flip one.
+
+> Two devices, one right answer, one wrong one, and the wrong one was the *quiet* one. Device 0 is
+> the stricter conformance oracle by policy; this is the run that paid for the policy. Had we
+> tested only on the faster card, the bug would have shipped and surfaced as a wrong logit on
+> somebody else's laptop.
+
+#### 7.6.4 Result on the real model
+
+Phi-3.5, both devices, identical:
+
+| | unpinned | pinned (free-dim overrides) |
+| --- | ---: | ---: |
+| records | 363 | 358 |
+| **claimed** | 0 | **257** |
+| declined | 363 | 101 |
+| full-set `dynamic-shape` | 356 | 0 |
+| full-set `staged` | 100 | 98 |
+| full-set `dtype` | 0 | 1 |
+
+Claimed, pinned: `MatMulNBits`×161, `Mul`×64, `Sigmoid`×32. The residual `dtype: 1` is the i64
+`Sub`. **`dtype` has disappeared from the unpinned full-set histogram entirely** — after this work,
+dynamic shape is the *sole* remaining blocker on 257 nodes, and the claim log now says so directly:
+`predicate_ok_runtime_extents` is true, with `codes == ["dynamic-shape"]`, on exactly those 257.
+
+The pinned session also **runs**, on both devices, against the CPU EP as oracle: 65 outputs, max
+absolute logit deviation 0.035 on fp16 logits, and the **same argmax token** (30751). That is the
+first execution of a real production model's arithmetic on this EP.
+
+The pinned number is a *measurement device*, not a milestone — §7.5.8 stands, and a decoder that
+needs free-dimension overrides serves no second token. What it establishes is that the 257 are
+blocked by one thing and one thing only, and that when that thing lifts the arithmetic is right.
+
+---
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.

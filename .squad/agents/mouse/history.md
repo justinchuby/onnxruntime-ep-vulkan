@@ -700,3 +700,77 @@ the only condition under which a signal is worth reading. Tank's framing is the 
 red teaches you to ignore the tool.
 
 No cross-owner edits this turn. Nothing outside `ops/**`, `registry.rs`, `OP_COVERAGE.md`.
+
+---
+
+## 2026-07-30 — fp16 elementwise, and the two bugs a closed claim was hiding
+
+**Brief said "build MatMulNBits GEMV". It was already built** — row `Live`, f16 handled,
+`q_gemv.comp` complete, 161 nodes claimed on the real model matching the CPU EP on both devices.
+Checking the premise before starting the work is what turned this turn into something.
+
+**Then I checked the brief's other premise and it was also wrong.** It said `Mul`x64 / `Sigmoid`x32
+/ `Sub`x1 were "blocked solely by compile-time extent baking". Pin the shapes and those exact 97
+decline on `dtype`. That is R8 recurring at the level of the coordinator's own reading of a
+first-match code — the same defect one layer up, which is the lesson's fourth landing and by far
+the most uncomfortable one, because the person quoting the histogram had just finished writing the
+rule about histograms.
+
+**Two gates in series, so I went and shut the second one.** 96 of the 97 are f16, and the
+elementwise family was f32-only. `Sub` is i64 and stays declined — correct, not pending.
+
+### What I found while doing it
+
+**The narrowing was hardcoded next to the evidence that already knew.** `only_f32` sat beside
+`EXERCISED`, which recorded the same fact and was read by nothing in the claim path. Two sources of
+truth; the weaker won. Now `only_proved_dtypes` reads the evidence list directly. Semantics-
+preserving on introduction; the value is that widening a claim is one edit rather than two that can
+disagree. **This kind of drift is invisible: it declines nodes we can serve, and nothing fails.**
+
+**Every f16 shader we had ever built was unloadable.** `SCALAR_T = float16_t` under
+`GL_EXT_shader_16bit_storage` made every f16 module declare `OpCapability StorageBuffer16BitAccess`.
+The engine enables only `synchronization2`. Nothing had failed because nothing had ever *asked* a
+device to load one — the f32-only claim guaranteed it. So: a capability we generate is not a
+capability we have, and generation proves nothing. Fixed by packing f16 into `uint` with
+`unpackHalf2x16`/`packHalf2x16` — no device feature at all, the same trade `q_gemv.comp` already
+made, which is exactly why *its* f16 path worked and this one did not. Generalised into a test that
+decodes `OpCapability` from every embedded module against an allowlist, because this bug class is
+silent by construction whenever the matching claim is closed.
+
+**Device 0 earned its keep, loudly.** fp16 differential: 12/12 on NVIDIA, **6/12 on Intel** — every
+failure the last element of an odd-length tensor. 15 f16 elements are 30 bytes; the store for
+element 14 addresses bytes 28..31, past the bound range. The 4060 absorbs it and is right; the Iris
+Xe applies `robustBufferAccess` and writes a zero. The wrong answer was the *quiet* one. Tested only
+on the fast card, this ships and surfaces as a wrong logit on a stranger's laptop.
+
+`indexing.glsl` had *asked* the allocator to round sub-word buffers to four bytes. ORT sizes its own
+tensors exactly and we bind what we are given, so the request was unenforceable — **a requirement
+the EP cannot enforce has to be met by declining, not by asking.** `check_subword_tail` declines
+what it cannot prove even, with a named lift condition for Switch (round the descriptor range up)
+that deletes it rather than relaxing it.
+
+### Result
+
+257 claimed on pinned Phi-3.5, both devices identical: `MatMulNBits`x161, `Mul`x64, `Sigmoid`x32.
+`dtype` is **gone from the unpinned full-set histogram**; 257 nodes are now blocked by dynamic shape
+and nothing else, and the log says so in a field rather than by inference. And the session *runs* —
+65 outputs, same argmax token as the CPU EP, 0.035 max fp16 logit deviation, on both devices. First
+real-model arithmetic on this EP.
+
+Per SS7.5.8 the pinned number is a measurement device and not a milestone, and I will keep saying so,
+because it is the single most quotable number I have produced and the easiest one to misuse.
+
+### For my own record — the design correction, stated as one
+
+Rejecting all symbolic dims was right for a static-shape EP and wrong for an LLM EP. Restricting an
+f16 claim to provably-even element counts is the same shape of judgement in the other direction:
+narrow deliberately, name the lift condition, and do not let the restriction outlive its cause.
+
+### Cross-owner edits
+
+* `tests/ops/test_op_table.py` (Trinity) — data rows only, no harness logic.
+* `rust/shaders/**` — ownership still unresolved; asked twice.
+
+Baseline note: `test_op_table.py` is **28 failed / 63 passed** with my change and **28 failed / 49
+passed without it** — pre-existing, intentional per its docstring, +14 and no regressions from me.
+A suite red by design still trains people to stop reading it.
