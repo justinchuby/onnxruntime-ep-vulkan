@@ -333,6 +333,10 @@ unsafe extern "C" fn release_thunk(p: *mut ort::OrtDataTransferImpl) {
             }
         );
         log::info!("VulkanExecutionProvider: {}", ledger::report());
+        log::info!(
+            "VulkanExecutionProvider: {}",
+            crate::allocator::tally::staging_verdict()
+        );
         // The observations are only complete now, and a torn-down process cannot print into a
         // test harness's captured output. Persist them where a parent process can read them.
         crate::counters::dump_observations_if_requested();

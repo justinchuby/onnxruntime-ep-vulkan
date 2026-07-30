@@ -229,6 +229,7 @@ pub fn dump_observations_if_requested() {
         return;
     };
     let o = crate::allocator::ledger::snapshot();
+    let t = crate::allocator::tally::snapshot();
     let snap = snapshot();
     let mut doc = snap.to_json();
     // Splice the observation keys in before the closing brace rather than appending after it, so
@@ -240,7 +241,10 @@ pub fn dump_observations_if_requested() {
             ",\n  \"pointers_observed\": {},\n  \"pointers_host\": {},\n  \
              \"pointers_at_base\": {},\n  \"pointers_interior\": {},\n  \
              \"pointers_in_guard_band\": {},\n  \"pointers_use_after_free\": {},\n  \
-             \"pointer_max_offset\": {}\n}}\n",
+             \"pointer_max_offset\": {},\n  \"alloc_allocations\": {},\n  \
+             \"alloc_frees\": {},\n  \"alloc_bytes\": {},\n  \
+             \"alloc_high_water_bytes\": {},\n  \"alloc_device_backed_spans\": {},\n  \
+             \"alloc_staged_spans\": {},\n  \"alloc_staged_bytes\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -248,6 +252,13 @@ pub fn dump_observations_if_requested() {
             o.in_guard_band,
             o.use_after_free,
             o.max_offset,
+            t.allocations,
+            t.frees,
+            t.bytes,
+            t.high_water_bytes,
+            t.device_backed_spans,
+            t.staged_spans,
+            t.staged_bytes,
         ));
     }
     if let Err(e) = std::fs::write(&path, doc) {

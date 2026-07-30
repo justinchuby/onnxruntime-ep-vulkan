@@ -546,6 +546,7 @@ impl HandleRegistry {
         if inner.stats.live_bytes > inner.stats.high_water_bytes {
             inner.stats.high_water_bytes = inner.stats.live_bytes;
         }
+        tally::on_alloc(requested as u64, inner.stats.live_bytes);
         Some(base)
     }
 
@@ -580,6 +581,7 @@ impl HandleRegistry {
         span.live = false;
         let requested = span.requested;
         inner.stats.total_frees += 1;
+        tally::on_free();
         inner.stats.live_spans = inner.stats.live_spans.saturating_sub(1);
         inner.stats.live_bytes = inner.stats.live_bytes.saturating_sub(requested as u64);
         // Staging is released here, not at retirement: at model scale it is real host memory and
@@ -676,7 +678,11 @@ impl HandleRegistry {
             .map_err(|_| LookupError::NotAHandle { addr })?;
         match inner.spans.get_mut(&addr) {
             Some(s) if s.live => {
+                let first = s.buffer.is_none();
                 s.buffer = Some(view);
+                if first {
+                    tally::on_device_backed();
+                }
                 Ok(())
             }
             Some(s) => Err(LookupError::Freed {
@@ -726,17 +732,26 @@ impl HandleRegistry {
             return None;
         }
         if inner.stats.staging_spans == 0 {
+            // Scoped deliberately to *this handle*. The previous wording ended "any timing from
+            // this run is a host measurement", which was true while nothing was device-backed and
+            // becomes false in the dangerous direction the moment some allocations are: a run that
+            // is 99% on device would still print it, and a warning that overstates gets ignored,
+            // which is how it stops protecting the 1% case it was written for. The whole-run
+            // claim is now made at teardown by `staging_verdict`, where the ratio is known, and
+            // asserted by `epctl --check-counters --require-device-memory`, which does not rely
+            // on anyone remembering a log line. See D-T69.
             log::warn!(
                 "VulkanExecutionProvider: no VkBuffer is attached to device handle 0x{addr:x}, so \
-                 its contents are being held in HOST memory. This is the near half of the real \
-                 copy path and it produces correct results, but nothing in this run touched device \
-                 memory for staged tensors. Any timing from this run is a host measurement — see \
-                 `StagingLiveBytes` in the allocator stats."
+                 the contents of THIS handle are being held in HOST memory. This is the near half \
+                 of the real copy path and it produces correct results, but nothing device-side \
+                 backs this tensor. Whether that is true of the whole run is reported at teardown \
+                 — see the staging verdict there, not this line."
             );
         }
         inner.staging.insert(addr, HostStaging { ptr, layout });
         inner.stats.staging_spans += 1;
         inner.stats.staging_live_bytes += layout.size() as u64;
+        tally::on_staging(layout.size() as u64);
         Some(ptr)
     }
 
@@ -782,6 +797,159 @@ impl HandleRegistry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// The allocation tally
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A process-global tally of what the allocator actually did, readable after teardown.
+///
+/// # Why this is separate from [`AllocStats`]
+///
+/// `AllocStats` belongs to a `HandleRegistry`, and a registry belongs to a `VulkanAllocator` that
+/// ORT releases on its own schedule. Its numbers are therefore gone by the time anyone can read
+/// them, and the teardown *ordering* between `ReleaseAllocator` and `ReleaseDataTransfer` — where
+/// the counters file is written — is ORT's business, not ours. A snapshot published at release
+/// would be correct only when the order happened to favour us, and would silently write zeros
+/// otherwise. That is precisely the class of check that reports a clean result because it did not
+/// run, which this project has now been bitten by three times.
+///
+/// So these are updated as the events happen. They are monotonic across every allocator in the
+/// process, which is the right shape for the question they answer: *did this run put tensors in
+/// device memory, or in host memory wearing a device handle?*
+///
+/// # Why `staged_spans` deserves to be a counter rather than a log line
+///
+/// The staging path prints a one-shot WARN saying any timing from the run is a host measurement.
+/// A warning is read by a human who is present, remembers it an hour later, and is honest when
+/// quoting the number. A counter is read by `epctl --check-counters`, which is none of those
+/// things and does not need to be. See D-T69.
+pub mod tally {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+    static FREES: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+    static DEVICE_BACKED: AtomicU64 = AtomicU64::new(0);
+    static STAGED_SPANS: AtomicU64 = AtomicU64::new(0);
+    static STAGED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn on_alloc(requested: u64, live_bytes: u64) {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(requested, Ordering::Relaxed);
+        HIGH_WATER.fetch_max(live_bytes, Ordering::Relaxed);
+    }
+
+    pub(super) fn on_free() {
+        FREES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A `VkBuffer` was attached to a handle for the first time: this one is genuinely on device.
+    pub(super) fn on_device_backed() {
+        DEVICE_BACKED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn on_staging(bytes: u64) {
+        STAGED_SPANS.fetch_add(1, Ordering::Relaxed);
+        STAGED_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Everything the counters file reports, taken together so the numbers are mutually consistent
+    /// enough to reason about. They are not sampled atomically as a group; at teardown, when this
+    /// is read, nothing is still mutating them.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Tally {
+        pub allocations: u64,
+        pub frees: u64,
+        pub bytes: u64,
+        pub high_water_bytes: u64,
+        pub device_backed_spans: u64,
+        pub staged_spans: u64,
+        pub staged_bytes: u64,
+    }
+
+    pub fn snapshot() -> Tally {
+        Tally {
+            allocations: ALLOCATIONS.load(Ordering::Relaxed),
+            frees: FREES.load(Ordering::Relaxed),
+            bytes: BYTES.load(Ordering::Relaxed),
+            high_water_bytes: HIGH_WATER.load(Ordering::Relaxed),
+            device_backed_spans: DEVICE_BACKED.load(Ordering::Relaxed),
+            staged_spans: STAGED_SPANS.load(Ordering::Relaxed),
+            staged_bytes: STAGED_BYTES.load(Ordering::Relaxed),
+        }
+    }
+
+    /// What this run's memory actually was, stated from the numbers rather than from a static
+    /// string that was true when it was written.
+    ///
+    /// # Why this is computed rather than fixed
+    ///
+    /// The staging WARN used to end "any timing from this run is a host measurement". That was
+    /// true while *nothing* was device-backed. As real `VkBuffer`s arrive behind handles it goes
+    /// wrong in the dangerous direction, and it goes wrong twice:
+    ///
+    /// * **Leave it and it over-warns.** A run that is 99% device-backed still prints "host
+    ///   measurement", so the warning is wrong, readers learn to discount it, and it stops
+    ///   protecting the 1% case it exists for. A caveat that is always printed carries no
+    ///   information.
+    /// * **Delete it and it under-warns.** Staging does not stop the day device memory lands; it
+    ///   stops per-allocation, and a partially staged run would then report nothing at all. That
+    ///   is the worse failure, because the number it silently blesses looks like a device
+    ///   measurement.
+    ///
+    /// Neither branch is survivable as prose, so the verdict is derived: it names the ratio, and
+    /// there is a distinct sentence for the mixed state that no fixed wording covers today and
+    /// that is exactly the state we are heading into.
+    pub fn staging_verdict() -> String {
+        let t = snapshot();
+        if t.allocations == 0 {
+            return "no device handles were allocated in this run, so there is nothing to say \
+                    about where their contents lived"
+                .to_string();
+        }
+        if t.staged_spans == 0 {
+            return format!(
+                "MEMORY: none of the {} device handle(s) were host-staged; {} had a VkBuffer \
+                 attached. Timing from this run is not disqualified by staging (which is not the \
+                 same as being a good measurement).",
+                t.allocations, t.device_backed_spans
+            );
+        }
+        if t.device_backed_spans == 0 {
+            return format!(
+                "MEMORY: ALL {} host-staged span(s) ({} B) and ZERO device-backed — nothing in \
+                 this run reached device memory. Any timing from it is a HOST measurement and must \
+                 not be quoted as anything else.",
+                t.staged_spans, t.staged_bytes
+            );
+        }
+        format!(
+            "MEMORY: MIXED — {} span(s) ({} B) were host-staged while {} had a VkBuffer attached, \
+             out of {} allocation(s). A timing from this run is neither a host measurement nor a \
+             device one; it is an average over two different memories and is not comparable with \
+             either. Assert `alloc_staged_spans == 0` with `epctl --check-counters \
+             --require-device-memory` before quoting a number from a run like this.",
+            t.staged_spans, t.staged_bytes, t.device_backed_spans, t.allocations
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn reset_for_test() {
+        for c in [
+            &ALLOCATIONS,
+            &FREES,
+            &BYTES,
+            &HIGH_WATER,
+            &DEVICE_BACKED,
+            &STAGED_SPANS,
+            &STAGED_BYTES,
+        ] {
+            c.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // The pointer-observation ledger
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -800,7 +968,7 @@ impl HandleRegistry {
 /// pointer", not "ORT never computed one". That distinction is the whole reason this is worth
 /// writing down rather than asserting.
 ///
-/// The taxonomy is [`LookupError`]'s, because those three failures demand three different fixes:
+/// The taxonomy is [`LookupError`]'s, because those failures demand different fixes:
 /// * **base** — the pointer we returned, unmodified.
 /// * **interior** — `base + n`, in-span. This is the planner-arithmetic case the design defends.
 /// * **guard band** — in the arena but between spans. Arithmetic that ran off the end. A real bug,
