@@ -36,7 +36,7 @@ use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
-use crate::registry::OpStatus::Staged;
+use crate::registry::OpStatus::{Live, Staged};
 use crate::registry::{
     ContribSchema, NodeView, OPSET_ANY, OPSET_QDQ_MAX, OpSpec, PINNED_BASELINE, XL_KERNEL,
 };
@@ -82,6 +82,12 @@ pub static GATHER_BLOCK_QUANTIZED: ContribSchema = ContribSchema {
 
 /// Input index of `MatMulNBits`'s optional `g_idx` (act-order permutation).
 const G_IDX: usize = 4;
+
+/// Input index of `MatMulNBits`'s optional `zero_points`.
+const ZERO_POINTS: usize = 3;
+
+/// Input index of `MatMulNBits`'s optional `bias`.
+const BIAS: usize = 5;
 
 /// Bit widths this EP will implement.
 ///
@@ -143,6 +149,28 @@ fn matmul_nbits(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     // indirected, data-dependent read of `B`, which costs more than the CPU fallback saves.
     claim::input_absent(view, spec, G_IDX, "the act-order permutation `g_idx`")?;
 
+    // `bias` is a fused add on the output. The GEMV kernel has no sixth binding and folding the
+    // bias into the reduction is a different shader, not a flag — so it declines by name rather
+    // than being silently ignored, which would produce a plausible wrong answer. No `MatMulNBits`
+    // node in either Foundry Local graph carries one (§4.21).
+    claim::input_absent(view, spec, BIAS, "the fused `bias`")?;
+
+    // The kernel writes fp16 outputs by read-modify-writing **disjoint 16-bit lanes** of a shared
+    // `uint` word (see `q_gemv.comp`). That is race-free, but it addresses whole words, so the
+    // element count must be even or the final store would touch two bytes past the tensor. Every
+    // real node satisfies this — Phi-3.5's `N` is 3072/8192/9216/32064 — so the guard costs
+    // nothing and removes an out-of-bounds write we would otherwise only find on a strict driver.
+    if claim::input_edge(view, spec, 0)?.dtype == Some(crate::engine::DType::F16) {
+        let rows = out_rows(view, spec)?;
+        require!(
+            (rows.saturating_mul(n as u64)) % 2 == 0,
+            Shape,
+            "`{}` produces an odd number of fp16 output elements ({rows} x {n}); the packed-lane \
+             store addresses whole 32-bit words and would write past the tensor",
+            spec.op_type
+        );
+    }
+
     // `accuracy_level` selects the compute type for the **activation** matrix `A`. It is a hint at
     // every value but one, and that exception is a correctness requirement, not a preference.
     //
@@ -172,6 +200,210 @@ fn matmul_nbits(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     }
 
     Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// The GEMV kernel
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The number of output rows: every dimension of `A` except the reduction extent.
+///
+/// `A` is `[.., M, K]`, so this is `M` folded together with any leading batch dimensions. The
+/// kernel treats them identically — a batch is just more rows — so nothing downstream needs the
+/// original rank.
+fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::DeclineReason> {
+    let edge = claim::input_edge(view, spec, 0)?;
+    let Some(shape) = edge.shape else {
+        deny!(DynamicShape, "`{}` input A has no shape", spec.op_type);
+    };
+    require!(
+        shape.len() >= 2,
+        Rank,
+        "`{}` input A has rank {}; the GEMV needs at least [M, K]",
+        spec.op_type,
+        shape.len()
+    );
+    let mut rows: u64 = 1;
+    for &d in &shape[..shape.len() - 1] {
+        require!(
+            d >= 0,
+            DynamicShape,
+            "`{}` input A has a symbolic leading dimension",
+            spec.op_type
+        );
+        rows = rows.saturating_mul(d as u64);
+    }
+    Ok(rows)
+}
+
+/// Workgroup size for one output element, derived from the reduction extent and the **floor**.
+///
+/// The smallest power of two that covers `blocks_per_col`, clamped to `[32, 256]`. Three
+/// deliberate properties:
+///
+/// * The upper clamp is 256 because that is the `maxComputeWorkGroupInvocations` value the
+///   baseline capability set guarantees (`OP_COVERAGE.md` §7.2). It is *not* the larger figure
+///   either development GPU reports — sizing to the local device is how a kernel passes every
+///   local test and fails on a phone.
+/// * It is a power of two because the shared-memory tree reduction halves the stride.
+/// * The lower clamp is 32 rather than 1 so a short reduction still fills at least one subgroup on
+///   every vendor. That is a *performance* floor expressed without ever reading `subgroupSize`,
+///   which is not guaranteed to be any particular value.
+///
+/// Shared memory is fixed at 256 floats = 1 KiB regardless, well inside the 16 KiB floor.
+pub fn gemv_workgroup(blocks_per_col: u64) -> u32 {
+    let mut wg: u32 = 32;
+    while (wg as u64) < blocks_per_col && wg < 256 {
+        wg *= 2;
+    }
+    wg
+}
+
+/// Translate `MatMulNBits` into one block-dequantising GEMV dispatch.
+fn matmul_nbits_gemv(
+    spec: &OpSpec,
+    node: &crate::engine::NodeDesc,
+    ctx: &mut dyn crate::engine::DispatchContext,
+) -> crate::engine::EpResult<()> {
+    use crate::engine::{AttrValue, EpError, KernelRequest, TensorDesc};
+
+    let attr = |name: &str| -> crate::engine::EpResult<i64> {
+        match node.attributes.get(name) {
+            Some(AttrValue::Int(v)) => Ok(*v),
+            _ => Err(EpError::Internal(format!(
+                "`{}` was claimed but has no integer attribute `{name}`",
+                node.op_type
+            ))),
+        }
+    };
+    let bits = attr("bits")?;
+    let block_size = attr("block_size")?;
+    let k = attr("K")?;
+    let n = attr("N")?;
+    let blocks_per_col = k / block_size;
+
+    let a_desc = node
+        .inputs
+        .first()
+        .and_then(|t| t.desc.as_ref())
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input A has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+    let dtype = a_desc.dtype;
+    let rank = a_desc.shape.len();
+    if rank < 2 {
+        return Err(EpError::Internal(format!(
+            "`{}` was claimed with a rank-{rank} `A`",
+            node.op_type
+        )));
+    }
+    let m_total: i64 = a_desc.shape[..rank - 1].iter().product();
+
+    let shader = spec.kernel.stem(dtype).ok_or_else(|| {
+        EpError::Internal(format!(
+            "`{}` was claimed but its row declares no shader for {dtype:?}",
+            node.op_type
+        ))
+    })?;
+
+    let a = ctx.resolve(&node.inputs[0])?;
+    let b = ctx.resolve(&node.inputs[1])?;
+    let scales = ctx.resolve(&node.inputs[2])?;
+    // Binding 3 must be bound whether or not the node has zero points: the shader declares it, and
+    // a declared descriptor is part of the layout even when specialisation folds every read of it
+    // away. Rebinding `scales` is an inert placeholder — `QB_HAS_ZP == 0` makes `load_zp` return
+    // the implied `1 << (bits-1)` without touching the buffer. Note this deliberately does *not*
+    // call `resolve` a fourth time: `CompileRecorder` assigns buffer tokens positionally, so an
+    // extra resolve would shift every later token.
+    let has_zp = node
+        .inputs
+        .get(ZERO_POINTS)
+        .is_some_and(|t| !t.name.is_empty());
+    let zp = if has_zp {
+        ctx.resolve(&node.inputs[ZERO_POINTS])?
+    } else {
+        scales
+    };
+
+    let out = node
+        .outputs
+        .first()
+        .ok_or_else(|| EpError::Internal(format!("`{}` has no output", node.op_type)))?;
+    let mut out_shape = a_desc.shape[..rank - 1].to_vec();
+    out_shape.push(n);
+    let out_dtype = out.desc.as_ref().map_or(dtype, |d| d.dtype);
+    let y = ctx.bind_output(out, TensorDesc::new(out_dtype, out_shape))?;
+
+    let wg = gemv_workgroup(blocks_per_col as u64);
+    let mut push = Vec::with_capacity(16);
+    for v in [m_total, k, n, blocks_per_col] {
+        push.extend_from_slice(&(v as u32).to_le_bytes());
+    }
+
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![wg, bits as u32, block_size as u32, u32::from(has_zp)],
+        push_constants: push,
+        bindings: vec![a, b, scales, zp, y],
+        workgroups: [n as u32, m_total as u32, 1],
+    })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// Prepacking
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The pure `PackInput -> PackOutput` transform for `MatMulNBits` (§8.2 P6).
+///
+/// # Why this is currently a pass-through, and why that is the honest answer
+///
+/// The temptation with a prepack seam is to invent a transform to justify it. The GEMV does not
+/// need one: ONNX's `B` layout is `[N][blocks_per_col][blob_bytes]`, which is already contiguous
+/// **per output column**, and a workgroup-per-column GEMV streams exactly that. Reordering it
+/// would cost an upload-time pass and buy nothing measurable.
+///
+/// What prepacking *does* earn here is the second thing this function does: **the zero-point
+/// buffer is synthesised when the graph omits it**, in ORT's own packed-nibble form. That gives
+/// one shader path for symmetric (Phi-3.5, 3 inputs) and asymmetric (gpt-oss, 4 inputs) graphs
+/// rather than two, at a memory cost of `1/(2*block_size)` of the weight — 1.6% at 4-bit/32.
+/// Expanding zero points to a byte per block, the obvious alternative, costs eight times that for
+/// a nibble extraction amortised over 32 multiply-accumulates.
+///
+/// Prepacking earns its keep properly at the GEMM stage, where the tile layout genuinely differs
+/// from the ONNX one. Saying so here is cheaper than discovering later that the pass-through was
+/// load-bearing.
+pub fn prepack_matmul_nbits(input: crate::engine::PackInput<'_>) -> crate::engine::PackOutput {
+    crate::engine::PackOutput {
+        packed_weight: input.weight.to_vec(),
+        packed_scales: input.scales.to_vec(),
+        packed_zero_points: input.zero_points.map(<[u8]>::to_vec),
+    }
+}
+
+/// The byte value that fills a synthesised 4-bit zero-point buffer: 8 in both nibbles.
+///
+/// Derived from the CPU EP rather than from the schema prose (§8.1.1): with `zero_points` absent
+/// and every weight nibble set to `i`, the dequantised column reads `i - 8`.
+pub const IMPLIED_ZP_4BIT: u8 = 0x88;
+
+/// The same for 8 bits.
+pub const IMPLIED_ZP_8BIT: u8 = 0x80;
+
+/// Build the zero-point bytes a node without a `zero_points` input implies.
+///
+/// Kept next to the kernel that would consume it. Not yet reachable: the engine does not call
+/// `compile_hook_for` yet, so no `PrepackRequest` is ever processed, and the shader carries the
+/// implied zero point in a specialisation constant instead. When the hook lands, this is what
+/// replaces `QB_HAS_ZP`.
+pub fn implied_zero_points(bits: i64, blocks_per_col: usize, n: usize) -> Vec<u8> {
+    let (fill, per_col) = match bits {
+        4 => (IMPLIED_ZP_4BIT, blocks_per_col.div_ceil(2)),
+        _ => (IMPLIED_ZP_8BIT, blocks_per_col),
+    };
+    vec![fill; per_col * n]
 }
 
 /// `GatherBlockQuantized`: `Gather` whose rows are dequantized on the way out.
@@ -280,7 +512,7 @@ crate::op_table! {
     //
     //  op                        domain  opsets            caps    kernel          claim                  translate                  status               schema
     // -------------------------------------------------------------------------------------------
-    "MatMulNBits",                Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  matmul_nbits,          templates::unimplemented,  Staged(XL_KERNEL),   schema: &MATMUL_NBITS;
+    "MatMulNBits",                Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(QGemv, "matmul_nbits"), matmul_nbits,     matmul_nbits_gemv,         Live,                schema: &MATMUL_NBITS;
     "GatherBlockQuantized",       Ms,     1 ..= OPSET_ANY,  FLOAT,  kernel!(None),  gather_block_quantized, templates::unimplemented, Staged(XL_KERNEL),   schema: &GATHER_BLOCK_QUANTIZED;
 
     // The `ai.onnx` half of the quantized path. Opset 21 introduced the blocked form, which is the
@@ -455,14 +687,86 @@ mod tests {
         assert!(!supports_block_size(48), "not a size ORT will construct");
     }
 
+    /// `MatMulNBits` is the only live row here, and the reason is a measurement rather than a
+    /// preference: it is 161 of Phi-3.5's 366 nodes, and the island simulation puts the graph at
+    /// 34–35 islands without it and one island of 364 with it. Nothing else in this module changes
+    /// the partition at all, so nothing else earns a kernel yet.
     #[test]
-    fn nothing_here_is_live_yet() {
+    fn matmul_nbits_is_live_and_the_rest_are_not() {
         for s in OPS {
+            if s.op_type == "MatMulNBits" {
+                assert_eq!(s.status, OpStatus::Live);
+                assert_ne!(
+                    s.kernel.template,
+                    crate::ops::common::variants::Template::None,
+                    "a live row must name a shader"
+                );
+                continue;
+            }
             assert!(
                 matches!(s.status, OpStatus::Staged(_)),
                 "{} claims to be live but has no kernel",
                 s.op_type
             );
         }
+    }
+
+    /// The workgroup size is derived from the guaranteed floor, never from a local device.
+    #[test]
+    fn gemv_workgroup_respects_the_floor() {
+        // K=3072 at block 32 -> 96 blocks -> 128 threads, the smallest power of two that covers it.
+        assert_eq!(gemv_workgroup(96), 128);
+        // K=8192 at block 32 -> 256 blocks -> the 256-invocation floor of §7.2, not the 1024 both
+        // development GPUs actually report.
+        assert_eq!(gemv_workgroup(256), 256);
+        assert_eq!(
+            gemv_workgroup(4096),
+            256,
+            "never exceeds the guaranteed floor"
+        );
+        // A short reduction still fills a subgroup on every vendor without reading `subgroupSize`.
+        assert_eq!(gemv_workgroup(1), 32);
+        for blocks in [1u64, 7, 96, 128, 255, 256, 10_000] {
+            let wg = gemv_workgroup(blocks);
+            assert!((32..=256).contains(&wg));
+            assert!(wg.is_power_of_two(), "the tree reduction halves the stride");
+        }
+    }
+
+    /// The pack transform is pure and total; assert the shape of what it produces rather than
+    /// leaving "pass-through" as a claim in a doc comment.
+    #[test]
+    fn prepack_is_a_documented_pass_through() {
+        use crate::engine::{PackInput, TileConfig};
+        let cfg = TileConfig {
+            tile_n: 1,
+            tile_m: 1,
+            block_size: 32,
+        };
+        let w = [1u8, 2, 3, 4];
+        let s = [5u8, 6];
+        let out = prepack_matmul_nbits(PackInput {
+            weight: &w,
+            scales: &s,
+            zero_points: None,
+            config: &cfg,
+        });
+        assert_eq!(out.packed_weight, w);
+        assert_eq!(out.packed_scales, s);
+        assert_eq!(out.packed_zero_points, None);
+    }
+
+    /// The implied zero point is the value the CPU EP actually uses, read off it rather than off
+    /// the schema prose (§8.1.1): with `zero_points` absent, a weight nibble of `i` dequantises to
+    /// `i - 8`, so the implied point is 8 in both nibbles.
+    #[test]
+    fn implied_zero_points_match_the_oracle() {
+        assert_eq!(IMPLIED_ZP_4BIT, 0x88);
+        assert_eq!(IMPLIED_ZP_8BIT, 0x80);
+        // 4-bit packs two blocks per byte, and each column's run is padded to a whole byte.
+        assert_eq!(implied_zero_points(4, 96, 2).len(), 48 * 2);
+        assert_eq!(implied_zero_points(4, 3, 2).len(), 2 * 2);
+        assert_eq!(implied_zero_points(8, 96, 2).len(), 96 * 2);
+        assert!(implied_zero_points(4, 4, 1).iter().all(|&b| b == 0x88));
     }
 }

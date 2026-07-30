@@ -437,6 +437,172 @@ unsafe extern "C" fn create_ep_device(
     ptr::null_mut()
 }
 
+// -- OrtMemoryInfo, and the lifetime contract that broke registration -------------------------
+//
+// `EpDevice_AddAllocatorInfo` is annotated `_In_` and reads like a copy. It is not: the
+// `OrtEpDevice` retains the pointer and ORT dereferences it *after* `GetSupportedDevices` returns,
+// while it finishes registering the library. Releasing the memory info after handing it over
+// therefore leaves a dangling pointer that a real ORT reads moments later — which is an access
+// violation inside `register_execution_provider_library`.
+//
+// The mock models this the only way a mock usefully can: `ReleaseMemoryInfo` **poisons** rather
+// than frees, and the scenario reads every retained info back after `GetSupportedDevices` returns.
+// Poisoning is deliberate — freeing here would reproduce the real crash inside the test process
+// instead of reporting it, and a test that segfaults tells you less than one that names the rule.
+
+struct MockMemoryInfo {
+    name: CString,
+    device_id: i32,
+    vendor_id: u32,
+    alignment: usize,
+    /// False once `ReleaseMemoryInfo` has been called. The object is intentionally never freed.
+    live: bool,
+}
+
+/// Memory infos handed to `EpDevice_AddAllocatorInfo` and therefore retained by the host.
+///
+/// Stored as addresses: the pointers are shared across threads only in the sense that the static
+/// is `Sync`, and `usize` keeps that honest without a wrapper type that would claim more.
+static RETAINED_ALLOCATOR_INFOS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+unsafe extern "C" fn create_memory_info_v2(
+    name: *const c_char,
+    _device_type: ort::OrtMemoryInfoDeviceType,
+    vendor_id: u32,
+    device_id: i32,
+    _mem_type: ort::OrtDeviceMemoryType,
+    alignment: usize,
+    _allocator_type: ort::OrtAllocatorType,
+    out: *mut *mut ort::OrtMemoryInfo,
+) -> ort::OrtStatusPtr {
+    let name = check_in_z(name, "CreateMemoryInfo_V2", "name");
+    if out.is_null() {
+        violation("CreateMemoryInfo_V2: `out` is annotated _Outptr_ but was NULL");
+        // SAFETY: a NUL-terminated literal.
+        return unsafe {
+            create_status(
+                ort::OrtErrorCode_ORT_INVALID_ARGUMENT,
+                c"null out-parameter".as_ptr(),
+            )
+        };
+    }
+    let mi = Box::into_raw(Box::new(MockMemoryInfo {
+        name: CString::new(name).expect("no interior NUL"),
+        device_id,
+        vendor_id,
+        alignment,
+        live: true,
+    }));
+    // SAFETY: valid out-parameter slot.
+    unsafe { *out = mi.cast() };
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn release_memory_info(mi: *mut ort::OrtMemoryInfo) {
+    if mi.is_null() {
+        return;
+    }
+    // SAFETY: every non-null `OrtMemoryInfo` in this host came from `create_memory_info_v2`.
+    unsafe { (*mi.cast::<MockMemoryInfo>()).live = false };
+}
+
+unsafe extern "C" fn memory_info_get_name(
+    mi: *const ort::OrtMemoryInfo,
+    out: *mut *const c_char,
+) -> ort::OrtStatusPtr {
+    if mi.is_null() || out.is_null() {
+        violation("MemoryInfoGetName: `ptr`/`out` are annotated _In_/_Out_ but one was NULL");
+        return ptr::null_mut();
+    }
+    // SAFETY: provenance as above; the `CString` lives as long as the (never-freed) box.
+    unsafe { *out = (*mi.cast::<MockMemoryInfo>()).name.as_ptr() };
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn memory_info_get_id(
+    mi: *const ort::OrtMemoryInfo,
+    out: *mut c_int,
+) -> ort::OrtStatusPtr {
+    if mi.is_null() || out.is_null() {
+        violation("MemoryInfoGetId: `ptr`/`out` are annotated _In_/_Out_ but one was NULL");
+        return ptr::null_mut();
+    }
+    // SAFETY: provenance as above.
+    unsafe { *out = (*mi.cast::<MockMemoryInfo>()).device_id };
+    ptr::null_mut()
+}
+
+unsafe extern "C" fn memory_info_get_vendor_id(mi: *const ort::OrtMemoryInfo) -> u32 {
+    if mi.is_null() {
+        violation("MemoryInfoGetVendorId: `ptr` is annotated _In_ but was NULL");
+        return 0;
+    }
+    // SAFETY: provenance as above.
+    unsafe { (*mi.cast::<MockMemoryInfo>()).vendor_id }
+}
+
+unsafe extern "C" fn ep_device_add_allocator_info(
+    ep_device: *mut ort::OrtEpDevice,
+    allocator_memory_info: *const ort::OrtMemoryInfo,
+) -> ort::OrtStatusPtr {
+    if ep_device.is_null() {
+        violation("EpDevice_AddAllocatorInfo: `ep_device` is annotated _In_ but was NULL");
+    }
+    if allocator_memory_info.is_null() {
+        violation(
+            "EpDevice_AddAllocatorInfo: `allocator_memory_info` is annotated _In_ but was NULL",
+        );
+        return ptr::null_mut();
+    }
+    // Retain the pointer, exactly as ORT does. This is the whole point of the mock.
+    RETAINED_ALLOCATOR_INFOS
+        .lock()
+        .expect("poisoned")
+        .push(allocator_memory_info as usize);
+    ptr::null_mut()
+}
+
+/// Assert that every memory info the EP handed to `EpDevice_AddAllocatorInfo` is still valid.
+///
+/// Called after `GetSupportedDevices` returns, which is where ORT reads them. On 2026-07-29 this
+/// exact sequence access-violated a real ORT 1.28 during
+/// `register_execution_provider_library`; the EP was releasing the handle it had just given away.
+fn assert_retained_allocator_infos_are_still_live(num_ep_devices: usize) {
+    let retained = RETAINED_ALLOCATOR_INFOS.lock().expect("poisoned");
+    eprintln!(
+        "[mock-ort] host retains {} allocator memory info(s) for {num_ep_devices} EP device(s)",
+        retained.len()
+    );
+    // A vacuously-green check is worse than no check: it reports the same thing as a working one.
+    // With device memory enabled, every advertised device must have attached exactly one info.
+    assert_eq!(
+        retained.len(),
+        num_ep_devices,
+        "device memory is enabled, so each advertised OrtEpDevice must attach exactly one \
+         allocator memory info — otherwise this test proves nothing about their lifetime"
+    );
+    for mi in retained.iter() {
+        // SAFETY: these boxes are never freed — `release_memory_info` only poisons — precisely so
+        // that reading them here is defined even when the EP got the lifetime wrong.
+        let info = unsafe { &*(*mi as *const MockMemoryInfo) };
+        assert!(
+            info.live,
+            "the EP released the OrtMemoryInfo `{}` after handing it to \
+             EpDevice_AddAllocatorInfo. ORT retains that pointer and dereferences it after \
+             GetSupportedDevices returns, so this is a dangling read inside \
+             register_execution_provider_library — an access violation, not a leak. The memory \
+             info must outlive the OrtEpDevice.",
+            info.name.to_string_lossy()
+        );
+        assert_eq!(
+            info.alignment % 4096,
+            0,
+            "an allocator whose handles are page-granular must not promise a finer alignment than \
+             it keeps: ORT may sub-divide a block on that boundary"
+        );
+    }
+}
+
 // -- OrtApiBase -------------------------------------------------------------------------------
 
 unsafe extern "C" fn get_api(version: u32) -> *const ort::OrtApi {
@@ -471,11 +637,17 @@ fn build_host() -> *const ort::OrtApiBase {
     api.HardwareDevice_DeviceId = Some(hw_device_id);
     api.HardwareDevice_Type = Some(hw_type);
     api.GetSessionConfigEntry = Some(get_session_config_entry);
+    api.CreateMemoryInfo_V2 = Some(create_memory_info_v2);
+    api.ReleaseMemoryInfo = Some(release_memory_info);
+    api.MemoryInfoGetName = Some(memory_info_get_name);
+    api.MemoryInfoGetId = Some(memory_info_get_id);
+    api.MemoryInfoGetVendorId = Some(memory_info_get_vendor_id);
     API.store(Box::into_raw(api), Ordering::Release);
 
     // SAFETY: see above.
     let mut ep_api: Box<ort::OrtEpApi> = Box::new(unsafe { std::mem::zeroed() });
     ep_api.CreateEpDevice = Some(create_ep_device);
+    ep_api.EpDevice_AddAllocatorInfo = Some(ep_device_add_allocator_info);
     EP_API.store(Box::into_raw(ep_api), Ordering::Release);
 
     // SAFETY: see above.
@@ -510,6 +682,15 @@ pub unsafe fn run_registration_scenario(
 ) {
     let base = build_host();
     let default_logger = fake_logger();
+
+    // Exercise the device-memory advertisement path, which is opt-in at runtime (it requires a
+    // data transfer the EP cannot yet provide, so it is off by default). Turning it on here is
+    // what puts `EpDevice_AddAllocatorInfo` — and therefore the memory-info lifetime rule — under
+    // test at all.
+    //
+    // SAFETY: this scenario is documented as running alone (the logging bridge is process-global
+    // state), so no other thread is reading the environment concurrently.
+    unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY", "1") };
 
     // ---- RegisterExecutionProviderLibrary step 1: CreateEpFactories -------------------------
     let mut factories: [*mut ort::OrtEpFactory; 4] = [ptr::null_mut(); 4];
@@ -632,6 +813,10 @@ pub unsafe fn run_registration_scenario(
         num_ep_devices,
         "the EP reported a different device count than it created"
     );
+
+    // Registration is not over when `GetSupportedDevices` returns: ORT goes on to read the
+    // memory infos the EP attached to each `OrtEpDevice`. Read them here, where ORT does.
+    assert_retained_allocator_infos_are_still_live(num_ep_devices);
 
     // ---- step 4: a log record must survive the round trip -----------------------------------
     //

@@ -19,6 +19,7 @@
 //! This binary consumes only the crate's public API. It deliberately owns no registry knowledge
 //! of its own, so it cannot drift from the table it reports on.
 
+use onnxruntime_vulkan_ep::counters;
 use onnxruntime_vulkan_ep::engine;
 use onnxruntime_vulkan_ep::registry::{OPSET_ANY, OpSpec, OpStatus, all_specs};
 use onnxruntime_vulkan_ep::sys;
@@ -170,6 +171,7 @@ fn usage() {
     eprintln!("USAGE:");
     eprintln!("    epctl --dump-capabilities [--json]");
     eprintln!("    epctl --probe-loader");
+    eprintln!("    epctl --check-counters <file> [--require-dispatches N]");
     eprintln!();
     eprintln!("    --dump-capabilities  every registered op, its opset window, dtypes, status,");
     eprintln!("                         backing shader, and (for contrib ops) the ORT release");
@@ -184,6 +186,143 @@ fn usage() {
     eprintln!(
         "                         Vulkan is functional on the runner independently of the EP."
     );
+    eprintln!("    --check-counters <file>");
+    eprintln!("                         read the execution-counter snapshot the EP writes when");
+    eprintln!(
+        "                         ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE is set, and fail the lane"
+    );
+    eprintln!("                         unless a claimed node actually executed on a device.");
+    eprintln!("    --require-dispatches N");
+    eprintln!("                         minimum executed dispatches to pass (default 1).");
+    eprintln!();
+    eprintln!("EXIT CODES:");
+    eprintln!("    0  pass");
+    eprintln!("    1  the lane reported, and the number was below the requirement");
+    eprintln!("    2  usage error");
+    eprintln!("    3  the lane did not report (file missing, unreadable, or unparseable)");
+}
+
+// ---------------------------------------------------------------------------------------------
+// --check-counters: the criterion-8 gate
+// ---------------------------------------------------------------------------------------------
+
+/// Outcome of reading a counters snapshot, kept separate from printing so it can be tested.
+///
+/// Exit 1 and exit 3 are deliberately different codes and the distinction is the whole point.
+/// "The lane ran and executed nothing" is a real, attributable result: it means every node
+/// declined, or fell back to CPU, or the device was refused. "The lane did not report" means the
+/// process died before teardown — which is what both CI lanes are doing today — and a crashed lane
+/// must not be able to look like any kind of answer at all. The same reasoning as
+/// [`probe_exit_code`]: a wrong answer is worse than a loud refusal to answer.
+#[derive(Debug, PartialEq, Eq)]
+enum CounterVerdict {
+    Pass { dispatches: u64 },
+    TooFew { dispatches: u64, required: u64 },
+    NoReport(String),
+}
+
+/// Pull one unsigned integer field out of the counters JSON.
+///
+/// Hand-rolled to match `counters::to_json`, which is hand-rolled for the same reason: this binary
+/// is a CI gate and must not acquire a dependency whose absence turns a red lane into a build
+/// failure. The document is eight flat integers written by us; a full parser would be more code
+/// than the thing it parses.
+fn json_u64(doc: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\"");
+    let start = doc.find(&needle)? + needle.len();
+    let rest = doc[start..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn read_counters(path: &str, required: u64) -> CounterVerdict {
+    let doc = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) => {
+            return CounterVerdict::NoReport(format!(
+                "cannot read {path}: {e}. The EP writes this file on its first successful dispatch \
+                 and again at factory teardown, so an absent file means neither happened — most \
+                 often because the host process died mid-session."
+            ));
+        }
+    };
+    let Some(abi) = json_u64(&doc, "abi_version") else {
+        return CounterVerdict::NoReport(format!(
+            "{path} does not contain an `abi_version` field; it is not a counters snapshot this \
+             build understands."
+        ));
+    };
+    if abi != counters::COUNTERS_ABI_VERSION as u64 {
+        return CounterVerdict::NoReport(format!(
+            "{path} reports counters ABI {abi}, but this epctl understands {}. Refusing to read \
+             fields whose meaning may have changed.",
+            counters::COUNTERS_ABI_VERSION
+        ));
+    }
+    let Some(dispatches) = json_u64(&doc, "dispatches_executed") else {
+        return CounterVerdict::NoReport(format!("{path} has no `dispatches_executed` field."));
+    };
+
+    if dispatches >= required {
+        CounterVerdict::Pass { dispatches }
+    } else {
+        CounterVerdict::TooFew {
+            dispatches,
+            required,
+        }
+    }
+}
+
+fn check_counters(path: &str, required: u64) -> std::process::ExitCode {
+    // Echo whatever the file does contain before judging it — a lane that fails here is a lane
+    // someone has to diagnose from the log alone.
+    if let Ok(doc) = std::fs::read_to_string(path) {
+        println!("epctl: counters snapshot at {path}");
+        for line in doc.lines() {
+            println!("  {line}");
+        }
+    }
+    match read_counters(path, required) {
+        CounterVerdict::Pass { dispatches } => {
+            println!(
+                "epctl: PASS — {dispatches} dispatch(es) executed on a real device in this lane \
+                 (required {required}).\n\
+                 \x20 Note what this does and does not claim: it claims a command buffer reached a \
+                 device and the fence signalled. It claims nothing about whether the results are \
+                 numerically correct — that is the differential test's job, not this one's."
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        CounterVerdict::TooFew {
+            dispatches,
+            required,
+        } => {
+            eprintln!(
+                "epctl: FAIL — this lane executed {dispatches} dispatch(es), below the required \
+                 {required}.\n\
+                 \x20 The suite may still have reported green: a lane where every op declines, or \
+                 every test skips, or every node silently falls back to CPU, passes its assertions \
+                 and executes nothing. That is exactly the state this gate exists to make loud.\n\
+                 \x20 Look at `subgraphs_live` and `subgraphs_stub` above: zero live subgraphs \
+                 means nothing was claimed; live subgraphs with zero dispatches means Compile \
+                 succeeded and Compute never ran or never succeeded."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::NoReport(why) => {
+            eprintln!(
+                "epctl: NO REPORT — {why}\n\
+                 \x20 This is exit 3, deliberately distinct from exit 1. 'Executed nothing' is an \
+                 answer; 'did not report' is the absence of one, and usually means the process \
+                 crashed. Do not read it as a device problem until the log says so."
+            );
+            std::process::ExitCode::from(3)
+        }
+    }
 }
 
 /// The phrase in `engine::loader_probe_report()` that carries the gate verdict.
@@ -235,14 +374,57 @@ fn main() -> std::process::ExitCode {
     let dump = args.iter().any(|a| a == "--dump-capabilities");
     let probe = args.iter().any(|a| a == "--probe-loader");
 
-    if let Some(bad) = args.iter().find(|a| {
-        a.as_str() != "--json"
-            && a.as_str() != "--dump-capabilities"
-            && a.as_str() != "--probe-loader"
-    }) {
+    // `--check-counters` and `--require-dispatches` take a value, so the flat "every argument must
+    // be a known flag" check below has to know to skip the values. Parse them out first.
+    let mut counters_file: Option<String> = None;
+    let mut required_dispatches: u64 = 1;
+    let mut consumed: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--check-counters" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("epctl: --check-counters needs a file path");
+                    usage();
+                    return std::process::ExitCode::from(2);
+                };
+                counters_file = Some(v.clone());
+                consumed.push(i);
+                consumed.push(i + 1);
+                i += 2;
+            }
+            "--require-dispatches" => {
+                let Some(v) = args.get(i + 1).and_then(|v| v.parse::<u64>().ok()) else {
+                    eprintln!("epctl: --require-dispatches needs a non-negative integer");
+                    usage();
+                    return std::process::ExitCode::from(2);
+                };
+                required_dispatches = v;
+                consumed.push(i);
+                consumed.push(i + 1);
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if let Some((_, bad)) = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !consumed.contains(i))
+        .find(|(_, a)| {
+            a.as_str() != "--json"
+                && a.as_str() != "--dump-capabilities"
+                && a.as_str() != "--probe-loader"
+        })
+    {
         eprintln!("epctl: unrecognised argument `{bad}`");
         usage();
         return std::process::ExitCode::from(2);
+    }
+
+    if let Some(path) = counters_file {
+        return check_counters(&path, required_dispatches);
     }
 
     if probe {
@@ -292,5 +474,117 @@ mod tests {
             format!("{:?}", std::process::ExitCode::from(3)),
             "a reworded report must be its own exit code, not a silent 'no devices' verdict"
         );
+    }
+
+    fn snapshot(dispatches: u64) -> String {
+        onnxruntime_vulkan_ep::counters::VulkanEpCounters {
+            struct_size: 0,
+            abi_version: counters::COUNTERS_ABI_VERSION,
+            compile_calls: 1,
+            subgraphs_live: 1,
+            subgraphs_stub: 0,
+            compute_calls: dispatches,
+            compute_failures: 0,
+            dispatches_executed: dispatches,
+        }
+        .to_json()
+    }
+
+    #[test]
+    fn json_u64_reads_our_own_snapshot_format() {
+        let doc = snapshot(7);
+        assert_eq!(json_u64(&doc, "dispatches_executed"), Some(7));
+        assert_eq!(json_u64(&doc, "compute_failures"), Some(0));
+        assert_eq!(
+            json_u64(&doc, "abi_version"),
+            Some(counters::COUNTERS_ABI_VERSION as u64)
+        );
+        assert_eq!(json_u64(&doc, "not_a_field"), None);
+    }
+
+    /// The three outcomes of the criterion-8 gate must be distinguishable for the same reason the
+    /// loader probe's are: a lane that crashed before reporting must not be mistakable for a lane
+    /// that reported honestly.
+    #[test]
+    fn counter_verdicts_separate_zero_from_no_report() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-counter-gate-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let ran = dir.join("ran.json");
+        std::fs::write(&ran, snapshot(3)).expect("write");
+        assert_eq!(
+            read_counters(ran.to_str().unwrap(), 1),
+            CounterVerdict::Pass { dispatches: 3 }
+        );
+
+        let idle = dir.join("idle.json");
+        std::fs::write(&idle, snapshot(0)).expect("write");
+        assert_eq!(
+            read_counters(idle.to_str().unwrap(), 1),
+            CounterVerdict::TooFew {
+                dispatches: 0,
+                required: 1
+            },
+            "a lane that executed nothing is a real, attributable answer — exit 1"
+        );
+
+        let missing = dir.join("this-file-does-not-exist.json");
+        let _ = std::fs::remove_file(&missing);
+        assert!(
+            matches!(
+                read_counters(missing.to_str().unwrap(), 1),
+                CounterVerdict::NoReport(_)
+            ),
+            "a lane that never wrote the file has not answered at all — exit 3, not exit 1"
+        );
+
+        let garbage = dir.join("garbage.json");
+        std::fs::write(&garbage, "the run crashed halfway through this fi").expect("write");
+        assert!(
+            matches!(
+                read_counters(garbage.to_str().unwrap(), 1),
+                CounterVerdict::NoReport(_)
+            ),
+            "a truncated file is the signature of a crash mid-write and must not parse as zero"
+        );
+
+        let future = dir.join("future.json");
+        std::fs::write(
+            &future,
+            snapshot(9).replace("\"abi_version\": 1", "\"abi_version\": 99"),
+        )
+        .expect("write");
+        assert!(
+            matches!(
+                read_counters(future.to_str().unwrap(), 1),
+                CounterVerdict::NoReport(_)
+            ),
+            "a snapshot from a counters ABI we do not understand must refuse rather than guess"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_dispatch_requirement_is_configurable_and_enforced() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-counter-threshold-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let f = dir.join("c.json");
+        std::fs::write(&f, snapshot(5)).expect("write");
+
+        assert_eq!(
+            read_counters(f.to_str().unwrap(), 5),
+            CounterVerdict::Pass { dispatches: 5 }
+        );
+        assert_eq!(
+            read_counters(f.to_str().unwrap(), 6),
+            CounterVerdict::TooFew {
+                dispatches: 5,
+                required: 6
+            }
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

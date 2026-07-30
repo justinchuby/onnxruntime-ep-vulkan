@@ -391,6 +391,83 @@ baseline there would dilute the signal on the rows that need one.
 
 ---
 
+## Proving a lane executed something: execution counters
+
+A green test suite and an executed dispatch are unrelated claims. A lane where every op declines,
+or every test skips, or every node quietly falls back to CPU under our provider's name, passes its
+assertions and runs nothing on a device. This project has already had to retract two fabricated
+speedups produced in exactly that state. `DESIGN.md` M0 criterion 8 therefore requires **a non-zero
+executed-dispatch count per lane, reported** — not inferred.
+
+`src/counters.rs` is that channel. It is always on (six relaxed atomics on paths that already do a
+GPU submit; the cost is unmeasurable) because a diagnostic you have to remember to enable makes a
+lane that *forgot* look identical to a lane that *executed nothing*.
+
+### What the number means
+
+`dispatches_executed` is incremented **after `dispatch_ort` returns success**, and `dispatch_ort`
+submits and then waits on a fence. So a non-zero count means a command buffer reached a device and
+the device finished it.
+
+It deliberately claims nothing about correctness. "A dispatch executed" and "the answer is right"
+are separate claims, and conflating them is how a provider that declined every node reported a
+1.45× speedup. Numerical agreement is the differential test's job.
+
+The other five counters exist to tell failure modes apart when the count is zero:
+
+| Counter | Zero-dispatch diagnosis |
+|---|---|
+| `compile_calls` | 0 → ORT never asked us to compile anything; nothing was claimed |
+| `subgraphs_live` | 0 with `subgraphs_stub` > 0 → we claimed nodes but had no device or produced no kernels |
+| `compute_calls` | 0 with `subgraphs_live` > 0 → Compile succeeded, the session never ran the node |
+| `compute_failures` | > 0 → we ran and returned a status; the log has the reason |
+
+### Reading it
+
+Two paths, because the interesting failure is a process that dies mid-session:
+
+```console
+# 1. A snapshot file, written on the FIRST successful dispatch and again at factory teardown.
+$ set ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE=%RUNNER_TEMP%\ep-counters.json
+$ pytest tests/ops
+$ cargo run --bin epctl -- --check-counters %RUNNER_TEMP%\ep-counters.json --require-dispatches 1
+```
+
+The early write is deliberate: both CI lanes currently crash inside `session.run()`, and a
+teardown-only snapshot would tell us nothing about how far they got. With the early write, a
+surviving file distinguishes "never executed anything" from "executed something and then
+corrupted memory".
+
+```c
+/* 2. In-process, for a host or a test that wants the live numbers. */
+size_t OrtEpVulkanGetExecutionCounters(void* out, size_t out_bytes);  /* returns bytes written */
+void   OrtEpVulkanResetExecutionCounters(void);
+```
+
+The struct leads with `struct_size` and `abi_version` so a reader validates before trusting, and
+growth is append-only. A short buffer gets a prefix and an honest byte count; a buffer too small
+for the header gets zero.
+
+### Exit codes, and why there are three
+
+| Code | Meaning |
+|---|---|
+| 0 | at least `--require-dispatches N` dispatches executed |
+| 1 | the lane reported, and the number was below the requirement |
+| 2 | usage error |
+| 3 | the lane **did not report** — file missing, truncated, or from a counters ABI we do not understand |
+
+1 and 3 are different codes on purpose, the same reasoning as `--probe-loader`. "Executed nothing"
+is a real, attributable answer. "Did not report" is the absence of one, and almost always means the
+process died before it could write. A crashed lane must not be able to look like any kind of
+answer, and a truncated file must not parse as a zero.
+
+At teardown the EP also logs a one-line summary through ORT's logger, and emits a `WARN` when the
+count is zero — so the signal is in the log even for a lane that never set the environment
+variable.
+
+---
+
 ## Loading the plugin
 
 ### Python
@@ -421,6 +498,99 @@ g_ort->RegisterExecutionProviderLibrary(env, "VulkanExecutionProvider", ORT_TSTR
 
 ---
 
+## The device allocator
+
+`src/allocator.rs` implements the `OrtAllocator` ORT uses when it decides a tensor should live in
+device memory. It is **opt-in**: set `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`. See *Why it is off by
+default* below — the reason is measured, not cautious.
+
+### What the pointer is
+
+ORT's allocator API is pointer-based: `Alloc` returns a `void*` and ORT may hand back
+`returned_ptr + offset`. Vulkan has no pointers — it has `VkBuffer` plus an offset. The pointer we
+return is therefore a **handle**, and it is deliberately not an integer: it is a page-aligned span
+of **real reserved virtual address space**, carved from one large `PROT_NONE` /
+`MEM_RESERVE`-only region per device.
+
+That choice is the whole design:
+
+* **`ptr + n` stays in-span by construction** for `n` below the requested size, so ORT's
+  memory-pattern planner does its arithmetic and we can still resolve the result to
+  `(handle, offset)` by range lookup.
+* **The address is unreadable.** Any code that mistakes the handle for memory and dereferences it
+  faults immediately at the exact instruction, instead of silently reading someone else's tensor.
+  Unreadability is the safety property, not an accident of the implementation.
+* **A guard band separates spans**, so the one-past-the-end pointer `ptr + size` lands in a hole
+  rather than on the next allocation.
+* Lookups are bounded by the **requested** size, not the page-rounded size — accepting the rounding
+  slack would quietly permit a short read past the tensor's end.
+* Reuse from the free list is **exact-size only**, for the same reason.
+
+`HandleRegistry::attach_buffer(addr, BufferView)` is the seam where the engine layer binds a real
+`VkBuffer` behind a handle. The registry never touches Vulkan itself.
+
+### When a handle goes bad
+
+`resolve` fails with one of three named causes, and each is logged in prose:
+
+| `LookupError` | Meaning |
+|---|---|
+| `NotAHandle` | the pointer is outside every reservation — a host pointer reached a device path |
+| `InGuardBand` | the pointer is inside the arena but between spans — an overrun by less than a page |
+| `Freed { freed_at_generation }` | the span was freed and is still in quarantine |
+
+### Quarantine is a window, not a proof
+
+Freed spans are held in a FIFO (`ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS`, default 4096) and stamped
+with the generation at which they were freed, so a use-after-free is *reported* rather than aliased
+onto a live tensor. When the FIFO overflows, the oldest address space is reused and that guarantee
+lapses for it. `AllocStats::quarantine_retired` counts exactly that: **non-zero means the window was
+exhausted and a stale handle could now alias.** It is reported rather than hidden because a
+detection window that silently closes is worse than none.
+
+### Stats
+
+`GetStats` reports nine keys. Two matter to other people:
+
+* **`MaxInUse`** (`AllocStats::high_water_bytes`) is the *peak*, not the current value. This is what
+  the `MatMulNBits` P6 assertion — "no dequantised weight is ever materialised in device memory" —
+  reads: a weight that is allocated and freed before the check still shows up in the high-water mark.
+* **`QuarantineRetired`** — see above.
+
+### Why it is off by default
+
+Advertising `OrtDeviceMemoryType_DEFAULT` is a package deal. Once ORT knows we have device memory it
+requires a registered `OrtDataTransferImpl` to move tensors in and out, and without one **every
+session fails at `Run`**:
+
+```
+There's no data transfer registered for copying tensors from
+  Device:[DeviceType:0 MemoryType:0 VendorId:0 DeviceId:0 Alignment:0] to
+  Device:[DeviceType:1 MemoryType:0 VendorId:4318 DeviceId:1 Alignment:4096]
+```
+
+Measured on both local devices. The data transfer cannot be written until handles are backed by real
+`VkBuffer`s, which is the engine layer's side. So the allocator ships complete and unit-proven, and
+stays behind a switch until its partner exists. The switch is also a bisect handle: flipping it took
+a ten-minute CI round trip down to a one-minute local answer when device memory first crashed
+registration.
+
+### The lifetime rule that cost us a crash
+
+`EpDevice_AddAllocatorInfo` is annotated `_In_`, which reads like a copy. It is not — the
+`OrtEpDevice` **retains** the `OrtMemoryInfo` pointer and ORT dereferences it after
+`GetSupportedDevices` returns, while it is still inside
+`register_execution_provider_library`. Releasing it there is an access violation. We leak it
+deliberately: one small object per device per registration, and ORT offers no way to hand it back.
+
+`tests/host_registration.rs` now enforces this. The mock host retains every attached memory info,
+`ReleaseMemoryInfo` **poisons instead of freeing**, and the scenario re-reads them after
+`GetSupportedDevices` returns — where ORT does. Re-introduce the release and the test names the
+rule instead of segfaulting. It also asserts one info per advertised device, so it cannot pass
+vacuously.
+
+---
+
 ## Environment variables
 
 | Variable | Effect |
@@ -428,6 +598,10 @@ g_ort->RegisterExecutionProviderLibrary(env, "VulkanExecutionProvider", ORT_TSTR
 | `ONNXRUNTIME_EP_VULKAN_VERBOSE=1` | verbose EP logging through ORT's logger |
 | `ONNXRUNTIME_EP_VULKAN_TRACE=1` | per-node trace during capability and compile |
 | `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` | log every node the EP declined **and why**, aggregated by op type |
+| `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE=<path>` | write the execution-counter snapshot here on the first successful dispatch and at factory teardown; read it back with `epctl --check-counters` |
+| `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` | **opt-in.** Advertise a device allocator to ORT, so ORT allocates tensors through us. Off by default — see *The device allocator* below |
+| `ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB=<n>` | size of the reserved virtual-address arena per device (default 65536 MiB, halved until the OS agrees) |
+| `ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS=<n>` | how many freed handles are held before their address space is reused (default 4096) |
 | `RUST_LOG=debug` | Rust-side `log` filtering, independent of ORT's level |
 | `LIBCLANG_PATH` | build only — where `bindgen` finds libclang |
 | `ORT_INCLUDE_DIR` / `ORT_HOME` | build only — override the vendored headers |

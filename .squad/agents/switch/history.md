@@ -291,3 +291,50 @@ a real model (Phi-3.5-mini) from running on GPU (64 of 366 nodes). Mouse taking 
 - norm.rs flip to Live: ⏳ waiting on Mouse (D-S15-01)
 - QGemv compile error: ✅ fixed (pre-existing, Mouse's enum addition)
 
+---
+
+## Session 16 — Descriptor-set lifetime fix (validation error VUID-03047) (2026-07-29T21:14:03-07:00)
+
+**Coordinator task:** Fix Vulkan validation error "A descriptor set is updated while bound to a
+recording command buffer, without UPDATE_AFTER_BIND" — caught by Trinity running the real Phi-3.5
+model, identical on Intel Iris Xe and NVIDIA RTX 4060.
+
+**Root cause (D-S16-01):**
+`dispatch_ort()` in `session.rs` created one `DispatchDescriptorPool` per kernel inside the
+dispatch loop. `DispatchDescriptorPool::Drop` calls `vkDestroyDescriptorPool`, freeing its
+`VkDescriptorSet` at end-of-iteration. On the *next* iteration `vkAllocateDescriptorSets` may
+reuse the same handle. `vkUpdateDescriptorSets` on that reused handle while the previous set is
+still "bound" in the recording command buffer triggers VUID-vkUpdateDescriptorSets-None-03047.
+
+Both drivers tolerated it (inference completed), but Adreno, Mali and MoltenVK are stricter.
+Working is not the same as valid.
+
+**Fix chosen: collect-and-defer (Option 1):**
+Declared `let mut desc_pools: Vec<DispatchDescriptorPool>` before the kernel loop. At the
+bottom of each loop iteration, ownership transfers to the Vec via `.push(desc_pool)`. The Vec
+drops after `submit_and_wait` returns, by which time the fence has signalled and the command
+buffer is no longer in use. This makes the class of error impossible without extension or
+platform-specific workaround: the set being written is always freshly allocated, and the set
+being read by the GPU is always fully initialised before it was ever bound.
+
+Why not `UPDATE_AFTER_BIND`? That requires `VK_EXT_descriptor_indexing`, which is optional
+and §7.2 requires no extensions. It would leave two diverging code paths where one does.
+
+**Also fixed (pre-existing, same session):**
+1. `allocator.rs` — `#[cfg(unix)]` changed to `#[cfg(not(windows))]` — P2 portability lint
+   requires every `#[cfg(windows)]` to have a `#[cfg(not(windows))]` counterpart. The `#[cfg(unix)]`
+   guard meant the Linux/macOS mmap path was only compiled on `unix`, not on all non-Windows targets.
+2. `allocator.rs:676` — added `#[allow(clippy::new_ret_no_self)]` on `VulkanAllocator::new` which
+   intentionally returns `*mut OrtAllocator` for the ORT ABI, not `Self`.
+3. `allocator.rs:836` — moved `// SAFETY:` comment to be immediately before the `unsafe` block
+   (was above the `if` statement; `undocumented_unsafe_blocks` requires the comment adjacent to the block).
+4. `allocator.rs:1074` — added `// SAFETY:` comments before `set_var`/`remove_var` unsafe blocks.
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN (326 lib tests + all integration suites)
+- Validation error VUID-vkUpdateDescriptorSets-None-03047: ✅ fixed (descriptor lifetime corrected)
+- Mouse's Intel access violation: 🟡 plausible same root cause (descriptor use-after-free); needs
+  confirmation from Mouse — the fix eliminates the scenario but cannot confirm it was the cause
+- SkipSimplifiedLayerNorm: ⏳ waiting on Mouse to flip norm.rs to Live (D-S15-01)
+- Pre-existing allocator.rs clippy/portability issues: ✅ fixed as side-effect
+

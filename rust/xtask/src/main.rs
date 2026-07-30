@@ -287,6 +287,14 @@ fn print_caveats(env: &Env) {
          \x20   claim diagnostics, no-ICD fallback) was not run. It needs a real ONNX Runtime."
     );
     println!(
+        "  * ZERO DISPATCHES EXECUTED, and that is expected here. The execution counters this\n\
+         \x20   suite exercises are checked for shape, not for a non-zero value: nothing in\n\
+         \x20   `cargo ci` runs a claimed node on a device. M0 criterion 8 is satisfied only by a\n\
+         \x20   lane that reports a non-zero `dispatches_executed` — see\n\
+         \x20   `epctl --check-counters`. A green `cargo ci` and an executed dispatch are\n\
+         \x20   unrelated claims; do not report the second on the strength of the first."
+    );
+    println!(
         "  * ONLY THIS HOST'S TARGET WAS COMPILED. Nothing here builds for the other OS, and this\n\
          \x20   caveat has already come true once: `tests/mock_ort/mod.rs` named a bindgen type\n\
          \x20   that only exists on Windows, and broke the Linux lane for a full cycle.\n\

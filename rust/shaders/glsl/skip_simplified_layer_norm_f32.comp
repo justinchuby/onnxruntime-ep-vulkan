@@ -1,0 +1,100 @@
+// SkipSimplifiedLayerNormalization (f32) — fused residual-add + RMSNorm.
+//
+// One workgroup covers one row (one token's hidden dimension).
+//
+// Algorithm:
+//   residual[i]  = hidden[i] + skip[i]                      (the "Skip" fuse)
+//   sum_sq       = Σ residual[i]² / hidden_size              (mean square)
+//   inv_rms      = 1 / sqrt(sum_sq + epsilon)
+//   out0[i]      = residual[i] * inv_rms * gamma[i]          (normalised — slot 0)
+//   out3[i]      = residual[i]                               (pre-norm sum — slot 3)
+//
+// out3 is always written; the translate handler allocates a temp buffer when slot 3 is not
+// requested, so the shader never needs to branch on that.
+//
+// Three-pass design within a single dispatch:
+//   Pass 1 — each thread loops over its stride of elements, writes out3, accumulates partial
+//             sum-of-squares.
+//   Pass 2 — shared-memory binary tree reduction → shmem[0] = total sum-of-squares.
+//   Pass 3 — each thread recomputes residual from inputs (avoids read-after-write on out3 which
+//             is writeonly) and writes the normalised out0.
+//
+// Cross-platform notes (ENGINE.md §3, §6):
+//   - LOCAL_SIZE is spec constant 0; default 256.  The translate handler always passes 256 (the
+//     EW constant) so no per-device tuning path exists yet.  256 fits in both local GPUs and the
+//     §7.2 floor device (256 invocations, 16 KiB shared memory).
+//   - Shared memory: 256 * 4 bytes = 1 KiB at the default local size.
+//   - The tree reduction requires LOCAL_SIZE to be a power of two.  The translate handler
+//     enforces this via the 256 constant; overriding via spec constant must also be power-of-two.
+//   - Arithmetic is f32 throughout.  The fp16 variant (skip_simplified_layer_norm_f16.comp)
+//     uses float16_t storage but promotes to f32 for all arithmetic — see the fp16 file once
+//     written.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint batch_count;  // total rows = product of dims 0 .. rank-2
+    uint hidden_size;  // last dimension (elements per row)
+    uint eps_bits;     // reinterpret-cast: uintBitsToFloat(eps_bits) == epsilon
+    uint _pad;         // alignment padding, must be zero
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer Hidden { float data[]; } u_hidden;
+layout(set = 0, binding = 1) readonly  buffer Skip   { float data[]; } u_skip;
+layout(set = 0, binding = 2) readonly  buffer Gamma  { float data[]; } u_gamma;
+layout(set = 0, binding = 3) writeonly buffer Out0   { float data[]; } u_out0;
+layout(set = 0, binding = 4) writeonly buffer Out3   { float data[]; } u_out3;
+
+// Tree-reduction scratch.  Sized at the default LOCAL_SIZE (256); unused entries when the
+// spec constant is overridden to a smaller power-of-two do not affect correctness.
+shared float shmem[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint lsz = gl_WorkGroupSize.x;
+
+    if (row >= pc.batch_count) return;
+
+    uint base = row * pc.hidden_size;
+
+    // Pass 1: write residual to out3, accumulate partial sum-of-squares.
+    float partial_sq = 0.0;
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float h = u_hidden.data[base + i];
+        float s = u_skip.data[base + i];
+        float r = h + s;
+        partial_sq += r * r;
+        u_out3.data[base + i] = r;
+    }
+
+    // Pass 2: binary tree reduction within the workgroup.
+    shmem[tid] = partial_sq;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] += shmem[tid + stride];
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    // Pass 3: normalise.  Re-read inputs rather than out3 (writeonly — re-reading is
+    // undefined).  Re-computing h+s is two extra cache hits per element; the inputs are
+    // readonly and will typically be L2-resident from pass 1.
+    float eps     = uintBitsToFloat(pc.eps_bits);
+    float inv_rms = inversesqrt(shmem[0] / float(pc.hidden_size) + eps);
+
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float h = u_hidden.data[base + i];
+        float s = u_skip.data[base + i];
+        float r = h + s;
+        float g = u_gamma.data[i];
+        u_out0.data[base + i] = r * inv_rms * g;
+    }
+}

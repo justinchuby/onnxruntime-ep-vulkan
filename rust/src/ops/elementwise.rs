@@ -564,6 +564,8 @@ mod tests {
                 Template::EwUnary => assert_eq!(arity, 1),
                 Template::EwBinary => assert_eq!(arity, 2),
                 Template::EwSelect => assert_eq!(arity, 3),
+                // QGemv rows live in quant.rs, not in this table; arity checked there.
+                Template::QGemv => {}
             }
         }
     }

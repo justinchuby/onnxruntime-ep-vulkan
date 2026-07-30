@@ -21,6 +21,7 @@
 
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use crate::engine::{self, DeviceInfo};
 use crate::ep::VulkanEp;
@@ -370,6 +371,24 @@ unsafe fn get_supported_devices_impl(
         unsafe { *ep_devices.add(written) = ep_device };
         written += 1;
 
+        // Advertise device memory for this device. Without this, ORT has no `OrtMemoryInfo` that
+        // names us and therefore never calls `CreateAllocator` — the allocator would exist and be
+        // unreachable, which is exactly the "a registry that is not in ORT's path" objection that
+        // made the earlier verification of the handle scheme a precondition dressed as an effect.
+        //
+        // Failure here is deliberately non-fatal: the EP is fully functional without a device
+        // allocator (M0/M1 staged everything through host memory), so a host too old to have
+        // `EpDevice_AddAllocatorInfo` gets a working EP with a log line rather than a dead one.
+        //
+        // The kill switch exists because this is the newest and least-exercised call we make into
+        // ORT, and being able to turn it off without a rebuild is what let a registration crash be
+        // bisected in one minute instead of one CI cycle.
+        if device_memory_enabled() {
+            // SAFETY: `ep_api`/`api` are live and `ep_device` is the handle `CreateEpDevice` just
+            // produced.
+            unsafe { advertise_device_memory(api, ep_api, ep_device, info) };
+        }
+
         log::info!(
             "VulkanExecutionProvider advertising device #{} `{}` (vendor {:#06x}, Vulkan {}, \
              correlated by {})",
@@ -384,6 +403,139 @@ unsafe fn get_supported_devices_impl(
     // SAFETY: valid out-param slot.
     unsafe { *num_ep_devices = written };
     ptr::null_mut()
+}
+
+/// Whether to advertise device memory at all.
+///
+/// **Default off, and the reason is a measured one rather than caution.** Advertising an
+/// `OrtDeviceAllocator` with `OrtDeviceMemoryType_DEFAULT` is a package deal: ORT then requires a
+/// registered `OrtDataTransferImpl` to move tensors between host memory and ours, and without one
+/// every session fails at Run with
+///
+/// > There's no data transfer registered for copying tensors from Device:[DeviceType:0 …] to
+/// > Device:[DeviceType:1 … Alignment:4096]
+///
+/// — verified locally against ORT 1.28 on both devices. The data transfer cannot be written until
+/// the handle→`VkBuffer` seam is filled, which is Switch's side. So the allocator ships complete,
+/// proven in ORT's path, and opt-in until its partner exists. Turning it on before then would
+/// trade a working EP for an unusable one.
+///
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` enables it. That is the switch the M2 work runs behind.
+pub const ENV_DEVICE_MEMORY: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY";
+
+fn device_memory_enabled() -> bool {
+    std::env::var(ENV_DEVICE_MEMORY).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// Advertise device memory for one `OrtEpDevice`.
+///
+/// This is what puts the allocator in ORT's path: ORT calls `CreateAllocator` only for an
+/// `OrtMemoryInfo` an EP device has claimed.
+///
+/// # Safety
+/// `api` and `ep_api` must be live; `ep_device` must be a handle from `CreateEpDevice`.
+unsafe fn advertise_device_memory(
+    api: *const ort::OrtApi,
+    ep_api: *const ort::OrtEpApi,
+    ep_device: *mut ort::OrtEpDevice,
+    info: &crate::engine::DeviceInfo,
+) {
+    // SAFETY: `api`/`ep_api` are live for the duration of this function.
+    unsafe {
+        let (Some(create_mi), Some(add_alloc)) = (
+            (*api).CreateMemoryInfo_V2,
+            (*ep_api).EpDevice_AddAllocatorInfo,
+        ) else {
+            log::info!(
+                "VulkanExecutionProvider: this ORT build has no CreateMemoryInfo_V2 / \
+                 EpDevice_AddAllocatorInfo, so no device allocator is advertised for device #{}. \
+                 The EP still works — subgraph I/O stays in host memory, as it did before M2.",
+                info.index
+            );
+            return;
+        };
+
+        let Ok(name) = CString::new(memory_info_name(info.index)) else {
+            return;
+        };
+        let mut mi: *mut ort::OrtMemoryInfo = ptr::null_mut();
+        let status = create_mi(
+            name.as_ptr(),
+            ort::OrtMemoryInfoDeviceType_OrtMemoryInfoDeviceType_GPU,
+            info.vendor_id,
+            info.index as i32,
+            ort::OrtDeviceMemoryType_OrtDeviceMemoryType_DEFAULT,
+            // Our handles are page-aligned, so promising 4096 is a claim we actually keep. A
+            // smaller promise would be true but would let ORT sub-divide a block on a boundary our
+            // range lookup cannot attribute to a distinct allocation.
+            crate::allocator::HANDLE_ALIGNMENT,
+            ort::OrtAllocatorType_OrtDeviceAllocator,
+            &mut mi,
+        );
+        if !status.is_null() || mi.is_null() {
+            let msg = sys::status_message(api, status);
+            sys::release_status(api, status);
+            log::warn!(
+                "VulkanExecutionProvider: could not create OrtMemoryInfo for device #{}: {msg}. \
+                 No device allocator will be advertised for it.",
+                info.index
+            );
+            return;
+        }
+
+        let status = add_alloc(ep_device, mi);
+        if !status.is_null() {
+            let msg = sys::status_message(api, status);
+            sys::release_status(api, status);
+            log::warn!(
+                "VulkanExecutionProvider: EpDevice_AddAllocatorInfo failed for device #{}: {msg}",
+                info.index
+            );
+            // Only on the failure path is the handle ours to release: ORT did not take it.
+            if let Some(release) = (*api).ReleaseMemoryInfo {
+                release(mi);
+            }
+            return;
+        }
+
+        // `mi` is deliberately NOT released.
+        //
+        // `EpDevice_AddAllocatorInfo` is annotated `_In_` and reads like a copy, but the
+        // `OrtEpDevice` stores the pointer: ORT dereferences it after `GetSupportedDevices`
+        // returns, while it is finishing library registration. Releasing here produced an access
+        // violation inside `register_execution_provider_library`, reproduced locally and bisected
+        // to this exact call — and it is the same fault signature CI has been showing.
+        //
+        // So the memory info leaks by design. It is one small object per device per registration,
+        // for the life of the process, and ORT has no API to hand it back. A leak whose size is
+        // bounded by the device count is the correct trade against a dangling pointer the host
+        // will dereference; this is the same deleter-lifetime class as the ORT 1.28 plugin-EP fix
+        // we pinned for.
+        //
+        // If a future ORT documents that it copies, the fix is to release here again — but the
+        // burden of proof is on the documentation, because this direction fails loudly and the
+        // other direction fails silently and only under memory pressure.
+        log::info!(
+            "VulkanExecutionProvider: advertised device memory `{}` for device #{} — ORT may now \
+             allocate through this EP",
+            memory_info_name(info.index),
+            info.index
+        );
+    }
+}
+
+/// The `OrtMemoryInfo` name for a device index.
+///
+/// `create_allocator` matches on this rather than on the device id alone, because ORT may hand us
+/// a memory info we never advertised (for a different EP, or for host memory) and answering "yes,
+/// that's mine" to one of those would put our handles where real pointers are expected.
+pub(crate) fn memory_info_name(index: usize) -> String {
+    format!("VulkanExecutionProvider:{index}")
 }
 
 /// RAII wrapper over an `OrtKeyValuePairs` built for EP-device metadata.
@@ -561,24 +713,187 @@ unsafe extern "C" fn release_ep(_p: *mut ort::OrtEpFactory, ep: *mut ort::OrtEp)
 // (OrtDataTransferImpl). See OQ-3 for how a `VkBuffer + offset` is made to look like the `void*`
 // ORT's allocator API expects — the current answer is an opaque-handle registry.
 
+// -------------------------------------------------------------------------------------------
+// Device allocator
+// -------------------------------------------------------------------------------------------
+//
+// ORT calls `CreateAllocator` for a memory info an EP device claimed in `GetSupportedDevices`
+// (see `advertise_device_memory`). The handle scheme, the vtable and the lifetime contract live in
+// `allocator.rs`; the `VkBuffer` behind each handle is Switch's `vk/alloc.rs`, reached through the
+// opaque `engine::BufferView` token.
+//
+// Data transfer and sync streams remain unimplemented: an allocator that hands out handles is
+// useful on its own (weight prepacking and the KV cache both need device-resident memory with a
+// stable identity), whereas a data-transfer implementation without one has nothing to transfer
+// into. They are advertised as absent rather than as no-op successes, because "this EP cannot copy
+// between devices" is true and "it copied successfully" would not be.
+
+/// Registries live for the process, keyed by device index, so every session on a device shares one
+/// handle space.
+///
+/// Process-lifetime rather than per-session for two reasons. ORT may create and destroy several
+/// allocators for the same device over a run, and recycling the address space between them would
+/// reintroduce exactly the stale-handle aliasing the quarantine exists to prevent. And the
+/// high-water number that Mouse's P6 assertion reads is only meaningful across a whole run.
+static REGISTRIES: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<usize, Arc<crate::allocator::HandleRegistry>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// The registry for `device_index`, creating it on first use.
+pub(crate) fn registry_for_device(
+    device_index: usize,
+) -> Option<Arc<crate::allocator::HandleRegistry>> {
+    let mut map = REGISTRIES.lock().ok()?;
+    if let Some(r) = map.get(&device_index) {
+        return Some(Arc::clone(r));
+    }
+    let r = crate::allocator::HandleRegistry::new()?;
+    map.insert(device_index, Arc::clone(&r));
+    Some(r)
+}
+
 unsafe extern "C" fn create_allocator(
-    _p: *mut ort::OrtEpFactory,
-    _memory_info: *const ort::OrtMemoryInfo,
+    p: *mut ort::OrtEpFactory,
+    memory_info: *const ort::OrtMemoryInfo,
     _options: *const ort::OrtKeyValuePairs,
     allocator: *mut *mut ort::OrtAllocator,
 ) -> ort::OrtStatusPtr {
+    // Null the out-param before anything fallible: on every early return below ORT must read a
+    // definite null rather than whatever was in the slot.
     if !allocator.is_null() {
         // SAFETY: valid out-param slot supplied by ORT.
         unsafe { *allocator = ptr::null_mut() };
     }
-    ptr::null_mut()
+    if p.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `p` is the factory pointer ORT received from `CreateEpFactories`.
+    let api = unsafe { this(p).ort_api };
+
+    // SAFETY: `api` is live; the guard converts any panic below into a status rather than
+    // unwinding into ORT's C++.
+    unsafe {
+        crate::guard_ffi_status(api, "OrtEpFactory::CreateAllocator", || {
+            if allocator.is_null() || memory_info.is_null() {
+                // Not an error: ORT probes with a null out-param in some paths, and "no allocator"
+                // is a legal answer.
+                return ptr::null_mut();
+            }
+            let Some(device_index) = device_index_of(api, memory_info) else {
+                // A memory info we did not advertise. Declining is the only safe answer: claiming
+                // it would put opaque handles where the requester expects readable memory.
+                log::debug!(
+                    "VulkanExecutionProvider: CreateAllocator called for a memory info this EP did \
+                     not advertise; declining."
+                );
+                return ptr::null_mut();
+            };
+            let Some(registry) = registry_for_device(device_index) else {
+                log::warn!(
+                    "VulkanExecutionProvider: could not reserve handle address space for device \
+                     #{device_index}; reporting no device allocator. The EP still works with host \
+                     memory."
+                );
+                return ptr::null_mut();
+            };
+
+            // Our own memory info for the allocator to report from `Info()`. ORT's contract is
+            // that the allocator owns what it returns there, so we make a fresh one rather than
+            // aliasing the caller's.
+            let Some(create_mi) = (*api).CreateMemoryInfo_V2 else {
+                return ptr::null_mut();
+            };
+            let Ok(name) = CString::new(memory_info_name(device_index)) else {
+                return ptr::null_mut();
+            };
+            let mut mi: *mut ort::OrtMemoryInfo = ptr::null_mut();
+            let status = create_mi(
+                name.as_ptr(),
+                ort::OrtMemoryInfoDeviceType_OrtMemoryInfoDeviceType_GPU,
+                vendor_id_of(api, memory_info).unwrap_or(0),
+                device_index as i32,
+                ort::OrtDeviceMemoryType_OrtDeviceMemoryType_DEFAULT,
+                crate::allocator::HANDLE_ALIGNMENT,
+                ort::OrtAllocatorType_OrtDeviceAllocator,
+                &mut mi,
+            );
+            if !status.is_null() {
+                return status;
+            }
+
+            // SAFETY: `mi` is an owned handle being transferred to the allocator, which releases
+            // it in `VulkanAllocator::release`; `api` is ORT's process-lifetime table.
+            let a = crate::allocator::VulkanAllocator::new(registry, mi, api);
+            // SAFETY: checked non-null above.
+            *allocator = a;
+            log::info!(
+                "VulkanExecutionProvider: created a device allocator for device #{device_index}. \
+                 Handles are reserved, inaccessible virtual addresses — interior pointers resolve \
+                 by range, and a dereference faults immediately by design."
+            );
+            ptr::null_mut()
+        })
+    }
+}
+
+/// Recover the device index from an `OrtMemoryInfo`, but only if we advertised it.
+///
+/// # Safety
+/// `api` must be live; `mi` must be a valid memory info.
+unsafe fn device_index_of(api: *const ort::OrtApi, mi: *const ort::OrtMemoryInfo) -> Option<usize> {
+    // SAFETY: `api` and `mi` are live per this function's contract; `MemoryInfoGetName` yields a
+    // pointer valid for as long as `mi` is, and we copy out of it before returning.
+    unsafe {
+        let get_name = (*api).MemoryInfoGetName?;
+        let mut name: *const std::os::raw::c_char = ptr::null();
+        let status = get_name(mi, &mut name);
+        if !status.is_null() {
+            sys::release_status(api, status);
+            return None;
+        }
+        if name.is_null() {
+            return None;
+        }
+        let name = CStr::from_ptr(name).to_string_lossy().into_owned();
+        // Matching on the exact name we advertised, not on a prefix and not on the device id: a
+        // memory info that merely *looks* like ours is one we must decline.
+        let get_id = (*api).MemoryInfoGetId?;
+        let mut id: std::os::raw::c_int = 0;
+        let status = get_id(mi, &mut id);
+        if !status.is_null() {
+            sys::release_status(api, status);
+            return None;
+        }
+        let index = usize::try_from(id).ok()?;
+        if name == memory_info_name(index) {
+            Some(index)
+        } else {
+            None
+        }
+    }
+}
+
+/// # Safety
+/// `api` must be live; `mi` must be a valid memory info.
+unsafe fn vendor_id_of(api: *const ort::OrtApi, mi: *const ort::OrtMemoryInfo) -> Option<u32> {
+    // SAFETY: `api`/`mi` are live per the contract.
+    unsafe {
+        let f = (*api).MemoryInfoGetVendorId?;
+        Some(f(mi))
+    }
 }
 
 unsafe extern "C" fn release_allocator(
     _p: *mut ort::OrtEpFactory,
-    _allocator: *mut ort::OrtAllocator,
+    allocator: *mut ort::OrtAllocator,
 ) {
-    // Nothing to release: `create_allocator` never produces one.
+    if allocator.is_null() {
+        return;
+    }
+    // SAFETY: ORT hands back exactly the pointer `create_allocator` produced, exactly once.
+    // `release` re-checks our marker before interpreting it, so a foreign pointer is logged and
+    // ignored rather than freed as ours.
+    unsafe { crate::allocator::VulkanAllocator::release(allocator) };
 }
 
 unsafe extern "C" fn create_data_transfer(

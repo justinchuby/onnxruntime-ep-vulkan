@@ -14,7 +14,7 @@
 //! undefined behaviour and a wrong answer is worse than a slow one.
 
 use crate::engine::{
-    DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
+    AttrValue, DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
 };
 use crate::registry::OpSpec;
 
@@ -201,6 +201,154 @@ pub fn unimplemented(
         "`{}` has no Vulkan translation yet; it should never have been claimed",
         node.op_type
     )))
+}
+
+// ── Norm family ──────────────────────────────────────────────────────────────────────────────
+
+/// Workgroup size the norm template is compiled with.
+///
+/// Shared with the EW constant (both 256) because the portability argument is the same: 256
+/// invocations is the §7.2 floor guarantee, and the tree-reduction scratch at 256 × 4 bytes
+/// (1 KiB) is safely within the 16 KiB shared-memory floor.  The local size must remain a
+/// power of two — the tree-reduction algorithm depends on it.
+pub const NORM_LOCAL_SIZE: u32 = 256;
+
+/// Default epsilon for RMSNorm variants, matching the ONNX schema default.
+const NORM_EPSILON_DEFAULT: f32 = 1e-5;
+
+/// Translate `SkipSimplifiedLayerNormalization` — fused residual-add + RMSNorm.
+///
+/// # Outputs
+///
+/// The ORT schema declares four output slots; only 0 and 3 matter:
+///
+/// | slot | name           | always bound? |
+/// |------|----------------|---------------|
+/// | 0    | normalised out | yes           |
+/// | 1    | mean           | almost never  |
+/// | 2    | inv_std_var    | almost never  |
+/// | 3    | residual sum   | yes (feeds next block) |
+///
+/// Slots 1 and 2 are empty strings in every node in both Phi-3.5 and gpt-oss (census
+/// `OP_COVERAGE.md §4.21`).  When slot 3 is absent the translate handler allocates a scratch
+/// buffer so the shader always has a place to write — the result is discarded, which is
+/// wasteful but correct and avoids a shader variant.
+///
+/// # Shader
+///
+/// The direct shader (`shaders/glsl/skip_simplified_layer_norm_f32.comp`) is not wired into
+/// the manifest system; `build.rs` picks it up by directory scan.  The stem
+/// `skip_simplified_layer_norm_f32` is therefore a string literal here rather than coming from
+/// `spec.kernel.stem(dtype)`.  A test below asserts the file exists so the mismatch surfaces as
+/// a unit-test failure rather than a build panic.
+pub fn skip_norm(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
+    // -- Validate and extract shape info --------------------------------------------------
+
+    // We expect at least 3 inputs: hidden (0), skip (1), gamma (2).
+    if node.inputs.len() < 3 {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` needs at least 3 inputs (hidden, skip, gamma), got {}",
+            node.op_type,
+            node.inputs.len()
+        )));
+    }
+
+    let dtype = common_dtype(node, 0, 3)?;
+
+    let hidden_shape = node.inputs[0]
+        .desc
+        .as_ref()
+        .map(|d| &d.shape)
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+
+    if hidden_shape.is_empty() {
+        return Err(EpError::Unsupported(format!(
+            "`{}` requires a non-scalar input",
+            node.op_type
+        )));
+    }
+    let rank = hidden_shape.len();
+    let hidden_size = hidden_shape[rank - 1] as u32;
+    let batch_count: u32 = hidden_shape[..rank - 1].iter().map(|&d| d as u32).product();
+    // product() on empty slice (rank==1) = 1, which is correct.
+
+    // -- Select shader stem by dtype ------------------------------------------------------
+    let shader: &'static str = match dtype {
+        DType::F32 => "skip_simplified_layer_norm_f32",
+        DType::F16 => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` fp16 variant is not yet written; claim predicate should have checked this",
+                node.op_type
+            )));
+        }
+        _ => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` dtype {dtype:?} is not supported by the norm kernel",
+                node.op_type
+            )));
+        }
+    };
+
+    // -- Epsilon attribute ----------------------------------------------------------------
+    let eps: f32 = match node.attributes.get("epsilon") {
+        Some(AttrValue::Float(v)) => *v,
+        None => NORM_EPSILON_DEFAULT,
+        Some(_) => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` `epsilon` attribute is not a float",
+                node.op_type
+            )));
+        }
+    };
+
+    // -- Bind inputs ----------------------------------------------------------------------
+    let hidden_buf = ctx.resolve(&node.inputs[0])?;
+    let skip_buf = ctx.resolve(&node.inputs[1])?;
+    let gamma_buf = ctx.resolve(&node.inputs[2])?;
+
+    // -- Bind or allocate outputs ---------------------------------------------------------
+    let out_desc = TensorDesc::new(dtype, hidden_shape.clone());
+
+    // Slot 0: normalised output — always present when the op is claimed.
+    let out0 = node
+        .outputs
+        .first()
+        .ok_or_else(|| EpError::InvalidGraph(format!("`{}` has no outputs", node.op_type)))?;
+    let out0_buf = ctx.bind_output(out0, out_desc.clone())?;
+
+    // Slot 3: residual sum (pre-norm) — feeds the next block in LLM graphs.  When the slot is
+    // absent in a given node, allocate a scratch buffer so the shader always has a valid
+    // binding.  The write is wasted but correct; no variant needed.
+    let out3_buf = match node.outputs.get(3).filter(|o| !o.name.is_empty()) {
+        Some(out3) => ctx.bind_output(out3, out_desc)?,
+        None => ctx.alloc_temp(out_desc)?,
+    };
+
+    // -- Push constants -------------------------------------------------------------------
+    // Layout (little-endian):
+    //   offset  0: batch_count (u32)
+    //   offset  4: hidden_size (u32)
+    //   offset  8: eps_bits    (u32)  — uintBitsToFloat(eps_bits) == epsilon
+    //   offset 12: _pad        (u32)
+    let mut push = Vec::with_capacity(16);
+    push.extend_from_slice(&batch_count.to_le_bytes());
+    push.extend_from_slice(&hidden_size.to_le_bytes());
+    push.extend_from_slice(&eps.to_bits().to_le_bytes());
+    push.extend_from_slice(&0u32.to_le_bytes()); // padding
+
+    // -- Dispatch -------------------------------------------------------------------------
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![NORM_LOCAL_SIZE],
+        push_constants: push,
+        bindings: vec![hidden_buf, skip_buf, gamma_buf, out0_buf, out3_buf],
+        workgroups: [batch_count.max(1), 1, 1],
+    })
 }
 
 #[cfg(test)]
@@ -443,5 +591,150 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── skip_norm tests ──────────────────────────────────────────────────────────────────────
+
+    fn skip_norm_node_f32(batch: i64, seq: i64, hidden: i64) -> NodeDesc {
+        NodeDesc {
+            op_type: "SkipSimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("hidden", DType::F32, &[batch, seq, hidden]),
+                tensor("skip", DType::F32, &[batch, seq, hidden]),
+                tensor("gamma", DType::F32, &[hidden]),
+            ],
+            outputs: vec![
+                out("out0", DType::F32, &[batch, seq, hidden]), // slot 0
+                OutRef {
+                    name: String::new(),
+                    desc: None,
+                }, // slot 1 (empty)
+                OutRef {
+                    name: String::new(),
+                    desc: None,
+                }, // slot 2 (empty)
+                out("out3", DType::F32, &[batch, seq, hidden]), // slot 3
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn skip_norm_f32_produces_one_dispatch_with_correct_shader() {
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let node = skip_norm_node_f32(2, 4, 64);
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).expect("translate");
+
+        assert_eq!(ctx.dispatches.len(), 1);
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.shader, "skip_simplified_layer_norm_f32");
+        assert_eq!(k.spec_constants, vec![NORM_LOCAL_SIZE]);
+        assert_eq!(k.workgroups, [8, 1, 1], "batch×seq = 2×4 = 8 rows");
+        assert_eq!(k.bindings.len(), 5, "hidden, skip, gamma, out0, out3");
+        assert_eq!(
+            ctx.outputs.len(),
+            2,
+            "bind_output called for slot-0 and slot-3"
+        );
+        assert_eq!(ctx.outputs[0].shape, vec![2, 4, 64]);
+    }
+
+    #[test]
+    fn skip_norm_f32_push_constants_encode_shape_and_epsilon() {
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let mut node = skip_norm_node_f32(1, 8, 128);
+        // Insert a custom epsilon attribute.
+        node.attributes
+            .insert("epsilon".into(), AttrValue::Float(1e-6));
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).unwrap();
+        let pc = &ctx.dispatches[0].push_constants;
+
+        assert_eq!(pc.len(), 16, "fixed 16-byte push constant block");
+        let batch_count = u32::from_le_bytes(pc[0..4].try_into().unwrap());
+        let hidden_size = u32::from_le_bytes(pc[4..8].try_into().unwrap());
+        let eps_bits = u32::from_le_bytes(pc[8..12].try_into().unwrap());
+        let pad = u32::from_le_bytes(pc[12..16].try_into().unwrap());
+        assert_eq!(batch_count, 8, "1×8 rows");
+        assert_eq!(hidden_size, 128);
+        assert_eq!(f32::from_bits(eps_bits), 1e-6_f32);
+        assert_eq!(pad, 0);
+    }
+
+    #[test]
+    fn skip_norm_absent_slot3_uses_a_temp_buffer() {
+        // When output slot 3 is not requested, the handler must allocate a scratch buffer so
+        // the shader always has a valid binding.
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let mut node = skip_norm_node_f32(1, 1, 32);
+        // Remove slot 3.
+        node.outputs.truncate(1);
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).unwrap();
+
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.bindings.len(), 5, "always 5 bindings even without slot-3");
+        // ctx.outputs includes both bind_output and alloc_temp calls (Recorder design).
+        // Check that exactly one is from slot-0 (bind_output) and one from the scratch (alloc_temp).
+        assert_eq!(
+            ctx.outputs.len(),
+            2,
+            "one bind_output (slot 0) + one alloc_temp (slot 3 scratch)"
+        );
+    }
+
+    #[test]
+    fn skip_norm_default_epsilon_matches_onnx_schema() {
+        // A missing `epsilon` attribute should resolve to 1e-5, the ONNX schema default.
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let node = skip_norm_node_f32(1, 1, 16);
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).unwrap();
+
+        let pc = &ctx.dispatches[0].push_constants;
+        let eps_bits = u32::from_le_bytes(pc[8..12].try_into().unwrap());
+        assert_eq!(
+            f32::from_bits(eps_bits),
+            NORM_EPSILON_DEFAULT,
+            "default epsilon is 1e-5"
+        );
+    }
+
+    #[test]
+    fn skip_norm_rank1_input_yields_batch_count_one() {
+        // A single 1-D row (e.g. during unit testing with [hidden_size] input).
+        let spec = spec_named("SkipSimplifiedLayerNormalization");
+        let node = NodeDesc {
+            op_type: "SkipSimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("hidden", DType::F32, &[256]),
+                tensor("skip", DType::F32, &[256]),
+                tensor("gamma", DType::F32, &[256]),
+            ],
+            outputs: vec![out("out0", DType::F32, &[256])],
+            ..Default::default()
+        };
+        let mut ctx = Recorder::default();
+        skip_norm(spec, &node, &mut ctx).unwrap();
+        assert_eq!(ctx.dispatches[0].workgroups, [1, 1, 1]);
+    }
+
+    /// The shader file that `skip_norm` names must exist on disk.
+    ///
+    /// `skip_norm` hardcodes the stem rather than routing through `spec.kernel.stem()`, so the
+    /// manifest system never checks it.  This test fills that gap: a wrong stem here is a
+    /// unit-test failure rather than a build panic on a different machine.
+    #[test]
+    fn skip_norm_f32_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("skip_simplified_layer_norm_f32.comp");
+        assert!(
+            path.is_file(),
+            "shaders/glsl/skip_simplified_layer_norm_f32.comp is missing; \
+             the translate handler names it directly so it must exist at build time"
+        );
     }
 }

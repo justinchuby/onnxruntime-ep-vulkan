@@ -114,8 +114,80 @@ fn ort_can_load_the_shipped_library_and_resolve_its_entry_points() {
     // mapped for the rest of the process — the same lifetime ORT gives a registered EP library.
     unsafe { run_registration_scenario(create, release, LogProbe::Foreign) };
 
+    check_counters_export(&lib, &path);
+
     // ORT does not unload an EP library while the process lives, and neither do we: the plugin has
     // installed a `log` logger and leaked process-lifetime statics inside its own image, so
     // unmapping it here would be less faithful, not more.
     std::mem::forget(lib);
+}
+
+/// The counters symbol must resolve **in the shipped artifact**, and must report honestly.
+///
+/// This is CI's criterion-8 evidence channel. If it silently stops being exported — a rename, a
+/// mangled symbol, a `#[unsafe(no_mangle)]` lost in a refactor — then `epctl --check-counters`
+/// starts returning "no report" on every lane and the gate degrades into noise that people learn
+/// to ignore. Checking it here costs one symbol lookup.
+///
+/// The scenario just run registered a factory and released it without ever calling `Compile`, so
+/// the honest answer is **zero dispatches**. Asserting on zero is the point: a counter that
+/// reported a non-zero number here would be fabricating, and a fabricated execution count is
+/// strictly worse than none — it is the exact shape of the two false speedups this project has
+/// already had to retract.
+fn check_counters_export(lib: &libloading::Library, path: &Path) {
+    type GetCountersFn = unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> usize;
+
+    // SAFETY: the name is the exported symbol from `lib.rs` and the signature is transcribed from
+    // it. A mismatch in the name surfaces as `Err` rather than UB.
+    let get: libloading::Symbol<GetCountersFn> = unsafe {
+        lib.get(b"OrtEpVulkanGetExecutionCounters\0")
+            .unwrap_or_else(|e| {
+                panic!(
+                    "`OrtEpVulkanGetExecutionCounters` is not exported from {}: {e}\n\
+                     This symbol is how CI proves a claimed node actually executed on a device. \
+                     Without it every lane reports 'no report' and the criterion-8 gate stops \
+                     distinguishing a working lane from a dead one.",
+                    path.display()
+                )
+            })
+    };
+
+    let mut buf = [0u8; std::mem::size_of::<onnxruntime_vulkan_ep::counters::VulkanEpCounters>()];
+    // SAFETY: `buf` is a live, correctly sized, byte-aligned-or-better local; the callee is
+    // documented to write at most `buf.len()` bytes and to return how many it wrote.
+    let written = unsafe { get(buf.as_mut_ptr().cast(), buf.len()) };
+    assert_eq!(
+        written,
+        buf.len(),
+        "the shipped library filled {written} of {} counter bytes — the struct this test was \
+         compiled against and the one inside the library disagree",
+        buf.len()
+    );
+
+    // SAFETY: `VulkanEpCounters` is `#[repr(C)]` and composed entirely of integers, so every byte
+    // pattern is a valid value; `buf` is exactly its size and the callee filled all of it.
+    let c: onnxruntime_vulkan_ep::counters::VulkanEpCounters =
+        unsafe { std::ptr::read_unaligned(buf.as_ptr().cast()) };
+
+    assert_eq!(
+        c.abi_version,
+        onnxruntime_vulkan_ep::counters::COUNTERS_ABI_VERSION,
+        "the shipped library reports counters ABI {} but this build understands {} — \
+         `epctl --check-counters` would refuse the snapshot",
+        c.abi_version,
+        onnxruntime_vulkan_ep::counters::COUNTERS_ABI_VERSION
+    );
+    assert_eq!(
+        c.dispatches_executed, 0,
+        "registration alone executed {} dispatch(es). Nothing in this scenario calls Compile, so \
+         any non-zero count here is the counter fabricating execution — the failure mode it \
+         exists to prevent.",
+        c.dispatches_executed
+    );
+    assert_eq!(
+        c.compile_calls, 0,
+        "registration alone reported {} Compile call(s)",
+        c.compile_calls
+    );
+    eprintln!("[cdylib-load] counters export resolves and reports zero dispatches, as it should");
 }

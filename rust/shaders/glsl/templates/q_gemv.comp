@@ -1,0 +1,200 @@
+// `com.microsoft.MatMulNBits` — block-dequantising GEMV.
+//
+// One workgroup computes one output element `Y[m][n]`. The grid is `(N, M, 1)`, so this kernel is
+// *correct* for every `M` and merely unoptimal for `M > 1`; prefill is a tiling problem, not a
+// correctness problem, and shipping the correct shape first is `OP_COVERAGE.md` §11's rule.
+//
+// # The three things this file deliberately does not do
+//
+// 1. **No subgroup operations.** Both development GPUs report a subgroup size of 32, which is the
+//    strongest possible invitation to bake 32 in and pass every local test. `VkPhysicalDeviceSub-
+//    groupProperties::subgroupSize` is not guaranteed to be anything, so the cross-workgroup
+//    reduction is a shared-memory tree sized by `gl_WorkGroupSize.x`.
+// 2. **No 16-bit storage capability.** fp16 activations are read and written through
+//    `unpackHalf2x16`/`packHalf2x16` over `uint` buffers, which is core GLSL 4.2 and needs no
+//    device feature at all. `shaderFloat16` and `storageBuffer16BitAccess` therefore gate nothing
+//    here. This matters more than it looks: the Phi-3.5 census found all 161 `MatMulNBits` nodes
+//    carry **fp16** activations, scales and outputs, so an f32-only kernel would decline the model
+//    this kernel exists to run. Accumulation is fp32 regardless of storage, which is also what
+//    ORT's `SQNBIT_CompFp32` path does — see `quant.rs`'s `accuracy_level` note.
+// 3. **No dequantised weight in memory.** `B` is unpacked into registers inside the block loop and
+//    never written anywhere. This is the P-series constraint from §8.2 and it is the reason int4
+//    is worth having at all.
+//
+// # Layout, derived from the ORT CPU EP rather than from the schema prose
+//
+// Established empirically (feed `A = I` so each output row is a dequantised weight column) —
+// `OP_COVERAGE.md` §8.1.1:
+//
+//   * `B` is `[N][blocks_per_col][blob_bytes]`, i.e. **row `n` is output column `n`**, so
+//     `Y[m][n] = sum_k A[m][k] * dequant(B[n][k])`. `B` is transposed relative to `MatMul`.
+//   * 4-bit nibble order is **low nibble first**: element `2i` is `byte[i] & 0xF`, element `2i+1`
+//     is `byte[i] >> 4`.
+//   * When `zero_points` is absent the implied zero point is `1 << (bits-1)` — 8 at 4 bits.
+//   * `zero_points` is packed the same way as `B` at 4 bits (two blocks per byte, low nibble
+//     first), one byte per block at 8 bits, with each column's run padded to a whole byte.
+//   * `scales` is indexed `n * blocks_per_col + blk`.
+//
+// # Specialisation constants
+//
+//   id 0  local_size_x      power of two in [32, 256]; the host picks the smallest that covers
+//                           `blocks_per_col`, capped at the 256-invocation floor of §7.2.
+//   id 1  QB_BITS           4 or 8. A spec constant rather than a `-D` define on purpose: both
+//                           bit widths are then one SPIR-V source and one pipeline-cache key, so
+//                           gpt-oss's mixed 4/8-bit graph is not a second shader.
+//   id 2  QB_BLOCK          16/32/64/128.
+//   id 3  QB_HAS_ZP         0 when the node has no `zero_points` input.
+//
+// # Bindings
+//
+//   0  A            activations, `[.., M, K]`
+//   1  B            packed weights, addressed as `uint` words
+//   2  scales       `[N * blocks_per_col]`
+//   3  zero_points  packed bytes. **Bound even when absent** — the translate handler binds
+//                   `scales` a second time as an inert placeholder, because a declared descriptor
+//                   must be bound whether or not `QB_HAS_ZP` folds every read away. Nothing reads
+//                   it when `QB_HAS_ZP == 0`.
+//   4  Y            `[.., M, N]`
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(constant_id = 1) const uint QB_BITS = 4u;
+layout(constant_id = 2) const uint QB_BLOCK = 32u;
+layout(constant_id = 3) const uint QB_HAS_ZP = 0u;
+
+layout(push_constant) uniform Params {
+    uint m_total;         // product of all leading dims of A times M
+    uint k;               // reduction extent
+    uint n;               // output columns
+    uint blocks_per_col;  // k / QB_BLOCK
+} pc;
+
+// -- bindings ---------------------------------------------------------------------------------
+
+#ifdef DTYPE_F16
+layout(set = 0, binding = 0) readonly buffer InA { uint data[]; } ina;
+layout(set = 0, binding = 2) readonly buffer InS { uint data[]; } ins;
+layout(set = 0, binding = 4) buffer OutY { uint data[]; } outy;
+
+float load_a(uint i) { return unpackHalf2x16(ina.data[i >> 1u])[i & 1u]; }
+float load_s(uint i) { return unpackHalf2x16(ins.data[i >> 1u])[i & 1u]; }
+
+// Store one fp16 lane without disturbing its neighbour. The two lanes of a word are written by
+// two different workgroups, so this is a read-modify-write on shared memory — but on **disjoint
+// bit lanes**, which is race-free in any interleaving. Same argument as the byte-typed stores in
+// `indexing.glsl`, and the same requirement on the allocator: the buffer must be rounded up to a
+// whole `uint`. The claim predicate additionally requires `m_total * n` to be even, so the final
+// word is never partial for any node we claim.
+void store_y(uint i, float v) {
+    uint lane = (i & 1u) * 16u;
+    uint half_bits = packHalf2x16(vec2(v, 0.0)) & 0xFFFFu;
+    atomicAnd(outy.data[i >> 1u], ~(0xFFFFu << lane));
+    atomicOr(outy.data[i >> 1u], half_bits << lane);
+}
+#else
+layout(set = 0, binding = 0) readonly buffer InA { float data[]; } ina;
+layout(set = 0, binding = 2) readonly buffer InS { float data[]; } ins;
+layout(set = 0, binding = 4) writeonly buffer OutY { float data[]; } outy;
+
+float load_a(uint i) { return ina.data[i]; }
+float load_s(uint i) { return ins.data[i]; }
+void store_y(uint i, float v) { outy.data[i] = v; }
+#endif
+
+layout(set = 0, binding = 1) readonly buffer InB { uint data[]; } inb;
+layout(set = 0, binding = 3) readonly buffer InZ { uint data[]; } inz;
+
+// -- helpers ----------------------------------------------------------------------------------
+
+/// Bytes of packed weight per (column, block).
+uint blob_bytes() { return (QB_BLOCK * QB_BITS) / 8u; }
+
+/// Bytes of packed zero point per column, padded to a whole byte as ORT pads it.
+uint zp_bytes_per_col() { return ((pc.blocks_per_col * QB_BITS) + 7u) / 8u; }
+
+/// The zero point for column `col`, block `blk`.
+int load_zp(uint col, uint blk) {
+    if (QB_HAS_ZP == 0u) {
+        return int(1u << (QB_BITS - 1u));
+    }
+    uint byte_index;
+    uint shift;
+    if (QB_BITS == 4u) {
+        byte_index = col * zp_bytes_per_col() + (blk >> 1u);
+        shift = (blk & 1u) * 4u;
+    } else {
+        byte_index = col * zp_bytes_per_col() + blk;
+        shift = 0u;
+    }
+    uint word = inz.data[byte_index >> 2u];
+    uint b = (word >> ((byte_index & 3u) * 8u)) & 0xFFu;
+    return int((b >> shift) & ((1u << QB_BITS) - 1u));
+}
+
+// -- reduction --------------------------------------------------------------------------------
+
+// 256 floats = 1 KiB, comfortably inside the 16 KiB shared-memory floor of §7.2. Sized by the
+// literal maximum rather than by the specialisation constant so the storage requirement is a
+// static property of the module and cannot become device-dependent.
+shared float red[256];
+
+void main() {
+    uint col = gl_WorkGroupID.x;   // n
+    uint row = gl_WorkGroupID.y;   // m
+    uint tid = gl_LocalInvocationID.x;
+    uint wg = gl_WorkGroupSize.x;
+
+    float acc = 0.0;
+
+    if (col < pc.n && row < pc.m_total) {
+        uint a_base = row * pc.k;
+        uint bb = blob_bytes();
+        uint nwords = bb >> 2u;
+
+        for (uint blk = tid; blk < pc.blocks_per_col; blk += wg) {
+            float s = load_s(col * pc.blocks_per_col + blk);
+            int zp = load_zp(col, blk);
+            uint word_base = ((col * pc.blocks_per_col + blk) * bb) >> 2u;
+            uint k0 = blk * QB_BLOCK;
+
+            for (uint w = 0u; w < nwords; ++w) {
+                uint packed = inb.data[word_base + w];
+                if (QB_BITS == 4u) {
+                    uint ke = k0 + w * 8u;
+                    for (uint j = 0u; j < 4u; ++j) {
+                        uint bv = (packed >> (j * 8u)) & 0xFFu;
+                        int q0 = int(bv & 0xFu);
+                        int q1 = int(bv >> 4u);
+                        acc += load_a(a_base + ke + j * 2u) * float(q0 - zp) * s;
+                        acc += load_a(a_base + ke + j * 2u + 1u) * float(q1 - zp) * s;
+                    }
+                } else {
+                    uint ke = k0 + w * 4u;
+                    for (uint j = 0u; j < 4u; ++j) {
+                        int q = int((packed >> (j * 8u)) & 0xFFu);
+                        acc += load_a(a_base + ke + j) * float(q - zp) * s;
+                    }
+                }
+            }
+        }
+    }
+
+    // Shared-memory tree. `wg` is a power of two (the host guarantees it), and every barrier below
+    // is reached by every invocation in the workgroup — the early-out above sets `acc` to zero
+    // rather than returning, precisely so that stays true.
+    red[tid] = acc;
+    barrier();
+    for (uint stride = wg >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            red[tid] += red[tid + stride];
+        }
+        barrier();
+    }
+
+    if (tid == 0u && col < pc.n && row < pc.m_total) {
+        store_y(row * pc.n + col, red[0]);
+    }
+}

@@ -46,6 +46,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod allocator;
+pub mod counters;
 pub mod engine;
 pub mod ep;
 pub mod factory;
@@ -121,6 +123,46 @@ pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> Str
         s.clone()
     } else {
         "unrecoverable panic (non-string payload)".to_string()
+    }
+}
+
+/// Catch a panic at a C-ABI entry point whose return type is a **pointer**, not a status.
+///
+/// `OrtAllocator::Alloc` and `OrtAllocator::Info` cannot report failure through an `OrtStatus`;
+/// their only failure channel is a null return, which ORT already handles as out-of-memory. So the
+/// guard converts a panic into null — a contract-legal answer — rather than letting it unwind into
+/// ORT's C++, which is undefined behaviour.
+///
+/// This is a strictly worse failure report than [`guard_ffi_status`] gives, and that is a property
+/// of ORT's allocator signature rather than a choice. The log line is therefore the only place the
+/// cause survives, so it is emitted unconditionally.
+pub(crate) fn guard_ffi_ptr<T>(body: impl FnOnce() -> *mut T) -> *mut T {
+    // `AssertUnwindSafe`: on the panic path the captured state is discarded, never re-read.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(p) => p,
+        Err(payload) => {
+            log::error!(
+                "caught a panic at a pointer-returning ORT entry point: {} — returning null. ORT \
+                 reads null as an allocation failure, which is the only failure this signature can \
+                 express; the host process is protected.",
+                panic_payload_message(payload.as_ref())
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Catch a panic at a C-ABI entry point that returns nothing (`OrtAllocator::Free`).
+///
+/// There is no failure channel at all here, so the panic is swallowed after being logged. That is
+/// the whole contract: a `Free` that panics must not unwind into ORT and must not abort the host.
+pub(crate) fn guard_ffi_void(body: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        log::error!(
+            "caught a panic at a void ORT entry point: {} — swallowed. This signature has no \
+             failure channel, so this log line is the only record; treat it as a hard bug.",
+            panic_payload_message(payload.as_ref())
+        );
     }
 }
 
@@ -268,12 +310,63 @@ unsafe fn create_ep_factories_impl(
 /// `factory` must be null, or a pointer [`CreateEpFactories`] wrote, released exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ReleaseEpFactory(factory: *mut ort::OrtEpFactory) -> ort::OrtStatusPtr {
+    // Report before tearing down: this is the last moment at which anything in this process can
+    // say what the EP actually did, and a lane that executed nothing has to be able to say so out
+    // loud rather than by omission. `summary()` allocates a String, which is why it sits above the
+    // release rather than inside a `Drop`.
+    let snap = counters::snapshot();
+    log::info!("{}", snap.summary());
+    if snap.dispatches_executed == 0 {
+        log::warn!(
+            "VulkanExecutionProvider executed ZERO dispatches in this process. If a test lane \
+             expected GPU work, this is a failure that would otherwise be invisible: every node \
+             ran somewhere else."
+        );
+    }
+    counters::dump_if_requested();
+
     // Not wrapped in `guard_ffi_status`: we have no `OrtApi` to build a status from once the
     // factory is being torn down, and the only work here is a `Box` drop. Anything that could
     // panic during teardown would live in a `Drop` impl, and ours are audited to be panic-free.
     // SAFETY: `factory` is null or a pointer we produced, released exactly once.
     unsafe { VulkanEpFactory::release(factory) };
     ptr::null_mut()
+}
+
+// -------------------------------------------------------------------------------------------
+// Execution counters — the criterion-8 evidence channel
+// -------------------------------------------------------------------------------------------
+
+/// Copy the EP's execution counters into `out`.
+///
+/// Returns the number of bytes written, or 0 if `out` is null or `out_bytes` is under 8. See
+/// [`counters`] for what each field means and, more importantly, what they do *not* claim.
+///
+/// This is not part of the ORT plugin ABI — ORT never calls it. It exists so a test harness that
+/// has the library loaded (ORT loaded it; `ctypes.CDLL` on the same path gets the same module) can
+/// ask "did anything actually execute?" without inferring it from test outcomes. Inferring it from
+/// test outcomes is what let a lane where everything skipped report success.
+///
+/// # Safety
+/// `out` must be null, or writable for `out_bytes` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OrtEpVulkanGetExecutionCounters(
+    out: *mut std::ffi::c_void,
+    out_bytes: usize,
+) -> usize {
+    // SAFETY: the contract on `out`/`out_bytes` is passed straight through to `fill`, which
+    // null-checks and clamps.
+    unsafe { counters::fill(out, out_bytes) }
+}
+
+/// Zero the EP's execution counters.
+///
+/// For a harness that wants to scope a claim to one model run: reset, run, read. Without it the
+/// only available claim is process-cumulative, and "some dispatch executed at some point in this
+/// pytest session" is a much weaker statement than "this model executed on the GPU".
+#[unsafe(no_mangle)]
+pub extern "C" fn OrtEpVulkanResetExecutionCounters() {
+    counters::reset();
 }
 
 #[cfg(test)]

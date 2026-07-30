@@ -570,3 +570,55 @@ and `rows` knobs. Her file — flagged, not imposed.
 
 **Habit to keep:** when a brief hands me a number, re-measure it before building on it. The number
 in this brief was mine, and it was wrong.
+
+## 2026-07-29 (evening) — the decline census: measuring *why* nodes are declined
+
+Coordinator ran Phi-3.5 through the EP: 0 claimed, 258 `dynamic-shape`, 100 `staged`, 5
+`not-registered`. Asked me to quantify the 258 and cost three options for handling them.
+
+**What I found, in order of how much it changed:**
+
+1. **The decline histogram is first-match and is not a partition of causes.** Cross-tabbing the
+   code against an independently computed shape class: only **4** of Phi-3.5's 363 nodes and **2**
+   of gpt-oss's 371 have fully static shapes. Landing every staged kernel while
+   `REQUIRE_STATIC_SHAPES` stands moves claimed from 0 to **2** and **1**. So shapes are not "2.5x
+   the problem" — the shape gate is upstream of the kernel gate for ~99% of nodes. The two models
+   look *opposite* (Phi shape-dominated, gpt-oss kernel-dominated) purely because gpt-oss's 100
+   `Cast` nodes hit the staging test first. Same cause, opposite appearance.
+
+2. **"Dynamic shapes" is too coarse.** Every symbolic dim in both graphs is a *leading* axis;
+   the last axis of every declined tensor is a literal. Coined EXTENT-ONLY vs STRUCTURAL:
+   324/359 and 318/369 are EXTENT-ONLY. Broadcasting is decidable symbolically because equal
+   `dim_param` implies equal extent.
+
+3. **Option (a) — Compile-time shapes — already works, and I had written it off.** Pinning
+   `batch_size=1, sequence_length=1` with `AddFreeDimensionOverrideByName` claims **161 nodes**,
+   the model **runs**, and it matches the CPU EP on **both** devices (argmax 30751, top-5 match,
+   max|Δ| 0.0078 decode / 0.0488 prefill seq=16). First production model executing on this EP.
+   Also confirms §8.1.2 on hardware: MatMulNBits alone = 161 one-node islands.
+
+4. **(b) and (c) are the same change and contain no shader work.** No pipeline in the Live set is
+   keyed on a runtime extent — checked `dispatch_elementwise` (`all_identical` is structure, not
+   extent) and `q_gemv` (`local_size_x` from static `K`). Extents live only in push constants and
+   grid dims. Cheapest route: run the translate handler a *second time* at Compute against a
+   `ComputeRecorder` implementing `DispatchContext` with real shapes. Three parts: my
+   `REQUIRE_STATIC_SHAPES`, Switch's `CompiledKernel` fields, Switch/Tank's `dispatch_ort`.
+   I will not flip mine before theirs exist — it would produce a wrong answer, not an error.
+
+5. **A second gate I had never seen: f16.** With shapes pinned, 97 nodes decline on **dtype** —
+   `Mul` x64 and `Sigmoid` x32 are f16. The elementwise family is Live for f32 only, so on a real
+   fp16 decoder our celebrated elementwise coverage is worth **zero nodes**. Cheapest remaining
+   work in the whole plan, entirely mine. Did not flip it — the brief asked for costs, not counts,
+   and f16 deserves the same device proof f32 got.
+
+6. **gpt-oss-20b runs on no EP here** — ORT's own CPU QMoE rejects `swiglu_fusion=0` at session
+   init. GetCapability still runs so the census is valid, but there is no CPU oracle for T5b.
+
+**Lessons for me.** I keep writing "the blocker is X, singular" and being wrong twice over: X was
+reachable from the caller, and there was a Y behind it. Before calling something a blocker, check
+(a) whether anyone outside the EP can move it, and (b) what the *next* predicate would say if it
+did. Also: `claim_log`'s sink only reopens on path change, so delete-and-reuse silently records
+nothing — cost me a measurement.
+
+No code changed this turn. `docs/OP_COVERAGE.md` §7.4 new, §8.1.3 corrected.
+Record: `.squad/decisions/inbox/mouse-decline-census.md`.

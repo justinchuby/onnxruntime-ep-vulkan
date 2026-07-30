@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
+use crate::counters;
 use crate::engine::{CompileRecorder, CompiledKernel, VulkanSession};
 use crate::logging;
 use crate::registry::{self, NodeView};
@@ -884,6 +885,8 @@ unsafe fn compile_impl(
     // SAFETY: `p` is our EP pointer.
     let abi_version = unsafe { this(p).abi_version() };
 
+    counters::record_compile_call();
+
     // Leave every out-slot null *before* doing anything that can fail, so ORT never reads an
     // uninitialised pointer and `ReleaseNodeComputeInfos` has nothing to free on the error path.
     if !node_compute_infos.is_null() {
@@ -1125,6 +1128,7 @@ impl SubgraphComputeInfo {
         abi_version: u32,
         ort_api: *const ort::OrtApi,
     ) -> Box<SubgraphComputeInfo> {
+        counters::record_subgraph(true);
         Box::new(SubgraphComputeInfo {
             base: SubgraphComputeInfo::base_vtable(abi_version),
             plan,
@@ -1148,6 +1152,7 @@ impl SubgraphComputeInfo {
         abi_version: u32,
         ort_api: *const ort::OrtApi,
     ) -> Box<SubgraphComputeInfo> {
+        counters::record_subgraph(false);
         Box::new(SubgraphComputeInfo {
             base: SubgraphComputeInfo::base_vtable(abi_version),
             plan,
@@ -1223,13 +1228,17 @@ unsafe fn compute_impl(
     // SAFETY: `api` is live for every `make_status` below.
     let fail = |code, msg: String| unsafe { sys::make_status(api, code, &msg) };
 
+    counters::record_compute_call();
+
     if kernel_context.is_null() {
+        counters::record_compute_failure();
         return fail(
             ort::OrtErrorCode_ORT_INVALID_ARGUMENT,
             "VulkanExecutionProvider: Compute received a null OrtKernelContext".to_string(),
         );
     }
     if !info.is_live() {
+        counters::record_compute_failure();
         return fail(
             ort::OrtErrorCode_ORT_EP_FAIL,
             format!(
@@ -1254,6 +1263,26 @@ unsafe fn compute_impl(
             info.output_byte_sizes.len(),
         )
     } {
+        counters::record_compute_failure();
+        return fail(
+            ort::OrtErrorCode_ORT_EP_FAIL,
+            format!("VulkanExecutionProvider: {msg}"),
+        );
+    }
+
+    // Counts agreeing is not the same as sizes agreeing, and the difference is a memory-safety
+    // one. `dispatch_ort` does `slice::from_raw_parts(cpu_ptr, input_byte_sizes[i])` on ORT's
+    // input tensor using the byte size *Compile* computed. If the tensor ORT actually bound is
+    // smaller than that — a symbolic dimension that resolved differently, a shape the plan
+    // mispredicted, a rank the fused node reported optimistically — that read runs off the end of
+    // the host's heap. There is no check inside the engine that can catch it, because by then the
+    // only thing it has is a pointer.
+    //
+    // SAFETY: `api` and `kernel_context` are live for the duration of this call.
+    let sizes_agree =
+        unsafe { check_bound_input_sizes(api, kernel_context, &info.input_byte_sizes) };
+    if let Err(msg) = sizes_agree {
+        counters::record_compute_failure();
         return fail(
             ort::OrtErrorCode_ORT_EP_FAIL,
             format!("VulkanExecutionProvider: {msg}"),
@@ -1266,7 +1295,7 @@ unsafe fn compute_impl(
     // `kernels`, the byte sizes and the shapes are exactly what `Compile` computed for this
     // subgraph, which is `dispatch_ort`'s stated precondition. Any status it returns is ORT's to
     // own from here.
-    unsafe {
+    let status = unsafe {
         (*info.session).dispatch_ort(
             &info.kernels,
             &info.input_byte_sizes,
@@ -1275,7 +1304,94 @@ unsafe fn compute_impl(
             api,
             kernel_context,
         )
+    };
+
+    // Count only what actually ran. `dispatch_ort` submits and then waits on a fence, so a success
+    // return means the GPU executed this command buffer to completion; a non-null status means it
+    // did not, whatever it managed along the way. Counting on the optimistic side of that line is
+    // how a lane that never executed anything reports that it did.
+    if status.is_null() {
+        counters::record_dispatches(info.kernels.len() as u64);
+    } else {
+        counters::record_compute_failure();
     }
+    status
+}
+
+/// Verify each bound input tensor is exactly the size `Compile` planned for it.
+///
+/// Returns `Ok(())` when every size agrees, when ORT is too old to answer (`GetTensorSizeInBytes`
+/// is not in the negotiated table), or when a tensor declines to report a size. The last two are
+/// deliberately permissive: this is a guard against a wrong answer, not a second source of truth,
+/// and refusing to run because a diagnostic is unavailable would be a worse failure than the one
+/// it prevents.
+///
+/// # Safety
+/// `api` and `ctx` must be live.
+unsafe fn check_bound_input_sizes(
+    api: *const ort::OrtApi,
+    ctx: *mut ort::OrtKernelContext,
+    want: &[u64],
+) -> Result<(), String> {
+    // SAFETY: `api`/`ctx` are live; every out-param below is a valid initialised local, and every
+    // status we receive is released before we return.
+    unsafe {
+        let (Some(get_input), Some(size_of_tensor)) =
+            ((*api).KernelContext_GetInput, (*api).GetTensorSizeInBytes)
+        else {
+            // `GetTensorSizeInBytes` arrived after our ABI floor, so a host at the bottom of the
+            // supported range legitimately lacks it. Say so once per process rather than per
+            // Compute — this runs on the hot path.
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!(
+                    "OrtApi::GetTensorSizeInBytes is unavailable in the negotiated ABI, so bound \
+                     input sizes cannot be checked against the compiled plan. A shape \
+                     disagreement will reach the engine as a raw pointer instead of a status."
+                );
+            }
+            return Ok(());
+        };
+
+        for (i, &planned) in want.iter().enumerate() {
+            let mut value: *const ort::OrtValue = ptr::null();
+            let status = get_input(ctx, i, &mut value);
+            if !status.is_null() {
+                let msg = sys::status_message(api, status);
+                sys::release_status(api, status);
+                return Err(format!("KernelContext_GetInput({i}) failed: {msg}"));
+            }
+            if value.is_null() {
+                return Err(format!(
+                    "input {i} is bound to a null OrtValue but the compiled subgraph requires \
+                     {planned} byte(s) from it"
+                ));
+            }
+            let mut actual: usize = 0;
+            let status = size_of_tensor(value, &mut actual);
+            if !status.is_null() {
+                // A tensor that will not report its size is not evidence of a mismatch. Release
+                // and move on rather than failing a run over a diagnostic.
+                sys::release_status(api, status);
+                continue;
+            }
+            if actual as u64 != planned {
+                return Err(format!(
+                    "input {i} is {actual} byte(s) but this subgraph was compiled for {planned}. \
+                     The shape ORT bound and the shape Compile planned for disagree, so the \
+                     dispatch would {} — refused. This is a plan/runtime shape mismatch, not a \
+                     device problem.",
+                    if (actual as u64) < planned {
+                        "read past the end of the host's tensor"
+                    } else {
+                        "read only part of the host's tensor and compute a wrong answer"
+                    }
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Verify the kernel context binds exactly as many tensors as the compiled subgraph expects.

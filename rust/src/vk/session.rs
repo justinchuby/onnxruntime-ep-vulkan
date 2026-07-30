@@ -400,6 +400,23 @@ impl VulkanSession {
         // SAFETY: cmd is recording; all buffers are live.
         unsafe { self.device.barriers().buffer_deps(cmd, &up_deps) };
 
+        // Descriptor pools for each kernel dispatch.
+        //
+        // **Lifetime contract:** each pool must remain alive until the fence signals — i.e.,
+        // until `submit_and_wait` returns.  Dropping a pool inside the recording loop frees
+        // its descriptor sets while the command buffer still references them; the driver may
+        // then reuse the same VkDescriptorSet handle for the next dispatch, and calling
+        // vkUpdateDescriptorSets on that new set while its handle is "bound" to the recording
+        // command buffer triggers validation error VUID-vkUpdateDescriptorSets-None-03047:
+        //   "A descriptor set is updated while bound to a recording command buffer,
+        //    without UPDATE_AFTER_BIND."
+        //
+        // Fix: collect every pool here and let them drop together after `submit_and_wait`.
+        // This makes the class of error impossible: the set being written is never the set
+        // that is bound, because each pool is fresh and its handle is distinct from every
+        // previously bound set.
+        let mut desc_pools: Vec<DispatchDescriptorPool> = Vec::with_capacity(kernels.len());
+
         // For each kernel: build pipeline + descriptor set, bind and dispatch.
         for kernel in kernels {
             let Some(spirv) = crate::engine::shaders::find(kernel.shader) else {
@@ -458,7 +475,8 @@ impl VulkanSession {
                 };
             };
 
-            // Per-dispatch descriptor pool. Freed when it goes out of scope below.
+            // Per-dispatch descriptor pool.  Ownership is transferred into `desc_pools` at the
+            // bottom of this loop iteration and freed after `submit_and_wait` returns.
             // SAFETY: device is live; n_bindings is the correct storage-buffer count.
             let Some(desc_pool) =
                 (unsafe { DispatchDescriptorPool::new(self.device.ash(), n_bindings as u32) })
@@ -558,6 +576,9 @@ impl VulkanSession {
                 self.device.ash().cmd_dispatch(cmd, wg_x, wg_y, wg_z);
                 // Niobe timestamp hook (AFTER): cmd_write_timestamp(cmd, stage, ts_pool, after_idx)
             }
+            // Keep this pool alive until after the fence signals.  See the `desc_pools`
+            // declaration above for the full lifetime reasoning.
+            desc_pools.push(desc_pool);
         }
 
         // Barrier: SHADER_WRITE → TRANSFER_READ on all output buffers.

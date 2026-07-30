@@ -44,6 +44,10 @@ pub enum Template {
     EwBinary,
     /// Three inputs, numpy broadcasting, one output. `Where`, `Clip`(3-input form).
     EwSelect,
+    /// Block-dequantising GEMV: `MatMulNBits`. Five bindings, no broadcasting, its own push
+    /// block. Not an elementwise template and deliberately not pretending to be one — it is the
+    /// first row that earns a hand-written kernel, per `OP_COVERAGE.md` §7.1.3.
+    QGemv,
 }
 
 impl Template {
@@ -54,6 +58,7 @@ impl Template {
             Template::EwUnary => "ew_unary",
             Template::EwBinary => "ew_binary",
             Template::EwSelect => "ew_select",
+            Template::QGemv => "q_gemv",
         }
     }
 
@@ -80,12 +85,32 @@ impl Template {
             Template::EwUnary => 1,
             Template::EwBinary => 2,
             Template::EwSelect => 3,
+            // A, B, scales, zero_points, and — when the node has no zero points — `scales` bound a
+            // second time as an inert placeholder. The arity is therefore a property of the
+            // *shader*, which always declares five, not of the node, which may have three inputs.
+            Template::QGemv => 5,
         }
     }
 
+    /// Whether this template's op identity reaches the shader as `-DEW_OP=OP_<op>`.
+    ///
+    /// The elementwise families are one source selected by an op code; a hand-written kernel is
+    /// one op and carries no selector. Several build-manifest invariants differ between the two,
+    /// so the distinction is named once here rather than re-derived by matching on the variant.
+    pub const fn is_elementwise(self) -> bool {
+        matches!(
+            self,
+            Template::EwUnary | Template::EwBinary | Template::EwSelect
+        )
+    }
+
     /// Every template that has a source file.
-    pub const ALL: &'static [Template] =
-        &[Template::EwUnary, Template::EwBinary, Template::EwSelect];
+    pub const ALL: &'static [Template] = &[
+        Template::EwUnary,
+        Template::EwBinary,
+        Template::EwSelect,
+        Template::QGemv,
+    ];
 }
 
 /// The GLSL scalar type a dtype maps to inside a template.
@@ -143,11 +168,16 @@ impl Kernel {
         if self.template == Template::None {
             return Vec::new();
         }
-        vec![
-            format!("EW_OP=OP_{}", self.op.to_uppercase()),
-            format!("SCALAR_T={}", dtype_glsl(d)),
-            format!("DTYPE_{}", dtype_suffix(d).to_uppercase()),
-        ]
+        let mut out = Vec::with_capacity(3);
+        // `EW_OP` is the elementwise templates' op selector and means nothing outside them. A
+        // hand-written kernel is one op, so its identity is the stem, not a define — emitting a
+        // spurious `EW_OP` there would compile but would quietly tie the kernel to `op_codes.glsl`.
+        if self.template.is_elementwise() {
+            out.push(format!("EW_OP=OP_{}", self.op.to_uppercase()));
+        }
+        out.push(format!("SCALAR_T={}", dtype_glsl(d)));
+        out.push(format!("DTYPE_{}", dtype_suffix(d).to_uppercase()));
+        out
     }
 }
 
@@ -198,6 +228,13 @@ macro_rules! kernel {
             template: $crate::ops::common::variants::Template::EwSelect,
             op: $op,
             stems: $crate::stems!("ew_select", $op),
+        }
+    };
+    (QGemv, $op:literal) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::QGemv,
+            op: $op,
+            stems: $crate::stems!("q_gemv", $op),
         }
     };
 }
@@ -350,7 +387,15 @@ mod tests {
                 v.stem
             );
             assert!(v.source.ends_with(".comp"));
-            assert_eq!(v.defines.len(), 3);
+            // Elementwise variants carry `EW_OP`, `SCALAR_T` and `DTYPE_*`; a hand-written kernel
+            // carries the last two only. The count is asserted rather than the contents so that
+            // adding a define to one family without the other is a failure here.
+            let want = if v.stem.starts_with(Template::QGemv.prefix()) {
+                2
+            } else {
+                3
+            };
+            assert_eq!(v.defines.len(), want, "wrong define count for `{}`", v.stem);
         }
     }
 
@@ -405,7 +450,9 @@ mod tests {
         let header = std::fs::read_to_string(shaders_dir().join("include").join("op_codes.glsl"))
             .expect("shaders/include/op_codes.glsl must exist");
         for spec in crate::registry::all_specs() {
-            if spec.kernel.template == Template::None {
+            // Only the elementwise families use an op selector; a hand-written kernel's identity
+            // is its stem, so there is no `OP_*` symbol to look for.
+            if !spec.kernel.template.is_elementwise() {
                 continue;
             }
             let symbol = format!("OP_{}", spec.kernel.op.to_uppercase());
@@ -433,12 +480,16 @@ mod tests {
                 std::fs::read_to_string(glsl.join(&v.source))
                     .unwrap_or_else(|e| panic!("cannot read shaders/glsl/{}: {e}", v.source))
             });
-            let symbol = v
+            let Some(symbol) = v
                 .defines
                 .iter()
                 .find(|d| d.starts_with("EW_OP="))
                 .map(|d| d.trim_start_matches("EW_OP=").to_string())
-                .expect("every variant carries an EW_OP define");
+            else {
+                // A hand-written kernel has no op selector to check for. It still has to exist
+                // and be readable, which the `entry` above just proved.
+                continue;
+            };
             assert!(
                 src.contains(&format!("EW_OP == {symbol}")),
                 "{} must handle {symbol} (variant `{}`) and does not",

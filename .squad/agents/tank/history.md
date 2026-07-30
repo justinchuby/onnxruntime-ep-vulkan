@@ -189,3 +189,43 @@ have **not** made the lanes green, and I could not: the fix for the most probabl
 claim is that after the next run we will know *which* of "never executed" and "executed then
 crashed" is true, and today we cannot distinguish those at all. That is a smaller claim than "CI is
 green" and it is the one that is true.
+
+---
+
+## Session 11 — 2026-07-29 — the allocator, and a crash that was mine
+
+**What I built.** `src/allocator.rs` — a real `OrtAllocator` over a per-device reserved
+virtual-address arena. Handles are page-aligned spans with guard bands; interior pointers resolve by
+range lookup; freed spans go into a generation-stamped quarantine. Wired into ORT through
+`advertise_device_memory` + `create_allocator`/`release_allocator` in `factory.rs`. 11 unit tests.
+Decisions D-T35…D-T39.
+
+**The lesson that actually cost something.** `EpDevice_AddAllocatorInfo` is annotated `_In_`. I read
+that as "copies" and released the memory info. It does not copy — ORT retains the pointer and reads
+it after `GetSupportedDevices` returns. That was the access violation at registration, and it was
+mine, on my side of the boundary, in code I had written the same hour. **An SAL annotation describes
+the parameter, not the object's lifetime.** `_In_` says "I will not write through this pointer"; it
+says nothing about whether the callee keeps it. When a callee is *given* a resource, the only safe
+default is that it took it, until documentation says otherwise — because releasing fails silently
+and catastrophically while leaking fails loudly if ever.
+
+**The methodology lesson, which generalises further than the bug.** I found this in about a minute
+because I had put a kill switch (`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY`) around the new subsystem
+before it worked, and a 20-second local Python probe (`tools/probe_allocator.py`) that drove a real
+ORT. CI had been showing the same fault signature for eight runs at ten minutes a round trip.
+**Build the bisect handle before you need it** — the switch that lets you turn a new subsystem off
+is worth more than any amount of reasoning about whether it is the cause.
+
+**The recurring lesson, sixth entry, and this time I did the thing.** My pattern is that writing a
+caveat feels like discharging the obligation. This session the caveat was "the mock host does not
+model the memory-info lifetime" — so I modelled it, planted the regression, watched the test fail
+with the rule named, and removed the plant. The variant worth remembering: *a mock that frees what
+the real host retains cannot report the bug, it can only reproduce the crash* — so the mock poisons
+instead of freeing, and the test names the rule rather than segfaulting.
+
+**Where I was honest instead of finished.** ORT did allocate through us, but the planner never did
+pointer arithmetic on our handles, because the session cannot reach `Run` without a data transfer.
+I recorded that as unproven rather than letting "ORT allocated through us" stand in for it. Same for
+the quarantine: unit-proven, not session-proven. And the validation-layer positive control is still
+owed — it needs a planted violation in Switch's files, so I recorded it as owed rather than
+describing the mechanism and counting that as progress.

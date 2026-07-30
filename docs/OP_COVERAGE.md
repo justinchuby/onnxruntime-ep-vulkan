@@ -1722,6 +1722,224 @@ The margin is 3×, not 1×. A cost model this crude, calibrated on a different d
 that schedules differently, is easily wrong by 2×; requiring a margin means the rule fails towards
 "run it on the CPU", which is always correct.
 
+### 7.4 The decline census — why a real model's nodes are actually declined (2026-07-29)
+
+Every previous version of this document reasoned about *which ops a model contains*. This section
+reasons about *why the EP declines the nodes it declines*, which turns out to be a different
+question with a different answer. It is §8.5's lesson landing for the fourth time, and the fourth
+landing is itself the finding: we keep planning against a property of the model that is easy to
+read off, rather than the property that actually gates us.
+
+#### 7.4.1 Method
+
+Two passes, in separate processes because loading the EP and running onnx's C++ shape inference in
+one process faults on a 2.2 GB external-data model:
+
+1. Real session creation over the cached Foundry model with `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` set —
+   one JSONL record per node carrying `op`, `node`, `opset`, `claimed`, `code`, `reason`.
+2. `onnx.shape_inference.infer_shapes_path` over the same file, giving every edge's shape with
+   symbolic dimensions preserved as `dim_param` names.
+
+Joined on node name. Scripts were scratch; the numbers below are reproducible from the claim log
+plus stock `onnx`, and nothing here is simulated.
+
+#### 7.4.2 The decline histogram is first-match, and cannot be read as a partition of causes
+
+A node records **one** reason — the first predicate that rejected it — but may have several
+disqualifying properties. So `staged: 100` does not mean "100 nodes that only need a kernel". It
+means "100 nodes that were rejected by the staging check *before* anything else was examined".
+Reading the histogram as a partition is how "kernels are what stand between us and a model" became
+a working assumption. Cross-tabulating the code against an independently computed shape class
+dissolves it:
+
+**Phi-3.5-mini-instruct, int4 RTN block-32 — 363 records over 366 nodes**
+
+| code | STATIC | EXTENT-ONLY | STRUCTURAL | total |
+|---|---:|---:|---:|---:|
+| `dynamic-shape` | 0 | 258 | 0 | 258 |
+| `staged` | 2 | 66 | 32 | 100 |
+| `not-registered` | 2 | 0 | 3 | 5 |
+| **total** | **4** | **324** | **35** | **363** |
+
+**gpt-oss-20b — 371 records over 374 nodes**
+
+| code | STATIC | EXTENT-ONLY | STRUCTURAL | total |
+|---|---:|---:|---:|---:|
+| `dynamic-shape` | 0 | 146 | 0 | 146 |
+| `staged` | 1 | 148 | 48 | 197 |
+| `not-registered` | 1 | 24 | 3 | 28 |
+| **total** | **2** | **318** | **51** | **371** |
+
+**Four nodes in Phi-3.5 and two in gpt-oss have fully static shapes.** Of the 100 `staged` Phi-3.5
+nodes, 2 are static; of gpt-oss's 197, 1 is. So landing `SkipSimplifiedLayerNormalization`,
+`GroupQueryAttention`, `Cast` and `QMoE` tomorrow, while `REQUIRE_STATIC_SHAPES` stands, moves the
+claimed count from 0 to **2** on Phi-3.5 and **1** on gpt-oss.
+
+The ratio "dynamic shapes 258, kernels 100" is therefore not a comparison between two comparable
+quantities, and the honest statement is stronger than the ratio suggests: **the shape gate sits
+upstream of the kernel gate for 99% of the nodes in both graphs.** Dynamic-shape support is not
+higher-priority than the three kernels; it is the precondition that decides whether those kernels
+are worth anything at all on a real model. Note also that the two models' histograms look
+*opposite* — Phi-3.5 is shape-dominated (258 vs 100), gpt-oss is kernel-dominated (146 vs 197) —
+purely because gpt-oss has 100 `Cast` nodes that get tested for staging first. Two models, opposite
+apparent conclusions, identical underlying cause. That is what a first-match histogram does to you.
+
+#### 7.4.3 Which dimension is symbolic — the answer is narrower than "dynamic shapes"
+
+Every `dynamic-shape` decline in both models, without exception:
+
+| model | op | n | symbolic dims |
+|---|---|---:|---|
+| Phi-3.5 | `com.microsoft::MatMulNBits` | 161 | `A` axis 0 `batch_size`, axis 1 `sequence_length`; `A` axis 2 = 3072 or 8192 literal; `B`/`scales` fully static |
+| Phi-3.5 | `Mul` | 64 | both inputs `[batch_size, sequence_length, 8192]` — identical dim_params |
+| Phi-3.5 | `Sigmoid` | 32 | `[batch_size, sequence_length, 8192]` |
+| Phi-3.5 | `Sub` | 1 | `[batch_size, 1]` against a scalar |
+| gpt-oss | `com.microsoft::MatMulNBits` | 73 | `A` `[batch_size, sequence_length, 2880]` |
+| gpt-oss | `Add` | 72 | `[batch_size, sequence_length, 5120]` + `[5120]` |
+| gpt-oss | `Sub` | 1 | `[batch_size, 1]` against a scalar |
+
+The whole graph uses five dim_params — `batch_size`, `sequence_length`, `total_sequence_length`,
+`past_sequence_length`, `max_sequence_length` — and **the last axis of every declined tensor is a
+literal**. The symbolic dimensions are exclusively leading dimensions. They determine *how many
+rows there are*, never the contraction length, never the channel count, never the block count,
+never the rank. That is a much smaller problem than "dynamic shapes".
+
+I classify each node as:
+
+* **STATIC** — no symbolic dim anywhere.
+* **EXTENT-ONLY** — every symbolic dim is a leading axis, the last axis of every input is a
+  literal, and all symbolic-carrying inputs agree dim_param-for-dim_param on their leading pattern.
+  Under those conditions "rows" is one runtime number and broadcasting is decidable *symbolically*,
+  because two dims carrying the same `dim_param` are equal by construction.
+* **STRUCTURAL** — anything else: symbolic in a contraction/channel axis, or shapes whose broadcast
+  relationship cannot be settled without the values.
+
+324 of Phi-3.5's 359 non-static nodes and 318 of gpt-oss's 369 are EXTENT-ONLY. The STRUCTURAL
+remainder is `GroupQueryAttention` (32 / 24), `QMoE` (24), and the `Shape`/`ReduceSum`/`Gather`
+prologue (3 each) — all of which are staged or unregistered anyway, so structural dynamic shapes
+are not on anyone's critical path yet.
+
+#### 7.4.4 The three options, costed — and (a) already works
+
+**(a) Shapes known only at `Compile` time.** `Compile` runs once at session creation, where the
+fused node's dims are still symbolic — *unless* the caller pins them. ORT exposes exactly that:
+`SessionOptions::AddFreeDimensionOverrideByName`. Measured on the cached model, device 1:
+
+| pinned | claimed | islands | remaining declines |
+|---|---:|---:|---|
+| nothing | 0 | 0 | `dynamic-shape` 258, `staged` 100, `not-registered` 5 |
+| `batch_size=1` | 0 | 0 | `dynamic-shape` 257, `staged` 100, `dtype` 1, `not-registered` 5 |
+| `sequence_length=1` | 0 | 0 | unchanged from nothing — it is the *conjunction* that matters |
+| **`batch_size=1, sequence_length=1`** | **161** | **161** | `staged` 100, `dtype` 97, `not-registered` 5 |
+
+And with both pinned the model **runs**:
+
+```
+Phi-3.5, batch=1 seq=1, decode:   161 MatMulNBits nodes on VulkanExecutionProvider,
+                                  298 node instances on CPU, 65 outputs
+  device 0 (Intel Iris Xe)  : argmax 30751, top-5 match, max|Δ| 0.0078 vs CPU EP
+  device 1 (NVIDIA RTX 4060): argmax 30751, top-5 match, max|Δ| 0.0078 vs CPU EP
+Phi-3.5, batch=1 seq=16, prefill: same 161 claimed, argmax 30751, max|Δ| 0.0488, both devices
+```
+
+Logits are fp16 with magnitude ~13, so 0.0078 is one ULP at that scale; the prefill figure is
+larger because the GEMV path accumulates 16 rows. **This is the first real production model to run
+on this EP with nodes executing on the GPU, and it took no predicate change of any kind.** It also
+independently confirms §8.1.2 on real hardware: `MatMulNBits` claimed *alone* produces 161 islands
+of one node each — the partition is shredded exactly as the simulation said, which is why the
+number to chase is the pair with `SkipSimplifiedLayerNormalization`, not this one.
+
+The cost of (a) is real and must not be glossed: a session pinned at `sequence_length=1` is valid
+for exactly that token count. A decoder needs one pinned session per shape bucket — one for decode
+and K for prefill — each carrying its own compiled plans, though the 2.2 GB of weights can be
+shared through ORT's prepacked-weight container. That is the standard shape-bucketing approach and
+it is a legitimate T3 demonstration vehicle, but it is not a general EP.
+
+**(b) Shapes known only at `Compute` time.** This is what ORT actually offers and what a general EP
+needs: the claim predicate accepts EXTENT-ONLY symbolic dims, and the extents arrive per call.
+Unlocks all 324 Phi-3.5 EXTENT-ONLY nodes and all 318 on gpt-oss with no bucketing and no second
+session. What has to change is precisely three things, and none of them is a shader:
+
+1. **Claim.** `claim::REQUIRE_STATIC_SHAPES` is a single global `bool` in `ops/common/claim.rs`,
+   deliberately placed there so this flips in one location rather than in sixty predicates. It
+   becomes a per-shape-class test: EXTENT-ONLY accepted, STRUCTURAL still declined.
+2. **Plan format.** `vk::session::CompiledKernel` stores `push_constants: Vec<u8>` and
+   `workgroups: [u32; 3]` **baked at Compile**. Those are the only two fields that carry an extent.
+3. **Compute.** `VulkanSession::dispatch_ort` currently takes `input_byte_sizes` and
+   `output_byte_sizes` from Compile and never calls `GetTensorTypeAndShape`. It must read the real
+   shapes and size its allocations from them.
+
+**(c) Fully dynamic, kernel handles it via push constants.** For every one of these ops, **(c) is
+already true and (b) and (c) are the same change.** Checked, not assumed:
+
+* `templates::dispatch_elementwise` emits `spec_constants: [EW_LOCAL_SIZE, plan.all_identical]`.
+  `EW_LOCAL_SIZE` is a compile-time constant; `all_identical` is shape-*structure*, decidable from
+  the symbolic shapes because same-`dim_param` implies equality. Extents appear only in the push
+  constants and the 1-D grid.
+* `q_gemv` uses `[local_size_x, QB_BITS, QB_BLOCK, QB_HAS_ZP]`. `local_size_x` is derived from
+  `K / block_size` and `K` is a literal on every real node. Extents appear only in the `m_total`
+  push constant and in `workgroups.y`.
+
+**No pipeline in the Live set is keyed on a runtime extent**, so nothing recompiles per shape and
+the pipeline cache is untouched. `ShapePlan::broadcast` already takes `&[&[i64]]` and does not care
+where the numbers came from.
+
+The cheapest implementation is therefore not a new symbolic plan IR: it is **running the existing
+translate handler a second time at Compute against a `DispatchContext` that holds real shapes**.
+`CompileRecorder` is one implementor of that trait; a `ComputeRecorder` is another. Cost is
+host-side integer arithmetic over ~360 nodes per `Run`, which is noise beside the weight upload the
+same call performs. Memoising the recording on the runtime shape vector reduces it to a hash lookup
+after the second call, because a decoder has exactly two shape regimes.
+
+This is an engine change and it is Switch's and Tank's to make. What is mine is item 1, and I will
+not flip it until 2 and 3 exist — a claim predicate that accepts symbolic dims while the plan still
+bakes extents produces a *wrong answer*, not an error, which is the same class of bug as `Compute`
+returning `null` on failure.
+
+#### 7.4.5 The second gate, which nobody had seen: fp16 elementwise
+
+With shapes pinned, 97 Phi-3.5 nodes stop declining on shape and immediately decline on **dtype**:
+
+> ``[dtype] `Mul` is live for f32 only; this node is f16. The f16 variant of the elementwise shader
+> compiles but has never executed on a device, and the CPU EP is correct for it``
+
+`Mul` ×64, `Sigmoid` ×32 are f16; `Sub` ×1 is i64. The elementwise family was flipped to `Live` for
+f32 only, correctly, because f32 is what `Add` proved. **Every elementwise node in a real fp16
+decoder is f16.** So the elementwise coverage this project celebrated is, on a production graph,
+worth zero nodes until the f16 variants are exercised — and those variants already compile and are
+already in the manifest. This is the cheapest remaining work in the whole plan and it is now the
+only thing between the current state and `MatMulNBits` + elementwise clustering on the real model.
+It is also a fourth instance of the same lesson: the family was measured against synthetic f32
+graphs, and the model is f16.
+
+#### 7.4.6 gpt-oss-20b does not run on any EP on this machine
+
+Recorded because the T5b plan assumes otherwise. Session creation fails in ORT's own CPU kernel
+before the Vulkan EP is reached:
+
+> `QMoECPU<MLFloat16>::QMoECPU activation_type_ != ActivationType::SwiGLU || swiglu_fusion_ == 1
+> was false. CPU QMoE only supports interleaved SwiGLU format. Please set swiglu_fusion=1.`
+
+`GetCapability` still runs, so the 371-record census above is valid, but there is **no CPU EP
+reference to differentiate against for this model**. Any T5b numerical claim needs a different
+oracle or a patched graph, and "run it and compare to CPU" — the method every other verification in
+this project rests on — is simply unavailable here. Flagging to Trinity rather than solving it.
+
+#### 7.4.7 Corrections to my own recorded conclusions
+
+* §8.1.3 said the island numbers in §8.1.2 were "the ceiling the partitioner reaches once dynamic
+  shapes land in the engine, not what the EP does today". That was right about the mechanism and
+  wrong about the availability: free-dimension overrides reach a large part of that ceiling
+  **today**, and the 161-island measurement above is the simulation confirmed on hardware. I
+  described a blocker without checking whether the caller could step around it.
+* I have repeatedly written that the blocker for Phi-3.5 is dynamic shapes, singular. There are
+  **two** gates in series, and the second (f16 elementwise) is in my own area and cheaper than the
+  first.
+* The claim-log sink in `ops/claim_log.rs` reopens only when the *path* changes. A harness that
+  deletes and reuses one path across sessions writes to the unlinked file and silently records
+  nothing. It cost me one confused measurement; noting it as a sharp edge for anyone writing a
+  multi-session census.
+
 ---
 
 ## 8. Quantization
@@ -1779,6 +1997,106 @@ per-block scale. Two sub-variants matter and both should exist:
 
 **Never materialize a dequantized weight tensor in device memory.** It defeats the entire purpose —
 int4 exists so a 1.7B model fits in 1 GB. This must be stated in the kernel spec I hand to Switch.
+
+### 8.1.1 The dequantisation semantics, derived from the oracle rather than the spec prose
+
+**2026-07-29 — landed and executing on both devices.** Before writing a line of GLSL I fed
+`A = I` through an ORT CPU EP `MatMulNBits` so that each output row *is* a dequantised weight
+column, and read the layout off the result. Doing it this way rather than from memory of the
+schema is the same discipline as §7: a shared misreading of the prose would have produced a kernel
+that agrees with my own reference implementation and disagrees with ORT.
+
+| Question | Answer, as measured |
+| --- | --- |
+| Orientation of `B` | `B` row `n` **is** output column `n`. `Y[m][n] = Σ_k A[m][k] · dequant(B[n][k])` — transposed relative to `MatMul`. |
+| 4-bit nibble order | **Low nibble first.** Element `2i` is `byte[i] & 0xF`; element `2i+1` is `byte[i] >> 4`. |
+| Implied zero point when `zero_points` is absent | `1 << (bits-1)` — **8** at 4 bits. Measured: nibble `i` dequantised to `i - 8`. |
+| `zero_points` packing | Same packing as `B`: two blocks per byte at 4 bits, low nibble first; one byte per block at 8 bits; each column's run padded to a whole byte. |
+| `scales` indexing | `n * blocks_per_col + blk`. |
+| Sign | The zero point is **subtracted**: `(q - zp) * scale`. Verified at `zp = 0` and `zp = 3`. |
+
+**Three things the kernel deliberately does not assume.**
+
+1. **No subgroup operations.** Both development GPUs report a subgroup size of 32, which is the
+   strongest possible invitation to bake 32 in and pass every local test. `subgroupSize` is not
+   guaranteed to be anything, so the cross-thread reduction is a shared-memory tree sized by
+   `gl_WorkGroupSize.x`, and shared storage is a fixed 256 floats = 1 KiB — inside the 16 KiB
+   floor of §7.2, not the Iris Xe's 32 KiB.
+2. **No 16-bit storage or arithmetic capability.** fp16 activations, scales and outputs go through
+   `unpackHalf2x16`/`packHalf2x16` over `uint` buffers, which is core GLSL and gates nothing.
+   Accumulation is fp32 regardless of storage, which is also what ORT's `SQNBIT_CompFp32` path
+   does. **This is not an optimisation — it is the requirement:** all 161 of Phi-3.5's
+   `MatMulNBits` nodes carry fp16 `A`, `scales` and `Y` (§4.21 re-census), so an f32-only kernel
+   would decline the model the kernel exists to run.
+3. **No tile-size query.** The workgroup size is the smallest power of two covering
+   `K / block_size`, clamped to `[32, 256]`, where 256 is the *guaranteed*
+   `maxComputeWorkGroupInvocations` floor rather than the larger figure either local device
+   reports. Grid is `(N, M_total, 1)`: one workgroup per output element. That makes the kernel
+   **correct for every `M`** — prefill is a performance problem, not a correctness one — which is
+   why the row claims all ranks rather than only decode.
+
+**Verified 2026-07-29 on both devices, identical results:** 29 passed / 1 failed in
+`tests/ops/test_matmulnbits.py` (the one failure is `DequantizeLinear`, still `Staged`, failing
+loudly by design). The passing set covers bits ∈ {4, 8} × block_size ∈ {16, 32, 64, 128} ×
+{3-input symmetric, 4-input asymmetric} in fp32, `M ∈ {1, 2, 7, 32}`, and fp16 at
+`M ∈ {1, 3}` both symmetric and asymmetric, each against the ORT CPU EP within the §10.1 Regime-2
+tolerances.
+
+### 8.1.2 The island result contradicts the premise this kernel was scheduled on
+
+The brief that scheduled this kernel — and my own earlier note — said Phi-3.5 sits at 34–35 islands
+without `MatMulNBits` and **collapses to one island of 364 with it**. Measured on the real graph,
+that is wrong, and wrong in the direction §7.2 keeps warning about:
+
+| claimed set | coverage | islands | largest |
+| --- | ---: | ---: | ---: |
+| elementwise only (today) | 27.3 % | 35 | 3 |
+| **+ `MatMulNBits`** | **71.3 %** | **100** | **6** |
+| + `SkipSimplifiedLayerNormalization` | 88.8 % | 5 | 320 |
+| + `GroupQueryAttention` | 97.5 % | 2 | 356 |
+| + `Reshape`/`Gather`/`Shape`/`ReduceSum` | 99.7 % | 1 | 365 |
+
+gpt-oss-20b behaves the same way: 46.3 % / 148 islands → 65.8 % / **100** islands with
+`MatMulNBits` → 78.6 % / 4 with `SkipSimplifiedLayerNormalization` → 85.0 % / 1 with
+`GroupQueryAttention` → 100 % / 1 with `QMoE`.
+
+**`MatMulNBits` alone makes the partition strictly worse on both models** — coverage nearly
+triples while the island count also triples. The reason is structural and obvious once measured:
+in a GenAI-built decoder block, every `MatMulNBits` is separated from the next by a
+`SkipSimplifiedLayerNormalization` or a `GroupQueryAttention`, so claiming the projections without
+the things between them shreds each block instead of fusing it. The collapse is caused by the
+**pair** `(MatMulNBits, SkipSimplifiedLayerNormalization)`, and it is a collapse worth having: 5
+islands with a largest of 320 on a 366-node graph.
+
+This is the third landing of the same lesson (§4.18, §7.3, the gpt-oss `Cast` result) and the
+recurrence is the finding. It also vindicates the metric of record being the triple
+`(coverage, island_count, largest_island_flops)` rather than coverage: on coverage alone this
+kernel looks like a 27 % → 71 % win, and shipped alone it would have made Phi-3.5 *slower*.
+
+**Operational consequence:** `MatMulNBits` should not be enabled on a real model without
+`SkipSimplifiedLayerNormalization`, which Switch is landing concurrently. The two are one unit of
+value, not two.
+
+### 8.1.3 What still blocks Phi-3.5, and it is not this kernel
+
+**Superseded in part by §7.4 — read that first.** What follows was right about the mechanism and
+wrong about the consequence.
+
+Measured, not inferred: a `MatMulNBits` node with static shapes is claimed and matches the CPU EP
+at rank 2 and rank 3 (leading dimensions fold into the row count). The same node with symbolic
+`batch`/`seq` dimensions is **declined**, because `claim::REQUIRE_STATIC_SHAPES` is a global
+property of the wire — `Compile` bakes push constants and buffer byte sizes from compile-time
+extents. Every `MatMulNBits` node in the real Phi-3.5 graph has symbolic leading dimensions.
+
+What I concluded from that — that the island numbers in §8.1.2 are a ceiling reachable only once
+dynamic shapes land in the engine — does not hold. §7.4.4 measures the same model with
+`batch_size` and `sequence_length` pinned through ORT's free-dimension overrides: 161 nodes
+claimed, 161 islands, correct logits on both devices. The ceiling is partly reachable **today**,
+from the caller, with no EP change. The blocker was real; the assumption that only the EP could
+move it was not.
+
+The second gate, which this section missed entirely, is dtype: once shapes are pinned the 97
+elementwise nodes decline on **f16**, not on shape. See §7.4.5.
 
 ### 8.2 Prepacking and the memory model
 

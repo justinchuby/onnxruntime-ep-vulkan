@@ -1577,27 +1577,28 @@ mod tests {
         // This test now verifies the positive constraint: every Live row has a compiled shader
         // variant and a translate handler, rather than enforcing that no rows are Live.
         use crate::engine::shaders;
-        let live: Vec<_> = all_specs()
-            .filter(|s| s.is_live())
-            .map(|s| s.qualified_name().into_owned())
-            .collect();
+        let live: Vec<&'static OpSpec> = all_specs().filter(|s| s.is_live()).collect();
         // At least Add must be live — if this ever goes back to zero we likely regressed.
         assert!(
             !live.is_empty(),
             "no rows are Live; the ORT dispatch wire landed with Add and must stay live"
         );
-        for name in &live {
+        for spec in &live {
+            let name = spec.qualified_name();
+            // Round-tripping through `NodeDesc` proves the *lookup path* works for this row, not
+            // just that the row exists. The domain has to come from the row rather than from
+            // splitting the qualified name: a contrib row reached through the default domain is a
+            // different lookup, and `MatMulNBits` is the first live row where it differs.
             let desc = NodeDesc {
-                op_type: name.split(':').next_back().unwrap_or(name).into(),
+                op_type: spec.op_type.into(),
+                domain: spec.domain.as_str().into(),
                 ..Default::default()
             };
-            // spec_for must return Some for a live row (it filters on is_live).
             assert!(
                 spec_for(&desc).is_some(),
                 "{name} is live but spec_for returns None — is_live() and spec_for are inconsistent"
             );
             // Every live row must have at least one compiled shader variant.
-            let spec = spec_for(&desc).unwrap();
             let has_shader = spec.caps.iter().any(|d| {
                 spec.kernel
                     .stem(d)
