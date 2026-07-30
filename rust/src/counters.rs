@@ -244,7 +244,10 @@ pub fn dump_observations_if_requested() {
              \"pointer_max_offset\": {},\n  \"alloc_allocations\": {},\n  \
              \"alloc_frees\": {},\n  \"alloc_bytes\": {},\n  \
              \"alloc_high_water_bytes\": {},\n  \"alloc_device_backed_spans\": {},\n  \
-             \"alloc_staged_spans\": {},\n  \"alloc_staged_bytes\": {}\n}}\n",
+             \"alloc_staged_spans\": {},\n  \"alloc_staged_bytes\": {},\n  \
+             \"alloc_allocators_released\": {},\n  \"alloc_allocators_live\": {},\n  \
+             \"alloc_frees_after_release\": {},\n  \
+             \"alloc_live_at_release_spans\": {},\n  \"alloc_live_at_release_bytes\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -259,6 +262,11 @@ pub fn dump_observations_if_requested() {
             t.device_backed_spans,
             t.staged_spans,
             t.staged_bytes,
+            t.allocators_released,
+            t.allocators_live,
+            t.frees_after_release,
+            t.live_at_release_spans,
+            t.live_at_release_bytes,
         ));
     }
     if let Err(e) = std::fs::write(&path, doc) {
