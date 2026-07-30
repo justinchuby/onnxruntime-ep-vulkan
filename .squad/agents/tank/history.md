@@ -331,3 +331,74 @@ the same instinct as "a false green sends you looking elsewhere", generalised.
 Also re-verified the planner numbers against a freshly built DLL on both devices rather than
 trusting this morning's green, per the standard Mouse set. Identical: 52 interior pointers, 0 guard
 band, max offset 49152 B, 30 dispatches, on device 0 and device 1.
+
+---
+
+## Session 14 — the validation positive control, and the guard-band assertion's home
+**2026-07-30T02:33:16-07:00**, worktree `C:\Users\justinchu\dev\ep-vulkan-tank`, branch `squad/tank`,
+rebased on `main` at `5d8fc16`. `cargo ci` green twice (348 tests, 3 new).
+
+### The thing I did not expect to find
+
+Criterion 3 was vacuous **twice over**, and only one half was on anyone's list. Morpheus refused
+"the validation layer surfaces no errors" because that is exactly what a run with the layer *not
+loaded* reports. True. But `vk/instance.rs` also attaches **no `VkDebugUtilsMessengerEXT`** — so
+even with the layer loaded, nothing in-process was listening; the output went to the layer's
+default handler, wherever that points. Switch's own module docs in `vk/dispatch_integration.rs`
+admit it in writing: messages "are observable on stderr but do not automatically return `Err`".
+
+So the criterion had two independent reasons to be meaningless, and the one nobody had named was
+the one that would have survived fixing the other. If I had only addressed Morpheus's objection —
+"check the layer is loaded" — I would have produced a check that passed while still observing
+nothing. **The stated objection is a sample from the failure class, not the class.** Worth
+carrying: when someone refuses a criterion for a reason, look for the reason they did not give.
+
+### What I built
+
+`epctl --probe-validation [--plant-violation]`, and `tests/validation_control.rs` around it.
+Three states, not a boolean — Armed (0), LayerAbsent (3), NoLoader (3) — because a boolean
+collapses "clean" into "not checked", which is the entire defect. The plant is
+`vkCreateDebugUtilsMessengerEXT` with zero severity/type masks.
+
+The property I care most about in that choice: **it needs no physical device.** A plant that needed
+one would make a machine with no capable GPU look identical to a machine with no validation. I had
+drafted the sampler-VUID version first, which needed a logical device, and in writing it I created
+a device with an empty `DeviceCreateInfo` — itself a validation error, so my control would have
+been catching its own scaffolding rather than the plant. That is a fault worth remembering in its
+own right: **a positive control can pass for the wrong reason, and then it is not a control.**
+
+And I broke it on purpose: neutered the plant, watched the test go red with the right message,
+restored it. Third time I have used plant-break-confirm-restore now. A positive control that has
+never been seen failing is itself unverified — the argument applies recursively and I should stop
+being surprised by that.
+
+### The scoping limit I am stating rather than burying
+
+My plant is inside `epctl`'s own instance. It proves the layer loads here and our capture works. It
+does **not** prove the EP's dispatch path has validation armed on *its* instance. Different
+instance, different file, different owner. I sent the coordinator the exact one-line env-gated plant
+for Switch (a leaked `VkFence`, `VUID-vkDestroyDevice-device-05137`) rather than editing `vk/**`
+mid-rewrite.
+
+The temptation was real: it would have been one line and I could have reported "validation is
+armed" without the qualifier. That is precisely the shape of the two fabricated speedups, and of
+`probe_allocator.py` reporting "numerically correct: True" through a run where the EP had silently
+fallen back to CPU. **A control that quietly proves something adjacent to the claim is worse than
+no control**, because it also spends the credibility.
+
+### Guard band
+
+`pointers_in_guard_band > 0` now fails `epctl --check-counters` with exit 1, **ahead of** the
+dispatch-count check, because thirty dispatches of wrong answers is not better than zero dispatches
+and the first failure reported should be the one that matters most. The key is optional: absent ≠
+zero. That distinction is the same one as LayerAbsent ≠ clean, and I have now made it three times
+in three different mechanisms in a week. It might be the single most load-bearing idea I hold.
+
+### And I falsified my own instrument again
+
+`cargo ci`'s honest-caveat epilogue said "no validation layers, no `vkCreateInstance`" — false the
+moment my test landed. I corrected it. The epilogue's whole value is that it is believed; one stale
+line teaches a reader to discount all of it. **It is an assertion aimed at a human and needs the
+same maintenance as one aimed at a compiler.** I now expect that every mechanism I add will falsify
+some caveat I wrote earlier, and I should check for that as a matter of routine rather than
+noticing it by luck.

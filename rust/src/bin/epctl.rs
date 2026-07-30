@@ -171,6 +171,7 @@ fn usage() {
     eprintln!("USAGE:");
     eprintln!("    epctl --dump-capabilities [--json]");
     eprintln!("    epctl --probe-loader");
+    eprintln!("    epctl --probe-validation [--plant-violation]");
     eprintln!("    epctl --check-counters <file> [--require-dispatches N]");
     eprintln!();
     eprintln!("    --dump-capabilities  every registered op, its opset window, dtypes, status,");
@@ -178,7 +179,6 @@ fn usage() {
     eprintln!("                         its claim predicate was verified against.");
     eprintln!("    --json               machine-readable output, for CI diffing.");
     eprintln!("    --probe-loader       probe the Vulkan loader: library presence, version,");
-    eprintln!("                         ICD discovery env vars, available layers/extensions,");
     eprintln!(
         "                         and whether vkCreateInstance + device enumeration succeed."
     );
@@ -186,6 +186,12 @@ fn usage() {
     eprintln!(
         "                         Vulkan is functional on the runner independently of the EP."
     );
+    eprintln!("    --probe-validation   report whether VK_LAYER_KHRONOS_validation is installed,");
+    eprintln!("                         enabled, AND being listened to by a debug messenger.");
+    eprintln!("                         Exit 3 when absent: that is no answer, not a clean one.");
+    eprintln!("    --plant-violation    with --probe-validation, deliberately commit an invalid");
+    eprintln!("                         Vulkan call. The positive control: if this does NOT");
+    eprintln!("                         produce a caught error, a clean run proves nothing.");
     eprintln!("    --check-counters <file>");
     eprintln!("                         read the execution-counter snapshot the EP writes when");
     eprintln!(
@@ -216,9 +222,18 @@ fn usage() {
 /// [`probe_exit_code`]: a wrong answer is worse than a loud refusal to answer.
 #[derive(Debug, PartialEq, Eq)]
 enum CounterVerdict {
-    Pass { dispatches: u64 },
-    TooFew { dispatches: u64, required: u64 },
+    Pass {
+        dispatches: u64,
+    },
+    TooFew {
+        dispatches: u64,
+        required: u64,
+    },
     NoReport(String),
+    /// ORT derived a pointer that ran off the end of one of our allocations.
+    OutOfBounds {
+        count: u64,
+    },
 }
 
 /// Pull one unsigned integer field out of the counters JSON.
@@ -266,6 +281,19 @@ fn read_counters(path: &str, required: u64) -> CounterVerdict {
     let Some(dispatches) = json_u64(&doc, "dispatches_executed") else {
         return CounterVerdict::NoReport(format!("{path} has no `dispatches_executed` field."));
     };
+
+    // Checked before the dispatch count, because it outranks it. A lane that executed plenty of
+    // dispatches *and* took a pointer off the end of an allocation has not passed; it has produced
+    // numbers nobody should trust. This is a correctness alarm wearing a counter's clothing.
+    //
+    // The key is optional on purpose: a snapshot written by a build without the ledger, or by a
+    // run with device memory disabled, simply does not carry it, and absence must not be read as
+    // zero. Present-and-non-zero is the only failing case.
+    if let Some(oob) = json_u64(&doc, "pointers_in_guard_band")
+        && oob > 0
+    {
+        return CounterVerdict::OutOfBounds { count: oob };
+    }
 
     if dispatches >= required {
         CounterVerdict::Pass { dispatches }
@@ -322,6 +350,224 @@ fn check_counters(path: &str, required: u64) -> std::process::ExitCode {
             );
             std::process::ExitCode::from(3)
         }
+        CounterVerdict::OutOfBounds { count } => {
+            eprintln!(
+                "epctl: FAIL — ORT derived {count} pointer(s) that landed in a guard band between \
+                 our device handles.\n\
+                 \x20 This is not a performance metric, it is a correctness alarm. ORT's memory- \
+                 pattern planner does pointer arithmetic on allocator return values — measured, \
+                 not assumed: it packs several tensors into one of our allocations and hands back \
+                 `base + n` from the second run of a session onward. In-span arithmetic is fine \
+                 and expected. A guard-band hit means an offset ran off the end of the allocation \
+                 it was derived from.\n\
+                 \x20 We only see this at all because handles are reserved address space rather \
+                 than opaque integers. Under any design that could not detect it, this would be a \
+                 silently wrong answer instead of a failing lane. Treat it as a bug in shape or \
+                 size accounting, not as an allocator tuning knob, and read the `*.trace.txt` \
+                 beside the counters file for the exact addresses."
+            );
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// --probe-validation: the criterion-3 positive control
+// ---------------------------------------------------------------------------------------------
+
+/// The marker the harness greps for. A literal, not a description, so the two ends cannot drift.
+const VALIDATION_CAUGHT_MARKER: &str = "EPCTL-VALIDATION-CAUGHT";
+const VALIDATION_LAYER: &std::ffi::CStr = c"VK_LAYER_KHRONOS_validation";
+
+/// Why `--probe-validation` cannot produce a verdict, kept separate from "it produced one".
+#[derive(Debug, PartialEq, Eq)]
+enum ValidationProbe {
+    /// The layer is installed, was enabled, and a debug messenger is receiving its output.
+    Armed,
+    /// No Vulkan loader, or `vkCreateInstance` failed.
+    NoLoader(String),
+    /// The loader is present but `VK_LAYER_KHRONOS_validation` is not installed.
+    LayerAbsent,
+}
+
+/// Create an instance with validation enabled *and a debug messenger attached*, then optionally
+/// commit a deliberate violation.
+///
+/// # Why this exists
+///
+/// M0 criterion 3 asks that validation runs clean. Morpheus refused that as written, because
+/// **"no errors surfaced" is exactly what a run with the layer not loaded reports** — the same
+/// objection that killed two fabricated speedups, applied to a layer instead of a provider.
+///
+/// The gap was worse than that. The EP requests `VK_LAYER_KHRONOS_validation` but attaches no
+/// `VkDebugUtilsMessengerEXT`, so even when the layer *is* loaded, nothing in-process observes its
+/// output — it goes wherever the layer's default handler sends it. So a clean run was uninformative
+/// twice over: the layer might not be there, and we were not listening.
+///
+/// This probe closes both halves. It attaches a messenger, so a caught error becomes a line we
+/// print ourselves, and it reports the three states apart: armed, layer absent, no loader. Only
+/// `Armed` licenses any claim about validation cleanliness.
+///
+/// # Safety
+/// Every unsafe block below is a Vulkan entry point; the invariants are stated at each one.
+fn probe_validation(plant: bool) -> ValidationProbe {
+    use ash::vk;
+
+    // SAFETY: opens the system Vulkan loader. No invariant beyond "the loader path is a valid
+    // shared library", which is the OS loader's job.
+    let entry = match unsafe { ash::Entry::load() } {
+        Ok(e) => e,
+        Err(e) => return ValidationProbe::NoLoader(format!("no Vulkan loader: {e}")),
+    };
+
+    // SAFETY: `entry` is live; a property query with no side effects.
+    let layers = unsafe { entry.enumerate_instance_layer_properties() }.unwrap_or_default();
+    let present = layers.iter().any(|l| {
+        // SAFETY: `layer_name` is a NUL-terminated char array supplied by the loader.
+        unsafe { std::ffi::CStr::from_ptr(l.layer_name.as_ptr()) == VALIDATION_LAYER }
+    });
+    if !present {
+        return ValidationProbe::LayerAbsent;
+    }
+
+    let app = vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 0, 0));
+    let layer_ptrs = [VALIDATION_LAYER.as_ptr()];
+    let ext_ptrs = [ash::ext::debug_utils::NAME.as_ptr()];
+    let mut messenger_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
+        .message_severity(
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
+        )
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                | vk::DebugUtilsMessageTypeFlagsEXT::GENERAL,
+        )
+        .pfn_user_callback(Some(validation_callback));
+    // Chained into the instance create info as well, so violations committed *during*
+    // instance creation and destruction are caught too — those are outside the messenger's
+    // own lifetime and would otherwise be invisible.
+    let ci = vk::InstanceCreateInfo::default()
+        .application_info(&app)
+        .enabled_layer_names(&layer_ptrs)
+        .enabled_extension_names(&ext_ptrs)
+        .push_next(&mut messenger_ci);
+
+    // SAFETY: `entry` is live and every borrowed array outlives `ci`.
+    let instance = match unsafe { entry.create_instance(&ci, None) } {
+        Ok(i) => i,
+        Err(e) => return ValidationProbe::NoLoader(format!("vkCreateInstance failed: {e:?}")),
+    };
+
+    let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+    // SAFETY: `instance` was created with the debug-utils extension enabled, and `messenger_ci`
+    // is a fully populated create-info whose callback has static lifetime.
+    let messenger = unsafe { debug_utils.create_debug_utils_messenger(&messenger_ci, None) }.ok();
+
+    if plant {
+        // THE PLANTED VIOLATION.
+        //
+        // `vkCreateDebugUtilsMessengerEXT` with empty `messageSeverity` and `messageType` masks
+        // violates VUID-VkDebugUtilsMessengerCreateInfoEXT-messageSeverity-requiredbitmask (and
+        // the matching messageType one). It is chosen for four properties:
+        //
+        //  1. It is a *stateless* parameter check, so it is caught with certainty by any build of
+        //     the validation layer, on any ICD, including lavapipe.
+        //  2. It cannot corrupt anything — nothing is allocated, bound, submitted or executed.
+        //  3. It needs **no logical device and no physical device**. That matters: if the plant
+        //     needed a device, a machine with no capable GPU would look exactly like a machine
+        //     with no validation, which is the precise conflation this control exists to prevent.
+        //  4. It exercises the same extension the messenger itself uses, so a pass proves the
+        //     capture path is live and not merely that an instance was created.
+        eprintln!("epctl: committing the planted violation now");
+        let bad = vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::empty())
+            .message_type(vk::DebugUtilsMessageTypeFlagsEXT::empty())
+            .pfn_user_callback(Some(validation_callback));
+        // SAFETY: `instance` was created with the debug-utils extension enabled. `bad` is a fully
+        // initialised create-info that is deliberately invalid; validation intercepts it. Any
+        // handle it returns is destroyed immediately below and never otherwise used.
+        if let Ok(m) = unsafe { debug_utils.create_debug_utils_messenger(&bad, None) } {
+            // SAFETY: `m` was just created by this `debug_utils` and is destroyed exactly once.
+            unsafe { debug_utils.destroy_debug_utils_messenger(m, None) };
+        }
+    }
+
+    if let Some(m) = messenger {
+        // SAFETY: `m` was created by this `debug_utils` on this instance and is destroyed once.
+        unsafe { debug_utils.destroy_debug_utils_messenger(m, None) };
+    }
+    // SAFETY: `instance` is live and every child object created above has been destroyed.
+    unsafe { instance.destroy_instance(None) };
+    ValidationProbe::Armed
+}
+
+/// Print every validation message with a greppable marker.
+///
+/// # Safety
+/// Called by the validation layer with a valid callback-data pointer, per the Vulkan spec.
+unsafe extern "system" fn validation_callback(
+    _severity: ash::vk::DebugUtilsMessageSeverityFlagsEXT,
+    _types: ash::vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const ash::vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+    _user: *mut std::ffi::c_void,
+) -> ash::vk::Bool32 {
+    if data.is_null() {
+        return ash::vk::FALSE;
+    }
+    // SAFETY: the layer guarantees `data` points to a valid callback-data struct for the duration
+    // of this call.
+    let msg = unsafe { (*data).p_message };
+    let text = if msg.is_null() {
+        std::borrow::Cow::Borrowed("<no message>")
+    } else {
+        // SAFETY: `p_message` is a NUL-terminated UTF-8 string owned by the layer.
+        unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy()
+    };
+    eprintln!("{VALIDATION_CAUGHT_MARKER}: {text}");
+    ash::vk::FALSE
+}
+
+fn run_probe_validation(plant: bool) -> std::process::ExitCode {
+    // A lane that skips the control silently is a lane without the control. Setting this turns
+    // "cannot answer" into "failed", so an environment that quietly lost the layer is loud.
+    let required = std::env::var_os("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION").is_some_and(|v| {
+        let v = v.to_string_lossy().to_ascii_lowercase();
+        v == "1" || v == "true" || v == "yes" || v == "on"
+    });
+    let unavailable = if required {
+        eprintln!(
+            "epctl: ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION is set, so an unavailable \
+             validation layer is a failure rather than a skip."
+        );
+        std::process::ExitCode::from(1)
+    } else {
+        std::process::ExitCode::from(3)
+    };
+    match probe_validation(plant) {
+        ValidationProbe::Armed => {
+            println!(
+                "epctl: VALIDATION ARMED — VK_LAYER_KHRONOS_validation is installed, was enabled, \
+                 and a VkDebugUtilsMessengerEXT is receiving its output.\n\
+                 \x20 Only in this state does a clean run mean anything. Without the messenger the \
+                 layer's output goes to its default handler and nothing in-process observes it, so \
+                 'no errors surfaced' would be true of a run in which errors surfaced."
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        ValidationProbe::LayerAbsent => {
+            eprintln!(
+                "epctl: VALIDATION LAYER ABSENT — the Vulkan loader is present but \
+                 VK_LAYER_KHRONOS_validation is not installed, so nothing can be validated here.\n\
+                 \x20 This is exit 3, not exit 1: it is the absence of an answer, not a failing \
+                 one. Install the Vulkan SDK, or set VK_LAYER_PATH to a directory containing the \
+                 layer's manifest."
+            );
+            unavailable
+        }
+        ValidationProbe::NoLoader(why) => {
+            eprintln!("epctl: NO VULKAN LOADER — {why}\n\x20 Exit 3: no answer, not a bad answer.");
+            unavailable
+        }
     }
 }
 
@@ -373,6 +619,8 @@ fn main() -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let dump = args.iter().any(|a| a == "--dump-capabilities");
     let probe = args.iter().any(|a| a == "--probe-loader");
+    let probe_validation_flag = args.iter().any(|a| a == "--probe-validation");
+    let plant_violation = args.iter().any(|a| a == "--plant-violation");
 
     // `--check-counters` and `--require-dispatches` take a value, so the flat "every argument must
     // be a known flag" check below has to know to skip the values. Parse them out first.
@@ -416,6 +664,8 @@ fn main() -> std::process::ExitCode {
             a.as_str() != "--json"
                 && a.as_str() != "--dump-capabilities"
                 && a.as_str() != "--probe-loader"
+                && a.as_str() != "--probe-validation"
+                && a.as_str() != "--plant-violation"
         })
     {
         eprintln!("epctl: unrecognised argument `{bad}`");
@@ -425,6 +675,10 @@ fn main() -> std::process::ExitCode {
 
     if let Some(path) = counters_file {
         return check_counters(&path, required_dispatches);
+    }
+
+    if probe_validation_flag {
+        return run_probe_validation(plant_violation);
     }
 
     if probe {
@@ -488,6 +742,55 @@ mod tests {
             dispatches_executed: dispatches,
         }
         .to_json()
+    }
+
+    /// A snapshot carrying the ledger keys, as a real run with device memory enabled writes it.
+    fn snapshot_with_guard_band(dispatches: u64, in_guard_band: u64) -> String {
+        let mut doc = snapshot(dispatches);
+        let cut = doc.rfind('}').expect("json");
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        doc.push_str(&format!(
+            ",\n  \"pointers_observed\": 100,\n  \"pointers_interior\": 52,\n  \
+             \"pointers_in_guard_band\": {in_guard_band}\n}}\n"
+        ));
+        doc
+    }
+
+    #[test]
+    fn a_guard_band_hit_fails_the_lane_even_when_plenty_of_dispatches_executed() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-guard-band-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let clean = dir.join("clean.json");
+        std::fs::write(&clean, snapshot_with_guard_band(30, 0)).expect("write");
+        assert_eq!(
+            read_counters(clean.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "in-span interior pointers are normal and must not fail a lane"
+        );
+
+        let dirty = dir.join("dirty.json");
+        std::fs::write(&dirty, snapshot_with_guard_band(30, 1)).expect("write");
+        assert_eq!(
+            read_counters(dirty.to_str().expect("utf8"), 1),
+            CounterVerdict::OutOfBounds { count: 1 },
+            "a pointer that ran off the end of an allocation must outrank a healthy dispatch \
+             count — 30 dispatches of wrong answers is not a pass"
+        );
+
+        // A snapshot from a build without the ledger, or a run with device memory off, carries no
+        // such key. Absence must not be read as either a pass or a failure signal.
+        let old = dir.join("old.json");
+        std::fs::write(&old, snapshot(30)).expect("write");
+        assert_eq!(
+            read_counters(old.to_str().expect("utf8"), 1),
+            CounterVerdict::Pass { dispatches: 30 },
+            "a snapshot without the key predates the ledger; absence is not zero and not a fault"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
