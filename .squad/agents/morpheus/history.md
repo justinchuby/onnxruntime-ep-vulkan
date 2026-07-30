@@ -128,3 +128,102 @@ this desk. When the lanes run they must carry criterion 10's gate.
 - Do not rename published C ABI to fix a documentation problem.
 
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+## Session 24 — correctness-gated claiming (2026-07-30T06:32:18-07:00)
+
+### The situation ruled on
+`main` at `557bf24` shipped an EP that claims 161 nodes on Phi-3.5 and computes zeros. Before this
+week that was impossible: the EP declined everything, so it was useless but never wrong. Coverage
+work crossed a line §7.0 does not describe.
+
+### §7.0.1 — the third category
+§7.0 (frozen) contemplates ops we CANNOT run. Third category: ops we CAN dispatch and have NOT
+proven. Companion rule, does NOT touch the frozen gate or §7.2:
+> Evidence shortfalls degrade op coverage, not device availability, and they degrade it identically
+> to capability shortfalls. An op we have not proven correct on a form is, for claiming purposes, an
+> op we cannot run on that form.
+
+### §8.9 — the ruling
+**Yes, claiming is gated on proof.** Argument that decided it: a decline is LOUD (claim-rate drop,
+island-count rise, CPU-fallback line, voided triple); a wrong claim is SILENT by construction (R5).
+A fast wrong answer is more dangerous than a slow right one because it does not announce itself.
+Compatibility ruling REQUIRES the gate rather than merely permitting it — silently-wrong output is
+the most severe compatibility failure available, since the only contract a user has is "ORT computes
+this graph". §1.3 said all this on 2026-07-28 and we shipped its exact failure anyway: **a prose
+commitment without a mechanism is not a commitment.**
+
+### Mechanism — `Live` stops being written down
+Hand-written `OpStatus::Live` is a duplicate of a machine-known fact → R7 "derive, do not declare".
+Table declares only source facts: `Staged(why)` (no kernel) / `Ready` (kernel exists). Claimability
+DERIVED per form from a harness-generated **proof ledger**. No entry ⇒ decline `[unproven]` naming
+the missing key. Ledger never hand-edited; regeneration check in CI. Promotion AND demotion
+automatic — a `DIVERGENT` model verdict demotes every participating form. epctl JSON extended
+ADDITIVELY (`status` unchanged, new `claimable` + `proof`) — compat outranks elegance.
+
+**Proof key** = (domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key incl.
+code-changing spec constants, shape_class, populated_optional_input_set). The point: it makes §8.7
+MECHANICAL — **an expression difference leaves the key equal; a path difference changes the key** —
+so an f32 proof can never be returned for an f16 node. Lookup is by key, no judgement call left.
+
+**Two tiers:** Tier 1 per-form op proof gates CLAIMING; Tier 2 per-producer-at-version model proof
+gates REPORTING and can RETRACT Tier 1. Op-level proof would likely not have caught a defect that
+reproduces at N=161 descriptors/readbacks.
+
+### Escape hatch — C1's shape
+`CLAIM_UNPROVEN` takes **a list of proof keys and nothing else**. No boolean, no `1`, no `*`. A
+parser that can express "everything" MUST NOT EXIST — enforced as a test (planted `*`, `1`, bare
+op-type all rejected). Default safe, requires no act. Three disclosures so no build is silently
+unsafe: WARN at session creation naming keys; `unproven_forms_enabled` in counters; `epctl
+--check-counters` FAILS on non-empty without `--allow-unproven`. Available in release builds —
+availability is not the risk, silence is; a feature gate would fork the shipped artifact from the
+tested one. Bootstrapping answered by construction: the ledger comes from the ordinary differential
+run, so unproven→proven IS the dev loop.
+
+### Cost — stated first, not afterwards
+Phi-3.5 claimed count **161 → 0**. Regression in the reported number, not the code. And per my own
+§10.0 gate the 161 was ALREADY void (`DIVERGENT` voids the triple). Honest number was already zero;
+the ruling only makes behaviour agree with reporting. Rather an honest zero than a dishonest 161.
+
+### M0
+Criterion 11 added (ledger + the three planted controls). **4 met / 4 partial / 3 not met.** M0 got
+worse twice in one day; none of it a code regression. Sequencing: **the gate goes FIRST, ahead of
+fixing the fp16 defect** — fixing the kernel removes today's defect, the gate stops the next one
+shipping.
+
+### Link's lanes — precondition, precisely scoped
+Split the word: **operational** (exists, executes, reports — Link may declare this without the gate;
+it is a prerequisite for running criterion 10 off this desk) vs **green** (admissible as evidence /
+satisfies a criterion / quoted — requires the gate). Made unrepresentable: a lane's pass condition
+includes the verdict field; `UNMEASURED` reports UNMEASURED, not PASS, not FAIL. Feasibility: the
+gate is the MECHANISM not the model — per-lane **gate artifact** = smallest real
+producer-at-version model that claims non-zero, has an island of >=2 nodes, and exercises >=1 proof
+key per dtype that lane claims. Not Phi-3.5 on a rasteriser.
+
+### Rai
+Pre-recorded independence: ruling does NOT depend on his RAI verdict. If he agrees, load-bearing
+reason stays the engineering one (R6 rule 1). If he disagrees, ruling stands and the disagreement is
+recorded, not compromised.
+
+### Carry forward
+- Anything hand-written in the registry that the harness already knows is an R7 fork waiting to drift.
+- When designing a switch, ask whether it can express "everything" — if yes, it will.
+- State the cost of a ruling on the day the number goes down, not afterwards.
+
+### Addendum — Rai converged, and RAI-009 named a gap I missed
+Rai returned RAI-008 CRITICAL (class: architecture permits silently-wrong output with no disclosure)
+and RAI-007 ADVISORY (the fp16 kernel instance) — correctly splitting instance from class. Converged
+INDEPENDENTLY: his load-bearing reason is autoregressive amplification (one zeroed-logit dispatch →
+unbounded stream of fluent wrong tokens, indistinguishable from "bad model"); mine is the
+claim/decline asymmetry + compatibility. Per R6 rule 1 the load-bearing reason stays the engineering
+one. **Two independent arguments are worth more than either only because they are DIFFERENT
+arguments** — R9 read the right way round: a second reading is evidence only if it could have come
+out differently.
+
+**RAI-009 was a real gap in my ruling.** §8.9.4 discloses only when the escape hatch is on; §9.1.3's
+verdict lives in a counters file no user sees. Closed as §8.9.7: at session creation, one INFO line
+per claimed form naming its proof key and backing ledger entry; WARN if any claimed form is
+UNMEASURED; explicit INFO naming top decline codes when the EP claims zero. Same mechanism at two
+severities, not a second thing to maintain. **Disclosure, not a gate — a log line is an instrument
+with no red state (R9) and may never substitute for the ledger.** Folded into M0 criterion 11.

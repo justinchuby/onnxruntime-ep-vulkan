@@ -506,8 +506,54 @@ than inferring execution from a pass count:
   `*.trace.txt` written beside the counters file.
   The key is **optional**: a snapshot from a build without the ledger does not carry it, and
   **absence must not be read as zero** — so a missing key passes and a present non-zero one fails.
+* **`alloc_staged_spans > 0` disqualifies a timing**, and `--require-device-memory` asserts it. See
+  [Keeping the staging caveat truthful](#keeping-the-staging-caveat-truthful).
 * `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` must be set **before** the process that loads the EP
   starts; the file is written on the first successful dispatch and again at teardown.
+
+---
+
+## Keeping the staging caveat truthful
+
+When a device handle has no `VkBuffer` behind it, its contents are held in host memory. That is
+correct — it is the near half of the real copy path — but it means the tensor never reached the
+device, so no timing from such a run is a device measurement.
+
+The original mechanism for saying so was a one-shot `WARN` ending *"any timing from this run is a
+host measurement"*. **That sentence cannot survive contact with real device memory**, and it fails
+in both directions:
+
+* **Keep it and it over-warns.** A run that is 99% device-backed still prints "host measurement".
+  The warning is then wrong, readers learn to discount it, and it stops protecting the 1% case it
+  was written for. A caveat that is always printed carries no information.
+* **Delete it and it under-warns.** Staging does not stop the day device memory lands; it stops
+  *per allocation*. A partially staged run would then say nothing at all, and its numbers would
+  look exactly like device numbers. This is the worse failure of the two.
+
+So the whole-run claim is no longer prose. Three things replaced it:
+
+1. **The per-handle WARN says only what it knows** — *this* handle has no `VkBuffer`, so *its*
+   contents are in host memory — and explicitly defers the whole-run question to teardown.
+2. **A teardown verdict computed from the ratio** (`allocator::tally::staging_verdict`), with a
+   distinct sentence for the **mixed** state that no fixed wording covered and that is precisely
+   where we are heading: *"neither a host measurement nor a device one; an average over two
+   different memories, comparable with neither."*
+3. **An assertion, so nobody has to remember a log line.** `epctl --check-counters
+   --require-device-memory` fails the lane unless every handle was device-backed. A snapshot with
+   no allocation tally **cannot answer** and exits 3 rather than passing — absent keys are not
+   zero. Set the flag on any lane that quotes a number.
+
+The counters file carries `alloc_allocations`, `alloc_frees`, `alloc_bytes`,
+`alloc_high_water_bytes`, `alloc_device_backed_spans`, `alloc_staged_spans` and
+`alloc_staged_bytes` to support this. They come from a process-global tally rather than from
+`AllocStats`, because an `AllocStats` lives inside a `VulkanAllocator` that ORT releases on its own
+schedule — a snapshot published at release would be correct only when the teardown order happened
+to favour us, and would silently write zeros otherwise.
+
+**As of today every one of those runs reports `alloc_device_backed_spans: 0`.** The ORT-facing half
+of the allocator is real and in the path; the `VkBuffer` behind each handle is not attached yet, so
+`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` currently buys host memory wearing a device handle. The
+flag above is what will notice the day that changes, and the day it half-changes.
 
 ---
 
@@ -741,6 +787,24 @@ a handle.
 
 This was an argument for a long time and is now a measurement.
 
+> **The op suite cannot observe any of this, and that is a property of the suite, not of the
+> allocator.** Every helper in `tests/ops/_models.py` is `_session(model, providers).run(...)` — a
+> session built, run **once**, and dropped. Measured on 2026-07-30, same machine, same DLL, both
+> devices:
+>
+> | | sessions | runs each | interior pointers | max offset |
+> | --- | --- | --- | --- | --- |
+> | `test_elementwise.py` | 67 | 1 | **0** | 0 B |
+> | `test_op_table.py` | 117 | 1 | **0** | 0 B |
+> | `tools/probe_planner.py` | 1 | 5 | **52** | 49152 B |
+> | `tools/probe_run2.py` (Phi-3.5, 2.2 GB) | 1 | 3 | **1192** | 65536 B |
+>
+> So the suite that runs most often is structurally blind to the interior-pointer path, and its
+> zero is not evidence of anything. `probe_planner.py --require-interior` is the standing check
+> that the instrument still reaches the path at all: we have measured that it sees 52 interior
+> pointers here, so a later zero means the *probe* broke, not that the planner stopped doing
+> arithmetic. Without that flag the regression reads as a clean bill of health.
+
 **It does pointer arithmetic on them, and only from the second run of a session onward.**
 
 ORT's memory-pattern planner does not engage on the first `Run`. It *records* the allocation
@@ -773,6 +837,45 @@ matters: every derived pointer stayed inside the span it was derived from, which
 reserved-address-space design promises by construction. Had handles been opaque integers, each of
 those 52 pointers would have been an unrecognisable value — not a crash, a *wrong answer*.
 
+### At model scale, on the real 2.2 GB model
+
+`tools/probe_run2.py` runs Phi-3.5-mini three times in one session with
+`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`, so 427 allocations and 2.09 GB of real model tensors go
+through the registry. Measured 2026-07-30, both devices:
+
+| | device 0 (Intel Iris Xe) | device 1 (RTX 4060) |
+| --- | --- | --- |
+| `pointers_observed` | 9552 | 8908 |
+| `pointers_interior` | **1192** | **1192** |
+| `pointers_in_guard_band` | **0** | **0** |
+| `pointers_use_after_free` | 0 | 0 |
+| `pointer_max_offset` | 65536 B | 65536 B |
+| `alloc_allocations` | 427 | 427 |
+| `alloc_device_backed_spans` | **0** | **0** |
+
+The interior count being *identical* across two vendors is what a deterministic planner should
+produce, and is a weak self-check that the ledger is counting the planner rather than the driver.
+
+**The instrument that would go red if the reserved-VA claim were false is
+`pointers_in_guard_band`**, and it is not a log line: `epctl --check-counters` returns
+`OutOfBounds` (exit 1) on any non-zero value, *before* it checks the dispatch count. It has now
+had 21 460 opportunities across two vendors and has not fired.
+
+**It also runs the session more than once on purpose, for a second reason.** On run 1 the arena is
+freshly zeroed, so a tensor nobody wrote and a tensor written with zeros are indistinguishable.
+From run 2 the arena is dirty, and the two separate cleanly: an unwritten buffer shows garbage, a
+zero-written buffer shows zeros. Any probe that runs a session once cannot tell those apart.
+
+**`probe_run2.py` asserts `EP_NAME in session.get_providers()` before it compares anything**, and
+that gate has already earned its place — registering the library under a name the session does not
+then request makes ORT print `Unknown Provider Type ... Falling back to CPUExecutionProvider` and
+**not raise**, so the comparison silently becomes CPU-versus-CPU and agrees perfectly.
+
+Its run-to-run diff compares **raw bytes**, not `max|a - b|`. `numpy` returns `nan` for the latter
+whenever either side holds a `NaN` — including for two bit-identical arrays — so a magnitude-based
+diff cannot distinguish "changed" from "both contain NaN". Magnitudes are reported separately and
+only over the finite subset.
+
 ### The ledger
 
 `allocator::ledger` classifies every pointer that crosses back to us and tallies it by
@@ -790,13 +893,20 @@ ORT's logger is usually already gone — and a process cannot read its own teard
 
 ### Quarantine: armed, never fired, and proven able to fire
 
-`pointers_use_after_free` was **0** in every real session. ORT did not present a stale handle, so
-the quarantine remains unobserved under a real allocation pattern — and that number on its own is
-worth nothing, because it is exactly what a dead detector reports.
+`pointers_use_after_free` was **0** in every real session, now including the 2.2 GB model: 18 460
+pointer observations and 210 frees across both vendors. The registry is unambiguously in ORT's
+path — 1192 of those observations were interior pointers it derived itself — so the zero can no
+longer be dismissed as "the detector is not connected". It still is not a pass. The claim this
+supports is precisely:
+
+> ORT has not presented us with a freed handle under any allocation pattern we have run.
+
+That is not "quarantine is verified", and it must not be written up as such.
 `the_quarantine_detector_fires_when_a_stale_handle_is_presented` is the positive control that
 separates the two: it frees a handle and presents it through the same `classify` funnel a real
 session uses, and requires the ledger to count it and `host_bytes` to refuse it. Break the
-detector and that test fails — verified by planting the break.
+detector and that test fails — verified by planting the break. Generation-stamped rejection is
+therefore proven only against frees in an order *we* chose.
 
 ---
 

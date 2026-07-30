@@ -607,6 +607,51 @@ Every CI lane that runs the test suite must run it **twice**:
 
 **The question:** Does carrying the legacy barrier backend (DESIGN.md §7.3) actually buy *usable* devices, or does the Adreno 5xx / Mali Bifrost population fail for reasons unrelated to barriers — driver bugs, unsupported memory limits, missing fp16, known Adreno quirks on the watchlist?
 
+### 10.0 Fact-check: OQ-12 figures (2026-07-30T07:05:09-07:00)
+
+> **Checked by:** Fact Checker — Verification mode. Applies R9 (commit `4ff4595`, §10.0.1): for every claim, name the instrument that would go red if the claim were false.
+
+#### 10.0.1 Source and currency of the 68.57% figure
+
+**Source (correctly identified in §8.2):** [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/) — VK_KHR_synchronization2, Sascha Willems, CC-BY 4.0. The §8.2 pull was dated **2026-07-28**. A web query against the same source on 2026-07-30 returned **~67.33%** Android coverage (gap ~32.67%).
+
+**Rating: ⚠️ Unverified as a current figure.** The gpuinfo.org page is JavaScript-rendered and cannot be fetched directly; the 67.33% figure comes from a web-indexed rendering, not a live page read. The direction is consistent with what would be expected if budget or legacy devices were submitted to the database in the interval: the coverage decreased (more sync2-lacking devices entered the sample), meaning the gap *grew* by roughly 1.2 points in two days. The exact current value cannot be confirmed without direct page access.
+
+**The finding that matters:** the figure IS moving. The database is live; it changes as developers submit device reports. A number pulled 2026-07-28 is not identical to the number on 2026-07-30 or in six months. The correct posture is: **treat the gpuinfo.org figure as a lower bound on the sync2-lacking fraction of the real Android installed base** (the database over-represents newer/higher-end hardware), and expect it to drift as submissions accumulate. Do not treat 31.43% as a fixed constant — it is a snapshot of a live sample.
+
+**Falsifiability instrument:** A direct read of `https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_KHR_synchronization2&platform=android` on any given date yields the current coverage percentage. If this value ever crosses 99%, the gap has closed to the point where the legacy-path decision can be revisited. Until then the figure is bounded but not pinned.
+
+#### 10.0.2 Error direction: is 31.43% the right reading?
+
+The §8.2 measurement already correctly defines coverage as "devices that expose the extension string **or** report Vulkan 1.3 (where sync2 is core)." The 1.3 promotion is therefore already captured; there is no undercounting from devices that support sync2 natively without the extension string. This part of the claim is sound.
+
+However, "31.43% of Android devices lack sync2" and "31.43% of Android devices are reachable via the legacy barrier path" are not the same claim. Two error directions exist:
+
+**Overcounting the benefit (ceiling):** Devices that lack sync2 may *also* fail the §7.2 device gate (Vulkan < 1.1, no compute queue, insufficient `maxComputeWorkGroupInvocations`, etc.). Those devices are rejected before the barrier backend is even selected; the legacy path buys them nothing. The gpuinfo.org figure is silent on whether sync2-lacking devices pass §7.2. **31.43% is therefore a ceiling on the legacy-path benefit, not a measured value.** How much below 31.43% the real benefit falls cannot be determined without the OQ-12 experiment.
+
+**Undercounting the real population (floor):** The database skews toward developer-submitted reports from newer and higher-end hardware. Budget Android devices — which are exactly the ones most likely to lack sync2 and to be running obsolete OEM blobs — are under-represented in the submission pool. The real installed-base fraction lacking sync2 is likely *higher* than 31.43%, not lower. This means the legacy path potentially benefits a larger fraction of real users than the number suggests, but the usability of those devices is the unknown.
+
+**Net position per R9:** 31.43% is simultaneously a ceiling on usability-benefit (some gap devices fail the gate) and a lower bound on the gap-population size (database skew). The two errors partially offset but the direction cannot be resolved without the experiment. **A single gpuinfo.org reading names a database-sample fraction, not a device-market fraction, not a usability fraction.** The legacy path is justified by the existence of a non-negligible gap population, not by the precision of this number.
+
+#### 10.0.3 Conditions required to drop the legacy barrier path
+
+The dual-backend architecture (DESIGN.md §7.3) exists to serve two independent gaps:
+
+| Gap | Current figure (2026-07-28 pull) | Drop condition |
+|---|---|---|
+| Android sync2 coverage | 68.57% (gap: 31.43%) | Database coverage ≥ 99% on Android **and** OQ-12 confirms gap devices fail §7.2 for other reasons |
+| Windows sync2 coverage | 87.78% (gap: 12.22%) | Database coverage ≥ 99% on Windows |
+
+**Both conditions must hold simultaneously to justify removing the legacy path.** Android coverage at 99% does not close the Windows gap; Windows coverage at 99% does not close the Android gap. Neither is currently close.
+
+There is a weaker sufficient condition: if OQ-12 (Stage 1) shows that **all** sync2-lacking devices in slots A and B also fail the §7.2 gate, the legacy path buys no Android devices. Even in that case, the Windows gap (12.22%) independently justifies the dual-backend architecture unless Windows coverage also reaches near-universality.
+
+**Public data as of 2026-07-30:** the legacy barrier path is justified. The conditions for removal are not met on either platform.
+
+**Falsifiability instrument:** Repeat the gpuinfo.org read monthly. If Android coverage crosses 99% on the database *and* OQ-12 Stage 1 yields all-fail for sync2-lacking devices, the Android justification is void. If the database coverage for Windows crosses 99%, the Windows justification is void. If both happen, the legacy path becomes a pure maintenance cost with no benefit and the decision can be revisited.
+
+---
+
 **How much of the 31.43% claim is currently unverified:** All of it, as a *usability* claim. The gpuinfo.org data proves those devices lack `VK_KHR_synchronization2`. It says nothing about whether they can run correct compute at all, whether they pass the §7.2 device gate, or whether Vulkan inference on them outperforms their own CPU. Until the experiment runs, every statement about "the legacy backend benefits the 31% Android population" is a database extrapolation, not a measurement.
 
 **Can any of it be de-risked without physical devices?**
