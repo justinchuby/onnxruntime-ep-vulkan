@@ -295,3 +295,55 @@ GPUs with full metadata — M0's "loads and enumerates" clauses are satisfied. C
 not-met to partial and the milestone did not move at all, because everything from "runs a graph"
 onward is still open. Good news that lands on a criterion you already listed is easy to report
 honestly precisely *because* you listed the criteria first.
+
+---
+
+## 2026-07-29T16:00:55-07:00 — evidence our own tooling manufactured, and a criterion a skip could satisfy
+
+**The most dangerous wrong input is a number our own code printed.** A frozen architectural decision
+— removing gate criterion R5 — was justified in writing by lavapipe's `supportedStages = 0`. Mesa
+26.1 lavapipe supports subgroup BASIC in compute; that reading was our own `push_next` probe bug.
+Every step to the decision was reasonable: read a capability, notice it excludes a platform we care
+about, weigh the requirement, change it, record why. **This failure is invisible to diligence** —
+more care at any step would not have caught it, because the flawed input entered at the only point
+nobody thinks to question. Written up as §10.0.1 R6, and it is the cleanest specimen I have.
+
+**The decision survived only because it had two reasons and the load-bearing one was not the number.**
+§7.0 argues R5 out of the gate from first principles and never mentions lavapipe. Had the observation
+been load-bearing rather than merely presented, this would have been a reversal. The rule I take
+from it and have written down: **when a decision rests on both a principle and a measurement, record
+which one would have to fail for the decision to change.** If the answer is the measurement, the
+decision is provisional and must say so. I did not do that for R5, and I could not tell from my own
+document which reason was doing the work.
+
+**Publish the correction even when the conclusion stands.** Nothing operational changed — R5 stays
+out of the gate, the code is right, the test pinning it is right. The temptation was to fix a comment
+quietly. But `PLATFORMS.md` LVP2 states the same false premise as an *observed device quirk* and as
+the cause of the §7.2 change, so anything downstream reasoning about lavapipe inherits it. **A right
+answer reached through false evidence is an unaudited answer.**
+
+**A number taken with a broken instrument is not evidence merely because it was written down.** Every
+capability reading recorded before the probe fix is now provisional and must be re-observed with
+`epctl --probe-loader` before it is cited again. Corroboration means a *second instrument*, never a
+second reading from the same code.
+
+**A criterion that a skip can satisfy is not a criterion.** The barrier-parity test reported "`Add`
+is not yet Ready (did not claim this node form)" on the same machine and day that
+`test_add_is_claimed` passed — two of our tests disagreeing about whether `Add` is claimed, because
+they build different node forms, and the disagreement surfaced as a **skip with a plausible reason**
+rather than a failure. I amended M0 criterion 8 to require a non-zero executed-dispatch count per
+lane. **A skip is a permissive outcome dressed as a neutral one** — same sign as R5's four-of-five
+finding, which is now the third context in which that asymmetry has bitten.
+
+**Exit criteria written in advance make good news easy to report honestly.** `Add` now executes
+through ORT on both devices — the first result traversing the whole stack. Criterion 2 moves to met,
+criterion 9 moves *back* to partial because this same revision found the sibling docs carry a false
+premise, and M0 remains not met because its sentence ends "on both Windows and Linux, on a software
+rasterizer, in CI" and that tail is not decoration. Nothing about that assessment required judgement,
+which is the whole value of having listed the criteria before there was anything to report.
+
+**The best number in the test suite is a failure count.** 125 failures on real hardware, every one
+the harness refusing to score a CPU-fallback run as a pass. A weaker harness would have reported
+~240 green. **A differential test that does not verify the EP ran is a test of ORT, not of us** —
+Trinity implemented in the harness what §9.1.2 had only asserted in prose, and the implementation is
+worth more than the prose.

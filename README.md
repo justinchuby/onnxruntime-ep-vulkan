@@ -14,11 +14,15 @@ the plugin-EP C ABI — no ORT fork, no ORT rebuild, no link against `libonnxrun
 
 > **Status: early implementation.** The architecture is settled and written down; the crate
 > scaffolding, the test harness and CI have landed and M0 is in progress. **M0 is not met.** As of
-> 2026-07-29 a single elementwise kernel has executed on two desktop GPUs (Intel Iris Xe, NVIDIA
-> RTX 4060) with zero validation errors — but from a Rust integration test, **not through ONNX
-> Runtime, not through a graph, and not through the EP's claim path**, which is what M0 actually
-> requires. Everything else — every other kernel, every contrib op, all quantized paths, the whole
-> ORT-mediated route — is unexecuted, and CI has no GPU hardware. See
+> 2026-07-29 a single `Add` node **is claimed by the EP and executes on the GPU through ONNX
+> Runtime**, on two desktop GPUs (Intel Iris Xe, NVIDIA RTX 4060), with `VulkanExecutionProvider` in
+> the profiling JSON and output matching the ORT CPU EP. That is the first result traversing the
+> whole stack, and its scope is exactly one op, **fp32, static shapes, one OS, two devices**.
+> Everything else — every other kernel, every contrib op, all quantized paths, every fused
+> multi-node island, and the legacy barrier backend — is unexecuted; CI has no GPU hardware; and on
+> real hardware the differential suite currently reports 125 failures, every one of them the harness
+> refusing to score a CPU-fallback run as a pass. M0 also requires this on Windows **and** Linux, on
+> a software rasterizer, in CI, under both barrier backends — none of which is done. See
 > [`docs/DESIGN.md`](docs/DESIGN.md) §9.1.2 for the full execution status and §10 for the
 > criterion-by-criterion M0 assessment.
 
