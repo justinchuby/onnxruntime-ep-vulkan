@@ -506,8 +506,54 @@ than inferring execution from a pass count:
   `*.trace.txt` written beside the counters file.
   The key is **optional**: a snapshot from a build without the ledger does not carry it, and
   **absence must not be read as zero** — so a missing key passes and a present non-zero one fails.
+* **`alloc_staged_spans > 0` disqualifies a timing**, and `--require-device-memory` asserts it. See
+  [Keeping the staging caveat truthful](#keeping-the-staging-caveat-truthful).
 * `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` must be set **before** the process that loads the EP
   starts; the file is written on the first successful dispatch and again at teardown.
+
+---
+
+## Keeping the staging caveat truthful
+
+When a device handle has no `VkBuffer` behind it, its contents are held in host memory. That is
+correct — it is the near half of the real copy path — but it means the tensor never reached the
+device, so no timing from such a run is a device measurement.
+
+The original mechanism for saying so was a one-shot `WARN` ending *"any timing from this run is a
+host measurement"*. **That sentence cannot survive contact with real device memory**, and it fails
+in both directions:
+
+* **Keep it and it over-warns.** A run that is 99% device-backed still prints "host measurement".
+  The warning is then wrong, readers learn to discount it, and it stops protecting the 1% case it
+  was written for. A caveat that is always printed carries no information.
+* **Delete it and it under-warns.** Staging does not stop the day device memory lands; it stops
+  *per allocation*. A partially staged run would then say nothing at all, and its numbers would
+  look exactly like device numbers. This is the worse failure of the two.
+
+So the whole-run claim is no longer prose. Three things replaced it:
+
+1. **The per-handle WARN says only what it knows** — *this* handle has no `VkBuffer`, so *its*
+   contents are in host memory — and explicitly defers the whole-run question to teardown.
+2. **A teardown verdict computed from the ratio** (`allocator::tally::staging_verdict`), with a
+   distinct sentence for the **mixed** state that no fixed wording covered and that is precisely
+   where we are heading: *"neither a host measurement nor a device one; an average over two
+   different memories, comparable with neither."*
+3. **An assertion, so nobody has to remember a log line.** `epctl --check-counters
+   --require-device-memory` fails the lane unless every handle was device-backed. A snapshot with
+   no allocation tally **cannot answer** and exits 3 rather than passing — absent keys are not
+   zero. Set the flag on any lane that quotes a number.
+
+The counters file carries `alloc_allocations`, `alloc_frees`, `alloc_bytes`,
+`alloc_high_water_bytes`, `alloc_device_backed_spans`, `alloc_staged_spans` and
+`alloc_staged_bytes` to support this. They come from a process-global tally rather than from
+`AllocStats`, because an `AllocStats` lives inside a `VulkanAllocator` that ORT releases on its own
+schedule — a snapshot published at release would be correct only when the teardown order happened
+to favour us, and would silently write zeros otherwise.
+
+**As of today every one of those runs reports `alloc_device_backed_spans: 0`.** The ORT-facing half
+of the allocator is real and in the path; the `VkBuffer` behind each handle is not attached yet, so
+`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` currently buys host memory wearing a device handle. The
+flag above is what will notice the day that changes, and the day it half-changes.
 
 ---
 
@@ -740,6 +786,23 @@ a handle.
 ## What ORT's planner actually does with our handles
 
 This was an argument for a long time and is now a measurement.
+
+> **The op suite cannot observe any of this, and that is a property of the suite, not of the
+> allocator.** Every helper in `tests/ops/_models.py` is `_session(model, providers).run(...)` — a
+> session built, run **once**, and dropped. Measured on 2026-07-30, same machine, same DLL, both
+> devices:
+>
+> | | sessions | runs each | interior pointers | max offset |
+> | --- | --- | --- | --- | --- |
+> | `test_elementwise.py` | 67 | 1 | **0** | 0 B |
+> | `test_op_table.py` | 117 | 1 | **0** | 0 B |
+> | `tools/probe_planner.py` | 1 | 5 | **52** | 49152 B |
+>
+> So the suite that runs most often is structurally blind to the interior-pointer path, and its
+> zero is not evidence of anything. `probe_planner.py --require-interior` is the standing check
+> that the instrument still reaches the path at all: we have measured that it sees 52 interior
+> pointers here, so a later zero means the *probe* broke, not that the planner stopped doing
+> arithmetic. Without that flag the regression reads as a clean bill of health.
 
 **It does pointer arithmetic on them, and only from the second run of a session onward.**
 

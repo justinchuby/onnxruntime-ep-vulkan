@@ -107,11 +107,38 @@ def main() -> int:
             f"{doc.get('pointers_in_guard_band', 0)} in a guard band, "
             f"{doc.get('pointers_use_after_free', 0)} use-after-free."
         )
+
+        # A guard-band hit is a correctness alarm wherever it is seen, and this probe sees the
+        # richest pointer traffic we can generate, so it must not be the one place that only
+        # prints it. Same rule as `epctl --check-counters`.
+        if doc.get("pointers_in_guard_band", 0) > 0:
+            print(
+                "\nFAIL: ORT derived a pointer that landed in a guard band between our "
+                "handles — an offset ran off the end of the allocation it came from. This is "
+                "a correctness alarm, not a metric. See the .trace.txt beside the counters."
+            )
+            return 1
+
         if interior == 0:
             print(
                 "OBSERVED: ORT's planner did NOT hand back a derived pointer. In-span "
                 "`base + n` remains correct by construction and UNOBSERVED in a real session."
             )
+            # `--require-interior` turns that observation into a failure, and it exists because
+            # the instrument can break in a way that looks exactly like good news. We have
+            # measured that this probe DOES see interior pointers on this model, on both
+            # devices (52 of them, max offset 49152 B). So on a machine where that has held, a
+            # later zero does not mean "ORT stopped doing arithmetic"; it means this probe
+            # stopped reaching the path — the session fell back to CPU, mem-pattern got
+            # disabled, or the observation funnel moved. Without this flag that regression is
+            # silent and reads as a clean bill of health.
+            if "--require-interior" in sys.argv:
+                print(
+                    "FAIL: --require-interior was set and no interior pointer was observed. "
+                    "Treat this as a broken instrument until proven otherwise, not as a "
+                    "clean allocator."
+                )
+                return 1
         return 0
 
     return child()

@@ -384,3 +384,87 @@ line teaches a reader to discount all of it. **It is an assertion aimed at a hum
 same maintenance as one aimed at a compiler.** I now expect that every mechanism I add will falsify
 some caveat I wrote earlier, and I should check for that as a matter of routine rather than
 noticing it by luck.
+
+---
+
+## Session 15 — the allocator through a claimed path, and a caveat that could not stay prose
+**2026-07-30T05:01:09-07:00**, worktree `ep-vulkan-tank`, branch `squad/tank`, rebased on `main`.
+`cargo ci` green twice, 346 tests.
+
+### The result I did not expect, and the one I should have
+
+Expected: the allocator is exercised through a claimed path. It is, and more heavily than I
+guessed — 648 at-base pointer observations across 255 allocations and 255 matched frees in one
+`test_op_table.py` run. The ORT-facing half of the design is genuinely in ORT's path.
+
+Not expected: **`alloc_device_backed_spans: 0`. Every one of those 255 spans was host memory.**
+`attach_buffer` is never called today, so `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` buys host memory
+wearing a device handle. Nothing is broken — staging is deliberate and correct — but *"device
+memory is on"* and *"tensors are on the device"* are different claims and only the first is true.
+
+What makes that worth carrying is how invisible it was. 63 op-table passes and 33 elementwise
+passes, all numerically correct, none of which touched device memory. **A green suite is compatible
+with the entire device half of the system being absent.** I only saw it because I had just added a
+counter that could say so; before this session there was no number anywhere that distinguished the
+two states, only a WARN nobody was obliged to read.
+
+### The caveat problem, which is the interesting one
+
+The coordinator asked how the staging WARN stays truthful as device memory arrives. Working it
+through, the trap is that **both obvious answers are wrong, and the state that breaks them is
+neither of the two the wording contemplates.**
+
+Keep the warning and it over-warns: a 99%-device run still prints "host measurement", so it is
+false, readers discount it, and it stops protecting the 1% case. Delete it and it under-warns: a
+partially staged run says nothing and its numbers look like device numbers. The dangerous state is
+the **mixed** one, which no fixed sentence covers and which arrives by default if nobody decides.
+
+So the whole-run claim stopped being prose: a per-handle WARN that says only what it locally knows,
+a teardown verdict computed from the ratio with its own sentence for mixed, and
+`epctl --check-counters --require-device-memory` as the actual gate.
+
+**The generalisation is the part I want to keep: a caveat that has to be remembered an hour later
+is not a caveat.** A log line needs a human who is present, recalls it correctly, and is honest
+when quoting the number. An assertion needs none of those. This is the third mechanism this week
+built on that move — guard band, positive control, staging — and in every case the prose version
+already existed and had already failed to protect anything. I should stop writing careful warnings
+and start writing flags.
+
+It failed a real snapshot within a minute of existing: 255 staged, 0 device-backed — a lane that
+`--require-dispatches 1` passes cleanly. Both true, different questions.
+
+### The blindness I found by measuring instead of assuming
+
+184 single-run sessions across two suites: **0 interior pointers.** One five-run session: **52,
+max offset 49152 B.** Same machine, same DLL, same hour. Every helper in `_models.py` is
+`_session(...).run(...)` — built, run once, dropped.
+
+So the suite that runs most often is structurally blind to the pointer arithmetic the whole
+allocator design exists to survive, and its `pointers_interior: 0` sits in the counters file right
+next to numbers that do mean something. That adjacency is the hazard. I nearly reported "0 interior
+pointers on both devices" as a result before noticing it was a property of the harness.
+
+`probe_planner.py --require-interior` now fails on zero, and the reasoning runs backwards from
+usual: we have *measured* 52 here, so a later zero means the probe broke, not that ORT changed.
+**Once you know what a healthy instrument reads, its silence becomes assertable.** That is the
+cheapest positive control I have built yet — no plant needed, just a prior measurement.
+
+### Quarantine, still not verified, and I am still saying so
+
+`pointers_use_after_free: 0` everywhere. The detector sat in front of 255 frees and 648 lookups and
+did not fire. What changed is that the zero can no longer mean "the registry is not in ORT's path"
+— that reading is excluded now. So the honest claim is *"ORT does not hand back freed pointers
+under the patterns we have run"*, which is a real finding about ORT, and **not** "quarantine is
+verified". Stronger surrounding evidence does not convert an absence into a presence. Third session
+running I have written a version of this sentence; the temptation gets stronger each time the
+evidence improves, which is presumably how it eventually wins.
+
+### Process notes
+
+Ran the control before reporting failures: 3 elementwise and 28 op-table failures reproduce with
+device memory *unset*, so they are pre-existing claim declines, not my regression. A new flag plus
+new failures is the exact shape that gets misattributed, and it costs one 15-second run to rule out.
+
+The `edit` tool bit me again — I inserted a module between a doc comment and its item, silently
+reattaching the ledger's documentation to my new module. It compiled. Fourth time; always view the
+region after an insert near a doc comment.
