@@ -9,6 +9,9 @@
 //! The dispatch path here is the same sequence as `dispatch_integration.rs` but reads from and
 //! writes to ORT-allocated CPU tensor buffers rather than test-generated data.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use ash::vk;
 
 use super::{
@@ -118,51 +121,124 @@ impl std::fmt::Debug for CompiledKernel {
 /// A [`DispatchContext`] that records kernel templates without issuing Vulkan commands.
 ///
 /// Used by `compile_impl` to run the registry's translate handlers and extract
-/// [`CompiledKernel`]s. Uses *positional* counting rather than name matching so that
-/// the name-equality assumption between subgraph inputs and node inputs need not hold.
+/// [`CompiledKernel`]s.
+///
+/// # Token encoding
+///
+/// For single-node islands the recorder uses *positional* counting (token = input/output
+/// index in the node's own slot list). For multi-node islands it switches to *name-based*
+/// assignment: external inputs and outputs receive tokens determined by their position in
+/// `plan.inputs`/`plan.outputs`, and intermediate outputs (values produced by one node and
+/// consumed by another within the same island) receive tokens beyond the output range.
+/// This ensures each distinct value gets a unique, stable token regardless of where it
+/// appears in the iteration order, and prevents `ShapeOnlyRecorder` from re-assigning
+/// an intermediate output the same slot token as an external output.
 pub(crate) struct CompileRecorder {
     n_plan_inputs: usize,
+    /// Optional name→token map. `None` for single-node islands (positional mode).
+    name_map: Option<Arc<HashMap<String, u64>>>,
+    /// First token reserved for anonymous `alloc_temp` allocations, after all named outputs.
+    first_temp_token: usize,
+    /// Positional fallback counters — used when the name map is absent or when a name is empty.
     next_resolve: usize,
     next_bind: usize,
+    next_temp: usize,
     /// Temporary scratch buffer byte sizes accumulated between translate calls and flushed
     /// into `CompiledKernel::temp_byte_sizes` on each `dispatch()` call.
     pending_temp_sizes: Vec<u64>,
     pub(crate) kernels: Vec<CompiledKernel>,
+    /// Byte sizes for intermediate (inter-node) output buffers, keyed by token.
+    /// Populated during static-shape translate runs from `bind_output` descriptors.
+    pub(crate) intermediate_sizes: HashMap<u64, u64>,
 }
 
 impl CompileRecorder {
+    /// Create a recorder for a single-node island (positional mode).
     pub(crate) fn new(n_plan_inputs: usize) -> Self {
         Self {
             n_plan_inputs,
+            name_map: None,
+            first_temp_token: 0,
             next_resolve: 0,
             next_bind: 0,
+            next_temp: 0,
             pending_temp_sizes: Vec::new(),
             kernels: Vec::new(),
+            intermediate_sizes: HashMap::new(),
         }
+    }
+
+    /// Create a recorder for a multi-node island using the pre-built name→token map.
+    ///
+    /// `first_temp_token` is the first token available for anonymous `alloc_temp` calls;
+    /// it must be `n_plan_inputs + n_plan_outputs + n_intermediates` so that temps land
+    /// in their own range and do not alias any named buffer.
+    pub(crate) fn new_named(
+        n_plan_inputs: usize,
+        name_map: Arc<HashMap<String, u64>>,
+        first_temp_token: usize,
+    ) -> Self {
+        Self {
+            n_plan_inputs,
+            name_map: Some(name_map),
+            first_temp_token,
+            next_resolve: 0,
+            next_bind: 0,
+            next_temp: 0,
+            pending_temp_sizes: Vec::new(),
+            kernels: Vec::new(),
+            intermediate_sizes: HashMap::new(),
+        }
+    }
+
+    /// Look up an input token: name-based first, then positional fallback.
+    fn resolve_token(&mut self, name: &str) -> u64 {
+        if let Some(map) = &self.name_map {
+            if !name.is_empty() {
+                if let Some(&t) = map.get(name) {
+                    return t;
+                }
+            }
+        }
+        let t = self.next_resolve as u64;
+        self.next_resolve += 1;
+        t
+    }
+
+    /// Look up an output token and record its byte size; name-based first, then positional.
+    fn bind_token(&mut self, name: &str, byte_size: u64) -> u64 {
+        if let Some(map) = &self.name_map {
+            if !name.is_empty() {
+                if let Some(&t) = map.get(name) {
+                    // Record the size so compile_impl can populate static_intermediate_byte_sizes.
+                    if t >= (self.n_plan_inputs) as u64 {
+                        self.intermediate_sizes.insert(t, byte_size);
+                    }
+                    return t;
+                }
+            }
+        }
+        let t = (self.n_plan_inputs + self.next_bind) as u64;
+        self.next_bind += 1;
+        t
     }
 
     /// Record a dynamic-shape kernel: allocate binding tokens without running the translate
     /// handler, and store the `DynKernelRecipe` for Compute-time re-run.
     ///
     /// Called from `compile_impl` when the translate handler fails due to symbolic shapes.
-    /// The recorder's `next_resolve`/`next_bind` counters are advanced exactly as if the
-    /// translate handler had called `resolve` and `bind_output` for each slot.
+    /// With a name map the tokens are resolved by name; without one they are positional.
     pub(crate) fn push_dynamic_kernel(
         &mut self,
         node_desc: crate::engine::NodeDesc,
         spec: &'static crate::registry::OpSpec,
     ) {
-        let n_inputs = node_desc.inputs.len();
-        let n_outputs = node_desc.outputs.len();
-
-        let mut bindings = Vec::with_capacity(n_inputs + n_outputs);
-        for _ in 0..n_inputs {
-            bindings.push(self.next_resolve as u64);
-            self.next_resolve += 1;
+        let mut bindings = Vec::with_capacity(node_desc.inputs.len() + node_desc.outputs.len());
+        for inp in &node_desc.inputs {
+            bindings.push(self.resolve_token(&inp.name));
         }
-        for _ in 0..n_outputs {
-            bindings.push((self.n_plan_inputs + self.next_bind) as u64);
-            self.next_bind += 1;
+        for out in &node_desc.outputs {
+            bindings.push(self.bind_token(&out.name, 0));
         }
 
         self.kernels.push(CompiledKernel {
@@ -179,23 +255,29 @@ impl CompileRecorder {
 }
 
 impl DispatchContext for CompileRecorder {
-    fn resolve(&mut self, _r: &TensorRef) -> EpResult<BufferView> {
-        let idx = self.next_resolve;
-        self.next_resolve += 1;
-        Ok(BufferView::from_raw(idx as u64))
+    fn resolve(&mut self, r: &TensorRef) -> EpResult<BufferView> {
+        Ok(BufferView::from_raw(self.resolve_token(&r.name)))
     }
 
-    fn bind_output(&mut self, _o: &OutRef, _desc: TensorDesc) -> EpResult<BufferView> {
-        let token = self.n_plan_inputs + self.next_bind;
-        self.next_bind += 1;
-        Ok(BufferView::from_raw(token as u64))
+    fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
+        let size = desc.byte_size().unwrap_or(0) as u64;
+        Ok(BufferView::from_raw(self.bind_token(&o.name, size)))
     }
 
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
-        let token = self.n_plan_inputs + self.next_bind;
-        self.next_bind += 1;
+        let token = if self.name_map.is_some() {
+            // Named mode: temps start after all named buffers.
+            let t = (self.first_temp_token + self.next_temp) as u64;
+            self.next_temp += 1;
+            t
+        } else {
+            // Positional mode: temps share the bind counter.
+            let t = (self.n_plan_inputs + self.next_bind) as u64;
+            self.next_bind += 1;
+            t
+        };
         self.pending_temp_sizes.push(desc.byte_size().unwrap_or(0) as u64);
-        Ok(BufferView::from_raw(token as u64))
+        Ok(BufferView::from_raw(token))
     }
 
     fn dispatch(&mut self, k: KernelRequest) -> EpResult<()> {
@@ -238,61 +320,123 @@ impl DispatchContext for CompileRecorder {
 /// Fix: this recorder captures `KernelRequest.bindings` from the re-run translate, giving the
 /// correct per-kernel binding sequence with any extra or duplicated tokens the translate inserts.
 /// `dispatch_ort` uses those captured bindings instead of `kernel.bindings` for dynamic kernels.
+///
+/// # Multi-node islands
+///
+/// For multi-node islands each node re-runs with `new_named()` so that resolve/bind_output
+/// calls go through the island-wide name→token map, assigning intermediate-output tokens from
+/// `n_plan_inputs + n_plan_outputs + k` rather than restarting from zero each time.
+/// `output_descs` is then keyed by token rather than being a flat list.
 struct ShapeOnlyRecorder {
     n_plan_inputs: usize,
+    /// Optional name→token map. `None` for single-node islands (positional mode).
+    name_map: Option<Arc<HashMap<String, u64>>>,
+    /// First token reserved for anonymous `alloc_temp` calls (named mode only).
+    first_temp_token: usize,
+    /// Positional fallback counters.
     next_resolve: usize,
     next_bind: usize,
+    next_temp: usize,
     /// Filled by `dispatch()` with push-constant bytes, workgroup counts, spec constants, and
     /// shader stem.  Binding tokens are in `captured_bindings`.
     #[allow(clippy::type_complexity)]
     pub captured: Option<(Vec<u8>, [u32; 3], Vec<u32>, &'static str)>,
     /// Binding tokens from the translate handler's `KernelRequest`, in descriptor-slot order.
-    ///
-    /// `push_dynamic_kernel` creates one token per NodeDesc input plus one per output, but some
-    /// translate handlers pass a different number of slots to `dispatch` — most notably
-    /// `matmul_nbits_gemv`, which binds `scales` a second time as an inert placeholder for
-    /// `zero_points` when the node has no zero-point input. The descriptor set layout must have
-    /// exactly this many slots or the output binding falls outside the layout and writes nowhere.
     pub captured_bindings: Option<Vec<u64>>,
-    /// Output `TensorDesc`s collected from `bind_output()` calls, used to size output buffers.
-    pub output_descs: Vec<TensorDesc>,
+    /// Output `TensorDesc`s collected from `bind_output()`, keyed by token.
+    /// Used by `dispatch_ort` to size both external ORT outputs and intermediate GPU buffers.
+    pub output_desc_by_token: Vec<(u64, TensorDesc)>,
     /// Descriptors from `alloc_temp()` calls — scratch buffers not tied to ORT outputs.
     pub temp_descs: Vec<TensorDesc>,
 }
 
 impl ShapeOnlyRecorder {
+    /// Single-node island: positional mode.
     fn new(n_plan_inputs: usize) -> Self {
         Self {
             n_plan_inputs,
+            name_map: None,
+            first_temp_token: 0,
             next_resolve: 0,
             next_bind: 0,
+            next_temp: 0,
             captured: None,
             captured_bindings: None,
-            output_descs: Vec::new(),
+            output_desc_by_token: Vec::new(),
             temp_descs: Vec::new(),
         }
+    }
+
+    /// Multi-node island: name-based mode.
+    fn new_named(
+        n_plan_inputs: usize,
+        name_map: Arc<HashMap<String, u64>>,
+        first_temp_token: usize,
+    ) -> Self {
+        Self {
+            n_plan_inputs,
+            name_map: Some(name_map),
+            first_temp_token,
+            next_resolve: 0,
+            next_bind: 0,
+            next_temp: 0,
+            captured: None,
+            captured_bindings: None,
+            output_desc_by_token: Vec::new(),
+            temp_descs: Vec::new(),
+        }
+    }
+
+    fn resolve_token(&mut self, name: &str) -> u64 {
+        if let Some(map) = &self.name_map {
+            if !name.is_empty() {
+                if let Some(&t) = map.get(name) {
+                    return t;
+                }
+            }
+        }
+        let t = self.next_resolve as u64;
+        self.next_resolve += 1;
+        t
+    }
+
+    fn bind_token(&mut self, name: &str, desc: TensorDesc) -> u64 {
+        if let Some(map) = &self.name_map {
+            if !name.is_empty() {
+                if let Some(&t) = map.get(name) {
+                    self.output_desc_by_token.push((t, desc));
+                    return t;
+                }
+            }
+        }
+        let t = (self.n_plan_inputs + self.next_bind) as u64;
+        self.next_bind += 1;
+        self.output_desc_by_token.push((t, desc));
+        t
     }
 }
 
 impl DispatchContext for ShapeOnlyRecorder {
-    fn resolve(&mut self, _r: &TensorRef) -> EpResult<BufferView> {
-        let idx = self.next_resolve;
-        self.next_resolve += 1;
-        Ok(BufferView::from_raw(idx as u64))
+    fn resolve(&mut self, r: &TensorRef) -> EpResult<BufferView> {
+        Ok(BufferView::from_raw(self.resolve_token(&r.name)))
     }
 
-    fn bind_output(&mut self, _o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
-        let token = self.n_plan_inputs + self.next_bind;
-        self.next_bind += 1;
-        self.output_descs.push(desc);
-        Ok(BufferView::from_raw(token as u64))
+    fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
+        Ok(BufferView::from_raw(self.bind_token(&o.name, desc)))
     }
 
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
-        let token = self.n_plan_inputs + self.next_bind;
-        self.next_bind += 1;
+        let token = if self.name_map.is_some() {
+            let t = (self.first_temp_token + self.next_temp) as u64;
+            self.next_temp += 1;
+            t
+        } else {
+            let t = (self.n_plan_inputs + self.next_bind) as u64;
+            self.next_bind += 1;
+            t
+        };
         self.temp_descs.push(desc);
-        Ok(BufferView::from_raw(token as u64))
+        Ok(BufferView::from_raw(token))
     }
 
     fn dispatch(&mut self, k: KernelRequest) -> EpResult<()> {
@@ -528,9 +672,15 @@ impl VulkanSession {
         input_byte_sizes: &[u64],
         output_byte_sizes: &[u64],
         output_shapes: &[Vec<i64>],
+        n_intermediates: usize,
+        name_map: Option<Arc<HashMap<String, u64>>>,
+        first_temp_token: usize,
+        static_intermediate_byte_sizes: &[u64],
         api: *const ort::OrtApi,
         kernel_ctx: *mut ort::OrtKernelContext,
     ) -> *mut ort::OrtStatus {
+        let n_plan_inputs = input_byte_sizes.len();
+        let n_plan_outputs = output_byte_sizes.len();
         // ── Step 1: read ORT input tensor data pointers ──────────────────────
         // Also retain the OrtValue pointers for the dynamic pre-pass below.
         let mut input_cpu_ptrs: Vec<*const u8> = Vec::with_capacity(input_byte_sizes.len());
@@ -639,6 +789,18 @@ impl VulkanSession {
         let mut actual_output_byte_sizes: Vec<u64> = output_byte_sizes.to_vec();
         let mut actual_output_shapes: Vec<Vec<i64>> = output_shapes.to_vec();
 
+        // For multi-node islands: intermediate buffer byte sizes, indexed by intermediate index
+        // (= token - n_plan_inputs - n_plan_outputs). Starts from compile-time static sizes;
+        // dynamic kernels override with Compute-time sizes from ShapeOnlyRecorder.
+        let mut intermediate_byte_sizes: Vec<u64> = static_intermediate_byte_sizes.to_vec();
+        if intermediate_byte_sizes.len() < n_intermediates {
+            intermediate_byte_sizes.resize(n_intermediates, 0);
+        }
+
+        // TensorDesc cache for intermediate outputs produced by earlier kernels in the same island.
+        // Keys are tokens in [n_plan_inputs+n_plan_outputs, first_temp_token).
+        let mut computed_descs: HashMap<u64, TensorDesc> = HashMap::new();
+
         for (ki, kernel) in kernels.iter().enumerate() {
             let recipe = match &kernel.dyn_recipe {
                 Some(r) => r,
@@ -648,16 +810,30 @@ impl VulkanSession {
             let n_inputs = recipe.node_desc.inputs.len();
 
             // Build a patched NodeDesc with concrete (non-symbolic) TensorDescs.
+            // For external ORT inputs (token < n_plan_inputs): read from `ort_values`.
+            // For intermediate inputs (token >= n_plan_inputs + n_plan_outputs): look up
+            // in `computed_descs`, which is populated by prior kernels in the same island.
             let mut patched_inputs = recipe.node_desc.inputs.clone();
             for (slot, &binding_token) in kernel.bindings[..n_inputs].iter().enumerate() {
-                let global_idx = binding_token as usize; // token < n_plan_inputs → global input
-                if global_idx < ort_values.len() {
-                    // SAFETY: `api` and `ort_values[global_idx]` are live for this call (fn contract).
-                    let td = unsafe { read_tensor_desc_from_ort(api, ort_values[global_idx]) };
-                    if let Some(td) = td {
-                        patched_inputs[slot].desc = Some(td);
+                if binding_token < n_plan_inputs as u64 {
+                    // External ORT input.
+                    let global_idx = binding_token as usize;
+                    if global_idx < ort_values.len() {
+                        // SAFETY: `api` and `ort_values[global_idx]` are live for this call.
+                        let td = unsafe { read_tensor_desc_from_ort(api, ort_values[global_idx]) };
+                        if let Some(td) = td {
+                            patched_inputs[slot].desc = Some(td);
+                        }
+                    }
+                } else if binding_token >= (n_plan_inputs + n_plan_outputs) as u64 {
+                    // Intermediate input from a prior kernel in this island.
+                    if let Some(td) = computed_descs.get(&binding_token) {
+                        patched_inputs[slot].desc = Some(td.clone());
                     }
                 }
+                // Tokens in [n_plan_inputs, n_plan_inputs+n_plan_outputs): external outputs
+                // of this island used as inputs by another kernel — theoretically possible but
+                // unusual. Leave as symbolic (None); the translate handler will degrade gracefully.
             }
 
             let patched_node = NodeDesc {
@@ -672,18 +848,38 @@ impl VulkanSession {
 
             // Re-run translate through ShapeOnlyRecorder to capture push constants, workgroups,
             // and the full binding list (which may include duplicate slots not in kernel.bindings).
-            let mut sor = ShapeOnlyRecorder::new(kernel.n_plan_inputs);
+            // For multi-node islands use new_named so bind_output assigns the island-wide token.
+            let mut sor = match name_map.as_ref() {
+                Some(nm) => ShapeOnlyRecorder::new_named(
+                    kernel.n_plan_inputs,
+                    Arc::clone(nm),
+                    first_temp_token,
+                ),
+                None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
+            };
             if (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor).is_ok() {
-                // Update actual output byte sizes and shapes from the re-run.
-                for (j, desc) in sor.output_descs.iter().enumerate() {
-                    let out_binding_slot = n_inputs + j;
-                    if out_binding_slot < kernel.bindings.len() {
-                        let global_out_idx =
-                            kernel.bindings[out_binding_slot] as usize - kernel.n_plan_inputs;
-                        if global_out_idx < actual_output_byte_sizes.len() {
+                // Update actual output byte sizes and shapes, and record intermediate descs.
+                for (token, desc) in &sor.output_desc_by_token {
+                    let token = *token;
+                    if token >= n_plan_inputs as u64
+                        && token < (n_plan_inputs + n_plan_outputs) as u64
+                    {
+                        // External ORT output.
+                        let j = (token - n_plan_inputs as u64) as usize;
+                        if let Some(sz) = desc.byte_size() {
+                            actual_output_byte_sizes[j] = sz as u64;
+                            actual_output_shapes[j] = desc.shape.clone();
+                        }
+                    } else if token >= (n_plan_inputs + n_plan_outputs) as u64
+                        && token < first_temp_token as u64
+                    {
+                        // Intermediate output — propagate to later kernels in this island.
+                        computed_descs.insert(token, desc.clone());
+                        // Also record the byte size for intermediate buffer allocation.
+                        let idx = (token - (n_plan_inputs + n_plan_outputs) as u64) as usize;
+                        if idx < intermediate_byte_sizes.len() {
                             if let Some(sz) = desc.byte_size() {
-                                actual_output_byte_sizes[global_out_idx] = sz as u64;
-                                actual_output_shapes[global_out_idx] = desc.shape.clone();
+                                intermediate_byte_sizes[idx] = sz as u64;
                             }
                         }
                     }
@@ -749,6 +945,8 @@ impl VulkanSession {
         let mut staging_ups: Vec<GpuBuffer> = Vec::new();
         let mut gpu_outputs: Vec<GpuBuffer> = Vec::new();
         let mut staging_dls: Vec<GpuBuffer> = Vec::new();
+        // Intermediate buffers: one per inter-node edge in multi-node islands.
+        let mut gpu_intermediates: Vec<GpuBuffer> = Vec::new();
         let mut gpu_temps: Vec<GpuBuffer> = Vec::new();
 
         macro_rules! bail {
@@ -758,6 +956,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_intermediates,
                     &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and `$msg` is
@@ -809,6 +1008,33 @@ impl VulkanSession {
             };
             gpu_outputs.push(buf);
             staging_dls.push(stg);
+        }
+
+        // Allocate intermediate buffers for multi-node islands.
+        // These are STORAGE_BUFFER only — a prior kernel writes them and a later kernel reads them;
+        // they never need to be transferred to/from staging.
+        for (idx, &sz) in intermediate_byte_sizes.iter().enumerate() {
+            if sz == 0 {
+                // Zero-size intermediate: the shape was still symbolic at both Compile and Compute
+                // time. This is a translate-handler defect; bail with a diagnostic.
+                log::error!(
+                    "dispatch_ort: intermediate buffer {idx} has zero byte size — \
+                     the translate handler did not resolve the output shape at Compute time"
+                );
+                bail!("intermediate buffer has zero byte size — unresolved shape at Compute time");
+            }
+            // SAFETY: live allocator/device; sz > 0 verified above.
+            let Some(buf) = (unsafe {
+                self.alloc.alloc(
+                    &format!("ep_inter_{idx}"),
+                    sz,
+                    MemClass::DeviceLocal,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            }) else {
+                bail!("alloc failed for intermediate buffer");
+            };
+            gpu_intermediates.push(buf);
         }
 
         // Allocate scratch buffers for kernels that called alloc_temp at translate time.
@@ -917,6 +1143,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_intermediates,
                     &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
@@ -950,6 +1177,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_intermediates,
                     &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
@@ -979,6 +1207,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_intermediates,
                     &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
@@ -999,20 +1228,31 @@ impl VulkanSession {
             // `kernel.bindings` — ensures that any extra or duplicate bindings the translate
             // inserts (e.g. the scales-as-zero-points placeholder in `MatMulNBits`) are correctly
             // mapped to GPU buffers and the pipeline layout has the right number of descriptors.
+            //
+            // Token routing for multi-node islands:
+            //   token < n_plan_inputs                                     → gpu_inputs[token]
+            //   n_plan_inputs <= token < n_plan_inputs + n_plan_outputs   → gpu_outputs[j]
+            //   n_plan_inputs + n_plan_outputs <= token < first_temp_token → gpu_intermediates[k]
+            //   token >= first_temp_token                                  → gpu_temps[...]
             let buf_bindings: Vec<(vk::Buffer, u64)> = eff_bindings
                 .iter()
                 .map(|&token| {
-                    if token < kernel.n_plan_inputs as u64 {
+                    if token < n_plan_inputs as u64 {
                         let b = &gpu_inputs[token as usize];
                         (b.buffer, b.size)
                     } else {
-                        let j = (token - kernel.n_plan_inputs as u64) as usize;
-                        let n_ort = actual_output_byte_sizes.len();
-                        let b = if j < n_ort {
+                        let j = (token - n_plan_inputs as u64) as usize;
+                        let b = if j < n_plan_outputs {
                             &gpu_outputs[j]
                         } else {
-                            // Temp buffer: j - n_ort indexes into this kernel's temp slice.
-                            &gpu_temps[temp_starts[ki] + (j - n_ort)]
+                            let k = j - n_plan_outputs;
+                            if k < n_intermediates {
+                                &gpu_intermediates[k]
+                            } else {
+                                // Temp buffer.
+                                let temp_idx = k - n_intermediates;
+                                &gpu_temps[temp_starts[ki] + temp_idx]
+                            }
                         };
                         (b.buffer, b.size)
                     }
@@ -1033,6 +1273,7 @@ impl VulkanSession {
                     &mut staging_ups,
                     &mut gpu_outputs,
                     &mut staging_dls,
+                    &mut gpu_intermediates,
                     &mut gpu_temps,
                 );
                 // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
@@ -1091,6 +1332,24 @@ impl VulkanSession {
             // Keep this pool alive until after the fence signals.  See the `desc_pools`
             // declaration above for the full lifetime reasoning.
             desc_pools.push(desc_pool);
+
+            // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier on all
+            // intermediate buffers after each dispatch (except the last). This ensures that
+            // a later kernel in the same island sees the writes from this kernel.
+            if !gpu_intermediates.is_empty() && ki + 1 < kernels.len() {
+                let inter_deps: Vec<BufferDep> = gpu_intermediates
+                    .iter()
+                    .map(|b| BufferDep {
+                        buffer: b.buffer,
+                        offset: 0,
+                        size: vk::WHOLE_SIZE,
+                        src: Access::ShaderWrite,
+                        dst: Access::ShaderRead,
+                    })
+                    .collect();
+                // SAFETY: cmd is recording; all intermediate buffers are live.
+                unsafe { self.device.barriers().buffer_deps(cmd, &inter_deps) };
+            }
         }
 
         // Barrier: SHADER_WRITE → TRANSFER_READ on all output buffers.
@@ -1126,12 +1385,13 @@ impl VulkanSession {
         // has not been submitted, so ending it cannot race any GPU work.
         let Some(cmd_buf) = (unsafe { recorder.finish() }) else {
             self.free_all(
-                &mut gpu_inputs,
-                &mut staging_ups,
-                &mut gpu_outputs,
-                &mut staging_dls,
-                &mut gpu_temps,
-            );
+                    &mut gpu_inputs,
+                    &mut staging_ups,
+                    &mut gpu_outputs,
+                    &mut staging_dls,
+                    &mut gpu_intermediates,
+                    &mut gpu_temps,
+                );
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -1148,12 +1408,13 @@ impl VulkanSession {
             unsafe { submit_and_wait(self.device.ash(), self.device.compute_queue(), cmd_buf) };
         if !ok {
             self.free_all(
-                &mut gpu_inputs,
-                &mut staging_ups,
-                &mut gpu_outputs,
-                &mut staging_dls,
-                &mut gpu_temps,
-            );
+                    &mut gpu_inputs,
+                    &mut staging_ups,
+                    &mut gpu_outputs,
+                    &mut staging_dls,
+                    &mut gpu_intermediates,
+                    &mut gpu_temps,
+                );
             // SAFETY: `api` is a live `OrtApi` for the whole call (fn contract) and the
             // message is a 'static NUL-terminated literal. Every buffer allocated by
             // this frame has been released above, so nothing outlives the return.
@@ -1182,12 +1443,13 @@ impl VulkanSession {
 
         // Cleanup regardless of output-write outcome.
         self.free_all(
-            &mut gpu_inputs,
-            &mut staging_ups,
-            &mut gpu_outputs,
-            &mut staging_dls,
-            &mut gpu_temps,
-        );
+                    &mut gpu_inputs,
+                    &mut staging_ups,
+                    &mut gpu_outputs,
+                    &mut staging_dls,
+                    &mut gpu_intermediates,
+                    &mut gpu_temps,
+                );
         status
     }
 
@@ -1320,6 +1582,7 @@ impl VulkanSession {
         staging_ups: &mut Vec<GpuBuffer>,
         gpu_outputs: &mut Vec<GpuBuffer>,
         staging_dls: &mut Vec<GpuBuffer>,
+        gpu_intermediates: &mut Vec<GpuBuffer>,
         gpu_temps: &mut Vec<GpuBuffer>,
     ) {
         // Each buffer was produced by `self.alloc` and has not been freed. Every caller reaches
@@ -1341,9 +1604,14 @@ impl VulkanSession {
             // SAFETY: as above.
             unsafe { self.alloc.free(b) };
         }
+        for b in gpu_intermediates.drain(..) {
+            // SAFETY: as above.
+            unsafe { self.alloc.free(b) };
+        }
         for b in gpu_temps.drain(..) {
             // SAFETY: as above.
             unsafe { self.alloc.free(b) };
         }
     }
 }
+

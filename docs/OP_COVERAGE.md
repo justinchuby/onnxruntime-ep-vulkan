@@ -1691,6 +1691,55 @@ be chosen by what *removes* gaps, not by what adds the most nodes. `declined_nod
 (§7.3) is the right instrument for this — each declined op's island-removal potential is computable
 before the op is implemented.
 
+#### 7.1.5 Island-count == claimed-count is the partition-wiring falsifier (2026-07-30)
+
+A second silent defect was found on the same day as the binding-arity bug. After `GetCapability`
+was wired to offer maximal convex connected subgraphs rather than one capability per node,
+`bench/phi35.py` reported `claimed 321 of 363, islands 321` — the island count equalled the
+claimed-node count exactly. `partition.rs` was correct; `GetCapability` was producing one
+fused node per claimed op. ORT fused one node per capability entry, so 321 capabilities became
+321 subgraphs, and `compute_calls 1 != expected 1023` (the dispatch-accounting falsifier) went
+red immediately on the first run — then the partition wiring was fixed.
+
+**The falsifier.** `island_count == claimed_node_count` means the partition pass did not run or
+produced no merges. This equality is not noise: ORT always fuses exactly the nodes in one
+capability entry into one subgraph, so a 1:1 ratio is a precise symptom of the same defect that
+produced 321 islands before the partition wiring was fixed. The bench now asserts:
+
+```
+dispatch_accounting: ok — compute_calls {N_INFERENCES} × {islands} == compute_calls_actual
+```
+
+Any future regression in partitioning will make this red by construction, without requiring a
+human to notice that wall time went up.
+
+**The general lesson.** A mechanism that exists in a file (`partition.rs`) and is not in a call
+graph (`GetCapability`) is indistinguishable from a mechanism that does not exist. Per R9: name the
+instrument that goes red if "partitioning is working" is false. Before this fix there was none —
+`island_count` was *reported*, and nobody compared it against `claimed_node_count`. That comparison
+is one line and it would have caught this on day one.
+
+**Multi-node island dispatch: a new axis in the intermediate-buffer space.** A subgraph with
+multiple nodes requires intermediate GPU buffers — one per inter-node edge — with stable token
+assignment across all kernels in the island. The prior token scheme (positional, reset per kernel)
+aliased intermediate output tokens onto external output tokens, so the write of an intermediate
+value silently clobbered or missed the external output slot. The fix uses a name-based
+token map built from the island's `plan.inputs`/`plan.outputs` and inner node outputs at Compile
+time, making the token ranges non-overlapping by construction:
+
+```
+0..n_plan_inputs                                    → external ORT inputs
+n_plan_inputs..n_plan_inputs+n_plan_outputs         → external ORT outputs
+n_plan_inputs+n_plan_outputs..first_temp_token      → intermediate buffers
+first_temp_token..                                  → alloc_temp scratch
+```
+
+This is a new coverage axis: **a multi-node island has different token routing than a single-node
+island**. A test that runs only single-node subgraphs cannot catch an aliasing bug that only appears
+when two kernels share an intermediate. The `dispatch_accounting` check (`compute_calls == islands ×
+inferences`) is the falsifier: if any multi-node island fails to dispatch, `compute_calls` drops
+below the expected value.
+
 ### 7.2 Death by fallback — the real failure mode
 
 A claim rate of 95% can be *slower* than 0%. If the 5% we decline are distributed through the graph,
