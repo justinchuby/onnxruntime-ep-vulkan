@@ -83,6 +83,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -289,8 +290,100 @@ MATMULNBITS_ORACLE_ACCURACY_LEVEL: int = 1
 
 
 # ---------------------------------------------------------------------------
-# IR construction helpers
+# Q/DQ opset-23+ oracle registration guard (onnx#8182)
 # ---------------------------------------------------------------------------
+#
+# onnx#8182: the opset-23 and opset-25 reference implementations for
+# QuantizeLinear / DequantizeLinear are NOT registered in onnx ≤ 1.22.0.
+# onnx.reference.ReferenceEvaluator silently falls back to the opset-21 implementation,
+# which does not know the ``output_dtype`` attribute (new in opset 23) or the
+# ``block_size`` attribute (new in opset 23).  The fallback either:
+#   a. raises TypeError (onnx 1.22.0, observed) — detectable, therefore safe;
+#   b. returns a number using the wrong semantics — undetectable, therefore dangerous.
+#
+# The fix is targeted at onnx 1.23.0, which does not exist as of 2026-07-30.
+# Detection and refusal are the only options available until then.
+#
+# IMPORTANT: our Regime-1 oracle for DequantizeLinear is NumPy, NOT ReferenceEvaluator.
+# Our Regime-2 oracle for MatMulNBits is ORT CPU EP, NOT ReferenceEvaluator.
+# Neither is affected by onnx#8182 today.  This guard exists so any future test that
+# adds a ReferenceEvaluator-based Q/DQ oracle will see an immediate, named refusal rather
+# than a silent wrong expected value.
+#
+# No-bump behavioral correction class (broader context, §9.4.1):
+#   onnx#8182 is one of at least 9 known instances of behavioral corrections applied to
+#   ONNX ops without an opset version bump.  This class is invisible to opset-version
+#   fingerprinting and to ContribSchema baseline checks by construction.
+#   Other instances in our plan: onnx#8099 (ScatterND min/max), onnx#8194 (TopK sorted=0).
+#   Detection via code: Trinity runs assert_qdq_reference_oracle_safe() before any
+#   ReferenceEvaluator oracle path.
+#   Detection of new instances across all ops: requires a per-onnx-release human audit.
+#   See decisions inbox: trinity-qdq-oracle-guard-no-bump-audit-2026-07-30.md.
+
+# Probed once at pytest_configure time in conftest.py; the conftest updates this via
+# its own module-level globals.  Tests read this to decide whether to call the guard.
+# Default: False — conservatively refuses until the conftest probe confirms safety.
+QDQOPSET23_REFERENCE_SAFE: bool = False
+QDQOPSET23_REFERENCE_STATUS: str = "not probed — run via pytest to get conftest.py probe"
+
+
+def assert_qdq_reference_oracle_safe(
+    opset: int,
+    attributes: Sequence[str],
+) -> None:
+    """Refuse to proceed if ReferenceEvaluator cannot correctly evaluate Q/DQ at *opset*.
+
+    ALWAYS call this before constructing any oracle that uses
+    ``onnx.reference.ReferenceEvaluator`` for QuantizeLinear or DequantizeLinear nodes.
+
+    Args:
+        opset: The ONNX opset of the Q/DQ node being evaluated.
+        attributes: The attribute names present on the node (e.g. ``["output_dtype"]``).
+
+    Raises:
+        RuntimeError: If the opset and attributes combination is affected by onnx#8182
+            and the current environment cannot produce a correct result.
+
+    Note:
+        For opset < 23 and for forms without ``output_dtype`` or ``block_size``, the
+        opset-21 fallback is semantically correct and this function does not raise.
+        Our current Regime-1 test uses opset 18 + NumPy oracle — it does NOT call this.
+
+    Background (onnx#8182):
+        The opset-23 and opset-25 Q/DQ reference implementations are not registered in
+        onnx ≤ 1.22.0.  ReferenceEvaluator falls back to opset-21, which does not know
+        ``output_dtype`` or ``block_size``.  In onnx 1.22.0 the fallback raises TypeError
+        (detectable).  In a future release that registers the op incorrectly, the fallback
+        could silently return a wrong number (the dangerous case).  Either way, this
+        function refuses before the wrong result reaches the test oracle.
+    """
+    _AFFECTED_ATTRIBUTES = frozenset({"output_dtype", "block_size"})
+    _affected = opset >= 23 and bool(_AFFECTED_ATTRIBUTES.intersection(attributes))
+
+    if not _affected:
+        return  # opset < 23 or no affected attributes — safe to proceed
+
+    if not QDQOPSET23_REFERENCE_SAFE:
+        raise RuntimeError(
+            f"Q/DQ oracle refused: opset {opset} with attributes {sorted(attributes)!r} "
+            f"is affected by onnx#8182 (unregistered opset-23/25 Q/DQ reference "
+            f"implementations in onnx ≤ 1.22.0). "
+            f"Current environment status: {QDQOPSET23_REFERENCE_STATUS}. "
+            f"The fix is targeted at onnx 1.23.0 (not yet released as of 2026-07-30). "
+            f"Use a NumPy oracle (Regime 1) or ORT CPU EP oracle (Regime 2) instead. "
+            f"Do NOT use ReferenceEvaluator for Q/DQ at opset >= 23 with these attributes."
+        )
+
+    import warnings
+    warnings.warn(
+        f"Q/DQ oracle at opset {opset} with attributes {sorted(attributes)!r}: "
+        f"this environment raises for the affected form (onnx#8182 fallback is live but "
+        f"detectable). The oracle will fail with TypeError rather than returning a wrong "
+        f"number. Use a NumPy or ORT CPU EP oracle instead of ReferenceEvaluator.",
+        stacklevel=2,
+    )
+
+
 
 
 def tensor(name: str, dtype: ir.DataType, shape: list[int]) -> ir.Value:

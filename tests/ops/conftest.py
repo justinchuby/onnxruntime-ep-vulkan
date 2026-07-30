@@ -155,6 +155,14 @@ def pytest_configure(config: pytest.Config) -> None:
 #
 # ORT 1.28 lower bound: null-allocator PrePack bug (fp16 MatMulNBits → NaN/Inf), and
 # deleter lifetime issue in plugin-EP path. Both fixed in 1.28.
+#
+# ORT 1.28 opset registration ceiling (verified 2026-07-30, Fact Checker):
+#   ORT 1.28 registers ONNX opsets through 27, not through 24 as the
+#   onnxruntime.ai compatibility table (last row ORT 1.20 = opset 21) implied.
+#   ORT 1.28 loads and runs opset-26 and opset-27 models. The compatibility table
+#   is stale; any reasoning derived from it is wrong. Justin's directive "support
+#   up to opset 26" is fully exercisable, and there is headroom to opset 27.
+#   Reference: onnxruntime source, ORT_OPSET_SUPPORTED_VERSION in register_onnxruntime_ops.cc.
 # ---------------------------------------------------------------------------
 
 _ORT_MIN_VERSION = "1.28.0"
@@ -175,9 +183,87 @@ _ONNX_MIN_VERSION = "1.22.0"
 #   4. Remove xfail from Attention tests.
 _ONNX_ATTENTION24_FIXED_VERSION: str | None = None  # unknown until Fact Checker confirms
 
+# Q/DQ opset-23+ oracle registration status (onnx#8182, detected at session start).
+# See _probe_qdq_reference_oracle() below.  This is set once at pytest_configure time
+# and is readable by tests via m.QDQOPSET23_REFERENCE_SAFE.
+QDQOPSET23_REFERENCE_SAFE: bool = False
+QDQOPSET23_REFERENCE_STATUS: str = "not yet probed"
+
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.split(".")[:3])
+
+
+def _probe_qdq_reference_oracle() -> tuple[bool, str]:
+    """Detect whether onnx.reference.ReferenceEvaluator can correctly evaluate DQ-23+.
+
+    Background (onnx#8182): the opset-23 and opset-25 reference implementations for
+    QuantizeLinear / DequantizeLinear are NOT registered in onnx ≤ 1.22.0.
+    ReferenceEvaluator silently falls back to the opset-21 implementation, which does
+    not know the ``output_dtype`` (new in 23) or ``block_size`` (new in 23) attributes.
+
+    Two observable fallback behaviours (Fact Checker falsifier, 2026-07-30):
+    - **TypeError** — the opset-21 impl receives an unknown attribute and raises.
+      Observed in onnx 1.22.0 for the ``output_dtype`` form.
+      Safe: the caller will see the error rather than a plausible wrong number.
+    - **Silent wrong result** — the fallback succeeds for forms compatible with opset-21
+      semantics but returns the wrong type or values.  Dangerous: a caller that trusts
+      the number will build its oracle on wrong expected outputs.
+
+    This function runs the Fact Checker's falsifier:
+        DequantizeLinear(opset=23, output_dtype=FLOAT16)
+    and classifies the result.
+
+    Returns (safe, status):
+      safe=True  → environment raises on the affected form.  Any caller that tries to
+                   use ReferenceEvaluator as a Q/DQ-23 oracle will fail visibly.
+      safe=False → environment returns without error.  The fallback is live and SILENT.
+                   No caller may use ReferenceEvaluator as a Q/DQ-23+ oracle without
+                   first calling m.assert_qdq_reference_oracle_safe().
+    """
+    try:
+        import onnx
+        import onnx.helper as oh
+        from onnx.reference import ReferenceEvaluator
+        node = oh.make_node("DequantizeLinear", ["x", "s", "z"], ["y"],
+                            output_dtype=onnx.TensorProto.FLOAT16)
+        graph = oh.make_graph(
+            [node], "dq23_probe",
+            [oh.make_tensor_value_info("x", onnx.TensorProto.UINT8, [4]),
+             oh.make_tensor_value_info("s", onnx.TensorProto.FLOAT, []),
+             oh.make_tensor_value_info("z", onnx.TensorProto.UINT8, [])],
+            [oh.make_tensor_value_info("y", onnx.TensorProto.FLOAT16, [4])],
+        )
+        model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 23)])
+        model.ir_version = 10
+        ev = ReferenceEvaluator(model)
+        import numpy as _np
+        ev.run(None, {
+            "x": _np.array([0, 128, 200, 255], dtype=_np.uint8),
+            "s": _np.float32(0.01),
+            "z": _np.uint8(128),
+        })
+        return (
+            False,
+            "UNSAFE: ReferenceEvaluator evaluated DQ-23 output_dtype without error — "
+            "fallback to opset-21 is SILENT in this environment. "
+            "No test may use ReferenceEvaluator as a Q/DQ-23+ oracle. "
+            "(onnx#8182 fix is unreleased; upgrade to onnx 1.23.0+ when available.)",
+        )
+    except TypeError as exc:
+        return (
+            True,
+            f"SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype "
+            f"in this environment (onnx {__import__('onnx').__version__}). "
+            f"The fallback is live but detectable. "
+            f"Detail: {exc}",
+        )
+    except Exception as exc:
+        return (
+            True,
+            f"SAFE (raises): ReferenceEvaluator raises {type(exc).__name__} for DQ-23 output_dtype "
+            f"in this environment. Detail: {exc}",
+        )
 
 
 def _assert_oracle_versions() -> None:
@@ -196,6 +282,13 @@ def _assert_oracle_versions() -> None:
       General op tests (Add, Relu, etc.) run correctly with onnx 1.22.
       Attention tests MUST use pytest.mark.xfail(strict=True) until Fact Checker
       confirms the fixed release and _ONNX_ATTENTION24_FIXED_VERSION is set.
+
+    Q/DQ-23+ oracle status (onnx#8182):
+      Probed at session start. Result stored in QDQOPSET23_REFERENCE_SAFE and
+      QDQOPSET23_REFERENCE_STATUS (module-level globals in this file and re-exported
+      via m.QDQOPSET23_REFERENCE_SAFE for test visibility). No current test uses
+      ReferenceEvaluator for Q/DQ; this probe exists to detect and refuse any future
+      addition that would produce silently wrong expected outputs.
     """
     import onnx as _onnx  # noqa: PLC0415
 
@@ -224,6 +317,23 @@ def _assert_oracle_versions() -> None:
             + "\n\nInstall all required versions: pip install -r tests/requirements.txt\n"
         )
         pytest.exit(msg, returncode=3)
+
+    # Probe Q/DQ-23 ReferenceEvaluator registration (onnx#8182).  Not a hard failure —
+    # no current test uses ReferenceEvaluator for Q/DQ — but the status must be recorded
+    # so that any future test that would silently use the wrong oracle is caught at review.
+    global QDQOPSET23_REFERENCE_SAFE, QDQOPSET23_REFERENCE_STATUS
+    QDQOPSET23_REFERENCE_SAFE, QDQOPSET23_REFERENCE_STATUS = _probe_qdq_reference_oracle()
+    print(
+        f"\n[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: {QDQOPSET23_REFERENCE_STATUS}",
+        file=sys.stderr, flush=True,
+    )
+    if not QDQOPSET23_REFERENCE_SAFE:
+        print(
+            "[ORACLE STATUS] WARNING: A test that uses ReferenceEvaluator as a Q/DQ-23+ "
+            "oracle will produce SILENTLY WRONG expected outputs. Call "
+            "m.assert_qdq_reference_oracle_safe() before any such oracle path.",
+            file=sys.stderr, flush=True,
+        )
 
 
 def _parse_device_indices(config: pytest.Config) -> list[int]:

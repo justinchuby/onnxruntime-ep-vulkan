@@ -73,6 +73,17 @@ def test_dequant_linear_bit_exact(vulkan_device_available):
     is a correctness bug, not a precision issue. Reference is NumPy, NOT ORT CPU EP,
     because a shared misreading of the schema would let both sides encode the same wrong
     answer (Morpheus C6 principle: the oracle must be independent).
+
+    ORACLE SAFETY NOTE (onnx#8182):
+    This test uses opset 18 and a NumPy oracle.  It is intentionally NOT using opset 23+
+    or onnx.reference.ReferenceEvaluator.  Reason: onnx#8182 documents that the opset-23
+    and opset-25 DequantizeLinear reference implementations are NOT registered in
+    onnx ≤ 1.22.0.  ReferenceEvaluator would silently fall back to the opset-21
+    implementation, which does not know ``output_dtype`` or ``block_size`` — producing
+    wrong expected outputs that the Vulkan kernel would be tested against.
+    NumPy is independent of ONNX opset registration and is immune to this class of defect.
+    See m.assert_qdq_reference_oracle_safe() for the guard that enforces this for any
+    future oracle path that might use ReferenceEvaluator.
     """
     rng = np.random.default_rng(42)
     x_data = rng.integers(-128, 127, size=(4, 8), dtype=np.int8)
