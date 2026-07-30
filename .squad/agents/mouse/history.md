@@ -672,3 +672,31 @@ would have gone *unchecked*. Now symbolic-aware: literal extents still checked p
 Code: `ops/common/claim.rs`, `registry.rs`, `ops/claim_log.rs`, `ops/quant.rs`.
 Docs: `docs/OP_COVERAGE.md` §7.5 new, §8.1.3 corrected.
 Record: `.squad/decisions/inbox/mouse-runtime-extents.md`.
+
+---
+
+## 2026-07-29 — Moved to worktree `C:\Users\justinchu\dev\ep-vulkan-mouse` (branch `squad/mouse`)
+
+`main` is now the integration branch. I commit to `squad/mouse`; I still do not push.
+
+**Transfer, done carefully because the failure mode is silent data loss.** My previous turn's work
+(the full-set claim audit) was still *uncommitted in main's working tree* — `5ab2d85` did not
+contain it. Order: export the diff, apply it in the worktree, run `cargo ci` there, commit, verify
+`git diff main squad/mouse --stat` matches the six files, and only then `git checkout --` in main.
+Reverting main first would have been one mistyped path away from losing 900 lines. The gitignored
+`.squad/decisions/inbox/` is not carried by a branch, so I copied it across by hand.
+
+**The worktree reproduces the numbers of record on both devices**, which is the check that makes it
+a working environment rather than merely a green one:
+
+* unpinned — 363 records, 0 claimed, full-set `dynamic-shape` 356, shape_class 360 extents-symbolic
+* pinned — 161 `MatMulNBits` claimed, residual `dtype` 97
+
+Byte-identical on device 0 and device 1. `cargo ci` green in the worktree: 336 lib tests.
+
+**Why this matters to me specifically:** the false red that cost me a turn was Switch's uncommitted
+`vk/caps.rs` in a tree I did not own. In here, `cargo ci` red means *I* broke something — which is
+the only condition under which a signal is worth reading. Tank's framing is the right one: a false
+red teaches you to ignore the tool.
+
+No cross-owner edits this turn. Nothing outside `ops/**`, `registry.rs`, `OP_COVERAGE.md`.
