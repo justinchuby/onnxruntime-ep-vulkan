@@ -194,7 +194,8 @@ impl DispatchContext for CompileRecorder {
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
         let token = self.n_plan_inputs + self.next_bind;
         self.next_bind += 1;
-        self.pending_temp_sizes.push(desc.byte_size().unwrap_or(0) as u64);
+        self.pending_temp_sizes
+            .push(desc.byte_size().unwrap_or(0) as u64);
         Ok(BufferView::from_raw(token as u64))
     }
 
@@ -691,7 +692,9 @@ impl VulkanSession {
                 if let (Some(cap), Some(cap_bi)) = (sor.captured, sor.captured_bindings) {
                     dyn_captured[ki] = Some((cap.0, cap.1, cap.2, cap.3, cap_bi));
                 }
-                dyn_temp_sizes[ki] = sor.temp_descs.iter()
+                dyn_temp_sizes[ki] = sor
+                    .temp_descs
+                    .iter()
                     .map(|d| d.byte_size().unwrap_or(0) as u64)
                     .collect();
             } else {
@@ -824,9 +827,13 @@ impl VulkanSession {
                 &kernel.temp_byte_sizes
             };
             for (j, &sz) in temp_sizes.iter().enumerate() {
-                let Some(buf) = (unsafe {
-                    self.alloc.alloc_device(&format!("ep_tmp_k{ki}_{j}"), sz)
-                }) else {
+                // SAFETY: `self.alloc` is live for the whole session, and every buffer it returns
+                // here is freed via the same allocator. (Tank, drive-by: restructured only to
+                // satisfy `clippy::undocumented_unsafe_blocks`, which wants the comment directly
+                // above the block; the code is Switch's and its behaviour is unchanged.)
+                let allocated =
+                    unsafe { self.alloc.alloc_device(&format!("ep_tmp_k{ki}_{j}"), sz) };
+                let Some(buf) = allocated else {
                     bail!("alloc_device failed for temp buffer");
                 };
                 gpu_temps.push(buf);

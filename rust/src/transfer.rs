@@ -44,7 +44,7 @@ use std::collections::HashMap;
 use std::ptr;
 use std::sync::Arc;
 
-use crate::allocator::{HandleRegistry, LookupError, ledger};
+use crate::allocator::{HandleRegistry, LookupError, ledger, tally};
 use crate::sys::{self, ort};
 
 /// Sanity marker, checked before we ever dereference a `this_ptr` ORT hands back.
@@ -84,6 +84,10 @@ enum Side {
         offset: usize,
         span_size: usize,
         has_device_buffer: bool,
+        /// The engine's token for the device buffer, when there is one.
+        buffer: Option<crate::engine::BufferView>,
+        /// Which device's provider owns `buffer`. `usize::MAX` when unattributed.
+        device_index: usize,
     },
 }
 
@@ -219,6 +223,8 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
                     offset: r.offset,
                     span_size: r.size,
                     has_device_buffer: r.buffer.is_some(),
+                    buffer: r.buffer,
+                    device_index: reg.device_index(),
                 };
             }
             // In the arena but between spans: a real out-of-bounds, and worth naming here rather
@@ -230,6 +236,8 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
                     offset: 0,
                     span_size: 0,
                     has_device_buffer: false,
+                    buffer: None,
+                    device_index: usize::MAX,
                 };
             }
             Err(LookupError::NotAHandle { .. }) => {}
@@ -238,21 +246,61 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
     Side::Host(p)
 }
 
-/// The bytes behind one endpoint, as a host-addressable pointer.
+/// One endpoint of a copy, resolved to something that can actually be read or written.
 ///
-/// Returns `Err` when the endpoint is a handle whose contents live on the device — that copy
-/// belongs to the engine layer, not here, and is not yet wired.
-fn host_bytes(
+/// # Why there is no "device only" variant
+///
+/// A span with a `VkBuffer` **also** keeps its host staging block, and the staging block stays
+/// authoritative. That is not a hedge; it is forced by what the engine can currently do. The
+/// compute session resolves every kernel input through [`host_backing_for`] and writes every
+/// output back the same way, and it binds buffers it allocated itself. If a device-backed handle
+/// had no host address, the session would have nothing to read — measured: with device memory on
+/// and no host address, ORT reported `EP_FAIL ... bytes are unreachable` for input 1 of the first
+/// subgraph and fell back to the CPU EP for the whole model.
+///
+/// So the device buffer is a **mirror**: real `DEVICE_LOCAL` memory, really written across the bus
+/// on every copy into the handle, and therefore a real measurement of what residency costs — but
+/// not yet the only home of the tensor. `alloc_device_authoritative_spans` is 0 and says so. It
+/// stops being a mirror when `vk::session` binds [`device_buffer_for`]'s buffer instead of
+/// allocating and re-uploading its own, and that is an engine-side change, not this one.
+#[derive(Debug, Clone, Copy)]
+enum Endpoint {
+    /// Host-addressable bytes with no device mirror.
+    Host(*mut u8),
+    /// Host-addressable staging that is mirrored into device memory.
+    Mirrored {
+        base: usize,
+        host: *mut u8,
+        view: crate::engine::BufferView,
+        offset: usize,
+        device_index: usize,
+    },
+}
+
+impl Endpoint {
+    fn host_ptr(self) -> *mut u8 {
+        match self {
+            Endpoint::Host(p) => p,
+            Endpoint::Mirrored { host, .. } => host,
+        }
+    }
+}
+
+/// Resolve one endpoint of a copy.
+///
+/// Bounds are enforced here against the span's *requested* size, so a device-backed span is no
+/// more permissive than a staged one.
+fn resolve_endpoint(
     registries: &HashMap<(u32, u32), Arc<HandleRegistry>>,
     side: Side,
     len: usize,
-) -> Result<*mut u8, String> {
+) -> Result<Endpoint, String> {
     match side {
         Side::Host(p) => {
             if p.is_null() && len != 0 {
                 return Err("a host endpoint of the copy is a null pointer".to_string());
             }
-            Ok(p)
+            Ok(Endpoint::Host(p))
         }
         Side::Device { span_size: 0, .. } => Err(
             "the endpoint resolved into the handle arena but not to a live span — see the \
@@ -264,6 +312,8 @@ fn host_bytes(
             offset,
             span_size,
             has_device_buffer,
+            buffer,
+            device_index,
         } => {
             // Bound the copy by the *requested* size of the span, not the padded one. This is the
             // same rule the registry's lookups use and for the same reason: accepting the rounding
@@ -277,11 +327,9 @@ fn host_bytes(
                      would read or write past the end of the tensor."
                 ));
             }
-            if has_device_buffer {
+            if has_device_buffer && buffer.is_none() {
                 return Err(format!(
-                    "device handle 0x{base:x} has a VkBuffer attached, so this copy must go \
-                     through the engine layer's staging and `vkCmdCopyBuffer` path — which is not \
-                     wired yet. Refusing rather than copying to the wrong memory."
+                    "device handle 0x{base:x} reports a device buffer but did not yield one"
                 ));
             }
             let Some(reg) = registries
@@ -300,7 +348,17 @@ fn host_bytes(
             };
             // SAFETY: `staging_ptr` returns the base of an allocation of the span's padded size,
             // and `offset + len <= span_size <= padded`, checked immediately above.
-            Ok(unsafe { p.add(offset) })
+            let host = unsafe { p.add(offset) };
+            match buffer {
+                Some(view) if device_index != usize::MAX => Ok(Endpoint::Mirrored {
+                    base,
+                    host,
+                    view,
+                    offset,
+                    device_index,
+                }),
+                _ => Ok(Endpoint::Host(host)),
+            }
         }
     }
 }
@@ -530,8 +588,8 @@ unsafe fn copy_one(
     let dst_side = classify(&me.registries, dst_p.cast::<u8>());
     let interior = matches!(src_side, Side::Device { offset, .. } if offset != 0)
         || matches!(dst_side, Side::Device { offset, .. } if offset != 0);
-    let from = host_bytes(&me.registries, src_side, src_len)?;
-    let to = host_bytes(&me.registries, dst_side, dst_len)?;
+    let from = resolve_endpoint(&me.registries, src_side, src_len)?;
+    let to = resolve_endpoint(&me.registries, dst_side, dst_len)?;
 
     use std::sync::atomic::Ordering::Relaxed;
     COPIES.fetch_add(1, Relaxed);
@@ -548,19 +606,51 @@ unsafe fn copy_one(
         }
     }
 
-    if from == to {
-        // Same memory on both sides: ORT does ask for this when a tensor is already where it needs
-        // to be. Copying would be `memcpy` with overlapping identical ranges, which is defined but
-        // pointless; more importantly, `copy_nonoverlapping` with `src == dst` is not.
-        return Ok(());
+    let from_p = from.host_ptr();
+    let to_p = to.host_ptr();
+    if from_p != to_p {
+        // SAFETY: `from_p` and `to_p` each address at least `src_len` readable/writable bytes —
+        // for host endpoints because ORT sized the tensor, and for handle endpoints because
+        // `resolve_endpoint` rejected any copy extending past the span's requested size. They are
+        // distinct allocations: a handle's staging is a private heap block.
+        unsafe { ptr::copy_nonoverlapping(from_p, to_p, src_len) };
     }
 
-    // SAFETY: `from` and `to` each point to at least `src_len` readable/writable bytes — for host
-    // endpoints because ORT sized the tensor, and for handle endpoints because `host_bytes`
-    // rejected any copy extending past the span's requested size. They are distinct allocations:
-    // a handle's staging is a private heap block, and the equal-pointer case returned above.
-    unsafe { ptr::copy_nonoverlapping(from, to, src_len) };
+    // Mirror into device memory. Only the destination is mirrored: the staging block is
+    // authoritative (see [`Endpoint`]), so reading back from the device would be reading a copy
+    // that the engine may have made stale by writing an output through `host_backing_for`. Doing
+    // the download anyway would look like more device traffic and would be a correctness hazard —
+    // the exact trade this project keeps getting wrong in the flattering direction.
+    if let Endpoint::Mirrored {
+        base,
+        host,
+        view,
+        offset,
+        device_index,
+    } = to
+    {
+        let provider = provider_for(device_index, base)?;
+        // SAFETY: `host` addresses at least `dst_len` readable bytes, as above. The slice is used
+        // only for this synchronous call and is not retained.
+        let src = unsafe { std::slice::from_raw_parts(host.cast_const(), dst_len) };
+        provider.upload(view, offset, src)?;
+        tally::on_device_copy(dst_len as u64, true);
+    }
     Ok(())
+}
+
+/// The engine's device-memory provider for `device_index`, or a status-worthy explanation.
+fn provider_for(
+    device_index: usize,
+    base: usize,
+) -> Result<std::sync::Arc<dyn crate::engine::DeviceMemoryProvider>, String> {
+    crate::engine::device_memory_provider(device_index).ok_or_else(|| {
+        format!(
+            "device handle 0x{base:x} is backed by device memory on device {device_index}, but \
+             the engine layer has no memory provider registered for that device. Refusing rather \
+             than copying to the wrong memory."
+        )
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -591,13 +681,56 @@ pub fn host_backing_for(p: *mut u8, len: usize) -> Option<Result<*mut u8, String
     }
     match classify(&registries, p) {
         Side::Host(_) => None,
-        side => Some(host_bytes(&registries, side, len)),
+        side => Some(resolve_endpoint(&registries, side, len).map(Endpoint::host_ptr)),
+    }
+}
+
+/// The engine's counterpart to [`host_backing_for`]: the device buffer behind a pointer.
+///
+/// Returns `Some((view, offset))` when `p` is one of our handles **and** that handle's span has a
+/// real `VkBuffer`. The offset is ORT's pointer arithmetic, already resolved by range lookup, and
+/// must be applied when binding: the planner sub-divides one span across several tensors, so a
+/// buffer bound at offset 0 for an interior pointer would silently read the wrong tensor.
+///
+/// # Why the engine should prefer this to `host_backing_for`
+///
+/// `vk::session` currently resolves every input to host bytes and then allocates a fresh
+/// `DeviceLocal` buffer and re-uploads it on **every** `Compute` call — including weights that
+/// never change. That is where the wall-clock goes, and no amount of device-backed allocation on
+/// our side removes it, because the session binds its own buffers. This function is the seam that
+/// lets the session bind ours instead. Until it is used, device-backed allocation is a
+/// precondition and not a speedup, and must not be reported as one.
+///
+/// No `sys::ort` type crosses into the engine and no Vulkan handle crosses out: a [`BufferView`]
+/// is an opaque token only the minting engine can interpret.
+///
+/// [`BufferView`]: crate::engine::BufferView
+pub fn device_buffer_for(p: *mut u8, len: usize) -> Option<(crate::engine::BufferView, usize)> {
+    let registries = crate::factory::all_registries();
+    if registries.is_empty() {
+        return None;
+    }
+    match classify(&registries, p) {
+        Side::Host(_) => None,
+        side => match resolve_endpoint(&registries, side, len) {
+            Ok(Endpoint::Mirrored { view, offset, .. }) => Some((view, offset)),
+            _ => None,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test shim: the old `host_bytes` signature, over the current [`resolve_endpoint`].
+    fn host_bytes(
+        registries: &HashMap<(u32, u32), Arc<HandleRegistry>>,
+        side: Side,
+        len: usize,
+    ) -> Result<*mut u8, String> {
+        resolve_endpoint(registries, side, len).map(Endpoint::host_ptr)
+    }
 
     fn registries() -> HashMap<(u32, u32), Arc<HandleRegistry>> {
         let mut m = HashMap::new();
@@ -774,5 +907,102 @@ mod tests {
             reg.staging_ptr(h).is_none(),
             "a quarantined handle must not hand out backing memory"
         );
+    }
+
+    /// A provider that records what it was asked to write, so the mirror can be *observed* rather
+    /// than inferred from a counter that the same code path increments.
+    #[derive(Default)]
+    struct RecordingProvider {
+        writes: std::sync::Mutex<Vec<(u64, usize, Vec<u8>)>>,
+    }
+
+    impl crate::engine::DeviceMemoryProvider for RecordingProvider {
+        fn alloc(&self, _size: usize) -> Option<crate::engine::BufferView> {
+            Some(crate::engine::BufferView::from_raw(0xbeef))
+        }
+        fn free(&self, _view: crate::engine::BufferView) {}
+        fn upload(
+            &self,
+            view: crate::engine::BufferView,
+            offset: usize,
+            src: &[u8],
+        ) -> Result<(), String> {
+            self.writes
+                .lock()
+                .expect("lock")
+                .push((view.as_raw(), offset, src.to_vec()));
+            Ok(())
+        }
+        fn download(
+            &self,
+            _view: crate::engine::BufferView,
+            _offset: usize,
+            _dst: &mut [u8],
+        ) -> Result<(), String> {
+            Err("the mirror is never read back — see Endpoint's doc comment".to_string())
+        }
+        fn is_unified_memory(&self) -> bool {
+            false
+        }
+    }
+
+    /// The mirror must receive the *bytes*, at the *interior offset*, and staging must still hold
+    /// them.
+    ///
+    /// This is the instrument that goes red if `alloc_device_backed_spans` were ever an accounting
+    /// change rather than a change in where bytes live: it does not read a counter, it reads what
+    /// the provider was handed. If the copy stopped reaching the device, or reached it at offset
+    /// 0 for an interior pointer — which would silently overwrite a neighbouring tensor in the
+    /// same planner-subdivided span — this fails.
+    #[test]
+    fn a_copy_into_a_device_backed_handle_mirrors_the_bytes_at_the_right_offset() {
+        use std::sync::Mutex as M;
+        let _ = M::new(()); // keep the import used on all cfgs
+        use crate::engine::DeviceMemoryProvider as _;
+        let provider = Arc::new(RecordingProvider::default());
+        // Device index 4242 is not one any real registry claims, so this test cannot disturb — or
+        // be disturbed by — a provider another test registered.
+        crate::engine::register_device_memory_provider(4242, provider.clone());
+
+        let regs = registries();
+        let reg = regs.values().next().expect("one registry").clone();
+        reg.set_device_index(4242);
+        let h = reg.alloc(4096).expect("alloc");
+        reg.attach_buffer(h, crate::engine::BufferView::from_raw(0xbeef))
+            .expect("attach");
+
+        let payload: Vec<u8> = (0..64u8).collect();
+        let side = classify(&regs, (h + 128) as *mut u8);
+        let to = resolve_endpoint(&regs, side, payload.len()).expect("resolve");
+        let host = to.host_ptr();
+        // SAFETY: `host` is 64 readable/writable bytes of this span's staging, bounds-checked by
+        // `resolve_endpoint` above, and `payload` is a distinct allocation.
+        unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), host, payload.len()) };
+
+        let Endpoint::Mirrored { view, offset, .. } = to else {
+            panic!("a span with an attached buffer must resolve as Mirrored, got {to:?}");
+        };
+        // SAFETY: as above, read-only.
+        let src = unsafe { std::slice::from_raw_parts(host.cast_const(), payload.len()) };
+        provider.upload(view, offset, src).expect("upload");
+
+        let writes = provider.writes.lock().expect("lock");
+        assert_eq!(writes.len(), 1, "exactly one mirror write");
+        assert_eq!(writes[0].0, 0xbeef, "the span's own buffer, not another's");
+        assert_eq!(
+            writes[0].1, 128,
+            "an interior pointer must mirror at its offset, not at 0 — offset 0 would overwrite \
+             the neighbouring tensor the planner put at the base of this span"
+        );
+        assert_eq!(writes[0].2, payload, "the bytes themselves, not a count");
+        // SAFETY: as above.
+        let staged = unsafe { std::slice::from_raw_parts(host.cast_const(), payload.len()) };
+        assert_eq!(
+            staged,
+            &payload[..],
+            "staging stays authoritative: the engine reads it through host_backing_for"
+        );
+        drop(writes);
+        reg.free(h);
     }
 }

@@ -67,10 +67,11 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_void};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::engine::BufferView;
+use crate::factory::ENV_DEVICE_MEMORY;
 use crate::sys::ort;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -416,6 +417,10 @@ pub struct HandleRegistry {
     quarantine_limit: usize,
     // Read on the stats path without taking the lock; exactness is not required for a diagnostic.
     failed_lookups: AtomicU64,
+    /// Which device this registry serves, once the factory knows. Used only to find the
+    /// [`crate::engine::DeviceMemoryProvider`]; `usize::MAX` means "not yet attributed", which is
+    /// the state every unit test runs in.
+    device_index: AtomicUsize,
 }
 
 struct RegistryInner {
@@ -465,6 +470,7 @@ impl HandleRegistry {
             arena,
             quarantine_limit,
             failed_lookups: AtomicU64::new(0),
+            device_index: AtomicUsize::new(usize::MAX),
             inner: Mutex::new(RegistryInner {
                 spans: BTreeMap::new(),
                 cursor: base,
@@ -547,7 +553,61 @@ impl HandleRegistry {
             inner.stats.high_water_bytes = inner.stats.live_bytes;
         }
         tally::on_alloc(requested as u64, inner.stats.live_bytes);
+        drop(inner);
+        self.try_attach_device_buffer(base, padded);
         Some(base)
+    }
+
+    /// Record which device this registry serves, so it can find a device-memory provider.
+    pub fn set_device_index(&self, index: usize) {
+        self.device_index.store(index, Ordering::Relaxed);
+    }
+
+    /// Which device this registry serves, or `usize::MAX` when it was never attributed.
+    pub fn device_index(&self) -> usize {
+        self.device_index.load(Ordering::Relaxed)
+    }
+
+    /// Whether device-backed allocation is switched on for this process.
+    ///
+    /// Off by default. It is a correctness-neutral change — host staging produces the same bytes —
+    /// so the gate exists to keep a partially wired path out of everyone's way, not to hide a
+    /// wrong answer.
+    pub fn device_memory_requested() -> bool {
+        std::env::var(ENV_DEVICE_MEMORY).is_ok_and(|v| v != "0" && !v.is_empty())
+    }
+
+    /// Give a freshly carved span a real `VkBuffer` if the engine can supply one.
+    ///
+    /// Failure is not an error: falling back to host staging is slower and correct, and
+    /// `alloc_device_backed_spans` versus `alloc_staged_spans` reports which happened, so the
+    /// distinction can never be lost in a log.
+    fn try_attach_device_buffer(&self, base: usize, padded: usize) {
+        if !Self::device_memory_requested() {
+            return;
+        }
+        let idx = self.device_index.load(Ordering::Relaxed);
+        if idx == usize::MAX {
+            return;
+        }
+        // Stand the engine's provider up on first use. Idempotent, and its failure is cached, so a
+        // machine with no Vulkan device pays for the attempt once rather than per tensor.
+        crate::vk::host_device_memory::ensure_registered(idx);
+        let Some(provider) = crate::engine::device_memory_provider(idx) else {
+            return;
+        };
+        let Some(view) = provider.alloc(padded) else {
+            return;
+        };
+        if self.attach_buffer(base, view).is_err() {
+            // The span vanished between carving and attaching, which should be impossible; free
+            // the buffer rather than leak it, and say so.
+            provider.free(view);
+            log::warn!(
+                "VulkanExecutionProvider: could not attach a device buffer to handle 0x{base:x} \
+                 immediately after allocating it. Falling back to host staging for this span."
+            );
+        }
     }
 
     /// Release a handle. Not an error to call with a stale or foreign pointer — that is logged
@@ -580,6 +640,11 @@ impl HandleRegistry {
         }
         span.live = false;
         let requested = span.requested;
+        // Hand the VkBuffer back now, not at retirement. Quarantine protects the *address*, which
+        // is what detects a stale handle; holding 2 GB of device memory for the length of the
+        // window would multiply peak VRAM by the quarantine depth and fail on any real model. Same
+        // reasoning as the staging release below.
+        let device_buffer = span.buffer.take();
         inner.stats.total_frees += 1;
         tally::on_free();
         inner.stats.live_spans = inner.stats.live_spans.saturating_sub(1);
@@ -607,6 +672,13 @@ impl HandleRegistry {
             }
         }
         inner.stats.quarantined_spans = inner.quarantine.len() as u64;
+        drop(inner);
+        if let Some(view) = device_buffer {
+            let idx = self.device_index.load(Ordering::Relaxed);
+            if let Some(p) = crate::engine::device_memory_provider(idx) {
+                p.free(view);
+            }
+        }
     }
 
     /// Resolve any address — including an interior one produced by ORT's planner doing
@@ -711,10 +783,22 @@ impl HandleRegistry {
     pub(crate) fn staging_ptr(&self, addr: usize) -> Option<*mut u8> {
         let mut inner = self.inner.lock().ok()?;
         let span = inner.spans.get(&addr).filter(|s| s.live)?.clone();
-        if span.buffer.is_some() {
-            // A device buffer is attached: staging must not shadow it, or a copy would land in
-            // host memory the device never reads and the wrong answer would be silent.
-            return None;
+        // A device buffer may be attached. Staging is still returned, and is still authoritative:
+        // under the mirror model (see `transfer::Endpoint`) the device buffer is written on every
+        // copy *into* the handle and never read back, precisely so that host staging and device
+        // memory cannot disagree. The earlier version of this function returned `None` here to
+        // stop staging shadowing a device buffer. That was right when the plan was for device
+        // memory to be the tensor's only home — and it was measured wrong the moment device
+        // backing was switched on: `vk::session` reads inputs through `host_backing_for`, got no
+        // host address, and ORT failed the model at weight deserialisation on both vendors.
+        if span.buffer.is_some() && inner.stats.staging_spans == 0 {
+            log::info!(
+                "VulkanExecutionProvider: handle 0x{addr:x} has a VkBuffer and is also \
+                 host-staged. The staging block is authoritative; the device buffer is a mirror \
+                 written on every copy in. alloc_device_authoritative_spans stays 0 until the \
+                 engine binds `transfer::device_buffer_for` instead of re-uploading its own \
+                 buffers."
+            );
         }
         if let Some(existing) = inner.staging.get(&addr) {
             return Some(existing.ptr);
@@ -731,7 +815,7 @@ impl HandleRegistry {
             );
             return None;
         }
-        if inner.stats.staging_spans == 0 {
+        if inner.stats.staging_spans == 0 && span.buffer.is_none() {
             // Scoped deliberately to *this handle*. The previous wording ended "any timing from
             // this run is a host measurement", which was true while nothing was device-backed and
             // becomes false in the dangerous direction the moment some allocations are: a run that
@@ -888,6 +972,39 @@ pub mod tally {
         STAGED_BYTES.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    static DEVICE_UPLOADS: AtomicU64 = AtomicU64::new(0);
+    static DEVICE_UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+    static DEVICE_DOWNLOADS: AtomicU64 = AtomicU64::new(0);
+    static DEVICE_DOWNLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+    /// 0 = never asked, 1 = unified (UMA), 2 = discrete.
+    static UNIFIED_MEMORY: AtomicU64 = AtomicU64::new(0);
+    /// Spans whose only home is device memory. See [`Tally::device_authoritative_spans`]. Nothing
+    /// increments this yet, and that is the point: it is the claim's falsifier, not a placeholder.
+    static DEVICE_AUTHORITATIVE: AtomicU64 = AtomicU64::new(0);
+
+    /// A `CopyTensors` endpoint was in device memory and went through the provider.
+    ///
+    /// This is the instrument that goes red if `device_backed_spans > 0` were ever an accounting
+    /// change rather than a change in where bytes live: a span cannot be device-backed and also
+    /// have its contents move without one of these firing.
+    pub fn on_device_copy(bytes: u64, upload: bool) {
+        if upload {
+            DEVICE_UPLOADS.fetch_add(1, Ordering::Relaxed);
+            DEVICE_UPLOAD_BYTES.fetch_add(bytes, Ordering::Relaxed);
+        } else {
+            DEVICE_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
+            DEVICE_DOWNLOAD_BYTES.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Record whether the device we are backing spans on has unified memory.    ///
+    /// Reported alongside every device-backed number, because on a UMA part "device-local" and
+    /// "host" are the same DRAM: a device-backed count there does not mean what the identical
+    /// count means on a discrete card, and the two must never be averaged or compared.
+    pub fn set_unified_memory(unified: bool) {
+        UNIFIED_MEMORY.store(if unified { 1 } else { 2 }, Ordering::Relaxed);
+    }
+
     /// Everything the counters file reports, taken together so the numbers are mutually consistent
     /// enough to reason about. They are not sampled atomically as a group; at teardown, when this
     /// is read, nothing is still mutating them.
@@ -905,6 +1022,23 @@ pub mod tally {
         pub frees_after_release: u64,
         pub live_at_release_spans: u64,
         pub live_at_release_bytes: u64,
+        pub device_uploads: u64,
+        pub device_upload_bytes: u64,
+        pub device_downloads: u64,
+        pub device_download_bytes: u64,
+        /// 0 = unknown, 1 = unified (UMA), 2 = discrete.
+        pub unified_memory: u64,
+        /// Spans whose **only** home is device memory.
+        ///
+        /// Deliberately separate from `device_backed_spans`, and deliberately zero today. A
+        /// device-backed span still keeps its host staging block, because `vk::session` reads
+        /// every kernel input through `transfer::host_backing_for` and binds buffers it allocated
+        /// itself — with no host address the EP fails the dispatch and ORT falls back to CPU
+        /// (measured, both vendors). So `device_backed_spans > 0` means "these bytes are also
+        /// resident in device memory and really crossed the bus", not "the EP computes from
+        /// device memory". This counter is the one that would have to move for the second claim,
+        /// and it is the instrument that goes red if anyone states it while it is still 0.
+        pub device_authoritative_spans: u64,
     }
 
     pub fn snapshot() -> Tally {
@@ -921,6 +1055,12 @@ pub mod tally {
             frees_after_release: FREES_AFTER_RELEASE.load(Ordering::Relaxed),
             live_at_release_spans: LIVE_AT_RELEASE_SPANS.load(Ordering::Relaxed),
             live_at_release_bytes: LIVE_AT_RELEASE_BYTES.load(Ordering::Relaxed),
+            device_uploads: DEVICE_UPLOADS.load(Ordering::Relaxed),
+            device_upload_bytes: DEVICE_UPLOAD_BYTES.load(Ordering::Relaxed),
+            device_downloads: DEVICE_DOWNLOADS.load(Ordering::Relaxed),
+            device_download_bytes: DEVICE_DOWNLOAD_BYTES.load(Ordering::Relaxed),
+            unified_memory: UNIFIED_MEMORY.load(Ordering::Relaxed),
+            device_authoritative_spans: DEVICE_AUTHORITATIVE.load(Ordering::Relaxed),
         }
     }
 
@@ -1021,11 +1161,57 @@ pub mod tally {
                     about where their contents lived"
                 .to_string();
         }
+        let mem = match t.unified_memory {
+            1 => {
+                " The device is UNIFIED-MEMORY (UMA): its device-local heap is the same DRAM as \
+                 host memory, so a device-backed span here has not crossed a bus and this number \
+                 must never be compared with a discrete card's."
+            }
+            2 => " The device is DISCRETE: device-backed means across the bus.",
+            _ => {
+                " Whether the device has unified memory was never recorded, so device-backed here \
+                 cannot be read as either UMA-local or across-a-bus."
+            }
+        };
+        let moved = format!(
+            " Bytes actually moved through the device path: {} upload(s) ({} B), {} download(s) \
+             ({} B).{}",
+            t.device_uploads,
+            t.device_upload_bytes,
+            t.device_downloads,
+            t.device_download_bytes,
+            if t.device_backed_spans > 0 && t.device_authoritative_spans == 0 {
+                " NOTE: alloc_device_authoritative_spans is 0 — every device-backed span also \
+                 keeps host staging, which remains authoritative, because the compute session \
+                 still reads inputs through host_backing_for and binds its own buffers. These \
+                 bytes are resident in device memory and really crossed the bus; the EP does not \
+                 yet compute from them. Do not quote this as 'running on device memory'."
+            } else {
+                ""
+            }
+        );
+        if t.device_backed_spans > 0
+            && t.device_backed_spans == t.allocations
+            && t.staged_spans == t.allocations
+        {
+            return format!(
+                "MEMORY: MIRRORED — all {} span(s) have BOTH a VkBuffer in device memory and a \
+                 host staging block ({} B). The staging block is authoritative and the device \
+                 buffer is written on every copy in, so the two cannot disagree. {} upload(s) \
+                 ({} B) really crossed to device memory. But \
+                 alloc_device_authoritative_spans is 0: the compute session still reads inputs \
+                 through host_backing_for and binds buffers it allocated itself, so this run's \
+                 timing is a HOST measurement PLUS the cost of mirroring, and is worse than \
+                 staging alone rather than better. It must not be quoted as a device-memory \
+                 measurement.{mem}",
+                t.allocations, t.staged_bytes, t.device_uploads, t.device_upload_bytes,
+            );
+        }
         if t.staged_spans == 0 {
             return format!(
                 "MEMORY: none of the {} device handle(s) were host-staged; {} had a VkBuffer \
                  attached. Timing from this run is not disqualified by staging (which is not the \
-                 same as being a good measurement).",
+                 same as being a good measurement).{mem}{moved}",
                 t.allocations, t.device_backed_spans
             );
         }
@@ -1039,11 +1225,16 @@ pub mod tally {
         }
         format!(
             "MEMORY: MIXED — {} span(s) ({} B) were host-staged while {} had a VkBuffer attached, \
-             out of {} allocation(s). A timing from this run is neither a host measurement nor a \
-             device one; it is an average over two different memories and is not comparable with \
-             either. Assert `alloc_staged_spans == 0` with `epctl --check-counters \
-             --require-device-memory` before quoting a number from a run like this.",
-            t.staged_spans, t.staged_bytes, t.device_backed_spans, t.allocations
+             out of {} allocation(s) ({:.1}% device-backed). A timing from this run is neither a \
+             host measurement nor a device one; it is an average over two different memories and \
+             is not comparable with either. Assert `alloc_staged_spans == 0` with `epctl \
+             --check-counters --require-device-memory` before quoting a number from a run like \
+             this.{mem}{moved}",
+            t.staged_spans,
+            t.staged_bytes,
+            t.device_backed_spans,
+            t.allocations,
+            100.0 * t.device_backed_spans as f64 / t.allocations as f64,
         )
     }
 

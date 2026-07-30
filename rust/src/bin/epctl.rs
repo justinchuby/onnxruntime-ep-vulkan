@@ -251,27 +251,18 @@ fn usage() {
 #[derive(Debug, PartialEq, Eq)]
 enum CounterVerdict {
     /// Dispatches ≥ required **and** `model_output_equivalence = MATCH`. Exit 0.
-    Pass {
-        dispatches: u64,
-    },
+    Pass { dispatches: u64 },
     /// Dispatches below required. Exit 1.
-    TooFew {
-        dispatches: u64,
-        required: u64,
-    },
+    TooFew { dispatches: u64, required: u64 },
     /// File not found, unreadable, wrong ABI, or missing required fields. Exit 3.
     NoReport(String),
     /// ORT derived a pointer that ran off the end of one of our allocations. Exit 1.
-    OutOfBounds {
-        count: u64,
-    },
+    OutOfBounds { count: u64 },
     /// A `Free` arrived after we released the allocator that owned the span.
     ///
     /// Unconditional, like [`CounterVerdict::OutOfBounds`], and for the same reason: it is not a
     /// metric, it is ORT and this EP disagreeing about who owns 2 GB.
-    FreeAfterRelease {
-        count: u64,
-    },
+    FreeAfterRelease { count: u64 },
     /// `--require-device-memory` was asked for and the run did not deliver it.
     NotOnDevice {
         staged_spans: u64,
@@ -283,18 +274,14 @@ enum CounterVerdict {
     ///
     /// The GPU executed and produced an answer; the answer is wrong. This is not "no report"
     /// (exit 3) — a wrong answer is worse than no answer and earns the harder exit code.
-    EquivalenceDivergent {
-        dispatches: u64,
-    },
+    EquivalenceDivergent { dispatches: u64 },
     /// Dispatches ≥ required but no CPU comparison was performed (`model_output_equivalence`
     /// absent or `UNMEASURED`). Exit 3.
     ///
     /// This is the same exit code as `NoReport` because both represent the absence of an answer
     /// on the correctness question: one because the process crashed, the other because the
     /// comparison step was never run. Neither may be read as "the EP is correct."
-    EquivalenceUnmeasured {
-        dispatches: u64,
-    },
+    EquivalenceUnmeasured { dispatches: u64 },
 }
 
 /// Pull one unsigned integer field out of the counters JSON.
@@ -434,8 +421,8 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
     // R9: a named instrument that does not exist is exactly the thing R9 warns about. UNMEASURED
     // exit 3 is the instrument that would go red if the comparison step were removed.
     match json_str(&doc, counters::EQUIVALENCE_KEY) {
-        Some(ref s) if *s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
-        Some(ref s) if *s == counters::EQUIVALENCE_DIVERGENT => {
+        Some(s) if s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
+        Some(s) if s == counters::EQUIVALENCE_DIVERGENT => {
             CounterVerdict::EquivalenceDivergent { dispatches }
         }
         // Absent or unknown value both map to UNMEASURED per R7: absence of an instrument must
@@ -534,6 +521,7 @@ fn check_counters_with(
             device_backed,
             allocations,
         } => {
+            let mirrored = staged_spans == allocations && device_backed == allocations;
             eprintln!(
                 "epctl: FAIL — --require-device-memory was asked for and this run did not deliver \
                  it: {staged_spans} host-staged span(s) ({staged_bytes} B), {device_backed} \
@@ -550,6 +538,17 @@ fn check_counters_with(
                  numbers look like device numbers. A caveat that has to be remembered an hour \
                  later is not a caveat. Set this flag on any lane that quotes a number."
             );
+            if mirrored {
+                eprintln!(
+                    "\x20 NOTE: every span is BOTH staged and device-backed — this is the \
+                     mirrored state, not a partial one. The bytes really are resident in device \
+                     memory and really crossed the bus, but host staging is still authoritative \
+                     because `vk::session` reads inputs through `host_backing_for` and binds \
+                     buffers it allocated itself. `alloc_device_authoritative_spans` is the \
+                     counter that has to move before this flag can pass, and it is the instrument \
+                     that goes red if anyone claims the EP computes from device memory today."
+                );
+            }
             std::process::ExitCode::from(1)
         }
         CounterVerdict::EquivalenceDivergent { dispatches } => {
@@ -1173,6 +1172,26 @@ mod tests {
             CounterVerdict::NotOnDevice { .. }
         ));
 
+        // The MIRRORED state: every span is device-backed AND every span is staged. This is what
+        // device-backed allocation actually produces today, and it must still fail the flag. The
+        // tempting reading is "12 of 12 device-backed, therefore on device" — but staging is
+        // still authoritative because the compute session reads through `host_backing_for`, so a
+        // timing from this run is a host measurement plus mirroring cost. If this assertion ever
+        // flips to Pass while `alloc_device_authoritative_spans` is 0, the flag has stopped
+        // measuring what its name says.
+        let mirrored = dir.join("mirrored.json");
+        std::fs::write(&mirrored, snapshot_with_tally(30, 12, 12, 12)).expect("write");
+        assert_eq!(
+            read_counters_with(mirrored.to_str().expect("utf8"), 1, true),
+            CounterVerdict::NotOnDevice {
+                staged_spans: 12,
+                staged_bytes: 49152,
+                device_backed: 12,
+                allocations: 12,
+            },
+            "every span being device-backed does not pass the flag while every span is also staged"
+        );
+
         // A snapshot with no tally cannot answer the question, and must not pass a check it did
         // not perform. Exit 3, the same distinction as everywhere else in this binary.
         let old = dir.join("old.json");
@@ -1212,16 +1231,16 @@ mod tests {
     #[test]
     fn json_str_reads_equivalence_field() {
         assert_eq!(
-            json_str(&snapshot(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_UNMEASURED),
             "to_json() always writes UNMEASURED by default"
         );
         assert_eq!(
-            json_str(&snapshot_match(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot_match(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_MATCH)
         );
         assert_eq!(
-            json_str(&snapshot_divergent(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot_divergent(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_DIVERGENT)
         );
         assert_eq!(json_str(&snapshot(7), "not_a_string_field"), None);

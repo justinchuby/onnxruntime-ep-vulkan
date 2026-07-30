@@ -38,6 +38,8 @@ pub(crate) mod barrier;
 pub(crate) mod caps;
 pub(crate) mod cmd;
 pub(crate) mod device;
+// Cross-owner (Tank): device-backed memory for ORT-owned tensors. New file, no edits to Switch's.
+pub(crate) mod host_device_memory;
 pub(crate) mod instance;
 pub(crate) mod pipeline;
 pub(crate) mod session;
