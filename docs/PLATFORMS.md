@@ -1,8 +1,8 @@
 # Platform Support Matrix — onnxruntime-ep-vulkan
 
 > **Document owner:** Link (Platform & Hardware Support Engineer)
-> **Last updated:** 2026-07-29T09:39:59-07:00
-> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); both CI lanes working as of 2026-07-29T09:19:35-07:00.
+> **Last updated:** 2026-07-29T20:26:56-07:00
+> **Status:** Active — §8 reflects frozen decision (DESIGN.md §7, 2026-07-28T19:16:08-07:00); both CI lanes working as of 2026-07-29T09:19:35-07:00. LVP2 **retracted** 2026-07-29T20:26:56-07:00 (instrument failure — was never a real quirk); see §6.3.
 
 This document is the evidence base for the project's platform support decisions. §1–§7 record the investigation and reasoning leading to the frozen capability set. §8 records what was decided, the data behind it, and the outstanding experiment needed to validate the Android half of that decision. §9 specifies the CI requirement for the dual barrier-backend parity lane. §10 documents the OQ-12 hardware validation experiment.
 
@@ -243,8 +243,8 @@ Vulkan 1.3 as a baseline is **acceptable** if the project explicitly targets des
 | Windows 10/11 | AMD (RDNA1/2/3, Vega, Polaris) | Adrenalin 22.1.2 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
 | Windows 10/11 | Intel (Arc discrete) | 30.0.101.1325 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
 | Windows 10/11 | Intel (iGPU, 11th gen+) | 30.0.101.1325 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
-| Windows Server 2025 | CPU (lavapipe, mesa-dist-win 26.1.3, **ICD registered in registry**) | mesa-dist-win 26.1.3 | 1.3 (llvmpipe, driverID MESA_LLVMPIPE) | N/A (software) | R1–R6 PASS; subgroup `supportedStages = 0` (**see LVP2**) | fp16/int8: absent (software) | **CI-verified (lavapipe)** |
-| Linux Ubuntu 22.04 | CPU (lavapipe, Mesa 23.2.1 / LLVM 15.0.7) | Mesa 23.2.1 | **1.3.255** (apiVersion observed) | N/A (software) | R1–R6 PASS; `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`; subgroup `supportedStages = 0` (**see LVP2**) | fp16/int8: absent (software) | **CI-verified (lavapipe)** |
+| Windows Server 2025 | CPU (lavapipe, mesa-dist-win 26.1.3, **ICD registered in registry**) | mesa-dist-win 26.1.3 | 1.3 (llvmpipe, driverID MESA_LLVMPIPE) | **UMA** (probe: is_uma=true; all memory types HOST_VISIBLE; UMA path exercised in CI) | R1–R6 PASS; subgroup: `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD, size=8 | fp16/int8: unverified (probe reading provisional — taken before push_next fix; re-observation recommended) | **CI-verified (lavapipe)** |
+| Linux Ubuntu 22.04 | CPU (lavapipe, Mesa 23.2.1 / LLVM 15.0.7) | Mesa 23.2.1 | **1.3.255** (apiVersion observed) | **UMA** (probe: is_uma=true; UMA path exercised in CI) | R1–R6 PASS; `deviceName = llvmpipe (LLVM 15.0.7, 256 bits)`; subgroup: `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD, size=8 | fp16/int8: unverified (probe reading provisional — taken before push_next fix; re-observation recommended) | **CI-verified (lavapipe)** |
 | Linux (Ubuntu 22.04+) | NVIDIA proprietary (470+ LTS or 535+) | Driver 470.x | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: generally present | untested (no CI GPU runner) |
 | Linux (Ubuntu 22.04+) | AMD (Mesa RADV, Mesa 22.0+) | Mesa 22.0 | 1.3+ | Discrete | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
 | Linux (Ubuntu 22.04+) | Intel iGPU (Mesa ANV, Mesa 22.0+, Gen11+) | Mesa 22.0 | 1.3+ | **UMA** | fp16/int8 arith + storage, timeline semaphore, subgroup BASIC | fp16/int8: query required | untested (no CI GPU runner) |
@@ -367,9 +367,11 @@ This is a living list. Each entry must have: symptom → affected hardware → d
 | # | Symptom | Version | Source | Notes |
 |---|---|---|---|---|
 | LVP1 | `subgroupSize` reports 1 (subgroups not emulated in software) | lavapipe < Mesa 22.0 | documentation | CI must pin Mesa ≥ 22.0. Ubuntu 22.04 minimum. |
-| LVP2 | `VkPhysicalDeviceSubgroupProperties::supportedStages = 0` — **no subgroup support in any stage** | lavapipe (all versions, by design) | **observed in CI, 2026-07-29** | lavapipe is a scalar software rasterizer; subgroups are not emulated. Any capability derived from `VkPhysicalDeviceSubgroupProperties::supportedOperations` must degrade gracefully rather than refusing the device — this is the reason §7.2 removed subgroup BASIC from the device gate. Consequence: shader variants that use subgroup arithmetic (`subgroupAdd`, `subgroupBroadcast`, etc.) must have a scalar fallback path that activates when `supportedStages` does not include `VK_SHADER_STAGE_COMPUTE_BIT`. CI validates the scalar path; subgroup arithmetic paths are validated on local-dev hardware only until a real GPU CI runner exists. |
+| LVP2 | ~~`supportedStages = 0` — subgroup ops absent~~ **RETRACTED — instrument failure** | ~~lavapipe (all versions)~~ | ~~"observed in CI, 2026-07-29"~~ — **not valid** | **Corrected reading (CI run with fixed probe, 2026-07-29T20:26:56-07:00):** Mesa 23.2.1 lavapipe reports `subgroup_probe_valid=true`, `subgroup_basic_in_compute=true`, `subgroup_stages_raw=FRAGMENT\|COMPUTE\|TASK_EXT\|MESH_EXT`, ops=`BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD`, `subgroupSize=8`. The original `supportedStages=0` reading was caused by a `push_next`/`ash` `#[must_use]` bug in Switch's `caps.rs` that silently discarded the entire `VkPhysicalDeviceProperties2` chain; every chained struct read as zero. **Mesa lavapipe does support subgroup BASIC and many other operations in compute.** The device gate removal of subgroup BASIC (DESIGN.md §7.2) stands on §7.0 grounds — capability shortfalls degrade op coverage, not device availability — not on this false observation. **A number taken with a broken instrument is not evidence merely because it was written down.** |
 
-*Sources: LVP1 — Mesa documentation; LVP2 — **CI-observed** from `epctl --probe-loader` on Linux lavapipe lane, 2026-07-29T09:19:35-07:00*
+**Instrument-failure scope note:** The push_next bug affected ALL `VkPhysicalDeviceProperties2` chain reads taken before the probe fix. Every other quirk entry in this table (A1/A2/A3, M1/M2, MVK1–MVK4, LVP1, ANV1) is sourced from external documentation — none came from our pre-fix probe — and is unaffected. The only entry sourced from our own probe before the fix was LVP2. The gate PASS results and base-struct device limits (maxComputeWorkGroupInvocations, maxComputeSharedMemorySize, memory types) for local-dev hardware are from base `VkPhysicalDeviceProperties`, not a chained struct, and are not affected. The fp16/int8 feature readings for all devices may have been affected (VkPhysicalDeviceFeatures2 chains use the same pattern); those are marked provisional in §5.
+
+*Sources: LVP1 — Mesa documentation; LVP2 — **RETRACTED** (original "CI-observed" reading was an instrument failure; corrected reading from fixed probe, CI run 2026-07-29T20:26:56-07:00)*
 
 ---
 
@@ -398,7 +400,7 @@ Enable `VK_LAYER_KHRONOS_validation` unconditionally in debug builds. In CI, tre
 
 ### 7.4 GPU-less CI Lane
 
-> **Status as of 2026-07-29T09:19:35-07:00: BOTH LANES WORKING.** The root causes documented in the previous revision are resolved. Both CI lanes now enumerate lavapipe and can create a Vulkan instance. The lavapipe `supportedStages = 0` quirk (LVP2, §6.3) caused the initial gate failure; Switch moved subgroup BASIC out of the device gate per §7.0 and the lanes now pass. Shaders that require subgroup arithmetic will degrade to scalar paths on lavapipe.
+> **Status as of 2026-07-29T20:26:56-07:00: BOTH LANES WORKING. LVP2 RETRACTED.** The root causes documented in the previous revision are resolved. Both CI lanes now enumerate lavapipe and can create a Vulkan instance. The lavapipe `supportedStages = 0` reading (LVP2, §6.3) that appeared to cause the initial gate failure was an **instrument failure** — the probe's `push_next`/`ash` bug silently zeroed the Properties2 chain. Mesa 23.2.1 lavapipe actually supports subgroup BASIC and broader ops in compute; see §6.3. The device gate removal of subgroup BASIC (DESIGN.md §7.2) remains correct, justified on §7.0 grounds, not on any lavapipe limitation.
 
 #### 7.4.1 Confirmed working state (as of 2026-07-29T09:19:35-07:00)
 
@@ -411,7 +413,11 @@ Enable `VK_LAYER_KHRONOS_validation` unconditionally in debug builds. In CI, tre
 
 The earlier Linux lane failure was a Rust compile error in `tests/mock_ort/mod.rs` (`ort::wchar_t` not found on Linux — fixed by Tank: `OrtChar` conditionalized to `c_char` on Linux). Once resolved, lavapipe works correctly under LunarG loader 1.3.296 + Mesa 23.2.1. `glslc` is available from LunarG's `shaderc` apt package (not from Ubuntu's repos).
 
-**Known limitation — LVP2:** lavapipe reports `supportedStages = 0` for subgroup operations. See §6.3. Switch removed subgroup BASIC from the §7.2 device gate; lavapipe passes all remaining gate criteria. Shader variants that use subgroup arithmetic must have a scalar fallback that activates when `supportedStages` does not include `VK_SHADER_STAGE_COMPUTE_BIT`.
+**Subgroup capabilities (fixed probe, CI run 2026-07-29T20:26:56-07:00):** `subgroup_probe_valid=true`; `subgroup_size=8`; `subgroup_stages_raw=FRAGMENT|COMPUTE|TASK_EXT|MESH_EXT`; `subgroup_basic_in_compute=true`; ops=`BASIC|VOTE|ARITHMETIC|BALLOT|SHUFFLE|SHUFFLE_RELATIVE|QUAD`. The earlier reading of `supportedStages=0` (LVP2) was an instrument failure — the push_next bug zeroed the Properties2 chain. Mesa 23.2.1 lavapipe supports subgroup operations including arithmetic. CI now exercises the subgroup arithmetic path, in software.
+
+**UMA confirmed:** probe reports `is_uma=true`. The UMA memory path is exercised in this CI lane.
+
+**fp16/int8:** probe reading taken before the push_next fix is provisional. Re-observation recommended once fp16 capability probing is confirmed fixed.
 
 ##### Windows / Windows Server 2025 — lavapipe (mesa-dist-win 26.1.3, CI-verified working)
 
@@ -429,7 +435,9 @@ New-Item -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Force | Out-Null
 New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdPath -Value 0 -PropertyType DWord -Force | Out-Null
 ```
 
-**Known limitation — LVP2:** Same `supportedStages = 0` as Linux; scalar fallback paths active.
+**Subgroup capabilities (Windows lane):** Consistent with Linux lavapipe — same Mesa lavapipe driver (mesa-dist-win 26.1.3, same LLVM backend). Subgroup ops are supported; LVP2 was an instrument failure in both lanes. See Linux entry above for observed values.
+
+**UMA confirmed:** is_uma=true (same as Linux lane). UMA path exercised in CI.
 
 ---
 
@@ -437,13 +445,13 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdPath -V
 
 | Lane | Primary ICD | Vulkan version | Validation layers | Parity lane | Subgroup |
 |---|---|---|---|---|---|
-| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | **1.3.255** (observed) | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) | `supportedStages = 0` — scalar fallback only |
-| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC, **registry-registered**) | 1.3 (observed) | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) | `supportedStages = 0` — scalar fallback only |
+| Linux / Ubuntu 22.04 | lavapipe (Mesa 23.2.1 / `libvulkan_lvp.so`) | **1.3.255** (observed) | `VK_LAYER_KHRONOS_validation` (LunarG 1.3.296) | ✓ required (§9) | **subgroup_basic_in_compute=true**; ops=BASIC\|VOTE\|ARITHMETIC\|BALLOT\|SHUFFLE\|SHUFFLE_RELATIVE\|QUAD; size=8 (probe-verified, 2026-07-29T20:26:56-07:00) |
+| Windows / Server 2025 | lavapipe (mesa-dist-win 26.1.3 MSVC, **registry-registered**) | 1.3 (observed) | `VK_LAYER_KHRONOS_validation` (LunarG SDK 1.3.296) | ✓ required (§9) | Consistent with Linux (same Mesa/LLVM backend); LVP2 retracted |
 
-Both lanes expose `VK_KHR_synchronization2`. The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available.
+Both lanes expose `VK_KHR_synchronization2` and support subgroup arithmetic in compute (probe-verified on Linux lane). The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available; the subgroup arithmetic path is now exercised in both normal CI runs.
 
 **What GPU-less CI does NOT cover:**
-- Hardware subgroup semantics (`supportedStages = 0` — subgroup arithmetic paths not exercised in CI)
+- Subgroup arithmetic **hardware** semantics (CI exercises the subgroup arithmetic code path via lavapipe software emulation, which is a valid correctness test but not a performance or hardware-conformance test)
 - Vendor-specific shader compilation paths
 - Driver-specific quirk workarounds (Adreno A1/A2, Mali M1/M2 — see §6.3)
 - Real fp16 throughput and memory bandwidth

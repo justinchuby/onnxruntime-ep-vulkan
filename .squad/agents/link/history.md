@@ -132,9 +132,62 @@ The lavapipe smoke-check fires a warning (non-blocking) after LunarG upgrades `l
 - §5.1 rewritten to explain the UMA column and its consequences, rather than being a post-table footnote.
 - Intel iGPU rows split from Intel Arc rows so UMA/Discrete is visible at row level.
 
----
+### 2026-07-29T20:26:56-07:00 — LVP2 retracted; instrument-failure discipline; lavapipe actually supports subgroup ops
 
-## Cross-agent context appended (2026-07-29T09:00:39-07:00) — first-hardware round
+**LVP2 WAS AN INSTRUMENT FAILURE — RETRACTED.**
+
+The "observed in CI" reading of `VkPhysicalDeviceSubgroupProperties::supportedStages = 0` on Mesa
+lavapipe was caused by the `ash` `push_next` / `#[must_use]` bug (Switch's `caps.rs`): the
+`push_next` method returns `&mut Self` and discarding that return value silently discards the entire
+extension chain. The driver received a Properties2 call with no extension structs; every chained
+struct read back as its zero-initialized default. The reading was taken before Switch fixed this.
+
+**Corrected reading (fixed probe, CI run 2026-07-29T20:26:56-07:00, Linux lane, Mesa 23.2.1):**
+
+```
+subgroup_probe_valid      : true
+subgroup_size             : 8
+subgroup_stages_raw       : FRAGMENT | COMPUTE | TASK_EXT | MESH_EXT
+subgroup_basic_in_compute : true
+subgroup_ops              : BASIC | VOTE | ARITHMETIC | BALLOT | SHUFFLE | SHUFFLE_RELATIVE | QUAD
+is_uma                    : true
+```
+
+Mesa 23.2.1 lavapipe supports subgroup BASIC — and arithmetic, ballot, shuffle, and quad — in
+compute. LVP2 removed from the watchlist; retraction documented in PLATFORMS.md §6.3. The device
+gate removal of subgroup BASIC (DESIGN.md §7.2) stands, justified by §7.0 not by lavapipe.
+
+**Secondary finding from re-observation:** `is_uma=true` on lavapipe. The UMA memory path is now
+exercised in CI (both lanes). This is a useful structural property — the UMA code path has
+software-rasterizer CI coverage even before Android hardware.
+
+**Also notable:** CI now exercises the subgroup arithmetic shader path in software via lavapipe.
+The false LVP2 reading had suggested CI validated only a scalar fallback; the correct reading shows
+CI validates subgroup arithmetic too (in software emulation).
+
+**INSTRUMENT-FAILURE DISCIPLINE — permanent rule:**
+
+> A number taken with a broken instrument is not evidence merely because it was written down.
+
+When any probe or measurement tool is known to have had a bug:
+1. Identify every reading sourced from that probe.
+2. Re-observe each one with the fixed probe before citing it.
+3. If re-observation contradicts the original, retract the entry explicitly and completely — do not
+   leave a correction note as a footnote on a false claim (Morpheus's R6 rule: a correction must
+   propagate through every document that cited the false reading, not stop at the file where it was
+   noticed).
+4. The `subgroup_probe_valid: true` flag from Switch's three-state probe is the signal that a
+   Properties2 reading is trustworthy.
+
+**Audit scope of the push_next bug:**
+- All entries in §6.3 other than LVP2 are sourced from external documentation — unaffected.
+- Gate PASS data and base device limits (maxComputeWorkGroupInvocations, shared memory size, memory
+  types) for local hardware come from base `VkPhysicalDeviceProperties`, not a chained struct —
+  unaffected.
+- fp16/int8 feature readings for all devices may have been affected (VkPhysicalDeviceFeatures2 also
+  uses push_next chaining); marked provisional in §5 pending re-observation.
+- Only LVP2 was an entry in the watchlist sourced from a broken chained probe.
+
 
 📌 **Windows ICD mechanism: registry registration, not env var (2026-07-29, Link + Trinity):** For non-elevated processes, `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` work. For elevated processes (CI runner = `runneradmin`), the LunarG loader ignores those env vars — ICD must be registered in `HKLM:\SOFTWARE\Khronos\Vulkan\Drivers`. Future CI setup for any Windows Vulkan resource must use the registry, not the env var.
 

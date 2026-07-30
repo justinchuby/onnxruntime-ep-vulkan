@@ -403,3 +403,54 @@ project is most tempted to convert structural similarity into evidence.
 false lavapipe premise reached `PLATFORMS.md` as an *observed device fact*. `ENGINE.md` and the Rust
 comments were fixed; LVP2 was not, so criterion 9 is not met. Stopping a correction at the file where
 it was noticed is the exact failure R6 exists to name.
+
+---
+
+## 2026-07-29T21:14:03-07:00 — the roadmap was ordered by our assumptions, and one real model reordered it
+
+**A decline histogram is a different measurement from an op census, and I had never asked for one.**
+The op inventory was accurate — Phi-3.5 really does contain those ops in those counts. It answered
+*which ops does this graph contain*, and the roadmap needed *why do this graph's nodes get declined*.
+Same artifact, different question, different answer: 258 declined on symbolic shapes, 100 on missing
+kernels. **Fourth landing of the same failure** — wrong producer, wrong revision, unread model file,
+now unasked question. It has survived three explicit corrections of itself, which is the strongest
+available evidence that it is structural. Rule of record: **coverage planning is driven by the
+decline histogram of a real graph, not by its op histogram.** An op census says what to build; only
+a decline census says what to build first.
+
+**Read a histogram of first-match codes as floors and ceilings, never as a partition.** This is the
+part I nearly missed and it inverts the naive reading. `claim_decision` checks key → opset → schema
+→ **status** → predicate and records the *first* failure, so the 100 `staged` nodes never reached
+the shape check — their shape viability is unknown, and three kernels unlock *at most* 100. The 258
+had already passed registration, opset, schema and status, so shape is their *sole* remaining
+blocker. **The asymmetry is larger than the raw ratio, not smaller.** Early codes are ceilings, late
+codes are floors, and two decline counts are not comparable without the check order.
+
+**"Ahead of" versus "alongside" is a dependency question, not a priority question.** Every
+interesting extent on a decode path is symbolic. A kernel written against static extents is **not a
+partial version of the kernel we need — it is a different kernel**, so sequencing kernels first
+manufactures rework. When asked to prioritise between two workstreams, check first whether one is
+upstream of the other; if it is, priority is not the question being asked.
+
+**Write criteria that a workaround cannot satisfy.** M1's new criterion is *two different concrete
+values of a symbolic dimension in one session* — deliberately unsatisfiable by resolving shapes
+ahead of time, which is exactly the substitution available here. That is the third hole of this shape
+I have closed this month: a skip could satisfy criterion 8, a switched-off validation layer could
+satisfy criterion 3, a static preprocessing step could have satisfied a naive shape criterion. **It
+is now a drafting rule: for every criterion, ask what the cheapest thing is that satisfies the words
+without satisfying the intent.**
+
+**A tool that improves our numbers without improving the product is the §9.1.2 hazard in its purest
+form.** `onnx-shape-inference` resolves symbolic dims statically. That is right for a fixed-shape
+test artifact and useless for inference, where sequence length varies per call. It stays adopted as
+an oracle and is now explicitly barred from being read as a solution to §8.8.
+
+**A ruling made on one model names its reversal condition.** gpt-oss showing `dynamic-shape` below
+`staged` reverses this. I do not expect it — the mechanism is architecture-independent — but "I do
+not expect it" is exactly what produced R8.
+
+**Record the machinery that worked, not only the plan that did not.** A 2.2 GB fp16 model with
+external data and an `If` prologue loaded, ran, declined all 363 nodes with machine-readable reasons,
+fell back to CPU, and was bit-identical across sessions. Conservative claiming did precisely what it
+was designed to do at a scale nothing else has tested. **The roadmap was wrong; the safety net was
+not**, and a design record that only logs the errors will mislead about where the risk actually sits.

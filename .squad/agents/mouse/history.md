@@ -521,3 +521,52 @@ loudly on staged rows is what makes a flip a real experiment instead of a hope.
 `test_op_table` 39 → **49 passed** / 28 failed; `test_barrier_parity` 36 → **46 passed** / 28
 skipped. The three remaining elementwise failures are `Min`/`Max` (variadic) and
 `test_clip_no_bounds` (my deliberate decline) — the table still reads as "what is left to do".
+
+## 2026-07-29 — `MatMulNBits` GEMV: Live on both devices, and the island premise was wrong
+
+**Shipped.** `com.microsoft::MatMulNBits` is `Live` — a block-dequantising GEMV, one workgroup per
+output element, grid `(N, M_total, 1)`, so correct for every `M` rather than only decode. New
+`Template::QGemv` + `shaders/glsl/templates/q_gemv.comp`. Both devices, identical:
+`tests/ops/test_matmulnbits.py` 29 passed / 1 failed (the failure is `DequantizeLinear`, still
+`Staged`, failing loudly by design). Coverage: bits {4,8} x block {16,32,64,128} x
+{3-input symmetric, 4-input asymmetric} in fp32, M in {1,2,7,32}; fp16 at M in {1,3} both forms.
+`cargo ci` ALL CHECKS PASSED.
+
+**The lesson that actually mattered.** I was scheduled on this kernel on the premise that it
+collapses Phi-3.5 from ~35 islands to one island of 364. Measured on the real graph, claiming
+`MatMulNBits` alone takes coverage 27.3% -> 71.3% and islands **35 -> 100**. Same on gpt-oss:
+148 -> 100 islands but largest island still 3. The collapse needs the **pair**
+`(MatMulNBits, SkipSimplifiedLayerNormalization)` — 88.8% / 5 islands / largest 320 — because in a
+GenAI decoder block every `MatMulNBits` is separated from the next by a SkipSLN or a GQA. Third
+time this lesson has landed. I had written the "one island of 364" figure myself, from schema
+reading rather than from the graph, which is exactly the §8.5 failure I keep documenting for other
+people. **Measure the partition, never predict it.**
+
+**Two things I got right by refusing to trust myself.**
+1. Ran an empirical probe (`A = I` through the CPU EP) before writing GLSL, instead of writing the
+   nibble order from memory. Settled low-nibble-first, implied zp = `1<<(bits-1)`, zp packing,
+   scale indexing, `B` orientation. Recorded as §8.1.1.
+2. Re-censused the real nodes' dtypes rather than assuming fp32 was a fine first target. **All 161
+   Phi-3.5 `MatMulNBits` nodes are fp16** — an f32-only claim would have declined the entire model
+   the kernel exists to run. Solved without a capability gate via `unpackHalf2x16`/`packHalf2x16`
+   over `uint` buffers with fp32 accumulation.
+
+**What actually blocks Phi-3.5 and it is not this kernel.** A static-shape node is claimed and
+matches at rank 2 and rank 3; the same node with symbolic `batch`/`seq` is declined by the global
+`REQUIRE_STATIC_SHAPES`, because `Compile` bakes byte sizes. Every real node has symbolic leading
+dims. The island numbers are a ceiling, not today's behaviour. Say so before someone reads
+"MatMulNBits is Live" as "Phi-3.5 partitions".
+
+**Prepacking.** Wrote the pure transform; it is a **pass-through**, and saying so was the right
+answer — ONNX's `B` layout is already what a workgroup-per-column GEMV streams. The seam is also
+not connected: nothing calls `compile_hook_for`. It did not matter, because `plan.inputs` is the
+fused node's inputs with `drop_constant_initializers = false`, so weights arrive as ordinary
+Compute inputs. Cost is re-upload per `Run` — that is what connecting the hook buys.
+
+**Found in Trinity's `_models.py`:** the fp16 builder emitted fp32 `scales`/output while
+`MatMulNBits` binds `A`/`scales`/`Y` to one `T1`, so ORT rejected the model and the fp16 test had
+never reached a kernel; and `zp_bytes_per_col` assumed 4 bits. Fixed both, added `with_zero_points`
+and `rows` knobs. Her file — flagged, not imposed.
+
+**Habit to keep:** when a brief hands me a number, re-measure it before building on it. The number
+in this brief was mine, and it was wrong.

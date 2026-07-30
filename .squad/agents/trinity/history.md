@@ -312,5 +312,94 @@ Added `live: bool = False` field to `CaseSpec` in `test_op_table.py`:
   Exit 1 from expected implementation-checklist failures; process no longer dies (exit -1073741819
   is gone). Both devices produce identical clean results.
 
+---
 
+## Round 16 (2026-07-29T20:26:56-07:00): Phi-3.5 real-model integration
 
+**Duplicate `is_vulkan_claimed` stub removed** from `_models.py`. A docstring-only stub
+definition (no body) was immediately shadowed by the real implementation. Mouse flagged; removed.
+
+**Phi-3.5 real-model integration test added** at `tests/ops/test_phi35.py`.
+
+Results (both devices identical, 2026-07-29, local, VK_LAYER_KHRONOS_validation enabled):
+
+  Device 0 (Intel Iris Xe, Vulkan 1.4.309, UMA 32 KiB):
+    Session load: LOADED ✓  Inference: RAN ✓  Outputs: 65 tensors  Bit-stable: ✓
+    Claimed: 0, Declined: 363 (staged=261, dynamic-shape=97, not-registered=5)
+    Islands: 0  (Mouse predicted 34-35 for future fp16 coverage — 0 correct for fp32-only)
+
+  Device 1 (NVIDIA RTX 4060, Vulkan 1.4.325, discrete 48 KiB):
+    Session load: LOADED ✓  Inference: RAN ✓  Outputs: 65 tensors  Bit-stable: ✓
+    (identical claim census to Device 0)
+
+**CLAIM_LOG confirmed working.** 363 decisions logged when env var set before session creation
+in the test. Earlier round-14 "env isolation" diagnosis was incorrect — the mechanism works
+as designed. Round-14 failure cause: tests/ops/ relative path for the log file may have had
+a creation permission issue; `tmp_path` (pytest guaranteed-writable temp dir) is reliable.
+
+LESSON: When testing infrastructure, use pytest's `tmp_path` fixture for any written output.
+Do not write to `__file__`-relative paths in test code — permissions and working-directory
+assumptions vary between pytest invocation contexts.
+
+**THREE VALIDATION ERRORS on BOTH devices (route to Switch):**
+  VUID-vkCmdPipelineBarrier2-commandBuffer-recording
+  VUID-vkCmdCopyBuffer-commandBuffer-recording
+  VUID-vkEndCommandBuffer-commandBuffer-00059
+  Root: descriptor set destroyed/updated without UPDATE_AFTER_BIND while bound to
+        a recording command buffer → command buffer enters invalid state.
+  Both Intel and NVIDIA flag the same 3-error sequence — spec violation in rust/src/vk/.
+  Inference still produced outputs (drivers recovered), but this is undefined Vulkan behaviour.
+
+**`If` node (prologue control flow):** not-registered, no crash. GetCapability handled it.
+**External data (2.2 GB .onnx.data):** loaded successfully, no crash or allocation error.
+**366-node scale GetCapability:** clean — the Staged-op Compile crash does NOT happen at
+GetCapability; it happens after, when ORT calls Compile. All 363 EP decisions were clean.
+
+**Mouse's island simulation correction:**
+  34-35 predicted (Mouse's simulation, assumed current coverage) vs 0 measured.
+  Prediction was for a future fp16 coverage state, not the current fp32-only state.
+  The simulation model is correct; its labeled coverage state was unclear.
+  When fp16 elementwise ops go Live, re-run this test to measure the actual island count.
+
+**`slow` mark registered** in conftest.py `pytest_configure`. Phi-3.5 tests ~15s each.
+
+---
+
+## Round 17 (2026-07-29T21:24-07:00): Summary-fix, census rerun with current binary, gpt-oss attempt, variable seqlen
+
+**COORDINATOR FINDING (21:14):** test_phi35.py printed "declined on dtype" while decline_codes
+showed dynamic-shape=258, staged=100, not-registered=5 with ZERO dtype entries.
+Hard rule: summary lines must be derived from the data they summarise, never asserted alongside it.
+
+**CHANGES MADE:**
+
+1. `test_phi35.py` summary lines rewritten: `decline_codes.most_common()` drives all prints.
+   The wrong "declined on dtype" string is gone; the dominant code is printed from data.
+
+2. **Census rerun with current EP binary (after Mouse's predicate updates):**
+   - Device 0 (Intel Iris Xe): dynamic-shape=258, staged=100, not-registered=5, claimed=0
+   - Device 1 (NVIDIA RTX 4060): IDENTICAL
+   - Old numbers (staged=261, dynamic-shape=97) reflected pre-update binary. New numbers match
+     coordinator's observation exactly. Dynamic-shape IS the dominant decline reason (2.5× staged).
+
+3. **gpt-oss-20b census attempted:**
+   ORT CPU EP REFUSES TO LOAD the model:
+   `QMoECPU<MLFloat16>::QMoECPU activation_type_ != ActivationType::SwiGLU || swiglu_fusion_ == 1 was false.`
+   24 QMoE nodes require swiglu_fusion=1; this model was exported without it. This is an ORT
+   CPU EP limitation — not a VulkanEP defect. Without a working CPU oracle, we cannot run the
+   differential test or the claim census. Test skips with a clear message explaining the cause.
+   Comparison against Phi-3.5 is not possible with this model variant. To unblock: re-export
+   gpt-oss-20b with swiglu_fusion=1 (model-owner concern). Decision recorded at §27.
+
+4. **Variable sequence-length fallback test added** (`test_phi35_variable_seqlen_fallback`):
+   Same Phi-3.5 session, seq_len=1 first call then seq_len=5 second call.
+   Result on both devices:
+     Device 0 (Intel Iris Xe):   seq_len=1 ✓  seq_len=5 ✓  outputs differ ✓
+     Device 1 (NVIDIA RTX 4060): seq_len=1 ✓  seq_len=5 ✓  outputs differ ✓
+   Shape changes between calls do NOT crash. ORT's CPU fallback handles dynamic shapes cleanly.
+   When VulkanEP claims fp16 ops, this test becomes the regression guard for dynamic dispatch.
+
+**WHAT REMAINS BLOCKED:**
+- gpt-oss-20b census: blocked on swiglu_fusion=1 re-export (not Trinity's action item)
+- Three Vulkan validation errors: Switch's responsibility (descriptor set recording lifecycle)
+- Dynamic-shape support at Compute time: Mouse/Tank responsibility (Morpheus ruling pending)

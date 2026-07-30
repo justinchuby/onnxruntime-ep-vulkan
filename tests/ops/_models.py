@@ -422,22 +422,6 @@ def is_vulkan_claimed(model: bytes, feeds: dict[str, np.ndarray]) -> bool:
     """Return True iff VulkanExecutionProvider claimed at least one node of *model*.
 
     Non-asserting probe used by test_barrier_parity to skip (not fail) when an op is
-    not yet Ready. Uses the CLAIM_LOG env-var mechanism (no profiling) instead of
-    profiling JSON so that:
-      1. No extra profiling session is created — avoids resource accumulation when
-         called for 70+ parity cases in a single pytest process.
-      2. Some ops crash ORT with profiling=True during session creation (EP bug in the
-         Compile path for unimplemented ops); CLAIM_LOG avoids this path because the
-         claim predicate runs BEFORE Compile, and declined ops never reach Compile.
-
-    If ONNXRUNTIME_EP_VULKAN_CLAIM_LOG is not implemented in the EP (log file not
-    written), this function falls back to False (conservative: treat as not claimed).
-    The caller (test_barrier_parity) will then skip the test, which is safe.
-    """
-def is_vulkan_claimed(model: bytes, feeds: dict[str, np.ndarray]) -> bool:
-    """Return True iff VulkanExecutionProvider claimed at least one node of *model*.
-
-    Non-asserting probe used by test_barrier_parity to skip (not fail) when an op is
     not yet Ready. Uses ORT profiling JSON (same mechanism as assert_vulkan_claims),
     with a broad exception catch so that:
       - A CPU fallback (not claimed) → returns False
@@ -691,6 +675,8 @@ def make_matmulnbits_model(
     block_size: int = 32,
     accuracy_level: int = MATMULNBITS_ORACLE_ACCURACY_LEVEL,
     activation_dtype: ir.DataType = ir.DataType.FLOAT,
+    with_zero_points: bool = True,
+    rows: int = 1,
 ) -> tuple[bytes, dict[str, np.ndarray]]:
     """Build a minimal MatMulNBits ONNX graph and return (model_bytes, feeds).
 
@@ -710,6 +696,14 @@ def make_matmulnbits_model(
         Pin this to MATMULNBITS_ORACLE_ACCURACY_LEVEL in oracle comparisons.
     activation_dtype :
         ORT data type for the activations input (FLOAT or FLOAT16).
+    with_zero_points :
+        Emit the 4-input asymmetric form. `False` gives the 3-input symmetric-RTN form, which
+        is what every one of Phi-3.5's 161 MatMulNBits nodes actually is — the implied zero
+        point is then `1 << (bits-1)`, a fact derived from the CPU EP rather than the schema
+        prose (OP_COVERAGE.md §8.1.1).
+    rows :
+        Number of activation rows. 1 is decode; >1 is prefill, which the GEMV handles by
+        running one workgroup per output element rather than by tiling.
 
     Returns
     -------
@@ -730,20 +724,23 @@ def make_matmulnbits_model(
     packed_shape = [N, blocks_per_col, packed_bytes]
     packed_data = rng.integers(0, 256, size=packed_shape, dtype=np.uint8)
 
-    # --- Scale tensor ---
-    # Shape: [N * blocks_per_col] as float32
-    scale_shape = [N * blocks_per_col]
-    scale_data = rng.uniform(0.001, 0.1, size=scale_shape).astype(np.float32)
-
-    # --- Zero-point tensor (optional, pack two 4-bit zp per byte) ---
-    zp_bytes_per_col = -(-blocks_per_col // 2)  # ceil(blocks_per_col / 2) bytes for 4-bit
-    zp_shape = [N, zp_bytes_per_col]
-    zp_data = rng.integers(0, 256, size=zp_shape, dtype=np.uint8)
-
     # --- Activation (the only dynamic input) ---
     np_dtype = np.float32 if activation_dtype == ir.DataType.FLOAT else np.float16
-    act = rng.standard_normal((1, K)).astype(np_dtype)
+    act = rng.standard_normal((rows, K)).astype(np_dtype)
     feeds = {"X": act}
+
+    # --- Scale tensor ---
+    # Shape: [N * blocks_per_col]. MatMulNBits binds `A`, `scales` and `Y` to the SAME type
+    # parameter T1, so leaving the scales fp32 under fp16 activations makes ORT reject the model
+    # outright ("T1 bound to different types"). Found while landing the fp16 GEMV: Phi-3.5's 161
+    # MatMulNBits nodes are all fp16, so the fp16 path is the one that matters, not the spare.
+    scale_shape = [N * blocks_per_col]
+    scale_data = rng.uniform(0.001, 0.1, size=scale_shape).astype(np_dtype)
+
+    # --- Zero-point tensor (optional; packed at `bits`, one run per column, byte-padded) ---
+    zp_bytes_per_col = -(-(blocks_per_col * bits) // 8)
+    zp_shape = [N, zp_bytes_per_col]
+    zp_data = rng.integers(0, 256, size=zp_shape, dtype=np.uint8)
 
     # Map ir.DataType → ONNX TensorProto type for the graph input declaration.
     _dtype_to_tp = {ir.DataType.FLOAT: tp.FLOAT, ir.DataType.FLOAT16: tp.FLOAT16}
@@ -757,7 +754,7 @@ def make_matmulnbits_model(
     # Build node.
     node = oh.make_node(
         "MatMulNBits",
-        inputs=["X", "B", "scale", "zero_points"],
+        inputs=["X", "B", "scale", "zero_points"] if with_zero_points else ["X", "B", "scale"],
         outputs=["Y"],
         domain="com.microsoft",
         K=K,
@@ -768,15 +765,17 @@ def make_matmulnbits_model(
     )
 
     # Build graph.
-    x_info = oh.make_tensor_value_info("X", act_tp_dtype, [1, K])
-    y_info = oh.make_tensor_value_info("Y", tp.FLOAT, [1, N])
+    x_info = oh.make_tensor_value_info("X", act_tp_dtype, [rows, K])
+    y_info = oh.make_tensor_value_info("Y", act_tp_dtype, [rows, N])
 
     graph = oh.make_graph(
         [node],
         "matmulnbits_test",
         [x_info],
         [y_info],
-        initializer=[b_tensor, scale_tensor, zp_tensor],
+        initializer=[b_tensor, scale_tensor, zp_tensor]
+        if with_zero_points
+        else [b_tensor, scale_tensor],
     )
     model = oh.make_model(
         graph,

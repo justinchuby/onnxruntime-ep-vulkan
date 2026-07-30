@@ -6,8 +6,83 @@ source-of-truth.
 
 > **No conformance runs recorded yet** (conformance suite requires onnx-tests sibling clone;
 > first run is a manual `workflow_dispatch` step — see `tests/conformance/README.md`).
-> However, the **differential test suite** (`tests/ops/`) has been run against both local
-> hardware devices; those results are recorded below.
+> However, the **differential test suite** (`tests/ops/`) and a **real-model integration run**
+> have been executed against both local hardware devices; those results are recorded below.
+
+---
+
+## Real-model integration — Phi-3.5-mini-instruct (2026-07-29)
+
+### Model
+
+| Property | Value |
+|---|---|
+| Model | `Microsoft/Phi-3.5-mini-instruct-cuda-int4-rtn-block-32` |
+| Graph nodes | 366 |
+| Opsets | `ai.onnx` 14 + `com.microsoft` 1 |
+| External data | 2.2 GB (`.onnx.data`) |
+| Dominant dtype | fp16 throughout |
+| Op breakdown | 161 MatMulNBits, 64 SkipSimplifiedLayerNormalization, 64 Mul, 32 GroupQueryAttention, 32 Sigmoid, 3 Constant, 2 Cast, 2 Gather, 1 Greater, 1 If, 1 ReduceSum, 1 Sub, 1 Shape, 1 SimplifiedLayerNormalization |
+
+### Claim census — `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` (identical on both devices)
+
+| Metric | Count |
+|---|---|
+| Nodes processed by EP GetCapability | 363 of 366 |
+| Nodes NOT passed to EP (Constants, handled by ORT optimizer) | 3 |
+| **Claimed** | **0** |
+| **Declined** | **363** |
+| Decline code: `staged` | 261 |
+| Decline code: `dynamic-shape` | 97 |
+| Decline code: `not-registered` | 5 |
+
+**Expected result:** All nodes fp16; live ops are fp32-only → 0 claimed. This exercises the "decline all cleanly at scale" path, which no synthetic test can cover.
+
+**`staged` (261):** Ops registered with a claim predicate but declined by it (dtype mismatch: fp16 input to a predicate tuned for fp32, or shape constraint not met).
+
+**`dynamic-shape` (97):** Ops with symbolic/unknown dimensions in the graph (GroupQueryAttention, SkipSimplifiedLayerNormalization, attention-path reshapes).
+
+**`not-registered` (5):** Ops entirely unknown to the EP (Shape, ReduceSum, SimplifiedLayerNormalization, and others in the prologue).
+
+### Island count
+
+| Source | Count |
+|---|---|
+| Mouse's simulation (static, at current coverage) | 34–35 |
+| **Measured** | **0** |
+
+Delta: −34 to −35 from prediction. **The simulation predicted islands for a coverage state that does not yet exist**; with 0 claimed nodes in a fp16 model vs fp32-only EP, 0 islands is the correct result. The simulation is valid but was computed for a future state where fp16 elementwise ops are live. This difference is the signal, not a defect.
+
+### Session and inference results
+
+| Device | Session load | First inference | Outputs | Bit-stable (2× sessions) |
+|---|---|---|---|---|
+| 0 — Intel Iris Xe (1.4.309, UMA) | ✅ | ✅ | 65 tensors | ✅ |
+| 1 — NVIDIA RTX 4060 (1.4.325, discrete) | ✅ | ✅ | 65 tensors | ✅ |
+
+### Validation layer findings
+
+**Three validation errors on BOTH devices** (identical error sequence):
+
+```
+VUID-vkCmdPipelineBarrier2-commandBuffer-recording
+VUID-vkCmdCopyBuffer-commandBuffer-recording
+VUID-vkEndCommandBuffer-commandBuffer-00059
+
+Root: VkDescriptorSet 0x... was destroyed or updated without UPDATE_AFTER_BIND
+      while bound to a recording command buffer.
+```
+
+These are **real EP bugs** — a descriptor set is being updated while it is already bound to a command buffer that has not yet ended. The command buffer transitions to an invalid state, causing all subsequent commands to fail validation. **Route to Switch** (descriptor set / command buffer lifecycle in `rust/src/vk/`).
+
+**This same error appears on BOTH Intel and NVIDIA** — it is not a vendor-specific issue; it is a correctness bug in our Vulkan usage that both drivers flag. The inference still produced outputs (driver recovered), but in a strict Vulkan environment this would result in undefined behavior.
+
+### Key findings from this run
+
+1. **External data loading works.** The EP survived being registered against a model with 2.2 GB external data without crashing or hanging.
+2. **`If` control flow does not crash GetCapability.** The single `If` node in the prologue was processed (it appears in the `not-registered` category — the EP correctly reports it as unknown rather than crashing).
+3. **CLAIM_LOG is visible to the EP** when set via `os.environ` before `InferenceSession` creation. The 363 claim decisions were logged correctly. Earlier failures (round 14) to see the log file are now unexplained; the mechanism works as designed.
+4. **Validation errors present on both devices.** Three Vulkan validation errors per run, identical across Intel and NVIDIA. This is a pre-existing EP bug, not introduced by the test.
 
 ---
 

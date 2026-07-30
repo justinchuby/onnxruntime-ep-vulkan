@@ -109,3 +109,83 @@ allocator against a real ORT session. There is no allocator — `create_allocato
 design until M2. I reported that rather than building a synthetic exercise of a registry that is not
 in ORT's path. That is the third time this project a "verified" claim would have been a precondition
 dressed as an effect, and the first time I have caught myself before rather than after.
+
+---
+
+## Session 10 — 2026-07-29T20:26:56-07:00 — CI has never executed a claimed node
+
+**The task was "make CI prove it", and the first thing I found was that CI cannot currently prove
+anything: both lanes crash.** Run `30510593046`, eight consecutive failures. Linux `SIGSEGV`
+(exit 139), Windows access violation, at the *identical* line — `conftest.py:358` inside
+`session.run()`. Two OSes, two lavapipe builds, one crash site. That symmetry is the finding: an
+environment fails differently on different platforms; a bug in our code fails the same way. It is
+ours.
+
+**What I could rule out cheaply, and it was worth doing first.** `epctl --probe-loader` *passes* on
+both lanes. So instance creation, physical-device enumeration and the §7.2 gate are all sound, and
+the fault is inside Compile or Compute. Half an hour of reading a log that already existed replaced
+what would have been a day of CI round-trips. The probe Switch built paid for itself here, in a
+question it was not built to answer.
+
+**The mechanism, and why it is invisible on this desk.** lavapipe is a CPU rasteriser: "device
+memory" is process memory in the same address space. An out-of-bounds storage-buffer write that a
+4060 absorbs without comment is, on lavapipe, a genuine out-of-bounds host write. That single fact
+explains identical crashes on two operating systems and zero crashes on either of my GPUs. I have
+been treating "it works on both my devices" as two independent confirmations; it is one, because
+both are real drivers with hardware bounds behaviour, and the axis that matters here is not
+vendor — it is *whether the device shares my address space*.
+
+**`robustBufferAccess` appears nowhere in this crate.** I went looking for it as the obvious
+mitigation and it simply is not there. It is a feature bit that must be requested at
+`vkCreateDevice`; absent it, OOB access is UB by specification. That is Switch's file, so I handed
+him the diagnosis rather than the patch — but the lesson for me is that I never checked. I have
+reviewed the ORT-facing contract line by line and never once asked what the *device* contract said
+about the memory the engine hands to shaders I do not own.
+
+**What I built: an evidence channel that cannot be inferred away.** `counters.rs` — always-on
+atomics at the ORT boundary, a snapshot struct with a version header, two exported C symbols, a
+JSON file, a teardown summary through ORT's logger, and `epctl --check-counters` with three exit
+codes. The design decision I am most confident in is the one that took longest to see: the file is
+written **on the first successful dispatch as well as at teardown**. My first draft wrote it only
+at teardown, which is the natural place — and would have produced exactly nothing on both lanes,
+because they die mid-session. I had written a diagnostic that could not survive the failure it was
+built to diagnose. Generalising: *an instrument that only reports at the end can only describe runs
+that reached the end, and those are not the runs you need it for.*
+
+**The counter increments after the fence, not after the submit.** Small choice, and the whole
+credibility of the number rests on it. Counting at submit would make "we tried" indistinguishable
+from "it ran", which is the same shape as the two fabricated speedups this project has retracted —
+both of which were precondition claims dressed as effect claims. The gate's pass message states
+outright that it claims nothing about correctness, because the place a misreading actually occurs
+is at the point of reading, not the point of writing.
+
+**Exit 1 and exit 3 stayed separate, and I now think this is a habit rather than a one-off.** I did
+the same thing in `probe_exit_code` last session for the same reason, and it is becoming my default:
+*never let "I have no answer" collapse into "the answer is no".* The two demand completely different
+next actions from whoever reads the exit code, and merging them silently reassigns the blame from
+our process to the environment.
+
+**Something I found in my own file while looking for someone else's bug.** `check_bound_counts`
+validated tensor *counts* and I had let that stand as "the boundary is checked". It is not:
+`dispatch_ort` reads `from_raw_parts(cpu_ptr, input_byte_sizes[i])` with a size computed at
+**Compile** time against a tensor allocated at **run** time. A shape disagreement there is an OOB
+read of ORT's heap, originating at my seam, uncatchable downstream because the engine only has a
+pointer by then. Now checked via `GetTensorSizeInBytes`, refused with `ORT_EP_FAIL`.
+
+The pattern worth naming: I validated the *shape of the interface* (how many tensors) and called
+the interface validated, without validating the *content of the contract* (how big each one is).
+Counts are the part that is easy to check without calling back into ORT, and I checked exactly the
+part that was easy. Next time I write a boundary check, the question to ask is which invariant I
+skipped because verifying it required another API call — that is where the real one will be.
+
+**And the deliberate permissiveness, since it is the kind of thing I would otherwise over-engineer.**
+If `GetTensorSizeInBytes` is missing from the negotiated ABI, we warn once and proceed rather than
+failing. Refusing to run because a *diagnostic* is unavailable is a worse failure than the one it
+prevents. Hard-failing there would have felt more rigorous and been strictly worse.
+
+**Status honestly stated, per the standard the coordinator set.** I have added the instrument. I
+have **not** made the lanes green, and I could not: the fix for the most probable cause lives in
+`vk/**`, which is Switch's, and the CI wiring lives in `.github/`, which is Trinity's. What I can
+claim is that after the next run we will know *which* of "never executed" and "executed then
+crashed" is true, and today we cannot distinguish those at all. That is a smaller claim than "CI is
+green" and it is the one that is true.

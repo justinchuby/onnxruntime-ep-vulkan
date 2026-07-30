@@ -285,3 +285,59 @@ def test_layer_capture_mechanism():
         "compare_layers returned non-zero diff for Add on identical inputs — "
         "capture mechanism has a bug."
     )
+
+
+# ---------------------------------------------------------------------------
+# Coverage matrix — the forms the claim predicate says it handles (Mouse)
+# ---------------------------------------------------------------------------
+#
+# The predicate claims bits in {4, 8}, block_size in {16, 32, 64, 128}, the 3-input symmetric
+# form and the 4-input asymmetric one, and every M rather than only decode. A predicate that
+# claims a form nothing exercises is the exact failure OP_COVERAGE.md §7 exists to prevent, so
+# every cell it admits is enumerated here rather than described.
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+@pytest.mark.parametrize("block_size", [16, 32, 64, 128])
+@pytest.mark.parametrize("with_zero_points", [True, False])
+def test_matmulnbits_form_matrix_fp32(vulkan_device_available, bits, block_size, with_zero_points):
+    """Every (bits, block_size, zero-point) form the predicate claims must match the CPU EP."""
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256, N=64, bits=bits, block_size=block_size, with_zero_points=with_zero_points
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+@pytest.mark.parametrize("rows", [1, 2, 7, 32])
+def test_matmulnbits_prefill_rows_fp32(vulkan_device_available, rows):
+    """M > 1 is prefill. The GEMV runs one workgroup per output element, so it is correct for
+    every M and merely unoptimal — this asserts the correctness half of that claim."""
+    model_bytes, feeds = m.make_matmulnbits_model(K=128, N=48, rows=rows)
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP32)
+
+
+@pytest.mark.skipif(
+    not _ort_version_ge(1, 28),
+    reason="fp16 MatMulNBits needs an ORT >= 1.28 oracle (see the module docstring).",
+)
+@pytest.mark.parametrize("with_zero_points", [True, False])
+@pytest.mark.parametrize("rows", [1, 3])
+def test_matmulnbits_fp16_matrix(vulkan_device_available, with_zero_points, rows):
+    """fp16 is the form that matters: all 161 of Phi-3.5's MatMulNBits nodes carry fp16
+    activations, scales and outputs, so an f32-only kernel would decline the model this kernel
+    exists to run. The odd `rows` case also exercises the packed-lane output store."""
+    model_bytes, feeds = m.make_matmulnbits_model(
+        K=256,
+        N=64,
+        rows=rows,
+        with_zero_points=with_zero_points,
+        activation_dtype=ir.DataType.FLOAT16,
+    )
+    cpu_out = m.run_cpu(model_bytes, feeds)[0]
+    assert not np.any(np.isnan(cpu_out)) and not np.any(np.isinf(cpu_out)), (
+        "CPU EP oracle produced NaN/Inf for fp16 MatMulNBits — the oracle is not usable."
+    )
+    m.assert_vulkan_claims(model_bytes, feeds)
+    m.assert_matches_cpu(model_bytes, feeds, **m.MATMULNBITS_FP16)

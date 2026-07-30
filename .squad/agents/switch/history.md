@@ -241,3 +241,53 @@ Trinity's ORT differential test is the M0 confirmation gate.
 - `MemoryLocation` hints match actual usage semantics: `CpuToGpu` = CPU writes, `GpuToCpu` = CPU reads.
 - `cargo ci` green (258 lib tests, fmt, clippy).
 
+---
+
+## Session 15 — SkipSimplifiedLayerNormalization kernel; QGemv compile error fix (2026-07-29T20:26:56-07:00)
+
+**Coordinator task:** Implement `SkipSimplifiedLayerNormalization` — one of the three ops blocking
+a real model (Phi-3.5-mini) from running on GPU (64 of 366 nodes). Mouse taking `MatMulNBits`.
+
+**What was done:**
+
+1. **`shaders/glsl/skip_simplified_layer_norm_f32.comp`** — new direct GLSL shader.
+   - Fused residual-add (the "Skip") + RMSNorm in one dispatch, one workgroup per row
+   - Three-pass: accumulate sum-of-squares while writing out3 → tree reduce → normalize
+   - Pass 3 re-reads inputs (not out3) to avoid read-after-write on a `writeonly` buffer
+   - LOCAL_SIZE_X = 256 (spec constant 0); shared memory = 256 × 4 bytes = 1 KiB
+   - Push constants: batch_count, hidden_size, eps_bits (float bits), pad — 16 bytes total
+   - Five bindings: hidden (readonly), skip (readonly), gamma (readonly), out0 (writeonly), out3
+   - Cross-platform safe: 1 KiB shared memory is within the 16 KiB portability floor (§7.2)
+   - Uses direct-file path: build.rs scans `shaders/glsl/` and picks it up without -D defines
+
+2. **`ops/common/templates.rs`** — added `skip_norm()` translate handler:
+   - Validates ≥3 inputs and consistent dtype
+   - Extracts `batch_count` = product of dims[0..rank-2], `hidden_size` = last dim
+   - `epsilon` from node attribute (default 1e-5, ONNX schema default)
+   - Binds slot-3 output OR allocates temp buffer when slot 3 is absent (rare, but correct)
+   - 6 unit tests: shader name, push constants, workgroups, slot-3 absent, default epsilon, rank-1
+
+3. **`ops/elementwise.rs`** — fixed pre-existing compile error from Mouse adding `Template::QGemv`
+   without updating the exhaustive match in `shader_rows_have_an_arity_their_predicate_agrees_with`.
+   Added `Template::QGemv => {}` arm with comment.
+
+4. **`cargo ci`** — ✅ GREEN after `--fix` for rustfmt. All 315 lib tests pass.
+
+**What Mouse must do to flip SkipSimplifiedLayerNormalization to Live (documented D-S15-01):**
+- `norm.rs` SkipSimplifiedLayerNormalization (Ms domain) row: `status: Live`, `translate: templates::skip_norm`
+- Update `both_norms_share_one_blocker` test (currently asserts ALL 4 rows Staged)
+- No `shader_variants.txt` regeneration needed (direct kernel not in manifest system)
+
+**Key design decisions recorded (D-S15-01, D-S15-02):**
+- Direct shader (not template-driven) because the norm kernel has a unique push-constant layout
+  and the two outputs are not compatible with the EW template interface
+- `kernel!(None)` in the op table row; translate handler names the shader stem directly
+- `skip_norm_f32_shader_exists_on_disk` test compensates for the manifest system not covering it
+
+**State at end of session:**
+- `cargo ci`: ✅ GREEN (315 lib tests)
+- SkipSimplifiedLayerNorm shader: ✅ written and glslc-verified
+- translate handler: ✅ written and tested
+- norm.rs flip to Live: ⏳ waiting on Mouse (D-S15-01)
+- QGemv compile error: ✅ fixed (pre-existing, Mouse's enum addition)
+

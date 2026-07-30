@@ -127,6 +127,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "Run with: pytest -m portability. "
         "An Intel-only failure in a portability test is a spec-conformance bug, not a harness bug.",
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: marks tests that take >10 s (e.g., real model integration tests). "
+        "Run with: pytest -m slow. Excluded from the default fast-feedback loop in CI.",
+    )
     _assert_oracle_versions()
 
 
