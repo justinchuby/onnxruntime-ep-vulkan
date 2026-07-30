@@ -1942,6 +1942,180 @@ this project rests on — is simply unavailable here. Flagging to Trinity rather
 
 ---
 
+### 7.5 The full-set decline audit, and runtime extents (2026-07-29)
+
+Morpheus's §8.8/§10.0.3/R8 ruling moves dynamic-shape support ahead of the three staged kernels,
+and corrects the histogram in §7.4.2 by reading the producer rather than the output. This section
+records what I changed, and what the corrected measurement says.
+
+#### 7.5.1 R8 landed in the producer, because a first-match histogram looks exactly like a complete one
+
+`claim_decision` evaluated key → opset → contrib schema → status → predicate and returned on the
+**first** failure, so every census this project will ever run inherited the same defect: an early
+code is a **ceiling** (nodes that failed there were never shown to the later checks) and a late
+code is a **floor** (nodes that reached it had already passed everything before it). Two decline
+counts are not comparable without knowing the check order — and nothing in the output said so.
+
+`registry::claim_audit(view, with_counterfactual)` now runs **all** checks in the same canonical
+order and collects every failure into `ClaimAudit`:
+
+| field | meaning |
+| --- | --- |
+| `primary` | first failure — unchanged semantics, so every existing `code` assertion still means what it meant |
+| `failures` | the complete set. This is the field planning must use |
+| `unevaluated` | checks that genuinely could not run (an unregistered op has no row, so opset/status/predicate are *unknown*, not *passing*) |
+| `shape_class` | computed from the node's edges, **independent of its registry row** |
+| `predicate_ok` | the row's own predicate, evaluated even for staged rows |
+| `predicate_ok_with_runtime_extents` | the same predicate under the counterfactual |
+
+The JSONL record gains `codes`, `reasons`, `unevaluated`, `shape_class`, `predicate_ok`,
+`predicate_ok_runtime_extents`; `code` and `reason` are untouched. Extending rather than replacing
+is deliberate — Trinity's harness and my own earlier measurements keep working.
+
+`shape_class` must not be routed through the op's predicate: for a staged row the predicate may be
+a stub, so its answer is not evidence. Reading the node's edges directly is the only way a staged
+node's shape viability is knowable at all, which is precisely the thing R8 says we were missing.
+
+#### 7.5.2 The predicate now distinguishes three cases it used to collapse into one
+
+Per §8.8:
+
+* **rank known, extents symbolic → claimable.** This is the LLM case.
+* **rank unknown → decline** (`unknown-rank`, a new code — previously reported as `dynamic-shape`,
+  which is wrong: one is a hard decline, the other a floor).
+* **data-dependent output shape → permanently declined** (`data-dependent-shape`, new). `NonZero`,
+  `Unique`, `Compress`, `StringSplit`, `TopK`, `RoiAlign`, `NonMaxSuppression`. This is a property
+  of ONNX, not of our progress, so it does not move. `Reshape`/`Slice`/`Expand` are deliberately
+  *not* on the list: whether their shape is data-dependent is a per-node fact, not an op fact.
+
+`REQUIRE_STATIC_SHAPES` is replaced by **`ENGINE_ACCEPTS_RUNTIME_EXTENTS`** (inverted sense). The
+rename carries the point: the constant is a statement about `vk::session`, not about claim logic —
+claim is *already* correct for symbolic extents, and is being held back by dispatch. To be plain
+about it in my own record: rejecting symbolic extents **was right for a static-shape EP and is
+wrong for an LLM EP**. That is a design correction, not a defect.
+
+`check_broadcast` had a real latent bug found while making this change: it returned `Ok(())` early
+whenever static shapes were not required, so the moment symbolic extents became acceptable,
+broadcast compatibility would have gone **unchecked**. It is now symbolic-aware — every pair of
+*literal* extents is still checked per right-aligned axis; symbolic and `1` are compatible with
+anything.
+
+#### 7.5.3 The counterfactual is a measurement, not a switch
+
+`AssumeRuntimeExtents` is an RAII guard over an `AtomicBool` that makes `runtime_extents_ok()`
+report true for one predicate evaluation. It exists so the question *"how many nodes would this
+unlock?"* is answered by **running the real predicates**, not by re-implementing them in a Python
+probe — which is how §7.4's first attempt got the shape story only half right. The second
+evaluation is only paid when the claim log is enabled.
+
+It is not a way to turn the feature on. Flipping `ENGINE_ACCEPTS_RUNTIME_EXTENTS` before the engine
+changes lands produces a **wrong answer, not an error**: symbolic dims arrive as `-1`, so push
+constants and grid dimensions would be computed from `-1`. Same failure class as `Compute`
+returning `null`.
+
+#### 7.5.4 The corrected numbers — Phi-3.5, both devices, identical
+
+363 records. First-match said `dynamic-shape` 258 / `staged` 100 / `not-registered` 5.
+
+| check | full-set | first-match | hidden |
+| --- | ---: | ---: | ---: |
+| `dynamic-shape` | **356** | 258 | +98 |
+| `staged` | 100 | 100 | 0 |
+| `not-registered` | 5 | 5 | 0 |
+
+`shape_class`: 360 `extents-symbolic`, 3 `static`, **0** `rank-unknown`, **0** `data-dependent`.
+
+**98 of the 100 staged nodes also fail the shape check.** So the answer the coordinator asked for:
+
+> **Landing all three staged kernels and nothing else unlocks 0 nodes of Phi-3.5.**
+
+Not "at most 100, plausibly fewer" — zero. Every one of `SkipSimplifiedLayerNormalization`×64 and
+`GroupQueryAttention`×32 is `extents-symbolic`. The two staged nodes with static shapes are a
+`Cast` and a `Greater`, and two nodes is not a milestone.
+
+The asymmetry is therefore not 2.5× and not "larger than 2.5×" — it is **total**. There is no
+ordering of the kernel work that produces a claimed node on this graph before the extent work
+lands. Kernels-first does not merely manufacture rework; on this model it produces nothing at all.
+
+#### 7.5.5 How many of the 258 become claimable under rank-known/extents-symbolic: 161
+
+Measured by the counterfactual, with no predicate widened:
+
+| | nodes |
+| --- | ---: |
+| predicate accepts today (status ignored) | 2 |
+| predicate accepts with runtime extents | 229 |
+| **unlocked by runtime extents alone** | **227** |
+
+The 227: `MatMulNBits`×161, `SkipSimplifiedLayerNormalization`×64, `SimplifiedLayerNormalization`×1,
+`Cast`×1. Of those, 161 are **claimable immediately** (their rows are `Live`); the other 66 are
+staged, so runtime extents is a **precondition** for their kernels, not a substitute.
+
+Of the 258 first-match `dynamic-shape` nodes, exactly **161 become claimable**. The other 97 do
+not, and the reason is the second gate from §7.4.5: `Mul`×64 and `Sigmoid`×32 are **f16**, `Sub`×1
+is **i64**. Confirmed independently — with free-dimension overrides pinning the symbolic dims, the
+residual histogram is `dtype: 97`. That is R8 one level down: `dynamic-shape` was itself masking
+`dtype` for 97 nodes, and the full-set log does not yet decompose failures *inside* a predicate,
+which returns one reason. Noted as a known limit of the audit rather than papered over.
+
+#### 7.5.6 gpt-oss-20b — the reversal condition would have been triggered by an artifact
+
+Morpheus's stated condition for revisiting the ruling is gpt-oss showing `dynamic-shape` **below**
+`staged`. First-match says `dynamic-shape` 146 < `staged` 197 — the condition appears met. Full-set
+says `dynamic-shape` **342** > `staged` 197, with 196 of the 197 staged nodes also shape-blocked and
+369 of 371 nodes `extents-symbolic`.
+
+So the reversal condition is **not** met on gpt-oss, and reading the first-match histogram would
+have reversed a correct ruling. This is the strongest available demonstration that R8 is not a
+tidiness rule. (Session init still fails in ORT's own CPU `QMoE`, so there remains no oracle for
+this model — but `GetCapability` runs, so the census is complete and valid. §7.4.6.)
+
+Also surfaced by full-set only: one gpt-oss `Cast` fails on `attribute`, a code that appeared
+**nowhere** in the first-match histogram.
+
+#### 7.5.7 What each kernel must take as a runtime parameter
+
+Verified by reading every `Live` dispatch: **no pipeline in the current set is keyed on a runtime
+extent**, so options (b) and (c) from §7.4.4 are the same option, and there is **no shader work**.
+
+* `dispatch_elementwise` — spec constants are `[EW_LOCAL_SIZE, plan.all_identical]`. `all_identical`
+  is *structure*, not extent. Extents enter only through push constants (shape, strides) and the
+  1-D grid. **Consequence:** when any extent is symbolic, `all_identical` cannot be decided at
+  Compile, so the handler must select the **general broadcast path**. A performance choice, not a
+  correctness one.
+* `q_gemv` — spec constants are `[local_size_x, QB_BITS, QB_BLOCK, QB_HAS_ZP]`, and `local_size_x`
+  derives from `K / block_size` where `K` is a literal on all 161 real nodes. Needs `m_total` as a
+  push constant and `workgroups.y` from the runtime row count.
+
+What must change is in the engine, not in `ops/`:
+
+1. `vk::session::CompiledKernel::{push_constants, workgroups}` stop being baked at Compile.
+2. `VulkanSession::dispatch_ort` reads real shapes at Compute — it currently takes byte sizes from
+   Compile and never calls `GetTensorTypeAndShape`.
+3. Translate handlers re-run against those real shapes.
+
+Recommended cheapest form, for Switch: **not** a symbolic plan IR, but a `ComputeRecorder`
+implementing `DispatchContext` with real shapes, re-running the existing handler unchanged
+(`ShapePlan::broadcast` already takes `&[&[i64]]`). Memoise on the runtime shape vector — a decoder
+has exactly two regimes, prefill and decode.
+
+One constraint of ours makes this harder than it looks: `EdgeType.shape` carries `-1` for symbolic
+and **discards the `dim_param` name**, so the EP cannot prove two symbolic dims are equal even when
+the graph says they are. ORT's C API does expose `GetSymbolicDimensions`; `NodeView` does not use
+it. Until it does, symbolic-vs-symbolic equality must be treated as *unknown*, never as *equal*.
+
+#### 7.5.8 Writing a decode-path kernel against static extents is forbidden
+
+Morpheus's constraint, recorded here because it binds my area: such a kernel is **not a partial
+version of the one we need, it is a different one**. Free-dimension overrides (§7.4.4) remain
+legitimate as a *harness* device for producing a CPU-EP comparison, and `onnx-shape-inference`
+remains an oracle — but neither may be presented as progress on inference, because a decoder whose
+claim depends on static extents claims nothing on the second token. Resolving dims statically
+improves our test numbers without making inference work, which is the §9.1.2 hazard in its purest
+form.
+
+---
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.
@@ -2079,8 +2253,10 @@ value, not two.
 
 ### 8.1.3 What still blocks Phi-3.5, and it is not this kernel
 
-**Superseded in part by §7.4 — read that first.** What follows was right about the mechanism and
-wrong about the consequence.
+**Superseded in part by §7.4 and §7.5 — read those first.** What follows was right about the
+mechanism and wrong about the consequence. `REQUIRE_STATIC_SHAPES` no longer exists; the engine
+precondition it encoded is now `ENGINE_ACCEPTS_RUNTIME_EXTENTS` (§7.5.2), and the counterfactual
+in §7.5.5 measures these 161 nodes as the largest single block that runtime extents unlocks.
 
 Measured, not inferred: a `MatMulNBits` node with static shapes is claimed and matches the CPU EP
 at rank 2 and rank 3 (leading dimensions fold into the row count). The same node with symbolic

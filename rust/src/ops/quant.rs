@@ -214,7 +214,11 @@ fn matmul_nbits(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::DeclineReason> {
     let edge = claim::input_edge(view, spec, 0)?;
     let Some(shape) = edge.shape else {
-        deny!(DynamicShape, "`{}` input A has no shape", spec.op_type);
+        deny!(
+            UnknownRank,
+            "`{}` input A has no shape at all, so the row count cannot be formed",
+            spec.op_type
+        );
     };
     require!(
         shape.len() >= 2,
@@ -225,12 +229,23 @@ fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::
     );
     let mut rows: u64 = 1;
     for &d in &shape[..shape.len() - 1] {
-        require!(
-            d >= 0,
-            DynamicShape,
-            "`{}` input A has a symbolic leading dimension",
-            spec.op_type
-        );
+        if d < 0 {
+            // The row count is exactly the kind of extent that becomes a runtime parameter: the
+            // GEMV already takes it as the `m_total` push constant and as `workgroups.y`, so
+            // nothing in the shader changes. Until the engine carries it, this declines.
+            require!(
+                claim::runtime_extents_ok(),
+                DynamicShape,
+                "`{}` input A has a symbolic leading dimension; the GEMV takes the row count as a \
+                 push constant, so this needs only the extent at Compute, not a new kernel",
+                spec.op_type
+            );
+            // Under the counterfactual there is no concrete row count to return; report the
+            // minimum viable one so the predicate can finish its remaining checks. This value is
+            // never used for dispatch — `ENGINE_ACCEPTS_RUNTIME_EXTENTS` is false, so the only
+            // caller that reaches here is the audit's measurement pass.
+            return Ok(1);
+        }
         rows = rows.saturating_mul(d as u64);
     }
     Ok(rows)
@@ -461,8 +476,9 @@ fn quant_linear(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     let scale = claim::input_edge(view, spec, 1)?;
     let Some(scale_rank) = scale.rank() else {
         deny!(
-            DynamicShape,
-            "`{}` scale has no shape; the scale-index mode cannot be decided",
+            UnknownRank,
+            "`{}` scale has no shape at all; the scale-index mode is chosen by rank, so it cannot \
+             be decided",
             spec.op_type
         );
     };

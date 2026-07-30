@@ -622,3 +622,81 @@ nothing — cost me a measurement.
 
 No code changed this turn. `docs/OP_COVERAGE.md` §7.4 new, §8.1.3 corrected.
 Record: `.squad/decisions/inbox/mouse-decline-census.md`.
+
+---
+
+## 2026-07-29 — Full-set decline audit; the predicate accepts symbolic extents (Morpheus R8, §8.8)
+
+Morpheus read my claim path and found the histogram I had reported was structurally misleading:
+`claim_decision` recorded only the **first** failing check. R8: early codes are ceilings, late
+codes are floors, and two decline counts are not comparable without knowing the check order.
+
+**What I built.**
+1. `registry::claim_audit` runs *every* check and returns `ClaimAudit { primary, failures,
+   unevaluated, shape_class, predicate_ok, predicate_ok_with_runtime_extents }`. The JSONL record
+   is extended, not replaced — `code`/`reason` keep first-match meaning.
+2. `shape_class` is computed from the node's edges, **row-independent**, because a staged row's
+   predicate may be a stub and its answer is therefore not evidence.
+3. Three-way split in `check_shape`: extents-symbolic → claimable, rank-unknown → decline
+   (`unknown-rank`), data-dependent → permanent decline (`data-dependent-shape`).
+4. `REQUIRE_STATIC_SHAPES` → `ENGINE_ACCEPTS_RUNTIME_EXTENTS` (inverted): the constant describes
+   `vk::session`, not claim logic.
+5. `AssumeRuntimeExtents` — an RAII counterfactual so "how many would this unlock?" is answered by
+   running the real predicates instead of re-implementing them in a probe.
+
+**What it measured (Phi-3.5, identical on both devices).**
+* Full-set `dynamic-shape` = **356 of 363**, not 258. 98 of the 100 staged nodes are *also*
+  shape-blocked.
+* **The three staged kernels alone unlock 0 nodes.** Not "at most 100" — zero.
+* **227 nodes become predicate-clean under runtime extents**; 161 (`MatMulNBits`) claimable
+  immediately, 66 staged.
+* The 97 that do not unlock are blocked on **dtype** — R8 recurring one level down, inside a
+  predicate that returns a single reason. A known limit of the audit, recorded rather than hidden.
+* gpt-oss first-match would have **falsely triggered** Morpheus's stated reversal condition
+  (146 < 197); full-set is 342 > 197.
+* No regression: still 0 claimed unpinned, **161 claimed** with dims pinned.
+
+**Bug found while changing it.** `check_broadcast` returned `Ok(())` early whenever static shapes
+were not required — so the instant symbolic extents became acceptable, broadcast compatibility
+would have gone *unchecked*. Now symbolic-aware: literal extents still checked pairwise.
+
+**Lessons for me.**
+* I reported that histogram as fact for a whole turn. It was produced by code I own and had read.
+  When a measurement is going to drive a roadmap, read the *producer*, not just the output —
+  a first-match histogram is indistinguishable from a complete one at the point of use.
+* "Rejecting symbolic extents" was a **design correction, not a defect**: right for a static-shape
+  EP, wrong for an LLM EP. Say which of the two a change is; they carry different lessons.
+* `EdgeType.shape` drops `dim_param`, so we cannot prove two symbolic dims are equal. Treat
+  symbolic-vs-symbolic equality as unknown, never equal.
+
+Code: `ops/common/claim.rs`, `registry.rs`, `ops/claim_log.rs`, `ops/quant.rs`.
+Docs: `docs/OP_COVERAGE.md` §7.5 new, §8.1.3 corrected.
+Record: `.squad/decisions/inbox/mouse-runtime-extents.md`.
+
+---
+
+## 2026-07-29 — Moved to worktree `C:\Users\justinchu\dev\ep-vulkan-mouse` (branch `squad/mouse`)
+
+`main` is now the integration branch. I commit to `squad/mouse`; I still do not push.
+
+**Transfer, done carefully because the failure mode is silent data loss.** My previous turn's work
+(the full-set claim audit) was still *uncommitted in main's working tree* — `5ab2d85` did not
+contain it. Order: export the diff, apply it in the worktree, run `cargo ci` there, commit, verify
+`git diff main squad/mouse --stat` matches the six files, and only then `git checkout --` in main.
+Reverting main first would have been one mistyped path away from losing 900 lines. The gitignored
+`.squad/decisions/inbox/` is not carried by a branch, so I copied it across by hand.
+
+**The worktree reproduces the numbers of record on both devices**, which is the check that makes it
+a working environment rather than merely a green one:
+
+* unpinned — 363 records, 0 claimed, full-set `dynamic-shape` 356, shape_class 360 extents-symbolic
+* pinned — 161 `MatMulNBits` claimed, residual `dtype` 97
+
+Byte-identical on device 0 and device 1. `cargo ci` green in the worktree: 336 lib tests.
+
+**Why this matters to me specifically:** the false red that cost me a turn was Switch's uncommitted
+`vk/caps.rs` in a tree I did not own. In here, `cargo ci` red means *I* broke something — which is
+the only condition under which a signal is worth reading. Tank's framing is the right one: a false
+red teaches you to ignore the tool.
+
+No cross-owner edits this turn. Nothing outside `ops/**`, `registry.rs`, `OP_COVERAGE.md`.
