@@ -2168,6 +2168,46 @@ R9's exact failure mode applied to people instead of counters.
   compromise. An EP that silently changes a model's answers is a defect whether or not it is also a
   responsible-AI finding.
 
+#### 8.9.7 Rai's verdict — convergent, and it names one gap this ruling did not close
+
+*Added 2026-07-30T06:32:18-07:00, after Rai's independent verdict landed in `2c35eac`.*
+
+Rai returned **RAI-008 🔴 Critical** — *the architecture permits silently-wrong inference output at
+any layer with no disclosure* — and **RAI-007 🟡 Advisory** for the fp16 kernel itself, correctly
+separating the instance from the class. **We converged, and I want it stated that we converged
+independently rather than agreed**: his load-bearing reason is the autoregressive amplification (one
+zeroed-logit dispatch produces an unbounded stream of fluent wrong tokens, indistinguishable to a
+user from "this model is bad"); mine is the claim/decline asymmetry and the compatibility ruling.
+Per R6 rule 1 the ruling's load-bearing reason stays the engineering one, so §8.9 does not move if
+the RAI framing is ever revised. Two independent arguments reaching the same gate is worth more than
+either — but only because they are *different* arguments, which is R9 read the right way round: what
+makes a second reading evidence is that it could have come out differently.
+
+**RAI-009 is the part I did not cover, and he is right.** *"There is no runtime WARNING when claimed
+forms carry UNMEASURED proof status"* — §8.9.4 item 3 discloses only when the **escape hatch** is
+enabled, and §9.1.3's verdict lives in a counters file a user never sees. A user who receives a
+session object and calls `Run` observes nothing either way. Under §8.9 the unproven forms are no
+longer claimed, so the acute hazard is closed by the gate; the residual is that **the user still has
+no positive statement of what was claimed and on what evidence**, which is R9 aimed at the user
+instead of at us: silence reads as fine.
+
+**Closing it, as an addition to §8.9.4 rather than a separate mechanism:**
+
+- **At session creation the EP logs, at INFO, one line per claimed form: the proof key and the
+  ledger entry backing it** — device, ORT build, artifact. A user can see what we vouched for and on
+  what basis, without reading a counters file.
+- **At WARN if any claimed form's evidence is `UNMEASURED`** — which under §8.9 can only happen via
+  the escape hatch, so the two disclosures are the same mechanism at two severities and there is no
+  second thing to maintain.
+- **If the EP claims zero nodes, it says so at INFO**, naming the top decline codes. "The EP claimed
+  nothing" is a finding a user is entitled to, and it is the state §8.9 will produce on Phi-3.5
+  tomorrow morning.
+
+This is disclosure, not a gate, and it must not be mistaken for one: **a log line is an instrument
+with no red state** (R9), so it may never substitute for the ledger. It exists because the ledger
+protects the user from us, and this tells the user that it did. Owner: Tank at session creation,
+Mouse for the per-form data. Tracked as part of M0 criterion 11.
+
 ---
 
 ## 9. Testing and benchmarking strategy
@@ -3116,7 +3156,10 @@ R8 is that expectation is not measurement.
     counters artifact records `unproven_forms_enabled`, and `epctl --check-counters` **fails** on a
     non-empty list without `--allow-unproven`. **Status: NOT MET — the mechanism does not exist
     yet.** Owners: Mouse (predicate + ledger lookup), Trinity (ledger emission + the three planted
-    controls), Switch (counters field), Tank (`epctl` exit code).
+    controls), Switch (counters field), Tank (`epctl` exit code). **Includes the session-layer
+    disclosure of §8.9.7** (RAI-009): one INFO line per claimed form naming its proof key and ledger
+    entry, WARN if any claimed form's evidence is `UNMEASURED`, and an explicit INFO line naming the
+    top decline codes when the EP claims zero nodes. Owner: Tank at session creation.
 
 **CRITERIA AMENDMENT — 2026-07-30T05:48:29-07:00. I am reopening previously-met criteria, and the
 defect is in the criteria, not in the engineering.**

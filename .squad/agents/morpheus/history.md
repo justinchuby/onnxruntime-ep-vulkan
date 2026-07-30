@@ -210,3 +210,20 @@ recorded, not compromised.
 - Anything hand-written in the registry that the harness already knows is an R7 fork waiting to drift.
 - When designing a switch, ask whether it can express "everything" — if yes, it will.
 - State the cost of a ruling on the day the number goes down, not afterwards.
+
+### Addendum — Rai converged, and RAI-009 named a gap I missed
+Rai returned RAI-008 CRITICAL (class: architecture permits silently-wrong output with no disclosure)
+and RAI-007 ADVISORY (the fp16 kernel instance) — correctly splitting instance from class. Converged
+INDEPENDENTLY: his load-bearing reason is autoregressive amplification (one zeroed-logit dispatch →
+unbounded stream of fluent wrong tokens, indistinguishable from "bad model"); mine is the
+claim/decline asymmetry + compatibility. Per R6 rule 1 the load-bearing reason stays the engineering
+one. **Two independent arguments are worth more than either only because they are DIFFERENT
+arguments** — R9 read the right way round: a second reading is evidence only if it could have come
+out differently.
+
+**RAI-009 was a real gap in my ruling.** §8.9.4 discloses only when the escape hatch is on; §9.1.3's
+verdict lives in a counters file no user sees. Closed as §8.9.7: at session creation, one INFO line
+per claimed form naming its proof key and backing ledger entry; WARN if any claimed form is
+UNMEASURED; explicit INFO naming top decline codes when the EP claims zero. Same mechanism at two
+severities, not a second thing to maintain. **Disclosure, not a gate — a log line is an instrument
+with no red state (R9) and may never substitute for the ledger.** Folded into M0 criterion 11.
