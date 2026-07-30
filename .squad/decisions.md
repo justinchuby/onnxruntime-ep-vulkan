@@ -442,7 +442,7 @@
 
 ---
 
-### 2026-07-28T22:28:08-07:00: Execution status disclosure — no shader has executed on any device yet
+### 2026-07-28T22:28:08-07:00: Execution status disclosure — no shader has executed on any device yet ⚠️ SUPERSEDED by 2026-07-30 D26 below
 
 **By:** Morpheus
 **What:** `DESIGN.md` §9.1.2 and `README.md` status block state plainly: no shader in this repository has executed on any device; the only device execution will be on lavapipe; every green count to date measures host-side logic; the first real execution evidence is M0's exit criteria. A test count is a claim about what was executed and must not imply more execution than occurred.
@@ -525,7 +525,7 @@
 
 ---
 
-### 2026-07-29T09:00:39-07:00: R5 (subgroup BASIC in compute) removed from the device gate — now a probed capability
+### 2026-07-29T09:00:39-07:00: R5 (subgroup BASIC in compute) removed from the device gate — now a probed capability ⚠️ RATIONALE CORRECTED by 2026-07-30 D36 (lavapipe reading was instrument bug, policy stands on §7.0)
 
 **By:** Switch
 **Supersedes:** R5 criterion in "Vulkan baseline frozen: minimal device gate, no required extensions" (2026-07-28T22:28:08-07:00). Only the gate status changes; the capability is still queried.
@@ -652,7 +652,7 @@
 
 ---
 
-### 2026-07-29T09:00:39-07:00: §9.1.2 refreshed: SDK installed, two GPUs pass gate, no shader dispatched
+### 2026-07-29T09:00:39-07:00: §9.1.2 refreshed: SDK installed, two GPUs pass gate, no shader dispatched ⚠️ SUPERSEDED: 45 ops now Live and executing on two GPUs; see D26 below
 
 **By:** Morpheus (D25)
 **What:** `DESIGN.md` §9.1.2 records: SDK installed at `C:\VulkanSDK\1.4.350.0`, two local GPUs pass the §7.2 gate, all 168 variants compile. **No shader has still been dispatched on any device.** Local GPUs are a development loop, not coverage — nothing they run is recorded, gated, or reproducible by anyone else.
@@ -689,3 +689,273 @@
 **By:** Trinity
 **What:** README badge + `.github/CI_POLICY.md` documenting lane structure, failure investigation commands, and branch protection TODO (requires GitHub admin from Justin). Rule: a red CI badge blocks all merges. Every agent checks the badge before reporting work complete.
 **Why:** CI was red for ≥4 consecutive runs without detection. Four consecutive CI failures — wrong package, bad YAML, PowerShell array bug, null file_path — all stacked silently because local `cargo ci` passed and CI was not being watched. CI is the ONLY mechanism in this project that verifies any shader executes. A loss of CI is a loss of all empirical evidence.
+
+---
+
+## Round 4 — 2026-07-30T02:49:12-07:00 (first-execution round)
+
+<!-- Merging 25 inbox files from this session. Supersessions resolved: LVP2 retracted, R5 rationale corrected, "no shader dispatched" superseded, kernels-first sequencing superseded by §8.8. -->
+
+### 2026-07-30T02:49:12-07:00: `push_next` chain bug — `let _ = props2.push_next(..)` silently discards pNext chain [D-S12-01]
+
+**By:** Switch
+**What:** In ash 0.38, `push_next` takes `self` by value and returns `Self`; discarding the return discards the chain. Consequence: every chained capability field (subgroup size, subgroup stages, shader_float16, SSC) read zero on all devices. Fix: `let mut props2 = { let p = vk::PhysicalDeviceProperties2::default().push_next(&mut subgroup_props); ... };` — rebind, never discard. Rule: every `push_next` call must rebind, not discard. `#[must_use]` was the hint; treating it as cosmetic was the mistake.
+**Why:** This was the root cause behind LVP2 (lavapipe `supportedStages=0`), the `subgroup_size=0` readings, and the UMA misclassification — three "device facts" that were instrument failures. The bug invalidated data that was used in two architectural decisions.
+
+---
+
+### 2026-07-30T02:49:12-07:00: LVP2 (lavapipe `supportedStages=0`) RETRACTED — was instrument failure, not device fact [D-S14-01 / Link]
+
+**By:** Switch + Link
+**What:** The quirks watchlist entry LVP2 is retracted. Mesa 23.2.1 lavapipe reports `subgroup_size=8`, `subgroup_stages_raw: FRAGMENT|COMPUTE|TASK_EXT|MESH_EXT`, `subgroup_basic_in_compute=true`. The original `supportedStages=0` was the zeroed default of the discarded `push_next` chain. ⚠️ **SUPERSEDES** the original LVP2 observation recorded earlier in PLATFORMS.md.
+**Why:** "We changed a frozen architectural decision on the strength of a number our own bug produced." (D36) Consequence: lavapipe subgroup size is **8** (not 32); CI now exercises the subgroup arithmetic path with a smaller warp than either local GPU. `PLATFORMS.md` LVP2 updated to reflect this.
+
+---
+
+### 2026-07-30T02:49:12-07:00: R5 rationale correction — policy on §7.0; lavapipe premise was false [D36]
+
+**By:** Morpheus
+**What:** §7.2's R5 removal rationale is corrected. The decision **stands** but the correct reason is: §7.0 requires capability shortfalls to degrade op coverage, not device availability. Subgroup arithmetic selects between shader variants — a variant choice, not a device-admission criterion. The "lavapipe lacks subgroups" reading was our probe bug. ⚠️ **CORRECTS** the rationale in the 2026-07-29 R5 decision; no code change.
+**Why:** A right answer reached through false evidence is an unaudited answer. Leaving the false premise in four documents lets the next decision inherit it silently.
+
+---
+
+### 2026-07-30T02:49:12-07:00: §7.9: capability probing distinguishes "not supported" from "not asked correctly" [D28]
+
+**By:** Morpheus
+**What:** Five rules for `vk/caps.rs` and every caller. (1) A probe reports three states including *not determined*, never coerced to "not supported". (2) Every chained query is validated after the call; an all-zero `pNext` chain on a ≥1.1 device is **probe failure** until proven otherwise. (3) `--dump-capabilities` prints raw values, not only derived booleans. (4) Heap predicates stated positively and universally; UMA = "every heap is DEVICE_LOCAL", not "a heap is HOST_VISIBLE". (5) Capability-derived behaviour is tested on one integrated and one discrete device before it is trusted.
+**Why:** Two bugs, both silent, from the first two-vendor run: the `push_next` chain discard (D-S12-01) zeroed every chained capability; `detect_uma` returned true on the discrete 4060 because ReBAR maps VRAM `HOST_VISIBLE`. Both are natural mistakes requiring structural prevention.
+
+---
+
+### 2026-07-30T02:49:12-07:00: `is_uma` predicate corrected — "every heap is DEVICE_LOCAL" not "largest heap is HOST_VISIBLE" [D-S12b-01]
+
+**By:** Switch
+**What:** Old predicate: "largest DEVICE_LOCAL heap is also HOST_VISIBLE" — wrongly reports discrete ReBAR GPU as UMA. New predicate: every memory heap is DEVICE_LOCAL. Confirmed: Intel Iris Xe `uma=true` (single DEVICE_LOCAL heap); RTX 4060 `uma=false` (system-RAM heap without DEVICE_LOCAL exists). Five unit tests, including one explicitly documenting the previously broken ReBAR case.
+**Why:** Staging copy bypass on a discrete GPU (RTX 4060) would have been fast and wrong.
+
+---
+
+### 2026-07-30T02:49:12-07:00: §9.1.2 rewritten — 45 ops execute on two GPUs; three qualifiers travel with any citation [D26]
+
+**By:** Morpheus
+**What:** §9.1.2 rewritten. 45 op rows (`Live`), barrier parity 46/28 on both devices under both backends. Three qualifiers: (1) executed through a Rust integration test, not through ONNX Runtime; (2) one kernel on one OS; (3) every contrib op, quantized path, and ORT-mediated route remain unexecuted. "A result obtained only on this desk is not a result this project has" is now more load-bearing, not less. ⚠️ **SUPERSEDES** the 2026-07-29 §9.1.2 "no shader dispatched" entry.
+**Why:** The risk inverted: from overclaiming execution we had not performed, to letting "we dispatch on two GPUs" stand in for "the EP works".
+
+---
+
+### 2026-07-30T02:49:12-07:00: M0 is NOT declared; six met, one partial, one not met [D27 / D41 / D42 / D43 / D46]
+
+**By:** Morpheus
+**What:** M0 criterion status — Met: build/clippy (1), no-ICD zero devices (4), shader-less claims nothing (5), CLAIM_DEBUG reasons (6), layering lint (7), doc consistency (9). Partial/Met: criterion 8 — legacy backend executed first time ever (46/28 on two GPUs, both backends, bit-exact). Not met: ORT-mediated `Add` claim assertion (2); validation-layer positive control (3 — "no errors surfaced" is what a run with the layer NOT loaded produces). Three items remain: validation positive control (Switch + Trinity); PLATFORMS.md LVP2 retracted (Link — done, see above); CI lanes green on lavapipe (Link + Trinity).
+**Why:** A standard that yields the first time it costs something was never a standard. M0 was placed in CI precisely because local success is the easiest and least transferable result.
+
+---
+
+### 2026-07-30T02:49:12-07:00: §10.0.1 R6 — a decision can be right, reasonably reached, and rest on evidence we manufactured [D37]
+
+**By:** Morpheus
+**What:** Three rules: (1) a decision record names its load-bearing reason; a number is never load-bearing alone — when supported by both a principle and a measurement, record which would have to fail for the decision to change; label provisional if the answer is the measurement. (2) A number produced by our own tooling is evidence about our tooling until corroborated by a second instrument. (3) A correction that leaves the conclusion standing must still be published.
+**Why:** R5 removal was reached by false evidence. Asymmetry noted: R5's direction (removing a capability) was safe; the same mistake in a permissive direction (adding a claim) would have shipped wrong answers.
+
+---
+
+### 2026-07-30T02:49:12-07:00: §10.0.1 R7 — instruments fabricate negatives; "absence of signal must not read as success" [D44]
+
+**By:** Morpheus
+**What:** Three-layer skip contradiction: `OnceLock`-cached claim-log path (dead instrument reads as "not claimed"), profiling-JSON workaround crashed on Intel, per-op `live` flag introduced a vacuous pass on `Add-i32` against an f32-only predicate. Two rules: (1) absence of an instrument must not read as a negative result — a probe that cannot find its data raises, it does not return False; (2) *derive, do not declare* — any fact the code knows is computed from the code, per form, never restated in a second language.
+**Why:** R7 is R6's twin and arguably worse: a manufactured negative asks for no explanation. Layer 2 and 3 were competent engineering applied to a false premise, each making the system worse.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Execution counters are always-on at the ORT boundary; `dispatches_executed` is the gate [D-T30]
+
+**By:** Tank
+**What:** `rust/src/counters.rs`: six process-wide relaxed atomics (`compile_calls`, `subgraphs_live`, `subgraphs_stub`, `compute_calls`, `compute_failures`, `dispatches_executed`), `VulkanEpCounters` C ABI struct, two exported C symbols, JSON file gated on `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE`, and teardown summary logged at WARN when count is zero. `dispatches_executed` incremented **after `dispatch_ort` returns null status** (fence waited, device finished). `epctl --check-counters <file>` exits 0/1/3 (0=pass, 1=below threshold, 3=lane did not report). File written twice: on first dispatch and at teardown.
+**Why:** M0 criterion 8 requires a *reported* non-zero dispatch count. Four consecutive red CI runs went unnoticed; two fabricated speedups retracted — all because "GPU work happened" was inferred from something else being green. A counter ORT's teardown emits cannot be inferred away. Debug-only would be absent in CI; log lines are greppable prose that breaks across owners.
+
+---
+
+### 2026-07-30T02:49:12-07:00: `Compute` must never return null on failure; null means success to ORT [D-T22]
+
+**By:** Tank
+**What:** `SubgraphComputeInfo` carries the `OrtApi` pointer; `Compute` returns a real `OrtStatus` on every internal error. ORT reads null from `Compute` as success — a failed compute reporting success leaves output tensors holding whatever was in them.
+**Why:** This is the same shape as the two fabricated speedups: a precondition dressed as an effect. A crash is better than a silent wrong answer. Pinned by `a_failing_compute_returns_a_real_status_not_a_silent_success`, verified adversarially.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Real `OrtAllocator` — reserved-VA handle scheme built and verified [D-T35 / D-T38 / D-T45 / D-T48]
+
+**By:** Tank
+**What:** `src/allocator.rs`: 64 GiB virtual-address reservation per device (`MEM_RESERVE`/`PROT_NONE`), page-aligned span carving, `BTreeMap<usize, Span>` for interior-pointer resolution. `attach_buffer(addr, BufferView)` is Switch's seam. Data transfer (`src/transfer.rs`) implemented: `CanCopy`, `CopyTensors`, `Release`. Device memory behind `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` (default off, blocked on `OrtDataTransferImpl`). **ORT's planner does arithmetic on our handles (D-T48):** 52 interior pointers observed, identical on both devices, all within span, `pointers_in_guard_band=0`. The planner does not engage on run 1 — every earlier "0 interior" probe was pointed at the wrong moment. `EpDevice_AddAllocatorInfo` leaks memory info by design (D-T36) — ORT dereferences it after `GetSupportedDevices`, so releasing causes an AV.
+**Why:** ORT pointer arithmetic on allocator return values would silently corrupt data with integer handles. The reserved-address-space design makes `ptr + n` stay in-span by construction, and makes the address unreadable so stray dereferences fault.
+
+---
+
+### 2026-07-30T02:49:12-07:00: `glslc` discovery includes installed-but-unexported Windows SDK [D-T29]
+
+**By:** Tank
+**What:** `build.rs::find_glslc` now searches (1) `$VULKAN_SDK/bin`, (2) `$PATH`, (3) highest-versioned `C:\VulkanSDK\<version>\Bin\glslc.exe`. Emits `cargo:warning` naming the compiler when it falls back to (3). Prevents phantom test failures when the SDK is installed but not on `PATH` or `VULKAN_SDK`.
+**Why:** A parity tool red for a reason CI is not is worse than no tool. False reds teach you to ignore the tool; that habit is how four consecutive red CI runs went unnoticed.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Worktree layout and inbox-portability constraint
+
+**By:** Coordinator (structural fact)
+**What:** The team now works in git worktrees: `squad/switch` at `C:\Users\justinchu\dev\ep-vulkan-switch`, `squad/mouse` at `C:\Users\justinchu\dev\ep-vulkan-mouse`, `squad/tank` at `C:\Users\justinchu\dev\ep-vulkan-tank`, with `main` as the integration tree. **`.squad/decisions/inbox/` is gitignored — records written in a worktree do not travel with the branch.** The inbox in `main` is authoritative. If the inbox count looks short against a manifest, sweep worktrees rather than assuming a record was never written.
+**Why:** Records have already been missed due to worktree isolation. Tank's `cargo ci` now warns about it.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Hardware matrix — CI verified, local GPUs confirmed, Intel = spec oracle [Link]
+
+**By:** Link
+**What:** Linux CI lane VERIFIED (`llvmpipe`, Vulkan 1.3.255, driverID MESA_LLVMPIPE); Windows CI lane VERIFIED (lavapipe enumerated after ICD registry registration). Local: Intel Iris Xe Vulkan 1.4.309 PASS, RTX 4060 Laptop Vulkan 1.4.325 PASS. Intel is the spec-conformance oracle — Intel failures predict MoltenVK failures and real portability problems. **Do not special-case Intel.** UMA = first-class platform column: Intel Iris Xe and mobile (Adreno, Mali) are UMA; test results on Iris Xe are a closer mobile proxy than results on the RTX 4060.
+**Why:** First execution-derived hardware matrix entries replace inferred/expected entries.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Vulkan struct teardown order enforced by field declaration order [D-S13-01]
+
+**By:** Switch
+**What:** `VulkanSession` fields declared in reverse creation order: pipeline_cache → cmd_pool → alloc → device → **instance last**. Rust drops fields top-to-bottom; declaring `instance` first caused `vkDestroyInstance` before `vkDestroyDevice` → STATUS_ACCESS_VIOLATION in `cdylib_load`.
+**Why:** Correct Vulkan teardown must be structurally enforced, not dependent on a `Drop` impl that can drift from the creation order.
+
+---
+
+### 2026-07-30T02:49:12-07:00: 45 op rows Live; Add and elementwise f32 execute on two GPUs; `Add` via ORT confirmed [D-M11-01 / D-M12-01 / D-M12-02]
+
+**By:** Mouse
+**What:** 1 → 45 Live rows. `Add` is Live for f32 only; `caps` stays `NUMERIC` for variant generation but `ew_binary_exercised` predicate declines non-f32 (`EXERCISED` evidence list: `add_f32_dispatches_end_to_end`, Intel Iris Xe 1.4.309, RTX 4060 Laptop 1.4.325). `Sub/Mul/Div/Pow` stay Staged — same template is not evidence (D-M11-02). `OnceLock`-cached claim log path fixed (D-M12-02) — `path()` now re-reads env var per decision so mid-process changes redirect. Profiling-JSON retained as the `is_vulkan_claimed` mechanism (D-M12-01 Trinity §22 finding: post-load env var changes unreliable for the DLL on Windows).
+**Why:** Seven activations unlocked by attribute push-constant tail (D below). The three-layer skip contradiction identified and closed.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Op attributes ride a push-constant parameter tail; Clip does not [Mouse attribute-params]
+
+**By:** Mouse
+**What:** Four-float parameter tail unconditionally at the end of every push-constant block (worst case 104 → 120 bytes, within 128-byte limit). Parameterless ops push four zeros they never read. One slot table read by both predicate and handler. Unlocks Selu, Elu, HardSigmoid, Shrink, ThresholdedRelu, LeakyRelu, CeluAlpha (7 activations). `Clip` excluded: two parameters, and the ORT kernel and GLSL semantics differ for NaN inputs.
+**Why:** A pipeline layout dependent on op would make a wrong push range UB that validation may not catch. Fixed range is cheaper than the bug class.
+
+---
+
+### 2026-07-30T02:49:12-07:00: `MatMulNBits` GEMV is Live (fp32 and fp16); layout read from the oracle [Mouse matmulnbits]
+
+**By:** Mouse
+**What:** `com.microsoft::MatMulNBits` Live for all `M`, fp32 and fp16. One workgroup per output element, grid `(N, M_total, 1)`. Layout derived by feeding `A=I` through ORT CPU EP. fp16 through `unpackHalf2x16/packHalf2x16` over `uint` — no 16-bit storage capability gated. Verified on both devices: `bits∈{4,8}`, `block_size∈{16,32,64,128}`, 3-input symmetric and 4-input asymmetric, fp32 `M∈{1,2,7,32}`, fp16 `M∈{1,3}`. All 161 Phi-3.5 `MatMulNBits` nodes are fp16 (`K∈{3072,8192}`, `N∈{3072,8192,9216,32064}`, bits=4, block_size=32, 3-input symmetric).
+**Why:** Claiming `MatMulNBits` alone actually worsens partition (D4 below) due to interleaving with GQA. Correct but incomplete coverage can be worse than less coverage.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Foundry Local census — two real production graphs; §8.5 third strengthening [D-M10-01 through D-M10-06 / D31 / D32]
+
+**By:** Mouse + Morpheus
+**What:** Phi-3.5-mini-instruct (`ai.onnx`=14, `com.microsoft`=1) and gpt-oss-20b (`ai.onnx`=21, `com.microsoft`=1) read from disk. Five findings: (1) `OPSET_STD_LLM=23` excludes both models — standard-domain rows serve mobius only; (2) `do_rotary=1` is universal, packed QKV on all GQA nodes — "claim GQA first, add rotary later" claims 0 nodes; (3) packed QKV predicate narrowed to require both inputs present; (4) `SimplifiedLayerNormalization` has `domain=""` in both graphs with no ONNX schema; (5) `QMoE` top-4 found (not top-1|2 as in schema). §8.5 rule: "a claim about what a producer emits is not evidence until read off a graph that producer actually produced. Builder source is intent; the model file is the fact." Metric of record upgraded to triple: `(claimed_op_coverage, island_count, largest_island_flops)` reported together, per producer at version.
+**Why:** Death-by-fallback observed: claiming `Cast` on gpt-oss raised coverage 28%→54% while raising islands 52→125. Coverage percentage alone scores it a 26-point win while partitioning worsens.
+
+---
+
+### 2026-07-30T02:49:12-07:00: mobius at `onnxruntime/mobius@87fd878`, default opset 24; producer revision pinned [D-M8-01 / D-M8-02 / D-M8-03]
+
+**By:** Mouse (corrected by Justin directive)
+**What:** Authoritative mobius is `onnxruntime/mobius` (not `justinchuby/onnx-genai-models`). Default opset 24. `ai.onnx::Attention` gained optional input 6 `nonpad_kv_seqlen` at opset 24 — a predicate written against opset 23 would have claimed that node and returned wrong logits. New ops found: `ai.onnx::Swish` (opset 24), `ai.onnx::TensorScatter` (opset 24). Producer revision must be pinned in census. Emitted op set is a function of producer, revision, **and how we describe ourselves** — contrib rows are not dead code on the mobius path if we advertise GQA support.
+**Why:** "The op inventory was correct in method but drawn from the wrong revision of the producer — the same class of error one level up." (Justin directive)
+
+---
+
+### 2026-07-30T02:49:12-07:00: ONNX Attention-24 `nonpad_kv_seqlen` — no opset bump; implement corrected semantics [copilot-directive / Fact Checker]
+
+**By:** Justin Chu (directive) + Fact Checker
+**What:** ONNX reference implementation of `ai.onnx::Attention`-24 was wrong for `nonpad_kv_seqlen` and was fixed in onnx 1.23 (commit 2816da65, June 20) **without an opset bump**. Justin ruled: implement the corrected semantics; no dual-path. Oracle must pin `onnx>=1.23` (fix not yet in any stable release as of 2026-07-29; onnx 1.22.0 is latest). ORT CPU EP (`>=1.28.0`) is already correct — pin matters only when using standalone onnx Python reference evaluator. **Opset-based version checks cannot see this class of defect by construction** — this is a known limitation of C2.
+**Why:** The same opset-24 graph yields different expected outputs under onnx 1.22 vs 1.23 with no signal in the model. An unpinned onnx drifts the oracle exactly as an unpinned `accuracy_level` drifts the ORT EP confidence knob.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Opset range through current version; both ONNX opset answers recorded [D-M9-01 / D-M9-02 / D-M9-03]
+
+**By:** Mouse (Justin directive: support opset up to current)
+**What:** `ONNX_OPSET_LAST_RELEASED=26`, `ONNX_OPSET_REGISTERED=27` (distinct constants, test asserts). All closed windows already cover every published schema version of their op; no window widened. `LinearAttention-27` and `CausalConvWithState-27` registered — onnx v1.22.0 standardised the Qwen3.5-hybrid ops (formerly `com.microsoft` main-branch).
+**Why:** Closed windows are schema-version windows; an opset-27 model is claimable for all of these — ORT resolves each node to its schema version. The distinction matters for elementwise rows (open-ended upward) vs LLM rows (versioned and closed).
+
+---
+
+### 2026-07-30T02:49:12-07:00: §8.8 RULING — dynamic-shape support is a claim-path capability; moves ahead of kernels [D47 / D48]
+
+**By:** Morpheus
+**What:** Symbolic extents are no longer a decline per se. Predicate now distinguishes: (a) rank known / extents symbolic → **claimable** if kernel takes extents as runtime parameters; (b) rank unknown → decline; (c) data-dependent → permanently declined. `REQUIRE_STATIC_SHAPES` renamed to `ENGINE_ACCEPTS_RUNTIME_EXTENTS` (inverted, gated on Switch's work). OQ-15 (indirect dispatch) promoted from tier-3 evaluation to **blocking** for M1. M1 gains the second-token criterion: same session, two different concrete values of a symbolic dim, no session re-compile. ⚠️ **SUPERSEDES** "kernels-first" sequencing; dynamic shapes are upstream of kernels, not in competition.
+**Why:** Phi-3.5 declined 363 nodes: `dynamic-shape` 258, `staged` 100. Full-set audit (D below) shows the asymmetry is larger: 98 of the 100 staged nodes are also shape-blocked. Landing all staged kernels while static shapes required yields 0 claimed nodes.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Decline census reports full set of failing checks; first-match is a ceiling [D-M decline-census / D3 mouse-runtime-extents]
+
+**By:** Mouse
+**What:** `registry::claim_audit` runs all checks, returns full set. JSONL record gains `codes`, `reasons`, `unevaluated`, `shape_class`, `predicate_ok`, `predicate_ok_runtime_extents`. Full-set Phi-3.5: `dynamic-shape` is **356 of 363**, not 258. 98 of 100 staged nodes are also shape-blocked. Landing all three staged kernels alone unlocks **0** nodes. 227 nodes predicate-clean under runtime extents; 161 (`MatMulNBits`) claimable immediately. gpt-oss full-set: `dynamic-shape` 342 > `staged` 197 — reading first-match would have reversed a correct ruling.
+**Why:** "A decline census is only usable for planning if it reports every failing check." R8: §10.0.1 — a decline code names the first failing check, not the only one.
+
+---
+
+### 2026-07-30T02:49:12-07:00: `ENGINE_ACCEPTS_RUNTIME_EXTENTS` flipped; 161 nodes claimed on Phi-3.5 [D-S18-01]
+
+**By:** Switch
+**What:** `ENGINE_ACCEPTS_RUNTIME_EXTENTS=true`. `CompiledKernel` stops baking extent-dependent fields at Compile for dynamic nodes; `dispatch_ort` reads real shapes at Compute via `GetTensorTypeAndShape`/`GetDimensions`. OQ-15 resolved for M1: re-record per shape (M2+ bucketing is an optimisation). Device 0 (Intel Iris Xe): 161 claimed, zero validation errors; Device 1 (RTX 4060): 161 claimed. Variable seqlen (seq=1 and seq=5 in same session) correct on both devices.
+**Why:** No new kernels needed — only the dispatch path changed. 97 nodes on Phi-3.5 (Mul×64, Sigmoid×32, Sub×1) were declined solely because the engine baked extents at Compile.
+
+---
+
+### 2026-07-30T02:49:12-07:00: §10.0.1 R8 — a decline code names the first failing check, not the only one [D47 D morpheus-dynamic-shape]
+
+**By:** Morpheus
+**What:** A first-match histogram answers "why did this node fail?" for one node; it cannot answer "what should we build first?" for a graph, and it fails in the direction of looking authoritative. The 100 `staged` nodes had never reached the shape check — their shape viability was unknown. The correct asymmetry is larger than 2.5×; it is total.
+**Why:** Mouse's full-set audit proved the first-match histogram on gpt-oss would have reversed a correct architectural ruling. Risk R8 added to §10.0.1.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Trinity — real Phi-3.5 run; barrier parity on two devices; Attention-24 oracle pin; profiling-JSON for `is_vulkan_claimed` [trinity-test-foundation §21 / §22]
+
+**By:** Trinity
+**What:** Phi-3.5-mini-instruct (2.2 GB) through the EP: loads, runs, 65 outputs, bit-identical across sessions, variable sequence length correct. Barrier parity 46 passed / 28 skipped on both devices (both barrier backends) with non-zero dispatch counts — first execution of the legacy backend. `_assert_oracle_versions()` in conftest.py: refuses if ORT<1.28 or onnx<1.22.0. Attention-24 tests marked `xfail(strict=True)` until `onnx>=1.23`. `is_vulkan_claimed` reverted to profiling-JSON (post-load env var changes unreliable for loaded DLL on Windows). Multi-device parametrization wired (blocked on Switch `ep.device_index`).
+**Why:** First production-model run through the EP. Legacy barrier backend had never executed; its compatibility claim now rests on bit-exact agreement rather than just code review.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Niobe — producer provenance structural; two fabricated speedups caught; portability floor is §7.2 [D-N19 through D-N28]
+
+**By:** Niobe
+**What:** `bench/producers.py`: `Producer{name,kind,version,digest,opsets,family}`, fingerprint `name@version#digest`. A case cannot carry a model-family label unless the producer built for that family. `compare.py` refuses cross-producer comparison (exit 2) — a timing without provenance is a mislabelled number. Portability floor = §7.2 (16 KiB shared, 256 invocations) not the smaller local GPU. `SUBGROUP_SIZE_IS_GUARANTEED=False` — both local GPUs happen to report 32, not a guarantee. `bench/portability.py`: verdicts `portable/needs-fallback/unknown`; `fits_device` from reported limits. UMA and discrete transfer models may not be blended. Two fabricated speedups caught: 1.70× (ORT 1.27 prints failure, doesn't raise) and 1.45× (EP loads, declines everything, all columns are CPU EP). Neither claimed.
+**Why:** A benchmark artefact is relative to its producer. "A timing has no shape to disagree about and so nothing fails loudly."
+
+---
+
+### 2026-07-30T02:49:12-07:00: Cross-platform generality is a standing constraint, checked continuously [copilot-directive-cross-platform]
+
+**By:** Justin Chu (directive)
+**What:** Cross-platform generality must be kept in mind at all times — not audited at the end. Specific structural forms: derive workgroup sizes from `maxComputeSharedMemorySize`, never from local constants; Intel Iris Xe = UMA = mobile proxy for memory model; Intel = spec oracle; no required extensions per §7.2; every `cfg` is a portability hazard (test `tests/portability.rs`); local results are development loop, not coverage.
+**Why:** This EP is the *cross-platform* backend. A Vulkan EP that only works on desktop NVIDIA has no reason to exist.
+
+---
+
+### 2026-07-30T02:49:12-07:00: onnx-runtime-ir trust objection withdrawn; structural objection stands independently [copilot-directive-mobius-opset24 / D30]
+
+**By:** Justin Chu (directive) + Morpheus
+**What:** `onnx-runtime-ir` (in `justinchuby/onnx-genai`) is the team's own crate; prudential trust objection withdrawn. Structural objection unchanged: ORT hands us `OrtGraph/OrtNode` across a C ABI; we never see a protobuf; adopting an external IR means copying the whole graph inside someone else's address space. Must be answered on merits. Named trigger still active: adopt when a graph representation must outlive a single `GetCapability` call.
+**Why:** Ownership retires the prudential half only. The structural argument must be engaged on its own merits.
+
+---
+
+### 2026-07-30T02:49:12-07:00: Phi-3.5 is a better first-execution target than Qwen3 [D-M10-06 / D-M10-05]
+
+**By:** Mouse (routed to Morpheus)
+**What:** Phi-3.5-mini-instruct: on disk, runnable, MHA (no KV-head broadcast), softcap=0, no SWA, symmetric RTN quantization (bits=4, block=32, K%32=0), cold-path control flow. Five op types cover 353/366 main-graph nodes; T4 exit criterion: `MatMulNBits` claimed → Phi-3.5 partitions into one island of ≥360 nodes. `ai.onnx::Attention` stays T3 implementation entry point (simpler schema, serves mobius); T3 demonstration is Phi-3.5.
+**Why:** The only LLM on disk, measureable, exercises none of the standard-domain LLM rows (§8.5 requires reporting separately). gpt-oss mixes 4-bit and 8-bit quantization and has SWA on 12/24 layers.
+
+
+---
+
+### 2026-07-30T02:49:12-07:00: fp16 elementwise Live; `OpCapability` allowlist; sub-word tail constraint [D-M1 / D-M2 / D-M3 — mouse-f16-elementwise.md]
+
+**By:** Mouse (not in original manifest — found in inbox)
+**What:** (D-M1) `only_proved_dtypes` replaces `only_f32` — predicate reads `EXERCISED` directly, so widening a claim is one edit, not two that can diverge silently. (D-M2) f16 elementwise via `uint` buffers + `unpackHalf2x16/packHalf2x16` — not via `OpCapability StorageBuffer16BitAccess` (which crashes under the engine's current feature set). `no_shader_requires_a_device_feature_the_engine_does_not_enable` assertion decodes `OpCapability` from every embedded module against an allowlist. This class of bug is silent when the matching claim is closed — must be caught in artifact, not at runtime. (D-M3) `claim::check_subword_tail` declines tensors where last-axis byte count is odd — ORT sizes tensors exactly and the EP binds what it is given; rounding up is Switch's named lift condition (bind `VkDescriptorBufferInfo.range` rounded up to multiple of 4). **Cross-owner flag:** `rust/shaders/include/indexing.glsl` edited under Switch's ownership (pre-ruling) — Switch should review the f16 packed-half hunk.
+**Result:** 257 nodes have `codes=["dynamic-shape"]` and `predicate_ok_runtime_extents=true` on Phi-3.5 — one blocker, named. `MatMulNBits×161 + Mul×64 + Sigmoid×32 = 257` claimed when shapes pinned. Same argmax token (30751) as CPU EP; first real-model arithmetic on this EP. **The 97 dtype and 258 dynamic-shape counts were not disjoint** — the correct unified statement is 257 extent-blocked with predicate OK.
+**Why:** A closed claim hides bugs in the variant it excludes — `StorageBuffer16BitAccess` modules had been unloadable since written, invisible because f16 was closed. The RTX 4060/Iris Xe divergence (6/12 fp16 failures on device 0) found the sub-word overrun before it could mislead.
