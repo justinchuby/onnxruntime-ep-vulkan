@@ -61,3 +61,70 @@ Memory-pattern planner does not engage on run 1. From run 2 onward hands back in
 
 ### Performance metric is a TRIPLE
 `(claimed_op_coverage, island_count, largest_island_flops)` per producer at version. Portability floor = §7.2. `SUBGROUP_SIZE_IS_GUARANTEED=False`.
+
+---
+
+## Session 23 — R9, the correctness gate, and reopening met criteria (2026-07-30T05:48:29-07:00)
+
+### The event
+Coordinator ran the comparison nobody had run: real 2.2 GB Phi-3.5, VulkanEP vs CPU-only, both devices.
+`cpu argmax 30751` / `vk argmax 0`, top-10 overlap 0/10, `vk logits [0.0000, 0.0000]`. Output #64
+(KV-cache) differs by 25.27 and is NOT zero — the session is not uniformly zeroed, the logits path is
+dead. 161 MatMulNBits claimed AND accepted by ORT. `compile_calls:1, subgraphs_live:161,
+compute_calls:161, compute_failures:0, dispatches_executed:161, islands:161`. Identical on Iris Xe and
+RTX 4060 → deterministic logic fault. **Test suite entirely green.**
+
+### R9 — the rule (DESIGN.md §10.0.1)
+> A set of individually sound instruments can be jointly silent on the property that matters, and their
+> agreement raises confidence without raising evidence. Therefore: **for every claim, name the instrument
+> that would go red if the claim were false.** If no such instrument exists, the claim is not evidenced,
+> however much telemetry surrounds it.
+
+Named **the red-instrument test**. Key insight to carry forward: **confidence scales with the number of
+agreeing instruments; evidence scales only with the number of falsifying ones.** A set with zero
+falsifiers has zero evidential weight no matter how large. R9 gets WORSE as telemetry gets BETTER —
+Switch's counter repairs made the false conclusion more persuasive. R6/R7 are defeated by
+corroboration; **R9 is not** — the second device agreed and both were right about the wrong question.
+Also: every instrument has a **silence set**, recorded when the instrument is added.
+`test_matmulnbits.py` mentions f16 exactly twice; Phi-3.5 is entirely fp16 — the suite's silence set
+contained the defect.
+
+### §9.1.3 — `compute_failures` ruled
+Execution-status counter. Licensed reading is exactly: *no dispatch reported an error it was able to
+detect.* Not licensed for correctness. **Prose cannot close this** (R7: derive, do not declare; R6: a
+written rationale carried a false number for weeks). Mechanism: a `model_output_equivalence` verdict
+emitted next to the counters, default `UNMEASURED`; no counters summary quotable without it. **Counter
+NOT renamed** — `VulkanEpCounters` is published C ABI used by epctl / probe_allocator.py / test_phi35.py;
+compatibility outranks API elegance. Precedent named: `Compute` returning `null` = SUCCESS to ORT —
+absence of a report IS the success report, same defect one layer down.
+
+### Metric of record — gated, not extended (§10.0)
+Triple stays a triple. Gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}, default
+UNMEASURED. Rejected making it a quadruple: **a wrong answer does not discount the other three numbers,
+it voids them**; a fourth column invites the trade the triple exists to prevent. Coverage 0→161 and
+islands 0→161 while the model went correct-via-CPU → wrong-via-GPU.
+
+### M0 criteria — reopened
+Applied my own drafting rule to the MET rows. **M0 as written could be fully met by an EP that computes
+zeros on every real model.** Defect in the criteria, not the engineering, and mine.
+- **Criterion 10 ADDED** — model-level correctness at producer-at-version. NOT MET (DIVERGENT).
+- **Criterion 2 REOPENED** — only correctness criterion, bottoms out in a single `Add`.
+- **Criteria 4 & 5 REOPENED** — negative-space, no positive control; an always-broken EP passes both.
+- **Criterion 8 relabelled** — parity only; two backends agreeing on a wrong value satisfies it.
+- Criterion 7 untouched — the only M0 criterion with a falsifier from day one; now the pattern.
+- **4 met / 4 partial / 2 not met**, down from 7/1/1. Said plainly: M0 is further away than yesterday,
+  and none of that movement is a code regression.
+
+### Sequencing
+Criterion 10 outranks the M0 tail (Windows+Linux, software rasteriser, CI) **in order, not as a gate**.
+Tail stays in M0's sentence unsoftened. Reasons: certifying a defect onto three more platforms; a green
+CI lane is itself an R9 composite (adds agreeing instruments to a falsifier-free set); the engineers are
+already on criterion 10. Link NOT blocked — lane bring-up is a prerequisite for running criterion 10 off
+this desk. When the lanes run they must carry criterion 10's gate.
+
+### Carry forward
+- Ask the red-instrument question before quoting any number.
+- `UNMEASURED` is first-class everywhere and is always the default.
+- Do not rename published C ABI to fix a documentation problem.
+
+📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.

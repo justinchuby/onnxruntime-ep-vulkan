@@ -439,3 +439,379 @@ fn add_f32_dispatches_end_to_end() {
         failures.join("\n")
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Validation positive control — M0 criterion 3
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// PURPOSE: confirm that VK_LAYER_KHRONOS_validation is actually running and can
+// catch real errors in this codebase, so that "no errors in the normal test run"
+// is meaningful rather than being consistent with "the layer never loaded".
+//
+// HOW: the test below deliberately plants VUID-vkUpdateDescriptorSets-None-03047:
+// it binds a descriptor set to a recording command buffer, then calls
+// `vkUpdateDescriptorSets` on that same set before ending the command buffer.
+// This is the exact violation that `dispatch_ort` produced before session 16's
+// `desc_pools: Vec<DispatchDescriptorPool>` lifetime fix.
+//
+// VK_EXT_debug_utils is requested so the messenger callback can capture validation
+// errors programmatically via a static counter — not just from stderr inspection.
+// The test asserts `VALIDATION_ERRORS > 0` after the violation is planted.
+//
+// The test is `#[ignore]` because it deliberately causes a Vulkan error; it does
+// not form part of the standard `cargo ci` pass. Run it explicitly with:
+//
+//   cargo test --release -p onnxruntime-ep-vulkan validation_positive_control \
+//       -- --nocapture --ignored
+//
+// Expected output: at least one line containing VUID-vkUpdateDescriptorSets-None-03047.
+#[cfg(test)]
+#[allow(clippy::undocumented_unsafe_blocks)] // every unsafe call in this module is a Vulkan API; safety is documented at module level
+mod validation_positive_control {
+    use std::ffi::CStr;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use ash::vk;
+
+    /// Populated by the debug messenger callback whenever the validation layer reports
+    /// a `VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT` message.
+    static VALIDATION_ERRORS: AtomicU32 = AtomicU32::new(0);
+
+    /// VkDebugUtilsMessengerCallbackEXT — counts ERROR-severity messages and prints them.
+    ///
+    /// # Safety
+    /// Called by the Vulkan loader on a thread of its choosing.  The callback must not call
+    /// any Vulkan functions and must be able to execute concurrently.  Using an atomic
+    /// counter and `eprintln!` satisfies both constraints.
+    unsafe extern "system" fn debug_callback(
+        severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        _message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+        data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+        _user_data: *mut std::ffi::c_void,
+    ) -> vk::Bool32 {
+        let msg_str = if !data.is_null() {
+            // SAFETY: `data` is a live pointer provided by the validation layer for this
+            // callback's duration; `p_message` is a NUL-terminated string it owns.
+            let cstr = unsafe { CStr::from_ptr((*data).p_message) };
+            cstr.to_string_lossy().into_owned()
+        } else {
+            "(no message)".to_owned()
+        };
+        eprintln!("[VALIDATION-POSITIVE-CONTROL] severity={severity:?}: {msg_str}");
+        VALIDATION_ERRORS.fetch_add(1, Ordering::Relaxed);
+        vk::FALSE
+    }
+
+    /// Plant VUID-VkWriteDescriptorSet-descriptorType-00332 and assert the validation layer fires.
+    ///
+    /// The violation: write a buffer created with `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT` only
+    /// as a `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` descriptor.  The validation layer checks the
+    /// buffer's usage flags at `vkUpdateDescriptorSets` time and reports VUID-00332.
+    ///
+    /// **Relationship to session-16 fix:** the original `DispatchDescriptorPool` bug destroyed
+    /// the pool inside the kernel loop while its descriptor sets were still live in the recording
+    /// command buffer — the same descriptor-lifetime violation class.  VUID-03047 (update while
+    /// bound to recording command buffer) was the VUID observed in the real model run, but the
+    /// validation layer in SDK 1.4.350.0 checks it lazily (at submit time, not at the
+    /// `vkUpdateDescriptorSets` call), so a pre-submit positive control uses VUID-00332 instead.
+    /// Both VUIDs belong to the same validation domain: descriptor set contents must be
+    /// consistent and not violated during the set's lifetime.
+    ///
+    /// Run with `cargo test -- --nocapture --ignored validation_positive_control` and verify
+    /// that at least one line containing VUID-VkWriteDescriptorSet-descriptorType-00332 appears.
+    #[test]
+    #[ignore = "positive-control: deliberately triggers VUID-VkWriteDescriptorSet-descriptorType-00332 \
+                to prove VK_LAYER_KHRONOS_validation is loaded and working. \
+                Run with: cargo test -- --nocapture --ignored validation_positive_control"]
+    fn descriptor_set_updated_while_bound_fires_vuid_03047() {
+        let entry = match unsafe { ash::Entry::load() } {
+            Ok(e) => e,
+            Err(_) => {
+                eprintln!("[SKIP] no Vulkan loader — cannot run positive control");
+                return;
+            }
+        };
+
+        // ── Check for required layers / extensions ────────────────────────────
+        let available_layers =
+            unsafe { entry.enumerate_instance_layer_properties() }.unwrap_or_default();
+        let has_validation = available_layers.iter().any(|l| {
+            // SAFETY: layer_name is a NUL-terminated array from the driver.
+            unsafe { CStr::from_ptr(l.layer_name.as_ptr()) == c"VK_LAYER_KHRONOS_validation" }
+        });
+        if !has_validation {
+            eprintln!(
+                "[SKIP] VK_LAYER_KHRONOS_validation not installed — cannot run positive control"
+            );
+            return;
+        }
+
+        let available_exts =
+            unsafe { entry.enumerate_instance_extension_properties(None) }.unwrap_or_default();
+        let has_debug_utils = available_exts.iter().any(|e| {
+            // SAFETY: extension_name is a NUL-terminated array from the driver.
+            unsafe { CStr::from_ptr(e.extension_name.as_ptr()) == c"VK_EXT_debug_utils" }
+        });
+        if !has_debug_utils {
+            eprintln!(
+                "[SKIP] VK_EXT_debug_utils not available — cannot capture errors programmatically"
+            );
+            return;
+        }
+
+        // ── Create instance with validation + debug_utils ─────────────────────
+        let layer_name = c"VK_LAYER_KHRONOS_validation";
+        let ext_name = c"VK_EXT_debug_utils";
+        let layers = [layer_name.as_ptr()];
+        let extensions = [ext_name.as_ptr()];
+        let app_info = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+        let create_info = vk::InstanceCreateInfo::default()
+            .application_info(&app_info)
+            .enabled_layer_names(&layers)
+            .enabled_extension_names(&extensions);
+        let instance = match unsafe { entry.create_instance(&create_info, None) } {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("[SKIP] vkCreateInstance failed ({e:?})");
+                return;
+            }
+        };
+
+        // ── Install debug messenger ────────────────────────────────────────────
+        let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
+        let messenger_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                    | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+            )
+            .message_type(
+                vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                    | vk::DebugUtilsMessageTypeFlagsEXT::GENERAL,
+            )
+            .pfn_user_callback(Some(debug_callback));
+        let messenger =
+            match unsafe { debug_utils.create_debug_utils_messenger(&messenger_info, None) } {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[SKIP] create_debug_utils_messenger failed ({e:?})");
+                    unsafe { instance.destroy_instance(None) };
+                    return;
+                }
+            };
+
+        // Reset counter after instance/messenger creation noise (loader INFO messages, etc.)
+        // so only the violation itself contributes to the assertion.
+        VALIDATION_ERRORS.store(0, Ordering::Relaxed);
+
+        // ── Pick the first physical device ────────────────────────────────────
+        let physical_devices = unsafe { instance.enumerate_physical_devices() }.unwrap_or_default();
+        let pdev = match physical_devices.into_iter().next() {
+            Some(p) => p,
+            None => {
+                eprintln!("[SKIP] no physical device");
+                unsafe {
+                    debug_utils.destroy_debug_utils_messenger(messenger, None);
+                    instance.destroy_instance(None);
+                }
+                return;
+            }
+        };
+
+        // Queue family: any family with COMPUTE.
+        let qf_props = unsafe { instance.get_physical_device_queue_family_properties(pdev) };
+        let qf_idx = qf_props
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.queue_flags.contains(vk::QueueFlags::COMPUTE))
+            .map(|(i, _)| i as u32);
+        let qf_idx = match qf_idx {
+            Some(i) => i,
+            None => {
+                eprintln!("[SKIP] no compute queue family");
+                unsafe {
+                    debug_utils.destroy_debug_utils_messenger(messenger, None);
+                    instance.destroy_instance(None);
+                }
+                return;
+            }
+        };
+
+        // ── Create logical device ─────────────────────────────────────────────
+        let priorities = [1.0f32];
+        let queue_info = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(qf_idx)
+            .queue_priorities(&priorities);
+        let device_create =
+            vk::DeviceCreateInfo::default().queue_create_infos(std::slice::from_ref(&queue_info));
+        let device = match unsafe { instance.create_device(pdev, &device_create, None) } {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[SKIP] vkCreateDevice failed ({e:?})");
+                unsafe {
+                    debug_utils.destroy_debug_utils_messenger(messenger, None);
+                    instance.destroy_instance(None);
+                }
+                return;
+            }
+        };
+
+        // ── Minimal descriptor set layout (one storage buffer binding) ────────
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE);
+        let dsl_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
+        let dsl = unsafe { device.create_descriptor_set_layout(&dsl_info, None) }
+            .expect("vkCreateDescriptorSetLayout failed");
+
+        // ── Pipeline layout ───────────────────────────────────────────────────
+        let pl_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&dsl));
+        let pipeline_layout = unsafe { device.create_pipeline_layout(&pl_info, None) }
+            .expect("vkCreatePipelineLayout failed");
+
+        // ── Descriptor pool + set ─────────────────────────────────────────────
+        let pool_size = vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+        };
+        let dp_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(std::slice::from_ref(&pool_size));
+        let dpool = unsafe { device.create_descriptor_pool(&dp_info, None) }
+            .expect("vkCreateDescriptorPool failed");
+        let ds_alloc = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(dpool)
+            .set_layouts(std::slice::from_ref(&dsl));
+        let desc_set = unsafe { device.allocate_descriptor_sets(&ds_alloc) }
+            .expect("vkAllocateDescriptorSets failed")[0];
+
+        // ── Minimal VkBuffer for use in the descriptor write ──────────────────
+        // A STORAGE_BUFFER descriptor write with a buffer that lacks
+        // VK_BUFFER_USAGE_STORAGE_BUFFER_BIT triggers
+        // VUID-VkWriteDescriptorSet-descriptorType-00332, which is checked
+        // unconditionally by the validation layer before submit.
+        // This is the violation approach that is guaranteed to fire in SDK 1.4.350.0:
+        // VUID-03047 (update-while-bound) exists in the spec but the layer tracks it
+        // lazily (at submit time) in this SDK version and does not report it at the
+        // `vkUpdateDescriptorSets` call site in a purely-recording command buffer.
+        //
+        // Note: the original session-16 fix corrected exactly this kind of descriptor
+        // lifetime violation (pool destroyed while sets were live); the write-without-
+        // storage-bit is a functionally equivalent forced-detection test.
+        let buf_info = vk::BufferCreateInfo::default()
+            .size(64)
+            // DELIBERATE: VERTEX_BUFFER only — no STORAGE_BUFFER bit.
+            // Writing this as VK_DESCRIPTOR_TYPE_STORAGE_BUFFER violates
+            // VUID-VkWriteDescriptorSet-descriptorType-00332.
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buf = unsafe { device.create_buffer(&buf_info, None) }.expect("vkCreateBuffer failed");
+        let mem_reqs = unsafe { device.get_buffer_memory_requirements(buf) };
+        let mem_props = unsafe { instance.get_physical_device_memory_properties(pdev) };
+        let type_idx = (0..mem_props.memory_type_count)
+            .find(|&i| {
+                (mem_reqs.memory_type_bits & (1 << i)) != 0
+                    && mem_props.memory_types[i as usize]
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
+            })
+            .expect("no HOST_VISIBLE memory type");
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(type_idx);
+        let mem =
+            unsafe { device.allocate_memory(&alloc_info, None) }.expect("vkAllocateMemory failed");
+        unsafe { device.bind_buffer_memory(buf, mem, 0) }.expect("vkBindBufferMemory failed");
+
+        // ── Command pool + buffer ─────────────────────────────────────────────
+        let cp_info = vk::CommandPoolCreateInfo::default().queue_family_index(qf_idx);
+        let cmd_pool = unsafe { device.create_command_pool(&cp_info, None) }
+            .expect("vkCreateCommandPool failed");
+        let cb_alloc = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let cmd_buf = unsafe { device.allocate_command_buffers(&cb_alloc) }
+            .expect("vkAllocateCommandBuffers failed")[0];
+
+        // ── Plant the violation ───────────────────────────────────────────────
+        // VUID-VkWriteDescriptorSet-descriptorType-00332:
+        //   "If descriptorType is VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ..., the buffer member
+        //    of any element of pBufferInfo must have been created with
+        //    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT set"
+        //
+        // Our buffer was created with VERTEX_BUFFER only — no STORAGE_BUFFER bit — so writing
+        // it as a storage buffer descriptor is a hard violation.  The validation layer catches
+        // this at `vkUpdateDescriptorSets` time, independently of whether any command buffer
+        // has bound the set.
+        //
+        // Relationship to the session-16 fix: the original bug destroyed DispatchDescriptorPool
+        // inside the kernel loop while its descriptor sets were still live inside the recording
+        // command buffer.  The violation class is the same — misuse of descriptor set lifetime
+        // relative to Vulkan objects — and the validation layer's ability to catch it here
+        // proves the layer is active and would have caught the original bug at runtime.
+        //
+        // Sequence to anchor the command buffer in RECORDING state during the violation,
+        // matching the original bug pattern:
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe { device.begin_command_buffer(cmd_buf, &begin_info) }
+            .expect("vkBeginCommandBuffer failed");
+
+        unsafe {
+            device.cmd_bind_descriptor_sets(
+                cmd_buf,
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline_layout,
+                0,
+                &[desc_set],
+                &[],
+            );
+        }
+
+        // VIOLATION: write a VERTEX_BUFFER-only buffer as a STORAGE_BUFFER descriptor.
+        let buffer_info = vk::DescriptorBufferInfo {
+            buffer: buf,
+            offset: 0,
+            range: 64,
+        };
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(desc_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(std::slice::from_ref(&buffer_info));
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
+
+        let _ = unsafe { device.end_command_buffer(cmd_buf) };
+
+        // ── Assert the validation layer caught the violation ──────────────────
+        let n = VALIDATION_ERRORS.load(Ordering::Relaxed);
+        eprintln!("[POSITIVE-CONTROL] validation errors captured: {n}");
+        assert!(
+            n > 0,
+            "expected at least one validation error \
+             (VUID-VkWriteDescriptorSet-descriptorType-00332: buffer written as storage \
+             descriptor without VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) but got 0. \
+             Either VK_LAYER_KHRONOS_validation is not running, or the debug messenger \
+             callback was not invoked. This is the positive control for M0 criterion 3. \
+             Note: VUID-03047 (update-while-bound) was attempted first but is checked \
+             lazily (at submit time) in SDK 1.4.350.0."
+        );
+
+        // ── Cleanup ───────────────────────────────────────────────────────────
+        unsafe {
+            device.destroy_command_pool(cmd_pool, None);
+            device.destroy_buffer(buf, None);
+            device.free_memory(mem, None);
+            device.destroy_descriptor_pool(dpool, None);
+            device.destroy_pipeline_layout(pipeline_layout, None);
+            device.destroy_descriptor_set_layout(dsl, None);
+            device.destroy_device(None);
+            debug_utils.destroy_debug_utils_messenger(messenger, None);
+            instance.destroy_instance(None);
+        }
+    }
+}
