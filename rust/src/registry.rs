@@ -841,6 +841,14 @@ pub enum DeclineCode {
     ContribSchema,
     /// The node is fine but the subgraph it would join is not viable — see `ops::partition`.
     Partition,
+    /// A row is `Ready` (kernel exists) but no ledger proof covers this form, and the proof
+    /// key is not in `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`.
+    ///
+    /// Under §8.9 (`DESIGN.md`), claiming is gated on evidence: a `Ready` row without a proof
+    /// entry is, for claiming purposes, equivalent to a row we cannot run.  The escape hatch
+    /// (`CLAIM_UNPROVEN`) accepts a comma-separated list of explicit proof keys and nothing else
+    /// — no wildcards, no `=1`, no domain patterns.
+    Unproven,
     /// An internal inconsistency; should never reach a user.
     Internal,
 }
@@ -863,6 +871,7 @@ impl DeclineCode {
             DeclineCode::Attribute => "attribute",
             DeclineCode::ContribSchema => "contrib-schema",
             DeclineCode::Partition => "partition",
+            DeclineCode::Unproven => "unproven",
             DeclineCode::Internal => "internal",
         }
     }
@@ -883,6 +892,7 @@ impl DeclineCode {
         DeclineCode::Attribute,
         DeclineCode::ContribSchema,
         DeclineCode::Partition,
+        DeclineCode::Unproven,
         DeclineCode::Internal,
     ];
 
@@ -990,10 +1000,35 @@ impl Domain {
 }
 
 /// Whether a row is actually backed by a working kernel.
+///
+/// # §8.9 — `Live` is being replaced by `Ready`
+///
+/// Under the §8.9 proof-ledger ruling, the table declares only facts about *source*:
+/// `Ready` means "a kernel exists"; `Staged` means "no kernel yet". Claimability is
+/// derived, per form, from a harness-generated proof ledger. The hand-written `Live`
+/// variant is the per-op claim that §8.9 removes.
+///
+/// **Transition state (2026-07-30):** `Ready` is introduced alongside `Live`. New rows
+/// should use `Ready`. Existing `Live` rows are semantically unchanged until the ledger
+/// check is activated in `claim_audit` — at which point every `Live`/`Ready` row without
+/// a ledger entry will decline with `[unproven]` unless its proof key is in
+/// `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`. The rename will complete in a single sweep
+/// when Trinity's harness is ready to generate the ledger. Until then, `Live` compiles
+/// and behaves identically to `Ready`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpStatus {
-    /// Claimable. The shader exists, the handler translates, conformance covers it.
+    /// Kernel exists, conformance proven. **Deprecated** — use `Ready`.
+    ///
+    /// Semantically identical to `Ready`; present only to let existing op-table rows
+    /// compile unchanged during the §8.9 transition. Once the proof ledger is active,
+    /// "proven" is a ledger-level fact, not a hand-written variant.
     Live,
+    /// Kernel exists. Claimability is derived from the proof ledger — not from this field.
+    ///
+    /// A row carrying `Ready` with no ledger entry declines with `[unproven]`. A proof key
+    /// in `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` overrides the ledger check for
+    /// development, subject to §8.9.4 restrictions.
+    Ready,
     /// Described and claim-tested, but declined at runtime with the given blocker.
     ///
     /// This is how the op table lands ahead of the shaders without ever violating the
@@ -1335,9 +1370,13 @@ impl OpSpec {
         }
     }
 
-    /// Whether this row is claimable at all.
+    /// Whether this row is claimable at all (kernel exists, regardless of proof status).
+    ///
+    /// Returns `true` for both `Live` (deprecated) and `Ready` rows; `Staged` rows always
+    /// return `false`.  Under §8.9, a `true` result here is necessary but not sufficient —
+    /// claiming is also gated on the proof ledger (or `CLAIM_UNPROVEN` escape hatch).
     pub fn is_live(&self) -> bool {
-        matches!(self.status, OpStatus::Live)
+        matches!(self.status, OpStatus::Live | OpStatus::Ready)
     }
 
     /// The C2 column: which ORT release this row's claim predicate was verified against, and when.
@@ -1462,7 +1501,128 @@ fn lookup(qualified: &str) -> Option<&'static OpSpec> {
     all_specs().find(|s| s.qualified_name() == qualified)
 }
 
-/// The one question `ep.rs` asks per node.
+// -------------------------------------------------------------------------------------------
+// Proof ledger and CLAIM_UNPROVEN escape hatch — §8.9 scaffolding
+// -------------------------------------------------------------------------------------------
+
+/// The proof key for one dispatchable op form.
+///
+/// Under §8.9 (`DESIGN.md`), every `Ready` row requires a matching ledger entry before it may be
+/// claimed.  The key is the tuple that selects the dispatched code and the layout of what it reads:
+///
+/// ```text
+/// (domain, op_type, opset_bucket,
+///  element dtype of every input and output,
+///  kernel_variant_key — including any spec-constant value that changes the emitted code,
+///  shape_class ∈ {static, runtime-extent},
+///  populated_optional_input_set)
+/// ```
+///
+/// Two nodes whose keys are equal are dispatched by the same code with the same descriptor
+/// layout; proof of one is proof of the other.  Any difference in the tuple corresponds to a
+/// different code path and requires independent proof.
+///
+/// The `populated_optional_input_set` component is the field the 2026-07-30 defect would
+/// have caught: `MatMulNBits` without `zero_points` (3 bindings) and with `zero_points` (4
+/// bindings) have different keys and different binding arities, so proof of one cannot be
+/// returned for the other.
+///
+/// # String representation (for `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`)
+///
+/// Keys are serialised as `domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs`.
+/// Example: `com.microsoft::MatMulNBits/1+/f16,u8,f16/qgemv_f16/runtime-extent/scales`.
+/// The canonical form is emitted by the harness that generated the proof; hand-written keys
+/// must match exactly.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProofKey(pub String);
+
+impl ProofKey {
+    /// Parse from a string representation.
+    pub fn parse(s: &str) -> Self {
+        ProofKey(s.trim().to_owned())
+    }
+
+    /// Reject values that the §8.9.4 escape hatch must never accept.
+    ///
+    /// §8.9.4 rule 1: "a parser that can express 'everything' must not exist", enforced as a
+    /// planted test.  Any value that a careless operator could use to mean "all forms" is
+    /// rejected here.  The test [`test_claim_unproven_rejects_wildcards`] plants these exact
+    /// strings and asserts each returns `Err`.
+    pub fn validate(s: &str) -> Result<Self, &'static str> {
+        let t = s.trim();
+        if t.is_empty() {
+            return Err("empty key");
+        }
+        // §8.9.4 planted rejections — a parser that can express 'everything' must not exist.
+        if t == "*" || t == "all" || t == "1" || t == "true" || t == "yes" {
+            return Err("wildcard key '*/all/1/true/yes' is not a valid proof key");
+        }
+        // A bare op-type (no '/' separating the required fields) is not a valid key —
+        // it would silently cover all forms of that op type.
+        if !t.contains('/') {
+            return Err(
+                "bare op-type is not a valid proof key; use the full \
+                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form",
+            );
+        }
+        Ok(ProofKey(t.to_owned()))
+    }
+}
+
+/// Parse the `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` environment variable.
+///
+/// Returns the list of explicitly enabled proof keys.  Panics at session creation (via ORT's WARN
+/// log) if any key fails validation — per §8.9.4, the default-safe setting requires no act, and a
+/// malformed allowlist fails loudly rather than silently enabling everything.
+///
+/// The env var takes a comma-separated list of full proof keys.  There is no boolean form, no
+/// `=1`, and no wildcard.
+pub fn claim_unproven_keys() -> Vec<ProofKey> {
+    let val = match std::env::var("ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Vec::new(),
+    };
+    let mut keys = Vec::new();
+    for part in val.split(',') {
+        match ProofKey::validate(part) {
+            Ok(k) => keys.push(k),
+            Err(e) => {
+                // §8.9.4 item 3 — log at WARN and treat the WHOLE list as empty (safe default).
+                eprintln!(
+                    "[VulkanEP WARN] ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN contains an invalid \
+                     key {:?}: {}. The entire list is ignored and all unproven forms decline.",
+                    part.trim(),
+                    e
+                );
+                return Vec::new();
+            }
+        }
+    }
+    if !keys.is_empty() {
+        eprintln!(
+            "[VulkanEP WARN] ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN is set with {} key(s): {}. \
+             Unproven forms enabled for development. Do not ship this configuration.",
+            keys.len(),
+            keys.iter().map(|k| k.0.as_str()).collect::<Vec<_>>().join(", ")
+        );
+    }
+    keys
+}
+
+/// Proof ledger stub — returns `false` until Trinity's harness generates the ledger file.
+///
+/// TODO(mouse, §8.9): Replace this with a ledger generated by the differential harness
+/// and baked into the cdylib at build time via `build.rs`. The ledger maps each
+/// `ProofKey` to the set of devices, ORT builds, and tolerance policies that proved it.
+/// A hand-edited ledger fails the regeneration check in CI.
+///
+/// Until the harness is ready, `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` is the only path
+/// to claiming `Ready` rows.
+pub fn ledger_contains(_key: &ProofKey) -> bool {
+    false
+}
+
+
 ///
 /// `Ok(())` means claim it. `Err(reason)` means leave it to the CPU EP and report `reason` under
 /// claim-debug. There is no third answer and no per-op logic anywhere above this function.
@@ -2068,5 +2228,72 @@ mod tests {
         };
         assert_eq!(scalar.rank(), Some(0));
         assert!(scalar.is_static());
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // §8.9.4 planted rejections — CLAIM_UNPROVEN validation
+    //
+    // "A parser that can express 'everything' must not exist" — enforced here, not by convention.
+    // Each test plants a specific disallowed string and asserts `ProofKey::validate` returns `Err`.
+    // If any of these tests are deleted, the no-wildcard guarantee no longer has a mechanism.
+    // -------------------------------------------------------------------------------------------
+
+    /// `*` is the most obvious wildcard and must always be rejected.
+    #[test]
+    fn claim_unproven_rejects_star_wildcard() {
+        assert!(
+            ProofKey::validate("*").is_err(),
+            "'*' must not be a valid proof key — it would silently enable all forms"
+        );
+    }
+
+    /// `=1` style booleans must be rejected (§8.9.4: no boolean form).
+    #[test]
+    fn claim_unproven_rejects_boolean_one() {
+        assert!(
+            ProofKey::validate("1").is_err(),
+            "'1' must not be a valid proof key — it would silently enable all forms"
+        );
+    }
+
+    /// `all` is the natural-language wildcard and must be rejected.
+    #[test]
+    fn claim_unproven_rejects_all_wildcard() {
+        assert!(
+            ProofKey::validate("all").is_err(),
+            "'all' must not be a valid proof key — it would silently enable all forms"
+        );
+    }
+
+    /// A bare op-type with no field separators would cover all forms of that op.
+    #[test]
+    fn claim_unproven_rejects_bare_op_type() {
+        assert!(
+            ProofKey::validate("MatMulNBits").is_err(),
+            "a bare op-type must not be a valid proof key — it would cover all forms of that op"
+        );
+        assert!(
+            ProofKey::validate("com.microsoft::MatMulNBits").is_err(),
+            "a domain-qualified op-type without field separators must not be a valid proof key"
+        );
+    }
+
+    /// A well-formed key (has all required '/' separators) is accepted.
+    #[test]
+    fn claim_unproven_accepts_full_key() {
+        assert!(
+            ProofKey::validate(
+                "com.microsoft::MatMulNBits/1+/f16,u8,f16/qgemv_f16/runtime-extent/scales"
+            )
+            .is_ok(),
+            "a fully-specified proof key must be accepted"
+        );
+    }
+
+    /// An empty key is rejected (no ambiguity, but also not a key).
+    #[test]
+    fn claim_unproven_rejects_empty() {
+        assert!(ProofKey::validate("").is_err());
+        assert!(ProofKey::validate("   ").is_err());
     }
 }

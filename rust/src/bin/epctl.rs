@@ -71,13 +71,14 @@ fn sorted_rows() -> Vec<&'static OpSpec> {
 fn status_tag(spec: &OpSpec) -> &'static str {
     match spec.status {
         OpStatus::Live => "live",
+        OpStatus::Ready => "ready",
         OpStatus::Staged(_) => "staged",
     }
 }
 
 fn staged_reason(spec: &OpSpec) -> Option<&'static str> {
     match spec.status {
-        OpStatus::Live => None,
+        OpStatus::Live | OpStatus::Ready => None,
         OpStatus::Staged(why) => Some(why),
     }
 }

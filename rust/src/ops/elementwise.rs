@@ -655,8 +655,8 @@ mod tests {
                 OpStatus::Staged(reason) => {
                     assert!(!reason.is_empty(), "{} is staged with no reason", s.op_type)
                 }
-                OpStatus::Live => {
-                    // A live row promises its shader compiles and has been executed on a device.
+                OpStatus::Live | OpStatus::Ready => {
+                    // A live/ready row promises its shader compiles and has been executed on a device.
                     // Verify at minimum that the shader variant exists in the binary.
                     let any_shader = s.caps.iter().any(|d| {
                         s.kernel

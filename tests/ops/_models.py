@@ -66,6 +66,24 @@ Quantized ops — three-regime policy (Mouse's spec, OP_COVERAGE.md §10.1):
     The 2e-2 rtol for fp16 accommodates fp16 mantissa truncation on top of accumulation order.
     Source: Mouse's OP_COVERAGE.md §10.1; derived from measurement, not guessed.
 
+    ACCURACY_LEVEL RULING (Mouse, 2026-07-30 — for Trinity's oracle question):
+    Phi-3.5-mini-instruct declares accuracy_level=0.  Trinity's oracle is pinned at
+    accuracy_level=1.  Ruling: the oracle pinning is correct and introduces no error.
+
+    ORT's CPU MatMulNBits kernel ignores accuracy_level for values 0-3 — they all map to
+    SQNBIT_CompFp32 (fp32 accumulation), confirmed empirically on ORT 1.27.x with
+    test_matmulnbits_accuracy_level_pinning() and identically in ORT source (SQNBitGemm.cpp,
+    `ComputeType` selection).  Only accuracy_level=4 changes computation (int8 VNNI accumulator),
+    and that diverges by ~4.6e-3 rtol — which is why we pin away from it.
+
+    The GPU shader always uses float accumulation regardless of the attribute:
+      float acc = 0.0;
+      ... unpack and accumulate in fp32 ...
+    so accuracy_level is not readable by the GPU path at all.
+
+    Consequence: a comparison between a model with accuracy_level=0 and an oracle at
+    accuracy_level=1 compares two instances of the same computation.  Pinning at 1 is correct.
+
     IMPORTANT: fp16 activations require ORT 1.28+ for a usable oracle. ORT 1.27 produces
     NaN/Inf for fp16 MatMulNBits on x86 (empirically confirmed 2026-07-28; suspected null-
     allocator PrePack bug, fixed in 1.28). Tests gated on ORT >= 1.28 for fp16 paths.

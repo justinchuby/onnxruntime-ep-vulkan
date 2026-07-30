@@ -1639,6 +1639,61 @@ barrier backend, so the legacy path we carry for ~31 % of Android is finally exe
 not the goal of the flip; it is a consequence of §7.2's point that claims and coverage are
 different things from *tested* claims.
 
+#### 7.1.4 Optional-input arity is a coverage axis, not a form simplification (2026-07-30)
+
+On 2026-07-30, `push_dynamic_kernel` allocated **4 binding tokens** for `MatMulNBits`-without-
+`zero_points` (3 inputs + 1 output from NodeDesc).  The translate handler (`matmul_nbits_gemv`)
+passes **5 bindings** to `KernelRequest` — `scales` appears twice, once as its natural slot and
+once as the inert placeholder for the absent `zero_points` at shader binding 3.  The pipeline
+layout had 4 entries; the shader's write to binding 4 (the output) was undefined-behavior-silent
+on both Intel and NVIDIA and was discarded.  All 161 Phi-3.5 `MatMulNBits` dispatches completed
+with `compute_failures: 0` and left the output buffer at its zero-initialised value.
+
+The diagnostic that would have caught it, and did not exist, is:
+
+> *A proof of `MatMulNBits` with `zero_points` present tells you nothing about `MatMulNBits`
+> without `zero_points`, because the two forms have different binding arities.*
+
+The f32/f16 dtype axis was the obvious candidate and was a red herring: the failure was
+orthogonal to dtype.  The actual uncovered axis was `populated_optional_input_set`.
+
+**The rule, stated as a coverage axis alongside the axes that already existed:**
+
+An op with an optional input **absent** exercises a different dispatch path from the same op with
+that input **present**, for two independent reasons:
+
+1. **The translate handler branches.** `matmul_nbits_gemv` takes a different code path when
+   `zero_points` is `None` vs `Some` — different binding list, potentially different spec
+   constants, potentially different shader variant.  §8.7's rule applies: a different branch is
+   a different path, not a different expression.
+
+2. **The binding arity changes.** The number of descriptor slots in the pipeline layout is
+   determined by `n_bindings = eff_bindings.len()`, and the two forms produce different lengths.
+   A proof of one length is not evidence about the other.  The pre-proof-ledger era's `Live` flag
+   was per-op; it was blind to arity.
+
+**Under the §8.9 proof key this is not an editorial decision.**  The key includes
+`populated_optional_input_set`, so a proof of the `{scales, zero_points}` form is stored under
+a different key than a proof of the `{scales}` form.  The predicate looks evidence up *by key*;
+it is not possible for proof of one form to be returned for another.  Yesterday's mistake is
+unrepresentable, not just discouraged.
+
+**Applied immediately**: `test_matmulnbits.py` now covers both the with-`zero_points` and
+without-`zero_points` forms explicitly.  The regression guard (`test_matmulnbits_fp16_dynamic_batch`)
+uses the without-`zero_points` form at `symbolic_batch=True` and would have gone red on the day
+of the defect.  The multi-run variant (`test_matmulnbits_fp16_dynamic_batch_multirun`) additionally
+confirms that runs 2 and 3 — when ORT's memory-pattern planner engages and arena sub-division is
+live — produce the same non-zero output as run 1.
+
+**What to check when writing a new translate handler with optional inputs:**
+
+- For each optional-input population pattern (absent vs present, and combinations if there are
+  multiple): does the binding list have a different length?  If yes, it is a different key and
+  requires separate proof.
+- Does the shader declaration match the binding list the handler produces?  The GLSL binding
+  index of the output must be `len(eff_bindings) − 1`, not `n_inputs_from_schema`.
+- Run the differential harness on both forms, not just the form the model happens to use.
+
 ### 7.2 Death by fallback — the real failure mode
 
 A claim rate of 95% can be *slower* than 0%. If the 5% we decline are distributed through the graph,
