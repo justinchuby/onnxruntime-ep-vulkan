@@ -44,7 +44,7 @@ use std::collections::HashMap;
 use std::ptr;
 use std::sync::Arc;
 
-use crate::allocator::{HandleRegistry, LookupError};
+use crate::allocator::{HandleRegistry, LookupError, ledger};
 use crate::sys::{self, ort};
 
 /// Sanity marker, checked before we ever dereference a `this_ptr` ORT hands back.
@@ -206,7 +206,13 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
         // `classify`, not `resolve`: a miss here is the expected answer for every host pointer, so
         // counting it would make the allocator's failed-lookup diagnostic non-zero on a healthy
         // run.
-        match reg.classify(addr) {
+        let outcome = reg.classify(addr);
+        // Every pointer ORT hands back crosses this line, which makes it the one place that can
+        // answer "what does the planner actually do with our handles?" with a measurement.
+        // Recorded before the match so a host pointer counts as an observation too — otherwise the
+        // ledger's denominator would only contain the answers we like.
+        ledger::observe(addr, &outcome);
+        match outcome {
             Ok(r) => {
                 return Side::Device {
                     base: r.base,
@@ -326,6 +332,10 @@ unsafe extern "C" fn release_thunk(p: *mut ort::OrtDataTransferImpl) {
                 ""
             }
         );
+        log::info!("VulkanExecutionProvider: {}", ledger::report());
+        // The observations are only complete now, and a torn-down process cannot print into a
+        // test harness's captured output. Persist them where a parent process can read them.
+        crate::counters::dump_observations_if_requested();
     });
 }
 
@@ -687,6 +697,46 @@ mod tests {
             seen[160..].iter().all(|&b| b == 0x11),
             "wrote past the length"
         );
+    }
+
+    /// Positive control for the quarantine detector.
+    ///
+    /// A real ORT session reports `pointers_use_after_free: 0`, and that number is worth
+    /// nothing on its own — it is exactly what a detector that never runs would also report.
+    /// This is the planted violation that distinguishes the two, the same shape as the layering
+    /// lint's deliberate breach: present a stale handle through the very funnel a real session
+    /// uses, and require the ledger to count it.
+    #[test]
+    fn the_quarantine_detector_fires_when_a_stale_handle_is_presented() {
+        let _lock = ledger::test_lock();
+        ledger::reset();
+        let regs = registries();
+        let reg = regs.values().next().expect("one registry").clone();
+
+        let h = reg.alloc(4096).expect("alloc");
+        // Classify it while live, so the control also proves the detector is quiet when it
+        // should be. A detector that fires on everything is as useless as one that never does.
+        classify(&regs, h as *mut u8);
+        assert_eq!(
+            ledger::snapshot().use_after_free,
+            0,
+            "a live handle must not be reported as a use-after-free"
+        );
+
+        reg.free(h);
+
+        // Exactly what a stale ORT pointer would look like, arriving at exactly the place a real
+        // one arrives: `classify`, from `CopyTensors` or `host_backing_for`.
+        let side = classify(&regs, (h + 64) as *mut u8);
+        assert_eq!(
+            ledger::snapshot().use_after_free,
+            1,
+            "the freed handle was not detected — a stale pointer would have aliased onto \
+             whatever is allocated there next"
+        );
+        // And it must be refused, not merely counted: a loud number attached to a silent success
+        // is still a use-after-free.
+        host_bytes(&regs, side, 64).expect_err("a freed handle must not yield usable backing");
     }
 
     #[test]

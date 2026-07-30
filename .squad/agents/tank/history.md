@@ -268,3 +268,43 @@ principle", which is the same distinction that caught two fabricated speedups th
   added a non-counting `classify` to the registry.
 * The `edit` tool joins lines when an `old_str` ending in `\n` is replaced by one without. Bit me
   twice; both caught by viewing afterwards.
+
+## Session 13 — 2026-07-30 — the verification I could not get was an instrument problem
+
+**Worktree** `C:\Users\justinchu\dev\ep-vulkan-tank`, branch `squad/tank`, rebased on `main`.
+
+**The result.** ORT's memory-pattern planner *does* do pointer arithmetic on our handles: it packs
+several tensors into one allocation and hands back `base + 16384`, `+32768`, `+49152`. 52 interior
+pointers across 5 runs, identical on both GPUs, and **zero** guard-band observations — every
+derived pointer stayed in-span, which is exactly what the reserved-address-space design promises.
+Had handles been opaque integers this would have been a wrong answer on every inference after the
+first, in a configuration ORT enables by default.
+
+**The lesson, which is the part worth keeping.** I reported "0 interior pointers" honestly twice,
+including once at 1 MiB tensors, and was right to refuse to claim the verification. But I was wrong
+about *why* the number was zero, and I did not interrogate my own instrument. ORT's planner does
+not engage on the first `Run` — it records the pattern then and only sub-divides from run 2 onward.
+Every probe I had ran each session exactly once. **The instrument was pointed at a moment the
+phenomenon cannot occur in**, and honest reporting of a measurement taken in the wrong conditions
+still leaves you believing something false. The control that settles it is trivial and I should
+have run it much earlier: 1 run → 0, 2 runs → 13, 3 runs → 26, 5 runs → 52.
+
+Previous sessions taught me that a caveat is not a check, and that a probe checking the output
+value but not the provider is not a gate. This one adds: **an honest negative result is still
+only as good as the conditions it was taken in.** "I did not observe X" needs "and here is why
+this run could have observed X" beside it, or it is not evidence.
+
+**Applied that immediately to my other zero.** `pointers_use_after_free` is also 0, and that number
+is exactly what a dead detector reports. So the quarantine detector now has a positive control that
+plants a stale handle through the same funnel a real session uses — and I planted a break to
+confirm the control fails, then restored it. The quarantine is still *not* verified against a real
+ORT pattern and I have said so; but "0" now means something.
+
+**Mechanics worth remembering.**
+* Diagnostics that are only complete at teardown cannot be logged — ORT's logger is gone by then,
+  and a process cannot read its own teardown. Write them to a file and read them from a parent
+  process. `probe_planner.py` runs the session in a child for exactly this reason, which has the
+  side benefit that every number comes from a run that finished.
+* Extend the counters *JSON*, never the `repr(C)` counters struct: the JSON reader looks keys up by
+  name and ignores the rest, while the struct is an ABI other processes read.
+* Process-global tallies need a `test_lock()` or parallel tests flake.

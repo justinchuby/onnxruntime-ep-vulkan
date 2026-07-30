@@ -224,6 +224,59 @@ pub fn dump_if_requested() {
     }
 }
 
+/// Append the allocator's pointer-observation tallies to the snapshot file.
+///
+/// Separate from [`dump_if_requested`] and deliberately *not* part of [`VulkanEpCounters`]: that
+/// struct is a C ABI other processes read through [`fill`], and growing it to carry a diagnostic
+/// would make every consumer's copy of the header a version problem. The JSON document has no such
+/// constraint — `epctl`'s reader looks up keys by name and ignores ones it does not know — so the
+/// numbers can live there additively.
+///
+/// This exists because the observations are only complete at teardown, and a process that has torn
+/// down cannot print to a test's captured stdout. A file survives the process; a log line does not.
+pub fn dump_observations_if_requested() {
+    let Some(path) = std::env::var_os(ENV_COUNTERS_FILE) else {
+        return;
+    };
+    let o = crate::allocator::ledger::snapshot();
+    let snap = snapshot();
+    let mut doc = snap.to_json();
+    // Splice the observation keys in before the closing brace rather than appending after it, so
+    // the file stays valid JSON for anything less forgiving than our own reader.
+    if let Some(cut) = doc.rfind('}') {
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        doc.push_str(&format!(
+            ",\n  \"pointers_observed\": {},\n  \"pointers_host\": {},\n  \
+             \"pointers_at_base\": {},\n  \"pointers_interior\": {},\n  \
+             \"pointers_in_guard_band\": {},\n  \"pointers_use_after_free\": {},\n  \
+             \"pointer_max_offset\": {}\n}}\n",
+            o.observed,
+            o.host,
+            o.at_base,
+            o.interior,
+            o.in_guard_band,
+            o.use_after_free,
+            o.max_offset,
+        ));
+    }
+    if let Err(e) = std::fs::write(&path, doc) {
+        log::warn!(
+            "could not write EP observations to {}: {e}",
+            path.to_string_lossy()
+        );
+    }
+    // The trace is prose, so it goes beside the JSON rather than into it. It is written for the
+    // same reason the JSON is: by the time these lines exist, ORT's logger has usually already
+    // been torn down, so logging them reaches nobody.
+    let trace = crate::allocator::ledger::trace_lines();
+    if !trace.is_empty() {
+        let mut p = std::path::PathBuf::from(&path);
+        p.set_extension("trace.txt");
+        let _ = std::fs::write(p, trace.join("\n") + "\n");
+    }
+}
+
 /// Copy the current counters into a caller-provided buffer.
 ///
 /// Returns the number of bytes written, or 0 if `out` is null or `out_bytes` is too small to carry
