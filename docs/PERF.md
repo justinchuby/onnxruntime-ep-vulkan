@@ -656,7 +656,7 @@ memory budget, different `timestampPeriod`; `bench/compare.py` refuses it struct
 
 #### `--device 0` — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
 
-> **Relabelled 2026-07-30 22:xx.** This block was published as "Device 0 — Intel Iris Xe". It was
+> **Relabelled 2026-07-30.** This block was published as "Device 0 — Intel Iris Xe". It was
 > not. See §11.1. The measurements are unchanged; only the name was wrong.
 
 ```
@@ -1759,3 +1759,4 @@ duration measures what its name says. Neither can be satisfied by the mechanism 
 **Not falsified, and named so:** §6's absolute numbers are re-labelled, not re-measured, and they
 remain under §10's withdrawal for contention. Re-labelling a withdrawn number does not un-withdraw
 it. The ordering question in §11.1 stays open until two quiet-machine runs agree.
+
