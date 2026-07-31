@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-30T22:13:37-07:00 (**STANDING DIRECTIVE (Justin): 「要确保我们性能是非常高 一致向高性能推进」** — *ensure performance is very high; push toward high performance continuously.* **RULING: it changes the calendar and not one gate.** It does **not** overturn the M0 performance ruling — a directive to be fast is exactly the condition under which a speed *gate* becomes dangerous, because the cheapest way to pass a ratio criterion is always to do less GPU work; it raises the value of the interlocks, not the case for the gate. It **does** make performance work continuous and parallel with correctness (`一致` is a **rate** obligation, so **the instrument for it is a series, not a value**, falsifiable by a flat line). Added on my own authority: **no timing figure is quotable from a run whose verdict is not `MATCH`, and every benchmark asserts EP presence and a non-zero claimed count before starting a clock — a fast wrong number is the failure mode this directive creates, not partial credit toward it.** **The tail (Windows + Linux + software rasteriser + CI) is unchanged and stays at the front**: it contends with residency for nothing — not a person, not a file, not a machine — and *a standing directive is a reason to re-examine a placement, never on its own a reason to move it.* **M1's weight-residency criterion stands exactly as written** (< 1% of constant-initializer bytes; today **1.0002**), both interlocks intact. **§6.5 RULING — exactly one `VkDevice` per (physical device, EP instance); the second one is a defect, not a design.** Tank's memory provider created its own device, so the session cannot bind its buffers; §2.3 already said `VkDevice` lifetime is EP-scoped, **so the document was right and the code diverged and nothing in between could tell**. No legitimate reason for two survives inspection (queue families, extension unions and external memory all fail to apply) and the split *costs* compatibility rather than buying it. **Seam owner: Switch** (the side that owns the lifetime, never the side that owns the caller); the allocator changes from *creating* to *receiving*. **§10.0.1 R12 — two instruments can each be correct about a different world, and a counter reading zero may be structurally incapable of reading anything else.** Specimen: `vulkan.cmd_upload` 15.2 s against `alloc_device_upload_bytes: 0`, both correct, different `VkDevice`s. **A quantity carries the identity of its frame; a counter whose event cannot occur in its frame reports `UNOBSERVABLE`, never `0`** — the fourth member of the family with `UNMEASURED`, `UNWIRED` and `SPLIT-DEVICE`, because **every way of not knowing gets a name a machine can print, since prose is where knowledge of a caveat goes to die.** **No criterion may name a pinned instrument**, so residency is read against `device_upload_bytes` on the session's device, never `alloc_device_authoritative_spans`. **R12 is not R11**: R11's remedy is available to the writer, R12's is structural. **Third disclosure obligation added — frame provenance — plus a seventh, positive one: independent corroboration is stated, not reconstructed** (Switch's span-derived 98.0% and Tank's counter-derived 95.8–98.4% for one quantity). Corrected picture, selector 0 = RTX 4060: **`cmd_upload` is ~71% of wall**, GPU kernels ~15%, and **pipeline lookup 0.4% / descriptor allocation 0.3% kill both standing hypotheses about per-island recording cost**) · *prior revision 2026-07-30T20:58:11-07:00* (**§10.0.1 R11 — a measurement's name is not its definition, and a decomposition that appears to close is the hardest kind of wrong.** R10's companion, found within hours of R10 by a specimen R10 certifies: `Phase::Record` is wired, invoked, correct, input-varying — **and misnamed by ~50×**. It is an *inclusive* interval containing the host staging copy, which reports into `phase_us[Upload]` and emits no `ph:"X"` span, so a span aggregation structurally could not see it: **upload is 95.8–98.4% of the "recording" phase; real command-buffer recording is 1–3% of wall.** The dominant cost is **the EP re-uploading the entire weight set on every inference** — 1997.6 MiB/inference, ratio **1.0002** against `device_upload_bytes`, exactly linear over 1/2/3 runs, in:out **2481:1**, transfer ceiling **~94.8% of wall discrete / ~44.0% UMA**. **The old table summed to 99.0% and appeared to close — because the missing cost was *inside* a row, so the residual was zero by construction.** R11 obliges: **every phase declares its extent (inclusive or exclusive of children); a flat table is an assertion of disjointness; the parts are summed against a whole measured by a *different* instrument and the residual published; and any row above 50% has its name checked against its content.** The register now reads **R6 our tooling manufactured a number · R7 a negative · R9 sound instruments jointly silent · R10 never called · R11 called, correct, and misnamed** — R11 is the hardest because *every check we have passes*. **The M0 tally does not move: six met, four partial, two not met, of twelve** — criterion 12 is *strengthened* rather than reopened, which is the whole benefit of its having been left open. **§10.0's disclosure obligation stands as written and is strengthened**: the phase decomposition was wrong by 50× while the wall-clock ratio (3.1× / 3.7× slower than CPU) was correct, **because the ratio has no internal structure to misattribute** — *a metric's robustness is inversely proportional to the number of naming decisions between the measurement and the reader; decompose to diagnose, report the coarse invariant.* A decomposition may accompany the ratio, never replace it, and is publishable only with its identity check. **R6 amendment 4 — the device labels were inverted team-wide**: `enumerate_capable_devices()` sorts best-first and `select_device` indexes the sorted list while `epctl --probe-loader` prints unsorted enumeration order — **`DEVICE=0` is the RTX 4060, `DEVICE=1` is the Iris Xe**, the "Intel beats the discrete GPU" finding dissolves, and **a result surprising enough to be a discovery is first a reason to check the instrument**. M1's lead performance criterion is corrected to **weight residency** — `device_upload_bytes`/inference below 1% of constant-initializer bytes, admissible only at or above last-published coverage with `MATCH` — with recording amortisation demoted to secondary) · *prior revision 2026-07-30T19:05:03-07:00* (**§10.0.1 R10 — a mechanism that exists in the source tree and not in the call graph is indistinguishable from one that was never written, and review cannot tell them apart.** R9's blind spot: *a falsifier that is never invoked is indistinguishable from one that never fires*. Five specimens in one day, all with correct code — `ops/partition.rs` (worth **3.7×**: islands 321 → 33, Intel 2954.6 ms → 807.2 ms when wired), the tracer, `model_output_equivalence`, `retain_viable`, and the EP-side validation messenger (loaded layer, no listener). **The falsifier for "X is wired" is an observation of an artifact X produced whose content varies with X's input — never a reading of X's code, never a flag its author set.** Uninvoked reports **`UNWIRED`**, distinct from empty; **the identity case is an explicit red state** (`island_count == claimed_count` was one line and was true for the whole life of the defect); **wiring is a property of an entry point, not of a file**; **review of a mechanism is not complete until the reviewer has seen an artifact it produced.** **§7.0.2 companion — a claim is a scheduling decision, not a capability statement: a correct claim can be a wrong claim**, net benefit is a property of the op *in a graph at a coverage level*, it lives in the partitioner and never in the registry, and it carries its own decline code. **M0 criterion 10 is MET — `model_output_equivalence = MATCH` on both devices** (argmax 30751 == CPU, top-10 10/10, max diff 0.031 / 0.035; **the non-identity is the correct answer** for fp16 accumulation order). Root cause was **binding arity, not dtype** — a 4-entry pipeline layout against a shader writing binding 4, silently dropped by both drivers — which is the strongest possible vindication of §8.9's `populated_optional_input_set` key component. **Criterion 2 closed on the promise made when it was reopened; criteria 4 and 5 stay partial — a correct model does not give an unknown-polarity check a polarity. Criterion 12 added (wiring census). Six met, four partial, two not met, of twelve.** **RULING: no performance criterion belongs in M0** — slowness is loud, wrongness is silent, and the cheapest way to pass a ratio criterion is always to do less GPU work; **M2 keeps the first threshold** (end-to-end ratio `< 1.0` on one discrete GPU with `MATCH`, every device in the matrix reported). **M0 gains a §10.0 disclosure obligation instead of a gate: the end-to-end wall-clock CPU ratio may never be omitted — currently 3.1× slower on Intel, 3.7× on NVIDIA.** **M1 gains a recording-amortisation criterion** checked with a counter before a clock, on the first honest trace: **68.3% command-buffer recording, 14.1% GPU kernels, 0.3% submit — 85.9% of runtime with no GPU work happening**, fixed per `Compute` call rather than per dispatch, which falsifies the fixed-per-submission hypothesis. **Sequencing: the tail resumes at the front; the 68.3% starts in parallel as Tank's M1 work and lands only through criterion 10's gate**, because a cached binding table is exactly the shape of today's defect) · *prior revision 2026-07-30T06:32:18-07:00* (**§8.9 RULING — unproven is a claim-path state; claiming is gated on evidence and `Live` stops being a thing we write down.** §7.0.1 companion: *evidence shortfalls degrade op coverage, not device availability, identically to capability shortfalls* — the frozen §7.2 gate is untouched. The table declares only `Staged(why)` / `Ready`; **claimability is derived per form from a harness-generated proof ledger**, keyed on `(domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key, shape_class, populated_optional_input_set)` — so **§8.7's expression-vs-path distinction becomes mechanical: an expression difference leaves the key equal, a path difference changes it**, and an f32 proof can never be returned for an f16 node. **A `DIVERGENT` model verdict demotes every form that participated, automatically.** Escape hatch is **a list of proof keys and nothing else** — no `1`, no `*`, no wildcard, C1's shape — with WARN at session creation, `unproven_forms_enabled` in the counters artifact, and `epctl --check-counters` failing on a non-empty list. **Honest cost: Phi-3.5's claimed count goes 161 → 0** — and per §10.0's gate that 161 was already void. **M0 criterion 11 added; four met, four partial, three not met.** **Link's lanes: the gate is a precondition for a lane being declared *green*, not for a lane being brought *up*** — with a per-lane **gate artifact** rather than Phi-3.5 on a rasteriser) · *prior revision 2026-07-30T05:48:29-07:00* (**§10.0.1 R9 — a set of individually sound instruments can be jointly silent on the property that matters; *for every claim, name the instrument that would go red if the claim were false*.** Phi-3.5 on both devices: 161 `MatMulNBits` claimed **and accepted by ORT**, `compute_failures: 0`, `dispatches_executed: 161`, suite green — and `vk argmax 0` against `cpu argmax 30751`, top-10 overlap 0/10. **§9.1.3 RULING — `compute_failures` is an execution-status counter and may never be read as a correctness signal**; prose cannot close that reading, a verdict emitted next to the counters must. **Metric of record gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}**, default `UNMEASURED`. **M0 criteria amended: criterion 10 added (model-level correctness); criteria 2, 4 and 5 REOPENED; criterion 8 relabelled parity-only.** **Sequencing: criterion 10 outranks the Windows/Linux/lavapipe/CI tail in order, and does not replace it as a gate**) · *prior revision 2026-07-29T21:14:03-07:00* (**§8.8 RULING — dynamic shapes are a claim-path capability, not a kernel feature**, and move **ahead of** the three kernels, §10.0.3; measured on the first end-to-end real-model run: **258 nodes declined on symbolic shapes vs 100 on missing kernels**, and the decline codes are first-match so 258 is a *floor*; **§1.2's dynamic-shape non-goal reversed**; **M1 gains a second-token exit criterion** — one session, two concrete values of a symbolic dimension; **OQ-15 promoted to blocking**; **§10.0.1 R8 — we planned against the ops a model contains, having never measured why its nodes are declined**) · *prior revision 2026-07-29T19:42:07-07:00* (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**; **45 op rows `Live`**; **criterion 3 ruled not discharged — a validation lane needs a positive control**; **criterion 9 not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, *derive, do not declare*; **§8.7 template evidence covers a different expression, never a different path**) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening**; **metric triple `(coverage, island_count, largest_island_flops)`**; **T3 demonstration target is Phi-3.5**; **R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 *producer **at version***; R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 producer-relative**; **§8.6 crate evaluations**; **§10.0.2 `ai.onnx::Attention` first**; R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 §7.8**; **OQ-M6 ruling** §8.4; **OQ-3 §6.4** reserved-VA, no BDA; C2 **item 7**; `retain_viable` §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **R1**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-31T07:45:10-07:00 (**§10.0 THIRD METRIC AMENDMENT — `MATCH` is not a verdict about this EP unless it carries what executed the model.** Specimen: ORT printed `EP_FAIL … Falling back`, re-ran the whole graph on CPU without raising, `get_providers()` still listed VulkanEP because the provider list is fixed at session-create time — and `model_output_equivalence` returned **`MATCH` for a run in which this EP executed zero nodes**. Wired, invoked, correctly named, arithmetically correct, **about a different world: R12 arriving at a verdict rather than a counter, where the frame is not a device but an executor.** The verdict becomes a **record** carrying `executed_by`, parsed on this run from **ORT's profiling trace — an instrument we do not own** — with `MATCH` **unrepresentable** at a zero own-provider count (constructor obligation, not an assertion beside the value), both witnesses recorded and disagreement emitting `SPLIT-FRAME`, and a fourth state **`UNATTRIBUTED`** that is emphatically **not** `DIVERGENT`: *the model was not wrong, the subject was.* **§10.0.1 R13 — an instrument's failure is not distinguishable from the condition it detects, and the reader who most needs the distinction is the one who predicted the red.** Trinity's Guard D — the fix for exactly the hole above — raised `NameError` before reading one profiling event; I watched the suite go `8 passed` → `5 failed` and reported the guard as working. **Three terminal tokens, always: `PASS` / `FAIL(condition)` / `ERROR(instrument)`; an instrument error never counts as a detection; a guard must state what it observed even when it fails; and the remedy is a second witness with a different failure mode, not a better first witness** — the lane now fails on the `Falling back` line itself, five sightings and every gate green. Second clause, and the more dangerous half, the inverse of R6 amendment 4: **a result that confirms a prediction deserves more scrutiny than one that contradicts it, because the contradiction gets checked automatically and the confirmation does not — quote the failure text, never the failure count.** First rule in this register about the reader rather than the instrument. **M0: criteria 2 and 10 REOPENED; four met, six partial, two not met, of twelve.** Criterion 10's closing evidence is **void, not narrow** — scope narrows a true statement and cannot repair one whose subject was absent — and the reopening is priced in advance: **three consecutive attributed `MATCH` runs in one session close it, same day, no new conditions.** Genuine and incomplete on the other side: **ORT profiling reports 354 of 364 nodes on the GPU in one fused island, 10 on CPU matching Mouse's declines exactly, `argmax 30751` == CPU** — the first attributed execution this project has recorded — against a multi-run picture that is red (weight cache OOM → silent fallback; 50 KV-cache outputs never written). Criteria 3, 4 and 5 advanced in substance and moved no row, because **I have not seen the artifacts** (R10), applied on a good day to mechanisms I asked for. **The ranked performance order stands — residency, net-benefit declines, fence-wait idle, kernels — because it was derived from counts and ratios, never from wall clock**; rank 1 keeps its place and changes its content from *make the weights resident* to **make residency bounded**, and **a performance mechanism that fails into silent CPU fallback is a correctness defect wearing a performance costume.** Residency landed on bytes: **1997.6 MiB → 0.756 MiB per inference, ratio 0.0004, forty times inside M1's threshold — and the criterion stays open**, which is the clearest evidence yet that the interlocks are the criterion. **Every wall-clock figure this project holds is withdrawn, 3.1× and 3.7× included** — taken during CPU fallback — so §10.0's disclosure obligation currently publishes **`UNATTRIBUTED`**, not a stale number; my own 22:13 clause, *no timing figure is quotable from a run whose verdict is not `MATCH`*, is what voids them, and **a rule that first bites its author was aimed at the right thing.**) · *prior revision 2026-07-30T22:13:37-07:00 (**STANDING DIRECTIVE (Justin): 「要确保我们性能是非常高 一致向高性能推进」** — *ensure performance is very high; push toward high performance continuously.* **RULING: it changes the calendar and not one gate.** It does **not** overturn the M0 performance ruling — a directive to be fast is exactly the condition under which a speed *gate* becomes dangerous, because the cheapest way to pass a ratio criterion is always to do less GPU work; it raises the value of the interlocks, not the case for the gate. It **does** make performance work continuous and parallel with correctness (`一致` is a **rate** obligation, so **the instrument for it is a series, not a value**, falsifiable by a flat line). Added on my own authority: **no timing figure is quotable from a run whose verdict is not `MATCH`, and every benchmark asserts EP presence and a non-zero claimed count before starting a clock — a fast wrong number is the failure mode this directive creates, not partial credit toward it.** **The tail (Windows + Linux + software rasteriser + CI) is unchanged and stays at the front**: it contends with residency for nothing — not a person, not a file, not a machine — and *a standing directive is a reason to re-examine a placement, never on its own a reason to move it.* **M1's weight-residency criterion stands exactly as written** (< 1% of constant-initializer bytes; today **1.0002**), both interlocks intact. **§6.5 RULING — exactly one `VkDevice` per (physical device, EP instance); the second one is a defect, not a design.** Tank's memory provider created its own device, so the session cannot bind its buffers; §2.3 already said `VkDevice` lifetime is EP-scoped, **so the document was right and the code diverged and nothing in between could tell**. No legitimate reason for two survives inspection (queue families, extension unions and external memory all fail to apply) and the split *costs* compatibility rather than buying it. **Seam owner: Switch** (the side that owns the lifetime, never the side that owns the caller); the allocator changes from *creating* to *receiving*. **§10.0.1 R12 — two instruments can each be correct about a different world, and a counter reading zero may be structurally incapable of reading anything else.** Specimen: `vulkan.cmd_upload` 15.2 s against `alloc_device_upload_bytes: 0`, both correct, different `VkDevice`s. **A quantity carries the identity of its frame; a counter whose event cannot occur in its frame reports `UNOBSERVABLE`, never `0`** — the fourth member of the family with `UNMEASURED`, `UNWIRED` and `SPLIT-DEVICE`, because **every way of not knowing gets a name a machine can print, since prose is where knowledge of a caveat goes to die.** **No criterion may name a pinned instrument**, so residency is read against `device_upload_bytes` on the session's device, never `alloc_device_authoritative_spans`. **R12 is not R11**: R11's remedy is available to the writer, R12's is structural. **Third disclosure obligation added — frame provenance — plus a seventh, positive one: independent corroboration is stated, not reconstructed** (Switch's span-derived 98.0% and Tank's counter-derived 95.8–98.4% for one quantity). Corrected picture, selector 0 = RTX 4060: **`cmd_upload` is ~71% of wall**, GPU kernels ~15%, and **pipeline lookup 0.4% / descriptor allocation 0.3% kill both standing hypotheses about per-island recording cost**) · *prior revision 2026-07-30T20:58:11-07:00* (**§10.0.1 R11 — a measurement's name is not its definition, and a decomposition that appears to close is the hardest kind of wrong.** R10's companion, found within hours of R10 by a specimen R10 certifies: `Phase::Record` is wired, invoked, correct, input-varying — **and misnamed by ~50×**. It is an *inclusive* interval containing the host staging copy, which reports into `phase_us[Upload]` and emits no `ph:"X"` span, so a span aggregation structurally could not see it: **upload is 95.8–98.4% of the "recording" phase; real command-buffer recording is 1–3% of wall.** The dominant cost is **the EP re-uploading the entire weight set on every inference** — 1997.6 MiB/inference, ratio **1.0002** against `device_upload_bytes`, exactly linear over 1/2/3 runs, in:out **2481:1**, transfer ceiling **~94.8% of wall discrete / ~44.0% UMA**. **The old table summed to 99.0% and appeared to close — because the missing cost was *inside* a row, so the residual was zero by construction.** R11 obliges: **every phase declares its extent (inclusive or exclusive of children); a flat table is an assertion of disjointness; the parts are summed against a whole measured by a *different* instrument and the residual published; and any row above 50% has its name checked against its content.** The register now reads **R6 our tooling manufactured a number · R7 a negative · R9 sound instruments jointly silent · R10 never called · R11 called, correct, and misnamed** — R11 is the hardest because *every check we have passes*. **The M0 tally does not move: six met, four partial, two not met, of twelve** — criterion 12 is *strengthened* rather than reopened, which is the whole benefit of its having been left open. **§10.0's disclosure obligation stands as written and is strengthened**: the phase decomposition was wrong by 50× while the wall-clock ratio (3.1× / 3.7× slower than CPU) was correct, **because the ratio has no internal structure to misattribute** — *a metric's robustness is inversely proportional to the number of naming decisions between the measurement and the reader; decompose to diagnose, report the coarse invariant.* A decomposition may accompany the ratio, never replace it, and is publishable only with its identity check. **R6 amendment 4 — the device labels were inverted team-wide**: `enumerate_capable_devices()` sorts best-first and `select_device` indexes the sorted list while `epctl --probe-loader` prints unsorted enumeration order — **`DEVICE=0` is the RTX 4060, `DEVICE=1` is the Iris Xe**, the "Intel beats the discrete GPU" finding dissolves, and **a result surprising enough to be a discovery is first a reason to check the instrument**. M1's lead performance criterion is corrected to **weight residency** — `device_upload_bytes`/inference below 1% of constant-initializer bytes, admissible only at or above last-published coverage with `MATCH` — with recording amortisation demoted to secondary) · *prior revision 2026-07-30T19:05:03-07:00* (**§10.0.1 R10 — a mechanism that exists in the source tree and not in the call graph is indistinguishable from one that was never written, and review cannot tell them apart.** R9's blind spot: *a falsifier that is never invoked is indistinguishable from one that never fires*. Five specimens in one day, all with correct code — `ops/partition.rs` (worth **3.7×**: islands 321 → 33, Intel 2954.6 ms → 807.2 ms when wired), the tracer, `model_output_equivalence`, `retain_viable`, and the EP-side validation messenger (loaded layer, no listener). **The falsifier for "X is wired" is an observation of an artifact X produced whose content varies with X's input — never a reading of X's code, never a flag its author set.** Uninvoked reports **`UNWIRED`**, distinct from empty; **the identity case is an explicit red state** (`island_count == claimed_count` was one line and was true for the whole life of the defect); **wiring is a property of an entry point, not of a file**; **review of a mechanism is not complete until the reviewer has seen an artifact it produced.** **§7.0.2 companion — a claim is a scheduling decision, not a capability statement: a correct claim can be a wrong claim**, net benefit is a property of the op *in a graph at a coverage level*, it lives in the partitioner and never in the registry, and it carries its own decline code. **M0 criterion 10 is MET — `model_output_equivalence = MATCH` on both devices** (argmax 30751 == CPU, top-10 10/10, max diff 0.031 / 0.035; **the non-identity is the correct answer** for fp16 accumulation order). Root cause was **binding arity, not dtype** — a 4-entry pipeline layout against a shader writing binding 4, silently dropped by both drivers — which is the strongest possible vindication of §8.9's `populated_optional_input_set` key component. **Criterion 2 closed on the promise made when it was reopened; criteria 4 and 5 stay partial — a correct model does not give an unknown-polarity check a polarity. Criterion 12 added (wiring census). Six met, four partial, two not met, of twelve.** **RULING: no performance criterion belongs in M0** — slowness is loud, wrongness is silent, and the cheapest way to pass a ratio criterion is always to do less GPU work; **M2 keeps the first threshold** (end-to-end ratio `< 1.0` on one discrete GPU with `MATCH`, every device in the matrix reported). **M0 gains a §10.0 disclosure obligation instead of a gate: the end-to-end wall-clock CPU ratio may never be omitted — currently 3.1× slower on Intel, 3.7× on NVIDIA.** **M1 gains a recording-amortisation criterion** checked with a counter before a clock, on the first honest trace: **68.3% command-buffer recording, 14.1% GPU kernels, 0.3% submit — 85.9% of runtime with no GPU work happening**, fixed per `Compute` call rather than per dispatch, which falsifies the fixed-per-submission hypothesis. **Sequencing: the tail resumes at the front; the 68.3% starts in parallel as Tank's M1 work and lands only through criterion 10's gate**, because a cached binding table is exactly the shape of today's defect) · *prior revision 2026-07-30T06:32:18-07:00* (**§8.9 RULING — unproven is a claim-path state; claiming is gated on evidence and `Live` stops being a thing we write down.** §7.0.1 companion: *evidence shortfalls degrade op coverage, not device availability, identically to capability shortfalls* — the frozen §7.2 gate is untouched. The table declares only `Staged(why)` / `Ready`; **claimability is derived per form from a harness-generated proof ledger**, keyed on `(domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key, shape_class, populated_optional_input_set)` — so **§8.7's expression-vs-path distinction becomes mechanical: an expression difference leaves the key equal, a path difference changes it**, and an f32 proof can never be returned for an f16 node. **A `DIVERGENT` model verdict demotes every form that participated, automatically.** Escape hatch is **a list of proof keys and nothing else** — no `1`, no `*`, no wildcard, C1's shape — with WARN at session creation, `unproven_forms_enabled` in the counters artifact, and `epctl --check-counters` failing on a non-empty list. **Honest cost: Phi-3.5's claimed count goes 161 → 0** — and per §10.0's gate that 161 was already void. **M0 criterion 11 added; four met, four partial, three not met.** **Link's lanes: the gate is a precondition for a lane being declared *green*, not for a lane being brought *up*** — with a per-lane **gate artifact** rather than Phi-3.5 on a rasteriser) · *prior revision 2026-07-30T05:48:29-07:00* (**§10.0.1 R9 — a set of individually sound instruments can be jointly silent on the property that matters; *for every claim, name the instrument that would go red if the claim were false*.** Phi-3.5 on both devices: 161 `MatMulNBits` claimed **and accepted by ORT**, `compute_failures: 0`, `dispatches_executed: 161`, suite green — and `vk argmax 0` against `cpu argmax 30751`, top-10 overlap 0/10. **§9.1.3 RULING — `compute_failures` is an execution-status counter and may never be read as a correctness signal**; prose cannot close that reading, a verdict emitted next to the counters must. **Metric of record gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}**, default `UNMEASURED`. **M0 criteria amended: criterion 10 added (model-level correctness); criteria 2, 4 and 5 REOPENED; criterion 8 relabelled parity-only.** **Sequencing: criterion 10 outranks the Windows/Linux/lavapipe/CI tail in order, and does not replace it as a gate**) · *prior revision 2026-07-29T21:14:03-07:00* (**§8.8 RULING — dynamic shapes are a claim-path capability, not a kernel feature**, and move **ahead of** the three kernels, §10.0.3; measured on the first end-to-end real-model run: **258 nodes declined on symbolic shapes vs 100 on missing kernels**, and the decline codes are first-match so 258 is a *floor*; **§1.2's dynamic-shape non-goal reversed**; **M1 gains a second-token exit criterion** — one session, two concrete values of a symbolic dimension; **OQ-15 promoted to blocking**; **§10.0.1 R8 — we planned against the ops a model contains, having never measured why its nodes are declined**) · *prior revision 2026-07-29T19:42:07-07:00* (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**; **45 op rows `Live`**; **criterion 3 ruled not discharged — a validation lane needs a positive control**; **criterion 9 not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, *derive, do not declare*; **§8.7 template evidence covers a different expression, never a different path**) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening**; **metric triple `(coverage, island_count, largest_island_flops)`**; **T3 demonstration target is Phi-3.5**; **R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 *producer **at version***; R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 producer-relative**; **§8.6 crate evaluations**; **§10.0.2 `ai.onnx::Attention` first**; R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 §7.8**; **OQ-M6 ruling** §8.4; **OQ-3 §6.4** reserved-VA, no BDA; C2 **item 7**; `retain_viable` §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **R1**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -2720,9 +2720,10 @@ verdict that must accompany the same run:**
 
 | Verdict | Meaning | What may be reported |
 |---|---|---|
-| `MATCH` | Every model output agrees with a CPU-only run of the same session on the same artifact, within the §9.1 tolerance policy; argmax and top-k agree on every logits-shaped output | The triple, as a result |
+| `MATCH` | Every model output agrees with a CPU-only run of the same session on the same artifact, within the §9.1 tolerance policy; argmax and top-k agree on every logits-shaped output — **and the run that produced those outputs executed at least one node on this EP, evidenced by an execution attribution taken from an instrument we do not own** (amendment of 2026-07-31T07:45:10-07:00 below) | The triple, as a result |
 | `DIVERGENT` | Any output disagrees | **The triple may not be reported as progress at all.** The run reports the divergence: which outputs, max-abs-diff per output, argmax and top-k agreement |
 | `UNMEASURED` | No CPU-only comparison was performed on this artifact in this run | **The triple may not be reported as progress at all.** It may be reported as a claim-path diagnostic, labelled `UNMEASURED` |
+| `UNATTRIBUTED` | The comparison was performed and agreed, **and this EP executed zero nodes in the run that produced the outputs** — CPU-vs-CPU. Added 2026-07-31T07:45:10-07:00 | **Nothing.** Not the triple, not the ratio, not a correctness claim. The comparison is arithmetically correct and it is about a different world (R12). This is a lane **failure**, and it is a *different* failure from `DIVERGENT` — the model was not wrong, the subject was |
 
 Four things about this, in the order they will be argued with:
 
@@ -2746,6 +2747,98 @@ is a number that recruits effort in the wrong direction and it does so with the 
 metric of record. Owner: Trinity emits the verdict, Niobe carries the gate in `PERF.md`, Mouse
 carries it in the census, and I will reject any milestone report, benchmark table or coverage figure
 that arrives with the verdict missing rather than assuming it.
+
+**THIRD METRIC AMENDMENT — 2026-07-31T07:45:10-07:00. `MATCH` is not a verdict about this EP unless
+it carries what executed the model. The verdict gains a frame, a fourth state, and a constructor
+that cannot be called without the evidence.**
+
+*Asked directly whether `model_output_equivalence` needs a frame tag. It does, and the specimen is
+the strongest one this project has produced, because nothing was broken.*
+
+**The specimen.** On 2026-07-30 the EP failed at run time on Phi-3.5's zero-length KV-cache inputs.
+ORT printed `EP_FAIL … Falling back to CPUExecutionProvider`, re-ran the whole graph on CPU, and
+**raised nothing**. `get_providers()` still listed `VulkanExecutionProvider`, because the provider
+list is fixed at session-create time and the fallback happens inside `run()`. The comparison gate
+then compared a CPU run against a CPU run and returned **`MATCH`**. Every gate in the lane passed.
+The verdict was **wired, invoked, correctly named, and arithmetically correct** — and it certified a
+run in which this EP contributed **zero nodes**.
+
+**That is R12 exactly, arriving at a verdict rather than at a counter.** `alloc_device_upload_bytes:
+0` was correct about the allocator's `VkDevice`; `MATCH` was correct about *some execution of this
+graph*. Neither says which world it lives in, and in both cases the reader supplies the frame from
+their expectations. The difference is that a counter's frame is a device and a verdict's frame is
+**an executor** — so the rule generalises without weakening: *a reported quantity carries the
+identity of its frame, and for a correctness verdict the frame is **what ran the graph**.*
+
+**The verdict stops being a string.** `model_output_equivalence` becomes a record, and the four
+things it carries are all things some mechanism computed on this run:
+
+```json
+"model_output_equivalence": {
+  "verdict": "MATCH | DIVERGENT | UNMEASURED | UNATTRIBUTED",
+  "executed_by": { "VulkanExecutionProvider": 1, "CPUExecutionProvider": 10 },
+  "attribution_source": "ort_profile",
+  "attribution_witnesses": { "profile_node_events": 1, "counters_dispatches_executed": 354 },
+  "artifact": "<producer-at-version + file digest>",
+  "device_index": 0, "device_name": "<physical device>"
+}
+```
+
+Five binding clauses. Each closes a way of writing the words without the meaning, which is the test
+every criterion in this document has to survive:
+
+1. **The attribution comes from an instrument we do not own.** ORT's profiling trace — one `Node`
+   event per executed node, carrying `args.provider` — is the primary witness. **Our own
+   `dispatches_executed` may not be the primary witness**, because it lives inside the frame whose
+   existence is in question: an EP that never ran leaves a stale or default counter, and an EP that
+   ran leaves the same shape of number. Independent corroboration is R12 obligation 3 and it is the
+   only thing that has caught anything this week.
+2. **Both witnesses are recorded, and disagreement is red.** If the profile says the EP executed
+   nodes and our counters say zero dispatches, or the reverse, the run reports `SPLIT-FRAME` and
+   reports no triple. Two witnesses that can only ever agree are one witness.
+3. **`MATCH` is unrepresentable without a non-zero own-provider count.** This is a constructor
+   obligation, not an assertion beside the value: the function that writes the verdict takes the
+   parsed attribution as a required argument derived from a profile *path*, and refuses to emit
+   `MATCH` when the count is zero — it emits `UNATTRIBUTED` and says which providers did execute.
+   **A caller may not pass a literal.** That is R10 amendment 1 applied to a verdict: the value must
+   be one a mechanism computed on this run, never a flag its author set.
+4. **`UNATTRIBUTED` is not `DIVERGENT` and must never be folded into it.** Merging them would lose
+   the whole finding. `DIVERGENT` says *our kernels compute the wrong answer*; `UNATTRIBUTED` says
+   *our kernels did not run and the answer is therefore not about them*. They have different owners,
+   different fixes, and different next questions, and a lane that prints one red for both is a lane
+   with R13's defect (§10.0.1). It is the fifth member of the family with `UNMEASURED`, `UNWIRED`,
+   `UNOBSERVABLE` and `SPLIT-DEVICE`, for the same reason as the other four: **every way of not
+   knowing gets a name a machine can print, because prose is where knowledge of a caveat goes to
+   die.**
+5. **The guard is an input to the verdict, not a neighbour of it.** Trinity's Guard D is the right
+   observation in the wrong place. As a separate assertion it can be skipped, `xfail`ed, deleted,
+   or crash before it observes anything — all four of which have now happened to controls on this
+   project — and the verdict is emitted regardless, into the counters JSON that Niobe, Mouse and
+   `epctl` read and that no pytest caveat travels with. **A caveat that lives in a different artifact
+   from the number it qualifies is not attached to it.** So Guard D's *observation* becomes the
+   verdict's constructor argument; Guard D's *assertion* remains in the lane as a fast, legible
+   failure. The observation is load-bearing; the assertion is a convenience.
+
+**What does not change.** The gate is still a gate and not a fourth number (`UNATTRIBUTED` voids the
+triple exactly as `DIVERGENT` does); the verdict still travels with its artifact at
+producer-at-version and never generalises; the comparison is still against a CPU-only run of the same
+session. **What changes is that the verdict now says whose result it is** — and it turns out that a
+verdict about *output equivalence* was never, on its own, a verdict about *this EP*.
+
+**The cheapest thing that satisfies the words without satisfying the intent**, since I require that
+question of every criterion: a caller that hardcodes `executed_by: {"VulkanExecutionProvider": 1}`.
+Clause 3 closes it structurally — the argument is a profile path, parsed here, with the event count
+recorded — and clause 2 makes a fabricated count disagree with the counters and go `SPLIT-FRAME`.
+The second cheapest is a profile parsed from a *previous* run; the artifact digest and the
+per-session profile path close that. **Owner: Trinity for the constructor and the profile parse,
+Switch for the counters-side record and the `SPLIT-FRAME` emission, Tank for `epctl --check-counters`
+failing on `UNATTRIBUTED` and on a missing `executed_by`.**
+
+**Retroactive consequence, stated plainly because it is the expensive half.** Every `MATCH` this
+project has recorded was recorded without an attribution. The 2026-07-30 verdicts on both devices are
+**not `MATCH` under this rule; they are `UNATTRIBUTED` until re-emitted with a profile beside them**,
+and the M0 table below moves accordingly. I am not grandfathering them. A rule whose first act is to
+exempt the evidence that motivated it is a rule written to be passed.
 
 **DISCLOSURE OBLIGATION — 2026-07-30T19:05:03-07:00. The triple gains no fourth number and no
 second gate. It gains a figure that may not be omitted.**
@@ -3440,6 +3533,72 @@ being correct in different places.**
 sound instruments, *jointly silent*. R10: *never called*. R11: called, correct, *misnamed*. **R12:
 called, correct, correctly named — and about a different world than the one the reader is in.**
 
+**R13 — an instrument's failure is not distinguishable from the condition it detects, and the reader
+who most needs the distinction is the one who predicted the red.** *Added 2026-07-31T07:45:10-07:00.
+I am the specimen and the second clause is mine.*
+
+**The specimen.** Trinity's Guard D — the mechanism built for exactly the hole above, a post-`run()`
+check that reads ORT's profile and fails when this EP executed zero nodes — contained a `NameError`
+and **raised before it read a single profiling event.** I merged it, ran the suite, watched
+`8 passed` become `5 failed`, and reported to the team that the guard was working and had caught the
+fallback. It had crashed. One line fixed it; with the guard actually running it reports four real
+defects with named owners, which is a different set of reds than the ones I looked at.
+
+**Why R10, R11 and R12 do not cover it.** R10 is a mechanism absent from the call graph. R11 is a
+mechanism that ran and was misnamed. R12 is a mechanism that ran, was correctly named, and described
+another world. **R13 is a mechanism that ran, failed, and whose failure wore the costume of its
+finding.** Guard D raising `NameError` and Guard D correctly detecting a CPU fallback both present as
+the same token — `FAILED` — in the only artifact anyone reads, the pytest summary line. There is no
+reading of that line, however careful, that separates them, which is what makes it a rule about the
+artifact rather than about the care taken.
+
+> **R13 — a check has at least three terminal states and must report them as three distinct tokens:
+> `PASS`, `FAIL(condition)` — the condition it exists to detect — and `ERROR(instrument)`, in which
+> the check did not reach its observation. A red that could mean either is not a signal. An
+> instrument error is a lane failure of a different kind and **never counts as a detection**; a
+> harness whose only failure vocabulary is its framework's `FAILED` line has a two-state alphabet and
+> cannot carry three states.**
+
+**Three obligations, all mechanical, because an obligation to be careful is not an obligation:**
+
+1. **Guards fail with a distinct type carrying the observation that produced them.** A guard raises
+   its own exception class only *after* it has read its input and computed a value; anything raised
+   before that point is `ERROR(instrument)` by construction, not by classification. The lane summary
+   prints condition-failures and instrument-errors as **separate counts**, and a lane with any
+   instrument error is not a lane that ran, whatever else it reports.
+2. **A guard must be able to state what it observed even when it fails.** `Guard D: 0 Vulkan node
+   events, providers seen: [CPUExecutionProvider]` is a detection. `Guard D: NameError` is an
+   outage. The distinguishing feature is the presence of an observation, so the observation is what
+   the guard is required to emit — into the artifact, not only into a traceback.
+3. **A second witness with a different failure mode, not a better first witness.** The remedy for a
+   guard that can fail silently is not a more careful guard; it is an independent check that fails
+   differently. Concretely and cheaply: **a known-fatal log line is a lane failure, not a log line** —
+   the lane greps its captured ORT output for `Falling back` and fails on it. That line has now
+   appeared **five times on this project** while every gate passed. A `grep` cannot `NameError`, and
+   a guard cannot be silenced by a log format change; each covers the other's outage.
+
+**The second clause, and it is the more dangerous half.** R6 amendment 4 records that *a result
+surprising enough to be a discovery is first a reason to check the instrument — surprise is a free
+instrument check.* The inverse is what caught me:
+
+> **A result that confirms a prediction deserves more scrutiny than one that contradicts it, because
+> the contradiction gets checked automatically and the confirmation does not.** A contradiction
+> recruits the reader's attention for free; a confirmation spends it. Therefore: when an observation
+> matches the prediction that motivated the change, **the observer reads one level below the summary
+> before reporting it — quote the failure text, never the failure count.**
+
+I had a written criterion, I had predicted red, red appeared, and I stopped reading at the count.
+Every rule in this register up to R12 is about an instrument; **R13's second clause is the first one
+about the reader**, and it exists because on this project the instruments have now been more reliable
+than my reading of them. The mechanical form — *quote the text, not the count* — is deliberate: it is
+the only version of this obligation that survives being tired, and *"be suspicious of good news"* is
+advice, and advice does not survive transit.
+
+**Where R13 sits.** R6: our tooling manufactured a *number*. R7: it manufactured a *negative*. R9:
+sound instruments, *jointly silent*. R10: *never called*. R11: called, correct, *misnamed*. R12:
+called, correct, correctly named, *about another world*. **R13: called, and its outage is spelled
+the same way as its finding — plus a reader who checked the spelling only when he disliked it.**
+
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
 first contrib row goes `Live`.
@@ -3640,6 +3799,21 @@ R8 is that expectation is not measurement.
     `dispatches_executed > 0` and a claimed count > 0, so that a CPU-fallback run cannot satisfy it
     (§9.1.2's non-vacuity refusal). The falsifier is the criterion: **it goes red when the model is
     wrong, which is the thing no other M0 criterion could ever do.**
+    **AMENDED 2026-07-31T07:45:10-07:00 on §10.0's third metric amendment, after a `MATCH` was
+    returned for a run in which this EP executed zero nodes.** The clause above — *"the run reports
+    `dispatches_executed > 0` … so that a CPU-fallback run cannot satisfy it"* — was written against
+    this hazard and did not stop it, because it names **our own counter**, which lives inside the
+    frame whose existence is in question, and because it was a sentence beside the verdict rather
+    than a condition on emitting it. Three additions, all structural:
+    (a) the verdict is a **record carrying `executed_by`**, an execution attribution parsed on this
+    run from **ORT's profiling trace** — an instrument we do not own — and `MATCH` is
+    unrepresentable when this EP's node-event count is zero (that run emits `UNATTRIBUTED`);
+    (b) **both witnesses are recorded** — profile node events and `dispatches_executed` — and
+    disagreement emits `SPLIT-FRAME` rather than a verdict;
+    (c) the criterion is satisfied only by a **series, not a single run**: the cross-run consistency
+    gate of 2026-07-30T19:05:03-07:00 applies here, so N ≥ 3 consecutive inferences in one session
+    each carry an attributed `MATCH`. A single attributed run is necessary and has never been
+    sufficient, and the OOM defect below is why that sentence is not pedantry.
 11. **No form is claimed without a ledger entry under its proof key, and no build can silently be
     claiming unproven forms** (§8.9). *Added 2026-07-30T06:32:18-07:00.* Three checks, all of them
     positive controls in criterion 7's sense: (a) a `Ready` row with no ledger entry for the node's
@@ -3722,17 +3896,17 @@ dishonestly.
 | # | Criterion | Status | What remains |
 |---|---|---|---|
 | 1 | build + clippy clean, Windows & Linux | **Met** on Windows; Linux via CI | Nothing; hold it |
-| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **Met — closed 2026-07-30T19:05:03-07:00 on criterion 10** | I wrote on 2026-07-30 that this "closes when criterion 10 closes", and criterion 10 has closed. Adding a further condition now would be moving the line after seeing the result, which is the opposite of the fault I reopened it for. **Recorded scope: it closes for the artifact and lanes criterion 10 was measured on, and travels no further** (§10.0 point 2). The M0 sentence's tail is tracked by the tail, not by re-reopening this row |
-| 3 | Validation layers clean in the debug lane | **Partially met — and it moved in both directions today** | The EP-side messenger was attached and immediately **fired on a real, unplanted violation on the ORT-mediated path**: `vkCreateComputePipelines(): SPIR-V uses descriptor [Set 0, Binding 4] but the binding was not declared in ... pSetLayouts[0]`. That is the polarity proof this criterion asked for, arriving as a live error rather than a plant — and it retroactively convicts the earlier "no errors surfaced" reading, which was a **silent instrument sitting on top of the day's worst defect for its entire life**. Two things now owed, and the criterion is *further* from met in one sense than it was: (a) a **re-run after the binding-arity fix showing zero errors with the messenger armed**, on both devices — the prior clean reading is void; (b) the planted control **in the lane**. `ep_messenger_fires_for_planted_fence_leak` is `#[ignore]`d, and a control that must be opted into is not in the lane (R10). A single manual run of it is reported in the inbox and contested in the coordinator's brief; **a contested observation is not a control**, and the remedy is the same either way: run it in the lane and keep the artifact. Then lavapipe |
-| 4 | No-ICD machine advertises zero devices, session runs on CPU | **Partially met — unchanged, and deliberately untouched by today** | Still needs the **paired positive control**: the same binary in the same lane advertising a non-zero device count with an ICD present. Nothing about model correctness bears on this. We have non-zero device counts everywhere and **not in the same lane as the negative**, which is the whole of what was asked. Cheap; owner Trinity with Switch. It has now been deferred as "cheap" on five consecutive days, which is a fact about cheap items, not about this one |
-| 5 | Shader-less build advertises zero devices and claims nothing (§7.8 condition 3) | **Partially met — unchanged, and deliberately untouched by today** | Same defect as 4, same fix, same non-argument: 321 claimed nodes elsewhere is not the paired control, because the pairing *is* the criterion. Owner Trinity with Switch |
+| 2 | `pytest tests/ops` green with the claim assertion proving `Add` ran on `VulkanExecutionProvider` | **REOPENED 2026-07-31T07:45:10-07:00 — partially met** | Reopened on two independent grounds, and I want both on the record because either alone would suffice. **(i) It was closed on criterion 10, and criterion 10's closure is withdrawn** — I wrote that this row "closes when criterion 10 closes", so when that closure turns out to have rested on an `UNATTRIBUTED` run, the ground under this row goes with it. **(ii) It fails on its own terms today**: the suite is not green. With Guard D actually executing, the lane reports four real defects with named owners. Ground (ii) is the one that matters, because it needs no argument about promises — *the criterion says green and the suite is red.* This row re-closes automatically when 10 does and the suite is green; it does **not** acquire new conditions on the way, which is the fault I reopened it for in the first place |
+| 3 | Validation layers clean in the debug lane | **Partially met — and one of its two owed items is now discharged** | (b) is **done**: the planted control fires **in the pytest lane** rather than behind `#[ignore]`, which is what "a control that must be opted into is not in the lane" asked for. (a) is still owed and is now owed more precisely: **a re-run after the binding-arity fix showing zero errors with the messenger armed, on both devices, from a run whose verdict is an *attributed* `MATCH`** — the prior clean reading is void and so is any reading taken from a fallback run, because a graph that ran on CPU generates no Vulkan calls for a validation layer to object to. **A silent validation lane and a lane with nothing to validate are the same reading**, which is R13's shape arriving in criterion 3. Then lavapipe |
+| 4 | No-ICD machine advertises zero devices, session runs on CPU | **Partially met — mechanism landed, artifact not seen** | Trinity landed the **paired positive control in one lane**, which is the specific thing this row has been waiting five days for. It does not move the status yet and the reason is my own rule: **review of a mechanism is not complete until the reviewer has seen an artifact it produced** (R10), and I have not. Two things close it: the lane artifact showing the same binary reporting zero devices without an ICD and non-zero with one, and — new, on R13 — **the two outcomes must be spelled differently from the control's own outage**, since "advertised zero devices" and "the probe threw" are the same word in a summary line. Owner Trinity with Switch. The remaining gap after that is the second OS |
+| 5 | Shader-less build advertises zero devices and claims nothing (§7.8 condition 3) | **Partially met — mechanism landed, artifact not seen** | Same as 4, same owner, same two closing conditions. The `ALLOW_MISSING_GLSLC=1` negative and its paired positive must be distinguishable from a build that failed for an unrelated reason — the reason string is the mechanism, and R13 says it must be emitted on the failing path, not only on the passing one |
 | 6 | `CLAIM_DEBUG=1` prints per-op decline reasons | **Met** | Nothing. Reasons are first-match (R8) — the criterion asks for reasons, not complete reasons, and that is deliberate |
 | 7 | Layering lint in CI, fails a planted violation incl. a planted `cmd_pipeline_barrier` | **Met** | Nothing. Still the only criterion written with a falsifier from day one; criteria 11 and 12 are both built in its image |
 | 8 | Full suite twice per lane, default and `force_legacy_barriers=1`, identical results, **non-zero executed-dispatch count in each lane** | **Met — as a *parity* criterion, which is all it ever was** | Unchanged, and today reinforces the relabelling rather than softening it: **both barrier backends agreed bit-exactly while the model produced all-zero logits**, which is exactly the failure mode the 2026-07-30 relabelling predicted in the abstract and has now been observed in the concrete. Link's lavapipe run adds a third independent barrier implementation (58/0 parity, `subgroup_size = 8`); that lane is **operational, not green**, so it is not quoted here as satisfying the criterion. Open: the twice-per-lane run on the lavapipe lanes, carrying criterion 10's gate |
 | 9 | Sibling docs consistent; §12 lists every divergence | **Partially met — the named blocker is discharged, the criterion is not** | `PLATFORMS.md` LVP2 is now **retracted** with the corrected reading from the fixed probe, which was the specific thing blocking this row (§10.0.1 R6 rule 3, executed). But `DESIGN.md`, `ENGINE.md`, `OP_COVERAGE.md`, `PERF.md` and `PLATFORMS.md` **all changed today**, and a consistency criterion assessed against yesterday's documents is not assessed. **Two items added 2026-07-30T20:58:11-07:00, both of which make every document written today wrong in a specific, mechanical way:** (a) every occurrence of the "68.3% command-buffer recording" figure is a misnomer defect (§10.0.1 R11) and must be restated as host upload — I have corrected this document's own occurrences below and the same sweep is owed in `PERF.md` and anywhere Niobe's phase table was quoted; (b) **every device label written on 2026-07-30 is inverted** — `DEVICE=0` is the RTX 4060, `DEVICE=1` is the Iris Xe (R6 amendment 4). Owner: Link for `PLATFORMS.md`, Niobe for `PERF.md`, me for §12 and the cross-references |
-| 10 | **Real model at producer-at-version, non-zero claimed count, `model_output_equivalence = MATCH` against a CPU-only run of the same session** | **MET — measured `MATCH` on both devices, 2026-07-30** | Phi-3.5, Intel Iris Xe and RTX 4060: `argmax 30751` on both, agreeing with CPU; top-10 overlap 10/10; max abs diff **0.031 / 0.035**. **The non-identity is the correct result**, not a tolerance we granted ourselves — fp16 accumulation order differs between a GPU reduction and a CPU one, and a bit-identical answer would have been evidence of a CPU fallback, not of a working kernel. Root cause was **binding arity**, not dtype: `push_dynamic_kernel` built a 4-entry pipeline layout for `MatMulNBits`-without-`zero_points` while the shader wrote its output to binding 4, and **both drivers silently dropped the write**. **Scope, recorded because a verdict travels with its artifact and never generalises (§10.0 point 2): one artifact, one producer-at-version, two devices, one OS.** The M0 tail is what carries it off this desk |
+| 10 | **Real model at producer-at-version, non-zero claimed count, attributed `model_output_equivalence = MATCH` against a CPU-only run of the same session, over N >= 3 consecutive inferences** | **REOPENED 2026-07-31T07:45:10-07:00 — partially met** | **The evidence that closed this row is void, and the evidence that replaces it is genuine and incomplete.** Void: the 2026-07-30 `MATCH` on both devices came from runs in which ORT had already fallen back to CPU inside `run()` — this EP executed zero nodes, so the verdict was `UNATTRIBUTED` under §10.0's third amendment, not `MATCH`. Genuine: after Switch fixed `Allocator::alloc(size=0)` returning `None` for Phi-3.5's `[1,32,0,96]` KV-cache inputs, **ORT's own profiling — an instrument we do not own — reports 1 `VulkanExecutionProvider` node event (one fused island of 354 nodes) and 10 `CPUExecutionProvider` events, exactly Mouse's ten declined edge ops, with `logits argmax 30751` matching CPU.** That is the first attributed execution this project has ever recorded and it is worth more than the reading it replaces. Incomplete: **the multi-run picture is red** — the weight cache exhausts device memory across runs (`gpu-allocator failed to allocate 14155776 bytes: Out of memory`, followed by silent CPU fallback) and 50 KV-cache outputs are never written, giving cross-run divergence on a dirty arena. **I am reopening this on the voidness of the old evidence and the incompleteness of the new, not on the badness of the news** — the test of that claim is cheap and I am stating it in advance: **when one session produces three consecutive attributed `MATCH` runs on this artifact, this row closes the same day, with no new conditions.** Owners: Switch (arena lifetime and the 50 unwritten outputs), Trinity (the attributed verdict constructor and the N >= 3 series) |
 | 11 | **No form claimed without a ledger entry under its proof key; no build silently claiming unproven forms** (§8.9) | **Not met — scaffolding only** | `DeclineCode::Unproven` and the `CLAIM_UNPROVEN` list-only parser exist in `registry.rs`; **there is no ledger**, so the predicate has nothing to look up and the three planted controls do not exist. Note this criterion still **removes** claims rather than adding them, and today changed its price: on landing, Phi-3.5's claimed count goes 321 → 0 until the ledger is populated, and it now does so to an EP that is *known correct on that model* — which is the moment the gate is least popular and most necessary (§8.9.5) |
-| 12 | **Wiring census: every mechanism this table relies on is observed to have run; a mechanism with no observation reports `UNWIRED`** (§10.0.1 R10) **— plus extent, the decomposition identity against an independent whole, and the name–content check** (§10.0.1 R11) | **Not met — added 2026-07-30T19:05:03-07:00, amended 20:58:11-07:00** | The census, the identity checks, the extent declarations and the lane assertion. **Amended within four hours of being written, by a specimen it would have certified** — `Phase::Record`, wired, invoked, correct, input-varying, and misnamed by 50×. **The tally does not move and that is the whole benefit of the row having been open**: a criterion strengthened while it is still unmet costs nothing and retracts nothing. Had I recorded it met this morning I would be reopening it tonight, on the seventh consecutive day of reopening a met criterion |
+| 12 | **Wiring census: every mechanism this table relies on is observed to have run; a mechanism with no observation reports `UNWIRED`** (§10.0.1 R10) **— plus extent, the decomposition identity against an independent whole, and the name–content check** (§10.0.1 R11) | **Not met — added 2026-07-30T19:05:03-07:00, amended 20:58:11-07:00** | The census, the identity checks, the extent declarations and the lane assertion. **Amended within four hours of being written, by a specimen it would have certified** — `Phase::Record`, wired, invoked, correct, input-varying, and misnamed by 50×. **The tally does not move and that is the whole benefit of the row having been open**: a criterion strengthened while it is still unmet costs nothing and retracts nothing. Had I recorded it met this morning I would be reopening it tonight, on the seventh consecutive day of reopening a met criterion. **AMENDED AGAIN 2026-07-31T07:45:10-07:00, again by a specimen it would have certified, and this time the specimen is a mechanism whose own outage the census would have recorded as an observation.** Two additions: **(g)** every mechanism's census line carries the **frame** it observed in — for `model_output_equivalence` that is `executed_by` (§10.0 third amendment); a census that reports a verdict without its executor reports a value from a world it has not identified; and **(h)** the census distinguishes three states per mechanism, `OBSERVED` / `UNWIRED` / `INSTRUMENT-ERROR` (R13), because a census whose vocabulary is *observed or not observed* records a crashed mechanism as an absence and an absence as a crash |
 
 **RULING ON CRITERION 3 — it does not discharge, and the reason is R7, not pedantry.** *"Ran with
 validation enabled and no errors surfaced"* is the same observation a run with the layer **not
@@ -3744,6 +3918,61 @@ the lane catches and fails on (the mechanism criterion 7 already uses for the la
 layer's own startup banner asserted in the log. Cheap, one-off, and it converts *"we saw nothing"*
 into *"we would have seen something"*. Owners: Switch and Trinity.
 
+**TALLY AT 2026-07-31T07:45:10-07:00 — four met, six partial, two not met, of twelve. Two rows moved
+backwards and I am the reason one of them was ever forward.** *Superseding the 20:58 and 19:05
+readings below, which are preserved because a table that only ever shows its current state is a
+table nobody can audit.*
+
+| | 19:05 · 20:58 | Now | Why |
+|---|---|---|---|
+| Met | 6 | **4** | 1, 6, 7, 8 |
+| Partial | 4 | **6** | 2 and 10 reopened; 3, 4, 5, 9 unchanged in status, three of them advanced in substance |
+| Not met | 2 | **2** | 11, 12 |
+
+**The question I was actually asked was whether to reopen criterion 10 or record it met with scope,
+and the answer turns on which of two things is true of the old evidence.** *Met with recorded scope*
+is the right instrument when evidence is **sound and narrow** — that is what I did on 2026-07-30 for
+one artifact, one producer, two devices, one OS. It is the wrong instrument when the evidence is
+**void**, and this evidence is void rather than narrow: those runs did not measure a narrower version
+of the thing, they measured **a different thing** — a CPU run compared against a CPU run. Scope
+narrows a true statement; it cannot repair one whose subject was absent. So: **reopened.**
+
+**And I am aware of the mirror.** I have twice refused to let good news close a criterion for the
+wrong reason, and the symmetric failure is refusing to let bad news reopen one for the wrong reason —
+reopening as penance, which is the same defect wearing the opposite sign and is precisely the
+*"do not harden a criterion to punish a bad week"* prohibition. Three things keep this from being
+that:
+
+1. **The reopening is caused by the old evidence, not by the new defects.** Even if the OOM and the
+   50 unwritten outputs did not exist, the 2026-07-30 `MATCH` would still be `UNATTRIBUTED` and this
+   row would still reopen. The bad news is not doing the work.
+2. **The row's price is stated in advance and it is low.** Three consecutive attributed `MATCH` runs
+   in one session on this artifact closes it, on the day they arrive, **with no new conditions
+   attached on arrival**. A reopening that specifies its own cheap closure is not a punishment; a
+   reopening whose conditions are written after the next attempt would be.
+3. **The multi-run requirement is not new.** The cross-run consistency gate was recorded on
+   2026-07-30T19:05:03-07:00, before any of this. I am applying an existing criterion to a row that
+   had not been assessed against it, which is the opposite of inventing one.
+
+**What did not move, and the discipline is the same as on the good day.** Criteria 3, 4 and 5 all
+advanced in substance — the planted messenger control now fires in the pytest lane, and Trinity's
+paired positive controls landed in one lane — and **none of them changes status, because I have not
+seen the artifacts.** *Review of a mechanism is not complete until the reviewer has seen an artifact
+it produced* (R10) is a rule I applied to other people's work all week; it applies identically when
+the mechanism is one I asked for and the news is good. **The single strongest piece of evidence this
+project has ever produced also arrived today** — an execution attribution from ORT's own profiler,
+354 nodes on the GPU in one island, argmax matching CPU — **and it moves no row either**, because it
+is one run and the row asks for three. Good news and bad news are being held to the same standard on
+the same day, which is the only day that test is worth anything.
+
+**What the tally does not say.** It does not say the project went backwards. **The EP executed a real
+model on the GPU today for the first time**, and per-inference upload fell from 1997.6 MiB to
+0.756 MiB, measured on bytes. Both are real and neither is a criterion. **A milestone table is not a
+progress report** — it is a list of claims we are prepared to defend, and today we learned that one
+of them was undefendable. That is the table working.
+
+**SUPERSEDED — the 20:58 and 19:05 readings, preserved for the audit trail:**
+
 **Six met, four partial, two not met, of twelve — against four met, four partial, three not met, of
 eleven, this morning.** The table moved forwards for the first time this week, and it grew by a row
 on the same day. Both facts belong in the same sentence. What closed closed on a **measurement**
@@ -3753,7 +3982,9 @@ not touch**: criteria 4 and 5 are negative-space checks with no positive control
 correct on Phi-3.5 passes them exactly as an always-broken EP does. **A correct model does not
 retroactively give an unknown-polarity check a polarity.** I record that explicitly because the
 temptation on a good day is to let the good news wash over the table, and the amendment of this
-morning exists because the same thing happened in reverse.
+morning exists because the same thing happened in reverse. *[The `MATCH` in this paragraph is now
+known to be `UNATTRIBUTED`. The paragraph's reasoning about criteria 4 and 5 survives intact and was
+right for reasons that had nothing to do with the verdict.]*
 
 **TALLY UNCHANGED AT 20:58:11-07:00, and the reason is worth more than the number.** The R11 event
 (§10.0.1) invalidated a headline figure, corrected a 50× misattribution, inverted every device label
@@ -3767,13 +3998,24 @@ the right things. **That is the first evidence I have that the criteria are load
 decorative, and it arrived from a defect rather than from a success**, which is the only way such
 evidence ever arrives.
 
-**What criterion 10 closes, and what it does not.** It closes criterion 2, on the promise I made
+**What criterion 10 closes, and what it does not.** *Written 2026-07-30T19:05:03-07:00 and
+**withdrawn 2026-07-31T07:45:10-07:00**: the run it describes was `UNATTRIBUTED`, so nothing in this
+paragraph closed anything. **One sentence in it survives, and it survives in a stronger form than it
+was written in.*** It closes criterion 2, on the promise I made
 when I reopened it. It closes the question R9 was written about: **there is now one instrument in
 this project that goes red when the model is wrong, it has been observed in both states, and the
 transition between those states was caused by a real defect.** That is the strongest form of
 evidence a criterion can have and no other criterion in this table has it. It does **not** close the
 M0 sentence's tail, it does not travel to another artifact or another producer (§10.0 point 2), it
 does not touch criteria 3, 4, 5, 9, 11 or 12, and it says nothing whatever about speed.
+
+**The surviving sentence, restated correctly.** *There is now one instrument in this project that
+goes red when the model is wrong, and it has been observed in both states* — that remains true, and
+today it acquired a third state and a second witness. What was false in the original was the
+implication that its red and green were **about this EP**; they were about whatever executed the
+graph. **An instrument with a real red state that measures the wrong subject is not a weaker version
+of a good instrument — it is a different instrument**, and that is the whole content of §10.0's
+third amendment.
 
 **A note on the defect, because it is the best evidence §8.9 will ever get.** The uncovered axis was
 **binding arity**, not dtype — everyone, including me, reasoned toward the f16 kernel. `MatMulNBits`
@@ -4064,6 +4306,61 @@ reading.** *Asked directly, and the coordinator was right to ask rather than ass
   a flat line. That is the criterion-shaped thing the directive deserves, and it belongs in the
   cadence, not in a gate.
 
+**RULING — the ranked performance order survives, rank 1 keeps its place and changes its content,
+and every wall-clock figure this project holds is withdrawn.** *2026-07-31T07:45:10-07:00, asked
+directly whether the ordering still stands now that the timings behind it are known to have been
+taken during CPU fallback.*
+
+**The ordering, unchanged in sequence:**
+
+| Rank | Item | Basis, and what it rests on now |
+|---|---|---|
+| 1 | **Weight residency** — `device_upload_bytes` per inference | **Landed and measured on bytes: 1997.6 MiB → 0.756 MiB per inference, sweep flat instead of linear.** Bytes are not a clock and were never taken from a timed run, so this result is untouched by the withdrawal below. **It is also now leaking**: the cache exhausts device memory across runs and the EP drops silently to CPU |
+| 2 | **Net-benefit declines** — `retain_viable` in the partitioner | Wired by Mouse. Rests on the island-count decomposition (321 → 33), a **count**, not a clock |
+| 3 | **Fence-wait GPU idle** — ~16% of wall, 53.6% of `fence_wait` is not kernel | Rests on a *share*, i.e. a ratio internal to one trace. Ratios within a trace survive the trace being from the wrong run only as **relative structure**, and that is exactly and only what they are being used for here |
+| 4 | **Kernels** — ≤15% of wall, 98% of it one kernel | Same basis as 3, plus the concentration figure, which is a property of the graph rather than of the run |
+
+**Why it survives.** The ordering was never derived from wall clock. It was derived from **the phase
+decomposition and the byte-level residency result**, and the byte result is the load-bearing one:
+2481:1 in:out, ratio 1.0002, exactly linear over one, two and three runs. **A count and a ratio do
+not care what the absolute number was**, which is the same property that let the 3.1×/3.7× ratio
+survive the R11 misattribution — one clock, one whole thing, no naming decisions — arriving now in
+its dual form. **An ordering is a claim about relative magnitude and is falsified only by a relative
+result**, and no relative result changed today.
+
+**What is withdrawn, without hedging.** Every wall-clock figure this project has published —
+**3.1× on Intel, 3.7× on NVIDIA**, and every derived per-phase millisecond — was measured on a run
+in which this EP executed zero nodes. They are timings of the ORT CPU EP against the ORT CPU EP.
+They are not "roughly right" or "an upper bound": they are `UNATTRIBUTED` and they are void. The
+22:13 clause I added on my own authority — *no timing figure is quotable from a run whose verdict is
+not `MATCH`* — is what catches this, and today it acquires its teeth: **`MATCH` now means attributed
+`MATCH`, so the clause retroactively voids the very figures it was written beside.** A rule that
+first bites its author is a rule that was aimed at the right thing.
+
+**Therefore §10.0's disclosure obligation currently has no admissible value, and it reports that
+rather than the old number.** The ratio is not omitted and it is not stale — it is
+**`UNATTRIBUTED`**, published as that token, until a run with three consecutive attributed `MATCH`
+verdicts produces a new one. This is the family doing its job for the fourth time: `UNMEASURED`,
+`UNWIRED`, `UNOBSERVABLE`, `SPLIT-DEVICE`, and now a disclosure that names its own absence rather
+than quietly keeping the last number that looked like one.
+
+**Rank 1's content changes and its position does not, and the distinction matters.** The work was
+*"make the weights resident"*; it is now **"make residency bounded"** — arena lifetime, eviction, and
+a cross-run invariant on device memory. That is not a demotion of the achievement; the upload
+mechanism is right and the measurement proving it is right is the best-evidenced performance result
+this project has. It is a statement about what remains. **And it is worth naming what the OOM defect
+actually is: a performance mechanism that fails into silent CPU fallback is a correctness defect
+wearing a performance costume.** A cache miss should cost milliseconds; this one costs the entire
+device. That places it above ranks 2–4 on correctness grounds even if it had no performance value at
+all, which resolves the ordering question twice over.
+
+**One interlock restated because the directive points everyone at rank 1.** No residency figure is
+admissible except from a run at or above the last published coverage with an **attributed** `MATCH`,
+with first-inference upload reported beside the steady-state figure. Today's 0.756 MiB satisfies the
+byte side and does **not** yet satisfy the interlock, because the run that produced it is one run and
+the multi-run behaviour is the OOM. **The number is real and it is not yet admissible**, and I would
+rather write that sentence than round it in either direction.
+
 **RULING — M1's weight-residency criterion stands exactly as written, and the tempting change is
 the one to refuse.** *Asked whether it survives contact with a directive that will point everyone
 at it. It does, and the interlocks are the reason, so they are restated rather than assumed.*
@@ -4073,10 +4370,17 @@ at it. It does, and the interlocks are the reason, so they are restated rather t
   and 0.01 that deserves a criterion: the mechanism either uploads weights once per session or it
   uploads them once per inference, and every intermediate number describes a bug rather than a
   design. **A threshold with no honest intermediate value is the rare case where a round number is
-  the rigorous choice.**
+  the rigorous choice.** **UPDATE 2026-07-31T07:45:10-07:00: the ratio measured after Switch's
+  persistent-residency change is **0.756 MiB against 1997.6 MiB — 0.0004, forty times inside the
+  threshold** — and the criterion is **not** met, because the interlock below is not satisfied and
+  because the mechanism producing that number exhausts device memory on later runs. **This is the
+  first time a criterion's headline number has been comfortably passed while the criterion stays
+  open, and it is the clearest evidence yet that the interlocks are the criterion.***
 - **The two interlocks are what the directive puts under pressure, and neither may be relaxed.**
   (a) The figure is admissible only from a run whose `claimed_op_coverage` is **at or above the last
-  published figure**, with `model_output_equivalence = MATCH`. Without it the criterion is the most
+  published figure**, with an **attributed** `model_output_equivalence = MATCH` (§10.0 third
+  amendment — a `MATCH` from a run this EP did not execute is `UNATTRIBUTED` and admits nothing).
+  Without it the criterion is the most
   gameable sentence in this document — claim nothing, upload nothing, score perfectly, and the
   directive rewards you for it. (b) The first-inference upload is reported beside the steady-state
   figure, so *"we uploaded once and kept it"* and *"we uploaded nothing"* stay distinguishable.

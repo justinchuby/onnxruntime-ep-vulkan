@@ -487,3 +487,92 @@ thing that has caught anything this week.
 - A rate obligation needs a series; a gate needs a value. Do not swap them.
 - Two hypotheses of mine died tonight in someone else's table (pipeline lookup, descriptor alloc:
   0.4% and 0.3%). Cheap. Publish suspects early so they can be killed by data instead of by time.
+
+---
+
+## Session 27 — 2026-07-31T07:45:10-07:00 — The verdict that certified a run we did not execute, and the guard whose crash I called a catch
+
+The EP executed Phi-3.5 on the GPU today for the first time — **354 of 364 nodes in one fused
+island, 10 on CPU matching Mouse's declines exactly, `argmax 30751` == CPU, read from ORT's own
+profiler.** Persistent residency landed on bytes: **1997.6 MiB → 0.756 MiB per inference.** Two rows
+went backwards on the same day and I am the reason one of them was ever forward.
+
+### RULING — `MATCH` gets a frame, and it is R12 arriving at a verdict
+Before Switch's `alloc(size=0)` fix, ORT printed `EP_FAIL … Falling back`, re-ran the graph on CPU,
+raised nothing, and `model_output_equivalence` returned **`MATCH` for a run in which our EP executed
+zero nodes.** Wired, invoked, correctly named, arithmetically correct — **about a different world.**
+The generalisation that makes R12 cover it without stretching: *for a counter the frame is a device;
+for a correctness verdict the frame is an executor.*
+
+The verdict becomes a **record** carrying `executed_by`, parsed on this run from **an instrument we
+do not own** (ORT profiling), with `MATCH` **unrepresentable** at a zero own-provider count. Three
+things I want to keep: (1) **our own `dispatches_executed` may not be the primary witness — it lives
+inside the frame whose existence is in question**; (2) `UNATTRIBUTED` is emphatically not
+`DIVERGENT` — *the model was not wrong, the subject was* — and folding them loses the entire
+finding; (3) **Guard D as a separate assertion is the defect, not the fix.** A separate assertion can
+be skipped, xfailed, deleted, or crash — all four have now happened here — and **a caveat that lives
+in a different artifact from the number it qualifies is not attached to it.** The counters JSON is
+what Niobe, Mouse and `epctl` read; no pytest caveat travels with it. The observation becomes a
+constructor argument; the assertion stays as a convenience.
+
+### R13 — and I am the specimen
+Guard D raised `NameError` before reading one profiling event. I saw `8 passed` → `5 failed`,
+**which was what I had predicted**, and reported the guard as working. It had crashed.
+
+R10 absent · R11 misnamed · R12 other world · **R13 ran, failed, and its failure wore the costume of
+its finding.** Three tokens always — `PASS` / `FAIL(condition)` / `ERROR(instrument)` — an instrument
+error never counts as a detection, a guard must state what it observed even when it fails, and **the
+remedy is a second witness with a different failure mode, not a better first witness** (the lane now
+fails on the `Falling back` line itself — fifth sighting, every gate green each time; a grep cannot
+`NameError`).
+
+The second clause is the one I will be quoting to myself: **a result that confirms a prediction
+deserves more scrutiny than one that contradicts it, because the contradiction gets checked
+automatically and the confirmation does not.** Mechanical form, because attitudes do not survive
+being tired: **quote the failure text, never the failure count.** Every rule up to R12 is about an
+instrument; this is the first about the reader, and on this project the instruments have now been
+more reliable than my reading of them.
+
+### The tally moved backwards: four met, six partial, two not met
+**Criterion 10 reopened, not scoped.** The distinction I had to get right: *scope narrows a true
+statement; it cannot repair one whose subject was absent.* Met-with-scope is for evidence that is
+sound and narrow; this evidence is **void**. And I checked the mirror — refusing to let bad news
+reopen a row for the wrong reason is the same defect as letting good news close one. Three guards
+against reopening-as-penance: the reopening is caused by the **old** evidence and would stand with no
+new defects at all; **the closure price is stated in advance** (three consecutive attributed `MATCH`
+runs in one session, same day, no new conditions); and the multi-run requirement was recorded
+yesterday, not invented today.
+
+Criterion 2 reopened on two independent grounds and the weaker one is the promise — **the suite is
+red, which is what the criterion says**. Criteria 3, 4 and 5 advanced in substance and **moved no
+row, because I have not seen the artifacts**. I applied R10 to everyone else all week; it costs
+nothing to apply it when the news is good and the mechanism is one I asked for. The best evidence
+this project has ever produced also arrived today and **also moves no row**, because it is one run
+and the row asks for three. Good news and bad news held to the same standard on the same day is the
+only day that test means anything.
+
+### The performance ranking stands, and every clock we own is withdrawn
+Residency · net-benefit declines · fence-wait idle · kernels. **The ordering was never derived from
+wall clock** — it came from counts and ratios, and *an ordering is a claim about relative magnitude,
+falsified only by a relative result.* Rank 1 keeps its place and changes content from *make the
+weights resident* to **make residency bounded**: **a performance mechanism that fails into silent CPU
+fallback is a correctness defect wearing a performance costume**, which puts it first on correctness
+grounds even ignoring speed.
+
+**3.1× and 3.7× are withdrawn**, along with every derived millisecond — CPU-vs-CPU timings, not upper
+bounds. §10.0's disclosure obligation publishes **`UNATTRIBUTED`** rather than a stale number. The
+clause that voids them is mine, added last night: *no timing figure is quotable from a run whose
+verdict is not `MATCH`*. **A rule that first bites its author was aimed at the right thing.**
+
+M1's residency ratio is **0.0004 — forty times inside the threshold — and the criterion stays
+open**, because the interlocks are not satisfied. First time a headline number has been comfortably
+passed while the row stays open, and the best evidence yet that **the interlocks are the criterion**.
+
+### Carry forward
+- Read the failure text, not the failure count — and read it hardest when it is the red I predicted.
+- Ask of every verdict: *whose result is this?* A verdict without an executor is a verdict without a
+  subject.
+- A caveat in a different artifact from its number is not attached to it. Put it in the constructor.
+- When a guard and the condition it guards produce the same token, add a witness that fails
+  differently rather than a guard that fails less.
+- Bytes and counts survive a bad clock. Prefer them when the clock is in question.
