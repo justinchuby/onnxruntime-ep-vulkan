@@ -1068,18 +1068,53 @@ impl VulkanTracer {
         ));
 
         if !s.phase_us.is_empty() {
-            out.push_str("  host time (wall clock on the CPU thread):\n");
+            // NESTING MATTERS AND THIS TABLE USED TO HIDE IT.
+            //
+            // `compile`, `record`, `submit` and `fence_wait` are SIBLINGS — they partition the
+            // host thread's wall time. `upload` and `readback` are CHILDREN OF `record`: the
+            // staging memcpy is timed inside the `Phase::Record` guard (see `vk/session.rs`) and
+            // fed here through `record_transfer`. Summing this column therefore double-counts
+            // transfer, and printing it as a flat list invited exactly that.
+            //
+            // Children are printed indented under their parent with an explicit marker, and the
+            // sibling total is computed and printed so nobody has to add the column by hand.
+            let get = |p: Phase| s.phase_us.get(&p).copied().unwrap_or((0, 0));
+            let child_us = get(Phase::Upload).0 + get(Phase::Readback).0;
+            let sibling_us = get(Phase::Compile).0
+                + get(Phase::Record).0
+                + get(Phase::Submit).0
+                + get(Phase::FenceWait).0;
+
+            out.push_str(
+                "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
+                 INSIDE `record` — do NOT add this column:\n",
+            );
             for phase in Phase::ALL {
-                if let Some((us, calls)) = s.phase_us.get(&phase) {
-                    out.push_str(&format!(
-                        "              {:<11} {:>10} us (x{}) — {}\n",
-                        phase.as_str(),
-                        us,
-                        calls,
-                        phase.caveat()
-                    ));
-                }
+                let Some((us, calls)) = s.phase_us.get(&phase) else {
+                    continue;
+                };
+                let nested = matches!(phase, Phase::Upload | Phase::Readback);
+                out.push_str(&format!(
+                    "              {}{:<11} {:>10} us (x{}) — {}\n",
+                    if nested { "  └─ " } else { "    " },
+                    phase.as_str(),
+                    us,
+                    calls,
+                    phase.caveat()
+                ));
             }
+            out.push_str(&format!(
+                "              {:<15} {:>10} us  (compile+record+submit+fence_wait; \
+                 excludes the nested rows)\n",
+                "SIBLING TOTAL", sibling_us
+            ));
+            out.push_str(&format!(
+                "              {:<15} {:>10} us  ({:.1}% of sibling total) — host staging copy, \
+                 already counted inside `record`\n",
+                "of which xfer",
+                child_us,
+                100.0 * child_us as f64 / (sibling_us.max(1)) as f64,
+            ));
         }
 
         if s.gpu_measured {
@@ -1167,6 +1202,28 @@ impl VulkanTracer {
             ));
         }
         log::info!("{lines}");
+    }
+
+    /// Host-side staging traffic recorded through [`Self::record_transfer`], as
+    /// `(upload_count, upload_bytes, readback_count, readback_bytes, upload_us, readback_us)`.
+    ///
+    /// Exposed so the allocator's staging verdict can report the traffic it CANNOT see. The
+    /// allocator only knows about spans ORT asked it to allocate; the per-inference staging copy
+    /// of every kernel input is done by `vk::session` against buffers it owns, and is invisible
+    /// to `alloc_*`. A verdict that reports only the allocator's view describes a minority of the
+    /// staging actually happening.
+    pub fn transfer_totals(&self) -> (u64, u64, u64, u64, u64, u64) {
+        let s = self.summary();
+        let up = s.phase_us.get(&Phase::Upload).copied().unwrap_or((0, 0));
+        let rb = s.phase_us.get(&Phase::Readback).copied().unwrap_or((0, 0));
+        (
+            s.upload_count,
+            s.upload_bytes,
+            s.readback_count,
+            s.readback_bytes,
+            up.0,
+            rb.0,
+        )
     }
 
     /// Write the accumulated trace as Chrome Trace JSON to the configured path.

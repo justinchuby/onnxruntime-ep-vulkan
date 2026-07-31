@@ -298,18 +298,26 @@ impl VulkanEpCounters {
 ///
 /// Best-effort by design: a diagnostic that can fail a run it was only supposed to observe is a
 /// liability. A write failure is logged at `warn` and otherwise ignored.
+///
+/// # Why this writes the *full* document
+///
+/// This is called from [`record_dispatches`] — on every successful dispatch — and it used to write
+/// `snapshot().to_json()`, a strict subset of what [`dump_observations_if_requested`] writes.
+/// Both write the same path, and last write wins. So on any run whose final write was a dispatch
+/// rather than a teardown, every `alloc_*` and `pointers_*` key **vanished from the file**, and
+/// the reader saw a well-formed document with the interesting half missing. Measured: the
+/// `DEVICE_MEMORY=0` cells of the transfer-bound matrix produced counters files containing only
+/// the ten base keys, while the `DEVICE_MEMORY=1` cells of the same matrix carried all thirty —
+/// a difference that looks like a property of device memory and is purely a write-order artefact.
+///
+/// It also clobbered `model_output_equivalence` back to `UNMEASURED` after Trinity had written a
+/// real verdict, for the same reason.
+///
+/// Emitting one document from one function removes the ordering dependence entirely. The extra
+/// cost is a file read and ~30 atomic loads per dispatch, on a path that was already doing a file
+/// write per dispatch.
 pub fn dump_if_requested() {
-    let Some(path) = std::env::var_os(ENV_COUNTERS_FILE) else {
-        return;
-    };
-    let snap = snapshot();
-    match std::fs::write(&path, snap.to_json()) {
-        Ok(()) => log::debug!("wrote EP counters to {}", path.to_string_lossy()),
-        Err(e) => log::warn!(
-            "could not write EP counters to {}: {e}",
-            path.to_string_lossy()
-        ),
-    }
+    dump_observations_if_requested();
 }
 
 /// Append the allocator's pointer-observation tallies to the snapshot file.
@@ -364,6 +372,8 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_uploads\": {},\n  \"alloc_device_upload_bytes\": {},\n  \
              \"alloc_device_downloads\": {},\n  \"alloc_device_download_bytes\": {},\n  \
              \"alloc_unified_memory\": {},\n  \
+             \"alloc_quarantine_peak_spans\": {},\n  \
+             \"alloc_quarantine_retired\": {},\n  \
              \"alloc_device_authoritative_spans\": {}\n}}\n",
             o.observed,
             o.host,
@@ -389,6 +399,8 @@ pub fn dump_observations_if_requested() {
             t.device_downloads,
             t.device_download_bytes,
             t.unified_memory,
+            t.quarantine_peak_spans,
+            t.quarantine_retired,
             t.device_authoritative_spans,
         ));
     }
@@ -438,6 +450,41 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dispatch-path dump must not write a poorer document than the teardown path.
+    ///
+    /// Both write the same file and last-write-wins, so a subset document on the hot path erases
+    /// the `alloc_*`/`pointers_*` keys on any run that ends with a dispatch. This is the falsifier:
+    /// if `dump_if_requested` ever stops emitting the full document, this goes red.
+    #[test]
+    fn the_dispatch_path_dump_carries_the_allocator_keys_too() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("counters_dump_parity_test.json");
+        std::fs::remove_file(&path).ok();
+
+        // SAFETY: single-threaded test; the variable is removed before returning on every path.
+        unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
+        dump_if_requested();
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(ENV_COUNTERS_FILE) };
+
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        std::fs::remove_file(&path).ok();
+        for key in [
+            "alloc_allocations",
+            "alloc_device_backed_spans",
+            "alloc_device_authoritative_spans",
+            "alloc_quarantine_retired",
+            "pointers_use_after_free",
+        ] {
+            assert!(
+                doc.contains(key),
+                "the per-dispatch dump dropped `{key}`; it overwrites the teardown document, so \
+                 the key disappears from any run that ends with a dispatch. Document was:\n{doc}"
+            );
+        }
+    }
 
     /// The counters are process-wide statics, so tests that touch them must not run concurrently
     /// with each other. One test, sequenced by hand, is simpler than a mutex and cannot deadlock.

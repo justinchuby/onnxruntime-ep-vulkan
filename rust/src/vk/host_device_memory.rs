@@ -68,6 +68,12 @@ pub(crate) struct HostDeviceMemory {
     inner: Mutex<Inner>,
     device: Device,
     is_uma: bool,
+    /// The device the mirror actually landed on.
+    ///
+    /// Recorded so the identity can be *reported* rather than assumed. `create` resolves the
+    /// index against its own `enumerate_capable_devices()` call, and whether that agrees with the
+    /// device `VulkanSession` picked is a claim, not a given — it must be checkable from a log.
+    device_name: String,
     /// Held so the loader and the instance outlive every buffer. Never used directly.
     _instance: Instance,
 }
@@ -92,19 +98,39 @@ impl HostDeviceMemory {
         if capables.is_empty() {
             return None;
         }
-        let idx = if device_index < capables.len() {
-            device_index
-        } else {
-            log::warn!(
-                "VulkanExecutionProvider: device-backed allocation asked for device \
-                 {device_index} but only {} device(s) are capable; using device 0. The memory \
-                 would otherwise be on a different device from the compute session.",
-                capables.len()
-            );
-            0
-        };
+        // Resolve the device the SAME WAY `VulkanSession::create` does.
+        //
+        // (Tank, 2026-07-30) This used to be `capables[device_index]`, and that was wrong in a way
+        // no counter reported. Three different index spaces are in play:
+        //
+        //   1. `enumerate_capable_devices()` — SORTED best-first (discrete > integrated), see
+        //      `vk/instance.rs`. On this desk that is [RTX 4060, Iris Xe].
+        //   2. `ONNXRUNTIME_EP_VULKAN_DEVICE` — an index into (1), applied by `select_device`.
+        //      This is what the compute session obeys.
+        //   3. `device_index` as passed here — the *factory's* advertised-device index, assigned
+        //      in `factory.rs`, which is not guaranteed to agree with either of the above.
+        //
+        // Indexing (1) with (3) silently put the mirror on a different physical device from the
+        // one running the kernels: measured `alloc_unified_memory=1` (UMA/Intel) on BOTH
+        // selector values, including the run whose kernels were on the discrete card. The counter
+        // was numerically correct and attributed to the wrong device — the same failure shape as
+        // the process-global `HandleRegistry` scope error, one level up.
+        //
+        // `select_device` is the single source of truth for "which device is this session on".
+        let idx = crate::vk::instance::select_device(&capables).unwrap_or(0);
         let capable = capables.swap_remove(idx);
         let is_uma = capable.caps.is_uma;
+        let device_name = capable.info.name.clone();
+        if idx != device_index {
+            log::debug!(
+                "VulkanExecutionProvider: device-backed allocation resolved to capable-device \
+                 index {idx} ('{device_name}') via {}, while the allocator was created for \
+                 factory device index {device_index}. The mirror follows the compute session's \
+                 device, which is the one that matters; these two index spaces are not the same \
+                 and must not be assumed equal.",
+                crate::vk::instance::ENV_DEVICE_SELECTOR,
+            );
+        }
         // SAFETY: `instance` is live; `capable` came from its own enumeration.
         let device = unsafe { Device::create(instance.ash(), &capable, false) }?;
         // SAFETY: instance and device are live; the physical device belongs to the instance.
@@ -121,8 +147,14 @@ impl HostDeviceMemory {
             }),
             device,
             is_uma,
+            device_name,
             _instance: instance,
         })
+    }
+
+    /// The device this mirror actually landed on. Reported, never inferred.
+    pub(crate) fn device_name(&self) -> &str {
+        &self.device_name
     }
 
     /// Run one staged copy in either direction. `to_device` picks upload or download.
@@ -342,11 +374,15 @@ pub(crate) fn ensure_registered(device_index: usize) {
                 Arc::clone(p) as Arc<dyn DeviceMemoryProvider>,
             );
             log::info!(
-                "VulkanExecutionProvider: device-backed allocation is ON for device \
-                 {device_index} (unified_memory={}). ORT's tensors now live in DEVICE_LOCAL \
-                 memory. Note: these buffers are on this provider's own VkDevice, so a compute \
-                 dispatch cannot bind them yet — alloc_device_backed_spans measures residency, \
-                 not that the engine reads from device memory.",
+                "VulkanExecutionProvider: device-backed allocation is ON, mirroring onto \
+                 '{}' (unified_memory={}). Cross-check this name against the \
+                 \"VulkanSession: selected\" line: if they differ, the mirror is on a different \
+                 physical device from the kernels and every alloc_device_* number describes the \
+                 wrong device. ORT's tensors are resident in DEVICE_LOCAL memory, but these \
+                 buffers are on this provider's own VkDevice, so a compute dispatch cannot bind \
+                 them yet — alloc_device_backed_spans measures residency, not that the engine \
+                 reads from device memory.",
+                p.device_name(),
                 p.is_unified_memory()
             );
         }

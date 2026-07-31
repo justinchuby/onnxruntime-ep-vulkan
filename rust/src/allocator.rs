@@ -660,6 +660,7 @@ impl HandleRegistry {
         }
         inner.quarantine.push_back(addr);
         inner.stats.quarantined_spans = inner.quarantine.len() as u64;
+        let retired_before = inner.stats.quarantine_retired;
 
         // Retire the oldest only once the window is full, so recent frees stay detectable.
         while inner.quarantine.len() > self.quarantine_limit {
@@ -672,6 +673,10 @@ impl HandleRegistry {
             }
         }
         inner.stats.quarantined_spans = inner.quarantine.len() as u64;
+        tally::on_quarantine(
+            inner.stats.quarantined_spans,
+            inner.stats.quarantine_retired - retired_before,
+        );
         drop(inner);
         if let Some(view) = device_buffer {
             let idx = self.device_index.load(Ordering::Relaxed);
@@ -921,6 +926,23 @@ pub mod tally {
     static FREES_AFTER_RELEASE: AtomicU64 = AtomicU64::new(0);
     static LIVE_AT_RELEASE_SPANS: AtomicU64 = AtomicU64::new(0);
     static LIVE_AT_RELEASE_BYTES: AtomicU64 = AtomicU64::new(0);
+    /// Deepest the quarantine FIFO has ever been, across every registry in the process.
+    static QUARANTINE_PEAK: AtomicU64 = AtomicU64::new(0);
+    /// Spans retired from quarantine and returned to service, process-wide.
+    ///
+    /// This exists because "the quarantine never fired" was being claimed from a number that was
+    /// never written to the counters file: [`AllocStats::quarantine_retired`] is per-registry and
+    /// only reachable through ORT's `GetStats` KVPs, which nothing in the harness calls. Under R7
+    /// an unreachable instrument is not a negative result. Non-zero here means the detection window
+    /// was exhausted, so `pointers_use_after_free == 0` stops being evidence of anything.
+    static QUARANTINE_RETIRED: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn on_quarantine(depth: u64, retired: u64) {
+        QUARANTINE_PEAK.fetch_max(depth, Ordering::Relaxed);
+        if retired > 0 {
+            QUARANTINE_RETIRED.fetch_add(retired, Ordering::Relaxed);
+        }
+    }
 
     pub(super) fn on_alloc(requested: u64, live_bytes: u64) {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
@@ -1039,6 +1061,12 @@ pub mod tally {
         /// device memory". This counter is the one that would have to move for the second claim,
         /// and it is the instrument that goes red if anyone states it while it is still 0.
         pub device_authoritative_spans: u64,
+        /// Deepest the quarantine FIFO ever got, process-wide.
+        pub quarantine_peak_spans: u64,
+        /// Spans retired from quarantine, process-wide. **Non-zero voids** any conclusion drawn
+        /// from `pointers_use_after_free == 0`, because the window that would have caught a stale
+        /// handle was reused before the handle could be presented.
+        pub quarantine_retired: u64,
     }
 
     pub fn snapshot() -> Tally {
@@ -1061,6 +1089,8 @@ pub mod tally {
             device_download_bytes: DEVICE_DOWNLOAD_BYTES.load(Ordering::Relaxed),
             unified_memory: UNIFIED_MEMORY.load(Ordering::Relaxed),
             device_authoritative_spans: DEVICE_AUTHORITATIVE.load(Ordering::Relaxed),
+            quarantine_peak_spans: QUARANTINE_PEAK.load(Ordering::Relaxed),
+            quarantine_retired: QUARANTINE_RETIRED.load(Ordering::Relaxed),
         }
     }
 
@@ -1154,6 +1184,35 @@ pub mod tally {
     /// Neither branch is survivable as prose, so the verdict is derived: it names the ratio, and
     /// there is a distinct sentence for the mixed state that no fixed wording covers today and
     /// that is exactly the state we are heading into.
+    /// What `vk::session` staged this run, which no `alloc_*` counter can see.
+    ///
+    /// Derived, not declared (R7): when the tracer is inert there are no observations, and this
+    /// says so rather than reporting zero bytes — "no instrument" and "no traffic" are different
+    /// claims and only one of them is good news.
+    fn session_staging_sentence() -> String {
+        let (up_n, up_b, rb_n, rb_b, up_us, rb_us) = crate::trace::tracer().transfer_totals();
+        if up_n == 0 && rb_n == 0 {
+            return " SESSION STAGING: NOT MEASURED — the tracer recorded no staging copies this \
+                    run. That is an absent instrument, not zero traffic: `vk::session` stages \
+                    every kernel input on every inference regardless. Set \
+                    ONNXRUNTIME_EP_VULKAN_TRACE to a path to measure it."
+                .to_string();
+        }
+        format!(
+            " SESSION STAGING (separate from every alloc_* number above, and normally much \
+             larger): vk::session performed {up_n} host->device staging copy/copies totalling \
+             {:.1} MiB in {:.1} ms, and {rb_n} readback(s) totalling {:.1} MiB in {:.1} ms. This \
+             is per-inference traffic and it repeats on every run; the allocator's bytes are \
+             allocated once. If the upload MiB is close to alloc_high_water_bytes, the whole \
+             weight set is being re-staged every inference and THAT, not span residency, is where \
+             the time goes.",
+            up_b as f64 / (1024.0 * 1024.0),
+            up_us as f64 / 1000.0,
+            rb_b as f64 / (1024.0 * 1024.0),
+            rb_us as f64 / 1000.0,
+        )
+    }
+
     pub fn staging_verdict() -> String {
         let t = snapshot();
         if t.allocations == 0 {
@@ -1161,6 +1220,17 @@ pub mod tally {
                     about where their contents lived"
                 .to_string();
         }
+        // The traffic this verdict CANNOT see, stated before any of the traffic it can.
+        //
+        // (Tank, 2026-07-30) Every branch below describes only spans ORT asked THIS allocator to
+        // allocate. It is silent about `vk::session`'s per-inference staging copy of each kernel
+        // input, which on Phi-3.5 measured 1997.6 MiB PER INFERENCE — within 0.02% of the entire
+        // 1997.2 MiB weight set this allocator holds, i.e. the whole model is re-staged on every
+        // single run — against 0.8 MiB read back. On the discrete card that copy is a median 94.8%
+        // of the EP's wall time. A verdict that said "MIRRORED — all spans are device-resident"
+        // and stopped there described residency truthfully while omitting the dominant staging
+        // cost, which is exactly the "reports what was true when it was written" failure.
+        let session = session_staging_sentence();
         let mem = match t.unified_memory {
             1 => {
                 " The device is UNIFIED-MEMORY (UMA): its device-local heap is the same DRAM as \
@@ -1203,15 +1273,28 @@ pub mod tally {
                  through host_backing_for and binds buffers it allocated itself, so this run's \
                  timing is a HOST measurement PLUS the cost of mirroring, and is worse than \
                  staging alone rather than better. It must not be quoted as a device-memory \
-                 measurement.{mem}",
+                 measurement.{mem}{session}",
                 t.allocations, t.staged_bytes, t.device_uploads, t.device_upload_bytes,
+            );
+        }
+        if t.staged_spans == 0 && t.device_backed_spans == 0 {
+            // Neither counter moved, yet spans were allocated. This is R7: the branch below
+            // ("none were host-staged") would read as reassurance, when the truth is that
+            // nothing observed where these bytes lived. `staged_spans == 0` only means
+            // "not staged" if something was in a position to record staging.
+            return format!(
+                "MEMORY: UNMEASURED — {} span(s) were allocated but BOTH alloc_staged_spans and \
+                 alloc_device_backed_spans are 0, so nothing recorded where their contents \
+                 lived. This is an absent instrument, not a clean result, and no timing from \
+                 this run may be described as either a host or a device measurement.{session}",
+                t.allocations
             );
         }
         if t.staged_spans == 0 {
             return format!(
                 "MEMORY: none of the {} device handle(s) were host-staged; {} had a VkBuffer \
                  attached. Timing from this run is not disqualified by staging (which is not the \
-                 same as being a good measurement).{mem}{moved}",
+                 same as being a good measurement).{mem}{moved}{session}",
                 t.allocations, t.device_backed_spans
             );
         }
@@ -1219,7 +1302,7 @@ pub mod tally {
             return format!(
                 "MEMORY: ALL {} host-staged span(s) ({} B) and ZERO device-backed — nothing in \
                  this run reached device memory. Any timing from it is a HOST measurement and must \
-                 not be quoted as anything else.",
+                 not be quoted as anything else.{session}",
                 t.staged_spans, t.staged_bytes
             );
         }
@@ -1229,7 +1312,7 @@ pub mod tally {
              host measurement nor a device one; it is an average over two different memories and \
              is not comparable with either. Assert `alloc_staged_spans == 0` with `epctl \
              --check-counters --require-device-memory` before quoting a number from a run like \
-             this.{mem}{moved}",
+             this.{mem}{moved}{session}",
             t.staged_spans,
             t.staged_bytes,
             t.device_backed_spans,
@@ -1248,9 +1331,21 @@ pub mod tally {
             &DEVICE_BACKED,
             &STAGED_SPANS,
             &STAGED_BYTES,
+            &QUARANTINE_PEAK,
+            &QUARANTINE_RETIRED,
         ] {
             c.store(0, Ordering::Relaxed);
         }
+    }
+
+    /// Drive the counters directly so every `staging_verdict` branch — including the genuinely
+    /// mixed one, which real hardware has never produced — can be exercised.
+    #[doc(hidden)]
+    pub fn seed_for_test(allocations: u64, device_backed: u64, staged: u64, staged_bytes: u64) {
+        ALLOCATIONS.store(allocations, Ordering::Relaxed);
+        DEVICE_BACKED.store(device_backed, Ordering::Relaxed);
+        STAGED_SPANS.store(staged, Ordering::Relaxed);
+        STAGED_BYTES.store(staged_bytes, Ordering::Relaxed);
     }
 }
 
@@ -1408,10 +1503,29 @@ pub mod ledger {
             );
         }
         if o.use_after_free == 0 {
-            s.push_str(
-                " The quarantine detector was armed and never fired: no stale handle was \
-                 presented, so quarantine remains UNOBSERVED under this pattern.",
-            );
+            let t = super::tally::snapshot();
+            if t.quarantine_retired == 0 {
+                s.push_str(&format!(
+                    " The quarantine detector was armed and never fired: no stale handle was \
+                     presented, so quarantine remains UNOBSERVED under this pattern. Its window \
+                     covered the whole run (peak depth {} span(s), 0 retired), so this is a real \
+                     negative for THIS pattern and not an exhausted instrument — but it is still \
+                     a negative, and it stays one until a free is followed by a lookup of the \
+                     same address. Nothing in the EP's control makes ORT do that.",
+                    t.quarantine_peak_spans
+                ));
+            } else {
+                s.push_str(&format!(
+                    " The quarantine detector never fired, BUT its window was exhausted: {} span(s) \
+                     were retired and returned to service (peak depth {}). A stale handle presented \
+                     after its span was retired would resolve to a LIVE span and be counted as a \
+                     normal lookup. `use_after_free == 0` is therefore NOT evidence here — raise \
+                     {} and re-run before reading anything into it.",
+                    t.quarantine_retired,
+                    t.quarantine_peak_spans,
+                    super::ENV_QUARANTINE_SPANS
+                ));
+            }
         }
         if let Ok(t) = TRACE.lock() {
             for line in t.iter() {
@@ -1724,6 +1838,71 @@ mod tests {
         HandleRegistry::new().expect("reserving address space must succeed on a 64-bit host")
     }
 
+    /// A genuinely MIXED run must say "mixed", with the real ratio.
+    ///
+    /// Hardware has only ever produced the all-or-nothing states, so this branch has never been
+    /// exercised by a real model. That is exactly why it gets a test: the failure this guards
+    /// against is a verdict that keeps asserting one extreme after the truth has become partial.
+    #[test]
+    fn staging_verdict_reports_the_measured_ratio_when_spans_are_mixed() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // 10 allocations: 6 device-backed, 4 host-staged.
+        tally::seed_for_test(10, 6, 4, 4096);
+        let v = tally::staging_verdict();
+
+        assert!(v.contains("MIXED"), "must name the mixed state, got: {v}");
+        assert!(
+            v.contains("60.0% device-backed"),
+            "must report the RATIO IT MEASURED, not a fixed sentence; got: {v}"
+        );
+        // The failure mode this test exists for: claiming a universal when 6/10 contradict it.
+        assert!(
+            !v.contains("ALL "),
+            "must not claim an extreme while 6 of 10 spans are device-backed; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// Both counters at zero is an ABSENT INSTRUMENT, not a clean run (R7).
+    #[test]
+    fn staging_verdict_refuses_to_reassure_when_nothing_observed_residency() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::seed_for_test(10, 0, 0, 0);
+        let v = tally::staging_verdict();
+
+        assert!(v.contains("UNMEASURED"), "got: {v}");
+        assert!(
+            !v.contains("not disqualified by staging"),
+            "zero staged spans must not read as reassurance when nothing recorded residency; \
+             got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// Every branch must carry the staging the allocator cannot see.
+    ///
+    /// The dominant staging cost on Phi-3.5 is `vk::session`'s per-inference copy, which no
+    /// `alloc_*` counter observes. A verdict that omits it is accurate about spans and wrong
+    /// about the run.
+    #[test]
+    fn every_staging_verdict_branch_mentions_the_traffic_it_cannot_see() {
+        let _g = ledger::test_lock();
+        for (allocations, backed, staged) in
+            [(10u64, 10u64, 10u64), (10, 10, 0), (10, 0, 10), (10, 6, 4), (10, 0, 0)]
+        {
+            tally::reset_for_test();
+            tally::seed_for_test(allocations, backed, staged, 4096);
+            let v = tally::staging_verdict();
+            assert!(
+                v.contains("SESSION STAGING"),
+                "branch ({allocations},{backed},{staged}) omitted session staging: {v}"
+            );
+        }
+        tally::reset_for_test();
+    }
+
     /// **The verification OQ-3 turns on.** ORT's memory-pattern planner allocates one block and
     /// hands out `base + offset`. With integer handles those interior pointers collide with other
     /// live handles; with reserved address space they stay in-span by construction.
@@ -1922,6 +2101,38 @@ mod tests {
             "with a window of 4 and 16 frees, retirement must have happened and must be visible"
         );
         assert_eq!(s.quarantined_spans, 4, "the window holds exactly its bound");
+    }
+
+    /// Retirement must reach the counters FILE, not just the per-registry struct.
+    ///
+    /// The per-registry `quarantine_retired` is only reachable through ORT's `GetStats` KVPs,
+    /// which nothing in the harness calls — so "quarantine never fired" was being asserted from
+    /// a number no run ever wrote down. This is the R7 falsifier for that claim: if the global
+    /// counter does not move here, `alloc_quarantine_retired: 0` in a real run means "not
+    /// plumbed", not "window intact".
+    #[test]
+    fn quarantine_exhaustion_reaches_the_process_wide_counters() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // SAFETY: single-threaded test, value is consumed by `HandleRegistry::new` immediately
+        // and removed before anything else can read it.
+        unsafe { std::env::set_var(ENV_QUARANTINE_SPANS, "4") };
+        let r = registry();
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(ENV_QUARANTINE_SPANS) };
+
+        let handles: Vec<_> = (0..16).map(|_| r.alloc(4096).expect("alloc")).collect();
+        for h in &handles {
+            r.free(*h);
+        }
+        let t = tally::snapshot();
+        assert!(
+            t.quarantine_retired > 0,
+            "exhaustion must be visible process-wide, or `alloc_quarantine_retired: 0` in a real \
+             run is unfalsifiable by construction"
+        );
+        assert_eq!(t.quarantine_peak_spans, 4, "peak depth must be the bound");
+        tally::reset_for_test();
     }
 
     #[test]
