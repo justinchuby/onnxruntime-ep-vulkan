@@ -9,6 +9,77 @@
 **Round 11 (2026-07-29T09:19:35-07:00) — shape inference and device parametrization:**
 `apply_shape_inference(model_bytes)` in all harness paths. Device parametrization across indices wired (blocked on Switch `ep.device_index`; now available as `--vulkan-devices 0,1` or `VULKAN_DEVICE_INDEX=0,1`).
 
+---
+
+## Round 19 (2026-07-30T20:33:50-07:00) — paired controls, validation lane, wiring census
+
+**Trigger:** Morpheus's ruling: criteria 4 and 5 "partially met — unchanged, and deliberately
+untouched by today," on five consecutive days. Criterion 3 moved backward (messenger was
+wired to stderr with no in-process listener). Criterion 12 added (wiring census).
+
+### Criterion 4 & 5 — paired positive controls
+
+Added to `test_claim_diagnostics.py`:
+- `test_icd_present_ep_advertises_nonzero_devices` — criterion 4 positive. ICD present → 2
+  devices advertised → Add claimed. PASS on both Intel Iris Xe and RTX 4060.
+- `test_shaders_compiled_ep_claims` — criterion 5 positive. 46 live ops → Add claimed.
+
+Polarity pair confirmed in same lane: negative (no ICD / shader-less) + positive (ICD +
+shaders) are now siblings in the same `pytest tests/ops` invocation.
+
+### Criterion 3 — test_validation.py
+
+Three tests, each covering a distinct property:
+
+**(a) Armed:** `test_validation_messenger_armed` — `epctl --probe-validation` exits 0.
+VALIDATION ARMED: VK_LAYER_KHRONOS_validation installed and messenger live.
+
+**(b) Plant in lane:** `test_ep_messenger_plant_fires_in_lane` — invokes the Rust
+`#[ignore]`'d `ep_messenger_fires_for_planted_fence_leak` as subprocess. EP_VALIDATION_
+ERROR_COUNT = 1 after planted fence leak. Plant is now in the pytest lane (criterion:
+"a control that must be opted into is not in the lane"). PASS.
+
+**(c) Clean after fix:** `test_validation_clean_after_binding_arity_fix` — `add_f32_
+dispatches_end_to_end` under validation shows zero VUID errors on both devices after
+Switch's binding-arity fix. Prior "no errors" reading was void (messenger wired to stderr
+with no in-process listener). This is the fresh, valid reading.
+
+**What Switch needs:** Remove `#[ignore]` from `ep_messenger_fires_for_planted_fence_leak`
+in `rust/src/vk/dispatch_integration.rs` so the plant also runs in the cargo-test lane.
+Python lane is covered; Switch's change makes it doubly covered.
+
+### Criterion 12 — test_wiring_census.py
+
+`test_wiring_census` emits `[WIRING CENSUS] mechanism: value` lines. Uses
+`OrtEpVulkanGetExecutionCounters` (ctypes C ABI) instead of COUNTERS_FILE — avoids the
+Windows UCRT env-var cache issue (post-load `os.environ` changes are invisible to the loaded
+DLL; established in round 14).
+
+Current census on this machine (commit 6f28af8):
+```
+partitioner: dispatches=1, subgraphs_live=1, claimed_from_profiling=1
+partition_identity_check: VACUOUS (single-node graph — expected)
+gpu_tracer: OPTIONAL-UNWIRED (opt-in by design)
+model_output_equivalence: UNMEASURED (phi35 not in cache for this run)
+retain_viable: UNWIRED -> xfail(strict=True), owner Mouse
+ledger_lookup: UNWIRED -> xfail(strict=True), criterion 11 not met
+validation_messenger: ARMED
+layering_lint: PASS
+```
+
+**Known-unwired items:** `retain_viable` and `ledger_lookup` are `xfail(strict=True)`.
+They XPASS when Mouse wires `retain_viable` into GetCapability and criterion 11 is met.
+
+**Design note (R10 sub-rule, §10.0.1):** For model_output_equivalence UNMEASURED means
+Phi-3.5 is not in the dev machine cache for this specific run; the canonical MATCH is
+in `test_phi35.py`. For the census this is informational — `test_phi35.py` owns the
+assertion. UNMEASURED does not fail the census.
+
+**layering lint in census:** Runs `cargo test --test layering` (debug, not --release) to
+avoid relinking the release DLL while it is loaded. CI uses the same (no `--release` flag
+in `.github/workflows/ci.yml`).
+
+
 **Round 12 (2026-07-29T09:39:59-07:00) — portability:**
 Cross-platform portability is structural, not a review step. Test assertions derived from reported device limits, not constants.
 

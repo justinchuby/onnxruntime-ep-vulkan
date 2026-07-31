@@ -327,6 +327,19 @@ impl Drop for VulkanEp {
         // allocator arena, command/descriptor pools, pipeline cache) all hang off this struct and
         // are destroyed by this drop, in field order, exactly once.
         log::debug!("VulkanExecutionProvider session released");
+        // Emit the phase/transfer summary BEFORE exporting.
+        //
+        // (Tank, 2026-07-30) `Tracer::log_summary` had **zero callers** in the whole crate. It is
+        // the only place `phase_us[Upload]` and `phase_us[Readback]` are ever surfaced, and
+        // `record_transfer` deliberately records those durations as summary entries rather than
+        // `ph:"X"` spans (to avoid double-counting inside `Phase::Record`, which encloses them).
+        //
+        // The consequence was that host staging-copy time was measured on every inference and
+        // then discarded: any aggregation over the trace JSON's `ph:"X"` spans — which is how the
+        // record/fence_wait/submit split was produced — structurally cannot see it, and its
+        // absence read as zero. That is R7 exactly: the instrument was not in a position to
+        // report, so its silence was mistaken for a negative result.
+        crate::trace::tracer().log_summary();
         // Export the Chrome Trace JSON. The tracer accumulates across sessions and rewrites the
         // full file on each EP teardown; the final teardown leaves the complete trace on disk.
         crate::trace::tracer().export();

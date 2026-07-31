@@ -61,8 +61,10 @@ EP_NAME = "VulkanExecutionProvider"
 # ---------------------------------------------------------------------------
 # Intel is the spec-conformance oracle.
 #   Intel Iris Xe (Vulkan 1.4.309, UMA) is the strictest Vulkan implementation
-#   available locally. A failure on Intel that passes on NVIDIA means the EP or
-#   test relied on undefined behavior. Intel is correct; the code must change.
+#   available locally. It is device SELECTOR 1 (not 0 — see device mapping note
+#   below; 0 is NVIDIA after the discrete-first sort. Corrected 2026-07-30).
+#   A failure on Intel that passes on NVIDIA means the EP or test relied on
+#   undefined behavior. Intel is correct; the code must change.
 #
 # Never vendor-special-case.
 #   Do not add a vendor-conditional skip or wider tolerance for one GPU. The
@@ -71,8 +73,8 @@ EP_NAME = "VulkanExecutionProvider"
 #   This makes the xfail visible when the driver is fixed (strict=True).
 #
 # UMA memory model.
-#   Iris Xe exposes DEVICE_LOCAL | HOST_VISIBLE memory, exactly as Adreno/Mali do.
-#   --vulkan-devices 0,1 exercises both memory models (UMA vs discrete).
+#   Iris Xe (selector 1) exposes DEVICE_LOCAL | HOST_VISIBLE memory, exactly as Adreno/Mali do.
+#   --vulkan-devices 0,1 exercises both memory models (discrete vs UMA).
 #
 # Tests that exercise cross-vendor portability explicitly should be decorated with
 # @pytest.mark.portability — this makes them easy to run as a targeted suite:
@@ -86,18 +88,23 @@ EP_NAME = "VulkanExecutionProvider"
 
 
 def _intel_failure_note(device_index: int) -> str:
-    """Return a diagnostic note to append to assertion errors on Intel (device 0).
+    """Return a diagnostic note to append to assertion errors on Intel (device selector 1).
 
-    On the local dev machine, device 0 is Intel Iris Xe (UMA, Vulkan 1.4.309),
-    the strictest locally-available Vulkan implementation. A failure here is
-    evidence of spec non-conformance in the EP, not an Intel bug.
+    DEVICE SELECTOR MAPPING (corrected 2026-07-30T21:23:53-07:00 — Tank's finding):
+    ``enumerate_capable_devices()`` sorts best-first (discrete before integrated).
+    ``select_device`` indexes that sorted list.  The local dev machine sorts as:
+      Selector 0 → NVIDIA GeForce RTX 4060 Laptop GPU (discrete, less strict)
+      Selector 1 → Intel Iris Xe Graphics (integrated/UMA, spec-conformance oracle)
+
+    A failure on selector 1 (Intel) that passes on selector 0 (NVIDIA) means the EP or
+    test relied on undefined behavior.  Intel is correct; the code must change.
     """
-    if device_index != 0:
+    if device_index != 1:
         return ""
     return (
-        "\n\n[Portability note] This failure is on device 0 (Intel Iris Xe or similar UMA device)."
+        "\n\n[Portability note] This failure is on device selector 1 (Intel Iris Xe or similar UMA device)."
         "\nIntel Vulkan is the spec-conformance oracle for this project."
-        "\nIf this test passes on NVIDIA (device 1), the EP relied on something unspecified."
+        "\nIf this test passes on NVIDIA (selector 0), the EP relied on something unspecified."
         "\nDo NOT widen the tolerance or add a vendor skip — route to Switch or Mouse."
     )
 
@@ -557,12 +564,17 @@ def require_vulkan(vulkan_device_available: bool) -> None:
 # ---------------------------------------------------------------------------
 # Device parametrization — multi-GPU support
 # ---------------------------------------------------------------------------
-# Justin's dev machine has two capable devices:
-#   Device 0: Intel Iris Xe Graphics     [Vulkan 1.4.309]  — strictest implementation
-#   Device 1: NVIDIA GeForce RTX 4060    [Vulkan 1.4.325]  — discrete, high throughput
+# Device selector mapping (corrected 2026-07-30T21:23:53-07:00 — Tank's finding):
+# enumerate_capable_devices() sorts best-first (discrete before integrated).
+# select_device() indexes the SORTED list, not the raw enumeration order.
+# Local dev machine, sorted order:
+#   Selector 0 → NVIDIA GeForce RTX 4060 Laptop GPU [Vulkan 1.4.325]  — discrete, less strict
+#   Selector 1 → Intel Iris Xe Graphics              [Vulkan 1.4.309]  — UMA, spec-conformance oracle
 #
-# Use --vulkan-devices 0,1 (or VULKAN_DEVICE_INDEX=0,1) to run tests on both.
-# CI uses --vulkan-devices 0 (lavapipe is always device 0 in the software rasterizer lane).
+# PREVIOUS LABELS (WRONG): 0=Intel, 1=NVIDIA — all results labelled this way are re-labelled;
+# measurements are unchanged, only the vendor names were swapped.
+#
+# CI uses --vulkan-devices 0 (lavapipe is always device selector 0 in the software rasterizer lane).
 #
 # TODO(Switch): ep.device_index session option must be implemented in rust/src/ep.rs for
 # multi-device runs to be effective. Until it lands, all sessions use the default device

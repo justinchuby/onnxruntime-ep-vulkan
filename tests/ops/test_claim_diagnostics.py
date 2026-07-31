@@ -271,3 +271,148 @@ def test_no_vulkan_icd_falls_back_to_cpu() -> None:
         "The no-ICD child did not print the expected success message. "
         "Check that the child test ran and produced correct output."
     )
+
+
+# ---------------------------------------------------------------------------
+# M0 criterion 4 — PAIRED POSITIVE CONTROL
+#
+# Criterion 4 has two polarities that must appear in the same lane:
+#   NEGATIVE (above): ICD absent   → EP advertises zero devices → session runs on CPU.
+#   POSITIVE (below): ICD present  → EP advertises non-zero devices → EP claims a node.
+#
+# An EP that always advertises zero devices passes the negative perfectly.
+# Without the positive control in the same lane, the criterion has no polarity.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set — no EP to test",
+)
+def test_icd_present_ep_advertises_nonzero_devices(require_vulkan) -> None:
+    """Criterion 4 POSITIVE CONTROL: ICD present → non-zero devices advertised and Add claimed.
+
+    This is the paired positive for ``test_no_vulkan_icd_falls_back_to_cpu`` (the negative).
+    Both run in the same pytest invocation, same binary, same lane.
+
+    The negative proves: no ICD → zero devices → CPU fallback (correct).
+    This positive proves: ICD present → non-zero devices → EP claims nodes (not always zero).
+
+    Without this positive, "advertise zero devices always" satisfies the negative perfectly —
+    it is an always-broken EP that is indistinguishable from a correct one at criterion 4.
+    Morpheus's ruling: "a correct model does not retroactively give an unknown-polarity check
+    a polarity." (DESIGN.md §10 M0 criterion 4 ruling, 2026-07-30.)
+    """
+    # Positive assertion 1: EP enumerates at least one device when ICD is present.
+    all_devices = ort.get_ep_devices()
+    vulkan_devices = [d for d in all_devices if d.ep_name == m.EP_NAME]
+    assert vulkan_devices, (
+        f"Criterion 4 POSITIVE CONTROL FAILED: ICD is installed and Vulkan loads, "
+        f"but EP advertises zero devices. An EP that always advertises zero would satisfy "
+        f"the criterion-4 negative. Without non-zero devices in the same lane, "
+        f"the criterion-4 pair has no polarity.\n"
+        f"All EP devices: {sorted({d.ep_name for d in all_devices})}"
+    )
+    print(
+        f"[CRITERION 4 POSITIVE] ICD present: {len(vulkan_devices)} VulkanEP device(s) "
+        f"advertised. Paired with test_no_vulkan_icd_falls_back_to_cpu (zero devices, no ICD).",
+        file=sys.stderr,
+    )
+
+    # Positive assertion 2: EP claims at least one node (Add) when a device is present.
+    model = m.make_model(
+        "Add",
+        [m.tensor("a", DT.FLOAT, [4]), m.tensor("b", DT.FLOAT, [4])],
+        [m.tensor("out", DT.FLOAT, [4])],
+    )
+    feeds = {
+        "a": np.ones(4, dtype=np.float32),
+        "b": np.ones(4, dtype=np.float32),
+    }
+    m.assert_vulkan_claims(model, feeds)
+    print(
+        "[CRITERION 4 POSITIVE] EP claimed Add node — non-zero-device path is dispatching.",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M0 criterion 5 — PAIRED POSITIVE CONTROL
+#
+# Criterion 5 has two polarities that must appear in the same lane:
+#   NEGATIVE: shader-less build (ALLOW_MISSING_GLSLC=1) → zero devices and zero claims.
+#             This is enforced by test_ep_ort_registers in test_a_ep_smoke.py which reports
+#             "Shader-less safety guard active (M0 exit criterion 5)" on a zero-device read.
+#   POSITIVE (below): this build has shaders compiled → non-zero live ops → EP claims a node.
+#
+# The negative (handled by test_a_ep_smoke.py::test_ep_ort_registers detecting zero devices
+# and the "shader-less safety guard" message) plus this positive form the criterion-5 polarity
+# pair. Both run in the same `pytest tests/ops` invocation on the same binary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set — no EP to test",
+)
+def test_shaders_compiled_ep_claims(require_vulkan) -> None:
+    """Criterion 5 POSITIVE CONTROL: shaders compiled → non-zero live ops → EP claims Add.
+
+    Paired with the criterion-5 negative (shader-less build → zero devices).
+    The negative is enforced by test_a_ep_smoke.py::test_ep_ort_registers on a shader-less
+    binary. This positive confirms that the *current* binary — the one that also hosts the
+    negative path via runtime guard — has at least one live op and claims it.
+
+    The pairing is the criterion. Criterion 5 requires both polarities in the same lane:
+    "shader-less claims nothing" is only meaningful if "shader-full claims something" is
+    also observed in the same run. Without the positive, an EP with no shaders and an EP
+    with shaders are indistinguishable at the criterion-5 boundary.
+    """
+    # Confirm at least one live op exists in this binary via epctl --dump-capabilities.
+    # epctl path: same directory as the EP library, or rust/target/release/.
+    ep_lib = Path(os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]).resolve()
+    epctl_name = "epctl.exe" if sys.platform == "win32" else "epctl"
+    epctl_path = ep_lib.parent / epctl_name
+
+    live_ops: int = 0
+    if epctl_path.is_file():
+        result = subprocess.run(
+            [str(epctl_path), "--dump-capabilities", "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            # Count "live": true entries
+            live_ops = result.stdout.count('"live": true')
+        print(
+            f"[CRITERION 5 POSITIVE] epctl --dump-capabilities: {live_ops} live op(s).",
+            file=sys.stderr,
+        )
+        assert live_ops > 0, (
+            "Criterion 5 POSITIVE CONTROL: epctl reports zero live ops. "
+            "This binary has no shaders compiled — it cannot be the positive control. "
+            "Build with glslc present (remove ALLOW_MISSING_GLSLC=1)."
+        )
+    else:
+        # epctl not found — fall through to the claim assertion, which is the essential check.
+        print(
+            f"[CRITERION 5 POSITIVE] epctl not found at {epctl_path}; "
+            f"skipping op-count check. Claim assertion is the essential part.",
+            file=sys.stderr,
+        )
+
+    # Essential check: EP claims Add — proving this binary dispatches when shaders are present.
+    model = m.make_model(
+        "Add",
+        [m.tensor("a", DT.FLOAT, [4]), m.tensor("b", DT.FLOAT, [4])],
+        [m.tensor("out", DT.FLOAT, [4])],
+    )
+    feeds = {
+        "a": np.ones(4, dtype=np.float32),
+        "b": np.ones(4, dtype=np.float32),
+    }
+    m.assert_vulkan_claims(model, feeds)
+    print(
+        f"[CRITERION 5 POSITIVE] EP claimed Add ({live_ops} live ops in binary). "
+        f"Paired with criterion-5 negative (shader-less build → zero claims).",
+        file=sys.stderr,
+    )

@@ -835,6 +835,83 @@ a handle.
 
 ---
 
+## Device-backed allocation: what `alloc_device_backed_spans: 427` does and does not mean
+
+For the whole life of this project that counter read **0**. It is now non-zero, and the exact
+extent of what that buys is the point of this section.
+
+**What is real.** With `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`, every span the handle registry
+carves now also gets a real `VkBuffer` in `DEVICE_LOCAL` memory, and every `CopyTensors` *into* a
+handle is mirrored across `vkCmdCopyBuffer`. Measured on the real 2.2 GB Phi-3.5 model:
+`alloc_device_backed_spans: 427`, `alloc_device_uploads: 386`,
+`alloc_device_upload_bytes: 2 094 231 552`. Two gigabytes really crossed into device memory, on
+both vendors.
+
+**What is not real yet, and the counter that says so.** `alloc_device_authoritative_spans` is
+**0**. Every device-backed span *also* keeps its host staging block, and staging stays
+authoritative. That is not a hedge — it is forced. `vk::session` resolves every kernel input
+through `transfer::host_backing_for` and binds buffers it allocated itself. The first cut of this
+work made a device-backed handle refuse to produce a host address, on the theory that the device
+buffer was now the tensor's home. ORT's answer, on the first real model run:
+
+```
+EP_FAIL : ... Deserialize tensor model.layers.31.mlp.down_proj.MatMul.weight_Q4 failed.
+VulkanExecutionProvider: copy 0/1 failed: could not obtain backing memory for device handle ...
+```
+
+and, when that was worked around, `input 1 is bound to device handle 0x… and its bytes are
+unreachable`, followed by a silent fallback to `CPUExecutionProvider` for the whole model. So the
+design is a **mirror**: the device buffer is written on every copy in and never read back, which
+makes host and device incapable of disagreeing. `transfer::device_buffer_for(ptr, len)` is the
+seam that ends the mirror — when the engine binds the returned `(BufferView, offset)` instead of
+re-uploading its own buffer, `alloc_device_authoritative_spans` becomes the thing that moves.
+
+**The offset in that tuple is not optional.** ORT's planner sub-divides one span across several
+tensors, so binding a mirrored buffer at offset 0 for an interior pointer overwrites a
+neighbouring tensor. `a_copy_into_a_device_backed_handle_mirrors_the_bytes_at_the_right_offset`
+asserts on the bytes the provider was handed, not on a counter, and fails if the offset is lost.
+
+### Why `epctl --check-counters --require-device-memory` still exits 1
+
+It should. Every span is device-backed *and* every span is staged, so the flag's question — "were
+this run's tensors where you asked them to be?" — is still answered no. `epctl` now names the
+mirrored state explicitly rather than reporting it as a partial one, and
+`every_span_device_backed_does_not_pass_while_every_span_is_also_staged` locks that in. The flag
+passing was proposed as this work's deliverable; it turned out that making it pass would have
+required either the fallback-to-CPU failure above, or lying about which memory the engine reads.
+
+### The timing, and a prediction that was wrong
+
+Recorded in `tank-device-memory-prediction.md` **before** any of this was implemented: device
+backing on its own would make Phi-3.5 **1.1×–1.6× slower on the discrete RTX 4060** and
+1.0×–1.2× slower on the UMA Iris Xe, because `vk::session` re-allocates and re-uploads every
+input on every one of the 6099 `Compute` calls and device backing adds bus traffic without
+removing any of that.
+
+Measured on this build, `bench/phi35.py --device N --iters 8`, medians of three whole-process
+repeats. **UMA and discrete are reported separately and are not comparable — `bench/compare.py`
+refuses cross-device comparison by design.**
+
+| device | device memory OFF | device memory ON | ratio |
+| --- | --- | --- | --- |
+| 0 — Intel Iris Xe (UMA) | 2921 ms (2782–3339) | 2958 ms (2916–2976) | 1.01× |
+| 1 — RTX 4060 (discrete) | 2320 ms (2103–2345) | 2173 ms (2075–2184) | **0.94×** |
+
+The discrete prediction is **falsified**: it did not get slower, it got slightly faster, and the
+intervals nearly overlap. The reason is visible in a counter I already had:
+`alloc_device_uploads` is **386** for a run of 19 inferences × 321 islands. The mirror upload
+happens once per *allocation*, at weight deserialisation — it is not in the measured inference
+loop at all, so the 2.09 GB crosses the bus during warm-up and never again. My prediction assumed
+the added traffic landed in the measured path; it does not. The UMA prediction survives only
+because its range included 1.0, which is not much of a survival.
+
+**None of these numbers is a device-memory measurement.** Both configurations run the same
+host-staged inference loop; the ON column additionally pays a one-time mirror. The lever that
+would change the shape of this table is the engine binding `device_buffer_for`, and it is not
+this work.
+
+---
+
 ## What ORT's planner actually does with our handles
 
 This was an argument for a long time and is now a measurement.
