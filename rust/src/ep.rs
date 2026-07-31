@@ -937,6 +937,10 @@ unsafe fn get_capability_impl(
 
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
     let mut n_rejected = 0usize;
+    // `n_viable_retained` counts islands that *passed* `partition::evaluate` (the net-benefit /
+    // `retain_viable` gate) in a multi-cluster graph. Single-cluster bypass does not increment
+    // this counter — that is intentional: the counter is the R10 wiring observable for the gate.
+    let mut n_viable_retained: u64 = 0;
     // Track island-level aggregate metrics for PartitionStats (§10.0 metric of record).
     let mut largest_island_flops: u64 = 0;
     let mut largest_island_nodes: u64 = 0;
@@ -1034,6 +1038,12 @@ unsafe fn get_capability_impl(
             total_boundary_bytes = total_boundary_bytes
                 .saturating_add(island.input_bytes)
                 .saturating_add(island.output_bytes);
+            // Increment the net-benefit wiring observable only for islands that went through
+            // partition::evaluate (multi-cluster path). Single-cluster bypass is intentionally
+            // excluded: the counter must vary with the gate's input, not with graph size.
+            if !only_one_cluster {
+                n_viable_retained += 1;
+            }
         } else {
             n_rejected += cluster_nodes.len();
             if let partition::Verdict::Reject(reason) = verdict {
@@ -1078,6 +1088,7 @@ unsafe fn get_capability_impl(
     }
 
     counters::record_capability(n_claimed_total as u64, n_islands as u64);
+    counters::record_viable_islands_retained(n_viable_retained);
     log::info!(
         "GetCapability: {} claimed nodes → {} islands ({} nodes rejected by partition policy)",
         n_claimed_total,
