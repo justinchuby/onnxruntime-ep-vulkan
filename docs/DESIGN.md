@@ -1,7 +1,7 @@
 # onnxruntime-ep-vulkan — Architecture Design
 
 **Status:** v0 architecture of record — accepted for M0/M1 implementation. **§7 (Vulkan baseline) is frozen.**
-**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-30T20:58:11-07:00 (**§10.0.1 R11 — a measurement's name is not its definition, and a decomposition that appears to close is the hardest kind of wrong.** R10's companion, found within hours of R10 by a specimen R10 certifies: `Phase::Record` is wired, invoked, correct, input-varying — **and misnamed by ~50×**. It is an *inclusive* interval containing the host staging copy, which reports into `phase_us[Upload]` and emits no `ph:"X"` span, so a span aggregation structurally could not see it: **upload is 95.8–98.4% of the "recording" phase; real command-buffer recording is 1–3% of wall.** The dominant cost is **the EP re-uploading the entire weight set on every inference** — 1997.6 MiB/inference, ratio **1.0002** against `device_upload_bytes`, exactly linear over 1/2/3 runs, in:out **2481:1**, transfer ceiling **~94.8% of wall discrete / ~44.0% UMA**. **The old table summed to 99.0% and appeared to close — because the missing cost was *inside* a row, so the residual was zero by construction.** R11 obliges: **every phase declares its extent (inclusive or exclusive of children); a flat table is an assertion of disjointness; the parts are summed against a whole measured by a *different* instrument and the residual published; and any row above 50% has its name checked against its content.** The register now reads **R6 our tooling manufactured a number · R7 a negative · R9 sound instruments jointly silent · R10 never called · R11 called, correct, and misnamed** — R11 is the hardest because *every check we have passes*. **The M0 tally does not move: six met, four partial, two not met, of twelve** — criterion 12 is *strengthened* rather than reopened, which is the whole benefit of its having been left open. **§10.0's disclosure obligation stands as written and is strengthened**: the phase decomposition was wrong by 50× while the wall-clock ratio (3.1× / 3.7× slower than CPU) was correct, **because the ratio has no internal structure to misattribute** — *a metric's robustness is inversely proportional to the number of naming decisions between the measurement and the reader; decompose to diagnose, report the coarse invariant.* A decomposition may accompany the ratio, never replace it, and is publishable only with its identity check. **R6 amendment 4 — the device labels were inverted team-wide**: `enumerate_capable_devices()` sorts best-first and `select_device` indexes the sorted list while `epctl --probe-loader` prints unsorted enumeration order — **`DEVICE=0` is the RTX 4060, `DEVICE=1` is the Iris Xe**, the "Intel beats the discrete GPU" finding dissolves, and **a result surprising enough to be a discovery is first a reason to check the instrument**. M1's lead performance criterion is corrected to **weight residency** — `device_upload_bytes`/inference below 1% of constant-initializer bytes, admissible only at or above last-published coverage with `MATCH` — with recording amortisation demoted to secondary) · *prior revision 2026-07-30T19:05:03-07:00* (**§10.0.1 R10 — a mechanism that exists in the source tree and not in the call graph is indistinguishable from one that was never written, and review cannot tell them apart.** R9's blind spot: *a falsifier that is never invoked is indistinguishable from one that never fires*. Five specimens in one day, all with correct code — `ops/partition.rs` (worth **3.7×**: islands 321 → 33, Intel 2954.6 ms → 807.2 ms when wired), the tracer, `model_output_equivalence`, `retain_viable`, and the EP-side validation messenger (loaded layer, no listener). **The falsifier for "X is wired" is an observation of an artifact X produced whose content varies with X's input — never a reading of X's code, never a flag its author set.** Uninvoked reports **`UNWIRED`**, distinct from empty; **the identity case is an explicit red state** (`island_count == claimed_count` was one line and was true for the whole life of the defect); **wiring is a property of an entry point, not of a file**; **review of a mechanism is not complete until the reviewer has seen an artifact it produced.** **§7.0.2 companion — a claim is a scheduling decision, not a capability statement: a correct claim can be a wrong claim**, net benefit is a property of the op *in a graph at a coverage level*, it lives in the partitioner and never in the registry, and it carries its own decline code. **M0 criterion 10 is MET — `model_output_equivalence = MATCH` on both devices** (argmax 30751 == CPU, top-10 10/10, max diff 0.031 / 0.035; **the non-identity is the correct answer** for fp16 accumulation order). Root cause was **binding arity, not dtype** — a 4-entry pipeline layout against a shader writing binding 4, silently dropped by both drivers — which is the strongest possible vindication of §8.9's `populated_optional_input_set` key component. **Criterion 2 closed on the promise made when it was reopened; criteria 4 and 5 stay partial — a correct model does not give an unknown-polarity check a polarity. Criterion 12 added (wiring census). Six met, four partial, two not met, of twelve.** **RULING: no performance criterion belongs in M0** — slowness is loud, wrongness is silent, and the cheapest way to pass a ratio criterion is always to do less GPU work; **M2 keeps the first threshold** (end-to-end ratio `< 1.0` on one discrete GPU with `MATCH`, every device in the matrix reported). **M0 gains a §10.0 disclosure obligation instead of a gate: the end-to-end wall-clock CPU ratio may never be omitted — currently 3.1× slower on Intel, 3.7× on NVIDIA.** **M1 gains a recording-amortisation criterion** checked with a counter before a clock, on the first honest trace: **68.3% command-buffer recording, 14.1% GPU kernels, 0.3% submit — 85.9% of runtime with no GPU work happening**, fixed per `Compute` call rather than per dispatch, which falsifies the fixed-per-submission hypothesis. **Sequencing: the tail resumes at the front; the 68.3% starts in parallel as Tank's M1 work and lands only through criterion 10's gate**, because a cached binding table is exactly the shape of today's defect) · *prior revision 2026-07-30T06:32:18-07:00* (**§8.9 RULING — unproven is a claim-path state; claiming is gated on evidence and `Live` stops being a thing we write down.** §7.0.1 companion: *evidence shortfalls degrade op coverage, not device availability, identically to capability shortfalls* — the frozen §7.2 gate is untouched. The table declares only `Staged(why)` / `Ready`; **claimability is derived per form from a harness-generated proof ledger**, keyed on `(domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key, shape_class, populated_optional_input_set)` — so **§8.7's expression-vs-path distinction becomes mechanical: an expression difference leaves the key equal, a path difference changes it**, and an f32 proof can never be returned for an f16 node. **A `DIVERGENT` model verdict demotes every form that participated, automatically.** Escape hatch is **a list of proof keys and nothing else** — no `1`, no `*`, no wildcard, C1's shape — with WARN at session creation, `unproven_forms_enabled` in the counters artifact, and `epctl --check-counters` failing on a non-empty list. **Honest cost: Phi-3.5's claimed count goes 161 → 0** — and per §10.0's gate that 161 was already void. **M0 criterion 11 added; four met, four partial, three not met.** **Link's lanes: the gate is a precondition for a lane being declared *green*, not for a lane being brought *up*** — with a per-lane **gate artifact** rather than Phi-3.5 on a rasteriser) · *prior revision 2026-07-30T05:48:29-07:00* (**§10.0.1 R9 — a set of individually sound instruments can be jointly silent on the property that matters; *for every claim, name the instrument that would go red if the claim were false*.** Phi-3.5 on both devices: 161 `MatMulNBits` claimed **and accepted by ORT**, `compute_failures: 0`, `dispatches_executed: 161`, suite green — and `vk argmax 0` against `cpu argmax 30751`, top-10 overlap 0/10. **§9.1.3 RULING — `compute_failures` is an execution-status counter and may never be read as a correctness signal**; prose cannot close that reading, a verdict emitted next to the counters must. **Metric of record gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}**, default `UNMEASURED`. **M0 criteria amended: criterion 10 added (model-level correctness); criteria 2, 4 and 5 REOPENED; criterion 8 relabelled parity-only.** **Sequencing: criterion 10 outranks the Windows/Linux/lavapipe/CI tail in order, and does not replace it as a gate**) · *prior revision 2026-07-29T21:14:03-07:00* (**§8.8 RULING — dynamic shapes are a claim-path capability, not a kernel feature**, and move **ahead of** the three kernels, §10.0.3; measured on the first end-to-end real-model run: **258 nodes declined on symbolic shapes vs 100 on missing kernels**, and the decline codes are first-match so 258 is a *floor*; **§1.2's dynamic-shape non-goal reversed**; **M1 gains a second-token exit criterion** — one session, two concrete values of a symbolic dimension; **OQ-15 promoted to blocking**; **§10.0.1 R8 — we planned against the ops a model contains, having never measured why its nodes are declined**) · *prior revision 2026-07-29T19:42:07-07:00* (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**; **45 op rows `Live`**; **criterion 3 ruled not discharged — a validation lane needs a positive control**; **criterion 9 not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, *derive, do not declare*; **§8.7 template evidence covers a different expression, never a different path**) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening**; **metric triple `(coverage, island_count, largest_island_flops)`**; **T3 demonstration target is Phi-3.5**; **R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 *producer **at version***; R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 producer-relative**; **§8.6 crate evaluations**; **§10.0.2 `ai.onnx::Attention` first**; R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 §7.8**; **OQ-M6 ruling** §8.4; **OQ-3 §6.4** reserved-VA, no BDA; C2 **item 7**; `retain_viable` §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **R1**)
+**Date:** 2026-07-28T17:59:54-07:00 · **Last revised:** 2026-07-30T22:13:37-07:00 (**STANDING DIRECTIVE (Justin): 「要确保我们性能是非常高 一致向高性能推进」** — *ensure performance is very high; push toward high performance continuously.* **RULING: it changes the calendar and not one gate.** It does **not** overturn the M0 performance ruling — a directive to be fast is exactly the condition under which a speed *gate* becomes dangerous, because the cheapest way to pass a ratio criterion is always to do less GPU work; it raises the value of the interlocks, not the case for the gate. It **does** make performance work continuous and parallel with correctness (`一致` is a **rate** obligation, so **the instrument for it is a series, not a value**, falsifiable by a flat line). Added on my own authority: **no timing figure is quotable from a run whose verdict is not `MATCH`, and every benchmark asserts EP presence and a non-zero claimed count before starting a clock — a fast wrong number is the failure mode this directive creates, not partial credit toward it.** **The tail (Windows + Linux + software rasteriser + CI) is unchanged and stays at the front**: it contends with residency for nothing — not a person, not a file, not a machine — and *a standing directive is a reason to re-examine a placement, never on its own a reason to move it.* **M1's weight-residency criterion stands exactly as written** (< 1% of constant-initializer bytes; today **1.0002**), both interlocks intact. **§6.5 RULING — exactly one `VkDevice` per (physical device, EP instance); the second one is a defect, not a design.** Tank's memory provider created its own device, so the session cannot bind its buffers; §2.3 already said `VkDevice` lifetime is EP-scoped, **so the document was right and the code diverged and nothing in between could tell**. No legitimate reason for two survives inspection (queue families, extension unions and external memory all fail to apply) and the split *costs* compatibility rather than buying it. **Seam owner: Switch** (the side that owns the lifetime, never the side that owns the caller); the allocator changes from *creating* to *receiving*. **§10.0.1 R12 — two instruments can each be correct about a different world, and a counter reading zero may be structurally incapable of reading anything else.** Specimen: `vulkan.cmd_upload` 15.2 s against `alloc_device_upload_bytes: 0`, both correct, different `VkDevice`s. **A quantity carries the identity of its frame; a counter whose event cannot occur in its frame reports `UNOBSERVABLE`, never `0`** — the fourth member of the family with `UNMEASURED`, `UNWIRED` and `SPLIT-DEVICE`, because **every way of not knowing gets a name a machine can print, since prose is where knowledge of a caveat goes to die.** **No criterion may name a pinned instrument**, so residency is read against `device_upload_bytes` on the session's device, never `alloc_device_authoritative_spans`. **R12 is not R11**: R11's remedy is available to the writer, R12's is structural. **Third disclosure obligation added — frame provenance — plus a seventh, positive one: independent corroboration is stated, not reconstructed** (Switch's span-derived 98.0% and Tank's counter-derived 95.8–98.4% for one quantity). Corrected picture, selector 0 = RTX 4060: **`cmd_upload` is ~71% of wall**, GPU kernels ~15%, and **pipeline lookup 0.4% / descriptor allocation 0.3% kill both standing hypotheses about per-island recording cost**) · *prior revision 2026-07-30T20:58:11-07:00* (**§10.0.1 R11 — a measurement's name is not its definition, and a decomposition that appears to close is the hardest kind of wrong.** R10's companion, found within hours of R10 by a specimen R10 certifies: `Phase::Record` is wired, invoked, correct, input-varying — **and misnamed by ~50×**. It is an *inclusive* interval containing the host staging copy, which reports into `phase_us[Upload]` and emits no `ph:"X"` span, so a span aggregation structurally could not see it: **upload is 95.8–98.4% of the "recording" phase; real command-buffer recording is 1–3% of wall.** The dominant cost is **the EP re-uploading the entire weight set on every inference** — 1997.6 MiB/inference, ratio **1.0002** against `device_upload_bytes`, exactly linear over 1/2/3 runs, in:out **2481:1**, transfer ceiling **~94.8% of wall discrete / ~44.0% UMA**. **The old table summed to 99.0% and appeared to close — because the missing cost was *inside* a row, so the residual was zero by construction.** R11 obliges: **every phase declares its extent (inclusive or exclusive of children); a flat table is an assertion of disjointness; the parts are summed against a whole measured by a *different* instrument and the residual published; and any row above 50% has its name checked against its content.** The register now reads **R6 our tooling manufactured a number · R7 a negative · R9 sound instruments jointly silent · R10 never called · R11 called, correct, and misnamed** — R11 is the hardest because *every check we have passes*. **The M0 tally does not move: six met, four partial, two not met, of twelve** — criterion 12 is *strengthened* rather than reopened, which is the whole benefit of its having been left open. **§10.0's disclosure obligation stands as written and is strengthened**: the phase decomposition was wrong by 50× while the wall-clock ratio (3.1× / 3.7× slower than CPU) was correct, **because the ratio has no internal structure to misattribute** — *a metric's robustness is inversely proportional to the number of naming decisions between the measurement and the reader; decompose to diagnose, report the coarse invariant.* A decomposition may accompany the ratio, never replace it, and is publishable only with its identity check. **R6 amendment 4 — the device labels were inverted team-wide**: `enumerate_capable_devices()` sorts best-first and `select_device` indexes the sorted list while `epctl --probe-loader` prints unsorted enumeration order — **`DEVICE=0` is the RTX 4060, `DEVICE=1` is the Iris Xe**, the "Intel beats the discrete GPU" finding dissolves, and **a result surprising enough to be a discovery is first a reason to check the instrument**. M1's lead performance criterion is corrected to **weight residency** — `device_upload_bytes`/inference below 1% of constant-initializer bytes, admissible only at or above last-published coverage with `MATCH` — with recording amortisation demoted to secondary) · *prior revision 2026-07-30T19:05:03-07:00* (**§10.0.1 R10 — a mechanism that exists in the source tree and not in the call graph is indistinguishable from one that was never written, and review cannot tell them apart.** R9's blind spot: *a falsifier that is never invoked is indistinguishable from one that never fires*. Five specimens in one day, all with correct code — `ops/partition.rs` (worth **3.7×**: islands 321 → 33, Intel 2954.6 ms → 807.2 ms when wired), the tracer, `model_output_equivalence`, `retain_viable`, and the EP-side validation messenger (loaded layer, no listener). **The falsifier for "X is wired" is an observation of an artifact X produced whose content varies with X's input — never a reading of X's code, never a flag its author set.** Uninvoked reports **`UNWIRED`**, distinct from empty; **the identity case is an explicit red state** (`island_count == claimed_count` was one line and was true for the whole life of the defect); **wiring is a property of an entry point, not of a file**; **review of a mechanism is not complete until the reviewer has seen an artifact it produced.** **§7.0.2 companion — a claim is a scheduling decision, not a capability statement: a correct claim can be a wrong claim**, net benefit is a property of the op *in a graph at a coverage level*, it lives in the partitioner and never in the registry, and it carries its own decline code. **M0 criterion 10 is MET — `model_output_equivalence = MATCH` on both devices** (argmax 30751 == CPU, top-10 10/10, max diff 0.031 / 0.035; **the non-identity is the correct answer** for fp16 accumulation order). Root cause was **binding arity, not dtype** — a 4-entry pipeline layout against a shader writing binding 4, silently dropped by both drivers — which is the strongest possible vindication of §8.9's `populated_optional_input_set` key component. **Criterion 2 closed on the promise made when it was reopened; criteria 4 and 5 stay partial — a correct model does not give an unknown-polarity check a polarity. Criterion 12 added (wiring census). Six met, four partial, two not met, of twelve.** **RULING: no performance criterion belongs in M0** — slowness is loud, wrongness is silent, and the cheapest way to pass a ratio criterion is always to do less GPU work; **M2 keeps the first threshold** (end-to-end ratio `< 1.0` on one discrete GPU with `MATCH`, every device in the matrix reported). **M0 gains a §10.0 disclosure obligation instead of a gate: the end-to-end wall-clock CPU ratio may never be omitted — currently 3.1× slower on Intel, 3.7× on NVIDIA.** **M1 gains a recording-amortisation criterion** checked with a counter before a clock, on the first honest trace: **68.3% command-buffer recording, 14.1% GPU kernels, 0.3% submit — 85.9% of runtime with no GPU work happening**, fixed per `Compute` call rather than per dispatch, which falsifies the fixed-per-submission hypothesis. **Sequencing: the tail resumes at the front; the 68.3% starts in parallel as Tank's M1 work and lands only through criterion 10's gate**, because a cached binding table is exactly the shape of today's defect) · *prior revision 2026-07-30T06:32:18-07:00* (**§8.9 RULING — unproven is a claim-path state; claiming is gated on evidence and `Live` stops being a thing we write down.** §7.0.1 companion: *evidence shortfalls degrade op coverage, not device availability, identically to capability shortfalls* — the frozen §7.2 gate is untouched. The table declares only `Staged(why)` / `Ready`; **claimability is derived per form from a harness-generated proof ledger**, keyed on `(domain, op_type, opset_bucket, every input/output dtype, kernel_variant_key, shape_class, populated_optional_input_set)` — so **§8.7's expression-vs-path distinction becomes mechanical: an expression difference leaves the key equal, a path difference changes it**, and an f32 proof can never be returned for an f16 node. **A `DIVERGENT` model verdict demotes every form that participated, automatically.** Escape hatch is **a list of proof keys and nothing else** — no `1`, no `*`, no wildcard, C1's shape — with WARN at session creation, `unproven_forms_enabled` in the counters artifact, and `epctl --check-counters` failing on a non-empty list. **Honest cost: Phi-3.5's claimed count goes 161 → 0** — and per §10.0's gate that 161 was already void. **M0 criterion 11 added; four met, four partial, three not met.** **Link's lanes: the gate is a precondition for a lane being declared *green*, not for a lane being brought *up*** — with a per-lane **gate artifact** rather than Phi-3.5 on a rasteriser) · *prior revision 2026-07-30T05:48:29-07:00* (**§10.0.1 R9 — a set of individually sound instruments can be jointly silent on the property that matters; *for every claim, name the instrument that would go red if the claim were false*.** Phi-3.5 on both devices: 161 `MatMulNBits` claimed **and accepted by ORT**, `compute_failures: 0`, `dispatches_executed: 161`, suite green — and `vk argmax 0` against `cpu argmax 30751`, top-10 overlap 0/10. **§9.1.3 RULING — `compute_failures` is an execution-status counter and may never be read as a correctness signal**; prose cannot close that reading, a verdict emitted next to the counters must. **Metric of record gated on `model_output_equivalence` ∈ {MATCH, DIVERGENT, UNMEASURED}**, default `UNMEASURED`. **M0 criteria amended: criterion 10 added (model-level correctness); criteria 2, 4 and 5 REOPENED; criterion 8 relabelled parity-only.** **Sequencing: criterion 10 outranks the Windows/Linux/lavapipe/CI tail in order, and does not replace it as a gate**) · *prior revision 2026-07-29T21:14:03-07:00* (**§8.8 RULING — dynamic shapes are a claim-path capability, not a kernel feature**, and move **ahead of** the three kernels, §10.0.3; measured on the first end-to-end real-model run: **258 nodes declined on symbolic shapes vs 100 on missing kernels**, and the decline codes are first-match so 258 is a *floor*; **§1.2's dynamic-shape non-goal reversed**; **M1 gains a second-token exit criterion** — one session, two concrete values of a symbolic dimension; **OQ-15 promoted to blocking**; **§10.0.1 R8 — we planned against the ops a model contains, having never measured why its nodes are declined**) · *prior revision 2026-07-29T19:42:07-07:00* (**M0 criterion 8 MET — both barrier backends executed, bit-exact on two vendors**; **45 op rows `Live`**; **criterion 3 ruled not discharged — a validation lane needs a positive control**; **criterion 9 not met** — `PLATFORMS.md` LVP2 still carries §7.2's false premise; **§10.0.1 R7 — our instruments fabricate negatives**, *derive, do not declare*; **§8.7 template evidence covers a different expression, never a different path**) · *prior revision 2026-07-29T16:00:55-07:00* (**`Add` executes through ORT — M0 criterion 2 MET**; **§7.2's R5 rationale corrected**, re-grounded on §7.0; **§10.0.1 R6**; criterion 8 amended so a skip cannot satisfy it) · *prior revision 2026-07-29T15:02:55-07:00* (**§8.5 third strengthening**; **metric triple `(coverage, island_count, largest_island_flops)`**; **T3 demonstration target is Phi-3.5**; **R5**) · *prior revision 2026-07-29T09:47:45-07:00* (**first shader dispatch**; **M0 assessed criterion by criterion**; **§7.9 capability probing**; §8.5 *producer **at version***; R4) · *prior revision 2026-07-29T08:13:58-07:00* (**§8.5 producer-relative**; **§8.6 crate evaluations**; **§10.0.2 `ai.onnx::Attention` first**; R1 narrowed + R3) · *prior revision 2026-07-28T22:28:08-07:00* (**OQ-4 §7.8**; **OQ-M6 ruling** §8.4; **OQ-3 §6.4** reserved-VA, no BDA; C2 **item 7**; `retain_viable` §5.4; eleven contrib ops; OQ-16; **§9.1.1 oracle validated**; **R1**)
 **Author:** Morpheus (Lead / EP Architect)
 **Repo:** `onnxruntime-ep-vulkan`
 **Reference architecture:** `onnxruntime-mlx` (Justin Chu's MLX plugin EP for Apple Silicon)
@@ -966,6 +966,58 @@ rather than to look a number up in a table. Binding form:
 (Tank's D-T9 step 6), so nothing downstream — descriptor construction, translate handlers, data
 transfer — needs to know a buffer came from outside. That is the registry serving the importer, and
 it is a further argument for a single resolution mechanism.
+
+### 6.5 RULING — exactly one `VkDevice` per (physical device, EP instance). The second one is a defect, not a design.
+
+> **Ruled 2026-07-30T22:13:37-07:00**, on Switch's finding that Tank's device-backed memory provider
+> creates its own `VkDevice`, so the session cannot bind those buffers. Binding on `allocator.rs`,
+> `transfer.rs`, `device.rs` and `ep.rs`.
+
+**The decision, in one sentence: a Vulkan object graph has exactly one owner per EP instance, that
+owner is the EP's device context, and any component needing a queue, an allocator or a buffer takes
+a handle to it and never constructs one.** §2.3 already said `VkDevice` lifetime is **EP-scoped** and
+§1.2 already listed *"one `VkDevice`, one compute queue, one submission per subgraph"* as the
+non-goal boundary. **So this is not a new architectural decision and I am not making one. It is an
+existing invariant that was violated without anyone noticing, which is a different and more
+uncomfortable finding** — the document was right, the code diverged, and nothing in between could
+tell. It is R10's lesson in a new place: *the architecture is a claim about the object graph, not
+about the prose.*
+
+**Is there a legitimate reason for two? I looked, and no.** The three real ones do not apply here:
+separate queue families (one `VkDevice` exposes all of them); differing enabled-extension sets
+(solved by enabling the union at device creation, which is what capability probing is *for*, §7.9);
+and cross-process/external-memory sharing (that is `VK_KHR_external_memory`, a different mechanism
+with a different lifetime, and we are explicitly not doing it in v1). **Compatibility outranks
+elegance, and this is not an elegance argument** — the split does not buy compatibility, it costs
+it: two devices double the device-lost surface, double the memory budget accounting, and on drivers
+that meter per-device allocations they halve the headroom we can address.
+
+**Four consequences, all binding:**
+
+1. **The memory provider takes a borrowed device handle; it does not create one.** The seam moves to
+   device-context construction, which happens once, in `CreateEp`, before either the allocator or the
+   engine exists. Neither of the two current owners is downstream of the other today, which is
+   exactly why they each built one.
+2. **Owner of the seam: Switch, with Tank as the consumer of the fixed interface.** Not because the
+   defect is his — it is not, it is nobody's and that is the point — but because the device context,
+   queue and command pool live in his files, and the rule from §7.0 forward is that **the seam is
+   owned by the side that owns the lifetime, never by the side that owns the caller.** Tank's
+   allocator changes from *creating* to *receiving*, which is the smaller and safer edit, and it is
+   the edit that unpins `alloc_device_authoritative_spans`.
+3. **Until it is fixed, every allocator-side byte counter carries its device identity in its name or
+   in the artifact, and a run with two devices reports `SPLIT-DEVICE` on the transfer accounting.**
+   Not `0`. A run where `vulkan.cmd_upload` is 15.2 s and `alloc_device_upload_bytes` is 0 has two
+   correct instruments describing two different worlds, and **the artifact must say which world**,
+   because the reader cannot.
+4. **`alloc_device_authoritative_spans` may not be used as the instrument for any criterion while
+   the split exists**, per R12 below. It is structurally pinned at zero; a pinned instrument is not
+   evidence, in either direction.
+
+**The trap if we leave it, stated plainly because it is the real cost.** Two correct owners will
+keep building correct mechanisms that cannot observe each other, every cross-cutting number will
+need a caveat naming which device produced it, and the caveats will be dropped in transit — which is
+precisely what happened to the phase table four hours ago. **A seam that requires a caveat on every
+number crossing it is not a seam, it is a fork.**
 
 ---
 
@@ -2537,6 +2589,34 @@ rather than on the validation layer or the capability probe.
 
 ## 10. Milestones
 
+> **STANDING DIRECTIVE (Justin, 2026-07-30):** 「要确保我们性能是非常高 一致向高性能推进」 —
+> *ensure our performance is very high; push toward high performance continuously.* **Recorded as
+> standing**, alongside 「兼容性是最好」 (compatibility outranks elegance, §7) and cross-platform
+> generality. Read together with §10.0's disclosure obligations, which are what keep it from being
+> satisfied by a number rather than by a machine.
+>
+> **RULING ON WHAT IT CHANGES — 2026-07-30T22:13:37-07:00. It changes the calendar and it does not
+> change a single gate, and I want both halves said in the same breath.**
+>
+> - **It does not overturn the M0 performance ruling, and the day it was issued is the day that
+>   argument got its second proof.** *Slowness is loud, wrongness is silent*, and **the cheapest way
+>   to pass a ratio criterion is always to do less GPU work.** A directive to be fast is precisely
+>   the condition under which a speed *gate* becomes dangerous, because a gate is a thing people are
+>   rewarded for passing and this one is passable by claiming nothing. **The directive raises the
+>   value of the interlocks, not the case for the gate.** No performance criterion enters M0.
+> - **It does change sequencing, in the direction the coordinator states: performance work runs
+>   continuously and in parallel with correctness, not queued behind M0.** This is not a concession —
+>   it is what I already ruled at 19:05 (*"sequencing governs declarations, not calendars"*, third
+>   time of saying it), now with a user mandate behind it. **Continuous** is the operative word:
+>   `一致向高性能推进` is a *rate* obligation, so the thing it forbids is a week in which no
+>   performance number moves, not a milestone that declares without one.
+> - **The one clause I am adding on my own authority, because a directive of this shape always
+>   acquires one eventually: no timing figure is quotable from a run whose verdict is not `MATCH`,
+>   and every benchmark asserts EP presence and a non-zero claimed count before it starts a clock.**
+>   The coordinator broadcast exactly this caveat before asking me; it is right, and it is now
+>   architecture rather than a broadcast. **A fast wrong number is not partial credit toward this
+>   directive. It is the failure mode this directive creates.**
+
 Each milestone's exit criteria are verifiable by a command, not by an opinion.
 
 ### 10.0 What admitting contrib ops does to the milestones — stated without smoothing
@@ -2736,6 +2816,35 @@ record as a preference and not only as a rule.** The fine metric is more useful 
 and there is no cheap way to know that it is. The coarse one is less useful and is nearly always
 right. At this stage of the project we are optimising for not being wrong in public, so the coarse
 one is the one that carries the obligation.
+
+**THE THIRD DISCLOSURE OBLIGATION — ADDED 2026-07-30T22:13:37-07:00, AND I WOULD NOT HAVE ADDED IT
+THIS MORNING.** *Asked directly whether tonight produces one that this morning would not have.* It
+does, and it is not about numbers being wrong. It is about numbers being **about something else**:
+
+> **6. Every reported performance quantity carries its frame — which selector index and physical
+> device, which `VkDevice`, which instrument produced it — and a configuration in which two
+> instruments observe different frames is disclosed as `SPLIT-DEVICE` rather than reconciled,
+> averaged, or reported as a total.** (§10.0.1 R12, §6.5.)
+
+Three reasons this is tonight's and not this morning's, in increasing order of importance:
+
+- This morning I believed a device label was a label. It is an **index into an ordering that the
+  printout did not carry** (R6 amendment 4), so half the frames written today were wrong before any
+  measurement was taken.
+- This morning the two upload accountings had not yet been shown to disagree by 15.2 seconds while
+  both being correct.
+- And this morning I would have written it as *"say which device"*, which is advice. **Advice does
+  not survive transit** — the phase table's caveats did not — so it is written as a state the
+  artifact emits, alongside `UNMEASURED`, `UNWIRED` and `UNOBSERVABLE`. That is the fourth member of
+  the same family, and by now the family is the method: **every way of not knowing gets a name that
+  a machine can print, because prose is where knowledge of a caveat goes to die.**
+
+**A seventh, which is the corroboration rule and is a positive one for once.** Two independent
+instruments agreeing on a number is the strongest evidence available to us, and it is the only thing
+that has caught anything this week. **A performance claim that has been corroborated by a second,
+independently-authored instrument says so; one that has not, says that too.** Tank's counter-derived
+95.8–98.4% and Switch's span-derived 98.0% for the same quantity is the shape I want, and it should
+be visible in the artifact rather than reconstructed by whoever remembers both.
 
 ### 10.0.1 Milestone risk register — "op works" ≠ "model works"
 
@@ -3276,6 +3385,60 @@ name that meant something else.** It is the hardest of the four to see because *
 passes**: it is wired, it is invoked, it is sound, it agrees with itself, and its table sums to 99%.
 The only thing that catches it is refusing to let a set of numbers be called a breakdown until
 something outside the set says what the total was.
+
+**R12 — two instruments can each be correct about a different world, and a counter that reads zero
+may be structurally incapable of reading anything else.** *Added 2026-07-30T22:13:37-07:00 on
+Switch's two-`VkDevice` finding. R11's sibling: R11 is a fault of **naming**, R12 is a fault of
+**frame**, and R12 is the one prose cannot fix.*
+
+**The specimen.** On a run where `vulkan.cmd_upload` measured **15.2 s**, the allocator reported
+`alloc_device_upload_bytes: 0` and `alloc_staged_bytes: 0`. **Both numbers are correct.** They are
+correct *about the allocator's own `VkDevice`*, which is not the device the session uploads through
+(§6.5). Neither instrument is misnamed; neither is unwired; neither is silent. They describe
+different worlds and the artifact does not say so, so a reader who adds them gets nonsense and a
+reader who quotes either gets a caveat they did not receive.
+
+> **R12 — a reported quantity carries the identity of the frame it was measured in: which device,
+> which queue, which process, which instrument. Two quantities may be compared, summed, or read as
+> agreeing only if their frames are identical and the artifact says so. And a counter whose value
+> cannot vary — because the mechanism it observes cannot occur in its frame — reports
+> `UNOBSERVABLE`, never `0`.**
+
+**The second sentence is the load-bearing one and it is why this is a rule and not a bug report.**
+`alloc_device_authoritative_spans` is 0 today. It will be 0 tomorrow. It will be 0 after a fix that
+works and after a fix that does not, for as long as the device split exists, **because the event it
+counts cannot happen in the frame it lives in.** A zero that cannot become nonzero is not a
+measurement, and reading it as a negative is R7's fabricated negative arriving from a cause that is
+not a bug in the instrument. **`UNOBSERVABLE` is to R12 what `UNWIRED` is to R10 and `UNMEASURED` is
+to §10.0: the third state that keeps a structural absence from being read as an empirical zero.**
+
+**Three obligations:**
+
+1. **No criterion may name as its instrument a counter that is `UNOBSERVABLE` in the configuration
+   the criterion will be assessed in.** Concretely: M1's weight-residency criterion is read against
+   `device_upload_bytes` on the *session's* device, and **not** against
+   `alloc_device_authoritative_spans` until §6.5 is closed. A criterion whose instrument is pinned
+   is not a criterion — it is a sentence.
+2. **Cross-frame comparison is an explicit act.** Any artifact presenting numbers from more than one
+   frame labels every row with its frame, and a run detected in a multi-frame configuration reports
+   `SPLIT-DEVICE` on the affected accounting rather than a total.
+3. **Agreement across frames is the strongest evidence we have, and it must be claimed
+   deliberately.** Tank measured upload at 95.8–98.4% of the record phase from the counters; Switch
+   measured `vulkan.cmd_upload` at 98.0% from a span. **Two instruments, two authors, two
+   mechanisms, one number** — that is the good case, and it is worth as much as the bad case above
+   costs, provided the artifact says the frames were the same. Independent corroboration is the only
+   thing that has caught anything this week.
+
+**Why R12 is not R11.** R11's remedy is to rename the quantity or declare its extent; a writer with
+enough care could have got it right alone. **R12's remedy is not available to the writer at all** —
+Tank's counter is exactly right in his frame and no wording he could choose would make it describe
+the run. The fix is structural (§6.5, one device) and the rule's job is to keep the number from
+being believed until then. **That is the class: not a mistake anyone made, an artefact of two people
+being correct in different places.**
+
+**Where R12 sits.** R6: our tooling manufactured a *number*. R7: it manufactured a *negative*. R9:
+sound instruments, *jointly silent*. R10: *never called*. R11: called, correct, *misnamed*. **R12:
+called, correct, correctly named — and about a different world than the one the reader is in.**
 
 **R2 — the fingerprints were unaudited.** Recorded as C2 item 7 (§1.4) rather than duplicated here.
 Milestone consequence: C2 item 7's re-verification job is a T3 precondition and lands before the
@@ -3875,11 +4038,59 @@ claim about a checkpoint in a plan, not a claim about a product. The distinction
 long as we keep publishing the number — which is what the §10.0 disclosure obligation above is for,
 and why I made it an obligation rather than a threshold.
 
-And the honest sentence underneath all of it: **an EP that is correct and 3.1× slower than CPU is
-not something anyone would enable, and I am not pretending otherwise.** It is a milestone, which is a
-claim about a checkpoint in a plan, not a claim about a product. The distinction survives only as
-long as we keep publishing the number — which is what the §10.0 disclosure obligation above is for,
-and why I made it an obligation rather than a threshold.
+**RULING ON THE STANDING PERFORMANCE DIRECTIVE AND THE TAIL — 2026-07-30T22:13:37-07:00. The tail
+is unchanged and stays at the front. Saying so is the ruling; the reasoning is the part worth
+reading.** *Asked directly, and the coordinator was right to ask rather than assume.*
+
+- **The tail is not competing with performance work for a slot, so a directive about performance
+  cannot move it.** The tail — *on both Windows and Linux, on a software rasteriser, in CI* — is a
+  **generality** obligation and a standing user constraint, owned by Link, running on a software
+  rasteriser where every timing number is meaningless by construction. Weight residency is Switch's,
+  in the transfer path, on real hardware. **They contend for nothing**: not a person, not a file, not
+  a machine. Re-ordering them would be theatre. The order stands as written this evening.
+- **A standing directive is a reason to re-examine a placement and never on its own a reason to
+  change it, and the difference matters more than this instance does.** If a directive moved every
+  item that could be argued to serve it, the ordering would be a record of the most recent
+  instruction rather than of the dependencies. I re-examined; the placement is load-bearing for a
+  reason the directive does not touch. **Note also which way the evidence points: the tail is
+  cheap insurance against a class of defect we have hit five times this week, and performance work
+  is where cross-platform assumptions get quietly baked in. The directive is, if anything, a
+  mild argument for keeping the tail early, not for moving it late.**
+- **What the directive does change here is the reporting cadence, and that is real.** `一致` — the
+  rate obligation — means the performance number moves, and is published with its frame and its
+  verdict, on a cadence rather than at a milestone. **The instrument for a rate obligation is a
+  series, not a value**: `device_upload_bytes` per inference, the wall-clock ratio, and the claimed
+  triple, published each time they change, so that "we are pushing continuously" is falsifiable by
+  a flat line. That is the criterion-shaped thing the directive deserves, and it belongs in the
+  cadence, not in a gate.
+
+**RULING — M1's weight-residency criterion stands exactly as written, and the tempting change is
+the one to refuse.** *Asked whether it survives contact with a directive that will point everyone
+at it. It does, and the interlocks are the reason, so they are restated rather than assumed.*
+
+- **The threshold does not move.** `device_upload_bytes` per inference below **1%** of constant-
+  initializer bytes. Today it is **1.0002**. There is no version of "we made progress" between 1.0
+  and 0.01 that deserves a criterion: the mechanism either uploads weights once per session or it
+  uploads them once per inference, and every intermediate number describes a bug rather than a
+  design. **A threshold with no honest intermediate value is the rare case where a round number is
+  the rigorous choice.**
+- **The two interlocks are what the directive puts under pressure, and neither may be relaxed.**
+  (a) The figure is admissible only from a run whose `claimed_op_coverage` is **at or above the last
+  published figure**, with `model_output_equivalence = MATCH`. Without it the criterion is the most
+  gameable sentence in this document — claim nothing, upload nothing, score perfectly, and the
+  directive rewards you for it. (b) The first-inference upload is reported beside the steady-state
+  figure, so *"we uploaded once and kept it"* and *"we uploaded nothing"* stay distinguishable.
+- **One clarification the directive forces, and it is R12's:** the criterion is read against
+  `device_upload_bytes` **on the session's device**, and explicitly **not** against
+  `alloc_device_authoritative_spans`, which is `UNOBSERVABLE` while §6.5's device split exists.
+  **A criterion whose instrument is structurally pinned at zero is not a criterion**, and the fix
+  for that is §6.5, not a weaker criterion. This is the second time in two days that the honest move
+  was to strengthen the instrument rather than the words.
+- **What I will not do is accelerate it into M0.** The directive is about rate, and M0 is about
+  declaring. Moving residency into M0 would convert a rate obligation into a gate, which is the
+  precise transformation §10's ruling exists to prevent — and it would put a speed criterion in the
+  milestone whose subject is *"the EP loads, claims, executes correctly, cross-platform"*. **Work on
+  it tonight; do not gate M0 on it. Those are consistent and I want the consistency on the record.**
 
 **RULING ON LINK'S LANES — the gate is a precondition for a lane being declared *green*, and not a
 precondition for a lane being brought *up*.** *2026-07-30T06:32:18-07:00, asked directly and answered
@@ -3978,6 +4189,21 @@ also inverted (R6 amendment 4). The full correction is in the M0 section above.*
 3. **Host↔device transfer time is reported as a share of wall clock, per device, next to it** — the
    measured ceiling is **~94.8% of wall on discrete and ~44.0% on UMA**, and those two were reported
    separately and never compared, which is why the gap survived a day.
+
+**CONFIRMED UNCHANGED 2026-07-30T22:13:37-07:00** under the standing performance directive (§10
+head), with one instrument clarification from §10.0.1 R12: the criterion is read against
+`device_upload_bytes` **on the session's device**, never against `alloc_device_authoritative_spans`,
+which is `UNOBSERVABLE` while the two-`VkDevice` split of §6.5 exists. The threshold, both
+interlocks and the first-inference companion figure all stand; the full ruling is in the M0 section
+above. **The corrected decomposition, now with upload as a declared sibling rather than an
+undeclared child** (Switch's `vulkan.cmd_upload` span, selector 0 = RTX 4060, 661 invocations,
+`MATCH`): subgraph 21424.2 ms, of which record 15510.0 ms, of which **`cmd_upload` 15197.8 ms —
+98.0% of record and ~71% of wall**; fence wait 5322.5 ms; GPU kernels ~3300 ms (~15%); submit
+127.4 ms; **pipeline lookup 91.4 ms and descriptor allocation 67.1 ms, which is 0.4% and 0.3% of
+wall and kills both of the standing hypotheses about per-island recording cost.** Switch's span-
+derived 98.0% and Tank's counter-derived 95.8–98.4% are **two independently-authored instruments
+agreeing on one quantity**, which is the corroboration §10.0's seventh disclosure point now asks
+every performance claim to state.
 
 **Secondary criterion — recording amortises, checked with a counter before a clock.** It survives
 its corroboration turning out to be wrong because its justification never depended on it
