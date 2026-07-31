@@ -562,7 +562,12 @@ pub trait DispatchContext {
     /// **Default:** calls `self.resolve(input)` — this returns the input buffer as the output
     /// handle, which is correct semantics for implementations that do not track aliasing
     /// separately (e.g., the `Recorder` test stub).
-    fn bind_aliased_output(&mut self, input: &TensorRef, out: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
+    fn bind_aliased_output(
+        &mut self,
+        input: &TensorRef,
+        out: &OutRef,
+        desc: TensorDesc,
+    ) -> EpResult<BufferView> {
         let _ = out;
         let _ = desc;
         self.resolve(input)
@@ -1078,7 +1083,8 @@ mod tests {
             name: "present_key".into(),
             desc: None,
         };
-        let result = ctx.bind_aliased_output(&input, &out, TensorDesc::new(DType::F16, vec![1, 1, 1, 96]));
+        let result =
+            ctx.bind_aliased_output(&input, &out, TensorDesc::new(DType::F16, vec![1, 1, 1, 96]));
         assert!(
             result.is_ok(),
             "default aliased should return resolve result"

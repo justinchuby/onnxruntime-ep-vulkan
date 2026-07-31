@@ -443,7 +443,12 @@ impl DispatchContext for ShapeOnlyRecorder {
     ///
     /// Returns the input's token so the `KernelRequest` binding routes the shader to the
     /// right buffer (same buffer for both reads and writes).
-    fn bind_aliased_output(&mut self, input: &TensorRef, out: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
+    fn bind_aliased_output(
+        &mut self,
+        input: &TensorRef,
+        out: &OutRef,
+        desc: TensorDesc,
+    ) -> EpResult<BufferView> {
         let out_token = self.bind_token(&out.name, desc);
         let in_token = self.resolve_token(&input.name);
         self.aliased_pairs.push((out_token, in_token));
@@ -694,9 +699,7 @@ impl VulkanSession {
         // to this buffer in descriptor writes — Vulkan requires a non-null buffer handle and
         // range > 0.  The shader never touches it (outer dim = 0 at compute time).
         // SAFETY: alloc and device are live; 4 bytes is always a valid allocation size.
-        let zero_elem_placeholder = unsafe {
-            alloc.alloc_device("zero_elem_placeholder", 4)
-        };
+        let zero_elem_placeholder = unsafe { alloc.alloc_device("zero_elem_placeholder", 4) };
         if zero_elem_placeholder.is_none() {
             log::error!("VulkanSession::create: failed to allocate zero-element placeholder");
             return None;
@@ -1155,7 +1158,11 @@ impl VulkanSession {
             // SAFETY: weight_cache_ptr is a valid, exclusive pointer to the per-subgraph
             // HashMap entry; no other code accesses weight_caches during this call.
             if let Some(cached) = unsafe { (*weight_cache_ptr).get(&cpu_key) } {
-                gpu_inputs.push(GpuBuffer::borrowed_ref(cached.buffer, cached.size, cached.mem_class));
+                gpu_inputs.push(GpuBuffer::borrowed_ref(
+                    cached.buffer,
+                    cached.size,
+                    cached.mem_class,
+                ));
                 // Push a sentinel staging entry so the Vecs stay parallel.  The sentinel is also
                 // borrowed_ref (no staging needed for cached inputs) and will be a no-op in
                 // free_all.  We never write to it or submit a vkCmdCopyBuffer for it.
@@ -1213,7 +1220,8 @@ impl VulkanSession {
                 let in_buf = &gpu_inputs[in_idx];
                 gpu_outputs.push(GpuBuffer::borrowed_ref(in_buf.buffer, sz, in_buf.mem_class));
                 // SAFETY: same allocator/device; sz > 0 verified above.
-                let Some(stg) = (unsafe { self.alloc.alloc_download(&format!("ep_stg_out_{i}"), sz) })
+                let Some(stg) =
+                    (unsafe { self.alloc.alloc_download(&format!("ep_stg_out_{i}"), sz) })
                 else {
                     bail!("alloc_download failed for aliased output staging");
                 };
@@ -1873,7 +1881,11 @@ impl VulkanSession {
             let sz = actual_input_byte_sizes[i];
             if !stg.borrowed && sz >= WEIGHT_CACHE_MIN_BYTES {
                 // Read fields before the mutable replace to avoid a borrow conflict.
-                let (handle, cached_sz, cls) = (gpu_inputs[i].buffer, gpu_inputs[i].size, gpu_inputs[i].mem_class);
+                let (handle, cached_sz, cls) = (
+                    gpu_inputs[i].buffer,
+                    gpu_inputs[i].size,
+                    gpu_inputs[i].mem_class,
+                );
                 // Take ownership of the device buffer and insert into cache.
                 // Replace with a borrowed_ref so free_all treats it as a no-op.
                 let owned = std::mem::replace(
@@ -1884,6 +1896,8 @@ impl VulkanSession {
                 crate::counters::weights::on_cache_insert(sz);
                 // If a stale entry exists for this key (e.g., pointer was reused at the same
                 // size by a different tensor), free it first to avoid a GPU memory leak.
+                // SAFETY: `weight_cache_ptr` is a valid, exclusive pointer to the per-subgraph
+                // HashMap; no other code accesses `weight_caches` during this call.
                 if let Some(old) = unsafe { (*weight_cache_ptr).insert(key, owned) } {
                     // The replaced entry leaves the cache; account for it before the device free.
                     crate::counters::weights::on_cache_evict(old.size);

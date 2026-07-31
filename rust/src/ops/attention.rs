@@ -69,7 +69,9 @@
 //! T3 entry point than GQA even though GQA is the more famous op. Morpheus ratified that in
 //! `DESIGN.md` §10.0.2.
 
-use crate::engine::{AttrValue, DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc};
+use crate::engine::{
+    AttrValue, DType, DispatchContext, EpError, EpResult, KernelRequest, NodeDesc, TensorDesc,
+};
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::{ANY, FLOAT};
@@ -403,11 +405,7 @@ fn tensor_scatter(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 ///   0 packed_qkv, 1 past_key, 2 past_value, 3 seqlens_k,
 ///   4 cos_cache,  5 sin_cache,
 ///   6 attn_output (write), 7 present_key (rw), 8 present_value (rw)
-fn translate_gqa(
-    _spec: &OpSpec,
-    node: &NodeDesc,
-    ctx: &mut dyn DispatchContext,
-) -> EpResult<()> {
+fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
     // -- Attribute helpers ----------------------------------------------------------------
     let attr_i64 = |name: &str| -> EpResult<i64> {
         match node.attributes.get(name) {
@@ -427,10 +425,9 @@ fn translate_gqa(
 
     // -- packed_qkv shape ----------------------------------------------------------------
     // Shape: [B, S, (Nq + 2*Nkv) * D].  Claim already verified input 0 is typed.
-    let qkv_desc = node.inputs[0]
-        .desc
-        .as_ref()
-        .ok_or_else(|| EpError::Unsupported(format!("`{}` packed_qkv has no shape", node.op_type)))?;
+    let qkv_desc = node.inputs[0].desc.as_ref().ok_or_else(|| {
+        EpError::Unsupported(format!("`{}` packed_qkv has no shape", node.op_type))
+    })?;
     if qkv_desc.shape.len() != 3 {
         return Err(EpError::InvalidGraph(format!(
             "`{}` packed_qkv must be rank 3, got rank {}",
@@ -447,17 +444,17 @@ fn translate_gqa(
     }
 
     let batch_size = qkv_desc.shape[0] as u32;
-    let seq_len    = qkv_desc.shape[1] as u32;
+    let seq_len = qkv_desc.shape[1] as u32;
     let packed_dim = qkv_desc.shape[2] as u32;
 
-    let num_heads    = attr_i64("num_heads")? as u32;
+    let num_heads = attr_i64("num_heads")? as u32;
     let kv_num_heads = attr_i64("kv_num_heads")? as u32;
-    let head_dim     = packed_dim / (num_heads + 2 * kv_num_heads);
+    let head_dim = packed_dim / (num_heads + 2 * kv_num_heads);
 
     // `rotary_embedding_dim` is optional; default to full head_dim (Phi-3.5 pattern).
     let rotary_dim = match node.attributes.get("rotary_embedding_dim") {
         Some(AttrValue::Int(v)) => *v as u32,
-        _                       => head_dim,
+        _ => head_dim,
     };
 
     // `scale` is optional; default to 1/sqrt(head_dim).
@@ -471,12 +468,12 @@ fn translate_gqa(
         .unwrap_or(0) as u32;
 
     // -- Resolve input buffers ----------------------------------------------------------
-    let qkv_buf     = ctx.resolve(&node.inputs[0])?;
-    let past_k_buf  = ctx.resolve(&node.inputs[3])?;
-    let past_v_buf  = ctx.resolve(&node.inputs[4])?;
+    let qkv_buf = ctx.resolve(&node.inputs[0])?;
+    let past_k_buf = ctx.resolve(&node.inputs[3])?;
+    let past_v_buf = ctx.resolve(&node.inputs[4])?;
     let seqlens_buf = ctx.resolve(&node.inputs[5])?;
-    let cos_buf     = ctx.resolve(&node.inputs[7])?;
-    let sin_buf     = ctx.resolve(&node.inputs[8])?;
+    let cos_buf = ctx.resolve(&node.inputs[7])?;
+    let sin_buf = ctx.resolve(&node.inputs[8])?;
 
     // -- Bind outputs ------------------------------------------------------------------
     // attn_output: [B, S, Nq*D]
@@ -485,7 +482,14 @@ fn translate_gqa(
     })?;
     let attn_buf = ctx.bind_output(
         attn_out_ref,
-        TensorDesc::new(dtype, vec![batch_size as i64, seq_len as i64, (num_heads * head_dim) as i64]),
+        TensorDesc::new(
+            dtype,
+            vec![
+                batch_size as i64,
+                seq_len as i64,
+                (num_heads * head_dim) as i64,
+            ],
+        ),
     )?;
 
     // present_key / present_value alias past_key / past_value (in-place KV cache update).
@@ -499,7 +503,12 @@ fn translate_gqa(
     // as past_key/past_value — the shader writes in-place at tok_pos, not appending new rows.
     let kv_desc = TensorDesc::new(
         dtype,
-        vec![batch_size as i64, kv_num_heads as i64, past_len_max as i64, head_dim as i64],
+        vec![
+            batch_size as i64,
+            kv_num_heads as i64,
+            past_len_max as i64,
+            head_dim as i64,
+        ],
     );
     let pres_k_buf = ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?;
 
@@ -526,15 +535,15 @@ fn translate_gqa(
         spec_constants: vec![],
         push_constants: push,
         bindings: vec![
-            qkv_buf,    // binding 0: packed_qkv
-            past_k_buf, // binding 1: past_key
-            past_v_buf, // binding 2: past_value
+            qkv_buf,     // binding 0: packed_qkv
+            past_k_buf,  // binding 1: past_key
+            past_v_buf,  // binding 2: past_value
             seqlens_buf, // binding 3: seqlens_k
-            cos_buf,    // binding 4: cos_cache
-            sin_buf,    // binding 5: sin_cache
-            attn_buf,   // binding 6: attn_output
-            pres_k_buf, // binding 7: present_key
-            pres_v_buf, // binding 8: present_value
+            cos_buf,     // binding 4: cos_cache
+            sin_buf,     // binding 5: sin_cache
+            attn_buf,    // binding 6: attn_output
+            pres_k_buf,  // binding 7: present_key
+            pres_v_buf,  // binding 8: present_value
         ],
         workgroups: [total, 1, 1],
     })
@@ -553,7 +562,10 @@ crate::op_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{BufferView, DispatchContext, EpResult, KernelRequest, NodeDesc, OutRef, TensorDesc, TensorRef};
+    use crate::engine::{
+        BufferView, DispatchContext, EpResult, KernelRequest, NodeDesc, OutRef, TensorDesc,
+        TensorRef,
+    };
     use crate::registry::{Domain, OpStatus};
 
     #[test]
@@ -693,11 +705,19 @@ mod tests {
     #[test]
     fn gqa_is_live_everything_else_is_staged() {
         let live: Vec<_> = OPS.iter().filter(|s| s.is_live()).collect();
-        assert_eq!(live.len(), 1, "only GroupQueryAttention should be live in this module");
+        assert_eq!(
+            live.len(),
+            1,
+            "only GroupQueryAttention should be live in this module"
+        );
         assert_eq!(live[0].op_type, "GroupQueryAttention");
         for s in OPS {
             if s.op_type != "GroupQueryAttention" {
-                assert!(matches!(s.status, OpStatus::Staged(_)), "{} should still be staged", s.op_type);
+                assert!(
+                    matches!(s.status, OpStatus::Staged(_)),
+                    "{} should still be staged",
+                    s.op_type
+                );
             }
         }
     }
@@ -782,7 +802,11 @@ mod tests {
             self.next += 1;
             Ok(BufferView::from_raw(self.next))
         }
-        fn bind_output(&mut self, _o: &crate::engine::OutRef, desc: TensorDesc) -> EpResult<BufferView> {
+        fn bind_output(
+            &mut self,
+            _o: &crate::engine::OutRef,
+            desc: TensorDesc,
+        ) -> EpResult<BufferView> {
             self.outputs.push(desc);
             self.next += 1;
             Ok(BufferView::from_raw(self.next))
@@ -815,7 +839,11 @@ mod tests {
             desc: Some(TensorDesc::new(DType::F16, shape)),
             is_initializer: false,
         };
-        let empty_ref = || TensorRef { name: String::new(), desc: None, is_initializer: false };
+        let empty_ref = || TensorRef {
+            name: String::new(),
+            desc: None,
+            is_initializer: false,
+        };
         // seqlens_k is int32; the translate handler only resolves it by index, doesn't check dtype here
         let seqlens_ref = TensorRef {
             name: "seqlens_k".into(),
@@ -831,18 +859,18 @@ mod tests {
             domain: "com.microsoft".into(),
             attributes: attrs,
             inputs: vec![
-                make_ref("qkv",     vec![b, s, qkv_dim]),   // 0 packed_qkv
-                empty_ref(),                                  // 1 absent
-                empty_ref(),                                  // 2 absent
-                make_ref("past_k",  vec![b, nkv, past_max, d]), // 3 past_key
-                make_ref("past_v",  vec![b, nkv, past_max, d]), // 4 past_value
-                seqlens_ref,                                  // 5 seqlens_k
-                empty_ref(),                                  // 6 total_seq (optional)
-                make_ref("cos",     vec![4096, rot_half]),    // 7 cos_cache
-                make_ref("sin",     vec![4096, rot_half]),    // 8 sin_cache
+                make_ref("qkv", vec![b, s, qkv_dim]),          // 0 packed_qkv
+                empty_ref(),                                   // 1 absent
+                empty_ref(),                                   // 2 absent
+                make_ref("past_k", vec![b, nkv, past_max, d]), // 3 past_key
+                make_ref("past_v", vec![b, nkv, past_max, d]), // 4 past_value
+                seqlens_ref,                                   // 5 seqlens_k
+                empty_ref(),                                   // 6 total_seq (optional)
+                make_ref("cos", vec![4096, rot_half]),         // 7 cos_cache
+                make_ref("sin", vec![4096, rot_half]),         // 8 sin_cache
             ],
             outputs: vec![
-                make_out("attn",   vec![b, s, nq * d]),
+                make_out("attn", vec![b, s, nq * d]),
                 make_out("pres_k", vec![b, nkv, past_max, d]),
                 make_out("pres_v", vec![b, nkv, past_max, d]),
             ],
@@ -865,21 +893,29 @@ mod tests {
         assert_eq!(k.shader, "gqa_f16", "must dispatch gqa_f16 shader");
         assert_eq!(k.workgroups, [32, 1, 1], "B*Nq*S = 1*32*1 = 32 invocations");
         assert_eq!(k.bindings.len(), 9, "9 bindings: 6 inputs + 3 outputs");
-        // Only attn_output calls bind_output; present_key/value use bind_aliased_output (→ resolve)
-        assert_eq!(ctx.outputs.len(), 1, "only attn_output has a new allocation");
+        // Only attn_output calls bind_output; present_key/value use bind_aliased_output.
+        // In this test Recorder, bind_aliased_output uses the trait default (→ resolve, no
+        // bind_output), so outputs.len()==1. ShapeOnlyRecorder overrides bind_aliased_output
+        // to also register the KV descriptor — that is the Defect 2 fix, and is exercised by
+        // the dispatch_ort path, not by this unit test.
+        assert_eq!(
+            ctx.outputs.len(),
+            1,
+            "only attn_output has a new allocation in the Recorder stub"
+        );
 
         // Verify push constants byte layout (32 bytes = 8 × u32/f32)
         let pc = &k.push_constants;
         assert_eq!(pc.len(), 32, "push constant block must be 32 bytes");
-        let batch_size  = u32::from_le_bytes(pc[0..4].try_into().unwrap());
-        let seq_len     = u32::from_le_bytes(pc[4..8].try_into().unwrap());
-        let num_heads   = u32::from_le_bytes(pc[8..12].try_into().unwrap());
+        let batch_size = u32::from_le_bytes(pc[0..4].try_into().unwrap());
+        let seq_len = u32::from_le_bytes(pc[4..8].try_into().unwrap());
+        let num_heads = u32::from_le_bytes(pc[8..12].try_into().unwrap());
         let kv_num_heads = u32::from_le_bytes(pc[12..16].try_into().unwrap());
-        let head_dim    = u32::from_le_bytes(pc[16..20].try_into().unwrap());
-        let rotary_dim  = u32::from_le_bytes(pc[20..24].try_into().unwrap());
+        let head_dim = u32::from_le_bytes(pc[16..20].try_into().unwrap());
+        let rotary_dim = u32::from_le_bytes(pc[20..24].try_into().unwrap());
         let past_len_max = u32::from_le_bytes(pc[24..28].try_into().unwrap());
-        let scale_bits  = u32::from_le_bytes(pc[28..32].try_into().unwrap());
-        let scale       = f32::from_bits(scale_bits);
+        let scale_bits = u32::from_le_bytes(pc[28..32].try_into().unwrap());
+        let scale = f32::from_bits(scale_bits);
 
         assert_eq!(batch_size, 1);
         assert_eq!(seq_len, 1);
@@ -888,7 +924,10 @@ mod tests {
         assert_eq!(head_dim, 96);
         assert_eq!(rotary_dim, 96, "default rotary_dim == head_dim");
         assert_eq!(past_len_max, 256);
-        assert!((scale - 96f32.sqrt().recip()).abs() < 1e-6, "scale = 1/sqrt(D)");
+        assert!(
+            (scale - 96f32.sqrt().recip()).abs() < 1e-6,
+            "scale = 1/sqrt(D)"
+        );
     }
 
     #[test]
@@ -902,4 +941,3 @@ mod tests {
         );
     }
 }
-

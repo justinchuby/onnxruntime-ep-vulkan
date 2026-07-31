@@ -1230,7 +1230,11 @@ impl VulkanTracer {
                 };
                 out.push_str(&format!(
                     "              {}{:<11} {:>10} us (x{}) — {}\n",
-                    if phase.is_sibling() { "    " } else { "  └─ " },
+                    if phase.is_sibling() {
+                        "    "
+                    } else {
+                        "  └─ "
+                    },
                     phase.as_str(),
                     us,
                     calls,

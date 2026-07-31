@@ -72,6 +72,8 @@ pub(crate) struct EpDeviceShare {
 // required; ash's documentation notes this). `vk::PhysicalDevice` is a `u64`, trivially Send.
 // `Capabilities` is Copy. `EpDeviceShare` is therefore both Send and Sync.
 unsafe impl Send for EpDeviceShare {}
+// SAFETY: see the comment above `impl Send` — the same reasoning (thread-safe ash handles,
+// `u64` physical device, `Copy` capabilities) establishes `Sync`.
 unsafe impl Sync for EpDeviceShare {}
 
 /// The process-global device share, set exactly once by `VulkanSession::create` and never
@@ -107,7 +109,6 @@ pub(crate) fn register_ep_device(device: &Device) {
 pub(crate) fn ep_device() -> Option<&'static EpDeviceShare> {
     EP_DEVICE.get()
 }
-
 
 /// The engine's logical device.
 ///
@@ -361,8 +362,6 @@ impl super::host_device_memory::SharedVkDevice for SessionSharedCtx {
         &self.name
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

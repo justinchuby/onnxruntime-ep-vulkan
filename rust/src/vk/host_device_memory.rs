@@ -428,8 +428,7 @@ impl HostDeviceMemory {
             return Err("could not end the command buffer for a device-memory copy".to_string());
         };
         // SAFETY: `cmd` was recorded and ended above; the queue belongs to this device.
-        let ok =
-            unsafe { submit_and_wait(self.ash_device(), self.compute_queue(), cmd) };
+        let ok = unsafe { submit_and_wait(self.ash_device(), self.compute_queue(), cmd) };
         if ok {
             Ok(())
         } else {

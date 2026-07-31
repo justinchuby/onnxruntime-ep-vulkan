@@ -1368,7 +1368,10 @@ mod tests {
         let future = dir.join("future.json");
         std::fs::write(
             &future,
-            snapshot(9).replace(&format!("\"abi_version\": {}", counters::COUNTERS_ABI_VERSION), "\"abi_version\": 99"),
+            snapshot(9).replace(
+                &format!("\"abi_version\": {}", counters::COUNTERS_ABI_VERSION),
+                "\"abi_version\": 99",
+            ),
         )
         .expect("write");
         assert!(

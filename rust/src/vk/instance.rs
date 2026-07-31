@@ -1107,9 +1107,7 @@ pub(crate) fn probe_loader_report() -> String {
                 passing
                     .get(idx)
                     .map(|(vulkan_idx, n, _)| {
-                        format!(
-                            "selector index {idx} → '{n}' (Vulkan enum index {vulkan_idx})"
-                        )
+                        format!("selector index {idx} → '{n}' (Vulkan enum index {vulkan_idx})")
                     })
                     .unwrap_or_else(|| {
                         format!(

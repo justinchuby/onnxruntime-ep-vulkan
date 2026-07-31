@@ -215,7 +215,9 @@ impl Allocator {
             // Zero-byte VkBuffers are not valid.  Callers that legitimately need a
             // zero-element tensor binding must use the session's `zero_elem_placeholder`
             // (session.rs) instead of calling alloc() with size=0.
-            log::warn!("Allocator::alloc called with size=0 for '{name}'; caller should use zero_elem_placeholder instead");
+            log::warn!(
+                "Allocator::alloc called with size=0 for '{name}'; caller should use zero_elem_placeholder instead"
+            );
             return None;
         }
 
@@ -300,7 +302,10 @@ impl Allocator {
             return;
         }
         // Mirror the alloc-side residency accounting for the session-allocator frame.
-        if matches!(buf.mem_class, MemClass::DeviceLocal | MemClass::PackedWeights) {
+        if matches!(
+            buf.mem_class,
+            MemClass::DeviceLocal | MemClass::PackedWeights
+        ) {
             crate::counters::weights::on_device_free(buf.size);
         }
         // Return the sub-allocation block first, then destroy the VkBuffer.
