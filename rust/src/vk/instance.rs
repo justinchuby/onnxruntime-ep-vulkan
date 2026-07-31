@@ -946,8 +946,11 @@ pub(crate) fn probe_loader_report() -> String {
         let all_pass = criteria.iter().all(|c| c.passed);
         let verdict = if all_pass { "PASS" } else { "FAIL" };
 
+        // §index-spaces note: this label uses the Vulkan enumeration index (the order
+        // vkEnumeratePhysicalDevices returns devices), which is NOT the same as the
+        // ONNXRUNTIME_EP_VULKAN_DEVICE selector index.  See the "Selector index map" block below.
         out.push(format!(
-            "Device {idx}: {} [Vulkan {}.{}.{}]  — gate {}",
+            "Device {idx} [Vulkan enum index {idx}]: {} [Vulkan {}.{}.{}]  — gate {}",
             name,
             vk::api_version_major(api_v),
             vk::api_version_minor(api_v),
@@ -1070,20 +1073,49 @@ pub(crate) fn probe_loader_report() -> String {
         passing.sort_by_key(|(_, _, ty)| std::cmp::Reverse(score(*ty)));
 
         if !passing.is_empty() {
+            // Print the two-index-space map so readers know exactly which device
+            // ONNXRUNTIME_EP_VULKAN_DEVICE=N selects.
+            //
+            // Two index spaces exist and are NOT interchangeable:
+            //   • Vulkan enum index  — from vkEnumeratePhysicalDevices (printed in the
+            //                          "Device N [Vulkan enum index N]" lines above).
+            //   • Selector index     — ONNXRUNTIME_EP_VULKAN_DEVICE value; indexes the
+            //                          capability-gate-passing devices sorted best-first
+            //                          (discrete > integrated > virtual > other).
+            //
+            // On a typical two-GPU machine the discrete GPU is selector index 0 even though
+            // the Vulkan driver may enumerate it as device 1.  The table below resolves this.
+            out.push(String::new());
+            out.push(format!(
+                "{ENV_DEVICE_SELECTOR} selector index map \
+                 (best-first sorted; use these indices for {ENV_DEVICE_SELECTOR}):"
+            ));
+            for (sort_idx, (vulkan_idx, name, _)) in passing.iter().enumerate() {
+                out.push(format!(
+                    "  [{sort_idx}] '{name}'  (Vulkan enum index {vulkan_idx})",
+                ));
+            }
+
             // Apply the selector logic (mirrors select_device but on the probe-only data).
             let selected_name = if selector_val.is_empty() {
                 format!(
-                    "Device {} '{}' (best-first default; set {ENV_DEVICE_SELECTOR}=<index|name> to override)",
-                    passing[0].0, passing[0].1
+                    "selector index 0 → '{}' (Vulkan enum index {}; best-first default; \
+                     set {ENV_DEVICE_SELECTOR}=<selector-index|name> to override)",
+                    passing[0].1, passing[0].0
                 )
             } else if let Ok(idx) = selector_val.parse::<usize>() {
                 passing
                     .get(idx)
-                    .map(|(i, n, _)| format!("Device {i} '{n}' (selected by index {idx})"))
+                    .map(|(vulkan_idx, n, _)| {
+                        format!(
+                            "selector index {idx} → '{n}' (Vulkan enum index {vulkan_idx})"
+                        )
+                    })
                     .unwrap_or_else(|| {
                         format!(
-                            "index {idx} out of range — would fall back to Device {} '{}'",
-                            passing[0].0, passing[0].1
+                            "selector index {idx} out of range — would fall back to '{}' \
+                             (Vulkan enum index {})",
+                            passing[0].1, passing[0].0
                         )
                     })
             } else {
@@ -1091,11 +1123,17 @@ pub(crate) fn probe_loader_report() -> String {
                 passing
                     .iter()
                     .find(|(_, n, _)| n.to_lowercase().contains(&lower))
-                    .map(|(i, n, _)| format!("Device {i} '{n}' (matched '{selector_val}')"))
+                    .map(|(vulkan_idx, n, _)| {
+                        format!(
+                            "name match → '{n}' (Vulkan enum index {vulkan_idx}; \
+                             matched '{selector_val}')"
+                        )
+                    })
                     .unwrap_or_else(|| {
                         format!(
-                            "no name matches '{selector_val}' — would fall back to Device {} '{}'",
-                            passing[0].0, passing[0].1
+                            "no name matches '{selector_val}' — would fall back to '{}' \
+                             (Vulkan enum index {})",
+                            passing[0].1, passing[0].0
                         )
                     })
             };

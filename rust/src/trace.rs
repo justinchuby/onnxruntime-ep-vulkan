@@ -164,6 +164,17 @@ pub enum Phase {
     Upload,
     /// Host-side command-buffer recording. Amortised: first inference, or a re-record.
     Record,
+    /// Sub-phase of `Record`: `vkCreateDescriptorPool` + `vkAllocateDescriptorSets` +
+    /// `vkUpdateDescriptorSets` per dispatch. Nested inside a `Record` span; emitted
+    /// per-kernel so the breakdown is visible in the Chrome Trace.
+    DescAlloc,
+    /// Sub-phase of `Record`: `PipelineCache::get_or_create` per dispatch — a hashmap
+    /// lookup on a hit, `vkCreateComputePipelines` on the first call for that shader.
+    PipelineLookup,
+    /// Sub-phase of `Record`: CPU `memcpy` into staging + `vkCmdCopyBuffer` for all
+    /// inputs.  Emitted once per `Compute` call. Isolates the upload cost from
+    /// everything else inside the Record span so we know how much is transfer vs. API.
+    CmdUpload,
     /// `vkQueueSubmit` and nothing else. **Measures no GPU work whatsoever.**
     Submit,
     /// `vkWaitForFences`. Queue latency + GPU execution, an *upper bound* on kernel time.
@@ -180,6 +191,9 @@ impl Phase {
             Phase::Prepack => "prepack",
             Phase::Upload => "upload",
             Phase::Record => "record",
+            Phase::DescAlloc => "desc_alloc",
+            Phase::PipelineLookup => "pipeline_lookup",
+            Phase::CmdUpload => "cmd_upload",
             Phase::Submit => "submit",
             Phase::FenceWait => "fence_wait",
             Phase::Readback => "readback",
@@ -202,6 +216,18 @@ impl Phase {
             Phase::Record => {
                 "host: command-buffer recording; amortised across replays (ENGINE.md 6.1)"
             }
+            Phase::DescAlloc => {
+                "host/sub-record: vkCreateDescriptorPool + vkAllocateDescriptorSets + \
+                 vkUpdateDescriptorSets per dispatch; emitted once per kernel per Compute call"
+            }
+            Phase::PipelineLookup => {
+                "host/sub-record: PipelineCache::get_or_create — hashmap hit or \
+                 vkCreateComputePipelines on first encounter; emitted once per kernel per Compute call"
+            }
+            Phase::CmdUpload => {
+                "host/sub-record: CPU memcpy into staging + vkCmdCopyBuffer for all inputs; \
+                 emitted once per Compute call; isolates transfer cost from API overhead"
+            }
             Phase::Submit => {
                 "HOST-ONLY: vkQueueSubmit returns before any shader runs — this is NOT GPU time"
             }
@@ -217,6 +243,7 @@ impl Phase {
     /// `false` for [`Phase::Submit`]: the call is asynchronous, so its wall time is driver
     /// bookkeeping. Everything else either is host work by definition or (for
     /// [`Phase::FenceWait`]) contains GPU execution without being able to isolate it.
+    /// Sub-phases (`DescAlloc`, `PipelineLookup`) are host-only and return `true` by default.
     pub fn observes_gpu_work(self) -> bool {
         !matches!(self, Phase::Submit)
     }

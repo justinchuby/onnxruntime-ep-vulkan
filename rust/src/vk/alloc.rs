@@ -104,6 +104,10 @@ impl MemClass {
 ///
 /// Freed by [`Allocator::free`]; do not drop this struct directly — the allocation
 /// inside it must be returned to the sub-allocator first.
+///
+/// Buffers created via [`GpuBuffer::borrowed_ref`] are **not** owned — `Allocator::free`
+/// is a no-op for them so that the weight-cache can lend a handle into a dispatch without
+/// transferring ownership.
 pub(crate) struct GpuBuffer {
     /// The raw buffer handle. Valid until `Allocator::free` is called.
     pub(crate) buffer: vk::Buffer,
@@ -113,9 +117,27 @@ pub(crate) struct GpuBuffer {
     pub(crate) size: u64,
     /// Memory class this buffer was allocated in.
     pub(crate) mem_class: MemClass,
+    /// When `true` this struct does **not** own the VkBuffer — `Allocator::free` is
+    /// a no-op.  Set only by [`GpuBuffer::borrowed_ref`].
+    pub(crate) borrowed: bool,
 }
 
 impl GpuBuffer {
+    /// A non-owning view of an existing device-local buffer.
+    ///
+    /// Calling `Allocator::free` on a borrowed buffer is safe but does nothing.
+    /// Used by the weight-cache so a cached GpuBuffer can be "lent" to a dispatch
+    /// without giving up ownership.
+    pub(crate) fn borrowed_ref(buffer: vk::Buffer, size: u64, mem_class: MemClass) -> Self {
+        GpuBuffer {
+            buffer,
+            allocation: None,
+            size,
+            mem_class,
+            borrowed: true,
+        }
+    }
+
     /// Pointer to the mapped host memory, for `Upload` / `Download` buffers.
     ///
     /// Returns `None` for `DeviceLocal` / `PackedWeights` buffers.
@@ -253,6 +275,7 @@ impl Allocator {
             allocation: Some(allocation),
             size,
             mem_class: class,
+            borrowed: false,
         })
     }
 
@@ -261,6 +284,11 @@ impl Allocator {
     /// # Safety
     /// `buf` must have been produced by this allocator and must not have been freed already.
     pub(crate) unsafe fn free(&mut self, mut buf: GpuBuffer) {
+        // Borrowed buffers are non-owning: the caller (weight_cache) still holds the
+        // real GpuBuffer and will free it later.  Do nothing here.
+        if buf.borrowed {
+            return;
+        }
         // Return the sub-allocation block first, then destroy the VkBuffer.
         if let Some(alloc) = buf.allocation.take() {
             if let Err(e) = self.inner.free(alloc) {
@@ -487,6 +515,7 @@ mod tests {
             allocation: None,
             size: 0,
             mem_class: MemClass::DeviceLocal,
+            borrowed: false,
         };
         assert!(buf.mapped_ptr().is_none());
     }
