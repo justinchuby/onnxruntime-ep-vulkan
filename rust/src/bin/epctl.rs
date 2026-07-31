@@ -521,6 +521,7 @@ fn check_counters_with(
             device_backed,
             allocations,
         } => {
+            let mirrored = staged_spans == allocations && device_backed == allocations;
             eprintln!(
                 "epctl: FAIL — --require-device-memory was asked for and this run did not deliver \
                  it: {staged_spans} host-staged span(s) ({staged_bytes} B), {device_backed} \
@@ -537,6 +538,17 @@ fn check_counters_with(
                  numbers look like device numbers. A caveat that has to be remembered an hour \
                  later is not a caveat. Set this flag on any lane that quotes a number."
             );
+            if mirrored {
+                eprintln!(
+                    "\x20 NOTE: every span is BOTH staged and device-backed — this is the \
+                     mirrored state, not a partial one. The bytes really are resident in device \
+                     memory and really crossed the bus, but host staging is still authoritative \
+                     because `vk::session` reads inputs through `host_backing_for` and binds \
+                     buffers it allocated itself. `alloc_device_authoritative_spans` is the \
+                     counter that has to move before this flag can pass, and it is the instrument \
+                     that goes red if anyone claims the EP computes from device memory today."
+                );
+            }
             std::process::ExitCode::from(1)
         }
         CounterVerdict::EquivalenceDivergent { dispatches } => {
@@ -1159,6 +1171,26 @@ mod tests {
             read_counters_with(host.to_str().expect("utf8"), 1, true),
             CounterVerdict::NotOnDevice { .. }
         ));
+
+        // The MIRRORED state: every span is device-backed AND every span is staged. This is what
+        // device-backed allocation actually produces today, and it must still fail the flag. The
+        // tempting reading is "12 of 12 device-backed, therefore on device" — but staging is
+        // still authoritative because the compute session reads through `host_backing_for`, so a
+        // timing from this run is a host measurement plus mirroring cost. If this assertion ever
+        // flips to Pass while `alloc_device_authoritative_spans` is 0, the flag has stopped
+        // measuring what its name says.
+        let mirrored = dir.join("mirrored.json");
+        std::fs::write(&mirrored, snapshot_with_tally(30, 12, 12, 12)).expect("write");
+        assert_eq!(
+            read_counters_with(mirrored.to_str().expect("utf8"), 1, true),
+            CounterVerdict::NotOnDevice {
+                staged_spans: 12,
+                staged_bytes: 49152,
+                device_backed: 12,
+                allocations: 12,
+            },
+            "every span being device-backed does not pass the flag while every span is also staged"
+        );
 
         // A snapshot with no tally cannot answer the question, and must not pass a check it did
         // not perform. Exit 3, the same distinction as everywhere else in this binary.

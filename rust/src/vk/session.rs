@@ -575,6 +575,10 @@ pub(crate) struct VulkanSession {
     pub(crate) device: Device,
     /// Vulkan instance. Must drop **last** — all child objects must be destroyed first.
     pub(crate) instance: Instance,
+    /// Per-subgraph weight caches.  Key: subgraph ID → HashMap<(cpu_ptr, byte_size), GpuBuffer>.
+    /// Populated lazily on the second inference through a subgraph; freed when the subgraph's
+    /// `SubgraphComputeInfo` is released (via `release_weight_cache`).
+    weight_caches: HashMap<u64, HashMap<(usize, u64), GpuBuffer>>,
 }
 
 impl VulkanSession {
@@ -642,7 +646,26 @@ impl VulkanSession {
             alloc,
             device,
             instance,
+            weight_caches: HashMap::new(),
         })
+    }
+
+    /// Free all cached GPU weight buffers for a subgraph that is being released.
+    ///
+    /// Called from `SubgraphComputeInfo`'s `Drop` implementation in `ep.rs`.
+    ///
+    /// # Safety
+    /// The caller must ensure that no GPU work submitted by `subgraph_id` is still in flight
+    /// — i.e., the fence for the last `Compute` call has already signalled.  ORT serialises
+    /// `Compute` and `ReleaseNodeComputeInfos` (the latter is never called concurrently with
+    /// an active `Compute`), so this invariant holds by the ORT contract.
+    pub(crate) fn release_weight_cache(&mut self, subgraph_id: u64) {
+        if let Some(cache) = self.weight_caches.remove(&subgraph_id) {
+            for (_, buf) in cache {
+                // SAFETY: buf is owned; last Compute has completed; no outstanding GPU work.
+                unsafe { self.alloc.free(buf) };
+            }
+        }
     }
 
     // ── Compute path ────────────────────────────────────────────────────────
@@ -680,6 +703,7 @@ impl VulkanSession {
         name_map: Option<Arc<HashMap<String, u64>>>,
         first_temp_token: usize,
         static_intermediate_byte_sizes: &[u64],
+        subgraph_id: u64,
         api: *const ort::OrtApi,
         kernel_ctx: *mut ort::OrtKernelContext,
     ) -> *mut ort::OrtStatus {
@@ -693,6 +717,13 @@ impl VulkanSession {
 
         let n_plan_inputs = input_byte_sizes.len();
         let n_plan_outputs = output_byte_sizes.len();
+
+        // Per-subgraph weight cache: obtain a raw pointer to break the borrow conflict
+        // between `self.weight_caches` and `self.alloc` / `self.device` used later.
+        // SAFETY: `weight_caches` and the other fields (`alloc`, `device`, etc.) are
+        // disjoint struct fields; no two accesses below alias the same memory.
+        let weight_cache_ptr: *mut HashMap<(usize, u64), GpuBuffer> =
+            self.weight_caches.entry(subgraph_id).or_default() as *mut _;
         // ── Step 1: read ORT input tensor data pointers ──────────────────────
         // Also retain the OrtValue pointers for the dynamic pre-pass below.
         let mut input_cpu_ptrs: Vec<*const u8> = Vec::with_capacity(input_byte_sizes.len());
@@ -983,6 +1014,25 @@ impl VulkanSession {
         }
 
         for (i, &sz) in actual_input_byte_sizes.iter().enumerate() {
+            // Weight-cache check: if ORT gives us the same CPU pointer as a prior inference,
+            // the tensor is a model constant (initialiser/weight) — skip alloc and upload.
+            // `borrowed_ref` produces a non-owning GpuBuffer: `free_all` below is a no-op
+            // for it, so the real buffer stays alive in `weight_caches` for next time.
+            let cpu_key = (input_cpu_ptrs[i] as usize, sz);
+            // SAFETY: weight_cache_ptr is a valid, exclusive pointer to the per-subgraph
+            // HashMap entry; no other code accesses weight_caches during this call.
+            if let Some(cached) = unsafe { (*weight_cache_ptr).get(&cpu_key) } {
+                gpu_inputs.push(GpuBuffer::borrowed_ref(cached.buffer, cached.size, cached.mem_class));
+                // Push a sentinel staging entry so the Vecs stay parallel.  The sentinel is also
+                // borrowed_ref (no staging needed for cached inputs) and will be a no-op in
+                // free_all.  We never write to it or submit a vkCmdCopyBuffer for it.
+                staging_ups.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::DeviceLocal,
+                ));
+                continue;
+            }
             // SAFETY: `self.alloc` owns a live `VkDevice` for as long as the session exists, and
             // `sz` came from `Compile`, where a zero-sized tensor was already rejected.
             let Some(buf) = (unsafe { self.alloc.alloc_device(&format!("ep_in_{i}"), sz) }) else {
@@ -1104,27 +1154,40 @@ impl VulkanSession {
 
         // Write CPU data into staging buffers and record staging→device copies.
         // Time the CPU memcopy portion so record_transfer can report upload bandwidth.
+        // Sub-phase CmdUpload isolates this cost from the rest of Record so we can tell
+        // whether upload memcpy or something else is the dominant 97% unexplained fraction.
+        let _cmd_upload_guard = t.phase(Phase::CmdUpload);
         let upload_t0 = std::time::Instant::now();
+        let mut uploaded_bytes: u64 = 0;
         for (i, (stg, &cpu_ptr)) in staging_ups.iter().zip(input_cpu_ptrs.iter()).enumerate() {
+            // Skip cache hits — sentinel staging buffers are `borrowed` (size 0, null handle).
+            if stg.borrowed {
+                continue;
+            }
+            let sz = actual_input_byte_sizes[i] as usize;
             // SAFETY: `cpu_ptr` is the tensor data pointer ORT just gave us for input `i`; it is
             // valid for at least `actual_input_byte_sizes[i]` bytes and stays live for this call.
-            let data =
-                unsafe { std::slice::from_raw_parts(cpu_ptr, actual_input_byte_sizes[i] as usize) };
+            let data = unsafe { std::slice::from_raw_parts(cpu_ptr, sz) };
             // SAFETY: cmd is recording; stg is Upload, gpu_inputs[i] is DeviceLocal.
             unsafe { record_upload(self.device.ash(), cmd, stg, &gpu_inputs[i], data) };
+            uploaded_bytes += sz as u64;
         }
         // Record upload bytes + duration in the tracer summary.
         // record_transfer (not phase(Phase::Upload)) so the byte/bandwidth counters are emitted
         // without double-counting the duration in phase_us[Upload].
         if t.active() {
-            let upload_bytes: u64 = actual_input_byte_sizes.iter().sum();
-            t.record_transfer(Transfer::Upload, upload_bytes, upload_t0.elapsed());
+            t.record_transfer(Transfer::Upload, uploaded_bytes, upload_t0.elapsed());
         }
+        drop(_cmd_upload_guard);
 
-        // Barrier: TRANSFER_WRITE → SHADER_READ on all input buffers.
-        let up_deps: Vec<BufferDep> = gpu_inputs
+        // Barrier: TRANSFER_WRITE → SHADER_READ on freshly-uploaded input buffers.
+        // Cached inputs (borrowed staging sentinel) are already in the correct layout from their
+        // last use; read-after-read across queue submissions needs no barrier.
+        let up_deps: Vec<BufferDep> = staging_ups
             .iter()
-            .map(|b| BufferDep {
+            .zip(gpu_inputs.iter())
+            .filter(|(stg, _)| !stg.borrowed)
+            .map(|(_, b)| BufferDep {
                 buffer: b.buffer,
                 offset: 0,
                 size: vk::WHOLE_SIZE,
@@ -1211,6 +1274,9 @@ impl VulkanSession {
                 shader: eff_shader,
                 spec_constants: eff_spec_constants.to_vec(),
             };
+            // Sub-phase: pipeline cache lookup (hashmap hit) or vkCreateComputePipelines (first
+            // encounter). Drops before the descriptor-alloc sub-phase so spans don't overlap.
+            let _pipeline_lookup_guard = t.phase(Phase::PipelineLookup);
             // SAFETY: spirv is valid SPIR-V from build.rs; pipeline_cache and device are live.
             let Some(entry) = (unsafe {
                 self.pipeline_cache
@@ -1239,7 +1305,11 @@ impl VulkanSession {
                     )
                 };
             };
+            drop(_pipeline_lookup_guard);
 
+            // Sub-phase: descriptor pool creation + set allocation + descriptor writes.
+            // This is the Vulkan-side cost of binding buffers to the pipeline for one dispatch.
+            let _desc_alloc_guard = t.phase(Phase::DescAlloc);
             // Per-dispatch descriptor pool.  Ownership is transferred into `desc_pools` at the
             // bottom of this loop iteration and freed after `submit_and_wait` returns.
             // SAFETY: device is live; n_bindings is the correct storage-buffer count.
@@ -1335,6 +1405,7 @@ impl VulkanSession {
                     )
                 };
             };
+            drop(_desc_alloc_guard);
 
             // Record: bind pipeline, descriptors, push constants, and dispatch.
             // SAFETY: cmd is recording; all handles are live for the duration.
@@ -1604,6 +1675,35 @@ impl VulkanSession {
         }
 
         // Cleanup regardless of output-write outcome.
+        //
+        // Weight-cache: for each input that was a fresh upload (non-borrowed staging),
+        // move its device buffer into `weight_cache` keyed on (cpu_ptr, byte_size) so the
+        // next inference can skip the upload.  Only tensors ≥ WEIGHT_CACHE_MIN_BYTES are
+        // cached — activations are small (seq=1 in Phi-3.5 → 6 KB) and may be backed by
+        // ORT's recycled frame allocator; caching them could serve stale data if ORT reuses
+        // the same address with different bytes.  Model weights and scales are ≥32 KB.
+        const WEIGHT_CACHE_MIN_BYTES: u64 = 32 * 1024;
+        for (i, stg) in staging_ups.iter().enumerate() {
+            let sz = actual_input_byte_sizes[i];
+            if !stg.borrowed && sz >= WEIGHT_CACHE_MIN_BYTES {
+                // Read fields before the mutable replace to avoid a borrow conflict.
+                let (handle, cached_sz, cls) = (gpu_inputs[i].buffer, gpu_inputs[i].size, gpu_inputs[i].mem_class);
+                // Take ownership of the device buffer and insert into cache.
+                // Replace with a borrowed_ref so free_all treats it as a no-op.
+                let owned = std::mem::replace(
+                    &mut gpu_inputs[i],
+                    GpuBuffer::borrowed_ref(handle, cached_sz, cls),
+                );
+                let key = (input_cpu_ptrs[i] as usize, sz);
+                // If a stale entry exists for this key (e.g., pointer was reused at the same
+                // size by a different tensor), free it first to avoid a GPU memory leak.
+                if let Some(old) = unsafe { (*weight_cache_ptr).insert(key, owned) } {
+                    // SAFETY: `old` is a device-local buffer owned by the cache; the fence
+                    // has signalled so no GPU work references it.
+                    unsafe { self.alloc.free(old) };
+                }
+            }
+        }
         self.free_all(
             &mut gpu_inputs,
             &mut staging_ups,

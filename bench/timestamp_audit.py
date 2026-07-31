@@ -80,7 +80,7 @@ EPCTL_ENV = "ONNXRUNTIME_EP_VULKAN_EPCTL"
 #: exists only to absorb decimal formatting (``52.0833`` vs ``52.083302``), not disagreement.
 PERIOD_RTOL = 1e-4
 
-_DEVICE_HEADER = re.compile(r"^Device (?P<i>\d+): (?P<name>.+?) \[Vulkan", re.M)
+_DEVICE_HEADER = re.compile(r"^Device (?P<i>\d+)(?:\s+\[Vulkan enum index \d+\])?: (?P<name>.+?) \[Vulkan", re.M)
 _PERIOD = re.compile(r"timestamp_period_ns\s*:\s*(?P<v>[0-9.]+)")
 _BITS = re.compile(r"timestamp_valid_bits\s*:\s*(?P<v>\d+)")
 _UMA = re.compile(r"is_uma\s*:\s*(?P<v>true|false)")

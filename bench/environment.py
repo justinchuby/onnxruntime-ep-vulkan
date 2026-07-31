@@ -42,9 +42,12 @@ EP_ENV_PREFIX = "ONNXRUNTIME_EP_VULKAN_"
 EP_LIB_ENV = "ONNXRUNTIME_VULKAN_EP_LIB"
 EPCTL_ENV = "ONNXRUNTIME_EP_VULKAN_EPCTL"
 
-#: ``Device 0: NVIDIA GeForce RTX 4060 Laptop GPU [Vulkan 1.4.325]`` and friends.
+#: ``Device 0 [Vulkan enum index 0]: Intel(R) Iris(R) Xe Graphics [Vulkan 1.4.309]`` and friends.
+#: The ``[Vulkan enum index N]`` annotation was added to make the two index spaces explicit;
+#: both the old (``Device N: Name``) and new format are accepted.
+#: The call site strips trailing ``— gate PASS/FAIL`` before matching.
 _DEVICE_LINE = re.compile(
-    r"Device\s+(?P<index>\d+)\s*:\s*(?P<name>.+?)\s*(?:\[(?P<detail>[^\]]*)\])?\s*$"
+    r"Device\s+(?P<index>\d+)(?:\s*\[Vulkan enum index \d+\])?\s*:\s*(?P<name>.+?)\s*(?:\[(?P<detail>[^\]]*)\])?\s*$"
 )
 
 
@@ -115,6 +118,12 @@ def probe_devices() -> "tuple[list[dict], str]":
         line = line.strip()
         if not line.startswith("Device"):
             continue
+        # Strip trailing "— gate PASS/FAIL" annotation added by probe_loader_report so the
+        # end-anchored regex continues to work.
+        for sep in ("  —", " —", "—"):
+            if sep in line:
+                line = line[:line.index(sep)].rstrip()
+                break
         m = _DEVICE_LINE.match(line)
         if not m:
             continue

@@ -227,3 +227,263 @@ per claimed form naming its proof key and backing ledger entry; WARN if any clai
 UNMEASURED; explicit INFO naming top decline codes when the EP claims zero. Same mechanism at two
 severities, not a second thing to maintain. **Disclosure, not a gate — a log line is an instrument
 with no red state (R9) and may never substitute for the ledger.** Folded into M0 criterion 11.
+
+---
+
+## Session 24 — the day the model became correct, and the failure class that was invisible to review (2026-07-30T19:05:03-07:00)
+
+Coordinator brief: the all-zero-logits defect is fixed, partition.rs was wired (3.7x), GPU
+timestamps landed, and the EP is 3.1x/3.7x slower than CPU with `model_output_equivalence = MATCH`.
+Asked for: an honest M0 update in both directions, a ruling on a performance criterion, a rule for
+the unwired-mechanism class, whether a correct claim can be a wrong claim, and sequencing.
+
+### The defect vindicated the key, not the reasoning
+Root cause was **binding arity**, not dtype — everyone including me reasoned toward the f16 kernel.
+`push_dynamic_kernel` built a 4-entry pipeline layout for `MatMulNBits`-without-`zero_points`; the
+shader wrote binding 4; **both drivers silently dropped the write.** `populated_optional_input_set`
+is a component of the §8.9 proof key, so with/without `zero_points` are **different keys and a proof
+of one could never be returned for the other.** The key was granular on principle before the
+incident. That is the argument for granularity no amount of arguing produces — and the reason
+criterion 11 does not get deprioritised now that the model is right.
+
+### M0: six met / four partial / two not met, of twelve
+Closed on a **measurement**: criterion 10 `DIVERGENT` -> `MATCH` (argmax 30751 == CPU, top-10 10/10,
+max diff 0.031/0.035 — **the non-identity is the correct answer**; a bit-identical result would have
+been evidence of CPU fallback). Criterion 2 closed on the promise I made when reopening it — adding
+a condition after seeing the result is the fault I reopened it for, in reverse.
+**Criteria 4 and 5 stay partial.** A correct model does not retroactively give an unknown-polarity
+check a polarity. Criterion 3 moved **both ways**: the messenger fired on a live unplanted violation
+and printed the root cause in one line (the polarity proof), which also convicts the earlier
+"no errors surfaced" as a silent instrument that sat on the worst defect for its whole life.
+Criterion 12 added (wiring census). First forward movement this week; the table also got longer.
+
+### R10 — the rule
+> A mechanism's existence is a claim about the **call graph**, not about the source tree. The
+> falsifier for "X is wired" is an observation of an artifact X produced whose content varies with
+> X's input — never a reading of X's code, never a flag its author set.
+
+Three amendments: (1) the artifact must **vary with the input** or a hardcoded banner passes;
+(2) uninvoked reports **`UNWIRED`**, distinct from empty — §7.9's third state, sixth appearance —
+because *a partitioner that never runs is indistinguishable from a graph with no islands*;
+(3) **the identity case is an explicit red state**. `island_count == claimed_count` was one line,
+true for the defect's whole life, and nobody had written down that it must be false. Generalised:
+every transform carries an assertion relating input to output, and the no-op case is red — because
+**doing nothing is exactly what not being called looks like.**
+Sub-rule: **wiring is per entry point, not per file** — verified in-tree, `evaluate` is called from
+`GetCapability`, `retain_viable` only from `#[cfg(test)]`, while everyone believed "partition.rs is
+wired". Review rule: **not complete until the reviewer has seen an artifact the mechanism produced.**
+Correction to the brief: **`compute_failures` is not R10** — it IS called; it is R9's silence set.
+The remedies differ (a different instrument vs the same instrument invoked) and conflating them
+means writing a second instrument for a gap a correct first one already covers.
+
+### §7.0.2 — yes, a correct claim can be a wrong claim
+A claim is a **scheduling decision**, not a capability statement. Net benefit is a property of the
+op **in a graph at a coverage level**. Lives in the partitioner, never the registry — a net-negative
+result must never demote a row to `Staged`, that would put a graph-dependent fact in a
+graph-independent place. Own decline code (never folded into `staged`/`dtype`, R8 reads that
+histogram). **It is the only discretionary decline in the system**, so it is the only one needing a
+guard against itself: measured per artifact, re-measured when the neighbourhood changes — SkipNorm
+flipped sign with no kernel change. Hazard recorded: `GetCapability` bypasses `evaluate` for a
+single cluster because "there is no competing partition" — **the competing partition is always CPU
+fallback**, and that is the shape a fully-claimed graph converges to.
+
+### Performance criterion — no, and the reasoning is the deliverable
+Slowness is loud (self-reporting, monotone, we noticed 3.1x without a criterion); wrongness is
+silent. Criteria exist for failures that hide. M0 is not a release; M2 already carries the criterion
+the counter-argument wants. And my own drafting rule kills it: **the cheapest way to pass a ratio
+criterion is always to do less GPU work.**
+M0 gains a **§10.0 disclosure obligation** instead — the end-to-end CPU ratio may never be omitted,
+especially above 1.0. **A figure nobody may hide is not a threshold nobody may fail**, and inventing
+a gate to look rigorous would be softening in the other direction.
+M1 gains: a **counter before a clock** (`command_buffer_records` < `compute_calls`; identity case
+red), recording share < 5%, ratio reported. Non-gameable because **the denominator is the whole
+model in wall clock — an EP that claims nothing scores exactly 1.0 and never better**, so declining
+can defend a ratio and never improve one. Plus `MATCH`-only admissibility and `REGRESSED-COVERAGE`.
+M2 keeps the threshold, sharpened: every device in the matrix reported, not just the winner.
+
+### Sequencing
+Tail stands, unsoftened, and is now the front of the queue. The 68.3% recording cost does not enter
+M0 and does not outrank the tail — **but it was never a sequencing conflict**: it is Tank's M1
+`recorded.rs` work and items 1-6 are Mouse/Trinity/Switch/Link. **Sequencing governs declarations,
+not calendars** (third time I have had to say it). One hard constraint the other way: caching means
+**a binding table computed once and reused**, which is today's defect generalised to every kernel —
+so it lands only through criterion 10's gate.
+
+### Carry forward
+- Ask R10's question before R9's: *does it run?* precedes *would it go red?*
+- When someone says a file is wired, ask which entry point.
+- The no-op case of any transform must be an explicit failure state, written down on day one.
+- On a good day, check which rows the good news does **not** touch, and say so first.
+
+---
+
+## Session 25 — 2026-07-30T20:58:11-07:00 — R11: the instrument that is called, correct, and misnamed
+
+**Dispatched four hours after R10, by a specimen R10 certifies clean.** Tank found that the 68.3%
+"command-buffer recording" figure — which I had built an M1 criterion on and the coordinator had
+broadcast to the whole team — **is upload**. `Phase::Record` is an *inclusive* interval opened
+before `vkBeginCommandBuffer`; the host staging memcpy runs inside it and reports through
+`Tracer::record_transfer` into `phase_us[Upload]`, deliberately emitting no `ph:"X"` span to avoid
+double-counting. The coordinator's table aggregated `ph:"X"` spans, so it **structurally could not
+see upload**. Verified in-tree myself (`rust/src/trace.rs`, read-only). Upload is **95.8-98.4% of
+the record phase**; real recording is **1-3% of wall**. The dominant cost is the EP re-uploading
+the entire weight set every inference: **1997.6 MiB/inference, ratio 1.0002, linear over 1/2/3
+runs, in:out 2481:1**.
+
+### RULING — R11, a new rule, not an R10 amendment
+I rejected the coordinator's proposed cut (*"children invisible to the aggregation"*), because
+invisibility is a property of the reader and the rule has to bind the writer. The cut is
+**inclusive vs exclusive extent**. R11: **a measurement's name is not its definition; a phase or
+counter must declare its extent, a flat table is an assertion of disjointness, the parts are summed
+against a whole measured by a *different* instrument with the residual published, and any row above
+50% has its name checked against its content.**
+
+**Why a new rule.** R10's obligation is *see an artifact*. Satisfying it here changes nothing — the
+artifact was seen, was correct, and was believed. The failure is downstream of observation, at
+interpretation. Different failure, different remedy, different number.
+
+**The load-bearing clause is the independent whole.** The old table summed to 99.0% and *appeared
+to close*, because the missing cost was inside a row, so the residual was zero by construction. An
+identity that cannot go red is R9's specimen restated in arithmetic.
+
+The register now reads: **R6 manufactured a number · R7 manufactured a negative · R9 sound
+instruments jointly silent · R10 never called · R11 called, correct, misnamed.** R11 is the hardest
+because every check we have passes.
+
+### The tally did not move — and that is the result, not an absence of one
+Six met / four partial / two not met, of twelve. Criterion 12's wiring census, as specified this
+morning, **would have certified `Phase::Record`**, so I amended it: extent declaration, the
+decomposition identity against an independent whole, and the name-content check. **Criterion 12
+changed; the tally did not, because 12 was never claimed met.** A criterion strengthened while
+still open costs nothing and retracts nothing. Had I recorded it met at 19:05 I would be reopening
+it at 21:00, on the seventh consecutive day of reopening a met criterion. **That is the argument
+for not closing rows early, stated as evidence rather than as caution.**
+
+### R6 amendment 4 — the device labels, not a new register entry
+`enumerate_capable_devices()` sorts best-first, `select_device` indexes the sorted list,
+`epctl --probe-loader` prints unsorted enumeration order. Two index spaces, one printout.
+**`DEVICE=0` is the RTX 4060; `DEVICE=1` is the Iris Xe.** Every device label written on
+2026-07-30, mine included, is backwards, and the "Intel beats the discrete 4060" finding dissolves.
+It is R6's shape exactly — our own tooling manufactured the number — so it is an amendment, not a
+new number. The rule it adds: **a result surprising enough to be a discovery is first a reason to
+check the instrument. Surprise is a free instrument check and we spent it on celebration.**
+
+### The disclosure obligation stands, and got stronger
+Asked directly. It stands. The phase decomposition was wrong by 50x while the wall-clock ratio
+(3.1x / 3.7x) was correct — **because the ratio has no internal structure to misattribute.**
+Generalised into §10.0: *a metric's robustness is inversely proportional to the number of naming
+decisions between the measurement and the reader; decompose to diagnose, report the coarse
+invariant.* Two binding consequences: a decomposition may accompany the ratio but never replace it
+or lead, and it is publishable only with its R11 identity check. **Coarse honest over fine
+misleading, on the record as a preference and not only as a rule.**
+
+### Also recorded
+- **M1's lead performance criterion corrected** from recording amortisation to **weight residency**
+  (`device_upload_bytes`/inference < 1% of constant-initializer bytes; today 1.0002), with the
+  anti-gaming interlock: admissible only at or above last-published coverage, with `MATCH`.
+  Recording amortisation survives as secondary on its own justification (`ENGINE.md` §6.1, R6 rule
+  1) — it was never propped up by the bad number, which is why it did not fall with it.
+- **The sequencing ruling is unchanged and its subject is not.** Every clause survived substituting
+  "weight upload" for "recording" — correct for a sequencing ruling, and a warning sign had it been
+  a technical one. Owner moved from Tank to Switch.
+- **Tank reported his own feature as not capturing the prize** — his device-backed allocation is a
+  mirror, not a move; staging stays authoritative, `alloc_device_authoritative_spans` is still 0 —
+  and handed the real fix to someone else's file. Recorded by name in §10 sequencing.
+
+### Carry forward
+- Ask of every table: which rows are inclusive of which other rows?
+- A decomposition that closes to ~100% with no independently-measured whole has proved nothing.
+- Any number I am about to quote twice, I sum against a clock first.
+- When a result is implausible, suspect the label before the physics.
+
+---
+
+## Session 26 — 2026-07-30T22:13:37-07:00 — A standing directive, and two VkDevices nobody chose
+
+**Justin's directive, recorded as standing:** 「要确保我们性能是非常高 一致向高性能推进」 —
+*ensure performance is very high; push toward high performance continuously.* Recorded at the head
+of §10 alongside the compatibility directive.
+
+### RULING — it changes the calendar and not one gate
+It does **not** overturn the M0 performance ruling, and the day it arrived is the day that argument
+got its second proof. **A directive to be fast is precisely the condition under which a speed
+*gate* becomes dangerous**, because a gate is a thing people are rewarded for passing and this one
+is passable by claiming nothing. The directive raises the value of the interlocks, not the case for
+the gate.
+
+It **does** make performance work continuous and parallel with correctness — which is what I ruled
+at 19:05 anyway (*sequencing governs declarations, not calendars*), now with a mandate behind it.
+`一致` is a **rate** obligation, so **the instrument for it is a series, not a value**, and it is
+falsifiable by a flat line. That is the criterion-shaped thing the directive deserves and it
+belongs in the cadence, not in a gate.
+
+One clause added on my own authority: **no timing figure is quotable from a run whose verdict is
+not `MATCH`; every benchmark asserts EP presence and a non-zero claimed count before starting a
+clock. A fast wrong number is not partial credit toward this directive — it is the failure mode
+this directive creates.**
+
+### The tail is unchanged, and I said so rather than let it be assumed
+The tail contends with residency for **nothing**: not a person (Link vs Switch), not a file, not a
+machine (a software rasteriser where timings are meaningless by construction). Re-ordering would be
+theatre. **A standing directive is a reason to re-examine a placement and never on its own a reason
+to move it** — otherwise the ordering records the most recent instruction rather than the
+dependencies. If anything the evidence points the other way: performance work is where
+cross-platform assumptions get quietly baked in.
+
+### M1's residency criterion stands exactly as written
+1% of constant-initializer bytes; today 1.0002. **There is no honest intermediate value** between
+1.0 and 0.01 — the mechanism either uploads once per session or once per inference — which is the
+rare case where a round number is the rigorous choice. Both interlocks intact (coverage floor +
+`MATCH`; first-inference upload beside the steady-state figure). Refused to accelerate it into M0:
+that converts a rate obligation into a gate, which is the exact transformation the M0 ruling exists
+to prevent.
+
+### §6.5 — one VkDevice, and the uncomfortable part
+Switch found that Tank's memory provider creates its **own** `VkDevice`, so the session cannot bind
+its buffers. **§2.3 already said `VkDevice` lifetime is EP-scoped and §1.2 already said one device,
+one queue.** So I am not making an architectural decision — **the document was right, the code
+diverged, and nothing in between could tell.** That is R10's lesson in a new place: the
+architecture is a claim about the object graph, not about the prose.
+
+Checked the three legitimate reasons for two devices — separate queue families, differing extension
+sets, external memory sharing — and none applies. The split does not buy compatibility, it costs
+it. **Seam owner: Switch**, by the rule that *the seam is owned by the side that owns the lifetime,
+never by the side that owns the caller*; Tank's allocator changes from creating to receiving, the
+smaller and safer edit, and the one that unpins `alloc_device_authoritative_spans`.
+
+**The trap, named:** two correct owners keep building correct mechanisms that cannot observe each
+other. **A seam that requires a caveat on every number crossing it is not a seam, it is a fork.**
+
+### R12 — the frame rule
+`vulkan.cmd_upload` 15.2 s against `alloc_device_upload_bytes: 0`. Both correct. Different worlds.
+**R12: a reported quantity carries the identity of its frame, and a counter whose event cannot
+occur in its frame reports `UNOBSERVABLE`, never `0`.**
+
+**R12 is not R11.** R11's remedy is available to the writer — rename it, declare its extent. R12's
+is not: no wording Tank could choose makes his counter describe the run. The fix is structural and
+the rule's job is to stop the number being believed until then. **Not a mistake anyone made — an
+artefact of two people being correct in different places.**
+
+Register now: R6 manufactured a number · R7 a negative · R9 jointly silent · R10 never called ·
+R11 misnamed · **R12 correctly named, about a different world.**
+
+### The disclosure obligation I would not have written this morning
+**Frame provenance**, emitted as `SPLIT-DEVICE` rather than reconciled. Three reasons it is
+tonight's: this morning I thought a device label was a label (it is an index into an unstated
+ordering); this morning the two upload accountings had not yet disagreed by 15.2 s while both being
+correct; and this morning I would have written it as *"say which device"*, which is **advice, and
+advice does not survive transit**. So it is a state the artifact emits. **Every way of not knowing
+gets a name a machine can print — `UNMEASURED`, `UNWIRED`, `UNOBSERVABLE`, `SPLIT-DEVICE` — because
+prose is where knowledge of a caveat goes to die.** By now the family is the method.
+
+Plus a seventh and positive one: **independent corroboration is stated, not reconstructed.** Switch
+span-derived 98.0%, Tank counter-derived 95.8-98.4%, one quantity, two authors. That is the only
+thing that has caught anything this week.
+
+### Carry forward
+- When code and document disagree, ask what could have told us — usually nothing, which is the bug.
+- Before naming an instrument in a criterion, ask whether its value can vary in the configuration
+  the criterion will be assessed in.
+- A rate obligation needs a series; a gate needs a value. Do not swap them.
+- Two hypotheses of mine died tonight in someone else's table (pipeline lookup, descriptor alloc:
+  0.4% and 0.3%). Cheap. Publish suspects early so they can be killed by data instead of by time.
