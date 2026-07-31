@@ -314,3 +314,84 @@ so it lands only through criterion 10's gate.
 - When someone says a file is wired, ask which entry point.
 - The no-op case of any transform must be an explicit failure state, written down on day one.
 - On a good day, check which rows the good news does **not** touch, and say so first.
+
+---
+
+## Session 25 — 2026-07-30T20:58:11-07:00 — R11: the instrument that is called, correct, and misnamed
+
+**Dispatched four hours after R10, by a specimen R10 certifies clean.** Tank found that the 68.3%
+"command-buffer recording" figure — which I had built an M1 criterion on and the coordinator had
+broadcast to the whole team — **is upload**. `Phase::Record` is an *inclusive* interval opened
+before `vkBeginCommandBuffer`; the host staging memcpy runs inside it and reports through
+`Tracer::record_transfer` into `phase_us[Upload]`, deliberately emitting no `ph:"X"` span to avoid
+double-counting. The coordinator's table aggregated `ph:"X"` spans, so it **structurally could not
+see upload**. Verified in-tree myself (`rust/src/trace.rs`, read-only). Upload is **95.8-98.4% of
+the record phase**; real recording is **1-3% of wall**. The dominant cost is the EP re-uploading
+the entire weight set every inference: **1997.6 MiB/inference, ratio 1.0002, linear over 1/2/3
+runs, in:out 2481:1**.
+
+### RULING — R11, a new rule, not an R10 amendment
+I rejected the coordinator's proposed cut (*"children invisible to the aggregation"*), because
+invisibility is a property of the reader and the rule has to bind the writer. The cut is
+**inclusive vs exclusive extent**. R11: **a measurement's name is not its definition; a phase or
+counter must declare its extent, a flat table is an assertion of disjointness, the parts are summed
+against a whole measured by a *different* instrument with the residual published, and any row above
+50% has its name checked against its content.**
+
+**Why a new rule.** R10's obligation is *see an artifact*. Satisfying it here changes nothing — the
+artifact was seen, was correct, and was believed. The failure is downstream of observation, at
+interpretation. Different failure, different remedy, different number.
+
+**The load-bearing clause is the independent whole.** The old table summed to 99.0% and *appeared
+to close*, because the missing cost was inside a row, so the residual was zero by construction. An
+identity that cannot go red is R9's specimen restated in arithmetic.
+
+The register now reads: **R6 manufactured a number · R7 manufactured a negative · R9 sound
+instruments jointly silent · R10 never called · R11 called, correct, misnamed.** R11 is the hardest
+because every check we have passes.
+
+### The tally did not move — and that is the result, not an absence of one
+Six met / four partial / two not met, of twelve. Criterion 12's wiring census, as specified this
+morning, **would have certified `Phase::Record`**, so I amended it: extent declaration, the
+decomposition identity against an independent whole, and the name-content check. **Criterion 12
+changed; the tally did not, because 12 was never claimed met.** A criterion strengthened while
+still open costs nothing and retracts nothing. Had I recorded it met at 19:05 I would be reopening
+it at 21:00, on the seventh consecutive day of reopening a met criterion. **That is the argument
+for not closing rows early, stated as evidence rather than as caution.**
+
+### R6 amendment 4 — the device labels, not a new register entry
+`enumerate_capable_devices()` sorts best-first, `select_device` indexes the sorted list,
+`epctl --probe-loader` prints unsorted enumeration order. Two index spaces, one printout.
+**`DEVICE=0` is the RTX 4060; `DEVICE=1` is the Iris Xe.** Every device label written on
+2026-07-30, mine included, is backwards, and the "Intel beats the discrete 4060" finding dissolves.
+It is R6's shape exactly — our own tooling manufactured the number — so it is an amendment, not a
+new number. The rule it adds: **a result surprising enough to be a discovery is first a reason to
+check the instrument. Surprise is a free instrument check and we spent it on celebration.**
+
+### The disclosure obligation stands, and got stronger
+Asked directly. It stands. The phase decomposition was wrong by 50x while the wall-clock ratio
+(3.1x / 3.7x) was correct — **because the ratio has no internal structure to misattribute.**
+Generalised into §10.0: *a metric's robustness is inversely proportional to the number of naming
+decisions between the measurement and the reader; decompose to diagnose, report the coarse
+invariant.* Two binding consequences: a decomposition may accompany the ratio but never replace it
+or lead, and it is publishable only with its R11 identity check. **Coarse honest over fine
+misleading, on the record as a preference and not only as a rule.**
+
+### Also recorded
+- **M1's lead performance criterion corrected** from recording amortisation to **weight residency**
+  (`device_upload_bytes`/inference < 1% of constant-initializer bytes; today 1.0002), with the
+  anti-gaming interlock: admissible only at or above last-published coverage, with `MATCH`.
+  Recording amortisation survives as secondary on its own justification (`ENGINE.md` §6.1, R6 rule
+  1) — it was never propped up by the bad number, which is why it did not fall with it.
+- **The sequencing ruling is unchanged and its subject is not.** Every clause survived substituting
+  "weight upload" for "recording" — correct for a sequencing ruling, and a warning sign had it been
+  a technical one. Owner moved from Tank to Switch.
+- **Tank reported his own feature as not capturing the prize** — his device-backed allocation is a
+  mirror, not a move; staging stays authoritative, `alloc_device_authoritative_spans` is still 0 —
+  and handed the real fix to someone else's file. Recorded by name in §10 sequencing.
+
+### Carry forward
+- Ask of every table: which rows are inclusive of which other rows?
+- A decomposition that closes to ~100% with no independently-measured whole has proved nothing.
+- Any number I am about to quote twice, I sum against a clock first.
+- When a result is implausible, suspect the label before the physics.
