@@ -1196,3 +1196,34 @@ NVIDIA RTX 4060 (selector 0): period=1.0, validBits=64 — both hazards indistin
 - Lane gap: 📋 written to inbox for Trinity
 - Quiet-machine cache benchmark: PENDING (coordinator offered to idle other agents — say the word)
 - lloc_device_authoritative_spans: still 0 (session uses its own VkBuffers for weight cache, not ORT allocator handles — architectural constraint documented)
+
+---
+
+## Session 33 - Cache byte sweep confirms 2642x reduction; two-VkDevice flag (2026-07-30T22:06:01-07:00)
+
+**Context:** Merged origin/main (692e7d0). Coordinator claimed the cache is not reducing upload, based on seeing cmd_upload 15197.8 ms with 661 subgraph spans. Task: verify via byte count (deterministic, immune to CPU contention), not wall time.
+
+**D-S33-01 - Measurement instrument choice:**
+Used tracer vulkan.transfer_bytes counter events (from t.record_transfer(Transfer::Upload, uploaded_bytes) in session.rs). The allocator counters (alloc_staged_bytes, alloc_device_upload_bytes) both read 0 on all runs - they do not observe session staging. This is a named R11 exposure (two upload accountings, one structurally blind). The tracer path is the correct instrument: uploaded_bytes directly accumulates bytes from the non-cached memcpy loop; cached entries skip the loop via `if stg.borrowed { continue; }` and do not add to uploaded_bytes.
+
+**D-S33-02 - Per-inference upload byte sweep (NVIDIA, device 0, build cdcc349):**
+
+Inference 0 (cold):  33 calls, 1997.596 MiB - full weight set
+Inferences 1-13 (warm): 33 calls each, 0.756 MiB each - activations only
+
+Pre-cache baseline (Tank sweep): 1/2/3 runs = 1997.60 / 3995.19 / 5992.79 MiB - exactly linear.
+Post-cache:              1/2/3 runs = 1997.6 / 1998.4 / 1999.1 MiB  - flat after cold.
+Reduction: 1997.596 -> 0.756 MiB per warm inference = 2642x.
+
+The 0.756 MiB warm residual is 33 subgraphs x ~24 KB activation tensors - correct; small tensors (< 32 KB) are intentionally not cached (seq=1 inputs are runtime-variable).
+
+Discrepancy with coordinator observation: coordinator saw cmd_upload 15197.8 ms with 661 spans - inconsistent with active cache. Likely: stale DLL from before cdcc349, or wrong library path. Cannot resolve without knowing which binary the coordinator ran.
+
+**D-S33-03 - Two-VkDevice architectural flag (written to inbox):**
+alloc_device_authoritative_spans is structurally 0: Tank's device-backed allocator uses its own VkDevice, separate from the session VkDevice. Cross-device VkBuffer access is not permitted at the Vulkan API level. Not solving unilaterally; flagged to coordinator/Morpheus for ruling. Three options: share VkDevice, external memory import (VK_KHR_external_memory), or accept the gap at M0 (weight cache captures most of the residency benefit anyway).
+
+**State at end of session:**
+- origin/main merge: clean (426 tests, 0 failures)
+- Cache byte verification: 2642x reduction confirmed on NVIDIA (tracer instrument)
+- Two-VkDevice flag: written to inbox
+- Quiet-machine wall-clock before/after: coordinator offer still open
