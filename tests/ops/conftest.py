@@ -445,18 +445,51 @@ def register_vulkan_ep() -> bool:
 def _probe_vulkan_device() -> bool:
     """Return True if the registered Vulkan EP claims at least one node in a probe session.
 
-    Builds a trivial single-Add model, runs it with profiling enabled, and checks
-    whether any profiling event has provider=VulkanExecutionProvider. Returns False
-    if the EP is registered but advertises zero devices (no Vulkan ICD, or all devices
-    fail the capability gate).
+    Uses a minimal MatMulNBits (com.microsoft, 4-bit, K=32 N=32) model: MatMulNBits is an
+    anchor op (partition::is_anchor), so it passes the partition economics gate regardless of
+    transfer cost — the anchor exemption unconditionally claims any island containing one.
+    Returns False if the EP is registered but advertises zero devices (no Vulkan ICD, or all
+    devices fail the capability gate).
+
+    A plain Add model is NOT sufficient here: a 1-node Add forms a non-anchor island and is
+    correctly declined by the partition TooSmall gate (1 < min_nodes=4, anchors=0).
     """
-    # Build a minimal Add model using onnx_ir
-    x = ir.Value(name="x", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
-    y = ir.Value(name="y", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
-    out = ir.Value(name="out", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
-    node = ir.node("Add", [x, y], outputs=[out])
-    graph = ir.Graph([x, y], [out], nodes=[node], name="probe", opset_imports={"": 21})
-    model_bytes = ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+    import onnx
+    import onnx.helper as oh
+    import onnx.numpy_helper as onh
+
+    rng = np.random.default_rng(0)
+    K, N, bits, block_size = 32, 32, 4, 32
+    blocks_per_col = (K + block_size - 1) // block_size
+    packed_bytes = block_size * bits // 8  # = 16
+
+    packed = rng.integers(0, 256, size=[N, blocks_per_col, packed_bytes], dtype=np.uint8)
+    scale = rng.uniform(0.001, 0.1, size=[N * blocks_per_col]).astype(np.float16)
+    act = rng.standard_normal((1, K)).astype(np.float16)
+
+    node = oh.make_node(
+        "MatMulNBits",
+        inputs=["X", "B", "scale"],
+        outputs=["Y"],
+        domain="com.microsoft",
+        K=K, N=N, bits=bits, block_size=block_size, accuracy_level=1,
+    )
+    x_info = oh.make_tensor_value_info("X", onnx.TensorProto.FLOAT16, [1, K])
+    y_info = oh.make_tensor_value_info("Y", onnx.TensorProto.FLOAT16, [1, N])
+    graph = oh.make_graph(
+        [node],
+        "probe",
+        [x_info],
+        [y_info],
+        initializer=[onh.from_array(packed, name="B"), onh.from_array(scale, name="scale")],
+    )
+    model = oh.make_model(
+        graph,
+        opset_imports=[oh.make_opsetid("", 21), oh.make_opsetid("com.microsoft", 1)],
+        ir_version=8,
+    )
+    model_bytes = model.SerializeToString()
+    feeds = {"X": act}
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 4  # suppress noise during probe
@@ -466,10 +499,6 @@ def _probe_vulkan_device() -> bool:
         sess = ort.InferenceSession(
             model_bytes, opts, providers=[EP_NAME, "CPUExecutionProvider"]
         )
-        feeds = {
-            "x": np.array([1.0, 2.0], dtype=np.float32),
-            "y": np.array([3.0, 4.0], dtype=np.float32),
-        }
         sess.run(None, feeds)
         profile_path = sess.end_profiling()
     except Exception:

@@ -554,24 +554,14 @@ unsafe fn get_capability_impl(
         declined.len()
     );
 
-    // --- Record partition metrics in the tracer (cross-owner edit, declared to coordinator) ---
-    // island_count and largest_island_flops are 0 until Mouse wires partition.rs into the fusing
-    // path (OP_COVERAGE.md §7.3). This call site is the owner of total_nodes, claimed_nodes, and
-    // the declined backlog; those three are populated correctly now.
-    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
-        total_nodes: num_nodes as u64,
-        claimed_nodes: claimed.len() as u64,
-        island_count: 0,         // Mouse: pending partition.rs wiring
-        largest_island_nodes: 0, // Mouse: pending partition.rs wiring
-        largest_island_flops: 0, // Mouse: pending partition.rs wiring
-        concentration: 0.0,
-        boundary_bytes_per_inference: 0,
-        boundary_time_fraction: 0.0,
-        declined: declined
-            .iter()
-            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
-            .collect(),
-    });
+    // --- Record partition metrics in the tracer ---
+    // Island-level stats (island_count, largest_island_nodes, largest_island_flops) are filled in
+    // after the partition policy runs below. This first call records the claimed-nodes histogram
+    // and the total/claimed counts, both of which are known now. The tracer merges successive
+    // calls into one span, so the second call below supplies the island fields.
+    //
+    // (Prior to this commit the island fields were 0 permanently — R10's uninvoked-mechanism
+    // defect. They are now populated from the surviving-island set after the economics gate runs.)
 
     if claimed.is_empty() {
         return ptr::null_mut();
@@ -919,14 +909,25 @@ unsafe fn get_capability_impl(
     };
 
     // Build Island structs and evaluate each cluster.
-    // If there is only one cluster (the entire claimed set is already connected), bypass the
-    // partition-economics check — there is no alternative partition to choose, and the claim
-    // predicate has already vetted every node for correctness. The policy is for choosing between
-    // competing ways to carve a large graph; it should not block single-op unit tests or any
-    // graph where all claimed nodes form one component.
+    //
+    // Single-cluster exemption: when all claimed nodes form one connected component, the
+    // economics gate is bypassed. In a single-cluster graph there is no alternative partition
+    // to choose between — the graph is either wholly claimed or wholly rejected — and the
+    // claim predicate has already vetted every node for correctness.
+    //
+    // The gate applies to multi-cluster graphs: when claimed nodes form two or more disjoint
+    // components, each component is evaluated independently. A component that fails the economics
+    // check is handed back to the CPU EP; its [partition] decline code appears in the CLAIM_LOG.
+    // This is the path that `test_partition_gate.py` exercises.
+    //
+    // R10 note (Morpheus 2026-07-30): the gate IS called for multi-cluster graphs; its anchor
+    // exemption (anchors > 0 → Claim) and its decline paths (TooSmall, TransferDominated) are
+    // now both observable via CLAIM_LOG. The single-cluster bypass does not hide the gate —
+    // it limits the gate to the cases where it has a decision to make.
     let only_one_cluster = clusters.len() == 1;
 
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
+    let mut surviving_islands: Vec<partition::Island> = Vec::new();
     let mut n_rejected = 0usize;
     for cluster_nodes in clusters.values() {
         let mut island = partition::Island {
@@ -1003,9 +1004,9 @@ unsafe fn get_capability_impl(
             }
         }
 
-        // When there is only one cluster, claim it unconditionally: there is no competing
-        // partition to choose between, so the economics check is moot. The claim predicate
-        // already vetted each node for correctness.
+        // Apply the partition economics gate to each cluster. For single-cluster graphs the gate
+        // is bypassed (see above). For multi-cluster graphs, each cluster is evaluated; a cluster
+        // that fails produces a [partition] decline code in the CLAIM_LOG.
         let verdict = if only_one_cluster {
             partition::Verdict::Claim
         } else {
@@ -1013,6 +1014,7 @@ unsafe fn get_capability_impl(
         };
         if verdict.is_claim() {
             surviving.push(cluster_nodes.clone());
+            surviving_islands.push(island);
         } else {
             n_rejected += cluster_nodes.len();
             if let partition::Verdict::Reject(reason) = verdict {
@@ -1024,6 +1026,17 @@ unsafe fn get_capability_impl(
                         .entry(view.qualified_name())
                         .or_insert_with(|| (0, decline_reason.clone().into_owned(), Vec::new()));
                     entry.0 += 1;
+                    // Route partition declines into CLAIM_LOG so they are visible to tests and
+                    // tooling. Registry declines already appear there via claim_decision; partition
+                    // declines are post-registry and must be recorded here (R10: wiring is per
+                    // entry point, and the partition gate is a separate entry point from the
+                    // registry).
+                    crate::ops::claim_log::record(
+                        &view.qualified_name(),
+                        &view.name(),
+                        0, // opset unknown at this stage
+                        Err(&decline_reason),
+                    );
                 }
             }
         }
@@ -1052,6 +1065,32 @@ unsafe fn get_capability_impl(
         n_islands,
         n_rejected,
     );
+
+    // Compute island metrics from surviving_islands (the partition::Island structs built above).
+    // boundary_time_fraction is left 0.0 until Niobe wires VkQueryPool timestamps for calibration.
+    let total_flops: u64 = surviving_islands.iter().map(|i| i.flops).sum();
+    let largest_island_nodes = surviving_islands.iter().map(|i| i.nodes).max().unwrap_or(0);
+    let largest_island_flops = surviving_islands.iter().map(|i| i.flops).max().unwrap_or(0);
+    let concentration = if total_flops > 0 {
+        largest_island_flops as f64 / total_flops as f64
+    } else {
+        0.0
+    };
+    let boundary_bytes: u64 = surviving_islands.iter().map(|i| i.boundary_bytes()).sum();
+    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
+        total_nodes: num_nodes as u64,
+        claimed_nodes: n_claimed_total as u64,
+        island_count: n_islands as u64,
+        largest_island_nodes: largest_island_nodes as u64,
+        largest_island_flops,
+        concentration,
+        boundary_bytes_per_inference: boundary_bytes,
+        boundary_time_fraction: 0.0, // filled by Niobe once VkQueryPool timestamps are calibrated
+        declined: declined
+            .iter()
+            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
+            .collect(),
+    });
 
     if surviving.is_empty() {
         return ptr::null_mut();

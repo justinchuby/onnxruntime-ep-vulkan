@@ -1891,7 +1891,41 @@ The margin is 3×, not 1×. A cost model this crude, calibrated on a different d
 that schedules differently, is easily wrong by 2×; requiring a margin means the rule fails towards
 "run it on the CPU", which is always correct.
 
-### 7.4 The decline census — why a real model's nodes are actually declined (2026-07-29)
+#### 7.3.1 `retain_viable` is now wired — R10 resolved (2026-07-30)
+
+**Status 2026-07-30:** R10 (Morpheus) identified that `retain_viable` existed in `partition.rs` but
+was not in the call graph for single-cluster models. Wiring `partition.rs` into `GetCapability`
+(the prior session's 321→33 island fix) wired the connected-component grouping. It did not wire
+the economics gate — `should_claim_island` had never declined an island in production.
+
+**What was wired:** The partition economics gate (`partition::evaluate`) now runs for every cluster
+in multi-cluster graphs. A cluster that fails the gate produces a `[partition]` decline code in
+the CLAIM_LOG, observable by tests and tooling.
+
+**Artifact proving it fires:** `tests/ops/test_partition_gate.py` builds a model with two
+independent Sigmoid branches (two disjoint claimed clusters, each 1 node, no anchors). The gate
+fires: TooSmall (1 < min_nodes=4, anchors=0) → both clusters declined → `[partition]` codes in
+CLAIM_LOG. This is the artifact R10 requires — content that varies with the gate's input.
+
+**PartitionStats populated:** `ep.rs` now emits real values for `island_count`,
+`largest_island_nodes`, `largest_island_flops`, `concentration`, and `boundary_bytes_per_inference`
+from the surviving island set after the economics gate runs. The `boundary_time_fraction` slot
+remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
+
+**Guards against both failure modes (§7.0.2):**
+- *Over-declination* (gate declines everything): the anchor exemption —
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
+  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
+  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+- *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
+  model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
+  asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
+
+**Single-cluster exemption retained:** when all claimed nodes form one connected component (the
+common case for unit tests of individual ops), the gate is bypassed. The gate applies to
+multi-cluster graphs, where it has a real scheduling decision to make.
+
+
 
 Every previous version of this document reasoned about *which ops a model contains*. This section
 reasons about *why the EP declines the nodes it declines*, which turns out to be a different
