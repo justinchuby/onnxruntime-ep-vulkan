@@ -223,15 +223,20 @@ impl Phase {
             }
             Phase::DescAlloc => {
                 "host/sub-record: vkCreateDescriptorPool + vkAllocateDescriptorSets + \
-                 vkUpdateDescriptorSets per dispatch; emitted once per kernel per Compute call"
+                 vkUpdateDescriptorSets per dispatch; emitted once per kernel per Compute call. \
+                 NESTED INSIDE `record` — already counted there, do not add to the sibling total"
             }
             Phase::PipelineLookup => {
                 "host/sub-record: PipelineCache::get_or_create — hashmap hit or \
-                 vkCreateComputePipelines on first encounter; emitted once per kernel per Compute call"
+                 vkCreateComputePipelines on first encounter; emitted once per kernel per Compute \
+                 call. NESTED INSIDE `record` — already counted there, do not add to the sibling \
+                 total"
             }
             Phase::CmdUpload => {
                 "host/sub-record: CPU memcpy into staging + vkCmdCopyBuffer for all inputs; \
-                 emitted once per Compute call; isolates transfer cost from API overhead"
+                 emitted once per Compute call; isolates transfer cost from API overhead. NESTED \
+                 INSIDE `record` — already counted there, and it OVERLAPS `upload`, which brackets \
+                 the same memcpy: never add the two nested rows together"
             }
             Phase::Submit => {
                 "HOST-ONLY: vkQueueSubmit returns before any shader runs — this is NOT GPU time"
@@ -267,7 +272,17 @@ impl Phase {
             // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
             // not a policy, and it must be re-checked if that guard moves.
             Phase::Upload | Phase::Readback => Some(Phase::Record),
-            _ => None,
+            // Switch's per-dispatch sub-phases, added in `692e7d0`. They are documented in their
+            // own caveats as "sub-record" and they are opened inside the Record guard.
+            Phase::DescAlloc | Phase::PipelineLookup | Phase::CmdUpload => Some(Phase::Record),
+            // EXHAUSTIVE ON PURPOSE — do not add a `_` arm. A catch-all here classifies every
+            // future phase as a top-level sibling by default, which means a new sub-phase gets
+            // silently added into SIBLING TOTAL and double-counts its parent. That is how three
+            // phases arrived this session: they merged cleanly and would have been summed.
+            // Make the compiler ask.
+            Phase::Compile | Phase::Prepack | Phase::Record | Phase::Submit | Phase::FenceWait => {
+                None
+            }
         }
     }
 
@@ -287,11 +302,14 @@ impl Phase {
     }
 
     /// Every phase, in reporting order.
-    pub const ALL: [Phase; 7] = [
+    pub const ALL: [Phase; 10] = [
         Phase::Compile,
         Phase::Prepack,
         Phase::Upload,
         Phase::Record,
+        Phase::DescAlloc,
+        Phase::PipelineLookup,
+        Phase::CmdUpload,
         Phase::Submit,
         Phase::FenceWait,
         Phase::Readback,
@@ -1171,16 +1189,19 @@ impl VulkanTracer {
             // would have had to be remembered in three places, and the one that gets forgotten is
             // the one that prints.
             let get = |p: Phase| s.phase_us.get(&p).copied().unwrap_or((0, 0));
-            let child_us: u64 = Phase::ALL
-                .iter()
-                .filter(|p| !p.is_sibling())
-                .map(|p| get(*p).0)
-                .sum();
+            // TRANSFER IS NAMED, NOT INFERRED FROM "IS A CHILD". `desc_alloc` and
+            // `pipeline_lookup` are also children of `record` and are not transfer; summing every
+            // child under the label "xfer" would be the same misnaming one level down.
+            let child_us: u64 = get(Phase::Upload).0 + get(Phase::Readback).0;
             let sibling_us: u64 = Phase::ALL
                 .iter()
                 .filter(|p| p.is_sibling())
                 .map(|p| get(*p).0)
                 .sum();
+            // `upload` (record_transfer totals) and `cmd_upload` (Switch's per-Compute sub-span)
+            // can bracket the same memcpy, so the nested rows are NOT disjoint and are never
+            // added together here.
+            let overlap = get(Phase::CmdUpload).1 > 0 && get(Phase::Upload).1 > 0;
 
             out.push_str(
                 "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
@@ -1211,12 +1232,19 @@ impl VulkanTracer {
                     .join("+")
             ));
             out.push_str(&format!(
-                "              {:<15} {:>10} us  ({:.1}% of sibling total) — host staging copy, \
+                "              {:<15} {:>10} us  ({:.1}% of sibling total) — upload+readback only, \
                  already counted inside `record`\n",
                 "of which xfer",
                 child_us,
                 100.0 * child_us as f64 / (sibling_us.max(1)) as f64,
             ));
+            if overlap {
+                out.push_str(
+                    "              NOTE: the nested rows are NOT disjoint — `upload` and \
+                     `cmd_upload` can bracket the same memcpy. Never add the nested rows to each \
+                     other; each is only comparable to its parent `record`.\n",
+                );
+            }
         }
 
         if s.gpu_measured {
@@ -1622,6 +1650,31 @@ mod tests {
     /// exclusion mechanism was present and its content was false. This is the falsifier for the
     /// content: if a phase is nested and its caveat stops saying so, or a phase stops being
     /// declared nested while `vk::session` still brackets it, this goes red.
+    /// Switch's per-dispatch sub-phases merged in cleanly and, under the previous `_ => None`
+    /// catch-all, would have been classified as top-level siblings and added into SIBLING TOTAL —
+    /// double-counting their own parent. This is the falsifier for that whole class: every phase
+    /// whose caveat calls itself a sub-phase must have a parent.
+    #[test]
+    fn a_sub_record_phase_can_never_be_counted_as_a_sibling() {
+        for p in Phase::ALL {
+            if p.caveat().contains("sub-record") {
+                assert_eq!(
+                    p.nested_in(),
+                    Some(Phase::Record),
+                    "{p:?} describes itself as sub-record but is not modelled as nested"
+                );
+                assert!(!p.is_sibling(), "{p:?} would be summed into SIBLING TOTAL");
+            }
+        }
+        assert!(!Phase::CmdUpload.is_sibling());
+        assert!(!Phase::DescAlloc.is_sibling());
+        assert!(!Phase::PipelineLookup.is_sibling());
+        assert!(
+            Phase::CmdUpload.caveat().contains("OVERLAPS `upload`"),
+            "cmd_upload and upload bracket the same memcpy; the artifact must say so"
+        );
+    }
+
     #[test]
     fn nested_phases_are_declared_both_structurally_and_in_their_caveat() {
         assert_eq!(Phase::Upload.nested_in(), Some(Phase::Record));
