@@ -371,6 +371,33 @@ impl Barriers {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Timestamp helper — the only other call site permitted to name PipelineStageFlags
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Record a `vkCmdWriteTimestamp` at the `COMPUTE_SHADER` pipeline stage.
+///
+/// Centralised here because `PipelineStageFlags` may only appear in this module (layering rule
+/// 7.5). The caller (`timestamp.rs`) passes in the ash device, command buffer, query pool, and
+/// index but must not name the stage flag itself.
+///
+/// # Safety
+/// - `cmd` must be in the recording state.
+/// - `pool` must be a live `VK_QUERY_TYPE_TIMESTAMP` pool.
+/// - `idx` must be within the pool's query count.
+#[inline]
+pub(crate) unsafe fn cmd_write_compute_timestamp(
+    ash_device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    pool: vk::QueryPool,
+    idx: u32,
+) {
+    // SAFETY: delegated to caller per the function contract.
+    unsafe {
+        ash_device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, pool, idx);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Sync2Backend implementation
 // ──────────────────────────────────────────────────────────────────────────────
 

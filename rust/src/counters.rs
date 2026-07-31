@@ -152,6 +152,16 @@ static SUBGRAPHS_STUB: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
+/// Total nodes that passed the claim predicate across all `GetCapability` calls.
+///
+/// JSON-only (not in the C ABI struct). Together with `islands_offered`, this is the
+/// **partition falsifier**: `islands_offered == claimed_nodes` means every node is its own
+/// island — partitioning produced no merges.
+static CLAIMED_NODES: AtomicU64 = AtomicU64::new(0);
+/// Islands offered to ORT across all `GetCapability` calls (surviving partition evaluation).
+///
+/// JSON-only. See [`CLAIMED_NODES`].
+static ISLANDS_OFFERED: AtomicU64 = AtomicU64::new(0);
 
 /// `Relaxed` is correct here and the reasoning is worth stating rather than assuming.
 ///
@@ -183,7 +193,16 @@ pub fn record_compute_failure() {
     COMPUTE_FAILURES.fetch_add(1, ORD);
 }
 
-/// Record `n` dispatches that ran to fence completion, and write the snapshot file if requested.
+/// Record a `GetCapability` call's partition results.
+///
+/// `claimed` is the number of nodes that passed `claim_decision`; `islands` is the number of
+/// connected clusters offered to ORT after partition evaluation. Together they form the
+/// **partition falsifier**: when `islands == claimed` and both are `> 1`, partitioning produced
+/// no merges — every node is its own island.
+pub fn record_capability(claimed: u64, islands: u64) {
+    CLAIMED_NODES.fetch_add(claimed, ORD);
+    ISLANDS_OFFERED.fetch_add(islands, ORD);
+}
 ///
 /// Writing on every successful dispatch means: a crash *after* real work still leaves evidence of
 /// that work, and successive reads of the file always reflect the latest accumulated state rather
@@ -218,6 +237,8 @@ pub fn reset() {
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
+    CLAIMED_NODES.store(0, ORD);
+    ISLANDS_OFFERED.store(0, ORD);
 }
 
 impl VulkanEpCounters {
@@ -238,10 +259,12 @@ impl VulkanEpCounters {
     /// "absent" from "UNMEASURED" — absence and UNMEASURED have the same meaning (R7: absence of
     /// an instrument is not a negative result), but the explicit value makes the state visible.
     pub fn to_json_with_equiv(&self, equiv: &str) -> String {
+        let claimed = CLAIMED_NODES.load(ORD);
+        let islands = ISLANDS_OFFERED.load(ORD);
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
-             \"dispatches_executed\": {},\n  \
+             \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -250,6 +273,8 @@ impl VulkanEpCounters {
             self.compute_calls,
             self.compute_failures,
             self.dispatches_executed,
+            claimed,
+            islands,
             equiv,
         )
     }

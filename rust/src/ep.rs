@@ -18,13 +18,14 @@
 //!   uploads inside `Compute` (`DESIGN.md` §6.3, decisions.md "Phased memory model").
 //! * `Compile` is unreachable while nothing is claimed, and says so loudly rather than pretending.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
 use crate::counters;
 use crate::engine::{CompileRecorder, CompiledKernel, VulkanSession};
 use crate::logging;
+use crate::ops::partition;
 use crate::registry::{self, NodeView};
 use crate::sys::{self, ort};
 
@@ -326,6 +327,9 @@ impl Drop for VulkanEp {
         // allocator arena, command/descriptor pools, pipeline cache) all hang off this struct and
         // are destroyed by this drop, in field order, exactly once.
         log::debug!("VulkanExecutionProvider session released");
+        // Export the Chrome Trace JSON. The tracer accumulates across sessions and rewrites the
+        // full file on each EP teardown; the final teardown leaves the complete trace on disk.
+        crate::trace::tracer().export();
     }
 }
 
@@ -550,18 +554,510 @@ unsafe fn get_capability_impl(
         declined.len()
     );
 
+    // --- Record partition metrics in the tracer (cross-owner edit, declared to coordinator) ---
+    // island_count and largest_island_flops are 0 until Mouse wires partition.rs into the fusing
+    // path (OP_COVERAGE.md §7.3). This call site is the owner of total_nodes, claimed_nodes, and
+    // the declined backlog; those three are populated correctly now.
+    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
+        total_nodes: num_nodes as u64,
+        claimed_nodes: claimed.len() as u64,
+        island_count: 0,         // Mouse: pending partition.rs wiring
+        largest_island_nodes: 0, // Mouse: pending partition.rs wiring
+        largest_island_flops: 0, // Mouse: pending partition.rs wiring
+        concentration: 0.0,
+        boundary_bytes_per_inference: 0,
+        boundary_time_fraction: 0.0,
+        declined: declined
+            .iter()
+            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
+            .collect(),
+    });
+
     if claimed.is_empty() {
         return ptr::null_mut();
     }
 
-    // --- fuse ---
-    // Claimed nodes are grouped into maximal convex connected clusters before fusing (a
-    // non-convex fusion creates a cycle ORT rejects). With an empty registry there is nothing to
-    // cluster, so the clustering pass lands together with the first claimable op; until then, one
-    // cluster per claimed node is trivially convex and correct.
+    // --- build reachability structures for convexity enforcement ---
     //
-    // TODO(mouse/tank, M1): port the union-find + reachability-bitset clustering from the
-    // reference EP and replace this per-node grouping.
+    // Convexity requirement (ORT §EP): a fused subgraph must be convex — for any two nodes A, B
+    // in the island, every path from A to B in the original graph must stay entirely within the
+    // island. Equivalently: no unclaimed node U may lie "between" A and B, meaning U is reachable
+    // from A AND B is reachable from U.
+    //
+    // We precompute:
+    //   unclaimed_desc[claimed_node]   = set of unclaimed nodes reachable from claimed_node
+    //   claimed_desc[unclaimed_node]   = set of claimed nodes reachable from unclaimed_node
+    //
+    // Two claimed nodes A and B can coexist in the same island iff:
+    //   ∀ U ∈ unclaimed_desc[A]: B ∉ claimed_desc[U]
+    //   ∀ U ∈ unclaimed_desc[B]: A ∉ claimed_desc[U]
+    //
+    // The check is applied AT CLUSTER LEVEL on each proposed merge to guard against transitivity
+    // failure (A∪B valid, B∪C valid, but A∪B∪C non-convex because U is between A and C).
+
+    // Build complete forward adjacency for ALL graph nodes (claimed + unclaimed, excluding
+    // graph-level inputs/outputs which have no corresponding OrtNode entry in `nodes`).
+    // SAFETY: `api` live; all nodes in `nodes` are live graph nodes for the duration of this call.
+    let mut all_fwd: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut all_node_by_output: HashMap<String, usize> = HashMap::new();
+    for &node in &nodes {
+        if node.is_null() {
+            continue;
+        }
+        all_fwd.entry(node as usize).or_default();
+        // SAFETY: `api` is live; node is a live graph node for this call.
+        for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
+            let name = unsafe { value_info_name(api, slot) };
+            if !name.is_empty() {
+                all_node_by_output.insert(name, node as usize);
+            }
+        }
+    }
+    for &node in &nodes {
+        if node.is_null() {
+            continue;
+        }
+        // SAFETY: `api` is live; node is a live graph node for this call.
+        for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
+            let name = unsafe { value_info_name(api, slot) };
+            if let Some(&prod) = all_node_by_output.get(&name) {
+                all_fwd.entry(prod).or_default().push(node as usize);
+            }
+        }
+    }
+
+    let claimed_raw: std::collections::HashSet<usize> =
+        claimed.iter().map(|&n| n as usize).collect();
+    let unclaimed_set: std::collections::HashSet<usize> = nodes
+        .iter()
+        .filter(|&&n| !n.is_null() && !claimed_raw.contains(&(n as usize)))
+        .map(|&n| n as usize)
+        .collect();
+
+    // BFS from `start` collecting all nodes in `target` reachable through the forward graph.
+    // Traverses both claimed and unclaimed nodes (it is the *target* filter that restricts output,
+    // not which intermediate nodes are visited).
+    fn bfs_into(
+        start: usize,
+        fwd: &HashMap<usize, Vec<usize>>,
+        target: &std::collections::HashSet<usize>,
+    ) -> std::collections::HashSet<usize> {
+        let mut found = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(curr) = stack.pop() {
+            if !visited.insert(curr) {
+                continue;
+            }
+            if target.contains(&curr) {
+                found.insert(curr);
+            }
+            if let Some(succs) = fwd.get(&curr) {
+                stack.extend_from_slice(succs);
+            }
+        }
+        found
+    }
+
+    // For each claimed node: unclaimed nodes reachable from it.
+    let mut unclaimed_desc: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
+    for &cn in &claimed_raw {
+        let desc = bfs_into(cn, &all_fwd, &unclaimed_set);
+        if !desc.is_empty() {
+            unclaimed_desc.insert(cn, desc);
+        }
+    }
+    // For each unclaimed node: claimed nodes reachable from it.
+    let mut claimed_desc: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
+    for &un in &unclaimed_set {
+        let desc = bfs_into(un, &all_fwd, &claimed_raw);
+        if !desc.is_empty() {
+            claimed_desc.insert(un, desc);
+        }
+    }
+
+    // Coexistence predicate: can two claimed node raw-pointers A and B be in the same island?
+    let empty_reach: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let can_coexist = |a: usize, b: usize| -> bool {
+        // Check: is any unclaimed node U between A and B?
+        for &u in unclaimed_desc.get(&a).unwrap_or(&empty_reach) {
+            if claimed_desc.get(&u).is_some_and(|s| s.contains(&b)) {
+                return false; // U reachable from A; U can reach B → non-convex
+            }
+        }
+        for &u in unclaimed_desc.get(&b).unwrap_or(&empty_reach) {
+            if claimed_desc.get(&u).is_some_and(|s| s.contains(&a)) {
+                return false; // U reachable from B; U can reach A → non-convex
+            }
+        }
+        true
+    };
+
+    // --- cluster claimed nodes into connected islands ---
+    //
+    // Union-find with cluster-level coexistence checking. We maintain an explicit list of members
+    // per cluster so that when merging X and Y we can check ALL pairs (x∈X, y∈Y). This guards
+    // against transitivity failures that a pairwise-only check on the triggering edge would miss.
+    //
+    // "Clean edge" guard: we only attempt a union via a dataflow edge (A→value→B) where `value`
+    // is NOT consumed by any unclaimed node. If it were, an unclaimed node shares that value on a
+    // direct path between A and B, making any island containing them both non-convex.
+    // The clean-edge guard is a fast pre-filter; the coexistence check is the decisive one.
+    let n_claimed = claimed.len();
+    let mut parent: Vec<usize> = (0..n_claimed).collect();
+    // members[i] holds all claimed-array indices in the cluster rooted at i.
+    // Only the root's list is valid; non-root entries are replaced by empty vecs on merge.
+    let mut members: Vec<Vec<usize>> = (0..n_claimed).map(|i| vec![i]).collect();
+
+    // Iterative path-compression find.
+    let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
+        let mut root = x;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        while parent[x] != root {
+            let next = parent[x];
+            parent[x] = root;
+            x = next;
+        }
+        root
+    };
+
+    // Build the "claimed producer" map: output value name → index in `claimed`.
+    // SAFETY: `api` and each claimed node are live for the duration of GetCapability.
+    let mut output_producer: HashMap<String, usize> = HashMap::new();
+    for (i, &node) in claimed.iter().enumerate() {
+        // SAFETY: `api` is live; node is a live graph node for this call.
+        for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
+            let name = unsafe { value_info_name(api, slot) };
+            if !name.is_empty() {
+                output_producer.insert(name, i);
+            }
+        }
+    }
+
+    // Build the "unclaimed consumer" set: value names consumed by at least one UNCLAIMED node.
+    let mut unclaimed_consumers: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for &node in &nodes {
+        if node.is_null() || claimed_raw.contains(&(node as usize)) {
+            continue;
+        }
+        // SAFETY: `api` is live; node is a live graph node for this call.
+        for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
+            let name = unsafe { value_info_name(api, slot) };
+            if !name.is_empty() {
+                unclaimed_consumers.insert(name);
+            }
+        }
+    }
+
+    // Walk each claimed node's inputs; attempt to union with the producing claimed node when:
+    //   1. the connecting value is not consumed by any unclaimed node (clean edge), AND
+    //   2. every pair across the two clusters passes can_coexist (convexity preserved).
+    for (i, &node) in claimed.iter().enumerate() {
+        // SAFETY: `api` is live; node is a live graph node for this call.
+        for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
+            let name = unsafe { value_info_name(api, slot) };
+            if name.is_empty() || unclaimed_consumers.contains(&name) {
+                continue;
+            }
+            let j = match output_producer.get(&name) {
+                Some(&j) => j,
+                None => continue,
+            };
+            let ri = find(&mut parent, i);
+            let rj = find(&mut parent, j);
+            if ri == rj {
+                continue; // already the same cluster
+            }
+            // Check all cross-cluster pairs before committing to the merge.
+            let compatible = members[ri].iter().all(|&a_idx| {
+                let a_raw = claimed[a_idx] as usize;
+                members[rj]
+                    .iter()
+                    .all(|&b_idx| can_coexist(a_raw, claimed[b_idx] as usize))
+            });
+            if !compatible {
+                continue; // merging would produce a non-convex island
+            }
+            // Union-by-size: append the smaller cluster into the larger to bound tree depth.
+            let (keep, drop_root) = if members[ri].len() >= members[rj].len() {
+                (ri, rj)
+            } else {
+                (rj, ri)
+            };
+            let dropped = std::mem::take(&mut members[drop_root]);
+            members[keep].extend(dropped);
+            parent[drop_root] = keep;
+        }
+    }
+
+    // Collect final clusters.
+    let mut clusters: HashMap<usize, Vec<*const ort::OrtNode>> = HashMap::new();
+    for (i, &node) in claimed.iter().enumerate() {
+        let root = find(&mut parent, i);
+        clusters.entry(root).or_default().push(node);
+    }
+
+    // --- apply partition policy ---
+    //
+    // Build a lightweight Island for each cluster (flop/byte estimates; exact values come once
+    // Niobe has wired VkQueryPool timestamps). Apply partition::evaluate() to decide whether the
+    // island is worth the boundary round-trip. Rejected islands are handed back to the CPU EP;
+    // their node op-types are folded into the existing `declined` histogram.
+    let is_uma = ep.session.as_ref().is_some_and(|s| s.capable.caps.is_uma);
+    let transfer_model = if is_uma {
+        partition::TransferModel::UMA
+    } else {
+        partition::TransferModel::DISCRETE
+    };
+    let policy = partition::Policy::default();
+
+    // Bytes-per-element for common dtypes (conservative fallback: 4).
+    let dtype_bytes = |et: ort::ONNXTensorElementDataType| -> u64 {
+        match et {
+            ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 => 2,
+            ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32 => 4,
+            ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64 => 8,
+            ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8
+            | ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL => 1,
+            _ => 4,
+        }
+    };
+
+    // Estimate boundary bytes for one value-info slot (null = 0).
+    // SAFETY: `api` live, slot borrowed from ORT graph.
+    let slot_bytes = |slot: *const ort::OrtValueInfo| -> u64 {
+        if slot.is_null() {
+            return 0;
+        }
+        // Read type+shape info. Missing shape or unknown dtype → conservative 4096-byte guess.
+        // We only use this for the partition economics check, not for buffer allocation.
+        // SAFETY: `api` is live; reading a fn pointer from the api table is a plain field read.
+        let get_type = unsafe { (*api).GetValueInfoTypeInfo };
+        let Some(get_type) = get_type else {
+            return 4096;
+        };
+        let mut type_info: *const ort::OrtTypeInfo = ptr::null();
+        // SAFETY: slot is live, type_info is an out-pointer.
+        let st = unsafe { get_type(slot, &mut type_info) };
+        if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
+            unsafe { crate::sys::release_status(api, st) };
+            return 4096;
+        }
+        if type_info.is_null() {
+            return 4096;
+        }
+        // SAFETY: `api` is live; reading a fn pointer from the api table is a plain field read.
+        let get_tensor_info = unsafe { (*api).CastTypeInfoToTensorInfo };
+        let Some(get_tensor_info) = get_tensor_info else {
+            return 4096;
+        };
+        let mut tensor_info: *const ort::OrtTensorTypeAndShapeInfo = ptr::null();
+        // SAFETY: type_info is live.
+        let st = unsafe { get_tensor_info(type_info, &mut tensor_info) };
+        if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
+            unsafe { crate::sys::release_status(api, st) };
+            return 4096;
+        }
+        if tensor_info.is_null() {
+            return 4096;
+        }
+        // Read element type and dims.
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
+        let get_et = unsafe { (*api).GetTensorElementType };
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
+        let get_ndim = unsafe { (*api).GetDimensionsCount };
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
+        let get_dims = unsafe { (*api).GetDimensions };
+        let (Some(get_et), Some(get_ndim), Some(get_dims)) = (get_et, get_ndim, get_dims) else {
+            return 4096;
+        };
+        let mut et = ort::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+        // SAFETY: tensor_info is live.
+        if unsafe { get_et(tensor_info, &mut et) }.is_null() {
+            // null status = success
+        } else {
+            return 4096;
+        }
+        let mut ndim: usize = 0;
+        // SAFETY: tensor_info is live.
+        if unsafe { get_ndim(tensor_info, &mut ndim) }.is_null() {
+            // success
+        } else {
+            return 4096;
+        }
+        if ndim == 0 {
+            return dtype_bytes(et); // scalar
+        }
+        let mut dims = vec![0i64; ndim];
+        // SAFETY: tensor_info is live; dims has ndim elements.
+        if unsafe { get_dims(tensor_info, dims.as_mut_ptr(), ndim) }.is_null() {
+            // success
+        } else {
+            return 4096;
+        }
+        let elems: u64 = dims
+            .iter()
+            .map(|&d| if d > 0 { d as u64 } else { 128 }) // unknown dim → conservative 128
+            .product();
+        elems.saturating_mul(dtype_bytes(et))
+    };
+
+    // Build Island structs and evaluate each cluster.
+    // If there is only one cluster (the entire claimed set is already connected), bypass the
+    // partition-economics check — there is no alternative partition to choose, and the claim
+    // predicate has already vetted every node for correctness. The policy is for choosing between
+    // competing ways to carve a large graph; it should not block single-op unit tests or any
+    // graph where all claimed nodes form one component.
+    let only_one_cluster = clusters.len() == 1;
+
+    let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
+    let mut n_rejected = 0usize;
+    for cluster_nodes in clusters.values() {
+        let mut island = partition::Island {
+            nodes: cluster_nodes.len(),
+            ..Default::default()
+        };
+
+        // Value names produced within this cluster — used to distinguish internal edges from
+        // boundary edges when computing output boundary bytes.
+        let mut internal_outputs: HashMap<String, ()> = HashMap::new();
+        for &node in cluster_nodes {
+            // SAFETY: `api` is live; node is a live graph node for this call.
+            for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+                // SAFETY: slot is from node_slots and is valid for this call.
+                let name = unsafe { value_info_name(api, slot) };
+                if !name.is_empty() {
+                    internal_outputs.insert(name, ());
+                }
+            }
+        }
+
+        for &node in cluster_nodes {
+            // SAFETY: api live; node is a live graph node.
+            let view = unsafe { NodeView::new(api, node) };
+            let qual = view.qualified_name();
+            if partition::is_anchor(&qual) {
+                island.anchors += 1;
+                // Anchor flop estimate: 2 × K × N for a matmul-family op.
+                // Conservative minimum: 2 × 3072 × 3072 when shapes are unavailable.
+                island.flops = island.flops.saturating_add(2 * 3072 * 3072);
+            } else {
+                // Light elementwise op: 1 FLOP per output element (fp16: 2 bytes → 1 FLOP).
+                // SAFETY: `api` is live; node is a live graph node for this call.
+                let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
+                let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
+                island.flops = island.flops.saturating_add(out_bytes / 2);
+            }
+
+            // Boundary activation bytes: only non-constant inputs that cross the island edge.
+            //
+            // Constant initializers (weights, biases) are NOT per-inference transfers — they
+            // are uploaded once at model-load time and must NOT be counted against the island's
+            // transfer budget. Counting them would cause every weight-heavy op (MatMulNBits,
+            // Conv, Gemm) to appear transfer-dominated relative to its compute, which would
+            // reject all islands unconditionally and reproduce the exact failure mode
+            // partition.rs was written to prevent.
+            // SAFETY: `api` is live; node is a live graph node for this call.
+            let in_slots = unsafe { node_slots(api, node, Slots::Inputs) };
+            for (i, &slot) in in_slots.iter().enumerate() {
+                if slot.is_null() {
+                    continue;
+                }
+                // SAFETY: slot is from node_slots and is valid for this call.
+                let name = unsafe { value_info_name(api, slot) };
+                // Skip: produced inside the island (internal edge), or a constant initializer.
+                if name.is_empty()
+                    || internal_outputs.contains_key(&name)
+                    || view.input_is_constant(i)
+                {
+                    continue;
+                }
+                island.input_bytes = island.input_bytes.saturating_add(slot_bytes(slot));
+            }
+
+            // Output boundary bytes: conservatively count all node outputs as boundary bytes.
+            // Some of these will be consumed by other cluster members (internal edges), so this
+            // over-counts. Over-counting is safe — it makes islands harder to claim, never easier.
+            // Under-counting output bytes (missing actual boundary transfers) would cause us to
+            // claim islands that cost more than they earn, which is the worse failure mode.
+            // SAFETY: `api` is live; node is a live graph node for this call.
+            let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
+            for slot in out_slots {
+                island.output_bytes = island.output_bytes.saturating_add(slot_bytes(slot));
+            }
+        }
+
+        // When there is only one cluster, claim it unconditionally: there is no competing
+        // partition to choose between, so the economics check is moot. The claim predicate
+        // already vetted each node for correctness.
+        let verdict = if only_one_cluster {
+            partition::Verdict::Claim
+        } else {
+            partition::evaluate(&island, &transfer_model, &policy)
+        };
+        if verdict.is_claim() {
+            surviving.push(cluster_nodes.clone());
+        } else {
+            n_rejected += cluster_nodes.len();
+            if let partition::Verdict::Reject(reason) = verdict {
+                let decline_reason = partition::decline_for(&reason);
+                for &node in cluster_nodes {
+                    // SAFETY: node is live.
+                    let view = unsafe { NodeView::new(api, node) };
+                    let entry = declined
+                        .entry(view.qualified_name())
+                        .or_insert_with(|| (0, decline_reason.clone().into_owned(), Vec::new()));
+                    entry.0 += 1;
+                }
+            }
+        }
+    }
+
+    let n_islands = surviving.len();
+    let n_claimed_total = claimed.len();
+
+    // Falsifier: island_count == claimed_count is a hard signal that partitioning is not working.
+    // It should be impossible after this change, but if it ever fires it means the union-find is
+    // producing one cluster per node — i.e. no edges were followed.
+    if n_islands == n_claimed_total && n_claimed_total > 1 {
+        log::warn!(
+            "GetCapability: PARTITION FALSIFIER FIRED — {} islands == {} claimed nodes; \
+             every claimed node is its own island, which means connectivity clustering produced \
+             no merges. Check that value names are being read correctly.",
+            n_islands,
+            n_claimed_total,
+        );
+    }
+
+    counters::record_capability(n_claimed_total as u64, n_islands as u64);
+    log::info!(
+        "GetCapability: {} claimed nodes → {} islands ({} nodes rejected by partition policy)",
+        n_claimed_total,
+        n_islands,
+        n_rejected,
+    );
+
+    if surviving.is_empty() {
+        return ptr::null_mut();
+    }
+
+    // --- fuse: one AddNodesToFuse call per surviving island ---
     // SAFETY: `ep_api` is live; `support` is the graph-support-info ORT passed in; `opts` is a
     // zeroed `#[repr(C)]` POD whose only non-pointer field we set explicitly.
     unsafe {
@@ -573,13 +1069,13 @@ unsafe fn get_capability_impl(
                 "OrtEpApi::EpGraphSupportInfo_AddNodesToFuse is unavailable",
             );
         };
-        for node in &claimed {
-            let mut opts: ort::OrtNodeFusionOptions = std::mem::zeroed();
-            opts.ort_version_supported = ep.abi_version();
-            // We read constant initializers at Compile time from the fused node's inputs, so ORT
-            // must keep supplying them.
-            opts.drop_constant_initializers = false;
-            let st = add_nodes_to_fuse(support, node, 1, &opts);
+        let mut opts: ort::OrtNodeFusionOptions = std::mem::zeroed();
+        opts.ort_version_supported = ep.abi_version();
+        // We read constant initializers at Compile time from the fused node's inputs, so ORT
+        // must keep supplying them.
+        opts.drop_constant_initializers = false;
+        for island_nodes in &surviving {
+            let st = add_nodes_to_fuse(support, island_nodes.as_ptr(), island_nodes.len(), &opts);
             if !st.is_null() {
                 return st;
             }
@@ -950,7 +1446,57 @@ unsafe fn compile_impl(
         );
 
         // ── Run translate handlers to produce CompiledKernels ──────────────
-        let mut recorder = CompileRecorder::new(plan.inputs.len());
+        let n_plan_inputs = plan.inputs.len();
+        let n_plan_outputs = plan.outputs.len();
+
+        // For multi-node islands, build a name→token map so that intermediate outputs (produced
+        // by one node, consumed by another within the island) get stable tokens distinct from
+        // both the external ORT inputs and outputs.
+        //
+        // Token ranges:
+        //   0..n_plan_inputs                                     → external ORT inputs
+        //   n_plan_inputs..n_plan_inputs+n_plan_outputs          → external ORT outputs
+        //   n_plan_inputs+n_plan_outputs..first_temp_token       → intermediate buffers
+        //   first_temp_token..                                   → alloc_temp scratch
+        let (name_map_opt, n_intermediates, first_temp_token) = if plan.nodes.len() > 1 {
+            let plan_output_names: std::collections::HashSet<&str> =
+                plan.outputs.iter().map(|r| r.name.as_str()).collect();
+
+            let mut map = std::collections::HashMap::<String, u64>::new();
+            for (k, inp) in plan.inputs.iter().enumerate() {
+                if !inp.name.is_empty() {
+                    map.insert(inp.name.clone(), k as u64);
+                }
+            }
+            for (j, out) in plan.outputs.iter().enumerate() {
+                if !out.name.is_empty() {
+                    map.insert(out.name.clone(), (n_plan_inputs + j) as u64);
+                }
+            }
+            let mut n_intermediates = 0usize;
+            for node in &plan.nodes {
+                for out in &node.outputs {
+                    if !out.name.is_empty()
+                        && !plan_output_names.contains(out.name.as_str())
+                        && !map.contains_key(&out.name)
+                    {
+                        let token = (n_plan_inputs + n_plan_outputs + n_intermediates) as u64;
+                        map.insert(out.name.clone(), token);
+                        n_intermediates += 1;
+                    }
+                }
+            }
+            let first_temp = n_plan_inputs + n_plan_outputs + n_intermediates;
+            (Some(std::sync::Arc::new(map)), n_intermediates, first_temp)
+        } else {
+            (None, 0usize, n_plan_inputs + n_plan_outputs)
+        };
+
+        let mut recorder = if let Some(ref nm) = name_map_opt {
+            CompileRecorder::new_named(n_plan_inputs, std::sync::Arc::clone(nm), first_temp_token)
+        } else {
+            CompileRecorder::new(n_plan_inputs)
+        };
         for node_desc in &plan.nodes {
             if let Some(spec) = registry::spec_for(node_desc) {
                 // If any input lacks a static TensorDesc, the shapes are symbolic — the translate
@@ -987,10 +1533,30 @@ unsafe fn compile_impl(
                 );
             }
         }
+
+        // Collect static intermediate byte sizes from the recorder (populated by bind_token for
+        // named outputs in the intermediate range). For dynamic-shape intermediates the entry is
+        // 0; dispatch_ort will resolve the size from the ShapeOnlyRecorder pre-pass at Compute.
+        let static_intermediate_byte_sizes: Vec<u64> = {
+            let mut sizes = vec![0u64; n_intermediates];
+            for (&token, &sz) in &recorder.intermediate_sizes {
+                let base = (n_plan_inputs + n_plan_outputs) as u64;
+                let ft = first_temp_token as u64;
+                if token >= base && token < ft {
+                    let idx = (token - base) as usize;
+                    if idx < sizes.len() {
+                        sizes[idx] = sz;
+                    }
+                }
+            }
+            sizes
+        };
+
         let kernels = recorder.kernels;
         log::debug!(
-            "Compile: subgraph {i} compiled into {} kernel(s)",
-            kernels.len()
+            "Compile: subgraph {i} compiled into {} kernel(s), {} intermediate(s)",
+            kernels.len(),
+            n_intermediates,
         );
 
         // ── Compute byte sizes and output shapes from the plan ─────────────
@@ -1038,6 +1604,10 @@ unsafe fn compile_impl(
                 input_byte_sizes,
                 output_byte_sizes,
                 output_shapes,
+                n_intermediates,
+                name_map_opt,
+                first_temp_token,
+                static_intermediate_byte_sizes,
                 session_ptr,
                 abi_version,
                 api,
@@ -1108,6 +1678,25 @@ struct SubgraphComputeInfo {
     output_byte_sizes: Vec<u64>,
     /// Concrete shape of each subgraph output, same order.
     output_shapes: Vec<Vec<i64>>,
+    /// Number of inter-node intermediate buffers in the island.
+    ///
+    /// For single-node islands this is always 0. For multi-node islands the token range
+    /// `[n_plan_inputs + n_plan_outputs, n_plan_inputs + n_plan_outputs + n_intermediates)`
+    /// is reserved for GPU buffers that hold outputs of one node consumed as inputs by another
+    /// node in the same island, and are never exposed as ORT outputs.
+    n_intermediates: usize,
+    /// Name→token map for multi-node islands; `None` for single-node islands.
+    ///
+    /// Keys are the OrtValue names from `plan.inputs`, `plan.outputs`, and the inner node
+    /// outputs that are consumed as inputs by other nodes in the island.
+    name_map: Option<std::sync::Arc<std::collections::HashMap<String, u64>>>,
+    /// First token available for anonymous `alloc_temp` buffers.
+    /// = `n_plan_inputs + n_plan_outputs + n_intermediates`.
+    first_temp_token: usize,
+    /// Byte sizes for intermediate buffers as determined at Compile time (static shapes).
+    /// Indexed by intermediate index = token - (n_plan_inputs + n_plan_outputs).
+    /// Entries are 0 for dynamic-shape intermediates (size resolved at Compute time).
+    static_intermediate_byte_sizes: Vec<u64>,
     ort_api: *const ort::OrtApi,
     session: *mut VulkanSession,
 }
@@ -1136,6 +1725,10 @@ impl SubgraphComputeInfo {
         input_byte_sizes: Vec<u64>,
         output_byte_sizes: Vec<u64>,
         output_shapes: Vec<Vec<i64>>,
+        n_intermediates: usize,
+        name_map: Option<std::sync::Arc<std::collections::HashMap<String, u64>>>,
+        first_temp_token: usize,
+        static_intermediate_byte_sizes: Vec<u64>,
         session: *mut VulkanSession,
         abi_version: u32,
         ort_api: *const ort::OrtApi,
@@ -1148,6 +1741,10 @@ impl SubgraphComputeInfo {
             input_byte_sizes,
             output_byte_sizes,
             output_shapes,
+            n_intermediates,
+            name_map,
+            first_temp_token,
+            static_intermediate_byte_sizes,
             ort_api,
             session,
         })
@@ -1172,6 +1769,10 @@ impl SubgraphComputeInfo {
             input_byte_sizes: Vec::new(),
             output_byte_sizes: Vec::new(),
             output_shapes: Vec::new(),
+            n_intermediates: 0,
+            name_map: None,
+            first_temp_token: 0,
+            static_intermediate_byte_sizes: Vec::new(),
             ort_api,
             session: ptr::null_mut(),
         })
@@ -1330,6 +1931,10 @@ unsafe fn compute_impl(
             &info.input_byte_sizes,
             &info.output_byte_sizes,
             &info.output_shapes,
+            info.n_intermediates,
+            info.name_map.clone(),
+            info.first_temp_token,
+            &info.static_intermediate_byte_sizes,
             api,
             kernel_context,
         )

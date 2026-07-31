@@ -792,12 +792,43 @@ def test_phi35_multi_run_same_session_interior_pointer_safety(
     bit-identical output across all 5 runs — if any run diverges, the planner's offset
     introduction is corrupting the result.
 
-    It also verifies that dispatches_executed scales with the number of runs: if counter
-    does not grow from run 1 to run 5, something in the dispatch path short-circuits on
-    interior pointers rather than executing through them.
+    TWO COUNTER ASSERTIONS (both required — they are distinct instruments)
+    -----------------------------------------------------------------------
+    compute_calls counts per-island OrtNodeComputeInfo::Compute() entries.
+    dispatches_executed counts per-node GPU dispatches inside those Compute() calls.
+
+    With single-node islands, compute_calls == dispatches_executed / N_RUNS — the two
+    counters agreed and appeared interchangeable.  After Mouse's partitioning work
+    (2026-07-30, islands 321 → 33), each island may contain many nodes, so
+    dispatches_executed >> compute_calls.  The two assertions are now distinct:
+
+      (1) compute_calls == N_RUNS × subgraphs_live
+          "Every island was Compute()-called on every run."
+          Would go red if interior pointers caused the dispatch path to skip an entire island.
+
+      (2) dispatches_executed % N_RUNS == 0  AND  dispatches // N_RUNS ≥ subgraphs_live
+          "Every run dispatched the same set of nodes; each island dispatched at least once."
+          Would go red if interior pointers caused partial dispatch *inside* an island,
+          or if different nodes ran on different runs.
+
+    The original assertion (dispatches_executed == N_RUNS × subgraphs_live) was asserting
+    the single-node-island assumption in arithmetic form. It could not have been noticed
+    as a hidden premise until partitioning collapsed 321 single-node islands to 33 islands,
+    at which point 5 × 321 ≠ 5 × 33. The fix splits the assertion along the counter boundary.
+
+    ARITHMETIC-IDENTITY PREMISES — AUDIT NOTE (added 2026-07-30)
+    -------------------------------------------------------------
+    An assertion that relates two counters by a fixed ratio is asserting a structural
+    invariant about the architecture — here, "islands are single-node".  Such assertions
+    are invisible to docstring-grep and name-grep audits.  When architectural work (like
+    partitioning) changes the invariant, the assertion fails as a test rather than as an
+    audit signal.  Any assertion of the form A == k × B where both A and B are counters
+    should name the structural invariant it encodes (in this docstring: "single-node islands").
 
     Cross-owner note (Switch → Tank): test_phi35.py is Tank's file.  This function added by
     Switch as specified by the coordinator (CURRENT_DATETIME: 2026-07-30T03:52:28-07:00).
+    Counter assertion fixed by Trinity (2026-07-30T15:41:27-07:00) after Mouse's partitioning
+    work moved Phi-3.5 from 321 single-node islands to 33 multi-node islands.
     """
     device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
 
@@ -891,24 +922,72 @@ def test_phi35_multi_run_same_session_interior_pointer_safety(
 
     # ── Assert counter scaling with N_RUNS ────────────────────────────────────
     if ep_counters:
-        dispatches = ep_counters["dispatches_executed"]
         subgraphs_live = ep_counters["subgraphs_live"]
-        # After N_RUNS on this session, dispatches_executed should be N_RUNS × subgraphs_live.
-        expected_dispatches = N_RUNS * subgraphs_live
-        assert dispatches == expected_dispatches, (
-            f"[Device {device_index}] dispatches_executed={dispatches} after {N_RUNS} runs, "
-            f"expected {expected_dispatches} ({N_RUNS} × {subgraphs_live} subgraphs_live). "
-            "A lower count means some runs did not execute on the GPU — possibly the dispatch "
-            "path short-circuited on an interior pointer from the memory-pattern planner."
+        compute_calls = ep_counters["compute_calls"]
+        dispatches = ep_counters["dispatches_executed"]
+
+        # ASSERTION 1 — coarse (island invocations): every island was Compute()-called
+        # on every run.  compute_calls counts per-island entries into OrtNodeComputeInfo::Compute,
+        # one per island per run.
+        #
+        # Invariant this depends on: subgraphs_live is constant at runtime (islands are compiled
+        # once and reused).  Multi-node islands do NOT affect this counter — it is always exactly
+        # N_RUNS × subgraphs_live regardless of how many nodes each island contains.
+        #
+        # What would go red if partitioning regressed to single-node islands: nothing here.
+        # What DOES go red here: if the memory-pattern planner's interior pointers cause the
+        # dispatch path to short-circuit an entire island (skipping its Compute() call).
+        expected_compute = N_RUNS * subgraphs_live
+        assert compute_calls == expected_compute, (
+            f"[Device {device_index}] compute_calls={compute_calls} after {N_RUNS} runs, "
+            f"expected {expected_compute} ({N_RUNS} × {subgraphs_live} subgraphs_live). "
+            "A lower count means at least one island Compute() call was skipped — the "
+            "memory-pattern planner's interior pointers may have caused the dispatch path "
+            "to short-circuit before the GPU was touched."
+        )
+
+        # ASSERTION 2 — fine (node-level GPU dispatches): every claimed node dispatched
+        # uniformly on every run.  dispatches_executed counts GPU dispatches (one per node
+        # per Compute call); with multi-node islands (Mouse's partitioning), this is strictly
+        # greater than compute_calls.
+        #
+        # Invariant this depends on: the same set of nodes is dispatched on every run.
+        # dispatches_executed = N_RUNS × claimed_nodes_per_run must be exactly divisible.
+        # A non-divisible count signals that different nodes dispatched on different runs —
+        # partial dispatch, or the short-circuit happened inside an island rather than before it.
+        #
+        # claimed_nodes_per_run = dispatches // N_RUNS is the per-run node dispatch count.
+        # We assert ≥ subgraphs_live (each island dispatches at least one node per Compute).
+        # We cannot assert == claimed_nodes without reading the JSON counter, but the
+        # divisibility + lower-bound pair is sufficient to catch interior-pointer short-circuits.
+        assert dispatches % N_RUNS == 0, (
+            f"[Device {device_index}] dispatches_executed={dispatches} is not divisible by "
+            f"N_RUNS={N_RUNS}: the dispatch set was not identical across all runs. "
+            "A non-divisible count means at least one run dispatched a different number of "
+            "nodes than the others — partial dispatch inside an island, or ORT reordering "
+            "which subgraphs run."
+        )
+        dispatches_per_run = dispatches // N_RUNS
+        assert dispatches_per_run >= subgraphs_live, (
+            f"[Device {device_index}] dispatches_per_run={dispatches_per_run} < "
+            f"subgraphs_live={subgraphs_live}: fewer GPU dispatches than islands per run. "
+            "Each island must dispatch at least one node per Compute() call."
         )
 
     print(f"\n[Phi-3.5 multi-run / Device {device_index}]")
     print(f"  Runs: {N_RUNS} — all outputs bit-identical ✓")
     if ep_counters:
+        subgraphs_live = ep_counters["subgraphs_live"]
+        dispatches = ep_counters["dispatches_executed"]
         print(f"  EP counters after {N_RUNS} runs: {ep_counters}")
         print(
-            f"  dispatches_executed={ep_counters['dispatches_executed']} = "
-            f"{N_RUNS} × {ep_counters['subgraphs_live']} subgraphs ✓"
+            f"  compute_calls={ep_counters['compute_calls']} = "
+            f"{N_RUNS} × {subgraphs_live} subgraphs ✓"
+        )
+        print(
+            f"  dispatches_executed={dispatches} = "
+            f"{N_RUNS} × {dispatches // N_RUNS} nodes/run "
+            f"({dispatches // N_RUNS} nodes per run, {subgraphs_live} islands) ✓"
         )
 
 

@@ -198,13 +198,75 @@ impl Drop for CommandRecorder<'_> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Queue submission helper
+// Queue submission helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Create a fence, submit `cmd` to `queue` under it, and return the fence.
+///
+/// On failure the fence is destroyed (if it was created) and `None` is returned.
+///
+/// This is the split-submit half of the v0 synchronization model; pair with
+/// [`wait_fence_then_destroy`] when the submit and wait phases need to be timed independently.
+/// For the all-in-one path, prefer [`submit_and_wait`].
+///
+/// # Safety
+/// - `ash_device` must be the logical device that owns `queue` and `cmd`.
+/// - `cmd` must be in the executable state (returned by [`CommandRecorder::finish`]).
+/// - No other work may be in-flight on `queue` (v0 single-queue constraint).
+pub(crate) unsafe fn create_and_submit(
+    ash_device: &ash::Device,
+    queue: vk::Queue,
+    cmd: vk::CommandBuffer,
+) -> Option<vk::Fence> {
+    let fence_info = vk::FenceCreateInfo::default();
+    // SAFETY: ash_device is live.
+    let fence = unsafe {
+        match ash_device.create_fence(&fence_info, None) {
+            Ok(f) => f,
+            Err(e) => {
+                log::error!("vkCreateFence failed: {e}");
+                return None;
+            }
+        }
+    };
+    let submit_info = [vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))];
+    // SAFETY: queue is valid; cmd is executable.
+    if let Err(e) = unsafe { ash_device.queue_submit(queue, &submit_info, fence) } {
+        log::error!("vkQueueSubmit failed: {e}");
+        // SAFETY: fence was created by us; nothing was submitted to it.
+        unsafe { ash_device.destroy_fence(fence, None) };
+        return None;
+    }
+    Some(fence)
+}
+
+/// Wait for `fence` to signal, then destroy it. Returns `false` on wait failure.
+///
+/// The fence is destroyed regardless of the outcome. Pairs with [`create_and_submit`].
+///
+/// # Safety
+/// - `ash_device` must be the logical device that owns `fence`.
+/// - `fence` must have been submitted via [`create_and_submit`] or equivalent.
+pub(crate) unsafe fn wait_fence_then_destroy(ash_device: &ash::Device, fence: vk::Fence) -> bool {
+    // SAFETY: fence is live and was submitted.
+    let wait_ok = unsafe { ash_device.wait_for_fences(&[fence], true, u64::MAX) };
+    // Destroy regardless of wait outcome — must not leak.
+    // SAFETY: fence is done (or errored); safe to destroy.
+    unsafe { ash_device.destroy_fence(fence, None) };
+    if let Err(e) = wait_ok {
+        log::error!("vkWaitForFences failed: {e}");
+        return false;
+    }
+    true
+}
 
 /// Submit `cmd` to `queue` and wait (via fence) for it to complete.
 ///
 /// This is the v0 synchronization model: one submission per subgraph, blocking. Timeline
 /// semaphores and pipelined submissions are a future optimisation (M2+, ENGINE.md §6.3).
+///
+/// Implemented as [`create_and_submit`] + [`wait_fence_then_destroy`]; use those directly when
+/// the submit and wait phases need to be timed independently (e.g. in `dispatch_ort`).
 ///
 /// # Safety
 /// - `ash_device` must be the logical device that owns `queue` and `cmd`.
@@ -215,40 +277,12 @@ pub(crate) unsafe fn submit_and_wait(
     queue: vk::Queue,
     cmd: vk::CommandBuffer,
 ) -> bool {
-    let fence_info = vk::FenceCreateInfo::default();
-    // SAFETY: ash_device is live.
-    let fence = unsafe {
-        match ash_device.create_fence(&fence_info, None) {
-            Ok(f) => f,
-            Err(e) => {
-                log::error!("vkCreateFence failed: {e}");
-                return false;
-            }
-        }
+    // SAFETY: requirements delegated to create_and_submit/wait_fence_then_destroy per their docs.
+    let Some(fence) = (unsafe { create_and_submit(ash_device, queue, cmd) }) else {
+        return false;
     };
-
-    let submit_info = [vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))];
-
-    // SAFETY: queue is valid; submit_info borrows cmd which is in executable state.
-    let submit_ok = unsafe { ash_device.queue_submit(queue, &submit_info, fence) };
-    if let Err(e) = submit_ok {
-        log::error!("vkQueueSubmit failed: {e}");
-        // SAFETY: fence was created by us; nothing was submitted to it.
-        unsafe { ash_device.destroy_fence(fence, None) };
-        return false;
-    }
-
-    // Wait for the fence, then destroy it.
-    // SAFETY: fence was submitted above and is valid.
-    let wait_ok = unsafe { ash_device.wait_for_fences(&[fence], true, u64::MAX) };
-    // SAFETY: fence is done (we waited); destroying it now is safe.
-    unsafe { ash_device.destroy_fence(fence, None) };
-
-    if let Err(e) = wait_ok {
-        log::error!("vkWaitForFences failed: {e}");
-        return false;
-    }
-    true
+    // SAFETY: fence was returned by create_and_submit above; requirements are met per its docs.
+    unsafe { wait_fence_then_destroy(ash_device, fence) }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
