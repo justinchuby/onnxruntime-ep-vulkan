@@ -1227,3 +1227,27 @@ alloc_device_authoritative_spans is structurally 0: Tank's device-backed allocat
 - Cache byte verification: 2642x reduction confirmed on NVIDIA (tracer instrument)
 - Two-VkDevice flag: written to inbox
 - Quiet-machine wall-clock before/after: coordinator offer still open
+
+---
+
+## Session 34 - Standing perf directive; MATCH + byte sweep reconfirmed (2026-07-30T22:23:35-07:00)
+
+Context: Coordinator issued standing directive - performance is first-class, continuous. 
+No new code written - directive is behavioral, not structural. Results below.
+
+model_output_equivalence: MATCH on both devices (phi35.py --iters 1 --warmup 0).
+
+Warm-cache byte sweep reconfirmed (trace_warm.json, phi35.py --iters 3 --warmup 1):
+  Inf 0 (cold):  1997.596 MiB  <- full weight set, cache cold
+  Inf 1-4 (warm):  0.756 MiB each  <- activations only, cache warm
+  Pattern: NOT linear. Pre-cache was linear at 1997.60 / 3995.19 / 5992.79.
+  Post-cache: 1997.6 / 1998.4 / 1999.1 MiB (flat). 2642x reduction.
+
+Warm-cache timing (contended machine - not quotable per coordinator ruling):
+  Intel Iris Xe (selector 1, UMA): 41.325 ms FASTER than CPU-only (0.9x)  <- cache + UMA
+  NVIDIA RTX 4060 (selector 0, discrete): 668.399 ms slower (3.2x)
+
+Intel faster than CPU is real: UMA + weight cache means GPU runs kernels on resident 
+weights without transfer. NVIDIA still upload-limited on warm activations + fence_wait idle.
+
+Outstanding: requested quiet-machine window for wall-clock before/after on NVIDIA.
