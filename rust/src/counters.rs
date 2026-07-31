@@ -58,7 +58,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
-pub const COUNTERS_ABI_VERSION: u32 = 1;
+pub const COUNTERS_ABI_VERSION: u32 = 2;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -265,6 +265,11 @@ pub struct VulkanEpCounters {
     pub compute_failures: u64,
     /// Dispatches that ran to fence completion. **This is the criterion-8 number.**
     pub dispatches_executed: u64,
+    /// Islands that passed `partition::evaluate` (net-benefit gate, §7.0.2) in multi-cluster
+    /// `GetCapability` calls.  Single-cluster bypass does not increment this.  Present even
+    /// when 0 so that the wiring census (R10) can distinguish "gate ran, all rejected" from
+    /// "UNWIRED" (key absent).  Added in ABI version 2.
+    pub viable_islands_retained: u64,
 }
 
 static COMPILE_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -283,6 +288,15 @@ static CLAIMED_NODES: AtomicU64 = AtomicU64::new(0);
 ///
 /// JSON-only. See [`CLAIMED_NODES`].
 static ISLANDS_OFFERED: AtomicU64 = AtomicU64::new(0);
+
+/// Islands that were evaluated by `partition::evaluate` (the net-benefit / `retain_viable` gate)
+/// and passed — i.e., survived the economics gate in multi-cluster graphs.
+///
+/// JSON-only. This is the R10 wiring observable for the net-benefit predicate (§7.0.2 §10.0.1):
+/// its value is 0 for single-cluster graphs (bypassed) and varies with the island graph for
+/// multi-cluster runs. A counter file that contains this key — even at 0 — proves the mechanism
+/// is in the call graph. Owner: Mouse (`partition.rs`, `ep.rs`).
+static VIABLE_ISLANDS_RETAINED: AtomicU64 = AtomicU64::new(0);
 
 /// `Relaxed` is correct here and the reasoning is worth stating rather than assuming.
 ///
@@ -324,6 +338,19 @@ pub fn record_capability(claimed: u64, islands: u64) {
     CLAIMED_NODES.fetch_add(claimed, ORD);
     ISLANDS_OFFERED.fetch_add(islands, ORD);
 }
+
+/// Record the number of islands that passed `partition::evaluate` (the net-benefit gate) in a
+/// multi-cluster `GetCapability` call. Single-cluster calls bypass the gate and must not call
+/// this function — the absence of an increment from a single-cluster run is correct behaviour.
+///
+/// R10 observable: the presence of `viable_islands_retained` in the counters JSON proves the
+/// net-benefit gate is in the production call graph.  The value varies with the island graph:
+/// 0 when every candidate island is rejected by TooSmall or TransferDominated, N > 0 when N
+/// islands survive.  An always-0 result is distinguishable from UNWIRED (key absent) because the
+/// key is present — UNWIRED would not emit the key at all.
+pub fn record_viable_islands_retained(n: u64) {
+    VIABLE_ISLANDS_RETAINED.fetch_add(n, ORD);
+}
 ///
 /// Writing on every successful dispatch means: a crash *after* real work still leaves evidence of
 /// that work, and successive reads of the file always reflect the latest accumulated state rather
@@ -347,6 +374,7 @@ pub fn snapshot() -> VulkanEpCounters {
         compute_calls: COMPUTE_CALLS.load(ORD),
         compute_failures: COMPUTE_FAILURES.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
+        viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
     }
 }
 
@@ -360,7 +388,10 @@ pub fn reset() {
     DISPATCHES_EXECUTED.store(0, ORD);
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
+    // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
+    // other; a reset that clears one and not the other is how a test reads another test's traffic.
     staging::reset();
+    VIABLE_ISLANDS_RETAINED.store(0, ORD);
 }
 
 impl VulkanEpCounters {
@@ -383,10 +414,12 @@ impl VulkanEpCounters {
     pub fn to_json_with_equiv(&self, equiv: &str) -> String {
         let claimed = CLAIMED_NODES.load(ORD);
         let islands = ISLANDS_OFFERED.load(ORD);
+        let viable = VIABLE_ISLANDS_RETAINED.load(ORD);
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
              \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
+             \"viable_islands_retained\": {},\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -397,6 +430,7 @@ impl VulkanEpCounters {
             self.dispatches_executed,
             claimed,
             islands,
+            viable,
             equiv,
         )
     }

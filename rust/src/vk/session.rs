@@ -18,7 +18,7 @@ use super::{
     alloc::{Allocator, GpuBuffer, MemClass, record_download, record_upload},
     barrier::{Access, BufferDep},
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
-    device::Device,
+    device::{Device, register_ep_device},
     instance::{CapableDevice, Instance, select_device},
     pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
     timestamp::GpuQueryPool,
@@ -638,6 +638,13 @@ impl VulkanSession {
 
         // SAFETY: device is live.
         let pipeline_cache = unsafe { PipelineCache::new(device.ash(), &[]) }?;
+
+        // §6.5: register the EP device so other components (e.g., host_device_memory) can share
+        // it without creating their own VkDevice. Must be called after Device::create succeeds.
+        // SAFETY: `device` will be stored in the returned VulkanSession, which is EP-scoped per
+        // §2.3. ORT always frees tensors before destroying the EP, so no caller can observe the
+        // device after VulkanSession::drop.
+        register_ep_device(&device);
 
         Some(VulkanSession {
             capable,
