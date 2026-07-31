@@ -273,6 +273,13 @@ impl Allocator {
             }
         }
 
+        // Record device-local residency for the session-allocator frame (R12): this is the
+        // instrument the `alloc_*` tally cannot provide, because that tally observes Tank's
+        // separate-VkDevice allocator. Only device-resident classes count toward device pressure.
+        if matches!(class, MemClass::DeviceLocal | MemClass::PackedWeights) {
+            crate::counters::weights::on_device_alloc(size);
+        }
+
         Some(GpuBuffer {
             buffer,
             allocation: Some(allocation),
@@ -291,6 +298,10 @@ impl Allocator {
         // real GpuBuffer and will free it later.  Do nothing here.
         if buf.borrowed {
             return;
+        }
+        // Mirror the alloc-side residency accounting for the session-allocator frame.
+        if matches!(buf.mem_class, MemClass::DeviceLocal | MemClass::PackedWeights) {
+            crate::counters::weights::on_device_free(buf.size);
         }
         // Return the sub-allocation block first, then destroy the VkBuffer.
         if let Some(alloc) = buf.allocation.take() {

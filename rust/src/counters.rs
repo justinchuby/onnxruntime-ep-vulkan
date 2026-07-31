@@ -241,6 +241,112 @@ pub mod staging {
     }
 }
 
+/// Session-scoped device-memory residency and weight-cache lifetime.
+///
+/// # Why this frame exists (R12)
+///
+/// The `alloc_*` tallies in [`crate::allocator::tally`] observe Tank's device-backed allocator,
+/// which uses its **own** `VkDevice` (§6.5 split frame). They are structurally blind to the
+/// session's `gpu-allocator` (`vk::alloc::Allocator`) — the one that holds the weight cache. A
+/// weight-cache leak is therefore **UNOBSERVABLE** in `alloc_high_water_bytes`: that counter reads
+/// a different world. This module is the instrument for the session allocator's frame.
+///
+/// # What each counter falsifies (R9/R10)
+///
+/// * `session_device_high_water_bytes` — deterministic (byte counts do not swing with CPU
+///   contention). Predict it before a run, then read it: it is the peak device-local bytes the
+///   session allocator ever held simultaneously. For a session that caches N MiB of weights and
+///   nothing else, the high-water is bounded at ≈ N MiB regardless of how many inferences run.
+///   If it grows with the run count, the cache lifetime is leaking.
+/// * `weight_cache_release_calls` — **the R10 wiring artifact.** `release_weight_cache` in the
+///   source tree is indistinguishable from one never written until an artifact varies with input.
+///   This counter is 0 on a run where the release path never executes, and non-zero the instant it
+///   does — its value is produced by the call graph, not by review.
+/// * `session_device_bytes_in_use` / `weight_cache_bytes_resident` at teardown — if the session's
+///   lifetime owns the cache, both reach 0 by the time the process observations are dumped. A
+///   non-zero residual is a leak the session never released.
+pub mod weights {
+    use super::ORD;
+    use std::sync::atomic::AtomicU64;
+
+    static DEV_ALLOCS: AtomicU64 = AtomicU64::new(0);
+    static DEV_FREES: AtomicU64 = AtomicU64::new(0);
+    static DEV_BYTES_IN_USE: AtomicU64 = AtomicU64::new(0);
+    static DEV_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
+    static WC_RELEASE_CALLS: AtomicU64 = AtomicU64::new(0);
+    static WC_RELEASE_BUFFERS: AtomicU64 = AtomicU64::new(0);
+    static WC_RELEASE_BYTES: AtomicU64 = AtomicU64::new(0);
+    static WC_BYTES_RESIDENT: AtomicU64 = AtomicU64::new(0);
+
+    /// One device-local (`DeviceLocal` / `PackedWeights`) buffer was allocated through the session
+    /// allocator. Raises the high-water mark if the new in-use total exceeds any prior peak.
+    pub fn on_device_alloc(bytes: u64) {
+        DEV_ALLOCS.fetch_add(1, ORD);
+        let now = DEV_BYTES_IN_USE.fetch_add(bytes, ORD) + bytes;
+        // Monotonic-max update. Relaxed is fine: the only reader is a post-run snapshot, and a
+        // transient under-report during a race resolves on the next alloc.
+        DEV_HIGH_WATER.fetch_max(now, ORD);
+    }
+
+    /// One device-local buffer was freed through the session allocator.
+    pub fn on_device_free(bytes: u64) {
+        DEV_FREES.fetch_add(1, ORD);
+        DEV_BYTES_IN_USE.fetch_sub(bytes, ORD);
+    }
+
+    /// A weight-tensor buffer entered the cache (moved out of the per-call free path).
+    pub fn on_cache_insert(bytes: u64) {
+        WC_BYTES_RESIDENT.fetch_add(bytes, ORD);
+    }
+
+    /// A cache entry was evicted mid-run (stale key overwrite), not released at subgraph teardown.
+    /// Adjusts resident bytes without touching the release-call wiring artifact.
+    pub fn on_cache_evict(bytes: u64) {
+        WC_BYTES_RESIDENT.fetch_sub(bytes, ORD);
+    }
+
+    /// `release_weight_cache` freed a cache for one subgraph: `buffers` entries, `bytes` total.
+    /// Called once per subgraph release even when the cache was empty, so the **call count** is the
+    /// wiring artifact and the **byte total** is the residency reclaimed.
+    pub fn on_cache_release(buffers: u64, bytes: u64) {
+        WC_RELEASE_CALLS.fetch_add(1, ORD);
+        WC_RELEASE_BUFFERS.fetch_add(buffers, ORD);
+        WC_RELEASE_BYTES.fetch_add(bytes, ORD);
+        WC_BYTES_RESIDENT.fetch_sub(bytes, ORD);
+    }
+
+    /// `(dev_allocs, dev_frees, dev_bytes_in_use, dev_high_water, wc_release_calls,
+    ///   wc_release_buffers, wc_release_bytes, wc_bytes_resident)`.
+    #[allow(clippy::type_complexity)]
+    pub fn snapshot() -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+        (
+            DEV_ALLOCS.load(ORD),
+            DEV_FREES.load(ORD),
+            DEV_BYTES_IN_USE.load(ORD),
+            DEV_HIGH_WATER.load(ORD),
+            WC_RELEASE_CALLS.load(ORD),
+            WC_RELEASE_BUFFERS.load(ORD),
+            WC_RELEASE_BYTES.load(ORD),
+            WC_BYTES_RESIDENT.load(ORD),
+        )
+    }
+
+    pub fn reset() {
+        for c in [
+            &DEV_ALLOCS,
+            &DEV_FREES,
+            &DEV_BYTES_IN_USE,
+            &DEV_HIGH_WATER,
+            &WC_RELEASE_CALLS,
+            &WC_RELEASE_BUFFERS,
+            &WC_RELEASE_BYTES,
+            &WC_BYTES_RESIDENT,
+        ] {
+            c.store(0, ORD);
+        }
+    }
+}
+
 /// The wire format of [`snapshot`], and the C ABI `OrtEpVulkanGetExecutionCounters` fills in.
 ///
 /// `#[repr(C)]` with `struct_size` and `abi_version` first so a reader can validate before it
@@ -391,6 +497,7 @@ pub fn reset() {
     // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
     // other; a reset that clears one and not the other is how a test reads another test's traffic.
     staging::reset();
+    weights::reset();
     VIABLE_ISLANDS_RETAINED.store(0, ORD);
 }
 
@@ -508,6 +615,7 @@ pub fn dump_observations_if_requested() {
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
     let st = staging::snapshot();
+    let wc = weights::snapshot();
     // §10.0.1 R12 — frame provenance. `alloc_device_authoritative_spans` can only ever be non-zero
     // when the provider's buffers are on the device the engine dispatches on (§6.5). In any other
     // frame the event it counts cannot occur, so the artifact prints the JSON *string*
@@ -553,7 +661,15 @@ pub fn dump_observations_if_requested() {
              \"session_staging_upload_us\": {},\n  \
              \"session_staging_readbacks\": {},\n  \
              \"session_staging_readback_bytes\": {},\n  \
-             \"session_staging_readback_us\": {}\n}}\n",
+             \"session_staging_readback_us\": {},\n  \
+             \"session_device_allocs\": {},\n  \
+             \"session_device_frees\": {},\n  \
+             \"session_device_bytes_in_use\": {},\n  \
+             \"session_device_high_water_bytes\": {},\n  \
+             \"weight_cache_release_calls\": {},\n  \
+             \"weight_cache_release_buffers\": {},\n  \
+             \"weight_cache_release_bytes\": {},\n  \
+             \"weight_cache_bytes_resident\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -592,6 +708,14 @@ pub fn dump_observations_if_requested() {
             st.3,
             st.4,
             st.5,
+            wc.0,
+            wc.1,
+            wc.2,
+            wc.3,
+            wc.4,
+            wc.5,
+            wc.6,
+            wc.7,
         ));
     }
     if let Err(e) = std::fs::write(&path, doc) {

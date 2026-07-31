@@ -52,7 +52,7 @@
 //! | `vulkan.subgraph` | `ep` | host | One fused subgraph's whole `Compute` call. |
 //! | `vulkan.compile` | `ep.phase` | host | `Compile`: plan build, pipeline/SPIR-V creation, descriptor layout. Once per subgraph. |
 //! | `vulkan.prepack` | `ep.phase` | host | Weight prepack + upload of block-quantised initializers. Once per `PackKey`. |
-//! | `vulkan.record` | `ep.phase` | host | Host-side command-buffer recording. First inference (or a re-record) only. |
+//! | `vulkan.record` | `ep.phase` | host | The `Compute` recording bracket. **Despite the name, dominated by the staging upload it contains (~96-98% on Phi-3.5), not by command recording (1-3%).** See `Phase::Record::caveat`. |
 //! | `vulkan.upload` | `ep.phase` | host | Host→device staging copy of inference inputs. Carries `bytes`. |
 //! | `vulkan.submit` | `ep.phase` | host | **`vkQueueSubmit` only.** Host bookkeeping. Measures no GPU work. |
 //! | `vulkan.fence_wait` | `ep.phase` | host | CPU blocked on the fence. Upper bound on GPU time, not GPU time. |
@@ -162,7 +162,11 @@ pub enum Phase {
     Prepack,
     /// Host→device staging copy of this inference's inputs.
     Upload,
-    /// Host-side command-buffer recording. Amortised: first inference, or a re-record.
+    /// The `Compute` recording bracket. The name is historical: this span's host wall time is
+    /// **dominated by the staging upload nested inside it** (measured 96-98% of the phase on
+    /// Phi-3.5), while actual `vkBeginCommandBuffer..vkEndCommandBuffer` recording is 1-3% of wall
+    /// (87-229 ms). R11: a measurement's name is not its definition — subtract `upload`+`readback`
+    /// before attributing anything here to recording.
     Record,
     /// Sub-phase of `Record`: `vkCreateDescriptorPool` + `vkAllocateDescriptorSets` +
     /// `vkUpdateDescriptorSets` per dispatch. Nested inside a `Record` span; emitted

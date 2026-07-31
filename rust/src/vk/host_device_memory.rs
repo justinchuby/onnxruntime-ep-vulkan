@@ -89,8 +89,16 @@ struct Inner {
 pub(crate) trait SharedVkDevice: Send + Sync {
     /// The `ash::Instance` the device was created from. Needed only by `Allocator::new`.
     fn instance_ash(&self) -> &ash::Instance;
-    /// The one logical device for this (physical device, EP instance).
-    fn device(&self) -> &Device;
+    /// The logical device handle. Needed for Vulkan command recording and submission.
+    fn ash_device(&self) -> &ash::Device;
+    /// The physical device handle. Needed by `Allocator::new`.
+    fn physical_device(&self) -> vk::PhysicalDevice;
+    /// The compute queue family index. Needed for `CommandPool::new`.
+    fn compute_queue_family(&self) -> u32;
+    /// The compute queue handle. Needed for `submit_and_wait`.
+    fn compute_queue(&self) -> vk::Queue;
+    /// Whether the device uses unified memory (UMA). Drives the `alloc_unified_memory` counter.
+    fn is_uma(&self) -> bool;
     /// The physical device's name, for the identity line in the log and the artifact.
     fn device_name(&self) -> &str;
 }
@@ -129,8 +137,20 @@ impl SharedVkDevice for OwnedDevice {
     fn instance_ash(&self) -> &ash::Instance {
         self.instance.ash()
     }
-    fn device(&self) -> &Device {
-        &self.device
+    fn ash_device(&self) -> &ash::Device {
+        self.device.ash()
+    }
+    fn physical_device(&self) -> vk::PhysicalDevice {
+        self.device.physical_device()
+    }
+    fn compute_queue_family(&self) -> u32 {
+        self.device.compute_queue_family()
+    }
+    fn compute_queue(&self) -> vk::Queue {
+        self.device.compute_queue()
+    }
+    fn is_uma(&self) -> bool {
+        self.device.caps().is_uma
     }
     fn device_name(&self) -> &str {
         &self.device_name
@@ -178,14 +198,13 @@ impl HostDeviceMemory {
     /// `ctx` must reference a live instance and device, and the `Arc` must be the caller's promise
     /// that they stay live — which it is, because this function stores it.
     unsafe fn on_shared_device(ctx: Arc<dyn SharedVkDevice>, frame: DeviceFrame) -> Option<Self> {
-        let device = ctx.device();
-        let is_uma = device.caps().is_uma;
+        let is_uma = ctx.is_uma();
         let device_name = ctx.device_name().to_string();
         // SAFETY: instance and device are live for as long as `ctx`, which is stored below.
         let alloc =
-            unsafe { Allocator::new(ctx.instance_ash(), device.physical_device(), device.ash()) }?;
+            unsafe { Allocator::new(ctx.instance_ash(), ctx.physical_device(), ctx.ash_device()) }?;
         // SAFETY: device is live; the queue family index came from it.
-        let cmd_pool = unsafe { CommandPool::new(device.ash(), device.compute_queue_family()) }?;
+        let cmd_pool = unsafe { CommandPool::new(ctx.ash_device(), ctx.compute_queue_family()) }?;
         Some(Self {
             inner: Mutex::new(Inner {
                 alloc,
@@ -210,8 +229,12 @@ impl HostDeviceMemory {
         self.frame
     }
 
-    fn device(&self) -> &Device {
-        self.ctx.device()
+    fn ash_device(&self) -> &ash::Device {
+        self.ctx.ash_device()
+    }
+
+    fn compute_queue(&self) -> vk::Queue {
+        self.ctx.compute_queue()
     }
 }
 
@@ -397,8 +420,7 @@ impl HostDeviceMemory {
         // SAFETY: `cmd` is recording; both buffers belong to this device and the region was bounds
         // checked against the target's size by the caller.
         unsafe {
-            self.device()
-                .ash()
+            self.ash_device()
                 .cmd_copy_buffer(cmd, src, dst, std::slice::from_ref(&region))
         };
         // SAFETY: `rec` is in the recording state.
@@ -407,7 +429,7 @@ impl HostDeviceMemory {
         };
         // SAFETY: `cmd` was recorded and ended above; the queue belongs to this device.
         let ok =
-            unsafe { submit_and_wait(self.device().ash(), self.device().compute_queue(), cmd) };
+            unsafe { submit_and_wait(self.ash_device(), self.compute_queue(), cmd) };
         if ok {
             Ok(())
         } else {

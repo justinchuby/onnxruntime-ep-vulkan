@@ -495,12 +495,18 @@ fn translate_gqa(
     let pres_k_ref = node.outputs.get(1).ok_or_else(|| {
         EpError::InvalidGraph(format!("`{}` has no present_key slot", node.op_type))
     })?;
-    let pres_k_buf = ctx.bind_aliased_output(&node.inputs[3], pres_k_ref)?;
+    // KV output descriptor: [batch, kv_heads, past_len_max, head_dim].  This is the same shape
+    // as past_key/past_value — the shader writes in-place at tok_pos, not appending new rows.
+    let kv_desc = TensorDesc::new(
+        dtype,
+        vec![batch_size as i64, kv_num_heads as i64, past_len_max as i64, head_dim as i64],
+    );
+    let pres_k_buf = ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?;
 
     let pres_v_ref = node.outputs.get(2).ok_or_else(|| {
         EpError::InvalidGraph(format!("`{}` has no present_value slot", node.op_type))
     })?;
-    let pres_v_buf = ctx.bind_aliased_output(&node.inputs[4], pres_v_ref)?;
+    let pres_v_buf = ctx.bind_aliased_output(&node.inputs[4], pres_v_ref, kv_desc)?;
 
     // -- Push constants (32 bytes, matches shader PC struct) ---------------------------
     let mut push = Vec::with_capacity(32);
