@@ -1822,6 +1822,25 @@ If × 1 (not-registered / control-flow); Cast × 2, SkipSimplifiedLayerNormaliza
 non-GQA variant); Sub × 1 (dtype — fp32 residual); Greater × 1 (staged). None of these create
 cuts on this graph.
 
+**⚠️ Runtime status as of 2026-07-31 (main `86a815f`):** The numbers above describe the EP's
+*offer* at `GetCapability` time — 353 nodes claimed, 1 island. **At Compute time the EP fails and
+ORT falls back entirely to CPU. Zero nodes execute on Vulkan.** Root cause: Phi-3.5's KV-cache
+inputs have shape `[1, 32, 0, 96]` at first-token prefill (empty KV sequence). `vk/alloc.rs:214`
+returns `None` for `size=0` because `vkCreateBuffer(size=0)` is forbidden by the Vulkan spec;
+this propagates to `session.rs:1045` as `bail!("alloc_device failed for input buffer")`, which
+ORT silently swallows and retries on CPU. **All timings cited in this section (Vulkan median,
+CPU median, 618 ms, 230 ms, 254 ms) are CPU measurements of a CPU fallback run.** The island
+count and claim data are correct; the timings are not comparisons of the EP against CPU.
+
+*Fix ownership:* Switch owns `vk/alloc.rs` and `vk/session.rs`. The fix is a zero-size sentinel
+path in `alloc.rs::alloc()` (return a 1-byte placeholder buffer; skip descriptor writes for
+zero-size inputs in `session.rs`). `retain_viable`/`should_claim_island` is **not** the fix —
+the gate runs at capability time against static/symbolic shapes; the zero dimension is dynamic and
+is not visible at that stage. See `.squad/decisions/inbox/copilot-zero-size-alloc-partition-analysis.md`.
+
+*Post-fix action for Mouse:* re-run `bench/phi35.py` with ORT profiling to confirm non-zero
+Vulkan node counts, then report the first valid EP-vs-CPU timing.
+
 ### 7.2 Death by fallback — the real failure mode
 
 A claim rate of 95% can be *slower* than 0%. If the 5% we decline are distributed through the graph,
