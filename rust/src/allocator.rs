@@ -1246,13 +1246,17 @@ pub mod tally {
     /// says so rather than reporting zero bytes — "no instrument" and "no traffic" are different
     /// claims and only one of them is good news.
     fn session_staging_sentence() -> String {
-        let (up_n, up_b, rb_n, rb_b, up_us, rb_us) = crate::trace::tracer().transfer_totals();
+        let (up_n, up_b, up_us, rb_n, rb_b, rb_us) = crate::counters::staging::snapshot();
         if up_n == 0 && rb_n == 0 {
-            return " SESSION STAGING: NOT MEASURED — the tracer recorded no staging copies this \
-                    run. That is an absent instrument, not zero traffic: `vk::session` stages \
-                    every kernel input on every inference regardless. Set \
-                    ONNXRUNTIME_EP_VULKAN_TRACE to a path to measure it."
-                .to_string();
+            // This used to read the tracer's totals, which early-return unless tracing or verbose
+            // is on — so the default run said NOT MEASURED while 71% of its wall clock was this
+            // exact traffic. The counter is now unconditional, so a zero here is a real zero at
+            // the recording hook, and the remaining ambiguity (resident vs. hook moved) is stated
+            // rather than resolved.
+            return format!(
+                " {}",
+                crate::counters::staging::sentence(crate::counters::snapshot().compute_calls)
+            );
         }
         format!(
             " SESSION STAGING (separate from every alloc_* number above, and normally much \
@@ -1466,6 +1470,9 @@ pub mod tally {
         ] {
             c.store(0, Ordering::Relaxed);
         }
+        // The verdict now quotes the session staging tally, so a test that does not clear it reads
+        // another test's traffic.
+        crate::counters::staging::reset();
     }
 
     /// Drive the counters directly so every `staging_verdict` branch — including the genuinely

@@ -898,6 +898,19 @@ impl VulkanTracer {
     /// the dominant cost, and because `boundary_bytes_per_inference` (the number MVS minimises)
     /// is only checkable against reality if we measure the bytes we actually moved.
     pub fn record_transfer(&self, direction: Transfer, bytes: u64, dur: Duration) {
+        // UNCONDITIONAL, AND BEFORE THE GUARD ON PURPOSE.
+        //
+        // Everything below early-returns unless tracing or verbose is on. That is right for the
+        // trace document and wrong for the bytes: staging upload is ~71% of wall and the run that
+        // gets quoted is the one nobody set a flag on. `alloc_device_upload_bytes` read 0 on a run
+        // whose cmd_upload phase was 15.2 s, because it counts a different copy through a
+        // different device. These two atomics are the byte falsifier for persistent weight
+        // residency, and they must exist in the default configuration.
+        let us = dur.as_micros() as u64;
+        match direction {
+            Transfer::Upload => crate::counters::staging::on_upload(bytes, us),
+            Transfer::Readback => crate::counters::staging::on_readback(bytes, us),
+        }
         if !self.active() {
             return;
         }
@@ -1346,11 +1359,11 @@ impl VulkanTracer {
     /// Host-side staging traffic recorded through [`Self::record_transfer`], as
     /// `(upload_count, upload_bytes, readback_count, readback_bytes, upload_us, readback_us)`.
     ///
-    /// Exposed so the allocator's staging verdict can report the traffic it CANNOT see. The
-    /// allocator only knows about spans ORT asked it to allocate; the per-inference staging copy
-    /// of every kernel input is done by `vk::session` against buffers it owns, and is invisible
-    /// to `alloc_*`. A verdict that reports only the allocator's view describes a minority of the
-    /// staging actually happening.
+    /// **Tracer-scoped and therefore NOT the accounting to quote.** These fields are populated
+    /// only when the tracer is active, which is why the allocator's staging verdict no longer
+    /// reads them: it reads `counters::staging`, which is unconditional. Kept for the trace
+    /// summary and for tests; a third upload accounting is the last thing this EP needs.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn transfer_totals(&self) -> (u64, u64, u64, u64, u64, u64) {
         let s = self.summary();
         let up = s.phase_us.get(&Phase::Upload).copied().unwrap_or((0, 0));

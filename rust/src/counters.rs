@@ -120,6 +120,127 @@ pub fn extract_equivalence(doc: &str) -> &'static str {
     EQUIVALENCE_UNMEASURED
 }
 
+/// Host↔device staging traffic, counted **unconditionally**, outside the tracer.
+///
+/// # Why this exists, and why it is not in the tracer
+///
+/// Two upload accountings existed and the one everybody quotes was blind. `alloc_device_upload_*`
+/// counts copies through the *allocator's device-memory provider*, which is only engaged when
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`. The upload that actually dominates the run —
+/// `vk::session` re-staging the whole weight set on every inference, measured at 1997.6 MiB per
+/// inference and 71% of wall — went through `Tracer::record_transfer`, which **early-returns
+/// unless tracing or verbose is on**. So the default configuration produced
+/// `alloc_device_upload_bytes: 0` on a run whose `cmd_upload` phase was 15.2 seconds, and the
+/// bytes that matter were recorded nowhere at all.
+///
+/// Persistent weight residency (the ~95% lever) is to be verified **on bytes, not wall time**,
+/// because bytes are deterministic and wall time swings 9.5× under contention. A byte falsifier
+/// that only exists when an opt-in flag is set is a falsifier that will not be set on the run
+/// somebody quotes. These are therefore plain atomics on the recording path, in the counters
+/// module, and they land in the counters JSON every run.
+///
+/// # What they are NOT
+///
+/// They are **not** an independent measurement of `alloc_device_upload_bytes` and the two must
+/// never be added or reconciled: they count different copies made by different code through
+/// different devices. R11 — an identity whose two sides come from the same source cannot fire;
+/// so can an identity between two quantities that were never the same quantity.
+pub mod staging {
+    use super::ORD;
+    use std::sync::atomic::AtomicU64;
+
+    static UPLOADS: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_US: AtomicU64 = AtomicU64::new(0);
+    static READBACKS: AtomicU64 = AtomicU64::new(0);
+    static READBACK_BYTES: AtomicU64 = AtomicU64::new(0);
+    static READBACK_US: AtomicU64 = AtomicU64::new(0);
+
+    /// One host→device staging copy. Called from `Tracer::record_transfer`, *before* its
+    /// `active()` guard, so it is recorded whether or not anybody asked for a trace.
+    pub fn on_upload(bytes: u64, us: u64) {
+        UPLOADS.fetch_add(1, ORD);
+        UPLOAD_BYTES.fetch_add(bytes, ORD);
+        UPLOAD_US.fetch_add(us, ORD);
+    }
+
+    /// One device→host readback. See [`on_upload`].
+    pub fn on_readback(bytes: u64, us: u64) {
+        READBACKS.fetch_add(1, ORD);
+        READBACK_BYTES.fetch_add(bytes, ORD);
+        READBACK_US.fetch_add(us, ORD);
+    }
+
+    /// `(uploads, upload_bytes, upload_us, readbacks, readback_bytes, readback_us)`.
+    pub fn snapshot() -> (u64, u64, u64, u64, u64, u64) {
+        (
+            UPLOADS.load(ORD),
+            UPLOAD_BYTES.load(ORD),
+            UPLOAD_US.load(ORD),
+            READBACKS.load(ORD),
+            READBACK_BYTES.load(ORD),
+            READBACK_US.load(ORD),
+        )
+    }
+
+    pub fn reset() {
+        for c in [
+            &UPLOADS,
+            &UPLOAD_BYTES,
+            &UPLOAD_US,
+            &READBACKS,
+            &READBACK_BYTES,
+            &READBACK_US,
+        ] {
+            c.store(0, ORD);
+        }
+    }
+
+    /// What a zero means here, said out loud, because zero is the value residency is supposed to
+    /// produce and it is also the value a moved hook produces.
+    ///
+    /// R7: absence of an instrument must not read as a negative result. When no staging bytes were
+    /// recorded across a run that executed Compute calls, this counter alone **cannot** tell
+    /// "the weights are resident" from "`record_transfer` no longer brackets the copy". The
+    /// independent cross-check is the `cmd_upload` phase in `vk::session`, which is a different
+    /// call site around the same memcpy.
+    pub fn sentence(compute_calls: u64) -> String {
+        let (up_n, up_b, up_us, rb_n, rb_b, _) = snapshot();
+        if up_n == 0 && rb_n == 0 {
+            if compute_calls == 0 {
+                return "SESSION STAGING: none recorded, and no Compute call ran — nothing to say."
+                    .to_string();
+            }
+            return format!(
+                "SESSION STAGING: 0 bytes recorded across {compute_calls} Compute call(s). This \
+                 counter alone CANNOT distinguish 'the weights are resident' (the win) from \
+                 'record_transfer no longer brackets the staging copy' (an instrument failure). \
+                 Cross-check the `cmd_upload` phase, which is an independent bracket around the \
+                 same memcpy in vk::session, before quoting this as residency."
+            );
+        }
+        let mib = up_b as f64 / (1024.0 * 1024.0);
+        let per_call = if compute_calls > 0 {
+            format!(
+                " {:.2} MiB per Compute call across {} call(s)",
+                mib / compute_calls as f64,
+                compute_calls
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "SESSION STAGING: {up_n} host->device copy/copies totalling {mib:.1} MiB in {:.1} ms, \
+             {rb_n} readback(s) totalling {:.2} MiB.{per_call} This is per-inference traffic and \
+             it is counted SEPARATELY from every alloc_device_upload_* number, which only sees \
+             copies through the allocator's device-memory provider: the two are different copies \
+             and must never be added.",
+            up_us as f64 / 1000.0,
+            rb_b as f64 / (1024.0 * 1024.0),
+        )
+    }
+}
+
 /// The wire format of [`snapshot`], and the C ABI `OrtEpVulkanGetExecutionCounters` fills in.
 ///
 /// `#[repr(C)]` with `struct_size` and `abi_version` first so a reader can validate before it
@@ -239,6 +360,7 @@ pub fn reset() {
     DISPATCHES_EXECUTED.store(0, ORD);
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
+    staging::reset();
 }
 
 impl VulkanEpCounters {
@@ -351,6 +473,7 @@ pub fn dump_observations_if_requested() {
 
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
+    let st = staging::snapshot();
     let snap = snapshot();
     let mut doc = snap.to_json_with_equiv(existing_equiv);
     // Splice the observation keys in before the closing brace rather than appending after it, so
@@ -377,7 +500,13 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_buffer_binds\": {},\n  \
              \"alloc_failed_lookups\": {},\n  \
              \"alloc_device_authoritative_ceiling\": {},\n  \
-             \"alloc_device_authoritative_spans\": {}\n}}\n",
+             \"alloc_device_authoritative_spans\": {},\n  \
+             \"session_staging_uploads\": {},\n  \
+             \"session_staging_upload_bytes\": {},\n  \
+             \"session_staging_upload_us\": {},\n  \
+             \"session_staging_readbacks\": {},\n  \
+             \"session_staging_readback_bytes\": {},\n  \
+             \"session_staging_readback_us\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -408,6 +537,12 @@ pub fn dump_observations_if_requested() {
             t.failed_lookups,
             t.device_authoritative_ceiling,
             t.device_authoritative_spans,
+            st.0,
+            st.1,
+            st.2,
+            st.3,
+            st.4,
+            st.5,
         ));
     }
     if let Err(e) = std::fs::write(&path, doc) {
@@ -457,17 +592,80 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// The bytes that dominate the run must be counted with **no flag set**.
+    ///
+    /// This is the falsifier for the whole "verify residency on bytes" plan: if the recording hook
+    /// is behind the tracer's `active()` guard, the default run records nothing and the sweep that
+    /// is supposed to prove residency is taken on an instrument that was never on.
+    #[test]
+    fn staging_bytes_are_recorded_without_any_tracing_flag() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        staging::reset();
+        // A tracer with no ONNXRUNTIME_EP_VULKAN_TRACE and no verbose is inert by construction;
+        // the process-wide tracer in a test run is exactly that.
+        crate::trace::tracer().record_transfer(
+            crate::trace::Transfer::Upload,
+            4096,
+            std::time::Duration::from_micros(25),
+        );
+        let (n, bytes, us, ..) = staging::snapshot();
+        assert_eq!((n, bytes), (1, 4096), "staging upload was not counted");
+        assert!(us >= 25, "staging time was not counted; got {us}");
+        staging::reset();
+    }
+
+    /// Zero is the value residency produces AND the value a moved hook produces. The artifact must
+    /// refuse to call it a win. R7.
+    #[test]
+    fn zero_staging_bytes_refuses_to_claim_residency() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        staging::reset();
+        let s = staging::sentence(661);
+        assert!(s.contains("CANNOT distinguish"), "got: {s}");
+        assert!(s.contains("cmd_upload"), "must name the independent bracket; got: {s}");
+        assert!(!s.contains("resident (the win)."), "must not assert the win; got: {s}");
+    }
+
+    /// The two upload accountings count different copies and the artifact must forbid adding them.
+    #[test]
+    fn the_staging_sentence_separates_itself_from_the_allocator_upload_counters() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        staging::reset();
+        staging::on_upload(1024 * 1024, 1000);
+        let s = staging::sentence(2);
+        assert!(s.contains("alloc_device_upload_"), "got: {s}");
+        assert!(s.contains("must never be added"), "got: {s}");
+        assert!(s.contains("per Compute call"), "got: {s}");
+        staging::reset();
+    }
+
+    // The `session_staging_*` keys are asserted inside
+    // `the_dispatch_path_dump_carries_the_allocator_keys_too` rather than in a test of their own:
+    // that test already owns `ENV_COUNTERS_FILE`, and a second writer to one artifact is the bug
+    // this module exists to remember.
+
     /// The dispatch-path dump must not write a poorer document than the teardown path.
     ///
     /// Both write the same file and last-write-wins, so a subset document on the hot path erases
     /// the `alloc_*`/`pointers_*` keys on any run that ends with a dispatch. This is the falsifier:
     /// if `dump_if_requested` ever stops emitting the full document, this goes red.
+    ///
+    /// It also covers the `session_staging_*` keys, deliberately in the SAME test rather than a
+    /// second one: these tests share one process-wide env var and one output path, and two tests
+    /// writing one artifact is the defect this file exists to remember.
     #[test]
     fn the_dispatch_path_dump_carries_the_allocator_keys_too() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("counters_dump_parity_test.json");
         std::fs::remove_file(&path).ok();
+
+        staging::on_upload(2048, 7);
 
         // SAFETY: single-threaded test; the variable is removed before returning on every path.
         unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
@@ -483,6 +681,12 @@ mod tests {
             "alloc_device_authoritative_spans",
             "alloc_quarantine_retired",
             "pointers_use_after_free",
+            "session_staging_uploads",
+            "session_staging_upload_bytes",
+            "session_staging_upload_us",
+            "session_staging_readbacks",
+            "session_staging_readback_bytes",
+            "session_staging_readback_us",
         ] {
             assert!(
                 doc.contains(key),
@@ -490,6 +694,10 @@ mod tests {
                  the key disappears from any run that ends with a dispatch. Document was:\n{doc}"
             );
         }
+        assert!(
+            !doc.contains("\"session_staging_upload_bytes\": 0,"),
+            "the staging bytes reached the counters module but not the document; got:\n{doc}"
+        );
     }
 
     /// The counters are process-wide statics, so tests that touch them must not run concurrently

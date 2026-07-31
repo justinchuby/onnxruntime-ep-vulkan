@@ -20,6 +20,7 @@
     "trace.rs::op_timer_start",
     "trace.rs::record_op_meta",
     "trace.rs::record_path",
+    "trace.rs::transfer_totals",
     "transfer.rs::device_buffer_for"
   ],
   "ambiguous": [
