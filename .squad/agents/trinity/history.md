@@ -223,3 +223,19 @@ idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+---
+
+## Round 20 (2026-07-31T00:26:22-07:00) -- Guard D: runtime-fallback vacuous-pass closed
+
+Trigger: Allocator::alloc(size=0) returns None for KV-cache [1,32,0,96] inputs. ORT prints EP_FAIL, falls back to CPU silently. get_providers() still shows EP. test_phi35_vulkan_matches_cpu_logits PASSED (CPU-vs-CPU). Fourth fallback trap instance.
+
+Fixes (commit 5b3518b):
+- _models.py: count_vulkan_executions_from_profile, assert_vulkan_executed_runtime (Guard D)
+- test_phi35.py: Guard D in 4 tests (matches_cpu, cross_run, f16_logits, multirun_stable)
+- test_wiring_census.py: model_output_equivalence validity condition documented
+- Device labels fixed (commit 00c576c): selector 0=NVIDIA, selector 1=Intel
+
+Needed from Switch:
+1. alloc.rs: zero-size alloc must return valid zero-length buffer, not None
+2. Remove #[ignore] from ep_messenger_fires_for_planted_fence_leak
