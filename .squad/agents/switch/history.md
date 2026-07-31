@@ -1251,3 +1251,40 @@ Intel faster than CPU is real: UMA + weight cache means GPU runs kernels on resi
 weights without transfer. NVIDIA still upload-limited on warm activations + fence_wait idle.
 
 Outstanding: requested quiet-machine window for wall-clock before/after on NVIDIA.
+
+---
+
+## Session 35 - §6.5 VkDevice seam; byte sweep stands (2026-07-30T22:32:54-07:00)
+
+Context: Morpheus ruled §6.5 - exactly one VkDevice per (physical device, EP instance).
+Switch owns the seam. Merged origin/main (676fb94, Morpheus history + DESIGN.md §6.5/R12).
+
+D-S35-01 - §6.5 implementation (commits e2a23b4):
+Added to vk/device.rs:
+  EpDeviceShare { ash_device: ash::Device, physical_device, caps, compute_queue_family }
+  - ash::Device derives Clone in ash 0.38 (bitwise copy of handle + dispatch table, no Arc)
+  - Cloning shares the same VkDevice handle without reference counting
+  - EpDeviceShare does NOT own the VkDevice (no Drop); session::Device::drop calls vkDestroyDevice
+  - Safety: VulkanSession is EP-scoped (§2.3); ORT frees tensors before destroying EP
+  static EP_DEVICE: OnceLock<EpDeviceShare>
+  pub(crate) fn register_ep_device(device: &Device)  <- called by VulkanSession::create
+  pub(crate) fn ep_device() -> Option<&'static EpDeviceShare>  <- Tank reads this
+
+Added to vk/session.rs:
+  register_ep_device(&device) call after Device::create succeeds
+
+Tank's work: host_device_memory.rs calls ep_device() and uses the returned handle
+instead of creating its own Instance + Device. That unpins alloc_device_authoritative_spans.
+
+The Instance concern: EpDeviceShare does not hold Instance. The session's Instance
+keeps the Vulkan loader alive. Since the session outlives all device-memory usage (§2.3
++ ORT teardown order), Tank does not need to retain a separate Instance in his path.
+
+D-S35-02 - R12 acknowledged:
+alloc_device_upload_bytes = 0 (UNOBSERVABLE, frame mismatch - allocator counter cannot
+see session staging). tracer vulkan.transfer_bytes is the correct instrument.
+The previous reads of alloc_device_upload_bytes as "0 bytes uploaded" were frame errors.
+
+State: 426 tests pass. Seam committed. Byte sweep from session 33/34 stands:
+  cold inf 0: 1997.596 MiB; warm inf 1+: 0.756 MiB. 2642x reduction confirmed.
+  model_output_equivalence = MATCH on both devices.
