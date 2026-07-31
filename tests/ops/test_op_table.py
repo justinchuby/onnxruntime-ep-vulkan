@@ -342,8 +342,11 @@ _CASES: list[CaseSpec] = [
 
     # An odd element count is deliberately declined, not claimed: _S16 = (3, 5) = 15 elements puts
     # a live element in a partial final word, whose store lands outside the bound buffer range.
-    # Device 1 absorbed that and returned the right answer; device 0 applied robustBufferAccess and
-    # left a zero. These rows are here as the regression guard for that vendor split — claim=False
+    # Device selector 0 (NVIDIA) absorbed that and returned the right answer; device selector 1
+    # (Intel Iris Xe, the spec-conformance oracle) applied robustBufferAccess and left a zero.
+    # Labels corrected 2026-07-30T21:23:53-07:00 — the selector indices were inverted in all
+    # earlier comments (Tank's finding: discrete sorts first, so selector 0 = NVIDIA).
+    # These rows are here as the regression guard for that vendor split — claim=False
     # asserts the EP declines rather than answering differently on two GPUs.
     _ew1("Relu-fp16-odd", "Relu", _f16(_S16), in_dt=DT.FLOAT16, out_dt=DT.FLOAT16,
          tol=dict(m.FP16_ANY), claim=False),

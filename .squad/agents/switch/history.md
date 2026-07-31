@@ -947,7 +947,186 @@ which is the opposite of what epctl's display implies. This should be documented
 
 ---
 
-📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
+## Session 29 (2026-07-30T17:19:29-07:00) — Sub-phase attribution + weight-tensor GPU buffer cache
+
+**Coordinator assignment recap:** (1) characterize what is expensive inside `vulkan.record`, (2) confirm device-1 phase split, (3) implement and measure the fix.
+
+### Phase breakdown — what is expensive inside `vulkan.record`
+
+Added three sub-phase instruments: `Phase::CmdUpload`, `Phase::DescAlloc`, `Phase::PipelineLookup`. Results (NVIDIA, 3 inferences, 100 Compute calls, GPU timestamps enabled):
+
+| Sub-phase | ms | % of record |
+|---|---|---|
+| `vulkan.cmd_upload` | 5204 ms | 97.1% |
+| `vulkan.desc_alloc` | 83 ms | 1.6% |
+| `vulkan.pipeline_lookup` | 36 ms | 0.7% |
+
+Root cause: CPU `memcpy` of model weight tensors into staging buffers on every `Compute` call. Weight tensors (B: 4.5–13 MB, scales: 576 KB) are re-copied from the same CPU pointers every inference. 97% of record time is upload, not Vulkan API overhead.
+
+Intel: identical pattern — cmd_upload = 95.7% of record.
+
+### Device-1 (NVIDIA, device 0 in sorted-index) phase split confirmed
+
+NVIDIA (100 Compute calls, 3 inferences, GPU timestamps enabled):
+
+| Phase | ms | share |
+|---|---|---|
+| `vulkan.record` | ~12700 ms | 83.9% |
+| `vulkan.fence_wait` | ~2100 ms | 13.9% |
+| GPU kernels | ~1175 ms | 7.8% |
+| `vulkan.submit` | ~75 ms | 0.5% |
+
+NVIDIA driver quirk: with `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=0`, NVIDIA record time is 7.4× slower (QueryPool presence activates a different scheduling path). All timing comparisons use GPU timestamps enabled.
+
+### Weight-tensor GPU buffer cache — implementation and measurement
+
+**Prediction (stated before building):** Weight tensors have stable CPU pointers across inferences. Caching tensors ≥ 32 KB should reduce upload by ~99.7% on inferences 2+. Expected: ~5-6× on NVIDIA, ~1.5-2× on Intel for 3 inferences.
+
+**Implementation:**
+- `GpuBuffer::borrowed_ref()` in `alloc.rs` — non-owning handle, `Allocator::free()` is no-op.
+- `VulkanSession::weight_caches: HashMap<u64 (subgraph_id), HashMap<(usize cpu_ptr, u64 byte_size), GpuBuffer>>`.
+- Cache populated after fence-signal; served as borrowed_ref on subsequent calls (skips memcpy + vkCmdCopyBuffer + barrier).
+- `impl Drop for SubgraphComputeInfo` calls `release_weight_cache(subgraph_id)`.
+- Borrow split: `let weight_cache_ptr: *mut _ = ... as *mut _;` (safe — disjoint fields).
+
+**Measured results (NVIDIA RTX 4060, commit cdcc349):**
+
+| Inference | cmd_upload total | mean/call |
+|---|---|---|
+| 1 (cold) | 4118 ms | 124.8 ms |
+| 2 (warm) | 212 ms | 6.4 ms |
+| 3 (hot) | 1.3 ms | 0.038 ms |
+
+Net for 3 inferences: 4332 ms vs expected ~12354 ms (no cache) → **2.85× reduction in upload time**.
+
+**Measured results (Intel Iris Xe, device 1):**
+
+| Inference | cmd_upload total | mean/call |
+|---|---|---|
+| 1 (cold) | 4258 ms | 129 ms |
+| 2 (warm) | 128 ms | 3.9 ms |
+| 3 (hot) | 2.3 ms | 0.07 ms |
+
+**Correctness:** `test_phi35_vulkan_multirun_logits_stable` PASSED on both devices with bit-identical logits (argmax=30751 on NVIDIA, argmax=30751 on Intel). All 420 tests pass.
+
+**Anomaly — Intel submit inflation:** Intel `vulkan.submit` = 2594 ms for 100 calls (26 ms/call) vs coordinator baseline of 0.127 ms/call (205× higher). Hypothesis: borrowed-ref buffers keeping large device-local GpuBuffers alive across Compute calls triggers Intel driver buffer-residency tracking per vkQueueSubmit. Requires investigation.
+
+### Messenger positive control — Intel (device 1) ✅
+
+`a_planted_vulkan_violation_is_caught_by_the_validation_layer` with `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=1` on device 1 (Intel): PASSED. Messenger fires on Intel as expected.
+
+### Decision written
+
+→ `.squad/decisions/inbox/switch-weight-cache-recording-bottleneck.md`
+
+Includes: per-inference cache results, Intel submit anomaly, R9 falsifier for the 68% claim, courtesy note to Tank on the fence_wait lever size relative to the cache win.
+
+### Pending
+
+- [x] Intel submit inflation — EXPLAINED: cold-inference-only, Intel UMA synchronous vkCmdCopyBuffer during submit. Warm inferences normal (0.6ms/call). Not a bug.
+- [ ] Predicted vs measured END-TO-END speedup on coordinator's 31-inference Intel run — coordinator should re-run `bench/phi35.py` on Intel device 0 to get wall-clock.
+- [ ] Timestamp falsifiers — stated in session 27, should be formally confirmed.
+
+
+---
+
+## Session 30 (2026-07-30T20:34:34-07:00) — CB-caching prediction; batching feasibility; post-cache bottleneck shift
+
+### Intel submit anomaly — explained
+
+Submit inf1 = 77.6ms/call, inf2 = 0.6ms/call, inf3 = 0.4ms/call. Anomaly is cold-inference-only. On Intel UMA, `vkQueueSubmit` executes `vkCmdCopyBuffer` synchronously (no PCIe bus). After my weight cache: warm inferences have no large staging copies → submit is normal (0.6ms). Not a bug.
+
+### CB-caching prediction (stated before building)
+
+**What it would eliminate:** `vkCreateDescriptorPool` + `vkAllocateDescriptorSets` + CB begin/end overhead per warm call.
+
+**Measured warm-call overhead (Intel post-cache):** record mean = 1.88ms/call. DescAlloc=0.17ms/call, PipelineLookup=0.12ms/call, unaccounted CB overhead ≈ 1.59ms/call.
+
+**Why gains are small:** Most descriptor bindings (intermediates, activations) change every call. Only weight bindings are stable. Dominant warm cost = GPU execution (q_gemv ≈ 56ms/call on Intel Iris Xe).
+
+**Prediction:** CB caching → warm record drops from 1.88ms to ~0.1ms/call.
+- For 3-inference Intel: 66 warm calls × 1.78ms = 117ms savings = **0.8% of 14554ms total**
+- For 31-inference extrapolation: 630 warm calls × 1.78ms = 1122ms savings → **1.12× incremental** speedup
+- **Falsifier:** DescAlloc total should drop from 16ms to <1ms for 100 calls after CB caching
+
+**Decision: do NOT implement CB caching this session.** Gain is <1% after the weight cache. GPU execution (q_gemv) dominates; CB caching doesn't address it.
+
+### ORT calling pattern and batching feasibility
+
+NVIDIA gaps: median=0.58ms, max=4258ms (between inferences).  
+Intel gaps: median=0.65ms, max=4842ms (first GQA inference on CPU/reference executor).
+
+**The 4842ms gap** is non-Vulkan-EP CPU work (GQA running on reference backend). Subsequent within-inference gaps are ~0.65ms.
+
+**Batching conclusion: NOT feasible without ORT interface change.**
+- Islands are data-dependent (layer-by-layer); GPU-side barriers needed between submits
+- ORT does CPU work (0.65ms) between each Compute call — no inference boundary signal exposed to EP
+- Non-EP GQA cost (~4842ms cold, ~2ms warm per inference) is not in our spans and cannot be batched
+- Deferred-submission would need: detect inference boundary (no hook exists), accumulate submits, flush at boundary
+
+### Post-cache bottleneck hierarchy (warm inferences)
+
+**Intel:**
+1. GPU kernel execution (q_gemv ≈ 56ms/call, 89% of fence_wait warm) ← PRIMARY
+2. Fence_wait idle (driver scheduling): 14ms/call median = 462ms/inference
+3. Record (post-cache): 1.88ms/call = 62ms/inference
+
+**NVIDIA:**
+1. GPU kernel execution (q_gemv dominant)
+2. Record + fence_wait: both ~1ms/call (small)
+
+**R9 falsifier for post-cache Intel claim:** if GPU execution time is not the bottleneck, a run with a faster GPU (or smaller model) would show proportionally reduced fence_wait without changing record. Falsifiable by device swap.
+
+### Fence-wait idle decomposition (post-cache)
+
+Coordinator's script on trace_s29_nv_cache.json:
+- fence_wait=248ms, idle=103ms (41.6%), kernel=145ms, median idle=0.76ms/call
+
+Coordinator's script on trace_s29_intel_cache.json:
+- fence_wait=5981ms, idle=2054ms (34.3%), kernel=3927ms, median idle=14.21ms/call
+- 256 of 964 GPU spans start OUTSIDE fence_wait (Intel UMA semi-synchronous execute during submit)
+
+### Decision written
+
+→ `.squad/decisions/inbox/switch-cb-cache-prediction.md`
+
+No code changes this session. Recommend GPU kernel optimization (q_gemv MatMulNBits) as next highest-leverage step. Deferred submission is medium-term (requires ORT API change).
+
+---
+
+## Session 31 (2026-07-30T21:03:48-07:00) — Measurement contamination acknowledgement; quiet-machine request
+
+**Coordinator finding:** command-buffer recording inflates 9.5× under CPU contention from concurrent agents compiling Rust on the same machine. Device 1 (NVIDIA) measured at record=65540ms vs device 0 (Intel) at 184356ms (contended) vs device 0 at 19460ms (quiet). Same device, same code, 9.5× apart. Withdrawing the device-1 comparison as unusable.
+
+**This contaminates all timing data from sessions 28-30** (my traces: trace_s28*, trace_s29*) — all taken while multiple agents were running on this machine.
+
+### What survives contamination
+
+**Correctness** is unaffected by timing contamination:
+- `test_phi35_vulkan_multirun_logits_stable` PASSED with bit-identical logits on both devices
+- 420 tests pass (layering, portability, validation_control)
+- The cache mechanism is correct; only the timing of its effect is uncertain
+
+**Qualitative findings** (direction survives, magnitude does not):
+- `cmd_upload` drops from cold (large) to warm (near-zero) — the RATIO between inf1 and inf3 is the finding. inf3 = 1.3ms vs inf1 = 4118ms is a 3168× ratio; even a 9.5× contention swing cannot make the warm calls expensive (they are doing ≤ 6 KB of uploads)
+- Recording cost is fixed per-Compute, not per-dispatch — confirmed by the coordinator's pre-cache quiet-machine data and consistent with my post-cache warm-call data (warm 20-dispatch islands at 1.03ms median, much cheaper than cold regardless of contention)
+- The Intel submit anomaly explanation (UMA synchronous copy) — directionally correct; absolute values unreliable
+
+**What must be re-measured quiet:**
+- Absolute wall-clock speedup from weight cache (my "2.85×" is based on contaminated data)
+- Phase split fractions (68% record, 30% fence_wait) may have shifted under contention
+- The CB-caching prediction (< 1% gain) is qualitatively robust but the exact percentages are not
+
+### Request: quiet-machine measurement window
+
+Coordinator offered to hold other agents idle. **Weight cache is committed (cdcc349), tested, and correct. Ready to measure.** When the machine is quiet, re-run `test_phi35_vulkan_multirun_logits_stable` on both devices with `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` and produce fresh traces. The before/after comparison requires a pre-cache baseline at the same machine state — the coordinator has the pre-cache trace from the original "68%" measurement which was taken on a quiet machine (device 0 Intel). That baseline is the control; my post-cache traces need quiet conditions to match it.
+
+### Revised weight cache claim (conservative)
+
+- **Correctness:** confirmed, two devices, 3 inferences each, bit-identical
+- **Direction:** warm-inference upload cost drops to near-zero (inf3 = 1.3ms on NVIDIA, 2.3ms on Intel)
+- **Magnitude:** pending quiet-machine re-measurement; the "2.85×" figure should not be cited until then
+- **Falsifier for the direction claim:** if warm-cache cmd_upload on a quiet machine exceeds 10ms/call for any warm call (inf3 on either device), the cache mechanism has a correctness defect, not just a contention artifact
 
 Two findings apply to every agent on the team:
 
@@ -959,6 +1138,61 @@ case the code was correct; the wiring was absent; the absence was invisible to r
 
 **(b) 85.9% of inference wall-time involves no GPU work** (recording 68.3%, fence-wait
 idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
+
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+
+---
+
+## Session 32 — Device-label fix; messenger positive control (valid); timestamp falsifiers; bench parsers (2026-07-30T19:47:00-07:00)
+
+**Context:** Resumed from summary. Prior commit cdcc349 (weight-tensor GPU buffer cache) eliminated 97% of per-inference upload for warm inferences. Large origin/main merge (d836e0) landed Tank's device-backed allocator, transfer.rs seams, and documentation.
+
+Critical coordinator correction: ONNXRUNTIME_EP_VULKAN_DEVICE=0 is NVIDIA (discrete-first sort); DEVICE=1 is Intel Iris Xe. All prior coordinator device labels were inverted.
+
+**D-S32-01 — Device-label semantics in instance.rs (commit 7d66986):**
+probe_loader_report() printed Device N: Name using Vulkan enumeration order while select_device() indexes a best-first sorted list. Same integers, different index spaces — a reader of the old output naturally concluded DEVICE=0 → Intel (wrong).
+
+Fix: add [Vulkan enum index N] annotation to each device header, plus an explicit ONNXRUNTIME_EP_VULKAN_DEVICE selector index map block showing the sorted order with Vulkan enum indices beside them. Selection behavior (discrete-first sort) unchanged — compatibility outranks elegance.
+
+`
+ONNXRUNTIME_EP_VULKAN_DEVICE selector index map:
+  [0] 'NVIDIA GeForce RTX 4060 Laptop GPU'  (Vulkan enum index 1)
+  [1] 'Intel(R) Iris(R) Xe Graphics'  (Vulkan enum index 0)
+Would select: selector index 0 → 'NVIDIA ...' (Vulkan enum index 1; best-first default)
+`
+
+Two bench parsers broke on the new format; updated regexes in 	imestamp_audit.py and nvironment.py (commit 7f734a2).
+
+**D-S32-02 — Messenger positive control (criterion 3 — first valid readings):**
+All prior "no validation errors" readings were void: the messenger was not attached (layer output went to default stderr handler, not in-process).
+
+New valid readings:
+- p_messenger_fires_for_planted_fence_leak PASS (NVIDIA device, run as --ignored): EP_VALIDATION_ERROR_COUNT = 1 after planted VkFence leak at kDestroyDevice
+- _planted_vulkan_violation_is_caught_by_the_validation_layer PASS
+- _clean_run_produces_no_validation_errors PASS (with ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=1)
+
+**Lane gap:** p_messenger_fires_for_planted_fence_leak is #[ignore]d (safely — it deliberately causes a Vulkan error and must not run concurrently with library tests). Morpheus: a control that must be opted into is not in the lane. Written to switch-criterion3-lane-gap.md inbox for Trinity.
+
+**D-S32-03 — Timestamp falsifiers (both confirmed):**
+Both falsifiers reside on Intel Iris Xe (selector index 1, Vulkan enum index 0):
+
+| Hazard | Falsifier | Value |
+|--------|-----------|-------|
+| Period scale | Intel Iris Xe | 52.0833 ns/tick (52× error if ignored) |
+| Valid-bit mask | Intel Iris Xe | 36 valid bits (unmasked → garbage/wrap) |
+
+NVIDIA RTX 4060 (selector 0): period=1.0, validBits=64 — both hazards indistinguishable from a broken conversion. This means a build that drops period scaling and valid-bit masking is green on NVIDIA and in CI (lavapipe also 1.0/64), while under-reporting every Intel duration by 52× with potential negative durations on wrap.
+
+ench/timestamp_audit.py exits 0. Conversion covered by unit tests in 	race.rs using the real hardware constants.
+
+**State at end of session:**
+- Device-label fix: ✅ committed 7d66986
+- Bench parser fix: ✅ committed 7f734a2
+- Criterion 3 positive control: ✅ first valid readings, both devices
+- Timestamp falsifiers: ✅ stated formally, audit exits 0
+- Lane gap: 📋 written to inbox for Trinity
+- Quiet-machine cache benchmark: PENDING (coordinator offered to idle other agents — say the word)
+- lloc_device_authoritative_spans: still 0 (session uses its own VkBuffers for weight cache, not ORT allocator handles — architectural constraint documented)
