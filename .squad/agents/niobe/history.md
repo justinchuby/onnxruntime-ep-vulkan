@@ -112,3 +112,57 @@ the §3 timestamps decide it.
   git never will.
 - Crate edition is 2024: `rustfmt --edition 2021 <file>` silently no-ops. Use `cargo fmt --all`.
 - PowerShell `Select-String` piped after a native command can return nothing; redirect to a file.
+
+---
+
+## 2026-07-30 (evening) — the hypothesis died, and two defects found by instrument
+
+### My per-submission hypothesis is FALSIFIED
+`vulkan.submit` is **0.6%** on the discrete part. I reasoned from Intel costing ~2x per island
+with no bus to cross, and I was right about the data and wrong about the stage. **Refusing to
+assert it is what got the instrument built.** That is the whole of R9 in one episode: I got more
+from being wrong with an instrument than I would have from being right with an argument.
+
+### The real cost: `vulkan.record` is 68.9% (NVIDIA) and **98.8% of it is host staging memcpy**
+~60 MiB re-copied into staging on *every* `Compute` call. The recording loop is worth 414 ms of a
+33456 ms phase. Recording scales with **bytes, not dispatches** (implied bandwidth constant to
+1.05x across a 10x dispatch-count change). Warmup decline is real and survives island identity;
+NVIDIA flattens by inference 2, Intel has not flattened after 12.
+
+### Defect: `ep.device_index` != `vkEnumeratePhysicalDevices` index
+`engine.rs::probe_devices` is **sorted best-first**; `vulkaninfo`/`probe()`/`epctl` are in
+enumeration order. Discrete outranks integrated, so `ep.device_index` 0 is NVIDIA while
+`probe()[0]` is Intel. **My first results table named the wrong GPU on every row and every gate
+stayed green.** A wrong-and-confident label is worse than a missing one.
+**Rule I now hold:** never label a measurement by the index you passed in. Label it from a
+fingerprint the *measured system itself* emitted. `devices.device_identity_check` does this from
+`timestampPeriod`/`validBits` carried in the trace, and prints `UNIDENTIFIED DEVICE` rather than
+a plausible guess. It refuses on ambiguity too — NVIDIA and lavapipe are both 1.0/64.
+
+### Defect: GPU spans cannot be attributed to submissions by timestamp
+`anchor_uncertainty_us` hits **314618 us (314 ms)** on Intel. Timestamp containment invented 14
+"GPU busier than its own fence" violations on a build whose conversion arithmetic was *proven*
+correct. Fixed by **ordinal** attribution (each subgraph consumes exactly `nodes` GPU spans),
+with `sum(nodes) == len(gpu_spans) == dispatches_executed` asserted as integer equality (5457).
+**Generalisable:** a derived coordinate whose error bar exceeds the thing being resolved must not
+be used to resolve it. Durations are fine; *positions* are not evidence.
+
+### Two things I retired rather than gated
+`per_island_ms_lower_bound` (it went UP when islands fell 10x) and the vulkan/cpu ratio on an
+unsteady baseline. Both for the same reason: **a number printed under a warning gets quoted
+without the warning.** Refusal beats annotation. Also: untestable steadiness (< 4 samples) is
+treated as unsteady — untested is not steady.
+
+### The 52x trap is now closed end to end
+`gpu_ns / period` must be a whole integer because ticks are integers. **Decisive only where
+period != 1.0** — VACUOUS on NVIDIA and on lavapipe CI, and reported as a gap, never as a pass.
+PASSED and decisive on Intel. Note GPU time is only 12.6%/43.9% of Compute, so a 52x error there
+is *invisible in wall clock* — which makes the trap worse, not better.
+
+### Tooling
+- Traces are cheap to re-analyse and expensive to re-collect. A full 2-device run is ~40 min;
+  both defects above were fixed and re-verified against the **stored traces**, no re-run.
+- The timed pass must run with tracing OFF and the split come from a separate pass;
+  `tracing_overhead_ratio` measured 1.02x on a 20-iter run and **7.89x** on a 2-iter one.
+- Verdicts from short runs are honest but different (no steady state, huge tracing overhead).
+  Do not quote a smoke run's `size_verdict`.

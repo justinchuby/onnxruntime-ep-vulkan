@@ -51,10 +51,20 @@ currently pathological in a way that must travel with the number:
   inference and buys back only the GEMV. The expected result is a *slowdown*, and a slowdown
   honestly measured is the most useful number available today: it prices the boundary, which
   is what tells us which op to write next.
-* There is **no GPU kernel time** in this measurement on any device, because no ``VkQueryPool``
-  exists yet — the timestamp hooks in the recording path are still comments
-  (``vk/session.rs`` and ``vk/dispatch_integration.rs``). Everything here is host wall time.
-  See :mod:`timestamp_audit` for what *is* verified about the timestamp path.
+* GPU kernel time **is** measured, as of the ``VkQueryPool`` path landing
+  (``rust/src/vk/timestamp.rs``; ``GpuQueryPool::cmd_before/cmd_after`` around every
+  ``vkCmdDispatch``). This module reports the phase split next to the wall time — see
+  :mod:`phases`. The previous caveat here, *"no GPU kernel time is included: no VkQueryPool
+  exists yet"*, was **retired on 2026-07-30** the day it stopped being true. It is recorded
+  rather than deleted because a stale caveat is the defect class this project produced five
+  times in one day: a true statement about the instrument set, kept past the point where the
+  instrument set changed, is read by every later reader as current.
+* The phase split comes from a **separate traced pass**, never from the timed run. Timestamp
+  queries are pipeline-stage writes inside the command buffer plus a query-pool reset per
+  recording, and the tracer itself allocates and takes a clock reading per span. Reporting a
+  wall time measured with the instrument switched on, as if it were the wall time without it,
+  is the same error one level up. The overhead is measured and reported as
+  ``tracing_overhead_ratio`` rather than assumed small.
 
 Usage::
 
@@ -79,6 +89,7 @@ if str(_HERE) not in sys.path:
 
 import devices as device_mod  # noqa: E402
 import environment  # noqa: E402
+import phases as phases_mod  # noqa: E402
 import producers  # noqa: E402
 import stats as stats_mod  # noqa: E402
 from stats import Sample  # noqa: E402
@@ -87,6 +98,8 @@ EP_NAME = "VulkanExecutionProvider"
 EP_LIB_ENV = "ONNXRUNTIME_VULKAN_EP_LIB"
 CLAIM_LOG_ENV = "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"
 COUNTERS_ENV = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
+TRACE_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE"
+TRACE_GPU_ENV = "ONNXRUNTIME_EP_VULKAN_TRACE_GPU"
 MODEL_ENV = "ONNXRUNTIME_EP_VULKAN_PHI35_ONNX"
 
 #: §10.0 verdict vocabulary. Owned by the metric-of-record ruling, not by this file.
@@ -366,43 +379,92 @@ def staging_label(counters: "dict | None") -> dict:
 
 def boundary_cost(vk_median_ms: float, cpu_median_ms: float,
                   island_count: "int | None") -> dict:
-    """Price the device-boundary crossings, honestly and with the direction of the bound stated.
+    """The host-side delta, and an explicit retirement of the per-island figure derived from it.
 
-    With ``island_count`` single-node islands, the graph leaves and re-enters the device once per
-    island per inference. The whole host-side difference is attributed to those crossings::
+    **``per_island_ms_lower_bound`` is retired as of 2026-07-30.** It was defined as::
 
         per_island_ms = (vk_median_ms - cpu_median_ms) / island_count
 
-    That is a **lower** bound on the true per-crossing cost, not an estimate of it, and the
-    reason is worth stating because the sign is counter-intuitive: the same difference also
-    contains whatever the GPU *saved* on the GEMV it took over. If the GPU kernel is faster than
-    the CPU's, the saving offsets part of the boundary cost, so the true boundary cost is larger
-    than this figure — the arithmetic below cannot separate them and does not pretend to.
+    and described as a lower bound on the cost of one device-boundary crossing. The phase split
+    (:mod:`phases`) shows that is not what it measures and never was. The delta is dominated by
+    host-side work inside ``Compute`` — command-buffer recording and, inside that, the staging
+    memcpy — which is a **per-inference, per-byte** cost, not a per-crossing one.
 
-    Separating them needs GPU kernel time, which needs ``VkQueryPool`` timestamps, which do not
-    exist yet (see :mod:`timestamp_audit`). That is recorded here as the missing instrument
-    rather than approximated.
+    The falsification was clean and is worth recording, because the statistic did not merely fail
+    to be useful — it moved the wrong way. When Mouse wired ``partition.rs`` into
+    ``GetCapability``, islands collapsed 321 → 33 and the Intel wall time fell 2954.6 → 807.2 ms:
+    a large real improvement. The per-island figure went **up**, from 8.5 to 16.6 ms, because the
+    denominator fell faster than a numerator that was never proportional to it. A statistic that
+    rises when the thing it purports to measure improves is not a noisy statistic; it is measuring
+    something else.
 
-    ``island_count`` is ``None`` when the EP did not report ``subgraphs_live``. In that case no
-    per-island figure is produced at all — dividing by an assumed island count is exactly how a
-    plausible-but-wrong number gets made, and this project has three of those already.
+    What replaces it is not a redefinition of the same quotient. It is two directly measured
+    numbers from the trace, neither of which is an attribution of a residual:
+
+    * ``phases.host_phases_ms['record'].median_ms`` — the actual per-island recording cost.
+    * ``phases.record_scaling`` — whether that cost scales with island size at all.
+
+    ``delta_over_island_count_ms`` is still emitted, because deleting a number that has been
+    quoted leaves a reader unable to reconcile older reports. It carries ``is_per_island_cost:
+    false`` and its own note, and nothing downstream prints it as a per-island cost.
     """
     delta = vk_median_ms - cpu_median_ms
-    per_island = (delta / island_count) if island_count else None
+    quotient = (delta / island_count) if island_count else None
     return {
         "vk_median_ms": vk_median_ms,
         "cpu_median_ms": cpu_median_ms,
         "delta_ms": delta,
         "island_count": island_count,
         "island_count_source": "EP counter `subgraphs_live`",
-        "per_island_ms_lower_bound": per_island,
-        "bound_direction": "lower",
-        "why_lower": "the host-side delta nets the boundary cost against whatever the GPU saved "
-                     "on the work it took over; the two cannot be separated without GPU kernel "
-                     "time, which requires VkQueryPool timestamps that do not exist yet",
-        "separating_instrument": "VkQueryPool timestamps around each dispatch "
-                                 "(docs/PERF.md §3, routed to Switch; not implemented)",
+        "per_island_ms_lower_bound": None,
+        "per_island_ms_lower_bound_status": "RETIRED 2026-07-30",
+        "per_island_ms_lower_bound_retirement_reason":
+            "it was total-host-delta over island count, and the phase split shows the delta is "
+            "dominated by per-inference host work (command-buffer recording, and inside it the "
+            "staging memcpy) that is not proportional to island count. It rose 8.5 -> 16.6 ms "
+            "(Intel) across a change that collapsed islands 321 -> 33 and cut wall time "
+            "2954.6 -> 807.2 ms. Replaced by the directly measured vulkan.record median and by "
+            "phases.record_scaling.",
+        "delta_over_island_count_ms": quotient,
+        "delta_over_island_count_is_per_island_cost": False,
+        "delta_over_island_count_note":
+            "an arithmetic restatement of delta_ms, kept only so older reports can be "
+            "reconciled. It is NOT a per-island or per-boundary cost and must not be quoted as "
+            "one.",
+        "separating_instrument": "bench/phases.py, over the EP's own Chrome Trace JSON "
+                                 "(vulkan.record / submit / fence_wait / vulkan.gpu.*)",
     }
+
+
+def ratio_refusal(vk_drift: "dict | None", cpu_drift: "dict | None") -> "str | None":
+    """Refuse to emit a vulkan-vs-cpu ratio when either sample is not steady.
+
+    A ratio has two operands and inherits the worse of them. On the last recorded run the Vulkan
+    absolutes were solid while the CPU baseline drifted 872.8 → 331.5 ms within a single process
+    (rsd 14.4% Intel, 56.5% NVIDIA), and the harness printed the ratio anyway with a warning
+    above it. **A warned-about number still gets quoted** — it travels into a summary, then into a
+    document, and the warning does not travel with it. This project has already lost two numbers
+    that way.
+
+    So the ratio is not emitted at all when ``stats.drift`` says either sample is unsteady. The
+    absolutes still are: each is a real measurement of its own session and neither depends on the
+    other. What is withheld is the derived quantity whose meaning depends on both being stable.
+    ``None`` means "emit it".
+    """
+    for tag, d in (("vulkan", vk_drift), ("cpu", cpu_drift)):
+        if not d:
+            continue
+        if d.get("steady") is False:
+            return (
+                f"no vulkan/cpu ratio is reported: the {tag} sample is not steady "
+                f"({d.get('reason')}). A ratio inherits the instability of its worse operand, "
+                f"and a ratio printed under a warning is quoted without the warning. The two "
+                f"absolutes above stand on their own and are unaffected.")
+        if d.get("steady") is None:
+            return (
+                f"no vulkan/cpu ratio is reported: steadiness of the {tag} sample could not be "
+                f"tested ({d.get('reason')}). Untested is not steady.")
+    return None
 
 
 def dispatch_accounting(counters: "dict | None", island_count: "int | None",
@@ -614,6 +676,11 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
     counters.unlink(missing_ok=True)
     env = dict(os.environ)
     env[COUNTERS_ENV] = str(counters)
+    # The timed pass runs with tracing OFF. Timestamp queries are pipeline-stage writes plus a
+    # query-pool reset per recording, and every span costs an allocation and a clock read; a wall
+    # time measured through the instrument is not the wall time without it.
+    env.pop(TRACE_ENV, None)
+    env.pop(TRACE_GPU_ENV, None)
     cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--device",
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
@@ -635,6 +702,70 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
     return rec
 
 
+def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
+                    timed: dict) -> dict:
+    """A second, instrumented process whose only product is the phase split.
+
+    Separate from the timed pass on purpose. What comes back is *where the time goes*, in
+    proportions; the absolute totals of this pass are inflated by the instrument and are labelled
+    as such. ``tracing_overhead_ratio`` is the traced median over the untimed median — measured,
+    not assumed small, because if the instrument doubled the run then the proportions it reports
+    are proportions of a different run.
+    """
+    scratch.mkdir(parents=True, exist_ok=True)
+    out = scratch / f"phi35_trace_dev{device_index}.json"
+    counters = scratch / f"phi35_trace_counters_dev{device_index}.json"
+    trace = scratch / f"phi35_trace_dev{device_index}.trace.json"
+    for p in (out, counters, trace):
+        p.unlink(missing_ok=True)
+    env = dict(os.environ)
+    env[COUNTERS_ENV] = str(counters)
+    env[TRACE_ENV] = str(trace)
+    env[TRACE_GPU_ENV] = "1"
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--device",
+           str(device_index), "--iters", str(iters), "--warmup", str(warmup),
+           "--out", str(out), "--scratch", str(scratch)]
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    rep: dict = {
+        "iters": iters,
+        "warmup": warmup,
+        "trace_file": str(trace),
+        "note": ("a separate instrumented process. Proportions are the product; the absolute "
+                 "totals here are inflated by the tracer and the query pool and are not the "
+                 "benchmark's numbers."),
+    }
+    if not trace.exists():
+        rep["refusal"] = (f"no trace file was written (worker exit {proc.returncode}). No phase "
+                          f"split is reported: {proc.stderr.strip()[-400:]}")
+        return rep
+    traced_rec = json.loads(out.read_text("utf-8")) if out.exists() else {}
+    cnt = None
+    if counters.exists():
+        try:
+            cnt = json.loads(counters.read_text("utf-8"))
+        except json.JSONDecodeError:
+            cnt = None
+    try:
+        rep["analysis"] = phases_mod.analyse(phases_mod.load(trace), cnt)
+    except Exception as exc:  # pragma: no cover - environment dependent
+        rep["refusal"] = f"the trace could not be analysed: {exc!r}"
+        return rep
+    rep["red_flags"] = phases_mod.red_flags(rep["analysis"])
+    tv = (traced_rec.get("vulkan") or {}).get("median_ms")
+    uv = (timed.get("vulkan") or {}).get("median_ms")
+    rep["traced_vulkan_median_ms"] = tv
+    rep["untraced_vulkan_median_ms"] = uv
+    rep["tracing_overhead_ratio"] = round(tv / uv, 4) if (tv and uv) else None
+    rep["tracing_overhead_note"] = (
+        "traced median / untraced median, both from this machine minutes apart. Above ~1.5 the "
+        "phase proportions describe a run the benchmark did not measure and should be read as "
+        "indicative only."
+        if rep["tracing_overhead_ratio"] else
+        "not computable: one of the two passes produced no median.")
+    rep["traced_model_output_equivalence"] = traced_rec.get("model_output_equivalence")
+    return rep
+
+
 def _derive(rec: dict) -> None:
     """Compute everything that needs the counters file, which only exists after teardown.
 
@@ -653,7 +784,14 @@ def _derive(rec: dict) -> None:
         return
 
     rec["boundary"] = boundary_cost(rec["vulkan"]["median_ms"], rec["cpu"]["median_ms"], islands)
+    # The ratio is a derived quantity gated on both operands being steady. See ratio_refusal.
+    refusal = ratio_refusal(rec.get("vulkan_drift"), rec.get("cpu_drift"))
+    rec["ratio_refusal"] = refusal
+    rec["vulkan_over_cpu_ratio"] = (
+        None if refusal or not rec["cpu"]["median_ms"]
+        else round(rec["vulkan"]["median_ms"] / rec["cpu"]["median_ms"], 4))
     claimed = rec.get("claimed_nodes")
+    ps = ((rec.get("phase_pass") or {}).get("analysis") or {}).get("partition_stats") or {}
     rec["metric_of_record"] = {
         "claimed_op_coverage": claimed,
         "nodes_probed": rec.get("total_nodes_probed"),
@@ -661,14 +799,18 @@ def _derive(rec: dict) -> None:
         "island_count_source": "EP counter `subgraphs_live`",
         "islands_equal_claimed_nodes": (islands == claimed) if islands is not None else None,
         "islands_equal_claimed_nodes_note":
-            "two independent counters agreeing that every claimed node is its own single-node "
-            "island. Per R9 (DESIGN.md §10.0.1) agreement raises confidence, not evidence; the "
-            "falsifier is `dispatch_accounting`, which goes red if the islands did not all run.",
+            "two independent counters. Per R9 (DESIGN.md §10.0.1) agreement raises confidence, "
+            "not evidence; the falsifier is `dispatch_accounting`, which goes red if the islands "
+            "did not all run.",
         "largest_island_flops": None,
+        "largest_island_flops_emitted_value": ps.get("largest_island_flops"),
+        "largest_island_flops_state": ps.get("third_slot_state", "NOT_OBSERVED"),
         "largest_island_flops_note":
-            "not emitted by the EP (rust/src/trace.rs PartitionStats is unfilled). Recorded as "
-            "null rather than guessed. Note that with every island a single node, the largest "
-            "island is one MatMulNBits — the metric is not currently discriminating.",
+            "the EP now *emits* the key on its `vulkan.getcapability` trace event, but emits 0: "
+            "`CoverageReport` computes no FLOP estimate, and `PartitionStats.island_count` is 0 "
+            "on the same event while `subgraphs_live` is not. The slot is plumbed and unfilled. "
+            "It is reported as null here rather than as 0, because 'not computed' and 'zero "
+            "FLOPs' are different states and only one of them is a measurement.",
         "gated_on": rec.get("model_output_equivalence"),
     }
 
@@ -755,11 +897,40 @@ def _merge_repeats(records: "list[dict]") -> dict:
     return base
 
 
+def _resolve_device_identity(rec: dict, facts: "list[device_mod.DeviceFacts]") -> dict:
+    """Name the device from the trace's own timestamp fingerprint, not from the index.
+
+    ``ep.device_index`` indexes a **best-first** list (``engine.rs::probe_devices``); ``probe()``
+    and ``vulkaninfo`` return **enumeration** order. On a laptop with an iGPU and a dGPU those two
+    orderings are reversed, so labelling a row with ``probe()[ep_index]`` prints the wrong GPU's
+    name, driver, transfer class and ``timestampPeriod`` over the numbers. This resolves the name
+    from the trace instead and records whether the two agreed.
+    """
+    idx = rec.get("device_index")
+    fp = (((rec.get("phase_pass") or {}).get("analysis") or {})
+          .get("device_fingerprint") or {})
+    chk = device_mod.device_identity_check(
+        facts, idx, fp.get("timestamp_period_ns"), fp.get("timestamp_valid_bits"))
+    device = chk.pop("device", None)
+    rec["device_identity"] = chk
+    return {"check": chk, "device": device}
+
+
 def _describe(rec: dict, facts: "device_mod.DeviceFacts | None") -> "list[str]":
     lines: "list[str]" = []
-    name = facts.name if facts else f"device {rec.get('device_index')}"
+    ident = rec.get("device_identity") or {}
+    if ident.get("verdict") == "UNVERIFIED":
+        # A plausible wrong name is worse than no name. Two orderings of the same two devices
+        # exist on this machine; without the trace's fingerprint we cannot say which one ran.
+        name = f"UNIDENTIFIED DEVICE (ep.device_index={rec.get('device_index')})"
+        facts = None
+    else:
+        name = facts.name if facts else f"device {rec.get('device_index')}"
     lines.append("")
-    lines.append(f"### {name} (index {rec.get('device_index')})")
+    lines.append(f"### {name} (ep.device_index {rec.get('device_index')})")
+    if ident:
+        mark = {True: "ok", False: "RED", None: "UNVERIFIED"}[ident.get("ok")]
+        lines.append(f"  device identity [{mark}]      : {ident.get('detail')}")
     if facts:
         lines.append(f"  driver {facts.driver_name} {facts.driver_version}  "
                      f"api {facts.api_version}  "
@@ -792,8 +963,11 @@ def _describe(rec: dict, facts: "device_mod.DeviceFacts | None") -> "list[str]":
                  f"{'   ** NOISY **' if cpu['noisy'] else ''}")
     delta = b.get("delta_ms", 0.0)
     verb = "slower" if delta > 0 else "faster"
-    lines.append(f"  vulkan is {abs(delta):.3f} ms {verb} than CPU-only on this artifact "
-                 f"({(rec['vulkan']['median_ms'] / rec['cpu']['median_ms']):.1f}x)")
+    lines.append(f"  vulkan is {abs(delta):.3f} ms {verb} than CPU-only on this artifact")
+    if rec.get("vulkan_over_cpu_ratio") is not None:
+        lines.append(f"  vulkan / cpu ratio       : {rec['vulkan_over_cpu_ratio']:.2f}x")
+    else:
+        lines.append(f"  ⛔ {rec.get('ratio_refusal')}")
     for tag in ("vulkan", "cpu"):
         d = rec.get(f"{tag}_drift") or {}
         if d.get("steady") is False:
@@ -807,16 +981,37 @@ def _describe(rec: dict, facts: "device_mod.DeviceFacts | None") -> "list[str]":
                      "a reader should carry.")
         if rs.get("note"):
             lines.append(f"  ⚠ {rs['note']}")
-    per = b.get("per_island_ms_lower_bound")
-    if per is not None:
-        lines.append(f"  amortised over {b['island_count']} islands: {per * 1000:.1f} us per "
-                     f"island boundary (LOWER bound — {b['why_lower']})")
-    else:
-        lines.append("  no per-island figure: the island count is unavailable, and dividing by "
-                     "an assumed one is how a plausible-but-wrong number gets made.")
+    lines.append(f"  {b.get('per_island_ms_lower_bound_status')}: per-island boundary cost — "
+                 f"{b.get('per_island_ms_lower_bound_retirement_reason')}")
     lines.append(f"  {cfg.get('note', '')}")
-    lines.append("  no GPU kernel time is included: no VkQueryPool exists yet, so every number "
-                 "above is host wall time.")
+
+    pp = rec.get("phase_pass") or {}
+    if pp.get("refusal"):
+        lines.append(f"  ⛔ no phase split: {pp['refusal']}")
+    elif pp.get("analysis"):
+        an = pp["analysis"]
+        lines.append("")
+        lines.append(f"  --- phase split (separate traced pass, {pp['iters']} iters; "
+                     f"tracing overhead {pp.get('tracing_overhead_ratio')}x) ---")
+        lines.extend(phases_mod.describe(an))
+        sc = an.get("record_scaling") or {}
+        if sc.get("usable"):
+            lines.append(f"    record vs island size   : {sc.get('size_verdict')} — "
+                         f"{sc.get('size_detail')}")
+            if sc.get("size_confound"):
+                lines.append(f"    confound                : {sc['size_confound']}")
+            lines.append(f"    record across inferences: {sc.get('decline_verdict')} — "
+                         f"{sc.get('decline_detail')}")
+        ps = an.get("partition_stats") or {}
+        lines.append(f"    largest_island_flops    : {ps.get('third_slot_state')} — "
+                     f"{ps.get('third_slot_note') or 'populated'}")
+        for f in pp.get("red_flags") or []:
+            lines.append(f"    ⛔ {f}")
+        if not pp.get("red_flags"):
+            lines.append("    every falsifier that could go red did not: phase containment, GPU "
+                         "containment, timestamp integrality, valid-bit mask, trace-vs-counters.")
+    else:
+        lines.append("  no phase split was requested (--no-phases).")
     return lines
 
 
@@ -837,30 +1032,47 @@ def main(argv: "list[str] | None" = None) -> int:
                     help="Whole-process repeats per device. Within-run spread cannot see "
                          "run-to-run variation; on this machine that variation is the larger "
                          "of the two.")
+    ap.add_argument("--trace-iters", type=int, default=5,
+                    help="Iterations for the separate instrumented pass that produces the phase "
+                         "split. Small on purpose: it answers a proportions question, and its "
+                         "absolute totals are inflated by the instrument.")
+    ap.add_argument("--no-phases", action="store_true",
+                    help="Skip the traced pass. The wall time is then reported with no statement "
+                         "about where it goes.")
     ap.add_argument("--out", help="write the full JSON record here")
     a = ap.parse_args(argv)
 
     facts, source = device_mod.probe()
-    by_index = {f.index: f for f in facts}
-    indices = a.device if a.device else sorted(by_index) or [0]
+    ep_order = device_mod.ep_selection_order(facts)
+    indices = a.device if a.device else list(range(len(ep_order))) or [0]
 
     results = []
+    identified: "list[device_mod.DeviceFacts | None]" = []
     for i in indices:
         reps = [_run_device(i, a.iters, a.warmup, _HERE / "_scratch")
                 for _ in range(max(1, a.repeats))]
-        results.append(_merge_repeats(reps))
+        merged = _merge_repeats(reps)
+        if not a.no_phases and not merged.get("refusals"):
+            merged["phase_pass"] = _run_trace_pass(
+                i, a.trace_iters, a.warmup, _HERE / "_scratch", merged)
+            _derive(merged)
+        resolved = _resolve_device_identity(merged, facts)
+        identified.append(resolved["device"] or device_mod.by_ep_index(facts, i))
+        results.append(merged)
 
     print("=" * 78)
     print("Phi-3.5 model benchmark — DESIGN.md §10.0 gated")
     print("=" * 78)
     print(f"device facts from: {source}")
+    print(f"ep.device_index order (best-first, engine.rs::probe_devices): "
+          + ", ".join(f"{n}={d.name}" for n, d in enumerate(ep_order)))
     try:
         print(f"artifact         : {model_path()}")
     except ArtifactUnavailable as exc:
         print(f"artifact         : UNAVAILABLE — {exc}")
     print(f"producer         : {phi35_producer().summary()}")
-    for rec, idx in zip(results, indices):
-        for line in _describe(rec, by_index.get(idx)):
+    for rec, dev in zip(results, identified):
+        for line in _describe(rec, dev):
             print(line)
 
     print("")
@@ -874,8 +1086,9 @@ def main(argv: "list[str] | None" = None) -> int:
         print("shared-memory budget and timestampPeriod; a single figure spanning them would")
         print("describe neither. See bench/compare.py's cross-device refusal.")
     print("Nothing above is a speedup claim. It is one configuration (staging-bound, every")
-    print("claimed node its own island, no GPU kernel time) of one artifact at one")
-    print("producer-at-version.")
+    print("claimed node its own island) of one artifact at one producer-at-version. The phase")
+    print("split comes from a separate instrumented pass; its proportions are the product and")
+    print("its absolute totals are not the benchmark's numbers.")
 
     payload = {
         "kind": "phi35",

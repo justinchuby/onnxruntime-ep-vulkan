@@ -664,19 +664,64 @@ def test_a_genuine_match_carries_its_evidence_not_just_its_verdict():
     assert v["outputs"][0]["top_k_overlap"] == phi35.TOP_K
 
 
-def test_no_per_island_cost_is_produced_without_a_measured_island_count():
-    """Dividing by an assumed island count is how a plausible-but-wrong number gets made."""
+def test_the_retired_per_island_cost_is_no_longer_produced_at_all():
+    """The statistic was retired on 2026-07-30; a null is not enough, the reason must travel.
+
+    It was total-host-delta over island count, described as a lower bound on the cost of one
+    device-boundary crossing. The phase split showed the delta is dominated by per-inference host
+    work that is not proportional to island count — and the statistic *rose* (8.5 -> 16.6 ms on
+    Intel) across a change that collapsed islands 321 -> 33 and cut wall time 2954.6 -> 807.2 ms.
+    A statistic that moves the wrong way when the thing it purports to measure improves is
+    measuring something else.
+    """
     known = phi35.boundary_cost(1465.9, 185.9, 257)
-    assert known["per_island_ms_lower_bound"] == pytest.approx(4.9805, rel=1e-3)
+    assert known["per_island_ms_lower_bound"] is None
+    assert known["per_island_ms_lower_bound_status"] == "RETIRED 2026-07-30"
+    assert "not proportional to island count" in \
+        known["per_island_ms_lower_bound_retirement_reason"]
     unknown = phi35.boundary_cost(1465.9, 185.9, None)
     assert unknown["per_island_ms_lower_bound"] is None
 
 
-def test_the_per_island_figure_is_declared_a_lower_bound_not_an_estimate():
-    """It nets the boundary cost against the GPU's saving; separating them needs timestamps."""
+def test_the_quotient_is_kept_but_explicitly_not_a_per_island_cost():
+    """Deleting a number that has been quoted leaves older reports irreconcilable.
+
+    So the arithmetic is still emitted — under a name that says what it is, with a flag that
+    forbids the reading it used to invite.
+    """
     b = phi35.boundary_cost(1465.9, 185.9, 257)
-    assert b["bound_direction"] == "lower"
-    assert "VkQueryPool" in b["separating_instrument"]
+    assert b["delta_over_island_count_ms"] == pytest.approx(4.9805, rel=1e-3)
+    assert b["delta_over_island_count_is_per_island_cost"] is False
+    assert "must not be quoted as one" in b["delta_over_island_count_note"]
+    assert "phases.py" in b["separating_instrument"]
+    assert b["separating_instrument"].count("not implemented") == 0
+
+
+def test_no_ratio_is_emitted_when_either_baseline_is_unsteady():
+    """A warned-about number still gets quoted. §item 3: refuse, do not warn.
+
+    The Vulkan absolutes on the last recorded run were solid; the CPU baseline drifted
+    872.8 -> 331.5 ms inside one process. The harness printed the ratio with a warning above it,
+    and a warning does not travel into the summary that quotes the ratio.
+    """
+    steady = stats.drift([100.0, 101.0, 99.5, 100.5, 100.2, 99.8, 100.1, 100.3])
+    assert steady["steady"] is True
+    assert phi35.ratio_refusal(steady, steady) is None
+
+    drifting = stats.drift([872.8, 700.0, 600.0, 520.0, 450.0, 400.0, 360.0, 331.5])
+    assert drifting["steady"] is False
+    msg = phi35.ratio_refusal(steady, drifting)
+    assert msg is not None and "cpu sample is not steady" in msg
+    # A drifting *vulkan* sample refuses just as hard: the ratio has two operands.
+    assert phi35.ratio_refusal(drifting, steady) is not None
+
+
+def test_untested_steadiness_is_not_steady():
+    """Three samples cannot be tested for drift; that is a refusal, not a pass."""
+    untestable = stats.drift([100.0, 101.0, 99.0])
+    assert untestable["steady"] is None
+    msg = phi35.ratio_refusal(untestable, untestable)
+    assert msg is not None and "Untested is not steady" in msg
 
 
 def test_an_island_that_never_ran_is_caught_by_dispatch_accounting():
