@@ -395,3 +395,95 @@ misleading, on the record as a preference and not only as a rule.**
 - A decomposition that closes to ~100% with no independently-measured whole has proved nothing.
 - Any number I am about to quote twice, I sum against a clock first.
 - When a result is implausible, suspect the label before the physics.
+
+---
+
+## Session 26 — 2026-07-30T22:13:37-07:00 — A standing directive, and two VkDevices nobody chose
+
+**Justin's directive, recorded as standing:** 「要确保我们性能是非常高 一致向高性能推进」 —
+*ensure performance is very high; push toward high performance continuously.* Recorded at the head
+of §10 alongside the compatibility directive.
+
+### RULING — it changes the calendar and not one gate
+It does **not** overturn the M0 performance ruling, and the day it arrived is the day that argument
+got its second proof. **A directive to be fast is precisely the condition under which a speed
+*gate* becomes dangerous**, because a gate is a thing people are rewarded for passing and this one
+is passable by claiming nothing. The directive raises the value of the interlocks, not the case for
+the gate.
+
+It **does** make performance work continuous and parallel with correctness — which is what I ruled
+at 19:05 anyway (*sequencing governs declarations, not calendars*), now with a mandate behind it.
+`一致` is a **rate** obligation, so **the instrument for it is a series, not a value**, and it is
+falsifiable by a flat line. That is the criterion-shaped thing the directive deserves and it
+belongs in the cadence, not in a gate.
+
+One clause added on my own authority: **no timing figure is quotable from a run whose verdict is
+not `MATCH`; every benchmark asserts EP presence and a non-zero claimed count before starting a
+clock. A fast wrong number is not partial credit toward this directive — it is the failure mode
+this directive creates.**
+
+### The tail is unchanged, and I said so rather than let it be assumed
+The tail contends with residency for **nothing**: not a person (Link vs Switch), not a file, not a
+machine (a software rasteriser where timings are meaningless by construction). Re-ordering would be
+theatre. **A standing directive is a reason to re-examine a placement and never on its own a reason
+to move it** — otherwise the ordering records the most recent instruction rather than the
+dependencies. If anything the evidence points the other way: performance work is where
+cross-platform assumptions get quietly baked in.
+
+### M1's residency criterion stands exactly as written
+1% of constant-initializer bytes; today 1.0002. **There is no honest intermediate value** between
+1.0 and 0.01 — the mechanism either uploads once per session or once per inference — which is the
+rare case where a round number is the rigorous choice. Both interlocks intact (coverage floor +
+`MATCH`; first-inference upload beside the steady-state figure). Refused to accelerate it into M0:
+that converts a rate obligation into a gate, which is the exact transformation the M0 ruling exists
+to prevent.
+
+### §6.5 — one VkDevice, and the uncomfortable part
+Switch found that Tank's memory provider creates its **own** `VkDevice`, so the session cannot bind
+its buffers. **§2.3 already said `VkDevice` lifetime is EP-scoped and §1.2 already said one device,
+one queue.** So I am not making an architectural decision — **the document was right, the code
+diverged, and nothing in between could tell.** That is R10's lesson in a new place: the
+architecture is a claim about the object graph, not about the prose.
+
+Checked the three legitimate reasons for two devices — separate queue families, differing extension
+sets, external memory sharing — and none applies. The split does not buy compatibility, it costs
+it. **Seam owner: Switch**, by the rule that *the seam is owned by the side that owns the lifetime,
+never by the side that owns the caller*; Tank's allocator changes from creating to receiving, the
+smaller and safer edit, and the one that unpins `alloc_device_authoritative_spans`.
+
+**The trap, named:** two correct owners keep building correct mechanisms that cannot observe each
+other. **A seam that requires a caveat on every number crossing it is not a seam, it is a fork.**
+
+### R12 — the frame rule
+`vulkan.cmd_upload` 15.2 s against `alloc_device_upload_bytes: 0`. Both correct. Different worlds.
+**R12: a reported quantity carries the identity of its frame, and a counter whose event cannot
+occur in its frame reports `UNOBSERVABLE`, never `0`.**
+
+**R12 is not R11.** R11's remedy is available to the writer — rename it, declare its extent. R12's
+is not: no wording Tank could choose makes his counter describe the run. The fix is structural and
+the rule's job is to stop the number being believed until then. **Not a mistake anyone made — an
+artefact of two people being correct in different places.**
+
+Register now: R6 manufactured a number · R7 a negative · R9 jointly silent · R10 never called ·
+R11 misnamed · **R12 correctly named, about a different world.**
+
+### The disclosure obligation I would not have written this morning
+**Frame provenance**, emitted as `SPLIT-DEVICE` rather than reconciled. Three reasons it is
+tonight's: this morning I thought a device label was a label (it is an index into an unstated
+ordering); this morning the two upload accountings had not yet disagreed by 15.2 s while both being
+correct; and this morning I would have written it as *"say which device"*, which is **advice, and
+advice does not survive transit**. So it is a state the artifact emits. **Every way of not knowing
+gets a name a machine can print — `UNMEASURED`, `UNWIRED`, `UNOBSERVABLE`, `SPLIT-DEVICE` — because
+prose is where knowledge of a caveat goes to die.** By now the family is the method.
+
+Plus a seventh and positive one: **independent corroboration is stated, not reconstructed.** Switch
+span-derived 98.0%, Tank counter-derived 95.8-98.4%, one quantity, two authors. That is the only
+thing that has caught anything this week.
+
+### Carry forward
+- When code and document disagree, ask what could have told us — usually nothing, which is the bug.
+- Before naming an instrument in a criterion, ask whether its value can vary in the configuration
+  the criterion will be assessed in.
+- A rate obligation needs a series; a gate needs a value. Do not swap them.
+- Two hypotheses of mine died tonight in someone else's table (pipeline lookup, descriptor alloc:
+  0.4% and 0.3%). Cheap. Publish suspects early so they can be killed by data instead of by time.
