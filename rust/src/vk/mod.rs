@@ -41,6 +41,9 @@ pub(crate) mod device;
 pub(crate) mod instance;
 pub(crate) mod pipeline;
 pub(crate) mod session;
+/// Per-dispatch `VkQueryPool` timestamp queries for GPU kernel timing. Engine-side only; the
+/// `trace` module consumes the raw ticks through [`crate::trace::GpuTimestampReport`].
+pub(crate) mod timestamp;
 
 /// End-to-end dispatch integration test. Only compiled in `#[cfg(test)]` builds.
 /// Skips silently when shaders are absent or no Vulkan device is available.

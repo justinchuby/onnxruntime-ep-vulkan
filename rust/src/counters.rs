@@ -101,12 +101,22 @@ pub const EQUIVALENCE_UNMEASURED: &str = "UNMEASURED";
 /// at an ABI boundary.
 pub fn extract_equivalence(doc: &str) -> &'static str {
     let needle = format!("\"{EQUIVALENCE_KEY}\"");
-    let Some(start) = doc.find(&needle) else { return EQUIVALENCE_UNMEASURED };
+    let Some(start) = doc.find(&needle) else {
+        return EQUIVALENCE_UNMEASURED;
+    };
     let rest = doc[start + needle.len()..].trim_start();
-    let Some(rest) = rest.strip_prefix(':').map(str::trim_start) else { return EQUIVALENCE_UNMEASURED };
-    let Some(rest) = rest.strip_prefix('"') else { return EQUIVALENCE_UNMEASURED };
-    if rest.starts_with(EQUIVALENCE_MATCH) { return EQUIVALENCE_MATCH; }
-    if rest.starts_with(EQUIVALENCE_DIVERGENT) { return EQUIVALENCE_DIVERGENT; }
+    let Some(rest) = rest.strip_prefix(':').map(str::trim_start) else {
+        return EQUIVALENCE_UNMEASURED;
+    };
+    let Some(rest) = rest.strip_prefix('"') else {
+        return EQUIVALENCE_UNMEASURED;
+    };
+    if rest.starts_with(EQUIVALENCE_MATCH) {
+        return EQUIVALENCE_MATCH;
+    }
+    if rest.starts_with(EQUIVALENCE_DIVERGENT) {
+        return EQUIVALENCE_DIVERGENT;
+    }
     EQUIVALENCE_UNMEASURED
 }
 
@@ -456,8 +466,10 @@ mod tests {
         let json = snapshot().to_json();
         assert!(json.contains("\"dispatches_executed\": 3"));
         assert!(json.contains("\"compute_failures\": 1"));
-        assert!(json.contains("\"model_output_equivalence\": \"UNMEASURED\""),
-            "to_json() must include UNMEASURED by default — an uncompared run says so explicitly");
+        assert!(
+            json.contains("\"model_output_equivalence\": \"UNMEASURED\""),
+            "to_json() must include UNMEASURED by default — an uncompared run says so explicitly"
+        );
 
         // A short buffer gets a correct prefix, not a stomp.
         let mut buf = [0u8; 8];
@@ -484,8 +496,8 @@ mod tests {
     #[test]
     fn extract_equivalence_parses_the_three_states() {
         let match_doc = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
-        let div_doc   = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
-        let unm_doc   = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);
+        let div_doc = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
+        let unm_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);
         // Build a document that physically lacks the field (old snapshot format).
         // to_json() writes `"model_output_equivalence": "UNMEASURED"` — strip both key and value.
         let without_field = {
@@ -502,11 +514,14 @@ mod tests {
         };
 
         assert_eq!(extract_equivalence(&match_doc), EQUIVALENCE_MATCH);
-        assert_eq!(extract_equivalence(&div_doc),   EQUIVALENCE_DIVERGENT);
-        assert_eq!(extract_equivalence(&unm_doc),   EQUIVALENCE_UNMEASURED);
+        assert_eq!(extract_equivalence(&div_doc), EQUIVALENCE_DIVERGENT);
+        assert_eq!(extract_equivalence(&unm_doc), EQUIVALENCE_UNMEASURED);
         // Absence must be treated the same as UNMEASURED (R7: absence ≠ negative).
-        assert_eq!(extract_equivalence(&without_field), EQUIVALENCE_UNMEASURED,
-            "a snapshot without the field predates the verdict; absence = UNMEASURED");
+        assert_eq!(
+            extract_equivalence(&without_field),
+            EQUIVALENCE_UNMEASURED,
+            "a snapshot without the field predates the verdict; absence = UNMEASURED"
+        );
         assert_eq!(extract_equivalence("{}"), EQUIVALENCE_UNMEASURED);
     }
 }

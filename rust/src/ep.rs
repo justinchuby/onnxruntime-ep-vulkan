@@ -327,6 +327,9 @@ impl Drop for VulkanEp {
         // allocator arena, command/descriptor pools, pipeline cache) all hang off this struct and
         // are destroyed by this drop, in field order, exactly once.
         log::debug!("VulkanExecutionProvider session released");
+        // Export the Chrome Trace JSON. The tracer accumulates across sessions and rewrites the
+        // full file on each EP teardown; the final teardown leaves the complete trace on disk.
+        crate::trace::tracer().export();
     }
 }
 
@@ -551,6 +554,25 @@ unsafe fn get_capability_impl(
         declined.len()
     );
 
+    // --- Record partition metrics in the tracer (cross-owner edit, declared to coordinator) ---
+    // island_count and largest_island_flops are 0 until Mouse wires partition.rs into the fusing
+    // path (OP_COVERAGE.md §7.3). This call site is the owner of total_nodes, claimed_nodes, and
+    // the declined backlog; those three are populated correctly now.
+    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
+        total_nodes: num_nodes as u64,
+        claimed_nodes: claimed.len() as u64,
+        island_count: 0,         // Mouse: pending partition.rs wiring
+        largest_island_nodes: 0, // Mouse: pending partition.rs wiring
+        largest_island_flops: 0, // Mouse: pending partition.rs wiring
+        concentration: 0.0,
+        boundary_bytes_per_inference: 0,
+        boundary_time_fraction: 0.0,
+        declined: declined
+            .iter()
+            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
+            .collect(),
+    });
+
     if claimed.is_empty() {
         return ptr::null_mut();
     }
@@ -583,7 +605,9 @@ unsafe fn get_capability_impl(
             continue;
         }
         all_fwd.entry(node as usize).or_default();
+        // SAFETY: `api` is live; node is a live graph node for this call.
         for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
             let name = unsafe { value_info_name(api, slot) };
             if !name.is_empty() {
                 all_node_by_output.insert(name, node as usize);
@@ -594,7 +618,9 @@ unsafe fn get_capability_impl(
         if node.is_null() {
             continue;
         }
+        // SAFETY: `api` is live; node is a live graph node for this call.
         for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
             let name = unsafe { value_info_name(api, slot) };
             if let Some(&prod) = all_node_by_output.get(&name) {
                 all_fwd.entry(prod).or_default().push(node as usize);
@@ -657,12 +683,12 @@ unsafe fn get_capability_impl(
     let can_coexist = |a: usize, b: usize| -> bool {
         // Check: is any unclaimed node U between A and B?
         for &u in unclaimed_desc.get(&a).unwrap_or(&empty_reach) {
-            if claimed_desc.get(&u).map_or(false, |s| s.contains(&b)) {
+            if claimed_desc.get(&u).is_some_and(|s| s.contains(&b)) {
                 return false; // U reachable from A; U can reach B → non-convex
             }
         }
         for &u in unclaimed_desc.get(&b).unwrap_or(&empty_reach) {
-            if claimed_desc.get(&u).map_or(false, |s| s.contains(&a)) {
+            if claimed_desc.get(&u).is_some_and(|s| s.contains(&a)) {
                 return false; // U reachable from B; U can reach A → non-convex
             }
         }
@@ -703,7 +729,9 @@ unsafe fn get_capability_impl(
     // SAFETY: `api` and each claimed node are live for the duration of GetCapability.
     let mut output_producer: HashMap<String, usize> = HashMap::new();
     for (i, &node) in claimed.iter().enumerate() {
+        // SAFETY: `api` is live; node is a live graph node for this call.
         for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
             let name = unsafe { value_info_name(api, slot) };
             if !name.is_empty() {
                 output_producer.insert(name, i);
@@ -718,7 +746,9 @@ unsafe fn get_capability_impl(
         if node.is_null() || claimed_raw.contains(&(node as usize)) {
             continue;
         }
+        // SAFETY: `api` is live; node is a live graph node for this call.
         for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
             let name = unsafe { value_info_name(api, slot) };
             if !name.is_empty() {
                 unclaimed_consumers.insert(name);
@@ -730,7 +760,9 @@ unsafe fn get_capability_impl(
     //   1. the connecting value is not consumed by any unclaimed node (clean edge), AND
     //   2. every pair across the two clusters passes can_coexist (convexity preserved).
     for (i, &node) in claimed.iter().enumerate() {
+        // SAFETY: `api` is live; node is a live graph node for this call.
         for slot in unsafe { node_slots(api, node, Slots::Inputs) } {
+            // SAFETY: slot is from node_slots and is valid for this call.
             let name = unsafe { value_info_name(api, slot) };
             if name.is_empty() || unclaimed_consumers.contains(&name) {
                 continue;
@@ -747,9 +779,9 @@ unsafe fn get_capability_impl(
             // Check all cross-cluster pairs before committing to the merge.
             let compatible = members[ri].iter().all(|&a_idx| {
                 let a_raw = claimed[a_idx] as usize;
-                members[rj].iter().all(|&b_idx| {
-                    can_coexist(a_raw, claimed[b_idx] as usize)
-                })
+                members[rj]
+                    .iter()
+                    .all(|&b_idx| can_coexist(a_raw, claimed[b_idx] as usize))
             });
             if !compatible {
                 continue; // merging would produce a non-convex island
@@ -779,7 +811,7 @@ unsafe fn get_capability_impl(
     // Niobe has wired VkQueryPool timestamps). Apply partition::evaluate() to decide whether the
     // island is worth the boundary round-trip. Rejected islands are handed back to the CPU EP;
     // their node op-types are folded into the existing `declined` histogram.
-    let is_uma = ep.session.as_ref().map_or(false, |s| s.capable.caps.is_uma);
+    let is_uma = ep.session.as_ref().is_some_and(|s| s.capable.caps.is_uma);
     let transfer_model = if is_uma {
         partition::TransferModel::UMA
     } else {
@@ -813,24 +845,32 @@ unsafe fn get_capability_impl(
         }
         // Read type+shape info. Missing shape or unknown dtype → conservative 4096-byte guess.
         // We only use this for the partition economics check, not for buffer allocation.
+        // SAFETY: `api` is live; reading a fn pointer from the api table is a plain field read.
         let get_type = unsafe { (*api).GetValueInfoTypeInfo };
-        let Some(get_type) = get_type else { return 4096 };
+        let Some(get_type) = get_type else {
+            return 4096;
+        };
         let mut type_info: *const ort::OrtTypeInfo = ptr::null();
         // SAFETY: slot is live, type_info is an out-pointer.
         let st = unsafe { get_type(slot, &mut type_info) };
         if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
             unsafe { crate::sys::release_status(api, st) };
             return 4096;
         }
         if type_info.is_null() {
             return 4096;
         }
+        // SAFETY: `api` is live; reading a fn pointer from the api table is a plain field read.
         let get_tensor_info = unsafe { (*api).CastTypeInfoToTensorInfo };
-        let Some(get_tensor_info) = get_tensor_info else { return 4096 };
+        let Some(get_tensor_info) = get_tensor_info else {
+            return 4096;
+        };
         let mut tensor_info: *const ort::OrtTensorTypeAndShapeInfo = ptr::null();
         // SAFETY: type_info is live.
         let st = unsafe { get_tensor_info(type_info, &mut tensor_info) };
         if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
             unsafe { crate::sys::release_status(api, st) };
             return 4096;
         }
@@ -838,8 +878,11 @@ unsafe fn get_capability_impl(
             return 4096;
         }
         // Read element type and dims.
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
         let get_et = unsafe { (*api).GetTensorElementType };
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
         let get_ndim = unsafe { (*api).GetDimensionsCount };
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
         let get_dims = unsafe { (*api).GetDimensions };
         let (Some(get_et), Some(get_ndim), Some(get_dims)) = (get_et, get_ndim, get_dims) else {
             return 4096;
@@ -885,15 +928,19 @@ unsafe fn get_capability_impl(
 
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
     let mut n_rejected = 0usize;
-    for (_root, cluster_nodes) in &clusters {
-        let mut island = partition::Island::default();
-        island.nodes = cluster_nodes.len();
+    for cluster_nodes in clusters.values() {
+        let mut island = partition::Island {
+            nodes: cluster_nodes.len(),
+            ..Default::default()
+        };
 
         // Value names produced within this cluster — used to distinguish internal edges from
         // boundary edges when computing output boundary bytes.
         let mut internal_outputs: HashMap<String, ()> = HashMap::new();
         for &node in cluster_nodes {
+            // SAFETY: `api` is live; node is a live graph node for this call.
             for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
+                // SAFETY: slot is from node_slots and is valid for this call.
                 let name = unsafe { value_info_name(api, slot) };
                 if !name.is_empty() {
                     internal_outputs.insert(name, ());
@@ -912,6 +959,7 @@ unsafe fn get_capability_impl(
                 island.flops = island.flops.saturating_add(2 * 3072 * 3072);
             } else {
                 // Light elementwise op: 1 FLOP per output element (fp16: 2 bytes → 1 FLOP).
+                // SAFETY: `api` is live; node is a live graph node for this call.
                 let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
                 let out_bytes: u64 = out_slots.iter().map(|&s| slot_bytes(s)).sum();
                 island.flops = island.flops.saturating_add(out_bytes / 2);
@@ -925,11 +973,13 @@ unsafe fn get_capability_impl(
             // Conv, Gemm) to appear transfer-dominated relative to its compute, which would
             // reject all islands unconditionally and reproduce the exact failure mode
             // partition.rs was written to prevent.
+            // SAFETY: `api` is live; node is a live graph node for this call.
             let in_slots = unsafe { node_slots(api, node, Slots::Inputs) };
             for (i, &slot) in in_slots.iter().enumerate() {
                 if slot.is_null() {
                     continue;
                 }
+                // SAFETY: slot is from node_slots and is valid for this call.
                 let name = unsafe { value_info_name(api, slot) };
                 // Skip: produced inside the island (internal edge), or a constant initializer.
                 if name.is_empty()
@@ -946,6 +996,7 @@ unsafe fn get_capability_impl(
             // over-counts. Over-counting is safe — it makes islands harder to claim, never easier.
             // Under-counting output bytes (missing actual boundary transfers) would cause us to
             // claim islands that cost more than they earn, which is the worse failure mode.
+            // SAFETY: `api` is live; node is a live graph node for this call.
             let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
             for slot in out_slots {
                 island.output_bytes = island.output_bytes.saturating_add(slot_bytes(slot));

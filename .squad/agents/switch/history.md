@@ -762,3 +762,87 @@ test vk::dispatch_integration::ep_messenger_fires_for_planted_fence_leak ... ok
 - `.squad/agents/switch/history.md` — this session appended.
 - Decision inbox: stranded `switch-dynamic-shape.md` moved to integration tree.
 
+---
+
+## Session 25 — VkQueryPool GPU timestamps + tracer wiring (2026-07-30T11:27:08-07:00)
+
+**Coordinator task:** Build VkQueryPool GPU timestamps behind `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1`; wire tracer into execution path; emit `PartitionStats`; confirm messenger positive control.
+
+**D-S25-01 — GpuQueryPool in `rust/src/vk/timestamp.rs`:**
+- `GpuQueryPool::new(n_kernels)` — 2×n_kernels queries, TIMESTAMP type, reset on every use
+- `cmd_reset()` / `cmd_before(cmd, ki)` / `cmd_after(cmd, ki)` — one before/after pair per kernel
+- `read_results()` returns `Vec<Option<(u64, u64)>>` — per-kernel pairs, None for sentinel (u64::MAX)
+- Handles multi-node islands correctly: N kernels in an island each get query index `2*ki` / `2*ki+1`
+- Query index layout, sentinel never-valid-tick, and n_kernels overflow: 3 unit tests
+
+**D-S25-02 — `cmd_write_compute_timestamp` in `barrier.rs`:**
+Single helper in the ONLY file permitted to name `PipelineStageFlags` (layering rule, enforced by `tests/layering.rs`). Both sync2 and legacy backends write `COMPUTE_SHADER` stage.
+
+**D-S25-03 — `create_and_submit` + `wait_fence_then_destroy` in `cmd.rs`:**
+Split `submit_and_wait` for calibration anchor: `host_t0` captured just before submit, `host_t1` just after wait. `anchor_uncertainty_us = (t1 - t0) / 2`. `submit_and_wait` delegates to both (backward compatible).
+
+**D-S25-04 — Tracer wiring in `session.rs`:**
+`dispatch_ort` gains a `subgraph_region()` span, Phase guards (Record/Submit/FenceWait/GPUKernels), upload/readback `record_transfer()`, GPU query pool (reset → cmd_before per kernel → submit → cmd_after per kernel would be wrong — correct: reset → cmd_before → dispatch → cmd_after per kernel), calibration anchor. `GpuQueryPool::read_results()` called after fence wait; per-kernel GPU durations emitted as spans via `tracer().gpu_kernel_span(ki, before_tick, after_tick, period_ns, valid_bits)`.
+
+**D-S25-05 — Intel 36-bit wrap handled structurally:**
+Period = 52.0833 ns/tick on Iris Xe; 36 valid bits → mask = `(1u64 << 36) - 1`. Wrap guard:
+```rust
+if after_masked < before_masked { after_masked += 1u64 << valid_bits; }
+```
+A build that drops the mask is green on NVIDIA and CI (both 1.0 ns/tick / 64 bits) but under-reports Intel by 52×. `bench/timestamp_audit.py` exits non-zero when no device with `period > 1.0 ns || valid_bits < 64` is present — makes the CI gap explicit.
+
+**D-S25-06 — Tracer wired in `ep.rs`:**
+`VulkanEp::drop()` calls `tracer().export()`. `get_capability_impl` calls `tracer().record_partition()`. Verified by running: 41 span events, 48 counter samples produced to trace file. Without `drop()` calling `export()`, the trace file never appeared despite all wiring inside dispatch — confirmed empirically by Niobe before session.
+
+**D-S25-07 — PartitionStats emitted:**
+`record_partition()` called in `get_capability_impl` after island computation. Mouse's `partition.rs` has `PartitionStats` struct with `island_count`, `claimed_nodes`, `largest_island_flops`. Switch owns emission; Mouse owns computation.
+
+**D-S25-08 — Messenger positive control (RTX 4060):**
+```
+[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = 1
+```
+Positive control confirmed. M0 criterion 3 is a positive control, not merely silent.
+
+**Intel 52× trap falsifier (R9):** the `bench/timestamp_audit.py` exits non-zero if no local device can produce the distinguishing signal. CI (lavapipe only, both 1.0 ns/tick / 64 bits) cannot falsify the trap — documented explicitly.
+
+**Results:**
+- Trace file: 41 spans, 48 counters on both devices ✅
+- GPU timestamps: per-dispatch durations for all kernels in multi-node islands ✅
+- Messenger: EP_VALIDATION_ERROR_COUNT=1 ✅
+- cargo ci: ✅ GREEN (366 tests)
+- Committed: `1352405` on `squad/switch`
+
+---
+
+## Session 26 — Multi-node island merge conflict resolution; clippy fixes (2026-07-30T15:41:27-07:00)
+
+**Coordinator task:** Merge `origin/main` (dc36166, Mouse's island-count fix: 321 → 33 islands, 3.7× Intel speedup) into `squad/switch`; resolve `session.rs` conflict; fix 29 clippy errors from Mouse's new partition/clustering code in `ep.rs`; verify with Mouse's tests and messenger positive control.
+
+**D-S26-01 — Conflict resolution (session.rs, 3 hunks):**
+- Hunk 1 (`alloc_temp`): Mouse's named/positional mode split adopted — named mode for the multi-node first-kernel case, positional for subsequent kernels. Correct for multi-node islands where `gpu_intermediates` naming must be stable.
+- Hunk 2 (`dispatch_ort` opening): BOTH kept — my tracer block first (Phase guards, upload record_transfer), then Mouse's `n_plan_inputs`/`n_plan_outputs` declarations. No double-counting (upload/readback use `record_transfer()`, not `phase()` guards).
+- Hunk 3 (submission section): My split-fence wait + GPU timestamps kept; Mouse's `gpu_intermediates` added to both `free_all` calls. Multi-node islands hold `gpu_intermediates` in the island record; `free_all` must release them after the fence fires.
+
+**D-S26-02 — `dispatch_ort` 11-argument lint:**
+Mouse added 4 new parameters (`n_intermediates`, `name_map`, `first_temp_token`, `static_intermediate_byte_sizes`). 11 > 7 threshold → `#[allow(clippy::too_many_arguments)]` added. Not worth refactoring; the signature documents the kernel dispatch contract.
+
+**D-S26-03 — 23 clippy errors in ep.rs (Mouse's new partition/clustering code):**
+All introduced by Mouse's `dc36166` additions:
+- 20 `undocumented_unsafe_blocks`: `node_slots`/`value_info_name` calls in 5 new loops + `slot_bytes` closure getting `(*api).GetValueInfoTypeInfo/CastTypeInfoToTensorInfo/GetTensorElementType/GetDimensionsCount/GetDimensions` + two `release_status` calls. Per-block SAFETY comments added.
+- 3 `map_or(false, ...)` → `is_some_and(...)`.
+- `for (_root, cluster_nodes) in &clusters` → `for cluster_nodes in clusters.values()`.
+- `field_reassign_with_default`: `Island::default()` + `island.nodes = ...` → struct literal with `nodes` field.
+
+**D-S26-04 — Multi-node island query pool (design note):**
+GpuQueryPool is created with `n_kernels` where `n_kernels = kernels.len()` — one query pair per kernel in the island. A fused subgraph now has many kernels; the pool is sized for all of them. Per-kernel attribution is correct: kernel `ki` uses query indices `2*ki` and `2*ki+1`.
+
+**Results (2026-07-30T15:41:27-07:00):**
+- Mouse's fp16 tests (`test_matmulnbits_fp16_dynamic_batch{,_multirun}`): PASSED on both devices ✅
+- Trace file: 89 spans (2 test cases × ~44 spans each) ✅ — confirmed by running, not reading
+- Messenger positive control: EP_VALIDATION_ERROR_COUNT=1 ✅
+- `cargo ci`: 366 passed, 0 failed ✅
+- Committed: `57bfed4` on `squad/switch`
+
+**Key learning — R9 applied to "tracer wired":**
+The trace file was confirmed by running `pytest tests/ops/test_matmulnbits.py -k fp16_dynamic_batch` with both trace env vars set, then checking `Test-Path trace_session26.json`. Exists with 89 spans. The instrument that would go red if wiring were broken: no file, or file with 0 spans.
+

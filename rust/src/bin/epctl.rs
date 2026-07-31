@@ -251,27 +251,18 @@ fn usage() {
 #[derive(Debug, PartialEq, Eq)]
 enum CounterVerdict {
     /// Dispatches ≥ required **and** `model_output_equivalence = MATCH`. Exit 0.
-    Pass {
-        dispatches: u64,
-    },
+    Pass { dispatches: u64 },
     /// Dispatches below required. Exit 1.
-    TooFew {
-        dispatches: u64,
-        required: u64,
-    },
+    TooFew { dispatches: u64, required: u64 },
     /// File not found, unreadable, wrong ABI, or missing required fields. Exit 3.
     NoReport(String),
     /// ORT derived a pointer that ran off the end of one of our allocations. Exit 1.
-    OutOfBounds {
-        count: u64,
-    },
+    OutOfBounds { count: u64 },
     /// A `Free` arrived after we released the allocator that owned the span.
     ///
     /// Unconditional, like [`CounterVerdict::OutOfBounds`], and for the same reason: it is not a
     /// metric, it is ORT and this EP disagreeing about who owns 2 GB.
-    FreeAfterRelease {
-        count: u64,
-    },
+    FreeAfterRelease { count: u64 },
     /// `--require-device-memory` was asked for and the run did not deliver it.
     NotOnDevice {
         staged_spans: u64,
@@ -283,18 +274,14 @@ enum CounterVerdict {
     ///
     /// The GPU executed and produced an answer; the answer is wrong. This is not "no report"
     /// (exit 3) — a wrong answer is worse than no answer and earns the harder exit code.
-    EquivalenceDivergent {
-        dispatches: u64,
-    },
+    EquivalenceDivergent { dispatches: u64 },
     /// Dispatches ≥ required but no CPU comparison was performed (`model_output_equivalence`
     /// absent or `UNMEASURED`). Exit 3.
     ///
     /// This is the same exit code as `NoReport` because both represent the absence of an answer
     /// on the correctness question: one because the process crashed, the other because the
     /// comparison step was never run. Neither may be read as "the EP is correct."
-    EquivalenceUnmeasured {
-        dispatches: u64,
-    },
+    EquivalenceUnmeasured { dispatches: u64 },
 }
 
 /// Pull one unsigned integer field out of the counters JSON.
@@ -434,8 +421,8 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
     // R9: a named instrument that does not exist is exactly the thing R9 warns about. UNMEASURED
     // exit 3 is the instrument that would go red if the comparison step were removed.
     match json_str(&doc, counters::EQUIVALENCE_KEY) {
-        Some(ref s) if *s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
-        Some(ref s) if *s == counters::EQUIVALENCE_DIVERGENT => {
+        Some(s) if s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
+        Some(s) if s == counters::EQUIVALENCE_DIVERGENT => {
             CounterVerdict::EquivalenceDivergent { dispatches }
         }
         // Absent or unknown value both map to UNMEASURED per R7: absence of an instrument must
@@ -1212,16 +1199,16 @@ mod tests {
     #[test]
     fn json_str_reads_equivalence_field() {
         assert_eq!(
-            json_str(&snapshot(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_UNMEASURED),
             "to_json() always writes UNMEASURED by default"
         );
         assert_eq!(
-            json_str(&snapshot_match(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot_match(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_MATCH)
         );
         assert_eq!(
-            json_str(&snapshot_divergent(7), counters::EQUIVALENCE_KEY).as_deref(),
+            json_str(&snapshot_divergent(7), counters::EQUIVALENCE_KEY),
             Some(counters::EQUIVALENCE_DIVERGENT)
         );
         assert_eq!(json_str(&snapshot(7), "not_a_string_field"), None);

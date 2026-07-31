@@ -754,13 +754,19 @@ mod tests {
             op_type: "SkipSimplifiedLayerNormalization".into(),
             inputs: vec![
                 tensor("hidden", DType::F16, &[2, 4, 64]),
-                tensor("skip",   DType::F16, &[2, 4, 64]),
-                tensor("gamma",  DType::F16, &[64]),
+                tensor("skip", DType::F16, &[2, 4, 64]),
+                tensor("gamma", DType::F16, &[64]),
             ],
             outputs: vec![
                 out("out0", DType::F16, &[2, 4, 64]),
-                OutRef { name: String::new(), desc: None },
-                OutRef { name: String::new(), desc: None },
+                OutRef {
+                    name: String::new(),
+                    desc: None,
+                },
+                OutRef {
+                    name: String::new(),
+                    desc: None,
+                },
                 out("out3", DType::F16, &[2, 4, 64]),
             ],
             ..Default::default()
@@ -786,8 +792,8 @@ mod tests {
             op_type: "SkipSimplifiedLayerNormalization".into(),
             inputs: vec![
                 tensor("hidden", DType::F16, &[1, 1, 32]),
-                tensor("skip",   DType::F16, &[1, 1, 32]),
-                tensor("gamma",  DType::F16, &[32]),
+                tensor("skip", DType::F16, &[1, 1, 32]),
+                tensor("gamma", DType::F16, &[32]),
             ],
             outputs: vec![out("out0", DType::F16, &[1, 1, 32])],
             ..Default::default()
@@ -796,7 +802,7 @@ mod tests {
         // Must succeed — before the fix, this returned Err(Unsupported("fp16 variant is not yet written")).
         skip_norm(spec, &node, &mut ctx).expect(
             "f16 SkipSimplifiedLayerNorm must not return Unsupported after this commit; \
-             if it does, the f16 shader path was not wired in"
+             if it does, the f16 shader path was not wired in",
         );
     }
 }
