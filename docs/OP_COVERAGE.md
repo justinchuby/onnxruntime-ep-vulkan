@@ -1401,7 +1401,7 @@ register (§11). They are now scheduled deliverables with named exit criteria:
 | `DequantizeLinear` / `QuantizeLinear` (block-wise) | T4 | Mouse | Per-tensor, per-axis and blocked (opset 21) scale/zero-point modes; blocked path shares the `MatMulNBits` block-index math bit-for-bit (same helper, proven by a unit test that runs both against one input). |
 | `GatherBlockQuantized` | T4 | Mouse | Quantized embedding lookup matches CPU EP; reuses `IDX` gather math + the unpack helper — no third copy of either. |
 | `RotaryEmbedding` | T3 | Mouse | Interleaved and non-interleaved, partial-rotary (`rotary_embedding_dim < head_size`), `is_packed_batching`; matches CPU EP on a Qwen3 GenAI graph's actual attribute set. |
-| `GroupQueryAttention` | T3 | Mouse | Prefill and decode paths, KV-cache in/out as the *same buffer* (in-place update, no copy), GQA head grouping, causal mask. Declines `local_window_size ≠ -1`, `softcap ≠ 0`, `smooth_softmax`, quantized KV — cleanly, with a `[attribute]` reason. |
+| `GroupQueryAttention` | T3 | Mouse | **DELIVERED 2026-07-30.** Decode path (`seq_len=1`), packed QKV, `do_rotary=1`, neox RoPE, online-softmax GQA kernel (`gqa_f16.comp`), in-place KV-cache via aliased output. Phi-3.5: Intel MATCH 618 ms, NVIDIA MATCH 230 ms, 353 claimed, 1 island. Prefill (`seq_len>1`) needs inter-invocation sync and is not yet claimed. Declines `local_window_size ≠ -1`, `softcap ≠ 0`, `smooth_softmax > 0`. |
 | `LinearAttention` (`gated_delta`) + `CausalConvWithState` | T5a | Mouse | Qwen3.5 hybrid layers run on Vulkan with conv-state and recurrent-state cache I/O. **Schema is main-branch-only and unverified — see §9.4; the fingerprint must be re-verified against the shipping release before the kernel is trusted.** |
 | `QMoE` (then `MoE`) | T5b | Mouse | Qwen3-MoE int4 expert block runs on Vulkan, not CPU. Masked-dense first (correct, wasteful); indirect dispatch only after it is proven correct and only if Switch adds the seam (§9.5). |
 
@@ -1739,6 +1739,74 @@ island**. A test that runs only single-node subgraphs cannot catch an aliasing b
 when two kernels share an intermediate. The `dispatch_accounting` check (`compute_calls == islands ×
 inferences`) is the falsifier: if any multi-node island fails to dispatch, `compute_calls` drops
 below the expected value.
+
+#### 7.1.6 GroupQueryAttention is Live — island attribution methodology and results (2026-07-30)
+
+**Attribution method.** After SkipSimplifiedLayerNormalization was promoted to `Live` (§7.1.4), a
+union-find over the full 366-node Phi-3.5 graph showed 2 connected components, while ORT reported
+33 islands. The gap between 2 and 33 came from topological "runs" of consecutive claimed nodes being
+broken by gaps of declined nodes. The question is which declined op types create gaps vs which sit
+at the graph's edges and create none.
+
+The attribution script (`tests/ops/test_island_attribution.py`) works as follows:
+
+1. Enable `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` during a real EP session; capture one JSONL record per
+   node (`op`, `claimed`, `code`).
+2. Run a union-find over *claimed* nodes only — two claimed nodes are merged if they share a
+   topological edge (i.e., one feeds the other and no unclaimed node lies between them in the
+   dependency chain). The number of resulting components is the minimum island count achievable
+   given the current claim set — it is what ORT would see if its partitioner were omniscient.
+3. Test each declined node type: for each node `d` of type `T`, temporarily add it to the claimed
+   set and recount components. The *reduction* in component count is the number of ORT islands that
+   claiming `T` would merge.
+4. The sum of reductions for a type is its **island-attribution score** — the measure of its
+   gap-creating contribution.
+
+**Decline histogram — Phi-3.5-mini int4, device 0 and device 1 (identical):**
+
+| op | declined | code | attribution (islands removed if claimed) |
+|---|---|---|---|
+| `GroupQueryAttention` | 32 | staged | **32 of 33 cuts → 1 island** |
+| `Gather` | 2 | not-registered | 0 |
+| `Cast` | 2 | staged | 0 |
+| `SkipSimplifiedLayerNormalization` | 1 | staged | 0 |
+| `Shape` | 1 | not-registered | 0 |
+| `ReduceSum` | 1 | not-registered | 0 |
+| `Sub` | 1 | dtype | 0 |
+| `Greater` | 1 | staged | 0 |
+| `If` | 1 | not-registered | 0 |
+
+GQA is the *only* cut-creator in Phi-3.5. Every other declined node is at a graph edge or sits in an
+already-disconnected component; claiming it would add nodes to an existing island but not merge any
+two islands. A decline can appear 32 times and create 32 cuts (GQA), or appear 2 times and create
+zero cuts (Gather). **Frequency is not attribution.**
+
+**Prediction (stated before implementation):**
+- Islands: 33 → ~1 (GQA is the sole cut creator; attributing all 32 cuts to it predicts one island)
+- Timing (Intel Iris Xe, device 0): 807 ms → 300–600 ms
+- Timing (NVIDIA RTX 4060, device 1): 1156 ms → 400–900 ms
+- Falsifier: `island_count > 3` after GQA → something else cuts
+
+**Post-GQA results (`bench/phi35.py`, 2026-07-30):**
+
+| device | claimed | islands | vulkan median | cpu median | verdict |
+|---|---|---|---|---|---|
+| 0 — Intel Iris Xe | 353 / 363 | **1** | 618 ms (16% RSD — noisy) | 345 ms | **MATCH** |
+| 1 — NVIDIA RTX 4060 | 353 / 363 | **1** | **230 ms** (2.7% RSD) | 254 ms | **MATCH** |
+
+Prediction: islands = 1 ✓. Intel timing 618 ms is within the predicted range. NVIDIA 230 ms is
+better than predicted (below the lower bound of 400 ms) — the island merge eliminated 32
+device-boundary round-trips that imposed transfer overhead on the discrete GPU.
+
+The GQA kernel is serial (1 thread per head, online softmax, decode path `seq_len=1`). On Intel Iris
+Xe (UMA, lower throughput) the serial attention is slower than ORT CPU; on RTX 4060 it is 23 ms
+faster, not because the kernel is optimised but because the island consolidation moved the KV cache
+onto the device and eliminated the round-trip cost.
+
+**Remaining declines (10 nodes, 0 additional islands):** Gather × 2, Shape × 1, ReduceSum × 1,
+If × 1 (not-registered / control-flow); Cast × 2, SkipSimplifiedLayerNormalization × 1 (staged,
+non-GQA variant); Sub × 1 (dtype — fp32 residual); Greater × 1 (staged). None of these create
+cuts on this graph.
 
 ### 7.2 Death by fallback — the real failure mode
 

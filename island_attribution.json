@@ -1,0 +1,49 @@
+{
+  "device": "0",
+  "claimed_count": 353,
+  "island_count": 1,
+  "decline_histogram": [
+    {
+      "op": "Gather",
+      "code": "not-registered",
+      "count": 2
+    },
+    {
+      "op": "Cast",
+      "code": "staged",
+      "count": 2
+    },
+    {
+      "op": "SimplifiedLayerNormalization",
+      "code": "staged",
+      "count": 1
+    },
+    {
+      "op": "Shape",
+      "code": "not-registered",
+      "count": 1
+    },
+    {
+      "op": "ReduceSum",
+      "code": "not-registered",
+      "count": 1
+    },
+    {
+      "op": "Sub",
+      "code": "dtype",
+      "count": 1
+    },
+    {
+      "op": "Greater",
+      "code": "staged",
+      "count": 1
+    },
+    {
+      "op": "If",
+      "code": "not-registered",
+      "count": 1
+    }
+  ],
+  "cut_attribution": [],
+  "top_cut_instances": []
+}
