@@ -590,3 +590,73 @@ question is whether it was in a position to read anything else.**
 construction, and nothing was ever leaked. The warning is now `debug!` while other holders are
 running and `warn!` only for the last allocator on a device. An open disjunction in a warning is a
 decision deferred to whoever reads it next, under worse conditions — usually nobody.
+
+---
+
+📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
+
+Two findings apply to every agent on the team:
+
+**(a) A mechanism that exists in a file but not in a call graph is indistinguishable from
+one that does not exist.**  Verification by reading is insufficient.  Verify by running.
+Five such mechanisms surfaced in this single batch: partition.rs, the GPU tracer,
+model_output_equivalence, compute_failures, and should_claim_island.  In every
+case the code was correct; the wiring was absent; the absence was invisible to review.
+
+**(b) 85.9% of inference wall-time involves no GPU work** (recording 68.3%, fence-wait
+idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
+command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
+accordingly.
+
+## Session 18 — device-backed allocation: the mirror, and a prediction I got wrong
+
+**`alloc_device_backed_spans` is non-zero for the first time: 427 spans, 2.09 GB really uploaded
+to `DEVICE_LOCAL`, both vendors.** What it cost to learn is the useful part.
+
+### Writing the prediction first was the single most valuable thing I did
+
+D-T82 went into the inbox before I wrote a line of the implementation: 1.1x-1.6x slower on the
+discrete 4060, 1.0x-1.2x on UMA, with a named falsifier ("device-backed and the clock improves =>
+I am wrong"). Measured: **0.94x on the 4060 — faster.** The falsifier fired.
+
+The reason was in a counter I already had: `alloc_device_uploads` is 386 for a run of 19
+inferences x 321 islands, i.e. the mirror upload is once per *allocation*, at weight
+deserialisation, inside the warm-up and outside the measured loop. I had assumed the 2.09 GB
+landed in the measured path. Had I predicted after measuring, I would have written a persuasive
+paragraph about one-time costs and nobody could have checked it. **A prediction is only evidence
+if it could have been wrong in public.**
+
+### ORT does not fail loudly when your memory is unreadable
+
+My first cut said: device-backed means the device buffer *is* the tensor, so refuse to hand out a
+host address. That is what the words mean. It produced `EP_FAIL ... bytes are unreachable` and
+then **a silent fallback to `CPUExecutionProvider` for the whole model** — no raise, exit 0, and
+counters that still looked like an EP run. `vk::session` reads every input through
+`host_backing_for`; with no host address there is nothing to read.
+
+So: **staging stays authoritative and the device buffer is a mirror**, written on every copy in,
+never read back — one writer, one direction, so they cannot disagree. Correctness unchanged by
+construction, bytes genuinely resident. Boring, and boring is the point.
+
+### The lesson I keep re-learning in new clothes
+
+`alloc_device_backed_spans: 427` is individually correct and reads exactly like a claim it does
+not support. So I added **`alloc_device_authoritative_spans`, which is 0 and stays 0**, and wired
+it into the verdict prose, into `epctl`'s MIRRORED message, and into a test that locks
+`--require-device-memory` to exit 1 when every span is both staged and backed. The assignment
+named that exit-1-to-exit-0 transition as the deliverable; **not delivering it was the correct
+outcome**, because the only ways to make it pass were to stop staging (CPU fallback) or stop
+counting staging (an instrument measuring its own name). Making a red light green by editing the
+light.
+
+### Also
+
+* The staging verdict now has a MIRRORED sentence. The two failure modes the coordinator named —
+  keep it and over-warn, delete it and under-warn — both assumed the state would be MIXED. It
+  isn't; it is *both, everywhere*, which neither wording covered. Compute the sentence, always.
+* `alloc_unified_memory` now travels with every device-backed number, so a UMA "device-backed"
+  count can never be silently read as a discrete one.
+* Quarantine: still never fired. Device memory does not change ORT's free ordering. Absence, not a
+  pass.
+* The `edit` tool bit me again — no, actually clippy did: `// SAFETY (Tank):` does not satisfy
+  `undocumented_unsafe_blocks`. It wants the literal `SAFETY:`. Three round trips.

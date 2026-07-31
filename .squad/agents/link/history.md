@@ -124,3 +124,21 @@ lavapipe results DO NOT provide Android evidence. UMA topology matches, but ISA,
 - §7.7 (new): Lavapipe execution record — build, gate, barrier path, test results, OQ-12 scope
 - §9: lavapipe barrier parity result added
 📌 Team update (2026-07-30T05:48:29-07:00): A green suite has been shown not to imply a correct model. Phi-3.5: 161 MatMulNBits dispatched, compute_failures:0, entire suite green — vk logits all-zero (argmax 0 vs CPU argmax 30751). R9 (Morpheus): for every claim, name the instrument that would go red if the claim were false; if none, the claim is UNMEASURED. model_output_equivalence verdict required alongside all counter summaries; default UNMEASURED. Any comparison must first assert EP_NAME in session.get_providers() before calling sess.run() — failure to do so compares CPU to CPU and reports agreement. Coordinator's own first comparison reported bit-identical on both devices due to this exact error. Trinity has landed xfail(strict=True) correctness gate. M0 criterion 10 added (NOT MET: DIVERGENT). Criteria 2, 4, 5 reopened. — decided by Morpheus, Trinity, Switch, Mouse; coordinator-verified.
+
+---
+
+📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
+
+Two findings apply to every agent on the team:
+
+**(a) A mechanism that exists in a file but not in a call graph is indistinguishable from
+one that does not exist.**  Verification by reading is insufficient.  Verify by running.
+Five such mechanisms surfaced in this single batch: partition.rs, the GPU tracer,
+model_output_equivalence, compute_failures, and should_claim_island.  In every
+case the code was correct; the wiring was absent; the absence was invisible to review.
+
+**(b) 85.9% of inference wall-time involves no GPU work** (recording 68.3%, fence-wait
+idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
+command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
+accordingly.
+
