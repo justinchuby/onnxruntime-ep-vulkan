@@ -75,6 +75,33 @@ For each hit, verify the claim/decline expectation against the current state of
 claim.rs and ENGINE_ACCEPTS_RUNTIME_EXTENTS.  This catches the shape of defect found
 here: a test that announces its premise in its identifier, not its body.
 
+THIRD HIDING PLACE — arithmetic-identity premises (2026-07-30)
+==============================================================
+After test_phi35_multi_run_same_session_interior_pointer_safety was added, it asserted:
+
+  dispatches_executed == N_RUNS × subgraphs_live
+
+This read as a definition of dispatch scaling.  It was in fact an assumption:
+"every island is a single node", which made dispatches_executed == compute_calls ==
+subgraphs_live_per_run.  Mouse's partitioning work (islands 321 → 33) broke the
+assumption: dispatches_executed = N_RUNS × claimed_nodes > N_RUNS × subgraphs_live.
+
+The three hiding places for false premises, in order of discovery:
+
+  1. docstring prose  — grep for "with N claimed", "falls back entirely to"
+  2. the test's name  — grep for def test_.*_ep_declines, assert_vulkan_does_not_claim
+  3. arithmetic identity — A == k × B where both are counters: "A is proportional to B"
+     assumes a structural invariant about the ratio of the two quantities.
+
+Any assertion that relates two counters by a fixed ratio must name the structural
+invariant it encodes in its docstring.  When architectural work changes that invariant,
+a named-invariant docstring is findable by grep; an unnamed arithmetic identity is not.
+
+  grep -r "N_RUNS .x.|n_runs .x.|x subgraphs|x claimed|x islands" tests/ops/
+
+Scan hits for assertions of the form A == k × B and verify the ratio is still correct
+after each merge that touches partition.rs, claim.rs, or ep.rs.
+
 EXCEPTION — MAX
 ===============
 Max (ONNX variadic-input elementwise max) fails test_inferred_shape_ep_claims even
