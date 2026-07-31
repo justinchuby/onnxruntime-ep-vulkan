@@ -1248,9 +1248,16 @@ impl VulkanSession {
         // Record upload bytes + duration in the tracer summary.
         // record_transfer (not phase(Phase::Upload)) so the byte/bandwidth counters are emitted
         // without double-counting the duration in phase_us[Upload].
-        if t.active() {
-            t.record_transfer(Transfer::Upload, uploaded_bytes, upload_t0.elapsed());
-        }
+        //
+        // CROSS-OWNER EDIT (Tank, declared): the `if t.active()` wrapper was removed. Persistent
+        // weight residency is to be verified on BYTES, not wall time, and this is the only site
+        // that knows how many bytes were staged — so gating it on the tracer meant the default
+        // run recorded nothing and `alloc_device_upload_bytes` (a different copy, through the
+        // provider's own VkDevice) read 0 while this loop moved ~2 GiB per inference.
+        // `record_transfer` now self-guards: it takes two atomics unconditionally into
+        // `counters::staging` and early-returns from all trace work when the tracer is inert.
+        // Behaviour when tracing IS on is unchanged.
+        t.record_transfer(Transfer::Upload, uploaded_bytes, upload_t0.elapsed());
         drop(_cmd_upload_guard);
 
         // Barrier: TRANSFER_WRITE → SHADER_READ on freshly-uploaded input buffers.
@@ -1751,10 +1758,11 @@ impl VulkanSession {
                 &actual_output_shapes,
             )
         };
-        if t.active() {
-            let readback_bytes: u64 = actual_output_byte_sizes.iter().sum();
-            t.record_transfer(Transfer::Readback, readback_bytes, readback_t0.elapsed());
-        }
+        // CROSS-OWNER EDIT (Tank, declared): same removal of the `if t.active()` gate as on the
+        // upload path above, for the same reason — the readback byte count is the other half of
+        // the per-inference boundary traffic and must exist without a tracing flag.
+        let readback_bytes: u64 = actual_output_byte_sizes.iter().sum();
+        t.record_transfer(Transfer::Readback, readback_bytes, readback_t0.elapsed());
 
         // Cleanup regardless of output-write outcome.
         //

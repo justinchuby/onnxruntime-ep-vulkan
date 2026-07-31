@@ -619,6 +619,7 @@ impl HandleRegistry {
         let Some(span) = inner.spans.get_mut(&addr) else {
             drop(inner);
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
             log::error!(
                 "VulkanExecutionProvider: Free(0x{addr:x}) — not the base of any device handle \
                  this allocator served. Either the caller freed an interior pointer (the base is \
@@ -631,6 +632,7 @@ impl HandleRegistry {
             let g = span.generation;
             drop(inner);
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
             log::error!(
                 "VulkanExecutionProvider: double free of device handle 0x{addr:x} (freed at \
                  generation {g}). Caught by quarantine rather than corrupting a live tensor. \
@@ -695,6 +697,7 @@ impl HandleRegistry {
         let r = self.resolve_inner(addr);
         if r.is_err() {
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
         }
         r
     }
@@ -912,6 +915,7 @@ impl HandleRegistry {
 /// quoting the number. A counter is read by `epctl --check-counters`, which is none of those
 /// things and does not need to be. See D-T69.
 pub mod tally {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -936,6 +940,18 @@ pub mod tally {
     /// an unreachable instrument is not a negative result. Non-zero here means the detection window
     /// was exhausted, so `pointers_use_after_free == 0` stops being evidence of anything.
     static QUARANTINE_RETIRED: AtomicU64 = AtomicU64::new(0);
+    /// Lookups that failed, process-wide.
+    ///
+    /// Per-registry `AllocStats::failed_lookups` says of itself "non-zero always indicates a bug
+    /// somewhere" — and it was reachable **only** through ORT's `GetStats` KVPs, which nothing in
+    /// this repo calls. A bug detector whose output no artifact carries has the same evidentiary
+    /// value as one that was never written. Same class as `quarantine_retired`; found by the same
+    /// sweep.
+    static FAILED_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn on_failed_lookup() {
+        FAILED_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+    }
 
     pub(super) fn on_quarantine(depth: u64, retired: u64) {
         QUARANTINE_PEAK.fetch_max(depth, Ordering::Relaxed);
@@ -1003,6 +1019,34 @@ pub mod tally {
     /// Spans whose only home is device memory. See [`Tally::device_authoritative_spans`]. Nothing
     /// increments this yet, and that is the point: it is the claim's falsifier, not a placeholder.
     static DEVICE_AUTHORITATIVE: AtomicU64 = AtomicU64::new(0);
+    /// Times the engine asked for one of our device buffers via `transfer::device_buffer_for`.
+    ///
+    /// The *only* way an engine can compute from our device memory is to bind a buffer this
+    /// function handed it. So this is the independent falsifier for
+    /// [`Tally::device_authoritative_spans`]: authoritative spans with zero binds is a
+    /// contradiction, not a nuance. It exists **before** the claim it guards, because a counter
+    /// wired at the same time as the feature it measures is wired by someone who already believes
+    /// the answer.
+    static DEVICE_BUFFER_BINDS: AtomicU64 = AtomicU64::new(0);
+
+    /// The engine bound one of our device buffers. Called from `transfer::device_buffer_for`.
+    pub fn on_device_buffer_bind() {
+        DEVICE_BUFFER_BINDS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A span became device-authoritative: device-resident with **no** host staging block behind
+    /// it, so nothing can read it through `host_backing_for`.
+    ///
+    /// The single documented increment point, deliberately narrow. Whoever wires persistent
+    /// residency must satisfy two independent measured guards or [`staging_verdict`] will call the
+    /// number dishonest in the artifact itself:
+    ///
+    /// 1. `device_authoritative_spans <= device_backed_spans - staged_spans` — a span that still
+    ///    has host staging is a mirror, whatever the design intends.
+    /// 2. `device_buffer_binds > 0` — the engine must actually have asked for the buffer.
+    pub fn on_device_authoritative() {
+        DEVICE_AUTHORITATIVE.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// A `CopyTensors` endpoint was in device memory and went through the provider.
     ///
@@ -1027,9 +1071,50 @@ pub mod tally {
         UNIFIED_MEMORY.store(if unified { 1 } else { 2 }, Ordering::Relaxed);
     }
 
-    /// Everything the counters file reports, taken together so the numbers are mutually consistent
-    /// enough to reason about. They are not sampled atomically as a group; at teardown, when this
-    /// is read, nothing is still mutating them.
+    /// The `VkDevice` frame the device-backed numbers were measured in, and its device name.
+    ///
+    /// `None` means no device-memory provider was ever stood up in this process, which is a third
+    /// state distinct from both frames: the counters are 0 because the feature is off, not because
+    /// they were measured in another world.
+    static DEVICE_FRAME: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+    /// **§10.0.1 R12 frame provenance.** Record which `VkDevice` the `alloc_device_*` numbers in
+    /// this run describe. Called by `vk::host_device_memory::ensure_registered`, which is the only
+    /// place that knows.
+    ///
+    /// `frame` is `"SHARED"` (§6.5 satisfied — the session's device) or `"SPLIT-DEVICE"` (a second
+    /// device, so those numbers describe a world the kernels did not run in).
+    pub fn set_device_frame(frame: &str, device: &str) {
+        if let Ok(mut f) = DEVICE_FRAME.lock() {
+            *f = Some((frame.to_string(), device.to_string()));
+        }
+    }
+
+    /// The frame, or `("OFF", "")` when no provider exists. Never guesses.
+    pub fn device_frame() -> (String, String) {
+        DEVICE_FRAME
+            .lock()
+            .ok()
+            .and_then(|f| f.clone())
+            .unwrap_or_else(|| (FRAME_OFF.to_string(), String::new()))
+    }
+
+    /// No device-memory provider was stood up, so there is no frame to report.
+    pub const FRAME_OFF: &str = "OFF";
+    /// §6.5 satisfied: the provider's buffers are on the device the engine dispatches on.
+    pub const FRAME_SHARED: &str = "SHARED";
+    /// §6.5 violated: a second `VkDevice`, so no dispatch can bind these buffers.
+    pub const FRAME_SPLIT: &str = "SPLIT-DEVICE";
+
+    /// Whether `device_authoritative_spans` is in a position to be non-zero at all (R12).
+    ///
+    /// It can only ever move when the provider's buffers are on the session's device. In the
+    /// `SPLIT-DEVICE` and `OFF` frames the event it counts **cannot occur**, so its zero is not a
+    /// measurement and the artifact prints `UNOBSERVABLE` in its place.
+    pub fn device_authoritative_observable() -> bool {
+        device_frame().0 == FRAME_SHARED
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct Tally {
         pub allocations: u64,
@@ -1061,6 +1146,14 @@ pub mod tally {
         /// device memory". This counter is the one that would have to move for the second claim,
         /// and it is the instrument that goes red if anyone states it while it is still 0.
         pub device_authoritative_spans: u64,
+        /// The most spans that *could* be authoritative, measured: `device_backed - staged`.
+        /// A span with a host staging block is a mirror however the design describes it.
+        pub device_authoritative_ceiling: u64,
+        /// Times the engine bound one of our device buffers via `transfer::device_buffer_for`.
+        /// Zero while `device_authoritative_spans > 0` is a contradiction.
+        pub device_buffer_binds: u64,
+        /// Lookups that failed anywhere in the process. Non-zero always indicates a bug.
+        pub failed_lookups: u64,
         /// Deepest the quarantine FIFO ever got, process-wide.
         pub quarantine_peak_spans: u64,
         /// Spans retired from quarantine, process-wide. **Non-zero voids** any conclusion drawn
@@ -1089,6 +1182,11 @@ pub mod tally {
             device_download_bytes: DEVICE_DOWNLOAD_BYTES.load(Ordering::Relaxed),
             unified_memory: UNIFIED_MEMORY.load(Ordering::Relaxed),
             device_authoritative_spans: DEVICE_AUTHORITATIVE.load(Ordering::Relaxed),
+            device_authoritative_ceiling: DEVICE_BACKED
+                .load(Ordering::Relaxed)
+                .saturating_sub(STAGED_SPANS.load(Ordering::Relaxed)),
+            device_buffer_binds: DEVICE_BUFFER_BINDS.load(Ordering::Relaxed),
+            failed_lookups: FAILED_LOOKUPS.load(Ordering::Relaxed),
             quarantine_peak_spans: QUARANTINE_PEAK.load(Ordering::Relaxed),
             quarantine_retired: QUARANTINE_RETIRED.load(Ordering::Relaxed),
         }
@@ -1190,13 +1288,17 @@ pub mod tally {
     /// says so rather than reporting zero bytes — "no instrument" and "no traffic" are different
     /// claims and only one of them is good news.
     fn session_staging_sentence() -> String {
-        let (up_n, up_b, rb_n, rb_b, up_us, rb_us) = crate::trace::tracer().transfer_totals();
+        let (up_n, up_b, up_us, rb_n, rb_b, rb_us) = crate::counters::staging::snapshot();
         if up_n == 0 && rb_n == 0 {
-            return " SESSION STAGING: NOT MEASURED — the tracer recorded no staging copies this \
-                    run. That is an absent instrument, not zero traffic: `vk::session` stages \
-                    every kernel input on every inference regardless. Set \
-                    ONNXRUNTIME_EP_VULKAN_TRACE to a path to measure it."
-                .to_string();
+            // This used to read the tracer's totals, which early-return unless tracing or verbose
+            // is on — so the default run said NOT MEASURED while 71% of its wall clock was this
+            // exact traffic. The counter is now unconditional, so a zero here is a real zero at
+            // the recording hook, and the remaining ambiguity (resident vs. hook moved) is stated
+            // rather than resolved.
+            return format!(
+                " {}",
+                crate::counters::staging::sentence(crate::counters::snapshot().compute_calls)
+            );
         }
         format!(
             " SESSION STAGING (separate from every alloc_* number above, and normally much \
@@ -1210,6 +1312,119 @@ pub mod tally {
             up_us as f64 / 1000.0,
             rb_b as f64 / (1024.0 * 1024.0),
             rb_us as f64 / 1000.0,
+        )
+    }
+
+    /// Whether `device_authoritative_spans` is credible, checked against two counters it does not
+    /// control.
+    ///
+    /// This counter is 0 today and will be the headline the moment persistent weight residency
+    /// lands. The failure mode is not fraud, it is belief: an author wires it because the design
+    /// says the span is device-resident. So the artifact audits it against measurements taken
+    /// elsewhere — the staging tally, and the engine's own bind traffic — and says so in the same
+    /// sentence that reports the number, where anyone quoting it must read it.
+    fn authoritative_audit_sentence(t: &Tally) -> String {
+        // R12 outranks R10 here. Before asking whether the counter was ever incremented, ask
+        // whether the event it counts could occur in the frame this run measured. On a second
+        // `VkDevice` (§6.5) no dispatch can bind these buffers at all, so the increment point is
+        // not merely uncalled — it is unreachable *in principle*, and a zero is not a negative
+        // result. `UNWIRED` would be the wrong word and would imply the fix is a call site.
+        let (frame, frame_device) = device_frame();
+        if t.device_authoritative_spans == 0 && frame != FRAME_SHARED {
+            let why = if frame == FRAME_OFF {
+                "no device-memory provider was stood up in this process, so no span was ever a \
+                 candidate"
+                    .to_string()
+            } else {
+                format!(
+                    "the provider's buffers are on a SECOND VkDevice ('{frame_device}', \
+                     alloc_device_frame={frame}) — §6.5 says that is a defect, not a design — so a \
+                     compute dispatch on the session's device CANNOT bind them, whatever the \
+                     allocator does"
+                )
+            };
+            return format!(
+                " alloc_device_authoritative_spans is UNOBSERVABLE, NOT 0, and the artifact prints \
+                 it that way (§10.0.1 R12): {why}. This is not a negative result and it is not an \
+                 unwired counter — it is the absence of a frame in which a result could exist, and \
+                 no criterion may name it while it is in this state. The fix is §6.5 \
+                 (vk::host_device_memory::offer_shared_device, called from wherever the EP-scoped \
+                 device context is built), not a call to \
+                 allocator::tally::on_device_authoritative. Its independent falsifier \
+                 alloc_device_buffer_binds is {}, and the measured ceiling on this run is {} \
+                 span(s) (device_backed {} - staged {}).",
+                t.device_buffer_binds,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            );
+        }
+        if t.device_authoritative_spans == 0 {
+            // A zero must say WHICH zero it is. R7: absence of an instrument must not read as a
+            // negative result. Without this sentence, "0 authoritative spans" is ambiguous between
+            // "measured, nothing is device-authoritative" and "nobody ever incremented it", and the
+            // second is what is actually true today.
+            return format!(
+                " alloc_device_authoritative_spans is 0, and this is an UNWIRED zero, not a \
+                 measured one: its only increment point (allocator::tally::on_device_authoritative) \
+                 has no production caller yet, and its independent falsifier \
+                 alloc_device_buffer_binds is {} — the engine has {} bound one of our device \
+                 buffers via transfer::device_buffer_for. The frame IS shared (§6.5 satisfied on \
+                 '{}'), so this zero is at least in a position to change; that is the difference \
+                 between this sentence and the UNOBSERVABLE one. The measured ceiling for it on \
+                 this run is {} span(s) (device_backed {} - staged {}). When residency lands, the \
+                 count and the binds must move together; a non-zero count with zero binds is \
+                 reported here as not credible.",
+                t.device_buffer_binds,
+                if t.device_buffer_binds == 0 {
+                    "never"
+                } else {
+                    "sometimes"
+                },
+                frame_device,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            );
+        }
+        let mut faults = Vec::new();
+        if frame != FRAME_SHARED {
+            faults.push(format!(
+                "it is non-zero in the {frame} frame, where the buffers are not on the device the \
+                 kernels ran on and no dispatch could have bound them — the counter and the frame \
+                 contradict each other and at least one of them is wrong"
+            ));
+        }
+        if t.device_authoritative_spans > t.device_authoritative_ceiling {
+            faults.push(format!(
+                "it claims {} authoritative span(s) but only {} span(s) are device-backed WITHOUT \
+                 host staging ({} backed - {} staged); a span with a staging block is a mirror \
+                 however the design describes it",
+                t.device_authoritative_spans,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            ));
+        }
+        if t.device_buffer_binds == 0 {
+            faults.push(
+                "the engine never called transfer::device_buffer_for, so it never bound one of \
+                 our device buffers and cannot have computed from one"
+                    .to_string(),
+            );
+        }
+        if faults.is_empty() {
+            return format!(
+                " alloc_device_authoritative_spans is {}, and it survives both independent checks: \
+                 it is within the measured no-staging ceiling of {}, and the engine bound our \
+                 device buffers {} time(s).",
+                t.device_authoritative_spans, t.device_authoritative_ceiling, t.device_buffer_binds
+            );
+        }
+        format!(
+            " *** alloc_device_authoritative_spans IS NOT CREDIBLE AND MUST NOT BE QUOTED: {}. \
+             Fix the counter or the wiring before this number leaves the machine. ***",
+            faults.join("; and ")
         )
     }
 
@@ -1231,6 +1446,7 @@ pub mod tally {
         // and stopped there described residency truthfully while omitting the dominant staging
         // cost, which is exactly the "reports what was true when it was written" failure.
         let session = session_staging_sentence();
+        let authoritative_audit = authoritative_audit_sentence(&t);
         let mem = match t.unified_memory {
             1 => {
                 " The device is UNIFIED-MEMORY (UMA): its device-local heap is the same DRAM as \
@@ -1273,7 +1489,7 @@ pub mod tally {
                  through host_backing_for and binds buffers it allocated itself, so this run's \
                  timing is a HOST measurement PLUS the cost of mirroring, and is worse than \
                  staging alone rather than better. It must not be quoted as a device-memory \
-                 measurement.{mem}{session}",
+                 measurement.{mem}{session}{authoritative_audit}",
                 t.allocations, t.staged_bytes, t.device_uploads, t.device_upload_bytes,
             );
         }
@@ -1286,7 +1502,7 @@ pub mod tally {
                 "MEMORY: UNMEASURED — {} span(s) were allocated but BOTH alloc_staged_spans and \
                  alloc_device_backed_spans are 0, so nothing recorded where their contents \
                  lived. This is an absent instrument, not a clean result, and no timing from \
-                 this run may be described as either a host or a device measurement.{session}",
+                 this run may be described as either a host or a device measurement.{session}{authoritative_audit}",
                 t.allocations
             );
         }
@@ -1294,7 +1510,7 @@ pub mod tally {
             return format!(
                 "MEMORY: none of the {} device handle(s) were host-staged; {} had a VkBuffer \
                  attached. Timing from this run is not disqualified by staging (which is not the \
-                 same as being a good measurement).{mem}{moved}{session}",
+                 same as being a good measurement).{mem}{moved}{session}{authoritative_audit}",
                 t.allocations, t.device_backed_spans
             );
         }
@@ -1302,7 +1518,7 @@ pub mod tally {
             return format!(
                 "MEMORY: ALL {} host-staged span(s) ({} B) and ZERO device-backed — nothing in \
                  this run reached device memory. Any timing from it is a HOST measurement and must \
-                 not be quoted as anything else.{session}",
+                 not be quoted as anything else.{session}{authoritative_audit}",
                 t.staged_spans, t.staged_bytes
             );
         }
@@ -1312,7 +1528,7 @@ pub mod tally {
              host measurement nor a device one; it is an average over two different memories and \
              is not comparable with either. Assert `alloc_staged_spans == 0` with `epctl \
              --check-counters --require-device-memory` before quoting a number from a run like \
-             this.{mem}{moved}{session}",
+             this.{mem}{moved}{session}{authoritative_audit}",
             t.staged_spans,
             t.staged_bytes,
             t.device_backed_spans,
@@ -1333,8 +1549,17 @@ pub mod tally {
             &STAGED_BYTES,
             &QUARANTINE_PEAK,
             &QUARANTINE_RETIRED,
+            &FAILED_LOOKUPS,
+            &DEVICE_AUTHORITATIVE,
+            &DEVICE_BUFFER_BINDS,
         ] {
             c.store(0, Ordering::Relaxed);
+        }
+        // The verdict now quotes the session staging tally, so a test that does not clear it reads
+        // another test's traffic.
+        crate::counters::staging::reset();
+        if let Ok(mut f) = DEVICE_FRAME.lock() {
+            *f = None;
         }
     }
 
@@ -1346,6 +1571,15 @@ pub mod tally {
         DEVICE_BACKED.store(device_backed, Ordering::Relaxed);
         STAGED_SPANS.store(staged, Ordering::Relaxed);
         STAGED_BYTES.store(staged_bytes, Ordering::Relaxed);
+    }
+
+    /// Drive the two counters that guard `device_authoritative_spans`, so the audit can be
+    /// exercised before the feature that will produce them exists. A guard first tested by the
+    /// author of the feature it guards is tested by someone who already believes the answer.
+    #[doc(hidden)]
+    pub fn seed_authoritative_for_test(authoritative: u64, binds: u64) {
+        DEVICE_AUTHORITATIVE.store(authoritative, Ordering::Relaxed);
+        DEVICE_BUFFER_BINDS.store(binds, Ordering::Relaxed);
     }
 }
 
@@ -1889,9 +2123,13 @@ mod tests {
     #[test]
     fn every_staging_verdict_branch_mentions_the_traffic_it_cannot_see() {
         let _g = ledger::test_lock();
-        for (allocations, backed, staged) in
-            [(10u64, 10u64, 10u64), (10, 10, 0), (10, 0, 10), (10, 6, 4), (10, 0, 0)]
-        {
+        for (allocations, backed, staged) in [
+            (10u64, 10u64, 10u64),
+            (10, 10, 0),
+            (10, 0, 10),
+            (10, 6, 4),
+            (10, 0, 0),
+        ] {
             tally::reset_for_test();
             tally::seed_for_test(allocations, backed, staged, 4096);
             let v = tally::staging_verdict();
@@ -2101,6 +2339,150 @@ mod tests {
             "with a window of 4 and 16 frees, retirement must have happened and must be visible"
         );
         assert_eq!(s.quarantined_spans, 4, "the window holds exactly its bound");
+    }
+
+    /// `alloc_device_authoritative_spans` will be the headline the moment persistent residency
+    /// lands. These are the two independent guards that must fire before it can be quoted.
+    #[test]
+    fn an_over_claimed_authoritative_count_is_called_dishonest_in_the_artifact() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // 10 allocations, 10 device-backed, 10 still staged -> ceiling is 0, so ANY authoritative
+        // span is a mirror being reported as device-resident. This is the exact shape of the
+        // claim this project has produced repeatedly: true about residency, false about the run.
+        tally::seed_for_test(10, 10, 10, 40960);
+        tally::seed_authoritative_for_test(6, 0);
+        let v = tally::staging_verdict();
+        assert!(v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(
+            v.contains("6 authoritative span(s) but only 0"),
+            "must quote both measured numbers, not just object; got: {v}"
+        );
+        assert!(
+            v.contains("never called transfer::device_buffer_for"),
+            "the bind counter is the second, independent falsifier; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// The credible case must also be stated, or the guard is a warning nobody can clear.
+    #[test]
+    fn a_credible_authoritative_count_says_which_checks_it_survived() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // §6.5 satisfied — otherwise the count is contradicted by its own frame (R12).
+        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        // 10 allocations, 10 device-backed, 2 staged -> ceiling 8. Claim 6, with real binds.
+        tally::seed_for_test(10, 10, 2, 8192);
+        tally::seed_authoritative_for_test(6, 33);
+        let v = tally::staging_verdict();
+        assert!(!v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(v.contains("survives both independent checks"), "got: {v}");
+        assert!(
+            v.contains("ceiling of 8"),
+            "must quote the measured ceiling; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// A count that is non-zero in a frame where the event cannot occur is a contradiction, and
+    /// the artifact must say so rather than reporting the number. R12's falsifier.
+    #[test]
+    fn a_nonzero_authoritative_count_in_a_split_frame_is_not_credible() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        tally::seed_for_test(10, 10, 2, 8192);
+        tally::seed_authoritative_for_test(6, 33);
+        let v = tally::staging_verdict();
+        assert!(v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(
+            v.contains("non-zero in the SPLIT-DEVICE frame"),
+            "the frame is the fault and must be named; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// Zero is the value this counter will hold right up until the moment it is quoted, so the
+    /// artifact must distinguish an unwired zero from a measured one. This is the falsifier for
+    /// that distinction: with no increment point called, the sentence must SAY it is unwired.
+    ///
+    /// The frame is set to `SHARED` deliberately. In any other frame the correct word is
+    /// `UNOBSERVABLE`, not `UNWIRED`, and the test below covers that.
+    #[test]
+    fn a_zero_authoritative_count_says_it_is_unwired_rather_than_measured() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        tally::seed_for_test(10, 10, 2, 8192);
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNWIRED zero"), "got: {v}");
+        assert!(v.contains("alloc_device_buffer_binds is 0"), "got: {v}");
+        assert!(v.contains("ceiling for it on this run is 8"), "got: {v}");
+        assert!(
+            !v.contains("NOT CREDIBLE"),
+            "a zero is not a dishonest count; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// **R12.** In a frame where the counted event cannot occur, the word is `UNOBSERVABLE` and
+    /// not `UNWIRED` — the two prescribe different fixes, and calling a structural pin "unwired"
+    /// sends the next person to add a call site that could never fire.
+    #[test]
+    fn a_zero_authoritative_count_in_a_foreign_frame_says_unobservable_not_unwired() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::seed_for_test(10, 10, 2, 8192);
+
+        // Frame OFF — no provider at all.
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
+        assert!(
+            !v.contains("UNWIRED zero"),
+            "an absent frame is not an absent call site; got: {v}"
+        );
+
+        // Frame SPLIT-DEVICE — the §6.5 defect.
+        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
+        assert!(
+            v.contains("SECOND VkDevice"),
+            "the reason must be the frame, named; got: {v}"
+        );
+        assert!(
+            v.contains("offer_shared_device"),
+            "and it must name the fix, which is the seam and not a call to the counter; got: {v}"
+        );
+        assert!(!v.contains("UNWIRED zero"), "got: {v}");
+        tally::reset_for_test();
+    }
+
+    /// A device buffer handed to the engine must be counted, or the falsifier above is inert.
+    #[test]
+    fn handing_out_a_device_buffer_is_counted() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        assert_eq!(tally::snapshot().device_buffer_binds, 0);
+        tally::on_device_buffer_bind();
+        assert_eq!(tally::snapshot().device_buffer_binds, 1);
+        tally::reset_for_test();
+    }
+
+    /// `failed_lookups` said of itself "non-zero always indicates a bug" and was reachable only
+    /// through an ORT API nothing in this repo calls. This is the falsifier for the plumbing.
+    #[test]
+    fn a_failed_lookup_reaches_the_process_wide_counters() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        let r = registry();
+        r.free(0xdead_0000);
+        assert!(
+            tally::snapshot().failed_lookups >= 1,
+            "a bug detector whose count no artifact carries is not a detector"
+        );
+        tally::reset_for_test();
     }
 
     /// Retirement must reach the counters FILE, not just the per-registry struct.
