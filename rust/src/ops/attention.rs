@@ -492,30 +492,55 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
         ),
     )?;
 
-    // present_key / present_value alias past_key / past_value (in-place KV cache update).
-    // The shader writes only the new token at tok_pos; all other positions are inherited from
-    // the past buffer, which is the same allocation.  This avoids a full-cache copy per step.
-    // M2's device-backed allocator must honour the alias (see OP_COVERAGE.md §9.5 #3).
     let pres_k_ref = node.outputs.get(1).ok_or_else(|| {
         EpError::InvalidGraph(format!("`{}` has no present_key slot", node.op_type))
     })?;
-    // KV output descriptor: [batch, kv_heads, past_len_max, head_dim].  This is the same shape
-    // as past_key/past_value — the shader writes in-place at tok_pos, not appending new rows.
+    let pres_v_ref = node.outputs.get(2).ok_or_else(|| {
+        EpError::InvalidGraph(format!("`{}` has no present_value slot", node.op_type))
+    })?;
+
+    // present_key / present_value handling depends on whether ORT gave us a KV buffer to
+    // update in place (`past_len_max > 0`) or an *empty* past (`past_len_max == 0`, the
+    // first-token / prefill and growing-KV case that genai-exported graphs emit — see
+    // `_build_phi35_feeds`, which feeds `past_key_values.N.key = [1, Nkv, 0, D]`).
+    //
+    // In-place aliasing is only valid when a past buffer exists whose positions the shader can
+    // inherit: `present` and `past` must be the *same* allocation with the same S-dimension.
+    // When the past is empty there is nothing to alias onto — the ORT-declared present shape is
+    // `[B, Nkv, past_len + seq_len, D] = [B, Nkv, seq_len, D]`, strictly larger than the (zero-
+    // element) past.  Aliasing it onto the past bound the 0-byte present output to the 4-byte
+    // zero-element placeholder, so `dispatch_ort` sized it 0 and the placeholder branch skipped
+    // the write entirely: the 50 KV outputs were never written (Guard D cross-run defect).
+    //
+    // `kv_len` is the present buffer's S-dimension and also the shader's KV write stride
+    // (push-constant `past_len_max`); the shader writes each token at `tok_pos = past_len +
+    // s_local`, so for an empty past (`past_len == 0`) it fills positions `[0, seq_len)` — the
+    // whole buffer.
+    let empty_past = past_len_max == 0;
+    let kv_len = if empty_past { seq_len } else { past_len_max };
     let kv_desc = TensorDesc::new(
         dtype,
         vec![
             batch_size as i64,
             kv_num_heads as i64,
-            past_len_max as i64,
+            kv_len as i64,
             head_dim as i64,
         ],
     );
-    let pres_k_buf = ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?;
-
-    let pres_v_ref = node.outputs.get(2).ok_or_else(|| {
-        EpError::InvalidGraph(format!("`{}` has no present_value slot", node.op_type))
-    })?;
-    let pres_v_buf = ctx.bind_aliased_output(&node.inputs[4], pres_v_ref, kv_desc)?;
+    let (pres_k_buf, pres_v_buf) = if empty_past {
+        // No in-place past to inherit: bind fresh present buffers the shader fills completely.
+        (
+            ctx.bind_output(pres_k_ref, kv_desc.clone())?,
+            ctx.bind_output(pres_v_ref, kv_desc)?,
+        )
+    } else {
+        // Fixed-buffer KV cache: present aliases past, shader updates `tok_pos` in place.
+        // M2's device-backed allocator must honour the alias (see OP_COVERAGE.md §9.5 #3).
+        (
+            ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?,
+            ctx.bind_aliased_output(&node.inputs[4], pres_v_ref, kv_desc)?,
+        )
+    };
 
     // -- Push constants (32 bytes, matches shader PC struct) ---------------------------
     let mut push = Vec::with_capacity(32);
@@ -525,7 +550,7 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     push.extend_from_slice(&kv_num_heads.to_le_bytes());
     push.extend_from_slice(&head_dim.to_le_bytes());
     push.extend_from_slice(&rotary_dim.to_le_bytes());
-    push.extend_from_slice(&past_len_max.to_le_bytes());
+    push.extend_from_slice(&kv_len.to_le_bytes());
     push.extend_from_slice(&scale.to_bits().to_le_bytes());
 
     // -- Dispatch: one invocation per (batch, query_head, query_seq_pos) ---------------
@@ -927,6 +952,47 @@ mod tests {
         assert!(
             (scale - 96f32.sqrt().recip()).abs() < 1e-6,
             "scale = 1/sqrt(D)"
+        );
+    }
+
+    /// Defect 2 falsifier (R9/R10): with an **empty** past KV (`past_max == 0`, the prefill /
+    /// growing-KV feed real graphs emit), the present outputs must be bound as real, correctly
+    /// sized `[B, Nkv, seq_len, D]` buffers — not aliased onto the zero-element past.  Before the
+    /// fix, present was aliased onto the empty past, `dispatch_ort` sized it 0 bytes, and the KV
+    /// outputs were never written.  The instrument that goes red if the fix regresses: the KV
+    /// output descriptors reappear at `S == past_max == 0`, or the shader's KV write stride
+    /// (`past_len_max` push field) collapses back to 0.
+    #[test]
+    fn translate_gqa_empty_past_binds_real_present_buffers() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        // B=1, S=2 (two prefill tokens), Nq=32, Nkv=32, D=96, past_max=0 (empty KV).
+        let node = gqa_node(1, 2, 32, 32, 96, 0);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        // attn_output + present_key + present_value are all real allocations now.
+        assert_eq!(
+            ctx.outputs.len(),
+            3,
+            "empty past must bind attn + present_key + present_value as real buffers"
+        );
+        // Present KV descriptors are sized to the present sequence length (= seq_len for prefill),
+        // never to the zero-element past.
+        for desc in &ctx.outputs[1..] {
+            assert_eq!(
+                desc.shape,
+                vec![1, 32, 2, 96],
+                "present KV must be [B, Nkv, seq_len, D], not the empty past shape"
+            );
+        }
+        // The shader's KV write stride (push field 6) must equal the present S-dim, not 0.
+        let k = &ctx.dispatches[0];
+        let kv_stride = u32::from_le_bytes(k.push_constants[24..28].try_into().unwrap());
+        assert_eq!(
+            kv_stride, 2,
+            "KV write stride must be seq_len for an empty past"
         );
     }
 

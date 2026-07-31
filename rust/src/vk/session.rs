@@ -683,17 +683,51 @@ impl VulkanSession {
         // §6.5 seam: offer the EP device context to host_device_memory so that ORT-tensor
         // allocations land on the SAME VkDevice the compute kernels use.  Must be called BEFORE
         // any ORT tensor is allocated — `ensure_registered` is lazy and consults OFFERED at first
-        // use.  The Arc is retained for the process lifetime (per the seam contract).
-        let ctx = crate::vk::device::SessionSharedCtx {
-            instance: instance.ash().clone(),
-            ash_device: device.ash().clone(),
-            physical_device: device.physical_device(),
-            compute_queue: device.compute_queue(),
-            compute_queue_family: device.compute_queue_family(),
-            is_uma: capable.caps.is_uma,
-            name: capable.info.name.clone(),
-        };
-        crate::vk::host_device_memory::offer_shared_device(idx, std::sync::Arc::new(ctx));
+        // use.
+        //
+        // KEY (index-space, R12): `ensure_registered` is called by the allocator with the
+        // *factory's advertised* device index (`HandleRegistry::set_device_index`, factory.rs) —
+        // which is the physical `vkEnumeratePhysicalDevices` index, i.e. `capable.info.index`.
+        // It is NOT the sorted-capables selector `idx` (the `ONNXRUNTIME_EP_VULKAN_DEVICE` value).
+        // Those two agree only when enumerate order equals best-first sort order; keying the offer
+        // on `idx` left `offered_device()` returning None on any desk where they diverge, so the
+        // provider silently built a SECOND VkDevice (`alloc_device_frame = SPLIT-DEVICE`). Offer
+        // under `capable.info.index` so the registry lookup finds it and the frame becomes SHARED.
+        //
+        // LIFETIME (why this is opt-in, not on by default): the offered context holds *borrowed*,
+        // bitwise-cloned ash handles (see `EpDeviceShare` / `SessionSharedCtx` — no refcount, no
+        // Drop). The device-memory provider that consumes them is process-global and built once,
+        // then cached (`host_device_memory::PROVIDERS`). But every `VulkanSession::create` builds a
+        // *fresh* VkDevice — §6.5's "exactly one VkDevice per physical device per EP instance"
+        // invariant is not yet enforced across sessions. Consequences of offering unconditionally:
+        //   1. Single session: correct — `alloc_device_frame` flips SPLIT-DEVICE → SHARED and
+        //      `alloc_device_authoritative_spans` transitions UNOBSERVABLE → 0 (a measurement).
+        //   2. Multiple sessions in one process: the cached provider outlives session 0's device,
+        //      which `VulkanSession::drop` destroys (vkDestroyDevice) → use-after-free. Measured:
+        //      STATUS_ACCESS_VIOLATION (0xC0000005) on the 2nd session's inference. Even if the
+        //      device were leaked to keep the handle valid, session N>0's kernels run on a
+        //      *different* device than the provider's, so its ORT tensors would be bound on the
+        //      wrong device.
+        // Closing this for real requires sessions to *reuse* the process-global EP device
+        // (`register_ep_device`) rather than create their own — an architectural change on the
+        // §6.5 seam, not a call-site fix. Until then the offer is gated: default OFF (safe for any
+        // session count, SPLIT-DEVICE), opt-in ON via `ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE=1`
+        // for single-session runs that want to exercise/verify the SHARED frame.
+        if std::env::var_os("ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE").is_some_and(|v| v == "1") {
+            let ctx = crate::vk::device::SessionSharedCtx {
+                instance: instance.ash().clone(),
+                ash_device: device.ash().clone(),
+                physical_device: device.physical_device(),
+                compute_queue: device.compute_queue(),
+                compute_queue_family: device.compute_queue_family(),
+                is_uma: capable.caps.is_uma,
+                name: capable.info.name.clone(),
+            };
+            crate::vk::host_device_memory::offer_shared_device(
+                capable.info.index,
+                std::sync::Arc::new(ctx),
+            );
+        }
 
         // Allocate the 4-byte zero-element placeholder buffer.  A zero-element tensor maps
         // to this buffer in descriptor writes — Vulkan requires a non-null buffer handle and
@@ -2101,5 +2135,12 @@ impl Drop for VulkanSession {
             // release).
             unsafe { self.alloc.free(placeholder) };
         }
+        // R10 artifact timing: the observation file is otherwise flushed at data-transfer
+        // teardown (transfer.rs), which ORT releases *before* the weight-cache release path
+        // runs — so that snapshot records `weight_cache_release_calls = 0` and the full cache
+        // still resident, hiding the release entirely. Emit one final snapshot here, after the
+        // drain, so the artifact carries the post-release truth (release_calls > 0, device
+        // bytes drained). Counters are cumulative atomics, so this can only add information.
+        crate::counters::dump_if_requested();
     }
 }
