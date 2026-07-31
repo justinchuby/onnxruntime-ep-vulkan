@@ -846,3 +846,119 @@ GpuQueryPool is created with `n_kernels` where `n_kernels = kernels.len()` — o
 **Key learning — R9 applied to "tracer wired":**
 The trace file was confirmed by running `pytest tests/ops/test_matmulnbits.py -k fp16_dynamic_batch` with both trace env vars set, then checking `Test-Path trace_session26.json`. Exists with 89 spans. The instrument that would go red if wiring were broken: no file, or file with 0 spans.
 
+---
+
+## Session 27 — Tracer end-to-end, timestamp falsifiers, hypothesis verdict, island splitters, PartitionStats fix (2026-07-30T17:22:33-07:00)
+
+**Coordinator tasks:** (1) Verify tracer by running. (2) Timestamp 52× trap — falsifiers. (3) Per-dispatch attribution shape. (4) Fixed-per-submission hypothesis verdict with number. (5) Island splitters histogram. (6) Messenger positive control. (7) PartitionStats largest_island_flops.
+
+**Pre-work:** Merged `origin/main` (Trinity's counter-assertion split, d9bcc9d) — 2 files changed, clean auto-merge.
+
+**Device selection clarification (D-S27-00):**
+`select_device()` uses sorted index (discrete-first). NVIDIA RTX 4060 = sorted index 0 (discrete, best-first default). Intel Iris Xe = sorted index 1. `ONNXRUNTIME_EP_VULKAN_DEVICE=0` or unset → NVIDIA. `ONNXRUNTIME_EP_VULKAN_DEVICE=1` → Intel. `epctl --probe-loader` shows Vulkan API enumeration order (Intel=0, NVIDIA=1), which differs from selector index order. This is a naming collision; selector index should be documented.
+
+**D-S27-01 — Tracer confirmed end-to-end (running, not reading):**
+`ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` + trace path + Phi-3.5 → **trace file produced**:
+- **322 GPU kernel spans**, real durations (Intel Iris Xe, 52.0833 ns/tick, 36 valid bits)
+- Breakdown: 161 MatMulNBits, 64 SkipNorm, 64 Mul, 32 Sigmoid, 1 Add
+- One span per kernel per island — NOT one span per island (correct per-dispatch attribution)
+- 34 Compute calls (33 surviving islands + 1 small single-node subgraph)
+- 461 total span events, 144 counter samples
+
+**D-S27-02 — Timestamp falsifiers (R9):**
+`bench/timestamp_audit.py` exit 0 on this machine, both hazards falsifiable:
+- **Period scale**: Intel Iris Xe (52.0833 ns/tick); DETECTABLE here — 52× error produces 52× wrong durations. NVIDIA (1.0) and lavapipe (1.0) cannot falsify this hazard; CI is blind to it.
+- **Valid-bit mask**: Intel Iris Xe (36 valid bits, wraps in ~3579 s); EXERCISABLE here — unmasked reads would be negative or garbage. NVIDIA (64 bits) and lavapipe (64 bits) cannot falsify this.
+- Both instruments agree between EP (`epctl --probe-loader`) and `vulkaninfoSDK` on both devices for both properties. Exit code 0.
+
+**D-S27-03 — Per-dispatch attribution shape:**
+`GpuQueryPool::new(kernels.len())` creates one `(cmd_before, dispatch, cmd_after)` triple per
+kernel. A 10-kernel island gets 10 independent pairs. Confirmed: 322 GPU spans = one per node,
+not one per island. Multi-node island attribution is correct.
+
+**D-S27-04 — Fixed-per-submission hypothesis: verdict and deciding numbers:**
+
+| Metric | Intel Iris Xe (UMA) | RTX 4060 (discrete) |
+|--------|--------------------|--------------------|
+| GPU kernel total | 784.6 ms | 48.3 ms |
+| Fence-wait total | 893.8 ms | 82.7 ms |
+| Non-kernel fence overhead | 109.2 ms (3.2 ms/sub) | 34.4 ms (1.0 ms/sub) |
+| Record total (CPU, re-recorded) | 1340.3 ms (39.4 ms/sub) | 1316.6 ms (38.7 ms/sub) |
+| GPU fraction of fence-wait | 87.8% | 58.4% |
+
+**Verdict: CONFIRMED — but the dominant mechanism is command-buffer re-recording, not vkQueueSubmit overhead.** The deciding number: `38.7–39.4 ms/submission record time`, identical on both devices (it is CPU work), dominates over GPU execution (23.1 ms/sub Intel; 1.4 ms/sub NVIDIA). On NVIDIA, recording is 27× GPU kernel time. vkQueueSubmit itself is only 140–186 µs/submit.
+
+The "per-island amortised figure went UP" (16.6 ms Intel / 25.7 ms NVIDIA) because total_delta/fewer_islands is the benchmark's definition — it was always measuring this ratio, not per-island overhead.
+
+**Data that does NOT settle:** why Intel (807 ms benchmark) beats NVIDIA (1156 ms) despite being 16× slower in GPU compute. Our total trace (record+fence_wait) gives Intel=2234 ms, NVIDIA=1400 ms — NVIDIA faster — opposite of benchmark. The benchmark timing window likely excludes recording (first-run compilation) or measures GPU-only. Further instrument needed: run `bench/phi35_bench.py` with TRACE_GPU=1 and examine which phases fall inside the benchmark's timing window.
+
+**D-S27-05 — Island splitters histogram (`ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`):**
+364 records, 322 claimed, 42 declined. Declined by (op, code):
+
+| count | op | code |
+|-------|-----|------|
+| 32 | `com.microsoft::GroupQueryAttention` | staged |
+| 2 | `Gather` | not-registered |
+| 2 | `Cast` | staged |
+| 1 | `SimplifiedLayerNormalization` | staged (different from SkipSimplifiedLayerNorm!) |
+| 1 | `Shape` | not-registered |
+| 1 | `ReduceSum` | not-registered |
+| 1 | `Sub` | dtype (i64 variant) |
+| 1 | `Greater` | staged |
+| 1 | `If` | not-registered |
+
+Mouse's priority: GroupQueryAttention (32 instances, primary island splitter). Implementing it
+collapses up to 32 island boundaries. The 64 GQA nodes in the model split roughly 50/50 across
+two execution paths (only 32 appear in this single-token inference).
+
+**D-S27-06 — PartitionStats §10.0 triple fixed (ep.rs):**
+The premature `record_partition()` call (before island computation, island_count=0) was removed.
+Tracking vars added before the cluster loop (`largest_island_flops`, `largest_island_nodes`,
+`total_flops`, `total_boundary_bytes`). New call placed after `counters::record_capability()`.
+Confirmed in trace: `island_count: 33`, `claimed_nodes: 321`, `largest_island_nodes: 10`,
+`largest_island_flops: 698351616`, `concentration: 0.031`.
+Note: `boundary_bytes_per_inference` is inflated by symbolic-dim fallback (→128 for -1 dims);
+treat as qualitative upper bound until shapes are available at GetCapability time.
+
+**D-S27-07 — Messenger positive control (NVIDIA, session 27):**
+`ep_messenger_fires_for_planted_fence_leak` — `EP_VALIDATION_ERROR_COUNT = 1` after planted
+fence leak on NVIDIA RTX 4060. Messenger is wired and capturing. Intel not separately confirmed
+in this session (dispatch_integration runs NVIDIA first as the best-score device). M0 criterion 3
+remains: messenger is not merely silent.
+
+**Device selection clarification (D-S27-00) — epctl display order vs selector order:**
+A naming collision exists: `epctl --probe-loader` shows Vulkan API physical device indices
+(Intel=0, NVIDIA=1), but `ONNXRUNTIME_EP_VULKAN_DEVICE` is interpreted as sorted-list index
+(NVIDIA=0, Intel=1 after discrete-first sort). Setting `DEVICE=1` gives Intel, not NVIDIA,
+which is the opposite of what epctl's display implies. This should be documented in ENGINE.md.
+
+**Results:**
+- Tracer: 322 GPU spans, real durations, trace file confirmed ✅
+- Timestamp audit: exit 0, both falsifiers present on Intel ✅
+- Per-dispatch attribution: correct (one span per kernel) ✅
+- Hypothesis verdict: recording-dominated (38.7 ms/sub); GPU kernel secondary ✅
+- Island splitters: GQA (32) primary, then Gather/Cast/etc. ✅
+- PartitionStats: island_count=33, largest_island_flops=698M ✅
+- Messenger: EP_VALIDATION_ERROR_COUNT=1 (NVIDIA) ✅
+- `cargo ci`: 366 passed, 0 failed ✅
+- Decision inbox: `switch-session27-trace-and-hypothesis.md`
+
+
+
+---
+
+📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
+
+Two findings apply to every agent on the team:
+
+**(a) A mechanism that exists in a file but not in a call graph is indistinguishable from
+one that does not exist.**  Verification by reading is insufficient.  Verify by running.
+Five such mechanisms surfaced in this single batch: partition.rs, the GPU tracer,
+model_output_equivalence, compute_failures, and should_claim_island.  In every
+case the code was correct; the wiring was absent; the absence was invisible to review.
+
+**(b) 85.9% of inference wall-time involves no GPU work** (recording 68.3%, fence-wait
+idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
+command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
+accordingly.
+

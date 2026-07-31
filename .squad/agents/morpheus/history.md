@@ -227,3 +227,90 @@ per claimed form naming its proof key and backing ledger entry; WARN if any clai
 UNMEASURED; explicit INFO naming top decline codes when the EP claims zero. Same mechanism at two
 severities, not a second thing to maintain. **Disclosure, not a gate — a log line is an instrument
 with no red state (R9) and may never substitute for the ledger.** Folded into M0 criterion 11.
+
+---
+
+## Session 24 — the day the model became correct, and the failure class that was invisible to review (2026-07-30T19:05:03-07:00)
+
+Coordinator brief: the all-zero-logits defect is fixed, partition.rs was wired (3.7x), GPU
+timestamps landed, and the EP is 3.1x/3.7x slower than CPU with `model_output_equivalence = MATCH`.
+Asked for: an honest M0 update in both directions, a ruling on a performance criterion, a rule for
+the unwired-mechanism class, whether a correct claim can be a wrong claim, and sequencing.
+
+### The defect vindicated the key, not the reasoning
+Root cause was **binding arity**, not dtype — everyone including me reasoned toward the f16 kernel.
+`push_dynamic_kernel` built a 4-entry pipeline layout for `MatMulNBits`-without-`zero_points`; the
+shader wrote binding 4; **both drivers silently dropped the write.** `populated_optional_input_set`
+is a component of the §8.9 proof key, so with/without `zero_points` are **different keys and a proof
+of one could never be returned for the other.** The key was granular on principle before the
+incident. That is the argument for granularity no amount of arguing produces — and the reason
+criterion 11 does not get deprioritised now that the model is right.
+
+### M0: six met / four partial / two not met, of twelve
+Closed on a **measurement**: criterion 10 `DIVERGENT` -> `MATCH` (argmax 30751 == CPU, top-10 10/10,
+max diff 0.031/0.035 — **the non-identity is the correct answer**; a bit-identical result would have
+been evidence of CPU fallback). Criterion 2 closed on the promise I made when reopening it — adding
+a condition after seeing the result is the fault I reopened it for, in reverse.
+**Criteria 4 and 5 stay partial.** A correct model does not retroactively give an unknown-polarity
+check a polarity. Criterion 3 moved **both ways**: the messenger fired on a live unplanted violation
+and printed the root cause in one line (the polarity proof), which also convicts the earlier
+"no errors surfaced" as a silent instrument that sat on the worst defect for its whole life.
+Criterion 12 added (wiring census). First forward movement this week; the table also got longer.
+
+### R10 — the rule
+> A mechanism's existence is a claim about the **call graph**, not about the source tree. The
+> falsifier for "X is wired" is an observation of an artifact X produced whose content varies with
+> X's input — never a reading of X's code, never a flag its author set.
+
+Three amendments: (1) the artifact must **vary with the input** or a hardcoded banner passes;
+(2) uninvoked reports **`UNWIRED`**, distinct from empty — §7.9's third state, sixth appearance —
+because *a partitioner that never runs is indistinguishable from a graph with no islands*;
+(3) **the identity case is an explicit red state**. `island_count == claimed_count` was one line,
+true for the defect's whole life, and nobody had written down that it must be false. Generalised:
+every transform carries an assertion relating input to output, and the no-op case is red — because
+**doing nothing is exactly what not being called looks like.**
+Sub-rule: **wiring is per entry point, not per file** — verified in-tree, `evaluate` is called from
+`GetCapability`, `retain_viable` only from `#[cfg(test)]`, while everyone believed "partition.rs is
+wired". Review rule: **not complete until the reviewer has seen an artifact the mechanism produced.**
+Correction to the brief: **`compute_failures` is not R10** — it IS called; it is R9's silence set.
+The remedies differ (a different instrument vs the same instrument invoked) and conflating them
+means writing a second instrument for a gap a correct first one already covers.
+
+### §7.0.2 — yes, a correct claim can be a wrong claim
+A claim is a **scheduling decision**, not a capability statement. Net benefit is a property of the
+op **in a graph at a coverage level**. Lives in the partitioner, never the registry — a net-negative
+result must never demote a row to `Staged`, that would put a graph-dependent fact in a
+graph-independent place. Own decline code (never folded into `staged`/`dtype`, R8 reads that
+histogram). **It is the only discretionary decline in the system**, so it is the only one needing a
+guard against itself: measured per artifact, re-measured when the neighbourhood changes — SkipNorm
+flipped sign with no kernel change. Hazard recorded: `GetCapability` bypasses `evaluate` for a
+single cluster because "there is no competing partition" — **the competing partition is always CPU
+fallback**, and that is the shape a fully-claimed graph converges to.
+
+### Performance criterion — no, and the reasoning is the deliverable
+Slowness is loud (self-reporting, monotone, we noticed 3.1x without a criterion); wrongness is
+silent. Criteria exist for failures that hide. M0 is not a release; M2 already carries the criterion
+the counter-argument wants. And my own drafting rule kills it: **the cheapest way to pass a ratio
+criterion is always to do less GPU work.**
+M0 gains a **§10.0 disclosure obligation** instead — the end-to-end CPU ratio may never be omitted,
+especially above 1.0. **A figure nobody may hide is not a threshold nobody may fail**, and inventing
+a gate to look rigorous would be softening in the other direction.
+M1 gains: a **counter before a clock** (`command_buffer_records` < `compute_calls`; identity case
+red), recording share < 5%, ratio reported. Non-gameable because **the denominator is the whole
+model in wall clock — an EP that claims nothing scores exactly 1.0 and never better**, so declining
+can defend a ratio and never improve one. Plus `MATCH`-only admissibility and `REGRESSED-COVERAGE`.
+M2 keeps the threshold, sharpened: every device in the matrix reported, not just the winner.
+
+### Sequencing
+Tail stands, unsoftened, and is now the front of the queue. The 68.3% recording cost does not enter
+M0 and does not outrank the tail — **but it was never a sequencing conflict**: it is Tank's M1
+`recorded.rs` work and items 1-6 are Mouse/Trinity/Switch/Link. **Sequencing governs declarations,
+not calendars** (third time I have had to say it). One hard constraint the other way: caching means
+**a binding table computed once and reused**, which is today's defect generalised to every kernel —
+so it lands only through criterion 10's gate.
+
+### Carry forward
+- Ask R10's question before R9's: *does it run?* precedes *would it go red?*
+- When someone says a file is wired, ask which entry point.
+- The no-op case of any transform must be an explicit failure state, written down on day one.
+- On a good day, check which rows the good news does **not** touch, and say so first.
