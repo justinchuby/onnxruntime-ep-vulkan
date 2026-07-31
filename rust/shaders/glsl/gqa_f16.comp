@@ -1,0 +1,308 @@
+// `com.microsoft.GroupQueryAttention` — fused GQA with RoPE (serial, first-pass baseline).
+//
+// # Correctness before performance
+//
+// One GLSL invocation per (batch, query_head, query_seq_pos).  Local size = (1,1,1) so there
+// are no barriers, no shared memory dependencies, and no wave-level reductions — the correctness
+// surface is a plain serial algorithm.  The dispatch is (B * Nq * S, 1, 1).
+//
+// # Why serial first
+//
+// Island attribution (2026-07-30): GroupQueryAttention is the sole op creating inter-island cuts
+// in Phi-3.5's graph (32 nodes → 32 ORT topological breaks → 33 islands).  The 33-island
+// profile shows command-buffer recording at 68.3% of wall time; reducing to ~1 island saves
+// most of that overhead.  A correct serial kernel gives the reduction immediately; per-element
+// tiling is a follow-up once this baseline is validated on both devices.
+//
+// # Scope (first kernel)
+//
+//   Supported:
+//     - Packed QKV:   input_0 = [B, S, (Nq + 2*Nkv) * D]; inputs 1 and 2 absent
+//     - KV cache:     past_key/value [B, Nkv, past_len_max, D]  (append-then-read layout)
+//     - RoPE:         half-rotation (neox) with do_rotary=1, rotary_interleaved=0
+//     - Attention:    online softmax over [0 .. tok_pos] tokens, causal
+//     - Output:       attn_output [B, S, Nq*D]; present_key/value written at tok_pos
+//
+//   Not supported by this kernel (all declined by claim predicate):
+//     - Separate Q/K/V inputs
+//     - rotary_interleaved=1
+//     - Softcap, attention_bias, QK norm
+//
+// # Push-constant layout (must match translate_gqa in attention.rs)
+//
+//   offset  0: batch_size   u32
+//   offset  4: seq_len      u32
+//   offset  8: num_heads    u32    (Nq)
+//   offset 12: kv_num_heads u32    (Nkv)
+//   offset 16: head_dim     u32    (D)
+//   offset 20: rotary_dim   u32    (rot_D; rot_D/2 cos/sin entries per position)
+//   offset 24: past_len_max u32    (KV buffer S dimension)
+//   offset 28: scale        f32    (1/sqrt(D))
+//
+// # Binding table (must match translate_gqa order)
+//
+//   binding 0: packed_qkv   readonly   [B, S, (Nq+2*Nkv)*D]   f16 packed as uint
+//   binding 1: past_key     readonly   [B, Nkv, past_len_max, D]  f16 packed as uint
+//   binding 2: past_value   readonly   [B, Nkv, past_len_max, D]  f16 packed as uint
+//   binding 3: seqlens_k    readonly   [B]   i32  (actual past length per batch element)
+//   binding 4: cos_cache    readonly   [max_seq, rot_D/2]   f16 packed as uint
+//   binding 5: sin_cache    readonly   [max_seq, rot_D/2]   f16 packed as uint
+//   binding 6: attn_output  writeonly  [B, S, Nq*D]          f16 packed as uint
+//   binding 7: present_key  readwrite  [B, Nkv, past_len_max, D]  f16 packed as uint
+//   binding 8: present_value readwrite [B, Nkv, past_len_max, D]  f16 packed as uint
+//
+// # f16 packing convention (shared with all other shaders in this project)
+//
+//   Tensors are stored as uint arrays, two f16 elements per uint.  Element at flat index i is
+//   in word i/2; the lower 16 bits hold element i&~1, the upper 16 bits hold element i|1.
+//   Reads use unpackHalf2x16; writes use atomicAnd/atomicOr to avoid corrupting the neighbour.
+//   (With local_size=1 the atomics are never actually contended, but they are always correct.)
+
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// --------------------------------------------------------------------------
+// Push constants
+// --------------------------------------------------------------------------
+layout(push_constant) uniform PC {
+    uint  batch_size;
+    uint  seq_len;
+    uint  num_heads;
+    uint  kv_num_heads;
+    uint  head_dim;
+    uint  rotary_dim;
+    uint  past_len_max;
+    float scale;
+} pc;
+
+// --------------------------------------------------------------------------
+// Buffers (f16 elements packed two-per-uint)
+// --------------------------------------------------------------------------
+layout(set = 0, binding = 0, std430) readonly  buffer BufQKV  { uint d[]; } qkv;
+layout(set = 0, binding = 1, std430) readonly  buffer BufPK   { uint d[]; } past_k;
+layout(set = 0, binding = 2, std430) readonly  buffer BufPV   { uint d[]; } past_v;
+layout(set = 0, binding = 3, std430) readonly  buffer BufSeq  { int  d[]; } seqlens;
+layout(set = 0, binding = 4, std430) readonly  buffer BufCos  { uint d[]; } cos_buf;
+layout(set = 0, binding = 5, std430) readonly  buffer BufSin  { uint d[]; } sin_buf;
+// attn_out is NOT declared writeonly: wr_out uses atomicAnd/atomicOr which need read access.
+// Each invocation writes to a disjoint range (different (b,h,s_local)), so the atomics never
+// actually contend — but they must compile.
+layout(set = 0, binding = 6, std430)           buffer BufOut  { uint d[]; } attn_out;
+layout(set = 0, binding = 7, std430)           buffer BufPresK { uint d[]; } pres_k;
+layout(set = 0, binding = 8, std430)           buffer BufPresV { uint d[]; } pres_v;
+
+// --------------------------------------------------------------------------
+// Scalar f16 read helpers (one per readonly buffer — GLSL cannot parameterise
+// buffer blocks, so each buffer gets its own helper)
+// --------------------------------------------------------------------------
+float f16_qkv(uint i) {
+    vec2 p = unpackHalf2x16(qkv.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pk(uint i) {
+    vec2 p = unpackHalf2x16(past_k.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_pv(uint i) {
+    vec2 p = unpackHalf2x16(past_v.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_cos(uint i) {
+    vec2 p = unpackHalf2x16(cos_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_sin(uint i) {
+    vec2 p = unpackHalf2x16(sin_buf.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+// present_key and present_value are read-write so they need separate read/write helpers
+float f16_presk(uint i) {
+    vec2 p = unpackHalf2x16(pres_k.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+float f16_presv(uint i) {
+    vec2 p = unpackHalf2x16(pres_v.d[i >> 1u]);
+    return (i & 1u) == 0u ? p.x : p.y;
+}
+
+// --------------------------------------------------------------------------
+// Scalar f16 write helpers (atomic to protect the neighbour half-word)
+// --------------------------------------------------------------------------
+void wr_out(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(attn_out.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (attn_out.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(attn_out.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (attn_out.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presk(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_k.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_k.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_k.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_k.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+void wr_presv(uint i, float v) {
+    uint bits = packHalf2x16(vec2(v, v));
+    if ((i & 1u) == 0u) {
+        atomicAnd(pres_v.d[i >> 1u], 0xFFFF0000u);
+        atomicOr (pres_v.d[i >> 1u], bits & 0x0000FFFFu);
+    } else {
+        atomicAnd(pres_v.d[i >> 1u], 0x0000FFFFu);
+        atomicOr (pres_v.d[i >> 1u], bits & 0xFFFF0000u);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Main
+// --------------------------------------------------------------------------
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    uint S   = pc.seq_len;
+    uint Nq  = pc.num_heads;
+    uint Nkv = pc.kv_num_heads;
+    uint D   = pc.head_dim;
+    uint rh  = pc.rotary_dim >> 1u;   // number of cos/sin entries per position = rotary_dim/2
+
+    // Decode gid → (batch b, query head h, query seq offset s_local)
+    uint b       = gid / (Nq * S);
+    uint rem     = gid % (Nq * S);
+    uint h       = rem / S;
+    uint s_local = rem % S;
+    if (b >= pc.batch_size) return;
+
+    uint kv_h    = h / (Nq / Nkv);     // KV head (group_size = Nq/Nkv; MHA has group_size=1)
+    uint past_len = uint(max(seqlens.d[int(b)], 0));
+    uint tok_pos  = past_len + s_local; // absolute position of this query token in the sequence
+
+    // ------------------------------------------------------------------
+    // 1. Load Q, K, V from packed_qkv
+    //    packed_qkv layout: [B, S, (Nq + 2*Nkv) * D]
+    // ------------------------------------------------------------------
+    uint qkv_row = (b * S + s_local) * (Nq + 2u * Nkv) * D;
+    uint q_base  = qkv_row + h             * D;
+    uint k_base  = qkv_row + Nq            * D + kv_h * D;
+    uint v_base  = qkv_row + (Nq + Nkv)   * D + kv_h * D;
+
+    // Local arrays — head_dim ≤ 128 for all current target models
+    float q[128], k_new[128], v_new[128], acc[128];
+    for (uint d = 0u; d < D; d++) {
+        q[d]     = f16_qkv(q_base + d);
+        k_new[d] = f16_qkv(k_base + d);
+        v_new[d] = f16_qkv(v_base + d);
+        acc[d]   = 0.0;
+    }
+
+    // ------------------------------------------------------------------
+    // 2. Apply RoPE to Q and K (neox / half-rotation: first rh dims are "x", next rh are "y")
+    //    cos_cache[pos, ri] is the ri-th cos value at sequence position pos.
+    // ------------------------------------------------------------------
+    {
+        uint cos_row = tok_pos * rh;
+        for (uint ri = 0u; ri < rh; ri++) {
+            float c = f16_cos(cos_row + ri);
+            float s = f16_sin(cos_row + ri);
+
+            float qx = q[ri];        float qy = q[ri + rh];
+            q[ri]      = qx * c - qy * s;
+            q[ri + rh] = qy * c + qx * s;
+
+            float kx = k_new[ri];    float ky = k_new[ri + rh];
+            k_new[ri]      = kx * c - ky * s;
+            k_new[ri + rh] = ky * c + kx * s;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Write rotated K/V into present_key/value at position tok_pos.
+    //    present layout: [B, Nkv, past_len_max, D]
+    //    (Atomic writes — with local_size=1 they are never contended, but must be correct
+    //    for seq_len > 1 where sibling invocations on the same kv_head can co-exist.)
+    // ------------------------------------------------------------------
+    {
+        uint pb = (b * Nkv + kv_h) * pc.past_len_max * D + tok_pos * D;
+        for (uint d = 0u; d < D; d++) {
+            wr_presk(pb + d, k_new[d]);
+            wr_presv(pb + d, v_new[d]);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 4. Online softmax attention: softmax(Q K^T * scale) V, causal mask.
+    //
+    //    Online softmax (Milakov & Gimelshein, 2018) accumulates the weighted V sum in a
+    //    single pass without storing the full score vector.  This eliminates the need for
+    //    a MAX_TOTAL_SEQ-sized local array and keeps register pressure manageable.
+    //
+    //    Invariant: acc[d] == sum_{t=0}^{cur} exp(s_t - max_s) * V[t][d]
+    //               sum_e  == sum_{t=0}^{cur} exp(s_t - max_s)
+    //    Rescaling: when a new maximum max_s' > max_s is found, multiply acc and sum_e by
+    //               exp(max_s - max_s') before adding the new term.
+    // ------------------------------------------------------------------
+    float max_s = -1.0e30;
+    float sum_e = 0.0;
+
+    uint total_len = tok_pos + 1u;   // causal: [0 .. tok_pos] inclusive
+
+    for (uint t = 0u; t < total_len; t++) {
+        // Compute Q . K[t]
+        float dot = 0.0;
+        uint kv_base;
+        if (t < past_len) {
+            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
+        } else if (t == tok_pos) {
+            // self-key — use rotated k_new directly
+            for (uint d = 0u; d < D; d++) dot += q[d] * k_new[d];
+        } else {
+            // t in [past_len, tok_pos): key from a sibling query position, already written
+            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            for (uint d = 0u; d < D; d++) dot += q[d] * f16_presk(kv_base + d);
+        }
+        float sc = dot * pc.scale;
+
+        // Online softmax rescale
+        if (sc > max_s) {
+            float factor = exp(max_s - sc);
+            for (uint d = 0u; d < D; d++) acc[d] *= factor;
+            sum_e *= factor;
+            max_s = sc;
+        }
+        float e = exp(sc - max_s);
+        sum_e += e;
+
+        // Accumulate e * V[t]
+        if (t < past_len) {
+            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
+        } else if (t == tok_pos) {
+            for (uint d = 0u; d < D; d++) acc[d] += e * v_new[d];
+        } else {
+            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            for (uint d = 0u; d < D; d++) acc[d] += e * f16_presv(kv_base + d);
+        }
+    }
+
+    // Normalise
+    float inv_s = 1.0 / sum_e;
+    for (uint d = 0u; d < D; d++) acc[d] *= inv_s;
+
+    // ------------------------------------------------------------------
+    // 5. Write attn_output[b, s_local, h*D .. (h+1)*D - 1]
+    //    output layout: [B, S, Nq * D]
+    // ------------------------------------------------------------------
+    {
+        uint ob = (b * S + s_local) * Nq * D + h * D;
+        for (uint d = 0u; d < D; d++) wr_out(ob + d, acc[d]);
+    }
+}
+

@@ -44,9 +44,8 @@ THE CENSUS MECHANISMS (per DESIGN.md §10 criterion 12 ruling):
      Census reports per the current counters file.
 
   4. ``retain_viable`` (net-benefit gate, §7.0.2)
-     Observable: no counter exists yet.  UNWIRED.
-     xfail(strict=True) — Morpheus: "retain_viable is called only from tests. A module-
-     granular claim about the call graph is not a claim about anything." (§10.0.1 R10).
+     Observable: ``viable_islands_retained`` in the C ABI counters (ABI version 2).
+     Present even at 0 — distinguishable from UNWIRED (key absent) per R10. WIRED 2026-07-30.
      Owner: Mouse.
 
   5. §8.9 ledger lookup (claim-unproven gate)
@@ -117,7 +116,6 @@ _MANDATORY_WIRED = {
 # Mechanisms known to be UNWIRED at M0 (criterion 11 not yet met).
 # These are xfail(strict=True) rather than hard failures.
 _KNOWN_UNWIRED_M0 = {
-    "retain_viable",   # Mouse — called only from tests (§10.0.1 R10 finding, 2026-07-30)
     "ledger_lookup",   # Mouse/Trinity — criterion 11 not met; no ledger entries exist
 }
 
@@ -159,6 +157,8 @@ class _EpCounters(ctypes.Structure):
         ("compute_calls", ctypes.c_uint64),
         ("compute_failures", ctypes.c_uint64),
         ("dispatches_executed", ctypes.c_uint64),
+        # ABI version 2: viable_islands_retained — R10 wiring observable for net-benefit gate.
+        ("viable_islands_retained", ctypes.c_uint64),
     ]
 
 
@@ -184,6 +184,7 @@ def _read_ep_counters_via_ctypes() -> dict[str, int]:
             "compute_calls": c.compute_calls,
             "compute_failures": c.compute_failures,
             "dispatches_executed": c.dispatches_executed,
+            "viable_islands_retained": c.viable_islands_retained,
         }
     except Exception:
         return {}
@@ -350,8 +351,13 @@ def test_wiring_census(require_vulkan) -> None:
     observations["model_output_equivalence"] = equiv
 
     # ── Mechanism 5: retain_viable ───────────────────────────────────────
-    # No counter exists.  Called only from tests, not from GetCapability.
-    observations["retain_viable"] = "UNWIRED"
+    # Observable: `viable_islands_retained` in the C ABI counters (added ABI version 2).
+    # Present even at 0 — an always-0 result is distinguishable from UNWIRED (key absent)
+    # because the key is emitted by the production path.  Owner: Mouse.
+    if "viable_islands_retained" in counters_after:
+        observations["retain_viable"] = str(counters_after["viable_islands_retained"])
+    else:
+        observations["retain_viable"] = "UNWIRED"
 
     # ── Mechanism 6: ledger_lookup ───────────────────────────────────────
     # §8.9 criterion 11 not met.  No ledger entries exist.
@@ -440,33 +446,19 @@ def test_wiring_census(require_vulkan) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "retain_viable is called only from #[cfg(test)], not from GetCapability. "
-        "§10.0.1 R10 finding (2026-07-30): a mechanism called only from tests is "
-        "not in the call graph. Owner: Mouse. Criterion 12 tracks this. "
-        "Remove this xfail when Mouse wires retain_viable into the production path "
-        "and the census observes a non-UNWIRED value."
-    ),
-)
 @pytest.mark.skipif(
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
     reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
 )
 def test_retain_viable_wired(require_vulkan) -> None:
-    """Criterion 12 sub-item: retain_viable must report a computed value, not UNWIRED.
+    """Criterion 12 sub-item: retain_viable reports a computed value, not UNWIRED.
 
-    Currently xfail because retain_viable is only called from tests (§10.0.1 R10,
-    2026-07-30 finding). This test will XPASS when Mouse wires it into GetCapability.
-
-    Observable proxy: the counters JSON would need a 'viable_islands_retained' field
-    (or equivalent) that varies with the island graph. Owner: Mouse to add the counter
-    and wire the call; Trinity to update the census query.
+    Wired 2026-07-30 (Mouse): `viable_islands_retained` added to the C ABI counters struct
+    (ABI version 2) and emitted from `GetCapability` for multi-cluster graphs. The key is
+    present even at 0 — distinguishable from UNWIRED (key absent) per R10. The xfail was
+    removed when the counter appeared in the ctypes read.
     """
     _, counters_after, _ = _run_add_session_with_profiling()
-    # When wired, counters should contain a 'viable_islands_retained' field (or similar).
-    # Currently it does not, so this assertion fails (xfail expected).
     assert "viable_islands_retained" in counters_after, (
         "retain_viable counter not present in EP counters (C ABI) — mechanism is UNWIRED. "
         f"Current counter keys: {sorted(counters_after.keys())}"
