@@ -1945,17 +1945,28 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 common case for unit tests of individual ops), the gate is bypassed. The gate applies to
 multi-cluster graphs, where it has a real scheduling decision to make.
 
-**TransferModel calibration note (Tank's finding, 2026-07-30):** The EP re-uploads ~2 GB of weights
-per inference (staging memcpy inside `Phase::Record`). Tank measured upload = 95.8–98.4% of the
-record phase, both devices. The provisional `TransferModel` constants (`UMA: 40 bytes/ns`,
-`DISCRETE: 12 bytes/ns`) model PCIe bandwidth, not the effective per-inference transfer rate,
-which is dominated by the CPU-side staging cost (~0.4 bytes/ns effective). **The `transfer_ns`
-term in the economics gate is too small by 10–100×** relative to the real measured cost. The gate
-is conservative in the right direction (it fails towards CPU), but the `TransferModel::DISCRETE`
-constant should be recalibrated once Switch lands persistent weight residency — after that, the
-per-inference transfer is activation-only (~16–128 bytes per boundary, not 2 GB), and the
-provisional constants will be more accurate. Re-calibrating before persistent residency would embed
-the re-upload cost permanently into a constant that will be wrong as soon as the bug is fixed.
+**TransferModel calibration — post-residency update (Switch 2026-07-30):** Persistent weight
+residency is landed. Per-inference boundary bytes: **~0.756 MiB** on Phi-3.5 (Switch's byte sweep:
+inference 0 uploads 1997.596 MiB, subsequent inferences add only 0.756 MiB each — activation-only).
+The provisional `TransferModel` constants (`DISCRETE: 12 bytes/ns`, `UMA: 40 bytes/ns`) now model
+the correct regime.
+
+**Gate behavior post-residency — stated before verifying:** the gate will decline far less. With
+`cost_ns(0.378 MiB) ≈ 93,000 ns` per direction on `DISCRETE`, the total transfer cost for Phi-3.5's
+one island is ~186 µs, and the 3× margin threshold is ~558 µs. Any island whose GPU compute exceeds
+558 µs (GQA: ~4 ms, MatMulNBits: ~1 ms) passes easily. Only sub-millisecond non-anchor islands
+should be declined now.
+
+**Correction on my earlier estimate:** I estimated "~16–128 bytes per boundary" post-residency. The
+measurement says 0.756 MiB — three orders of magnitude larger — because the KV cache (32 layers,
+each 2 × [B, Hkv, seq, D]) and model activations cross the boundary even without weights.
+**An estimate without a measurement is not a calibration** (R6 amendment 4: a result surprising
+enough to be a discovery is first a reason to check the instrument).
+
+**What still needs Niobe:** `TransferModel::fit(samples)` awaits a timed staircase calibration.
+The current constants model nominal PCIe bandwidth (12 GB/s) from published specs. For the
+activation-only regime, the fixed overhead (60 µs / 20 µs) dominates over the variable term;
+Niobe's measurements will tell us whether the fixed cost is accurate or needs adjustment.
 
 
 

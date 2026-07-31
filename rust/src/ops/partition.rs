@@ -52,14 +52,32 @@ pub struct TransferModel {
 impl TransferModel {
     /// Integrated GPU with unified memory: no copy, but still submission and barrier cost.
     ///
-    /// Provisional until measured — the numbers are a starting point for the rule, not a claim
-    /// about any device.
+    /// Provisional until Niobe's calibration harness (`TransferModel::fit`) supplies real samples.
+    /// Post-residency (Switch 2026-07-30): per-inference boundary is ~0.756 MiB on Phi-3.5
+    /// (activation-only; weights resident). `cost_ns(0.756 MiB / 2)` ≈ 20 µs fixed + ~10 µs
+    /// variable = ~30 µs per direction, ~60 µs total. Gate threshold (3× margin): ~180 µs.
+    /// On UMA the variable cost is near zero so `fixed_ns` dominates.
     pub const UMA: TransferModel = TransferModel {
         fixed_ns: 20_000.0,
         bytes_per_ns: 40.0,
     };
 
     /// Discrete GPU over PCIe: a real staging copy in each direction.
+    ///
+    /// Provisional until Niobe's calibration harness (`TransferModel::fit`) supplies real samples.
+    /// Nominal PCIe-4 bandwidth ~16 GB/s; 12.0 bytes/ns is conservative.
+    ///
+    /// Post-residency (Switch 2026-07-30): per-inference boundary ~0.756 MiB on Phi-3.5
+    /// (activation-only; weights resident). `cost_ns(0.378 MiB)` = 60,000 + (396,288 / 12)
+    /// = 60,000 + 33,024 = ~93,000 ns per direction, ~186,000 ns total (DISCRETE, both directions).
+    /// Gate threshold (3× margin): ~558 µs. GQA at ~4 ms easily passes. A 1-node non-anchor
+    /// island at ~1 µs GPU time is correctly declined.
+    ///
+    /// **Pre-residency caveat (now resolved):** the EP was re-uploading ~2 GiB of weights on
+    /// every inference, making `transfer_ns` effectively 2 GiB × (1/12 bytes/ns) ≈ 167 ms per
+    /// direction — far larger than any kernel compute time. That caused the gate to be
+    /// pathologically strict. The re-upload bug is fixed; the provisional constants now model
+    /// the correct activation-boundary regime.
     pub const DISCRETE: TransferModel = TransferModel {
         fixed_ns: 60_000.0,
         bytes_per_ns: 12.0,
