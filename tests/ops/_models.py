@@ -829,14 +829,115 @@ def assert_ep_in_session(sess: "ort.InferenceSession") -> None:
         "  • ONNXRUNTIME_VULKAN_EP_LIB not set or file not found.\n"
         "  • ort.register_execution_provider_library was not called before session creation.\n"
         "  • The EP registered but enumerated zero Vulkan devices (no ICD, capability gate).\n"
-        "Check conftest.py register_vulkan_ep fixture and require_vulkan fixture."
+        "Check conftest.py register_vulkan_ep fixture and require_vulkan fixture.\n"
+        "\n"
+        "NOTE: This guard catches load-time fallback only (get_providers() is fixed at\n"
+        "session-create time). It does NOT catch run-time fallback, where ORT prints\n"
+        "'EP_FAIL ... Falling back' during sess.run() and silently re-executes on CPU.\n"
+        "Use assert_vulkan_executed_runtime() after sess.run() to close that gap."
     )
+
+
+# ---------------------------------------------------------------------------
+# Runtime-fallback guard — post-run Vulkan execution check
+# ---------------------------------------------------------------------------
+
+
+def count_vulkan_executions_from_profile(events: list[dict]) -> int:
+    """Return the number of Node events executed by the Vulkan EP in *events*.
+
+    Counts entries where ``cat == "Node"`` and ``args["provider"] == EP_NAME``.
+    This is the post-run complement to ``assert_ep_in_session``: where that function
+    checks at session-create time (which is fixed before run()), this function checks
+    what actually executed during run().
+
+    ORT emits one ``Node`` profiling event per node execution.  For plugin EPs, fused
+    islands are single nodes from ORT's perspective — one event per island per run.
+
+    Returns 0 if the EP contributed nothing (runtime fallback occurred).
+    """
+    count = 0
+    for ev in events:
+        if ev.get("cat") != "Node":
+            continue
+        args = ev.get("args")
+        if not isinstance(args, dict):
+            continue
+        if args.get("provider") == EP_NAME:
+            count += 1
+    return count
+
+
+def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> int:
+    """Assert that at least one Node event in *profile_path* was executed by the Vulkan EP.
+
+    This is Guard D for tests that own their session: ORT prints ``EP_FAIL ... Falling back``
+    during ``sess.run()`` and retries on CPU without raising.  ``get_providers()`` remains
+    non-empty (the EP registered successfully), so ``assert_ep_in_session`` cannot detect
+    this.  Only the profiling trace, which records what actually ran, can close the gap.
+
+    DESIGN.md §10.0.1 R10 / R7 note: a comparison gate without this guard is wired to
+    the wrong signal — it reads CPU-vs-CPU and reports MATCH.  That reading is structurally
+    indistinguishable from "VulkanEP executed and agreed with CPU", which is the reading the
+    caller intends.
+
+    Parameters
+    ----------
+    profile_path:
+        Path returned by ``sess.end_profiling()``.  The file is read and deleted here.
+
+    Returns
+    -------
+    int
+        Number of VulkanEP Node events observed in *profile_path* (always ≥ 1 on success).
+
+    Raises
+    ------
+    AssertionError
+        If the Vulkan EP executed zero nodes — runtime fallback is confirmed.
+    """
+    path = pathlib.Path(profile_path)
+    try:
+        with open(path) as fh:
+            events = json.load(fh)
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    vulkan_count = count_vulkan_executions_from_profile(events)
+
+    # Also collect which providers DID execute for the error message.
+    providers_seen = {
+        e["args"]["provider"]
+        for e in events
+        if e.get("cat") == "Node"
+        and isinstance(e.get("args"), dict)
+        and "provider" in e["args"]
+    }
+
+    assert vulkan_count > 0, (
+        f"{EP_NAME} executed ZERO nodes at run time — ORT fell back to CPU silently.\n"
+        f"Providers that did execute: {sorted(providers_seen) or 'none'}.\n"
+        "\n"
+        "Root cause pattern: ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider'\n"
+        "during sess.run() and re-runs the entire graph on CPU without raising an exception.\n"
+        "The comparison gate then compares CPU output against CPU output and finds MATCH.\n"
+        "\n"
+        "Known trigger (2026-07-31, current main): Allocator::alloc returns None for size==0\n"
+        "inputs (e.g. KV-cache past_key_values with seq_len=0 on first-token prefill).\n"
+        "Fix in Switch's alloc.rs: zero-size allocation must return a valid zero-length\n"
+        "buffer, not None.\n"
+        "\n"
+        "This is a vacuous-pass — the verdict produced by this run is not about the Vulkan EP."
+    )
+    return vulkan_count
 
 
 # ---------------------------------------------------------------------------
 # model_output_equivalence verdict — §9.1.3 / §10.0 (Morpheus ruling)
 # ---------------------------------------------------------------------------
-
 #: The three valid values for the `model_output_equivalence` field in the counters JSON.
 #: Written by :func:`write_equivalence_verdict`; read by ``epctl --check-counters``.
 #: See ``rust/src/counters.rs`` for the mirrored constants on the Rust side.

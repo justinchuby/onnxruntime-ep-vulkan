@@ -339,6 +339,13 @@ def test_wiring_census(require_vulkan) -> None:
     # ── Mechanism 4: model_output_equivalence ────────────────────────────
     # This session runs Add, not Phi-3.5. The equivalence verdict belongs to test_phi35.py.
     # Read from ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE if set (may have been written by phi35).
+    #
+    # VALIDITY CONDITION (Guard D): MATCH is a valid verdict only when the run that wrote it
+    # had Guard D active — i.e., assert_vulkan_executed_runtime() confirmed Vulkan ran nodes
+    # AFTER sess.run(). Without Guard D, a runtime fallback (ORT silently retrying on CPU)
+    # produces CPU-vs-CPU output that reports MATCH. Guard D is now in
+    # test_phi35_vulkan_matches_cpu_logits; verdicts written before 2026-07-31 should be
+    # treated as UNMEASURED (the guard was absent).
     equiv = "UNMEASURED"
     counters_file_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
     if counters_file_path and Path(counters_file_path).is_file():

@@ -523,6 +523,11 @@ def test_phi35_vulkan_matches_cpu_logits(
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    # Enable profiling so Guard D (runtime-fallback check) can read what actually ran.
+    # Guard A (get_providers()) catches load-time fallback; Guard D catches run-time
+    # fallback where ORT prints "EP_FAIL ... Falling back" and retries on CPU silently.
+    opts.enable_profiling = True
+    opts.profile_file_prefix = "_phi35_matches_cpu_probe"
 
     # --- VulkanEP session — THREE RUNS ---
     vk_sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
@@ -547,6 +552,28 @@ def test_phi35_vulkan_matches_cpu_logits(
     all_vk_runs = m.run_session_n_times(vk_sess, feeds, 3)
     vk_run1, vk_run2, vk_run3 = all_vk_runs
 
+    # Guard D: runtime-fallback check. ORT may print "EP_FAIL ... Falling back" during
+    # run() and silently retry on CPU — get_providers() (Guard A) cannot see this because
+    # the provider list is fixed at session-create time. Guard D reads the profiling trace,
+    # which records what actually executed, to confirm Vulkan ran at least one node.
+    # If it didn't, the 3 runs above produced CPU output, and the comparison below is
+    # CPU-vs-CPU (MATCH is vacuously true). Write UNMEASURED and fail.
+    profile_path = vk_sess.end_profiling()
+    try:
+        vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
+    except AssertionError as _guard_d_err:
+        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+        if counters_path:
+            try:
+                m.write_equivalence_verdict(counters_path, m.EQUIVALENCE_UNMEASURED)
+            except Exception:  # noqa: BLE001
+                pass
+        raise AssertionError(
+            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
+        ) from _guard_d_err
+    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
+    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
+
     # --- CPU-only session ---
     cpu_opts = ort.SessionOptions()
     cpu_opts.log_severity_level = 3
@@ -565,7 +592,6 @@ def test_phi35_vulkan_matches_cpu_logits(
     # We use raw byte equality (outputs_bit_equal) NOT max|a-b| — see outputs_bit_equal
     # docstring for the NaN-contamination issue with max|a-b| on fp16 KV outputs.
     cross_run_ok, differing_outputs = m.outputs_bit_equal(vk_run1, vk_run2)
-    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
     if not cross_run_ok:
         print(
             f"  Guard C FAIL: outputs differ between run 1 and run 2 at indices "
@@ -727,11 +753,14 @@ def test_phi35_vulkan_cross_run_consistency(
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    # Enable profiling for Guard D (runtime-fallback check after runs).
+    opts.enable_profiling = True
+    opts.profile_file_prefix = "_phi35_cross_run_probe"
 
     sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
 
-    # Guard: EP must be in use — otherwise CPU fallback makes this a determinism test,
-    # not a cross-run write-completeness gate.
+    # Guard: EP must be in use at load time — otherwise CPU fallback makes this a
+    # determinism test, not a cross-run write-completeness gate.
     m.assert_ep_in_session(sess)
 
     # Three runs. Run 1 has a clean (OS-zeroed) arena. Run 2 has dirty arena from run 1.
@@ -739,7 +768,17 @@ def test_phi35_vulkan_cross_run_consistency(
     all_runs = m.run_session_n_times(sess, feeds, 3)
     run1, run2, run3 = all_runs
 
+    # Guard D: runtime-fallback check. Profiling trace proves Vulkan ran, not just registered.
+    profile_path = sess.end_profiling()
+    try:
+        vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
+    except AssertionError as _guard_d_err:
+        raise AssertionError(
+            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
+        ) from _guard_d_err
+
     print(f"\n[Phi-3.5 cross-run consistency / Device {device_index}]")
+    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
     print(f"  {len(run1)} outputs, 3 runs")
 
     ok12, diff12 = m.outputs_bit_equal(run1, run2)
@@ -1041,6 +1080,9 @@ def test_phi35_f16_matmulnbits_logits_nonzero(
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    # Enable profiling for Guard D (runtime-fallback check after run()).
+    opts.enable_profiling = True
+    opts.profile_file_prefix = "_phi35_f16_logits_probe"
 
     try:
         vk_sess = ort.InferenceSession(
@@ -1066,6 +1108,17 @@ def test_phi35_f16_matmulnbits_logits_nonzero(
         vk_out = vk_sess.run(None, feeds)
     except Exception as exc:
         pytest.fail(f"[Device {device_index}] VulkanEP inference failed: {exc}")
+
+    # Guard D: runtime-fallback check. get_providers() (above) is fixed at session-create
+    # time; it cannot detect ORT's silent "EP_FAIL ... Falling back" during run().
+    # Profiling records what actually executed. If Vulkan ran nothing, vk_out is CPU output.
+    profile_path = vk_sess.end_profiling()
+    try:
+        m.assert_vulkan_executed_runtime(profile_path)
+    except AssertionError as _guard_d_err:
+        pytest.fail(
+            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
+        )
 
     # CPU reference — pure CPU, no VulkanEP.
     cpu_opts = ort.SessionOptions()
@@ -1188,6 +1241,9 @@ def test_phi35_vulkan_multirun_logits_stable(
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    # Enable profiling for Guard D (runtime-fallback check after all runs).
+    opts.enable_profiling = True
+    opts.profile_file_prefix = "_phi35_multirun_logits_probe"
     try:
         vk_sess = ort.InferenceSession(str(phi35_onnx_path), opts, providers=m.EP_PROVIDERS)
     except Exception as exc:
@@ -1229,6 +1285,19 @@ def test_phi35_vulkan_multirun_logits_stable(
         print(
             f"  run {run_idx + 1}/{_RUNS}: logits [{logits.min():.4f}, {logits.max():.4f}] "
             f"argmax={int(logits.reshape(-1, logits.shape[-1]).argmax(-1)[0])}"
+        )
+
+    # Guard D: runtime-fallback check. Read the profiling trace after all runs.
+    # Non-zero logits (above) are necessary but not sufficient: if runtime fallback occurred,
+    # all _RUNS results are CPU output, and CPU logits are non-zero, so the loop above
+    # would pass vacuously. The profiling trace records what actually ran.
+    profile_path = vk_sess.end_profiling()
+    try:
+        vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
+        print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
+    except AssertionError as _guard_d_err:
+        pytest.fail(
+            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
         )
 
     # Bit-identical across all three runs.  Same session, same feeds, deterministic hardware.
