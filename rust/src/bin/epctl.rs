@@ -959,6 +959,7 @@ mod tests {
             compute_calls: dispatches,
             compute_failures: 0,
             dispatches_executed: dispatches,
+            viable_islands_retained: 0,
         }
         .to_json()
     }
@@ -975,6 +976,7 @@ mod tests {
             compute_calls: dispatches,
             compute_failures: 0,
             dispatches_executed: dispatches,
+            viable_islands_retained: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -991,6 +993,7 @@ mod tests {
             compute_calls: dispatches,
             compute_failures: 0,
             dispatches_executed: dispatches,
+            viable_islands_retained: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -1310,7 +1313,7 @@ mod tests {
         let future = dir.join("future.json");
         std::fs::write(
             &future,
-            snapshot(9).replace("\"abi_version\": 1", "\"abi_version\": 99"),
+            snapshot(9).replace(&format!("\"abi_version\": {}", counters::COUNTERS_ABI_VERSION), "\"abi_version\": 99"),
         )
         .expect("write");
         assert!(
