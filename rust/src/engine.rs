@@ -179,6 +179,76 @@ impl BufferView {
 }
 
 // -------------------------------------------------------------------------------------------
+// Device memory for ORT-owned tensors
+// -------------------------------------------------------------------------------------------
+
+/// The seam that lets ORT's tensors live in device memory instead of host staging.
+///
+/// # Why this trait exists rather than a direct call
+///
+/// [`crate::allocator`] must not name an `ash` type and `vk/` must not name an `sys::ort` type —
+/// layering rule 2, enforced by `tests/layering.rs`. The allocator needs a `VkBuffer` per span and
+/// cannot say so. This trait is the only vocabulary they share: sizes, byte slices, and opaque
+/// [`BufferView`] tokens.
+///
+/// # What an implementor owes
+///
+/// * [`alloc`](DeviceMemoryProvider::alloc) returns a device-local buffer of at least `size`
+///   bytes, or `None` — and `None` must be *survivable*: the allocator falls back to host staging,
+///   which is slower but correct. Refusing is always better than returning a buffer that is not
+///   device-local, because the whole point of the counter this feeds is to distinguish the two.
+/// * [`upload`](DeviceMemoryProvider::upload) and [`download`](DeviceMemoryProvider::download) are
+///   **synchronous**: they must not return until the bytes are visible to the other side. ORT's
+///   `CopyTensors` has no completion handle to wait on, so an asynchronous copy here would be a
+///   silent race, which is the failure class this project has spent the most time on.
+/// * [`free`](DeviceMemoryProvider::free) may be called at any time after `alloc`, including
+///   during teardown.
+pub trait DeviceMemoryProvider: Send + Sync {
+    /// Allocate `size` bytes of device-local memory. `None` means "use host staging instead".
+    fn alloc(&self, size: usize) -> Option<BufferView>;
+
+    /// Release a buffer previously returned by [`alloc`](DeviceMemoryProvider::alloc).
+    fn free(&self, view: BufferView);
+
+    /// Copy host bytes into the buffer at `offset`. Must be complete on return.
+    fn upload(&self, view: BufferView, offset: usize, src: &[u8]) -> Result<(), String>;
+
+    /// Copy bytes out of the buffer at `offset` into `dst`. Must be complete on return.
+    fn download(&self, view: BufferView, offset: usize, dst: &mut [u8]) -> Result<(), String>;
+
+    /// Whether this device shares one physical heap with the host.
+    ///
+    /// Reported, never used to skip a copy. UMA and discrete are different performance problems
+    /// and `bench/compare.py` refuses to compare them; a number that silently changes meaning
+    /// between them is the same defect in a different costume.
+    fn is_unified_memory(&self) -> bool;
+}
+
+static PROVIDERS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<usize, std::sync::Arc<dyn DeviceMemoryProvider + 'static>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Register the device-memory provider for `device_index`. Called by the engine once it has a
+/// logical device; until then the allocator stages on the host, which is correct but slower.
+pub fn register_device_memory_provider(
+    device_index: usize,
+    provider: std::sync::Arc<dyn DeviceMemoryProvider + 'static>,
+) {
+    if let Ok(mut m) = PROVIDERS.lock() {
+        m.insert(device_index, provider);
+    }
+}
+
+/// The provider for `device_index`, if the engine has stood one up yet.
+pub fn device_memory_provider(
+    device_index: usize,
+) -> Option<std::sync::Arc<dyn DeviceMemoryProvider + 'static>> {
+    PROVIDERS.lock().ok()?.get(&device_index).cloned()
+}
+
+// -------------------------------------------------------------------------------------------
 // Node / plan vocabulary
 // -------------------------------------------------------------------------------------------
 
