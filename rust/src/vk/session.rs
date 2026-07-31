@@ -579,6 +579,13 @@ pub(crate) struct VulkanSession {
     /// Populated lazily on the second inference through a subgraph; freed when the subgraph's
     /// `SubgraphComputeInfo` is released (via `release_weight_cache`).
     weight_caches: HashMap<u64, HashMap<(usize, u64), GpuBuffer>>,
+    /// A permanent 4-byte device-local STORAGE_BUFFER used as a descriptor placeholder for
+    /// zero-element inputs (e.g., Phi-3.5 KV-cache tensors on a first-token prefill, whose
+    /// shape is `[1, H, 0, D]`).  A zero-byte VkBuffer is invalid; Vulkan also requires
+    /// `VkDescriptorBufferInfo::range > 0`.  The shader never accesses this buffer because
+    /// the outer dimension is 0 — it is only present to satisfy the descriptor-write constraint.
+    /// Freed explicitly in `Drop` before `alloc` drops.
+    zero_elem_placeholder: Option<GpuBuffer>,
 }
 
 impl VulkanSession {
@@ -630,7 +637,7 @@ impl VulkanSession {
             unsafe { Device::create(instance.ash(), &capable, options.force_legacy_barriers) }?;
 
         // SAFETY: instance and device are live; physical_device belongs to instance.
-        let alloc =
+        let mut alloc =
             unsafe { Allocator::new(instance.ash(), device.physical_device(), device.ash()) }?;
 
         // SAFETY: device is live; compute_queue_family is valid.
@@ -646,6 +653,18 @@ impl VulkanSession {
         // device after VulkanSession::drop.
         register_ep_device(&device);
 
+        // Allocate the 4-byte zero-element placeholder buffer.  A zero-element tensor maps
+        // to this buffer in descriptor writes — Vulkan requires a non-null buffer handle and
+        // range > 0.  The shader never touches it (outer dim = 0 at compute time).
+        // SAFETY: alloc and device are live; 4 bytes is always a valid allocation size.
+        let zero_elem_placeholder = unsafe {
+            alloc.alloc_device("zero_elem_placeholder", 4)
+        };
+        if zero_elem_placeholder.is_none() {
+            log::error!("VulkanSession::create: failed to allocate zero-element placeholder");
+            return None;
+        }
+
         Some(VulkanSession {
             capable,
             pipeline_cache,
@@ -654,6 +673,7 @@ impl VulkanSession {
             device,
             instance,
             weight_caches: HashMap::new(),
+            zero_elem_placeholder,
         })
     }
 
@@ -1021,6 +1041,31 @@ impl VulkanSession {
         }
 
         for (i, &sz) in actual_input_byte_sizes.iter().enumerate() {
+            // Zero-element tensor (e.g., Phi-3.5 KV-cache on first-token prefill: shape
+            // [1, H, 0, D]).  A zero-byte VkBuffer is invalid; Vulkan also requires
+            // VkDescriptorBufferInfo::range > 0.  Bind the session placeholder (4 bytes,
+            // DeviceLocal) so the descriptor write satisfies the API contract.  The shader
+            // will not access this buffer — the outer KV dimension is 0, so no dispatch
+            // thread ever indexes into it.  No upload is needed.
+            if sz == 0 {
+                let placeholder_buf = self
+                    .zero_elem_placeholder
+                    .as_ref()
+                    .expect("zero_elem_placeholder was freed before dispatch — session bug");
+                gpu_inputs.push(GpuBuffer::borrowed_ref(
+                    placeholder_buf.buffer,
+                    4,
+                    MemClass::DeviceLocal,
+                ));
+                // Borrowed sentinel — upload loop skips borrowed staging buffers, barrier
+                // filter skips them too (read-after-read on placeholder is fine).
+                staging_ups.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::DeviceLocal,
+                ));
+                continue;
+            }
             // Weight-cache check: if ORT gives us the same CPU pointer as a prior inference,
             // the tensor is a model constant (initialiser/weight) — skip alloc and upload.
             // `borrowed_ref` produces a non-owning GpuBuffer: `free_all` below is a no-op
@@ -1040,8 +1085,8 @@ impl VulkanSession {
                 ));
                 continue;
             }
-            // SAFETY: `self.alloc` owns a live `VkDevice` for as long as the session exists, and
-            // `sz` came from `Compile`, where a zero-sized tensor was already rejected.
+            // SAFETY: `self.alloc` owns a live `VkDevice` for as long as the session exists;
+            // sz > 0 is guaranteed by the zero-size guard above.
             let Some(buf) = (unsafe { self.alloc.alloc_device(&format!("ep_in_{i}"), sz) }) else {
                 bail!("alloc_device failed for input buffer");
             };
@@ -1058,6 +1103,27 @@ impl VulkanSession {
         }
 
         for (i, &sz) in actual_output_byte_sizes.iter().enumerate() {
+            // Zero-element output (e.g., GQA KV-cache on first-token prefill).
+            // Same constraint as inputs: Vulkan requires a non-null buffer handle and
+            // range > 0.  There is nothing to write back to ORT (0 bytes); bind the
+            // session placeholder so the descriptor write is valid.
+            if sz == 0 {
+                let placeholder_buf = self
+                    .zero_elem_placeholder
+                    .as_ref()
+                    .expect("zero_elem_placeholder was freed before dispatch — session bug");
+                gpu_outputs.push(GpuBuffer::borrowed_ref(
+                    placeholder_buf.buffer,
+                    4,
+                    MemClass::DeviceLocal,
+                ));
+                staging_dls.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::Download,
+                ));
+                continue;
+            }
             // Output buffers: STORAGE_BUFFER (shader writes) + TRANSFER_SRC (copy to staging).
             // SAFETY: live allocator/device as above; `sz` is the (actual) byte size, non-zero.
             let Some(buf) = (unsafe {
@@ -1488,10 +1554,15 @@ impl VulkanSession {
             }
         }
 
-        // Barrier: SHADER_WRITE → TRANSFER_READ on all output buffers.
+        // Barrier: SHADER_WRITE → TRANSFER_READ on all non-zero output buffers.
+        // Zero-size outputs use the session placeholder (borrowed_ref) — they were never written
+        // by any shader, so no barrier is needed (and we don't want to issue a SHADER_WRITE
+        // barrier on the shared placeholder).
         let dl_deps: Vec<BufferDep> = gpu_outputs
             .iter()
-            .map(|b| BufferDep {
+            .zip(staging_dls.iter())
+            .filter(|(_, stg)| !stg.borrowed)
+            .map(|(b, _)| BufferDep {
                 buffer: b.buffer,
                 offset: 0,
                 size: vk::WHOLE_SIZE,
@@ -1502,8 +1573,12 @@ impl VulkanSession {
         // SAFETY: cmd is recording; all output buffers are live.
         unsafe { self.device.barriers().buffer_deps(cmd, &dl_deps) };
 
-        // Record output→staging downloads.
+        // Record output→staging downloads.  Skip zero-size outputs (borrowed staging sentinels)
+        // — vkCmdCopyBuffer with size=0 is invalid, and there are no bytes to copy.
         for (i, (gpu_out, stg)) in gpu_outputs.iter().zip(staging_dls.iter()).enumerate() {
+            if stg.borrowed {
+                continue; // zero-size output or cached — nothing to download
+            }
             // SAFETY: cmd is recording; gpu_out is DeviceLocal, stg is Download.
             unsafe {
                 record_download(
@@ -1788,6 +1863,13 @@ impl VulkanSession {
             }
 
             // Copy downloaded GPU output to ORT's CPU buffer.
+            // Zero-element outputs have a borrowed sentinel for `stg` (no mapped memory);
+            // skip the copy — there are 0 bytes to transfer.  We still called
+            // KernelContext_GetOutput above so ORT's output tensor is properly allocated.
+            let byte_size = output_byte_sizes[i] as usize;
+            if byte_size == 0 {
+                continue;
+            }
             let Some(src_ptr) = stg.mapped_ptr() else {
                 // SAFETY: `api` is live per the fn contract and the message is a 'static
                 // NUL-terminated literal. Buffer cleanup is the caller's.
@@ -1799,7 +1881,6 @@ impl VulkanSession {
                     )
                 };
             };
-            let byte_size = output_byte_sizes[i] as usize;
             // Cross-owner note (Tank): as for inputs — an output ORT placed in this EP's own
             // device memory is an opaque handle, not writable memory. Resolve it to its backing
             // before copying, or the write below would fault on a reserved page.
@@ -1880,6 +1961,20 @@ impl VulkanSession {
         for b in gpu_temps.drain(..) {
             // SAFETY: as above.
             unsafe { self.alloc.free(b) };
+        }
+    }
+}
+
+impl Drop for VulkanSession {
+    fn drop(&mut self) {
+        // The zero-element placeholder must be freed before `alloc` drops (field order would
+        // drop `alloc` before `zero_elem_placeholder` otherwise). The explicit Drop body runs
+        // before any field drop glue, so `alloc` is still live here.
+        if let Some(placeholder) = self.zero_elem_placeholder.take() {
+            // SAFETY: placeholder was allocated by self.alloc; no GPU work can reference it
+            // at drop time (ORT serialises Compute calls and never calls Compute after EP
+            // release).
+            unsafe { self.alloc.free(placeholder) };
         }
     }
 }
