@@ -881,6 +881,28 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
     indistinguishable from "VulkanEP executed and agreed with CPU", which is the reading the
     caller intends.
 
+    WHAT THE COUNT MEANS
+    ====================
+    ORT records one ``Node`` profiling event per *fused island* execution, not per graph node.
+    A single VulkanEP event may represent hundreds of graph nodes fused into one island.
+    The count returned here is the number of fused-island executions observed — not the
+    number of graph nodes dispatched.  Zero is the only value that is conclusively bad:
+    it means the Vulkan EP ran nothing at all (runtime fallback confirmed).  Any value ≥ 1
+    proves Vulkan participated; the graph-node count is a separate instrument.
+
+    FAILURE MODE DISTINCTION
+    ========================
+    Two distinct failure modes must be separated because they require different actions:
+
+    - ``AssertionError`` — *fallback detected*: the profiling trace was read successfully
+      but zero VulkanEP Node events were found.  This is a real finding — the EP fell back
+      at run time.  Route to Switch/Mouse (allocation or dispatch failure).
+
+    - ``RuntimeError`` — *guard instrument broken*: the trace file could not be read, the
+      JSON could not be parsed, or another infrastructure failure occurred.  This is an
+      instrument failure, not a finding about the EP.  Do not route as an EP bug; fix the
+      harness first.
+
     Parameters
     ----------
     profile_path:
@@ -889,17 +911,35 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
     Returns
     -------
     int
-        Number of VulkanEP Node events observed in *profile_path* (always ≥ 1 on success).
+        Number of VulkanEP fused-island execution events (always ≥ 1 on success).
 
     Raises
     ------
     AssertionError
-        If the Vulkan EP executed zero nodes — runtime fallback is confirmed.
+        Fallback detected — the EP ran zero fused islands at run time.
+    RuntimeError
+        Guard instrument broken — trace file unreadable or unparseable.
     """
-    path = pathlib.Path(profile_path)
+    path = Path(profile_path)
+    events: list
     try:
         with open(path) as fh:
             events = json.load(fh)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"[Guard D instrument failure] Profiling trace not found: {path}\n"
+            "sess.end_profiling() should have created this file.  Check that profiling\n"
+            "was enabled on SessionOptions (enable_profiling=True) before session creation."
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"[Guard D instrument failure] Profiling trace at {path} is not valid JSON: {exc}\n"
+            "The file may be truncated (session closed before end_profiling) or corrupt."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"[Guard D instrument failure] Could not read profiling trace {path}: {exc}"
+        ) from exc
     finally:
         try:
             path.unlink(missing_ok=True)
@@ -908,7 +948,7 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
 
     vulkan_count = count_vulkan_executions_from_profile(events)
 
-    # Also collect which providers DID execute for the error message.
+    # Collect which providers DID execute for the error message.
     providers_seen = {
         e["args"]["provider"]
         for e in events
@@ -917,18 +957,18 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
         and "provider" in e["args"]
     }
 
+    # AssertionError = fallback detected (real finding, not a harness bug).
     assert vulkan_count > 0, (
-        f"{EP_NAME} executed ZERO nodes at run time — ORT fell back to CPU silently.\n"
+        f"[Guard D: fallback detected] {EP_NAME} executed ZERO fused islands at run time.\n"
         f"Providers that did execute: {sorted(providers_seen) or 'none'}.\n"
         "\n"
-        "Root cause pattern: ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider'\n"
-        "during sess.run() and re-runs the entire graph on CPU without raising an exception.\n"
-        "The comparison gate then compares CPU output against CPU output and finds MATCH.\n"
+        "ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' during sess.run()\n"
+        "and re-runs the entire graph on CPU without raising an exception.  The comparison\n"
+        "gate then compares CPU output against CPU output and reports MATCH vacuously.\n"
         "\n"
-        "Known trigger (2026-07-31, current main): Allocator::alloc returns None for size==0\n"
-        "inputs (e.g. KV-cache past_key_values with seq_len=0 on first-token prefill).\n"
-        "Fix in Switch's alloc.rs: zero-size allocation must return a valid zero-length\n"
-        "buffer, not None.\n"
+        "Known trigger: Allocator::alloc returns None for size==0 inputs (e.g. KV-cache\n"
+        "past_key_values with seq_len=0 on first-token prefill).  Fix: zero-size allocation\n"
+        "must succeed and return a valid zero-length buffer.  Owner: Switch (alloc.rs).\n"
         "\n"
         "This is a vacuous-pass — the verdict produced by this run is not about the Vulkan EP."
     )

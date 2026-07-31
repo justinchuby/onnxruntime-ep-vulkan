@@ -562,6 +562,7 @@ def test_phi35_vulkan_matches_cpu_logits(
     try:
         vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
     except AssertionError as _guard_d_err:
+        # Fallback detected: the trace was read but Vulkan ran nothing. Real EP finding.
         counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
         if counters_path:
             try:
@@ -569,10 +570,17 @@ def test_phi35_vulkan_matches_cpu_logits(
             except Exception:  # noqa: BLE001
                 pass
         raise AssertionError(
-            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
+            f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}"
+        ) from _guard_d_err
+    except RuntimeError as _guard_d_err:
+        # Instrument failure: the guard itself is broken — trace file missing/corrupt.
+        # Do NOT write UNMEASURED; we have no evidence either way.
+        raise RuntimeError(
+            f"[Device {device_index}] Guard D (instrument failure — fix the harness, "
+            f"not the EP): {_guard_d_err}"
         ) from _guard_d_err
     print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
-    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
+    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
 
     # --- CPU-only session ---
     cpu_opts = ort.SessionOptions()
@@ -774,11 +782,15 @@ def test_phi35_vulkan_cross_run_consistency(
         vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
     except AssertionError as _guard_d_err:
         raise AssertionError(
-            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
+            f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}"
+        ) from _guard_d_err
+    except RuntimeError as _guard_d_err:
+        raise RuntimeError(
+            f"[Device {device_index}] Guard D (instrument failure — fix the harness): {_guard_d_err}"
         ) from _guard_d_err
 
     print(f"\n[Phi-3.5 cross-run consistency / Device {device_index}]")
-    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
+    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
     print(f"  {len(run1)} outputs, 3 runs")
 
     ok12, diff12 = m.outputs_bit_equal(run1, run2)
@@ -1116,9 +1128,9 @@ def test_phi35_f16_matmulnbits_logits_nonzero(
     try:
         m.assert_vulkan_executed_runtime(profile_path)
     except AssertionError as _guard_d_err:
-        pytest.fail(
-            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
-        )
+        pytest.fail(f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}")
+    except RuntimeError as _guard_d_err:
+        pytest.fail(f"[Device {device_index}] Guard D (instrument failure — fix the harness): {_guard_d_err}")
 
     # CPU reference — pure CPU, no VulkanEP.
     cpu_opts = ort.SessionOptions()
@@ -1294,11 +1306,11 @@ def test_phi35_vulkan_multirun_logits_stable(
     profile_path = vk_sess.end_profiling()
     try:
         vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
-        print(f"  Guard D: VulkanEP executed {vulkan_executed_count} node event(s) ✓")
+        print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
     except AssertionError as _guard_d_err:
-        pytest.fail(
-            f"[Device {device_index}] Guard D (runtime-fallback): {_guard_d_err}"
-        )
+        pytest.fail(f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}")
+    except RuntimeError as _guard_d_err:
+        pytest.fail(f"[Device {device_index}] Guard D (instrument failure — fix the harness): {_guard_d_err}")
 
     # Bit-identical across all three runs.  Same session, same feeds, deterministic hardware.
     for run_idx in range(1, _RUNS):
