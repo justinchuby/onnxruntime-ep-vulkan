@@ -896,7 +896,7 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
     AssertionError
         If the Vulkan EP executed zero nodes — runtime fallback is confirmed.
     """
-    path = pathlib.Path(profile_path)
+    path = Path(profile_path)
     try:
         with open(path) as fh:
             events = json.load(fh)
