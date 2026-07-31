@@ -1142,3 +1142,57 @@ idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+
+---
+
+## Session 32 — Device-label fix; messenger positive control (valid); timestamp falsifiers; bench parsers (2026-07-30T19:47:00-07:00)
+
+**Context:** Resumed from summary. Prior commit cdcc349 (weight-tensor GPU buffer cache) eliminated 97% of per-inference upload for warm inferences. Large origin/main merge (d836e0) landed Tank's device-backed allocator, transfer.rs seams, and documentation.
+
+Critical coordinator correction: ONNXRUNTIME_EP_VULKAN_DEVICE=0 is NVIDIA (discrete-first sort); DEVICE=1 is Intel Iris Xe. All prior coordinator device labels were inverted.
+
+**D-S32-01 — Device-label semantics in instance.rs (commit 7d66986):**
+probe_loader_report() printed Device N: Name using Vulkan enumeration order while select_device() indexes a best-first sorted list. Same integers, different index spaces — a reader of the old output naturally concluded DEVICE=0 → Intel (wrong).
+
+Fix: add [Vulkan enum index N] annotation to each device header, plus an explicit ONNXRUNTIME_EP_VULKAN_DEVICE selector index map block showing the sorted order with Vulkan enum indices beside them. Selection behavior (discrete-first sort) unchanged — compatibility outranks elegance.
+
+`
+ONNXRUNTIME_EP_VULKAN_DEVICE selector index map:
+  [0] 'NVIDIA GeForce RTX 4060 Laptop GPU'  (Vulkan enum index 1)
+  [1] 'Intel(R) Iris(R) Xe Graphics'  (Vulkan enum index 0)
+Would select: selector index 0 → 'NVIDIA ...' (Vulkan enum index 1; best-first default)
+`
+
+Two bench parsers broke on the new format; updated regexes in 	imestamp_audit.py and nvironment.py (commit 7f734a2).
+
+**D-S32-02 — Messenger positive control (criterion 3 — first valid readings):**
+All prior "no validation errors" readings were void: the messenger was not attached (layer output went to default stderr handler, not in-process).
+
+New valid readings:
+- p_messenger_fires_for_planted_fence_leak PASS (NVIDIA device, run as --ignored): EP_VALIDATION_ERROR_COUNT = 1 after planted VkFence leak at kDestroyDevice
+- _planted_vulkan_violation_is_caught_by_the_validation_layer PASS
+- _clean_run_produces_no_validation_errors PASS (with ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=1)
+
+**Lane gap:** p_messenger_fires_for_planted_fence_leak is #[ignore]d (safely — it deliberately causes a Vulkan error and must not run concurrently with library tests). Morpheus: a control that must be opted into is not in the lane. Written to switch-criterion3-lane-gap.md inbox for Trinity.
+
+**D-S32-03 — Timestamp falsifiers (both confirmed):**
+Both falsifiers reside on Intel Iris Xe (selector index 1, Vulkan enum index 0):
+
+| Hazard | Falsifier | Value |
+|--------|-----------|-------|
+| Period scale | Intel Iris Xe | 52.0833 ns/tick (52× error if ignored) |
+| Valid-bit mask | Intel Iris Xe | 36 valid bits (unmasked → garbage/wrap) |
+
+NVIDIA RTX 4060 (selector 0): period=1.0, validBits=64 — both hazards indistinguishable from a broken conversion. This means a build that drops period scaling and valid-bit masking is green on NVIDIA and in CI (lavapipe also 1.0/64), while under-reporting every Intel duration by 52× with potential negative durations on wrap.
+
+ench/timestamp_audit.py exits 0. Conversion covered by unit tests in 	race.rs using the real hardware constants.
+
+**State at end of session:**
+- Device-label fix: ✅ committed 7d66986
+- Bench parser fix: ✅ committed 7f734a2
+- Criterion 3 positive control: ✅ first valid readings, both devices
+- Timestamp falsifiers: ✅ stated formally, audit exits 0
+- Lane gap: 📋 written to inbox for Trinity
+- Quiet-machine cache benchmark: PENDING (coordinator offered to idle other agents — say the word)
+- lloc_device_authoritative_spans: still 0 (session uses its own VkBuffers for weight cache, not ORT allocator handles — architectural constraint documented)
