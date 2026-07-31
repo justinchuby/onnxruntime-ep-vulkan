@@ -1921,6 +1921,12 @@ independent Sigmoid branches (two disjoint claimed clusters, each 1 node, no anc
 fires: TooSmall (1 < min_nodes=4, anchors=0) → both clusters declined → `[partition]` codes in
 CLAIM_LOG. This is the artifact R10 requires — content that varies with the gate's input.
 
+**C ABI counter (ABI version 2):** `viable_islands_retained` added to `VulkanEpCounters` (the
+struct `OrtEpVulkanGetExecutionCounters` fills). Emitted per multi-cluster `GetCapability` call;
+present even at 0, so the wiring census can distinguish "gate ran, all rejected" from "UNWIRED
+(key absent)". The census (`test_wiring_census.py`) now reads this counter and marks `retain_viable`
+WIRED. The test `test_retain_viable_wired` has its `xfail(strict=True)` removed — it passes.
+
 **PartitionStats populated:** `ep.rs` now emits real values for `island_count`,
 `largest_island_nodes`, `largest_island_flops`, `concentration`, and `boundary_bytes_per_inference`
 from the surviving island set after the economics gate runs. The `boundary_time_fraction` slot

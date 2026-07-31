@@ -76,8 +76,7 @@ def collect_claim_log(log_path: pathlib.Path) -> list[dict]:
             str(_ONNX_FILE),
             sess_options=opts,
             providers=[EP_NAME, "CPUExecutionProvider"],
-            provider_options=[{"device_id": str(device_id)}, {}],
-            # Dim overrides so shapes are static (same pinning as prior sessions)
+            # Device is selected via ONNXRUNTIME_EP_VULKAN_DEVICE env var.
             free_dimension_overrides_by_name={"batch_size": "1", "sequence_length": "1"},
         )
         # One inference — we only need the claim log, not outputs.

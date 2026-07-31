@@ -1,5 +1,4 @@
 {
-  "device": "0",
   "claimed_count": 353,
   "island_count": 1,
   "decline_histogram": [
@@ -44,6 +43,5 @@
       "count": 1
     }
   ],
-  "cut_attribution": [],
-  "top_cut_instances": []
+  "cut_attribution": []
 }
