@@ -474,6 +474,17 @@ pub fn dump_observations_if_requested() {
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
     let st = staging::snapshot();
+    // §10.0.1 R12 — frame provenance. `alloc_device_authoritative_spans` can only ever be non-zero
+    // when the provider's buffers are on the device the engine dispatches on (§6.5). In any other
+    // frame the event it counts cannot occur, so the artifact prints the JSON *string*
+    // `"UNOBSERVABLE"` rather than the number 0: a reader doing arithmetic on it fails loudly
+    // instead of quietly reading a structural pin as a measurement.
+    let (frame, frame_device) = crate::allocator::tally::device_frame();
+    let authoritative = if crate::allocator::tally::device_authoritative_observable() {
+        t.device_authoritative_spans.to_string()
+    } else {
+        "\"UNOBSERVABLE\"".to_string()
+    };
     let snap = snapshot();
     let mut doc = snap.to_json_with_equiv(existing_equiv);
     // Splice the observation keys in before the closing brace rather than appending after it, so
@@ -501,6 +512,8 @@ pub fn dump_observations_if_requested() {
              \"alloc_failed_lookups\": {},\n  \
              \"alloc_device_authoritative_ceiling\": {},\n  \
              \"alloc_device_authoritative_spans\": {},\n  \
+             \"alloc_device_frame\": \"{}\",\n  \
+             \"alloc_device_frame_device\": \"{}\",\n  \
              \"session_staging_uploads\": {},\n  \
              \"session_staging_upload_bytes\": {},\n  \
              \"session_staging_upload_us\": {},\n  \
@@ -536,7 +549,9 @@ pub fn dump_observations_if_requested() {
             t.device_buffer_binds,
             t.failed_lookups,
             t.device_authoritative_ceiling,
-            t.device_authoritative_spans,
+            authoritative,
+            frame,
+            frame_device.replace('\\', "\\\\").replace('"', "\\\""),
             st.0,
             st.1,
             st.2,
@@ -624,8 +639,14 @@ mod tests {
         staging::reset();
         let s = staging::sentence(661);
         assert!(s.contains("CANNOT distinguish"), "got: {s}");
-        assert!(s.contains("cmd_upload"), "must name the independent bracket; got: {s}");
-        assert!(!s.contains("resident (the win)."), "must not assert the win; got: {s}");
+        assert!(
+            s.contains("cmd_upload"),
+            "must name the independent bracket; got: {s}"
+        );
+        assert!(
+            !s.contains("resident (the win)."),
+            "must not assert the win; got: {s}"
+        );
     }
 
     /// The two upload accountings count different copies and the artifact must forbid adding them.
@@ -680,6 +701,8 @@ mod tests {
             "alloc_device_backed_spans",
             "alloc_device_authoritative_spans",
             "alloc_quarantine_retired",
+            "alloc_device_frame",
+            "alloc_device_frame_device",
             "pointers_use_after_free",
             "session_staging_uploads",
             "session_staging_upload_bytes",
@@ -698,6 +721,71 @@ mod tests {
             !doc.contains("\"session_staging_upload_bytes\": 0,"),
             "the staging bytes reached the counters module but not the document; got:\n{doc}"
         );
+    }
+
+    /// **R12 falsifier.** `alloc_device_authoritative_spans` may never appear as the number `0` in
+    /// a frame where the event it counts cannot occur (§6.5 split device, or no provider at all).
+    ///
+    /// This goes red if anyone "simplifies" the artifact back to always emitting a number — which
+    /// is exactly how a structural pin gets read as a measurement.
+    #[test]
+    fn a_pinned_authoritative_counter_reports_unobservable_and_never_zero() {
+        let _g = crate::allocator::ledger::test_lock();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("counters_r12_frame_test.json");
+        std::fs::remove_file(&path).ok();
+
+        crate::allocator::tally::reset_for_test();
+
+        // Frame 1: no provider at all.
+        // SAFETY: single-threaded test; removed before returning on every path.
+        unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": \"UNOBSERVABLE\""),
+            "with no device-memory provider the counter is pinned, not measured; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frame\": \"OFF\""),
+            "the frame must be reported even when there is none; got:\n{doc}"
+        );
+
+        // Frame 2: a second VkDevice — the §6.5 defect. Still pinned.
+        crate::allocator::tally::set_device_frame(
+            crate::allocator::tally::FRAME_SPLIT,
+            "Some Other Device",
+        );
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": \"UNOBSERVABLE\""),
+            "on a split device a compute dispatch cannot bind these buffers, so 0 is not a \
+             measurement; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frame\": \"SPLIT-DEVICE\""),
+            "the split frame must be named in the artifact; got:\n{doc}"
+        );
+
+        // Frame 3: §6.5 satisfied. Now — and only now — the zero is a real measurement.
+        crate::allocator::tally::set_device_frame(
+            crate::allocator::tally::FRAME_SHARED,
+            "The Session's Device",
+        );
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": 0"),
+            "once the device is shared the counter is observable and its zero is evidence; \
+             got:\n{doc}"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(ENV_COUNTERS_FILE) };
+        std::fs::remove_file(&path).ok();
+        crate::allocator::tally::reset_for_test();
     }
 
     /// The counters are process-wide statics, so tests that touch them must not run concurrently

@@ -915,6 +915,7 @@ impl HandleRegistry {
 /// quoting the number. A counter is read by `epctl --check-counters`, which is none of those
 /// things and does not need to be. See D-T69.
 pub mod tally {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -1070,9 +1071,50 @@ pub mod tally {
         UNIFIED_MEMORY.store(if unified { 1 } else { 2 }, Ordering::Relaxed);
     }
 
-    /// Everything the counters file reports, taken together so the numbers are mutually consistent
-    /// enough to reason about. They are not sampled atomically as a group; at teardown, when this
-    /// is read, nothing is still mutating them.
+    /// The `VkDevice` frame the device-backed numbers were measured in, and its device name.
+    ///
+    /// `None` means no device-memory provider was ever stood up in this process, which is a third
+    /// state distinct from both frames: the counters are 0 because the feature is off, not because
+    /// they were measured in another world.
+    static DEVICE_FRAME: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+    /// **§10.0.1 R12 frame provenance.** Record which `VkDevice` the `alloc_device_*` numbers in
+    /// this run describe. Called by `vk::host_device_memory::ensure_registered`, which is the only
+    /// place that knows.
+    ///
+    /// `frame` is `"SHARED"` (§6.5 satisfied — the session's device) or `"SPLIT-DEVICE"` (a second
+    /// device, so those numbers describe a world the kernels did not run in).
+    pub fn set_device_frame(frame: &str, device: &str) {
+        if let Ok(mut f) = DEVICE_FRAME.lock() {
+            *f = Some((frame.to_string(), device.to_string()));
+        }
+    }
+
+    /// The frame, or `("OFF", "")` when no provider exists. Never guesses.
+    pub fn device_frame() -> (String, String) {
+        DEVICE_FRAME
+            .lock()
+            .ok()
+            .and_then(|f| f.clone())
+            .unwrap_or_else(|| (FRAME_OFF.to_string(), String::new()))
+    }
+
+    /// No device-memory provider was stood up, so there is no frame to report.
+    pub const FRAME_OFF: &str = "OFF";
+    /// §6.5 satisfied: the provider's buffers are on the device the engine dispatches on.
+    pub const FRAME_SHARED: &str = "SHARED";
+    /// §6.5 violated: a second `VkDevice`, so no dispatch can bind these buffers.
+    pub const FRAME_SPLIT: &str = "SPLIT-DEVICE";
+
+    /// Whether `device_authoritative_spans` is in a position to be non-zero at all (R12).
+    ///
+    /// It can only ever move when the provider's buffers are on the session's device. In the
+    /// `SPLIT-DEVICE` and `OFF` frames the event it counts **cannot occur**, so its zero is not a
+    /// measurement and the artifact prints `UNOBSERVABLE` in its place.
+    pub fn device_authoritative_observable() -> bool {
+        device_frame().0 == FRAME_SHARED
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct Tally {
         pub allocations: u64,
@@ -1282,6 +1324,41 @@ pub mod tally {
     /// elsewhere — the staging tally, and the engine's own bind traffic — and says so in the same
     /// sentence that reports the number, where anyone quoting it must read it.
     fn authoritative_audit_sentence(t: &Tally) -> String {
+        // R12 outranks R10 here. Before asking whether the counter was ever incremented, ask
+        // whether the event it counts could occur in the frame this run measured. On a second
+        // `VkDevice` (§6.5) no dispatch can bind these buffers at all, so the increment point is
+        // not merely uncalled — it is unreachable *in principle*, and a zero is not a negative
+        // result. `UNWIRED` would be the wrong word and would imply the fix is a call site.
+        let (frame, frame_device) = device_frame();
+        if t.device_authoritative_spans == 0 && frame != FRAME_SHARED {
+            let why = if frame == FRAME_OFF {
+                "no device-memory provider was stood up in this process, so no span was ever a \
+                 candidate"
+                    .to_string()
+            } else {
+                format!(
+                    "the provider's buffers are on a SECOND VkDevice ('{frame_device}', \
+                     alloc_device_frame={frame}) — §6.5 says that is a defect, not a design — so a \
+                     compute dispatch on the session's device CANNOT bind them, whatever the \
+                     allocator does"
+                )
+            };
+            return format!(
+                " alloc_device_authoritative_spans is UNOBSERVABLE, NOT 0, and the artifact prints \
+                 it that way (§10.0.1 R12): {why}. This is not a negative result and it is not an \
+                 unwired counter — it is the absence of a frame in which a result could exist, and \
+                 no criterion may name it while it is in this state. The fix is §6.5 \
+                 (vk::host_device_memory::offer_shared_device, called from wherever the EP-scoped \
+                 device context is built), not a call to \
+                 allocator::tally::on_device_authoritative. Its independent falsifier \
+                 alloc_device_buffer_binds is {}, and the measured ceiling on this run is {} \
+                 span(s) (device_backed {} - staged {}).",
+                t.device_buffer_binds,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            );
+        }
         if t.device_authoritative_spans == 0 {
             // A zero must say WHICH zero it is. R7: absence of an instrument must not read as a
             // negative result. Without this sentence, "0 authoritative spans" is ambiguous between
@@ -1292,22 +1369,32 @@ pub mod tally {
                  measured one: its only increment point (allocator::tally::on_device_authoritative) \
                  has no production caller yet, and its independent falsifier \
                  alloc_device_buffer_binds is {} — the engine has {} bound one of our device \
-                 buffers via transfer::device_buffer_for. The measured ceiling for it on this run \
-                 is {} span(s) (device_backed {} - staged {}). When residency lands, the count and \
-                 the binds must move together; a non-zero count with zero binds is reported here as \
-                 not credible.",
+                 buffers via transfer::device_buffer_for. The frame IS shared (§6.5 satisfied on \
+                 '{}'), so this zero is at least in a position to change; that is the difference \
+                 between this sentence and the UNOBSERVABLE one. The measured ceiling for it on \
+                 this run is {} span(s) (device_backed {} - staged {}). When residency lands, the \
+                 count and the binds must move together; a non-zero count with zero binds is \
+                 reported here as not credible.",
                 t.device_buffer_binds,
                 if t.device_buffer_binds == 0 {
                     "never"
                 } else {
                     "sometimes"
                 },
+                frame_device,
                 t.device_authoritative_ceiling,
                 t.device_backed_spans,
                 t.staged_spans
             );
         }
         let mut faults = Vec::new();
+        if frame != FRAME_SHARED {
+            faults.push(format!(
+                "it is non-zero in the {frame} frame, where the buffers are not on the device the \
+                 kernels ran on and no dispatch could have bound them — the counter and the frame \
+                 contradict each other and at least one of them is wrong"
+            ));
+        }
         if t.device_authoritative_spans > t.device_authoritative_ceiling {
             faults.push(format!(
                 "it claims {} authoritative span(s) but only {} span(s) are device-backed WITHOUT \
@@ -1331,9 +1418,7 @@ pub mod tally {
                 " alloc_device_authoritative_spans is {}, and it survives both independent checks: \
                  it is within the measured no-staging ceiling of {}, and the engine bound our \
                  device buffers {} time(s).",
-                t.device_authoritative_spans,
-                t.device_authoritative_ceiling,
-                t.device_buffer_binds
+                t.device_authoritative_spans, t.device_authoritative_ceiling, t.device_buffer_binds
             );
         }
         format!(
@@ -1473,6 +1558,9 @@ pub mod tally {
         // The verdict now quotes the session staging tally, so a test that does not clear it reads
         // another test's traffic.
         crate::counters::staging::reset();
+        if let Ok(mut f) = DEVICE_FRAME.lock() {
+            *f = None;
+        }
     }
 
     /// Drive the counters directly so every `staging_verdict` branch — including the genuinely
@@ -2035,9 +2123,13 @@ mod tests {
     #[test]
     fn every_staging_verdict_branch_mentions_the_traffic_it_cannot_see() {
         let _g = ledger::test_lock();
-        for (allocations, backed, staged) in
-            [(10u64, 10u64, 10u64), (10, 10, 0), (10, 0, 10), (10, 6, 4), (10, 0, 0)]
-        {
+        for (allocations, backed, staged) in [
+            (10u64, 10u64, 10u64),
+            (10, 10, 0),
+            (10, 0, 10),
+            (10, 6, 4),
+            (10, 0, 0),
+        ] {
             tally::reset_for_test();
             tally::seed_for_test(allocations, backed, staged, 4096);
             let v = tally::staging_verdict();
@@ -2278,29 +2370,92 @@ mod tests {
     fn a_credible_authoritative_count_says_which_checks_it_survived() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
+        // §6.5 satisfied — otherwise the count is contradicted by its own frame (R12).
+        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
         // 10 allocations, 10 device-backed, 2 staged -> ceiling 8. Claim 6, with real binds.
         tally::seed_for_test(10, 10, 2, 8192);
         tally::seed_authoritative_for_test(6, 33);
         let v = tally::staging_verdict();
         assert!(!v.contains("NOT CREDIBLE"), "got: {v}");
         assert!(v.contains("survives both independent checks"), "got: {v}");
-        assert!(v.contains("ceiling of 8"), "must quote the measured ceiling; got: {v}");
+        assert!(
+            v.contains("ceiling of 8"),
+            "must quote the measured ceiling; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// A count that is non-zero in a frame where the event cannot occur is a contradiction, and
+    /// the artifact must say so rather than reporting the number. R12's falsifier.
+    #[test]
+    fn a_nonzero_authoritative_count_in_a_split_frame_is_not_credible() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        tally::seed_for_test(10, 10, 2, 8192);
+        tally::seed_authoritative_for_test(6, 33);
+        let v = tally::staging_verdict();
+        assert!(v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(
+            v.contains("non-zero in the SPLIT-DEVICE frame"),
+            "the frame is the fault and must be named; got: {v}"
+        );
         tally::reset_for_test();
     }
 
     /// Zero is the value this counter will hold right up until the moment it is quoted, so the
     /// artifact must distinguish an unwired zero from a measured one. This is the falsifier for
     /// that distinction: with no increment point called, the sentence must SAY it is unwired.
+    ///
+    /// The frame is set to `SHARED` deliberately. In any other frame the correct word is
+    /// `UNOBSERVABLE`, not `UNWIRED`, and the test below covers that.
     #[test]
     fn a_zero_authoritative_count_says_it_is_unwired_rather_than_measured() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
+        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
         tally::seed_for_test(10, 10, 2, 8192);
         let v = tally::staging_verdict();
         assert!(v.contains("UNWIRED zero"), "got: {v}");
         assert!(v.contains("alloc_device_buffer_binds is 0"), "got: {v}");
         assert!(v.contains("ceiling for it on this run is 8"), "got: {v}");
-        assert!(!v.contains("NOT CREDIBLE"), "a zero is not a dishonest count; got: {v}");
+        assert!(
+            !v.contains("NOT CREDIBLE"),
+            "a zero is not a dishonest count; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// **R12.** In a frame where the counted event cannot occur, the word is `UNOBSERVABLE` and
+    /// not `UNWIRED` — the two prescribe different fixes, and calling a structural pin "unwired"
+    /// sends the next person to add a call site that could never fire.
+    #[test]
+    fn a_zero_authoritative_count_in_a_foreign_frame_says_unobservable_not_unwired() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::seed_for_test(10, 10, 2, 8192);
+
+        // Frame OFF — no provider at all.
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
+        assert!(
+            !v.contains("UNWIRED zero"),
+            "an absent frame is not an absent call site; got: {v}"
+        );
+
+        // Frame SPLIT-DEVICE — the §6.5 defect.
+        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
+        assert!(
+            v.contains("SECOND VkDevice"),
+            "the reason must be the frame, named; got: {v}"
+        );
+        assert!(
+            v.contains("offer_shared_device"),
+            "and it must name the fix, which is the seam and not a call to the counter; got: {v}"
+        );
+        assert!(!v.contains("UNWIRED zero"), "got: {v}");
         tally::reset_for_test();
     }
 

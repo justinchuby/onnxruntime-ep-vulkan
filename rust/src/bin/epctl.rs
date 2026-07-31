@@ -478,6 +478,30 @@ fn check_counters_with(
                      `alloc_device_buffer_binds`) before describing anything as computed from \
                      device memory."
                 );
+                // §10.0.1 R12 — frame provenance in the artifact, not in prose. Which VkDevice
+                // those spans live on decides whether they could ever be bound at all. Re-read
+                // rather than threading it through the verdict: the verdict is an exit code, and
+                // this is a disclosure obligation attached to the PASS text.
+                let raw = std::fs::read_to_string(path).unwrap_or_default();
+                match json_str(&raw, "alloc_device_frame") {
+                    Some("SHARED") => println!(
+                        "\x20 alloc_device_frame = SHARED — the provider's buffers are on the \
+                         engine's VkDevice (§6.5), so `alloc_device_authoritative_spans` is \
+                         observable and its value is a measurement."
+                    ),
+                    Some(other) => println!(
+                        "\x20 alloc_device_frame = {other} — these spans are NOT on the device the \
+                         kernels ran on (§6.5), so no dispatch could bind them and \
+                         `alloc_device_authoritative_spans` reads UNOBSERVABLE rather than 0. Per \
+                         R12 that is not a negative result, it is the absence of a frame in which \
+                         a result could exist."
+                    ),
+                    None => println!(
+                        "\x20 alloc_device_frame is absent from this snapshot, so which VkDevice \
+                         these spans live on is unknown. Predates the frame provenance key; do not \
+                         infer SHARED from its absence."
+                    ),
+                }
             }
             std::process::ExitCode::SUCCESS
         }
@@ -571,7 +595,13 @@ fn check_counters_with(
                      because `vk::session` reads inputs through `host_backing_for` and binds \
                      buffers it allocated itself. `alloc_device_authoritative_spans` is the \
                      counter that has to move before this flag can pass, and it is the instrument \
-                     that goes red if anyone claims the EP computes from device memory today."
+                     that goes red if anyone claims the EP computes from device memory today.\n\
+                     \x20 And read its FRAME before reading its value (§10.0.1 R12): while \
+                     `alloc_device_frame` is SPLIT-DEVICE the provider's buffers are on a second \
+                     VkDevice (§6.5), so no dispatch could bind them whatever the allocator does — \
+                     the counter reads UNOBSERVABLE, not 0, and no criterion may name it in that \
+                     state. Weight residency is read against `device_upload_bytes` on the \
+                     session's device until §6.5 is closed."
                 );
             }
             std::process::ExitCode::from(1)

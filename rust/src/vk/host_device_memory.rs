@@ -15,17 +15,35 @@
 //! `DEVICE_LOCAL` memory, and makes `CopyTensors` move bytes across `vkCmdCopyBuffer` instead of
 //! `memcpy`.
 //!
-//! # The limitation, which is a measured counter and not just a paragraph
+//! # §6.5 — this provider RECEIVES a `VkDevice`; it does not create one
 //!
-//! This provider owns **its own** `Instance`, `Device` and `Allocator`, held for the process
-//! lifetime. It does so because [`crate::allocator::HandleRegistry`] is itself process-global
+//! **Ruled 2026-07-30T22:13:37-07:00: exactly one `VkDevice` per (physical device, EP instance).**
+//! The seam is owned by the side that owns the lifetime — Switch — and this file is the consumer.
+//! The surface is exactly three methods, [`SharedVkDevice`], and one entry point,
+//! [`offer_shared_device`]. Switch calls that once, from wherever the EP-scoped device context is
+//! constructed (§2.3 says that is `CreateEp`, not `VulkanSession::create`). Nothing else here
+//! needs to change on his side and nothing in `vk/session.rs`, `vk/device.rs` or `vk/instance.rs`
+//! is edited by this file.
+//!
+//! The provider holds an `Arc<dyn SharedVkDevice>`, which **pins the device for as long as the
+//! provider lives** — that matters, because [`crate::allocator::HandleRegistry`] is process-global
 //! (`factory::REGISTRIES`) and outlives every `VulkanSession`: a span allocated during session A
-//! may be freed after session A is gone, so a buffer owned by a session's allocator would be a
-//! use-after-free waiting to happen. A process-global device makes the two lifetimes identical by
-//! construction.
+//! may be freed after session A is gone. Holding the `Arc` is what makes handing over a
+//! session-scoped device safe *at the Vulkan level*; it does not make it correct, and §2.3 still
+//! requires EP scope.
 //!
-//! The consequence is that **these buffers are on a different `VkDevice` from the one
-//! `vk::session` dispatches on, so a compute shader cannot bind them.** That means:
+//! # The fallback, and why it is a reported state rather than a silent one
+//!
+//! Until [`offer_shared_device`] has been called for a device index, this module falls back to
+//! [`OwnedDevice`] — which does create an `Instance` and a `Device` of its own, exactly as this
+//! file did before §6.5. **That fallback is the defect §6.5 names**, so it is not silent: the
+//! frame is recorded as [`DeviceFrame::SplitDevice`], `alloc_device_frame` says so in the counters
+//! artifact, and per R12 `alloc_device_authoritative_spans` reports `UNOBSERVABLE` rather than `0`
+//! — because in that frame the event it counts *cannot occur*, and a zero would be read as a
+//! measurement.
+//!
+//! In the split frame, **these buffers are on a different `VkDevice` from the one `vk::session`
+//! dispatches on, so a compute shader cannot bind them.** That means:
 //!
 //! * the bytes really are in device memory, and the upload/download cost really is bus traffic —
 //!   so `alloc_device_backed_spans` and `alloc_device_upload_bytes` measure what they say;
@@ -63,19 +81,83 @@ struct Inner {
     next_token: u64,
 }
 
-/// A process-lifetime Vulkan device used only for ORT tensor residency.
+/// The **exact** surface this provider needs from the EP's device context (§6.5 seam).
+///
+/// Three methods, all borrows, no construction, no lifetime obligations beyond `Arc`. Switch
+/// implements this on whatever type owns the EP-scoped device and calls [`offer_shared_device`]
+/// once. Adding a fourth method to this trait is a cross-owner change and gets declared as one.
+pub(crate) trait SharedVkDevice: Send + Sync {
+    /// The `ash::Instance` the device was created from. Needed only by `Allocator::new`.
+    fn instance_ash(&self) -> &ash::Instance;
+    /// The one logical device for this (physical device, EP instance).
+    fn device(&self) -> &Device;
+    /// The physical device's name, for the identity line in the log and the artifact.
+    fn device_name(&self) -> &str;
+}
+
+/// Which `VkDevice` this provider's buffers live on, relative to the one that dispatches.
+///
+/// This is **frame provenance** in the sense of §10.0.1 R12: it is not a quality score, it is the
+/// identity of the world the `alloc_device_*` numbers were measured in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DeviceFrame {
+    /// §6.5 satisfied: the buffers are on the session's device and a dispatch could bind them.
+    Shared,
+    /// §6.5 violated: a second device, so every `alloc_device_*` number describes another world.
+    SplitDevice,
+}
+
+impl DeviceFrame {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "SHARED",
+            Self::SplitDevice => "SPLIT-DEVICE",
+        }
+    }
+}
+
+/// A device this module created itself — the §6.5 fallback, used only until Switch's context is
+/// offered. Its existence is the defect, so its use is always reported as `SPLIT-DEVICE`.
+struct OwnedDevice {
+    device: Device,
+    device_name: String,
+    /// Held so the loader and the instance outlive every buffer.
+    instance: Instance,
+}
+
+impl SharedVkDevice for OwnedDevice {
+    fn instance_ash(&self) -> &ash::Instance {
+        self.instance.ash()
+    }
+    fn device(&self) -> &Device {
+        &self.device
+    }
+    fn device_name(&self) -> &str {
+        &self.device_name
+    }
+}
+
+// SAFETY: both fields are immutable after construction. `ash::Device` and `ash::Instance` are
+// Vulkan handles, which the specification permits to be used from any thread given external
+// synchronisation; nothing here is thread-affine and the queue is synchronised by the provider's
+// mutex.
+unsafe impl Send for OwnedDevice {}
+// SAFETY: as above.
+unsafe impl Sync for OwnedDevice {}
+
+/// Device-local memory for ORT tensors, on a device this module was **handed**.
 pub(crate) struct HostDeviceMemory {
     inner: Mutex<Inner>,
-    device: Device,
+    /// The device context. Held as an `Arc` so it outlives every buffer minted from it, which is
+    /// what makes the process-global `HandleRegistry` safe against session teardown.
+    ctx: Arc<dyn SharedVkDevice>,
     is_uma: bool,
-    /// The device the mirror actually landed on.
+    frame: DeviceFrame,
+    /// The device the buffers actually landed on.
     ///
-    /// Recorded so the identity can be *reported* rather than assumed. `create` resolves the
-    /// index against its own `enumerate_capable_devices()` call, and whether that agrees with the
+    /// Recorded so the identity can be *reported* rather than assumed. Whether it agrees with the
     /// device `VulkanSession` picked is a claim, not a given — it must be checkable from a log.
     device_name: String,
-    /// Held so the loader and the instance outlive every buffer. Never used directly.
-    _instance: Instance,
 }
 
 // SAFETY: every field is either immutable after construction (`device`, `is_uma`, `_instance`) or
@@ -87,7 +169,54 @@ unsafe impl Send for HostDeviceMemory {}
 unsafe impl Sync for HostDeviceMemory {}
 
 impl HostDeviceMemory {
-    /// Stand up a device for `device_index`, or `None` if Vulkan is unavailable.
+    /// Build a provider **on a device it was given**. This is the §6.5 shape.
+    ///
+    /// Fails (`None`) only if the allocator or the command pool cannot be created on that device.
+    /// It creates no `Instance` and no `Device`.
+    ///
+    /// # Safety
+    /// `ctx` must reference a live instance and device, and the `Arc` must be the caller's promise
+    /// that they stay live — which it is, because this function stores it.
+    unsafe fn on_shared_device(ctx: Arc<dyn SharedVkDevice>, frame: DeviceFrame) -> Option<Self> {
+        let device = ctx.device();
+        let is_uma = device.caps().is_uma;
+        let device_name = ctx.device_name().to_string();
+        // SAFETY: instance and device are live for as long as `ctx`, which is stored below.
+        let alloc =
+            unsafe { Allocator::new(ctx.instance_ash(), device.physical_device(), device.ash()) }?;
+        // SAFETY: device is live; the queue family index came from it.
+        let cmd_pool = unsafe { CommandPool::new(device.ash(), device.compute_queue_family()) }?;
+        Some(Self {
+            inner: Mutex::new(Inner {
+                alloc,
+                cmd_pool,
+                buffers: HashMap::new(),
+                next_token: 1,
+            }),
+            ctx,
+            is_uma,
+            frame,
+            device_name,
+        })
+    }
+
+    /// The device this provider's buffers landed on. Reported, never inferred.
+    pub(crate) fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Which world the `alloc_device_*` numbers from this provider were measured in (R12).
+    pub(crate) fn frame(&self) -> DeviceFrame {
+        self.frame
+    }
+
+    fn device(&self) -> &Device {
+        self.ctx.device()
+    }
+}
+
+impl OwnedDevice {
+    /// Stand up a device of our own — the §6.5 fallback. `None` if Vulkan is unavailable.
     ///
     /// # Safety
     /// The Vulkan loader must remain loaded for the process lifetime, which it does: the returned
@@ -116,10 +245,11 @@ impl HostDeviceMemory {
         // was numerically correct and attributed to the wrong device — the same failure shape as
         // the process-global `HandleRegistry` scope error, one level up.
         //
-        // `select_device` is the single source of truth for "which device is this session on".
+        // Matching indices does NOT make this one device: §6.5 is about the `VkDevice` object, not
+        // the physical device it was created from. Agreeing here only means the two `VkDevice`s
+        // wrap the same GPU, which is why the frame is still `SPLIT-DEVICE`.
         let idx = crate::vk::instance::select_device(&capables).unwrap_or(0);
         let capable = capables.swap_remove(idx);
-        let is_uma = capable.caps.is_uma;
         let device_name = capable.info.name.clone();
         if idx != device_index {
             log::debug!(
@@ -133,30 +263,15 @@ impl HostDeviceMemory {
         }
         // SAFETY: `instance` is live; `capable` came from its own enumeration.
         let device = unsafe { Device::create(instance.ash(), &capable, false) }?;
-        // SAFETY: instance and device are live; the physical device belongs to the instance.
-        let alloc =
-            unsafe { Allocator::new(instance.ash(), device.physical_device(), device.ash()) }?;
-        // SAFETY: device is live; the queue family index came from it.
-        let cmd_pool = unsafe { CommandPool::new(device.ash(), device.compute_queue_family()) }?;
         Some(Self {
-            inner: Mutex::new(Inner {
-                alloc,
-                cmd_pool,
-                buffers: HashMap::new(),
-                next_token: 1,
-            }),
             device,
-            is_uma,
             device_name,
-            _instance: instance,
+            instance,
         })
     }
+}
 
-    /// The device this mirror actually landed on. Reported, never inferred.
-    pub(crate) fn device_name(&self) -> &str {
-        &self.device_name
-    }
-
+impl HostDeviceMemory {
     /// Run one staged copy in either direction. `to_device` picks upload or download.
     fn staged_copy(
         &self,
@@ -282,7 +397,7 @@ impl HostDeviceMemory {
         // SAFETY: `cmd` is recording; both buffers belong to this device and the region was bounds
         // checked against the target's size by the caller.
         unsafe {
-            self.device
+            self.device()
                 .ash()
                 .cmd_copy_buffer(cmd, src, dst, std::slice::from_ref(&region))
         };
@@ -291,7 +406,8 @@ impl HostDeviceMemory {
             return Err("could not end the command buffer for a device-memory copy".to_string());
         };
         // SAFETY: `cmd` was recorded and ended above; the queue belongs to this device.
-        let ok = unsafe { submit_and_wait(self.device.ash(), self.device.compute_queue(), cmd) };
+        let ok =
+            unsafe { submit_and_wait(self.device().ash(), self.device().compute_queue(), cmd) };
         if ok {
             Ok(())
         } else {
@@ -356,6 +472,37 @@ static PROVIDERS: OnceLock<Mutex<HashMap<usize, Option<Arc<HostDeviceMemory>>>>>
 /// Idempotent and cheap after the first call. A `None` outcome is cached: if Vulkan could not
 /// stand up a device the first time, retrying on every allocation would turn a missing ICD into a
 /// per-tensor cost.
+/// Device contexts offered by the engine, per device index (§6.5). Populated by
+/// [`offer_shared_device`]; empty means the seam has not been called and the fallback applies.
+static OFFERED: OnceLock<Mutex<HashMap<usize, Arc<dyn SharedVkDevice>>>> = OnceLock::new();
+
+/// **§6.5 SEAM — the one entry point Switch calls.**
+///
+/// Hand this module the EP-scoped device context for `device_index`. Call it once, from wherever
+/// the device context is constructed, *before* any tensor is allocated — the provider is stood up
+/// lazily on the first ORT allocation, and whichever device is on offer at that moment is the one
+/// it uses. Calling it later is harmless but has no effect on an already-built provider, and that
+/// is reported: `alloc_device_frame` will still say `SPLIT-DEVICE`.
+///
+/// The `Arc` is retained for the process lifetime. That is deliberate — the `HandleRegistry` this
+/// serves is process-global and outlives every session — and it is the only obligation this seam
+/// places on the caller.
+///
+/// **This function is `UNWIRED` until Switch calls it** (R10). It has no production caller in this
+/// tree today; `rust/tools/instrument_census.json` lists it, and the counters artifact says
+/// `alloc_device_frame: "SPLIT-DEVICE"` on every run until the call exists. Do not read a passing
+/// build as evidence that the seam is closed — read `alloc_device_frame`.
+pub(crate) fn offer_shared_device(device_index: usize, ctx: Arc<dyn SharedVkDevice>) {
+    let map = OFFERED.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut map) = map.lock() {
+        map.insert(device_index, ctx);
+    }
+}
+
+fn offered_device(device_index: usize) -> Option<Arc<dyn SharedVkDevice>> {
+    OFFERED.get()?.lock().ok()?.get(&device_index).cloned()
+}
+
 pub(crate) fn ensure_registered(device_index: usize) {
     let map = PROVIDERS.get_or_init(|| Mutex::new(HashMap::new()));
     let Ok(mut map) = map.lock() else {
@@ -364,27 +511,55 @@ pub(crate) fn ensure_registered(device_index: usize) {
     if map.contains_key(&device_index) {
         return;
     }
-    // SAFETY: the value is stored in a `static` and never dropped, so the loader outlives it.
-    let provider = unsafe { HostDeviceMemory::create(device_index) }.map(Arc::new);
+    // §6.5: receive a device if one is on offer; only create one if it is not.
+    let ctx: Option<(Arc<dyn SharedVkDevice>, DeviceFrame)> = match offered_device(device_index) {
+        Some(c) => Some((c, DeviceFrame::Shared)),
+        None => {
+            // SAFETY: the value is stored in a `static` and never dropped, so the loader outlives
+            // it.
+            unsafe { OwnedDevice::create(device_index) }.map(|d| {
+                (
+                    Arc::new(d) as Arc<dyn SharedVkDevice>,
+                    DeviceFrame::SplitDevice,
+                )
+            })
+        }
+    };
+    // SAFETY: `ctx` is live and is stored inside the provider, which is stored in a `static`.
+    let provider = ctx
+        .and_then(|(c, frame)| unsafe { HostDeviceMemory::on_shared_device(c, frame) })
+        .map(Arc::new);
     match &provider {
         Some(p) => {
             crate::allocator::tally::set_unified_memory(p.is_unified_memory());
+            crate::allocator::tally::set_device_frame(p.frame().as_str(), p.device_name());
             crate::engine::register_device_memory_provider(
                 device_index,
                 Arc::clone(p) as Arc<dyn DeviceMemoryProvider>,
             );
-            log::info!(
-                "VulkanExecutionProvider: device-backed allocation is ON, mirroring onto \
-                 '{}' (unified_memory={}). Cross-check this name against the \
-                 \"VulkanSession: selected\" line: if they differ, the mirror is on a different \
-                 physical device from the kernels and every alloc_device_* number describes the \
-                 wrong device. ORT's tensors are resident in DEVICE_LOCAL memory, but these \
-                 buffers are on this provider's own VkDevice, so a compute dispatch cannot bind \
-                 them yet — alloc_device_backed_spans measures residency, not that the engine \
-                 reads from device memory.",
-                p.device_name(),
-                p.is_unified_memory()
-            );
+            match p.frame() {
+                DeviceFrame::Shared => log::info!(
+                    "VulkanExecutionProvider: device-backed allocation is ON and SHARES the \
+                     engine's VkDevice (§6.5) on '{}' (unified_memory={}). A compute dispatch can \
+                     bind these buffers, so alloc_device_authoritative_spans is now observable — \
+                     it is still 0 until the engine calls transfer::device_buffer_for, and that \
+                     zero is a measurement rather than a frame artefact.",
+                    p.device_name(),
+                    p.is_unified_memory()
+                ),
+                DeviceFrame::SplitDevice => log::warn!(
+                    "VulkanExecutionProvider: device-backed allocation is ON but on a SECOND \
+                     VkDevice ('{}', unified_memory={}) — §6.5 says that is a defect, not a \
+                     design, and it means a compute dispatch CANNOT bind these buffers. Every \
+                     alloc_device_* number in this run describes that second device and not the \
+                     one the kernels ran on; the artifact records alloc_device_frame = \
+                     SPLIT-DEVICE and alloc_device_authoritative_spans = UNOBSERVABLE rather than \
+                     0 (R12). Closing this is vk::host_device_memory::offer_shared_device, called \
+                     from wherever the EP-scoped device context is built.",
+                    p.device_name(),
+                    p.is_unified_memory()
+                ),
+            }
         }
         None => log::warn!(
             "VulkanExecutionProvider: device-backed allocation was requested for device \

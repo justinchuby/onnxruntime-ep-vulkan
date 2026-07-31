@@ -52,7 +52,19 @@ BASELINE = HERE.parent / "instrument_census.json"
 
 # Files whose `pub fn`s are the instruments under audit. Everything the EP emits about
 # itself is produced from one of these.
-INSTRUMENT_FILES = ["counters.rs", "trace.rs", "ops/claim_log.rs", "allocator.rs", "transfer.rs"]
+#
+# `vk/host_device_memory.rs` is here for one function: `offer_shared_device`, the §6.5 seam.
+# It is UNWIRED by construction until Switch calls it, and the whole point of R10 is that a
+# seam nobody calls is indistinguishable from one that was never written. Screening it means
+# the day it acquires a caller, this baseline goes red and somebody has to look.
+INSTRUMENT_FILES = [
+    "counters.rs",
+    "trace.rs",
+    "ops/claim_log.rs",
+    "allocator.rs",
+    "transfer.rs",
+    "vk/host_device_memory.rs",
+]
 
 FN = re.compile(r"^\s*pub(?:\(\w+\))? fn ([a-z_][a-z0-9_]*)\s*[(<]")
 
