@@ -38,8 +38,76 @@ use super::{
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Device
+// §6.5 — Process-global EP device registry
+//
+// The rule: exactly one VkDevice per (physical device, EP instance). The session creates the
+// device; every other component that needs Vulkan receives it via this registry instead of
+// creating its own.
+//
+// `EpDeviceShare` holds a *borrowed* `ash::Device` — a clone of the session's handle with no
+// ownership (no Drop). The session's `Device` owns the VkDevice and calls `vkDestroyDevice` on
+// drop. `EpDeviceShare` must not outlive the session; SAFETY below documents why it cannot.
 // ──────────────────────────────────────────────────────────────────────────────
+
+use std::sync::OnceLock;
+
+/// Borrowed handles from the EP session's Vulkan device.
+///
+/// **Does not own the VkDevice** — the session's `Device` does. Do not call `vkDestroyDevice`
+/// through these handles. Use only while the `VulkanSession` (and hence its `Device`) is live.
+pub(crate) struct EpDeviceShare {
+    /// The session's logical device handle, cloned (not reference-counted — raw handle copy).
+    /// ash::Device is Clone and Share: cloning copies the dispatch table pointer, not the device.
+    pub ash_device: ash::Device,
+    /// The physical device from which `ash_device` was created.
+    pub physical_device: vk::PhysicalDevice,
+    /// Physical device capabilities, frozen at session-creation time.
+    pub caps: Capabilities,
+    /// The compute queue family. Needed by components that allocate their own command pools.
+    pub compute_queue_family: u32,
+}
+
+// SAFETY: `ash::Device` is safe to share across threads per the Vulkan spec (Vulkan handles may
+// be used from multiple threads provided the caller provides external synchronisation where
+// required; ash's documentation notes this). `vk::PhysicalDevice` is a `u64`, trivially Send.
+// `Capabilities` is Copy. `EpDeviceShare` is therefore both Send and Sync.
+unsafe impl Send for EpDeviceShare {}
+unsafe impl Sync for EpDeviceShare {}
+
+/// The process-global device share, set exactly once by `VulkanSession::create` and never
+/// changed. `OnceLock` guarantees both write-once and lock-free reads after the first set.
+static EP_DEVICE: OnceLock<EpDeviceShare> = OnceLock::new();
+
+/// Register the EP session's device so other components can receive it via [`ep_device`].
+///
+/// Called exactly once by `VulkanSession::create` after the `Device` is created. Subsequent
+/// calls (e.g., from a second session on the same physical device) are silently ignored —
+/// §6.5 permits one device per EP instance, and the factory creates at most one session per
+/// logical device.
+///
+/// # Safety
+/// The `Device` (and its owning `VulkanSession`) must outlive every use of the returned
+/// `EpDeviceShare`. This is guaranteed by §2.3: the `VulkanSession` is EP-scoped, and ORT
+/// always frees all tensors (calling any device-memory provider's `free`) before destroying the
+/// EP. So no call through `EpDeviceShare` can occur after `VulkanSession::drop`.
+pub(crate) fn register_ep_device(device: &Device) {
+    EP_DEVICE.get_or_init(|| EpDeviceShare {
+        ash_device: device.ash_device.clone(),
+        physical_device: device.physical_device,
+        caps: device.caps.clone(),
+        compute_queue_family: device.compute_queue_family,
+    });
+}
+
+/// Return the process-global device share, or `None` if the session has not yet been created.
+///
+/// Components that need a `VkDevice` call this first. If it returns `Some`, they use the shared
+/// handles and do not create their own Vulkan instance or device.
+#[inline]
+pub(crate) fn ep_device() -> Option<&'static EpDeviceShare> {
+    EP_DEVICE.get()
+}
+
 
 /// The engine's logical device.
 ///
