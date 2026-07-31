@@ -340,6 +340,11 @@ impl Drop for VulkanEp {
         // absence read as zero. That is R7 exactly: the instrument was not in a position to
         // report, so its silence was mistaken for a negative result.
         crate::trace::tracer().log_summary();
+        // Same class, same sweep: `log_slowest_ops` also had zero callers. Its producer
+        // (`record_op_meta`) is still unwired and belongs to whoever owns op translation, so this
+        // call currently prints "NOT WIRED" — which is the point. An artifact that names its own
+        // missing instrument is worth more than one that omits the section.
+        crate::trace::tracer().log_slowest_ops();
         // Export the Chrome Trace JSON. The tracer accumulates across sessions and rewrites the
         // full file on each EP teardown; the final teardown leaves the complete trace on disk.
         crate::trace::tracer().export();

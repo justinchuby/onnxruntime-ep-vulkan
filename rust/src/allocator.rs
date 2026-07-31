@@ -619,6 +619,7 @@ impl HandleRegistry {
         let Some(span) = inner.spans.get_mut(&addr) else {
             drop(inner);
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
             log::error!(
                 "VulkanExecutionProvider: Free(0x{addr:x}) — not the base of any device handle \
                  this allocator served. Either the caller freed an interior pointer (the base is \
@@ -631,6 +632,7 @@ impl HandleRegistry {
             let g = span.generation;
             drop(inner);
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
             log::error!(
                 "VulkanExecutionProvider: double free of device handle 0x{addr:x} (freed at \
                  generation {g}). Caught by quarantine rather than corrupting a live tensor. \
@@ -695,6 +697,7 @@ impl HandleRegistry {
         let r = self.resolve_inner(addr);
         if r.is_err() {
             self.failed_lookups.fetch_add(1, Ordering::Relaxed);
+            tally::on_failed_lookup();
         }
         r
     }
@@ -936,6 +939,18 @@ pub mod tally {
     /// an unreachable instrument is not a negative result. Non-zero here means the detection window
     /// was exhausted, so `pointers_use_after_free == 0` stops being evidence of anything.
     static QUARANTINE_RETIRED: AtomicU64 = AtomicU64::new(0);
+    /// Lookups that failed, process-wide.
+    ///
+    /// Per-registry `AllocStats::failed_lookups` says of itself "non-zero always indicates a bug
+    /// somewhere" — and it was reachable **only** through ORT's `GetStats` KVPs, which nothing in
+    /// this repo calls. A bug detector whose output no artifact carries has the same evidentiary
+    /// value as one that was never written. Same class as `quarantine_retired`; found by the same
+    /// sweep.
+    static FAILED_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn on_failed_lookup() {
+        FAILED_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+    }
 
     pub(super) fn on_quarantine(depth: u64, retired: u64) {
         QUARANTINE_PEAK.fetch_max(depth, Ordering::Relaxed);
@@ -1003,6 +1018,34 @@ pub mod tally {
     /// Spans whose only home is device memory. See [`Tally::device_authoritative_spans`]. Nothing
     /// increments this yet, and that is the point: it is the claim's falsifier, not a placeholder.
     static DEVICE_AUTHORITATIVE: AtomicU64 = AtomicU64::new(0);
+    /// Times the engine asked for one of our device buffers via `transfer::device_buffer_for`.
+    ///
+    /// The *only* way an engine can compute from our device memory is to bind a buffer this
+    /// function handed it. So this is the independent falsifier for
+    /// [`Tally::device_authoritative_spans`]: authoritative spans with zero binds is a
+    /// contradiction, not a nuance. It exists **before** the claim it guards, because a counter
+    /// wired at the same time as the feature it measures is wired by someone who already believes
+    /// the answer.
+    static DEVICE_BUFFER_BINDS: AtomicU64 = AtomicU64::new(0);
+
+    /// The engine bound one of our device buffers. Called from `transfer::device_buffer_for`.
+    pub fn on_device_buffer_bind() {
+        DEVICE_BUFFER_BINDS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A span became device-authoritative: device-resident with **no** host staging block behind
+    /// it, so nothing can read it through `host_backing_for`.
+    ///
+    /// The single documented increment point, deliberately narrow. Whoever wires persistent
+    /// residency must satisfy two independent measured guards or [`staging_verdict`] will call the
+    /// number dishonest in the artifact itself:
+    ///
+    /// 1. `device_authoritative_spans <= device_backed_spans - staged_spans` — a span that still
+    ///    has host staging is a mirror, whatever the design intends.
+    /// 2. `device_buffer_binds > 0` — the engine must actually have asked for the buffer.
+    pub fn on_device_authoritative() {
+        DEVICE_AUTHORITATIVE.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// A `CopyTensors` endpoint was in device memory and went through the provider.
     ///
@@ -1061,6 +1104,14 @@ pub mod tally {
         /// device memory". This counter is the one that would have to move for the second claim,
         /// and it is the instrument that goes red if anyone states it while it is still 0.
         pub device_authoritative_spans: u64,
+        /// The most spans that *could* be authoritative, measured: `device_backed - staged`.
+        /// A span with a host staging block is a mirror however the design describes it.
+        pub device_authoritative_ceiling: u64,
+        /// Times the engine bound one of our device buffers via `transfer::device_buffer_for`.
+        /// Zero while `device_authoritative_spans > 0` is a contradiction.
+        pub device_buffer_binds: u64,
+        /// Lookups that failed anywhere in the process. Non-zero always indicates a bug.
+        pub failed_lookups: u64,
         /// Deepest the quarantine FIFO ever got, process-wide.
         pub quarantine_peak_spans: u64,
         /// Spans retired from quarantine, process-wide. **Non-zero voids** any conclusion drawn
@@ -1089,6 +1140,11 @@ pub mod tally {
             device_download_bytes: DEVICE_DOWNLOAD_BYTES.load(Ordering::Relaxed),
             unified_memory: UNIFIED_MEMORY.load(Ordering::Relaxed),
             device_authoritative_spans: DEVICE_AUTHORITATIVE.load(Ordering::Relaxed),
+            device_authoritative_ceiling: DEVICE_BACKED
+                .load(Ordering::Relaxed)
+                .saturating_sub(STAGED_SPANS.load(Ordering::Relaxed)),
+            device_buffer_binds: DEVICE_BUFFER_BINDS.load(Ordering::Relaxed),
+            failed_lookups: FAILED_LOOKUPS.load(Ordering::Relaxed),
             quarantine_peak_spans: QUARANTINE_PEAK.load(Ordering::Relaxed),
             quarantine_retired: QUARANTINE_RETIRED.load(Ordering::Relaxed),
         }
@@ -1213,6 +1269,76 @@ pub mod tally {
         )
     }
 
+    /// Whether `device_authoritative_spans` is credible, checked against two counters it does not
+    /// control.
+    ///
+    /// This counter is 0 today and will be the headline the moment persistent weight residency
+    /// lands. The failure mode is not fraud, it is belief: an author wires it because the design
+    /// says the span is device-resident. So the artifact audits it against measurements taken
+    /// elsewhere — the staging tally, and the engine's own bind traffic — and says so in the same
+    /// sentence that reports the number, where anyone quoting it must read it.
+    fn authoritative_audit_sentence(t: &Tally) -> String {
+        if t.device_authoritative_spans == 0 {
+            // A zero must say WHICH zero it is. R7: absence of an instrument must not read as a
+            // negative result. Without this sentence, "0 authoritative spans" is ambiguous between
+            // "measured, nothing is device-authoritative" and "nobody ever incremented it", and the
+            // second is what is actually true today.
+            return format!(
+                " alloc_device_authoritative_spans is 0, and this is an UNWIRED zero, not a \
+                 measured one: its only increment point (allocator::tally::on_device_authoritative) \
+                 has no production caller yet, and its independent falsifier \
+                 alloc_device_buffer_binds is {} — the engine has {} bound one of our device \
+                 buffers via transfer::device_buffer_for. The measured ceiling for it on this run \
+                 is {} span(s) (device_backed {} - staged {}). When residency lands, the count and \
+                 the binds must move together; a non-zero count with zero binds is reported here as \
+                 not credible.",
+                t.device_buffer_binds,
+                if t.device_buffer_binds == 0 {
+                    "never"
+                } else {
+                    "sometimes"
+                },
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            );
+        }
+        let mut faults = Vec::new();
+        if t.device_authoritative_spans > t.device_authoritative_ceiling {
+            faults.push(format!(
+                "it claims {} authoritative span(s) but only {} span(s) are device-backed WITHOUT \
+                 host staging ({} backed - {} staged); a span with a staging block is a mirror \
+                 however the design describes it",
+                t.device_authoritative_spans,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            ));
+        }
+        if t.device_buffer_binds == 0 {
+            faults.push(
+                "the engine never called transfer::device_buffer_for, so it never bound one of \
+                 our device buffers and cannot have computed from one"
+                    .to_string(),
+            );
+        }
+        if faults.is_empty() {
+            return format!(
+                " alloc_device_authoritative_spans is {}, and it survives both independent checks: \
+                 it is within the measured no-staging ceiling of {}, and the engine bound our \
+                 device buffers {} time(s).",
+                t.device_authoritative_spans,
+                t.device_authoritative_ceiling,
+                t.device_buffer_binds
+            );
+        }
+        format!(
+            " *** alloc_device_authoritative_spans IS NOT CREDIBLE AND MUST NOT BE QUOTED: {}. \
+             Fix the counter or the wiring before this number leaves the machine. ***",
+            faults.join("; and ")
+        )
+    }
+
     pub fn staging_verdict() -> String {
         let t = snapshot();
         if t.allocations == 0 {
@@ -1231,6 +1357,7 @@ pub mod tally {
         // and stopped there described residency truthfully while omitting the dominant staging
         // cost, which is exactly the "reports what was true when it was written" failure.
         let session = session_staging_sentence();
+        let authoritative_audit = authoritative_audit_sentence(&t);
         let mem = match t.unified_memory {
             1 => {
                 " The device is UNIFIED-MEMORY (UMA): its device-local heap is the same DRAM as \
@@ -1273,7 +1400,7 @@ pub mod tally {
                  through host_backing_for and binds buffers it allocated itself, so this run's \
                  timing is a HOST measurement PLUS the cost of mirroring, and is worse than \
                  staging alone rather than better. It must not be quoted as a device-memory \
-                 measurement.{mem}{session}",
+                 measurement.{mem}{session}{authoritative_audit}",
                 t.allocations, t.staged_bytes, t.device_uploads, t.device_upload_bytes,
             );
         }
@@ -1286,7 +1413,7 @@ pub mod tally {
                 "MEMORY: UNMEASURED — {} span(s) were allocated but BOTH alloc_staged_spans and \
                  alloc_device_backed_spans are 0, so nothing recorded where their contents \
                  lived. This is an absent instrument, not a clean result, and no timing from \
-                 this run may be described as either a host or a device measurement.{session}",
+                 this run may be described as either a host or a device measurement.{session}{authoritative_audit}",
                 t.allocations
             );
         }
@@ -1294,7 +1421,7 @@ pub mod tally {
             return format!(
                 "MEMORY: none of the {} device handle(s) were host-staged; {} had a VkBuffer \
                  attached. Timing from this run is not disqualified by staging (which is not the \
-                 same as being a good measurement).{mem}{moved}{session}",
+                 same as being a good measurement).{mem}{moved}{session}{authoritative_audit}",
                 t.allocations, t.device_backed_spans
             );
         }
@@ -1302,7 +1429,7 @@ pub mod tally {
             return format!(
                 "MEMORY: ALL {} host-staged span(s) ({} B) and ZERO device-backed — nothing in \
                  this run reached device memory. Any timing from it is a HOST measurement and must \
-                 not be quoted as anything else.{session}",
+                 not be quoted as anything else.{session}{authoritative_audit}",
                 t.staged_spans, t.staged_bytes
             );
         }
@@ -1312,7 +1439,7 @@ pub mod tally {
              host measurement nor a device one; it is an average over two different memories and \
              is not comparable with either. Assert `alloc_staged_spans == 0` with `epctl \
              --check-counters --require-device-memory` before quoting a number from a run like \
-             this.{mem}{moved}{session}",
+             this.{mem}{moved}{session}{authoritative_audit}",
             t.staged_spans,
             t.staged_bytes,
             t.device_backed_spans,
@@ -1333,6 +1460,9 @@ pub mod tally {
             &STAGED_BYTES,
             &QUARANTINE_PEAK,
             &QUARANTINE_RETIRED,
+            &FAILED_LOOKUPS,
+            &DEVICE_AUTHORITATIVE,
+            &DEVICE_BUFFER_BINDS,
         ] {
             c.store(0, Ordering::Relaxed);
         }
@@ -1346,6 +1476,15 @@ pub mod tally {
         DEVICE_BACKED.store(device_backed, Ordering::Relaxed);
         STAGED_SPANS.store(staged, Ordering::Relaxed);
         STAGED_BYTES.store(staged_bytes, Ordering::Relaxed);
+    }
+
+    /// Drive the two counters that guard `device_authoritative_spans`, so the audit can be
+    /// exercised before the feature that will produce them exists. A guard first tested by the
+    /// author of the feature it guards is tested by someone who already believes the answer.
+    #[doc(hidden)]
+    pub fn seed_authoritative_for_test(authoritative: u64, binds: u64) {
+        DEVICE_AUTHORITATIVE.store(authoritative, Ordering::Relaxed);
+        DEVICE_BUFFER_BINDS.store(binds, Ordering::Relaxed);
     }
 }
 
@@ -2101,6 +2240,87 @@ mod tests {
             "with a window of 4 and 16 frees, retirement must have happened and must be visible"
         );
         assert_eq!(s.quarantined_spans, 4, "the window holds exactly its bound");
+    }
+
+    /// `alloc_device_authoritative_spans` will be the headline the moment persistent residency
+    /// lands. These are the two independent guards that must fire before it can be quoted.
+    #[test]
+    fn an_over_claimed_authoritative_count_is_called_dishonest_in_the_artifact() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // 10 allocations, 10 device-backed, 10 still staged -> ceiling is 0, so ANY authoritative
+        // span is a mirror being reported as device-resident. This is the exact shape of the
+        // claim this project has produced repeatedly: true about residency, false about the run.
+        tally::seed_for_test(10, 10, 10, 40960);
+        tally::seed_authoritative_for_test(6, 0);
+        let v = tally::staging_verdict();
+        assert!(v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(
+            v.contains("6 authoritative span(s) but only 0"),
+            "must quote both measured numbers, not just object; got: {v}"
+        );
+        assert!(
+            v.contains("never called transfer::device_buffer_for"),
+            "the bind counter is the second, independent falsifier; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// The credible case must also be stated, or the guard is a warning nobody can clear.
+    #[test]
+    fn a_credible_authoritative_count_says_which_checks_it_survived() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        // 10 allocations, 10 device-backed, 2 staged -> ceiling 8. Claim 6, with real binds.
+        tally::seed_for_test(10, 10, 2, 8192);
+        tally::seed_authoritative_for_test(6, 33);
+        let v = tally::staging_verdict();
+        assert!(!v.contains("NOT CREDIBLE"), "got: {v}");
+        assert!(v.contains("survives both independent checks"), "got: {v}");
+        assert!(v.contains("ceiling of 8"), "must quote the measured ceiling; got: {v}");
+        tally::reset_for_test();
+    }
+
+    /// Zero is the value this counter will hold right up until the moment it is quoted, so the
+    /// artifact must distinguish an unwired zero from a measured one. This is the falsifier for
+    /// that distinction: with no increment point called, the sentence must SAY it is unwired.
+    #[test]
+    fn a_zero_authoritative_count_says_it_is_unwired_rather_than_measured() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::seed_for_test(10, 10, 2, 8192);
+        let v = tally::staging_verdict();
+        assert!(v.contains("UNWIRED zero"), "got: {v}");
+        assert!(v.contains("alloc_device_buffer_binds is 0"), "got: {v}");
+        assert!(v.contains("ceiling for it on this run is 8"), "got: {v}");
+        assert!(!v.contains("NOT CREDIBLE"), "a zero is not a dishonest count; got: {v}");
+        tally::reset_for_test();
+    }
+
+    /// A device buffer handed to the engine must be counted, or the falsifier above is inert.
+    #[test]
+    fn handing_out_a_device_buffer_is_counted() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        assert_eq!(tally::snapshot().device_buffer_binds, 0);
+        tally::on_device_buffer_bind();
+        assert_eq!(tally::snapshot().device_buffer_binds, 1);
+        tally::reset_for_test();
+    }
+
+    /// `failed_lookups` said of itself "non-zero always indicates a bug" and was reachable only
+    /// through an ORT API nothing in this repo calls. This is the falsifier for the plumbing.
+    #[test]
+    fn a_failed_lookup_reaches_the_process_wide_counters() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        let r = registry();
+        r.free(0xdead_0000);
+        assert!(
+            tally::snapshot().failed_lookups >= 1,
+            "a bug detector whose count no artifact carries is not a detector"
+        );
+        tally::reset_for_test();
     }
 
     /// Retirement must reach the counters FILE, not just the per-registry struct.

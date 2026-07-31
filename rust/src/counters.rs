@@ -374,6 +374,9 @@ pub fn dump_observations_if_requested() {
              \"alloc_unified_memory\": {},\n  \
              \"alloc_quarantine_peak_spans\": {},\n  \
              \"alloc_quarantine_retired\": {},\n  \
+             \"alloc_device_buffer_binds\": {},\n  \
+             \"alloc_failed_lookups\": {},\n  \
+             \"alloc_device_authoritative_ceiling\": {},\n  \
              \"alloc_device_authoritative_spans\": {}\n}}\n",
             o.observed,
             o.host,
@@ -401,6 +404,9 @@ pub fn dump_observations_if_requested() {
             t.unified_memory,
             t.quarantine_peak_spans,
             t.quarantine_retired,
+            t.device_buffer_binds,
+            t.failed_lookups,
+            t.device_authoritative_ceiling,
             t.device_authoritative_spans,
         ));
     }

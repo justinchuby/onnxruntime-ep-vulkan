@@ -197,10 +197,15 @@ impl Phase {
             }
             Phase::Prepack => "host: CPU repack + staging upload of weights; once per PackKey",
             Phase::Upload => {
-                "host: staging copy; on a discrete GPU this is PCIe time and users pay it"
+                "host: staging copy; on a discrete GPU this is PCIe time and users pay it. \
+                 NESTED INSIDE `record` — already counted there, do not add to the sibling total"
             }
             Phase::Record => {
-                "host: command-buffer recording; amortised across replays (ENGINE.md 6.1)"
+                "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket, which CONTAINS \
+                 the `upload` staging memcpy and the `readback` copy. Measured on Phi-3.5, upload \
+                 is 96% of this phase and actual command recording is 1-3% of wall — so this \
+                 number is NOT command-buffer recording cost. Subtract `upload`+`readback` before \
+                 attributing anything here to recording"
             }
             Phase::Submit => {
                 "HOST-ONLY: vkQueueSubmit returns before any shader runs — this is NOT GPU time"
@@ -208,8 +213,41 @@ impl Phase {
             Phase::FenceWait => {
                 "host: queue latency + GPU execution — an UPPER BOUND on kernel time, not kernel time"
             }
-            Phase::Readback => "host: device->host copy; counts toward end-to-end latency",
+            Phase::Readback => {
+                "host: device->host copy; counts toward end-to-end latency. NESTED INSIDE \
+                 `record` — already counted there, do not add to the sibling total"
+            }
         }
+    }
+
+    /// The phase whose wall time already contains this one, if any.
+    ///
+    /// # Why this is structural and not a sentence
+    ///
+    /// `caveat()` has always been emitted as a span arg, so the exclusion mechanism was wired,
+    /// invoked, and in every artifact — and `Record`'s caveat said "amortised across replays"
+    /// while 96% of its time was a staging memcpy that emits no span of its own. Prose in an
+    /// artifact is only read by humans who already suspect something. An aggregator that sums
+    /// `ph:"X"` spans by name cannot read prose, and summing `record` with `upload` double-counts
+    /// while summing `record` alone attributes a child's cost to its parent's name. Both are one
+    /// field away from being impossible.
+    ///
+    /// Emitted as the `nested_in` span arg. A phase with `nested_in == Some(p)` must never be
+    /// added to a total that also contains `p`.
+    pub fn nested_in(self) -> Option<Phase> {
+        match self {
+            // `vk::session` opens Phase::Record before vkBeginCommandBuffer and drops it after
+            // vkEndCommandBuffer; the input staging loop and the output readback both run inside
+            // that bracket. See session.rs (Record guard) — this is a fact about the call graph,
+            // not a policy, and it must be re-checked if that guard moves.
+            Phase::Upload | Phase::Readback => Some(Phase::Record),
+            _ => None,
+        }
+    }
+
+    /// Phases that are top-level: their wall times may be summed.
+    pub fn is_sibling(self) -> bool {
+        self.nested_in().is_none()
     }
 
     /// Whether a host clock around this phase can see any GPU execution at all.
@@ -716,7 +754,14 @@ impl VulkanTracer {
             .with_args(
                 Args::new()
                     .with(ARG_DEVICE, DEVICE_HOST)
-                    .with("caveat", phase.caveat()),
+                    .with("caveat", phase.caveat())
+                    // Machine-readable parentage. An aggregator that sums `ph:"X"` spans by name
+                    // must skip any span carrying `nested_in`, or it attributes a child's cost to
+                    // its parent and reports a memcpy as command-buffer recording.
+                    .with(
+                        "nested_in",
+                        phase.nested_in().map(Phase::as_str).unwrap_or("none"),
+                    ),
             );
         Some(PhaseGuard {
             phase,
@@ -1055,10 +1100,25 @@ impl VulkanTracer {
                 out.push_str(&format!("              - {op} x{n}: {reason}\n"));
             }
         }
-        out.push_str(&format!(
-            "  compute:  first-record={} replay={} rerecord={}\n",
-            s.record_paths[0], s.record_paths[1], s.record_paths[2]
-        ));
+        // `Tracer::record_path` has no production caller (audited 2026-07-30: zero call sites
+        // outside this file; the classifier is unit-tested, which is why review never caught it).
+        // Printing "first-record=0 replay=0 rerecord=0" reads as "this run recorded nothing",
+        // which is a measurement. It is not one. It is the absence of a measurement, and the
+        // difference matters here more than most: `Phase::Record`'s caveat asserted that recording
+        // is "amortised across replays", and this is the only instrument that could falsify that.
+        if s.record_paths.iter().all(|&n| n == 0) {
+            out.push_str(
+                "  compute:  record-path breakdown NOT WIRED — Tracer::record_path() has no \
+                 production caller, so first-record/replay/rerecord are unmeasured, NOT zero. \
+                 Nothing in this build can tell you whether command buffers are re-recorded per \
+                 inference or replayed.\n",
+            );
+        } else {
+            out.push_str(&format!(
+                "  compute:  first-record={} replay={} rerecord={}\n",
+                s.record_paths[0], s.record_paths[1], s.record_paths[2]
+            ));
+        }
         out.push_str(&format!(
             "  transfer: upload {} calls / {:.2} MiB; readback {} calls / {:.2} MiB\n",
             s.upload_count,
@@ -1078,12 +1138,22 @@ impl VulkanTracer {
             //
             // Children are printed indented under their parent with an explicit marker, and the
             // sibling total is computed and printed so nobody has to add the column by hand.
+            // Both the child set and the sibling total are DERIVED from `Phase::nested_in()`
+            // rather than restated here. They used to be two hardcoded lists, which is the same
+            // duplicate-truth defect one level down: changing the bracketing in `vk::session`
+            // would have had to be remembered in three places, and the one that gets forgotten is
+            // the one that prints.
             let get = |p: Phase| s.phase_us.get(&p).copied().unwrap_or((0, 0));
-            let child_us = get(Phase::Upload).0 + get(Phase::Readback).0;
-            let sibling_us = get(Phase::Compile).0
-                + get(Phase::Record).0
-                + get(Phase::Submit).0
-                + get(Phase::FenceWait).0;
+            let child_us: u64 = Phase::ALL
+                .iter()
+                .filter(|p| !p.is_sibling())
+                .map(|p| get(*p).0)
+                .sum();
+            let sibling_us: u64 = Phase::ALL
+                .iter()
+                .filter(|p| p.is_sibling())
+                .map(|p| get(*p).0)
+                .sum();
 
             out.push_str(
                 "  host time (wall clock on the CPU thread). `upload`/`readback` are NESTED \
@@ -1093,10 +1163,9 @@ impl VulkanTracer {
                 let Some((us, calls)) = s.phase_us.get(&phase) else {
                     continue;
                 };
-                let nested = matches!(phase, Phase::Upload | Phase::Readback);
                 out.push_str(&format!(
                     "              {}{:<11} {:>10} us (x{}) — {}\n",
-                    if nested { "  └─ " } else { "    " },
+                    if phase.is_sibling() { "    " } else { "  └─ " },
                     phase.as_str(),
                     us,
                     calls,
@@ -1104,9 +1173,15 @@ impl VulkanTracer {
                 ));
             }
             out.push_str(&format!(
-                "              {:<15} {:>10} us  (compile+record+submit+fence_wait; \
-                 excludes the nested rows)\n",
-                "SIBLING TOTAL", sibling_us
+                "              {:<15} {:>10} us  (siblings only: {}; excludes the nested rows)\n",
+                "SIBLING TOTAL",
+                sibling_us,
+                Phase::ALL
+                    .iter()
+                    .filter(|p| p.is_sibling())
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+")
             ));
             out.push_str(&format!(
                 "              {:<15} {:>10} us  ({:.1}% of sibling total) — host staging copy, \
@@ -1180,6 +1255,15 @@ impl VulkanTracer {
             m.iter().map(|(k, v)| (k.clone(), v.0, v.1)).collect()
         };
         if snapshot.is_empty() {
+            // Returning silently here is how this table came to be missing from every artifact
+            // without anyone noticing. `record_op_meta` — the only producer — has no production
+            // caller (audited 2026-07-30), so this map is empty on every real run, and an empty
+            // map used to mean "print nothing". Absence of a table is not absence of slow ops.
+            log::info!(
+                "VulkanExecutionProvider: per-op host time NOT WIRED — Tracer::record_op_meta() \
+                 has no production caller, so there is no per-op breakdown for this run. This is \
+                 a missing instrument, not a run without slow ops."
+            );
             return;
         }
         let total: u64 = snapshot.iter().map(|(_, us, _)| *us).sum();
@@ -1502,6 +1586,46 @@ mod tests {
         }
         assert!(Phase::Submit.caveat().contains("NOT GPU time"));
         assert!(Phase::FenceWait.caveat().contains("UPPER BOUND"));
+    }
+
+    /// Parentage must be structural, and every nested phase must say so in its own caveat.
+    ///
+    /// `Phase::Record` was wired, invoked, emitted on every span, and its caveat said "amortised
+    /// across replays" while 96% of its measured time was a staging memcpy nested inside it. The
+    /// exclusion mechanism was present and its content was false. This is the falsifier for the
+    /// content: if a phase is nested and its caveat stops saying so, or a phase stops being
+    /// declared nested while `vk::session` still brackets it, this goes red.
+    #[test]
+    fn nested_phases_are_declared_both_structurally_and_in_their_caveat() {
+        assert_eq!(Phase::Upload.nested_in(), Some(Phase::Record));
+        assert_eq!(Phase::Readback.nested_in(), Some(Phase::Record));
+        for p in Phase::ALL {
+            match p.nested_in() {
+                Some(parent) => {
+                    assert!(
+                        p.caveat().contains("NESTED INSIDE"),
+                        "{p:?} is nested in {parent:?} but its caveat does not say so — an \
+                         aggregator that reads prose will double-count it"
+                    );
+                    assert!(
+                        parent.nested_in().is_none(),
+                        "only one level of nesting is modelled; {parent:?} gained a parent"
+                    );
+                    assert!(!p.is_sibling());
+                }
+                None => assert!(p.is_sibling()),
+            }
+        }
+        // The parent must warn that it CONTAINS its children, not just the reverse: whoever reads
+        // the 68% row reads the parent's caveat, not the child's.
+        assert!(
+            Phase::Record.caveat().contains("CONTAINS"),
+            "the phase that swallowed a memcpy must say what it swallowed"
+        );
+        assert!(
+            !Phase::Record.caveat().contains("amortised across replays"),
+            "this claim was falsified by measurement and by an unwired record-path counter"
+        );
     }
 
     #[test]

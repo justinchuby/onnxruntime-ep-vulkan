@@ -713,7 +713,16 @@ pub fn device_buffer_for(p: *mut u8, len: usize) -> Option<(crate::engine::Buffe
     match classify(&registries, p) {
         Side::Host(_) => None,
         side => match resolve_endpoint(&registries, side, len) {
-            Ok(Endpoint::Mirrored { view, offset, .. }) => Some((view, offset)),
+            Ok(Endpoint::Mirrored { view, offset, .. }) => {
+                // Measured here rather than asserted by the caller. `alloc_device_authoritative_spans`
+                // will be quoted the moment persistent residency lands, and the failure mode for
+                // that counter is an author incrementing it because the design says the span is
+                // device-resident. This is the falsifier: a span cannot be authoritative if the
+                // engine never asked for its buffer, and this is the only function that hands one
+                // out. `authoritative > 0` while this is 0 is a contradiction, not a nuance.
+                crate::allocator::tally::on_device_buffer_bind();
+                Some((view, offset))
+            }
             _ => None,
         },
     }

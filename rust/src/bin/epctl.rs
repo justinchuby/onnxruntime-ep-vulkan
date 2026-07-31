@@ -211,8 +211,12 @@ fn usage() {
     eprintln!("    --require-dispatches N");
     eprintln!("                         minimum executed dispatches to pass (default 1).");
     eprintln!("    --require-device-memory");
-    eprintln!("                         fail unless every device handle was backed by a VkBuffer,");
-    eprintln!("                         i.e. nothing was host-staged. Set this on any lane that");
+    eprintln!("                         fail unless every ALLOCATOR SPAN was backed by a VkBuffer");
+    eprintln!("                         with no host staging block. NOT a claim that the run did");
+    eprintln!("                         no host staging: `vk::session` stages every kernel input");
+    eprintln!("                         on every inference (1997.6 MiB/inference on Phi-3.5, a");
+    eprintln!("                         median 94.8% of wall on a discrete card) and no alloc_*");
+    eprintln!("                         counter can see it. Set this on any lane that");
     eprintln!("                         quotes a timing: a partially staged run is not a slow");
     eprintln!("                         device measurement, it is an average over two memories.");
     eprintln!("                         A snapshot with no allocation tally fails as exit 3, not");
@@ -454,6 +458,27 @@ fn check_counters_with(
                  device and the fence signalled. It claims nothing about whether the results are \
                  numerically correct — that is the differential test's job, not this one's."
             );
+            if require_device_memory {
+                // The flag's own help text used to say it fails "unless nothing was host-staged",
+                // and that sentence is false in exactly the way this project keeps producing.
+                // What it verifies is a property of ALLOCATOR SPANS. It cannot see `vk::session`'s
+                // per-inference staging copy of every kernel input, which on Phi-3.5 measured
+                // 1997.6 MiB per inference — a median 94.8% of wall on the discrete card. A run
+                // can pass this flag and still be almost entirely a host memcpy. The exclusion
+                // goes in the artifact, on the PASS path, where whoever quotes the number reads it.
+                println!(
+                    "\x20 --require-device-memory: PASSED, and here is what it EXCLUDES. It checks \
+                     `alloc_staged_spans`/`alloc_device_backed_spans`, which describe only the \
+                     spans ORT asked our allocator for. It is blind to `vk::session`'s staging \
+                     copy of every kernel input on every inference — measured at 1997.6 MiB per \
+                     inference on Phi-3.5, within 0.02% of the whole weight set, and a median \
+                     94.8% of wall on a discrete card. Passing this flag does NOT mean the run was \
+                     free of host staging. Check `alloc_device_authoritative_spans` (and its \
+                     measured ceiling `alloc_device_authoritative_ceiling`, plus \
+                     `alloc_device_buffer_binds`) before describing anything as computed from \
+                     device memory."
+                );
+            }
             std::process::ExitCode::SUCCESS
         }
         CounterVerdict::TooFew {
