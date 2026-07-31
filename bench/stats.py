@@ -46,6 +46,10 @@ class Sample:
 
     name: str
     samples: "list[float]" = field(default_factory=list)
+    #: Wall time of the whole loop that produced ``samples``, including warmup, from the same
+    #: ``perf_counter``. Used as the independent whole a trace decomposition is checked against
+    #: (R11); ``None`` when the sample was not produced by a timed loop.
+    loop_wall_ms: "float | None" = None
 
     @property
     def n(self) -> int:
@@ -108,6 +112,8 @@ class Sample:
             "rsd": _round(self.rsd, 4),
             "noisy": self.noisy,
         }
+        if self.loop_wall_ms is not None:
+            d["loop_wall_ms"] = _round(self.loop_wall_ms)
         if raw:
             d["samples_ms"] = [_round(s) for s in self.samples]
         return d

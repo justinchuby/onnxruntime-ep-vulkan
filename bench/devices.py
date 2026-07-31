@@ -387,6 +387,161 @@ def by_index(record: dict, index: int) -> "dict | None":
     return None
 
 
+# ---------------------------------------------------------------------------------------------
+# Which index is `ep.device_index`?
+#
+# There are TWO orderings on this machine and they are not the same one:
+#
+#   * `vkEnumeratePhysicalDevices` order — what `vulkaninfo` prints, what `probe()` returns,
+#     and what `epctl --probe-loader` labels "Device N". On this laptop: 0 = Intel, 1 = NVIDIA.
+#   * **best-first** order — `engine.rs::probe_devices` is documented "Sorted best-first by
+#     DeviceKind::score, so index 0 is the default device", and `ep.device_index` indexes into
+#     *that* list. Discrete (4) outranks Integrated (3), so on this laptop 0 = NVIDIA, 1 = Intel.
+#
+# A benchmark that passes `ep.device_index = 0` and then labels the row with `probe()[0]` prints
+# the Intel name over NVIDIA numbers. That is not a rounding error, it is a mislabelled device,
+# and it is exactly the class of defect that makes a results table worse than no table. So the
+# index is never trusted: the row is labelled from the *trace's own* timestamp fingerprint and
+# `device_identity_check` goes red if the two disagree.
+# ---------------------------------------------------------------------------------------------
+
+_KIND_SCORE = {
+    "discrete": 4,
+    "integrated": 3,
+    "virtual": 2,
+    "cpu": 1,
+}
+
+
+def _kind_score(device_type: "str | None") -> int:
+    t = (device_type or "").lower()
+    for key, score in _KIND_SCORE.items():
+        if key in t:
+            return score
+    return 0
+
+
+def ep_selection_order(devices: "list[DeviceFacts]") -> "list[DeviceFacts]":
+    """The devices in the order ``ep.device_index`` selects them: best-first, ties by enum order.
+
+    Mirrors ``engine.rs::probe_devices``' documented contract. Returned in order; element *i* is
+    the device an ``ep.device_index = i`` session binds.
+    """
+    return sorted(devices, key=lambda d: (-_kind_score(d.device_type), d.index))
+
+
+def ep_index_of(devices: "list[DeviceFacts]", enumeration_index: int) -> "int | None":
+    """``ep.device_index`` value that selects the device at ``vkEnumeratePhysicalDevices`` index."""
+    for pos, d in enumerate(ep_selection_order(devices)):
+        if d.index == enumeration_index:
+            return pos
+    return None
+
+
+def by_ep_index(devices: "list[DeviceFacts]", ep_index: int) -> "DeviceFacts | None":
+    order = ep_selection_order(devices)
+    if 0 <= ep_index < len(order):
+        return order[ep_index]
+    return None
+
+
+def identify_by_timestamp(
+    devices: "list[DeviceFacts]",
+    period_ns: "float | None",
+    valid_bits: "int | None",
+) -> "tuple[DeviceFacts | None, str]":
+    """Name the device a trace came from, using only facts carried *in the trace*.
+
+    ``timestampPeriod``/``timestampValidBits`` are a strong discriminator here: 52.0833/36 on the
+    Intel part, 1.0/64 on the NVIDIA part. Returns ``(device, reason)``; ``device`` is ``None``
+    whenever the fingerprint is absent or fails to pick out exactly one device, because a guess is
+    not an identification.
+    """
+    if period_ns is None and valid_bits is None:
+        return None, "trace carries no timestamp fingerprint (was TRACE_GPU set?)"
+
+    matches = []
+    for d in devices:
+        if period_ns is not None and d.timestamp_period_ns is not None:
+            if abs(d.timestamp_period_ns - period_ns) > 1e-3:
+                continue
+        if valid_bits is not None and d.timestamp_valid_bits is not None:
+            if d.timestamp_valid_bits != valid_bits:
+                continue
+        matches.append(d)
+
+    if len(matches) == 1:
+        return matches[0], (
+            f"timestamp fingerprint period={period_ns} bits={valid_bits} matches exactly one device"
+        )
+    if not matches:
+        return None, (
+            f"timestamp fingerprint period={period_ns} bits={valid_bits} matches NO probed device"
+        )
+    names = ", ".join(m.name for m in matches)
+    return None, (
+        f"timestamp fingerprint period={period_ns} bits={valid_bits} is ambiguous between: {names}"
+    )
+
+
+def device_identity_check(
+    devices: "list[DeviceFacts]",
+    ep_index: int,
+    period_ns: "float | None",
+    valid_bits: "int | None",
+) -> dict:
+    """Falsifier: does the device we *labelled* the row with match the device that actually ran?
+
+    Goes red when the timestamp fingerprint in the trace names a different device than the one
+    ``ep.device_index = ep_index`` was assumed to select. On red the caller must withhold the
+    device name entirely rather than print a plausible wrong one.
+    """
+    assumed = by_ep_index(devices, ep_index)
+    observed, why = identify_by_timestamp(devices, period_ns, valid_bits)
+
+    out = {
+        "check": "device_identity",
+        "ep_device_index": ep_index,
+        "assumed_from_ep_order": assumed.name if assumed else None,
+        "observed_from_trace": observed.name if observed else None,
+        "reason": why,
+        "asserts": (
+            "the device named on a results row is the device whose timestamp fingerprint appears "
+            "in that row's trace"
+        ),
+    }
+
+    if observed is None:
+        out["ok"] = None
+        out["verdict"] = "UNVERIFIED"
+        out["detail"] = f"device identity not established from the trace: {why}"
+        out["name_may_be_quoted"] = False
+        return out
+
+    if assumed is None:
+        out["ok"] = True
+        out["verdict"] = "TRACE_ONLY"
+        out["detail"] = f"no assumption to check; trace says {observed.name}"
+        out["name_may_be_quoted"] = True
+        out["device"] = observed
+        return out
+
+    same = observed.index == assumed.index
+    out["ok"] = same
+    out["verdict"] = "MATCH" if same else "MISLABELLED"
+    out["name_may_be_quoted"] = True
+    out["device"] = observed
+    out["detail"] = (
+        f"trace and ep-order agree: {observed.name}"
+        if same
+        else (
+            f"ep.device_index={ep_index} was assumed to be {assumed.name!r} but the trace's "
+            f"timestamp fingerprint is {observed.name!r} — row relabelled from the trace"
+        )
+    )
+    return out
+
+
 if __name__ == "__main__":  # pragma: no cover - manual use
     found, why = probe()
     if why:

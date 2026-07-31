@@ -1,0 +1,23 @@
+22:09:44  CONTENDED  foreign= 12.38 cores  peak= 18.84  loud=100%  spin=86.46 ms  top=['Code.exe', 'copilot.exe', 'MsSense.exe']  <- fastest spin so far (86.46 ms)
+22:10:35  CONTENDED  foreign= 12.77 cores  peak= 17.15  loud=100%  spin=76.62 ms  top=['Code.exe', 'copilot.exe', 'rustc.exe']  <- fastest spin so far (76.62 ms)
+22:11:27  CONTENDED  foreign= 18.61 cores  peak= 20.00  loud=100%  spin=102.22 ms  top=['Code.exe', 'MsMpEng.exe', 'copilot.exe']
+22:12:35  CONTENDED  foreign= 18.83 cores  peak= 20.00  loud=100%  spin=159.19 ms  top=['rustc.exe', 'Code.exe', 'MsMpEng.exe']
+22:13:36  CONTENDED  foreign= 17.13 cores  peak= 19.91  loud=100%  spin=83.53 ms  top=['Code.exe', 'WmiPrvSE.exe', 'MsMpEng.exe']
+22:14:30  CONTENDED  foreign= 15.07 cores  peak= 18.43  loud=100%  spin=78.23 ms  top=['Code.exe', 'copilot.exe', 'python.exe']
+22:15:19  CONTENDED  foreign= 15.71 cores  peak= 18.98  loud=100%  spin=69.07 ms  top=['Code.exe', 'copilot.exe', 'MsMpEng.exe']  <- fastest spin so far (69.07 ms)
+22:16:11  CONTENDED  foreign= 14.39 cores  peak= 18.25  loud=100%  spin=69.61 ms  top=['python.exe', 'Code.exe', 'copilot.exe']
+22:17:00  CONTENDED  foreign= 13.10 cores  peak= 16.00  loud=100%  spin=69.24 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:17:45  CONTENDED  foreign=  9.25 cores  peak= 11.94  loud=100%  spin=59.96 ms  top=['Code.exe', 'copilot.exe', 'MsSense.exe']  <- fastest spin so far (59.96 ms)
+22:18:31  CONTENDED  foreign=  9.32 cores  peak= 13.86  loud=100%  spin=63.71 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:19:18  CONTENDED  foreign= 10.61 cores  peak= 12.62  loud=100%  spin=80.83 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:20:02  CONTENDED  foreign=  7.57 cores  peak= 10.31  loud=100%  spin=63.27 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:20:47  CONTENDED  foreign= 14.40 cores  peak= 19.85  loud=100%  spin=61.44 ms  top=['Code.exe', 'copilot.exe', 'MsMpEng.exe']
+22:21:32  CONTENDED  foreign= 10.94 cores  peak= 14.37  loud=100%  spin=62.30 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:22:17  CONTENDED  foreign= 10.48 cores  peak= 12.87  loud=100%  spin=62.36 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:23:03  CONTENDED  foreign= 10.16 cores  peak= 12.80  loud=100%  spin=59.92 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']  <- fastest spin so far (59.92 ms)
+22:23:47  CONTENDED  foreign= 10.08 cores  peak= 13.08  loud=100%  spin=66.13 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:24:32  CONTENDED  foreign=  8.30 cores  peak= 12.21  loud=100%  spin=61.33 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:25:19  CONTENDED  foreign= 11.25 cores  peak= 14.90  loud=100%  spin=60.75 ms  top=['Code.exe', 'copilot.exe', 'svchost.exe']
+22:26:07  CONTENDED  foreign= 13.56 cores  peak= 19.86  loud=100%  spin=65.12 ms  top=['Code.exe', 'copilot.exe', 'System']
+22:26:53  CONTENDED  foreign= 10.85 cores  peak= 18.15  loud=100%  spin=62.75 ms  top=['Code.exe', 'python.exe', 'copilot.exe']
+22:27:38  CONTENDED  foreign=  9.11 cores  peak= 11.96  loud=100%  spin=60.71 ms  top=['Code.exe', 'copilot.exe', 'MsMpEng.exe']

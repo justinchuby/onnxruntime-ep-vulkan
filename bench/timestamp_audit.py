@@ -23,29 +23,37 @@ Both mistakes available here are *silent* and *plausible*:
    Worse, a genuine wrap during a measurement (an hour of GPU uptime on Intel is not exotic)
    yields a *negative* delta that, taken as unsigned, becomes an enormous positive duration.
 
-WHAT THIS MODULE ACTUALLY VERIFIES, AND WHAT IT CANNOT
-======================================================
-It verifies the **inputs** to the conversion, on real hardware, by cross-checking two
-independent instruments that read them by different routes:
+WHAT THIS MODULE VERIFIES, AND WHAT EACH PART CANNOT
+=====================================================
+**One — the inputs to the conversion,** on real hardware, by cross-checking two independent
+instruments that read them by different routes:
 
 * ``epctl --probe-loader`` — the EP's own capability probe (``rust/src/vk/caps.rs``), i.e. the
   values the conversion will actually be handed at run time.
 * ``vulkaninfoSDK`` — the SDK's dump, i.e. what the driver reports to a program that is not us.
 
 If those disagree, the EP is reading the wrong field or the wrong queue family, and this exits
-non-zero. That is the red instrument.
+non-zero. That is the red instrument for the inputs.
 
-It **cannot** verify the conversion end to end, because **no ``VkQueryPool`` exists**: the
-timestamp writes in the recording path are still comments (``rust/src/vk/session.rs`` and
-``rust/src/vk/dispatch_integration.rs``). There is no tick from any device to convert. That is
-reported as ``UNMEASURED``, loudly, and is not softened into a pass — an audit that cannot fail
-is not an audit. The arithmetic itself is covered by the Rust unit tests in ``trace.rs``, which
-use *these measured values* rather than invented ones, so that the tests fail if the arithmetic
-would be wrong on the hardware we have rather than on hardware we imagined.
+**Two — the conversion end to end,** from a real trace, with ``--trace``. This became possible on
+2026-07-30, when the ``VkQueryPool`` path landed (``rust/src/vk/timestamp.rs`` hands back raw,
+unmasked ticks; ``trace.rs::GpuTimestampCalibration::ticks_to_ns`` applies the mask, the
+single-wrap recovery and the period scale; ``vk/session.rs`` composes them). The previous text
+here — *"it cannot verify the conversion end to end, because no ``VkQueryPool`` exists"* — was
+**true when written and is retired as of that date**, rather than left standing to be read as
+current by everyone who arrives later.
+
+The end-to-end check is ``phases.timestamp_conversion_integrality``: an emitted ``gpu_ns`` is a
+tick count times the period, so ``gpu_ns ÷ period`` must be a whole number. A build that dropped
+the period scale emits raw ticks — integers — and dividing those by 52.0833 gives a fraction.
+**It is decisive only where the period is not 1.0**, which on this desk means the Intel part
+alone; on NVIDIA and lavapipe it is reported ``VACUOUS``, never as a pass. That asymmetry is why
+the Iris Xe is the only instrument here for this bug class and CI has none.
 
 Usage::
 
     python bench/timestamp_audit.py
+    python bench/timestamp_audit.py --trace bench/_scratch/phi35_trace_dev1.trace.json
     python bench/timestamp_audit.py --json bench/results/timestamp-audit.json
 """
 
@@ -229,6 +237,42 @@ def conversion_self_check(period_ns: float, valid_bits: int) -> dict:
     return checks
 
 
+def end_to_end(trace_path: "str | Path") -> dict:
+    """Check the emitted GPU durations against the device period they claim to have used.
+
+    Consumes a trace written by a run with ``ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1``. The check
+    itself lives in :mod:`phases` so that the benchmark and the audit cannot drift into two
+    different definitions of "the conversion is right".
+    """
+    import phases  # noqa: PLC0415 - imported here so the audit still runs without a trace
+
+    p = Path(trace_path)
+    if not p.is_file():
+        return {"status": "UNMEASURED",
+                "reason": f"no trace at {p}. Run the benchmark with the phase pass enabled, or "
+                          f"set ONNXRUNTIME_EP_VULKAN_TRACE and ONNXRUNTIME_EP_VULKAN_TRACE_GPU."}
+    events = phases.load(p)
+    gpus = phases.gpu_spans(events)
+    if not gpus:
+        return {"status": "UNMEASURED",
+                "reason": f"{p} contains no vulkan.gpu.* spans: the run produced no timestamp "
+                          f"results, so there is no tick to check the conversion against."}
+    integral = phases.timestamp_conversion_integrality(gpus)
+    mask = phases.valid_bits_applied(gpus)
+    return {
+        "status": ("RED" if (integral.get("red") or mask.get("red")) else
+                   "VERIFIED" if integral.get("decisive") else "VACUOUS"),
+        "trace": str(p),
+        "gpu_spans": len(gpus),
+        "integrality": integral,
+        "valid_bits": mask,
+        "note": ("the period scale is applied end to end on a device where dropping it would be "
+                 "detectable" if integral.get("decisive") and not integral.get("red") else
+                 "every device in this trace reports timestampPeriod 1.0, so this trace cannot "
+                 "falsify a dropped period scale. Not a pass — run the Intel part."),
+    }
+
+
 def audit() -> dict:
     epctl = find_epctl()
     sdk_facts, sdk_source = device_mod.probe()
@@ -301,7 +345,9 @@ def describe(report: dict) -> str:
            f"{report['gpu_kernel_time_reason']}", ""]
     for d in report.get("devices", []):
         c = d["conversion"]
-        out.append(f"### {d['name']} (index {d['index']})")
+        out.append(f"### {d['name']} (vkEnumeratePhysicalDevices index {d['index']})")
+        # NOT `ep.device_index`. `engine.rs::probe_devices` sorts best-first, so on a laptop with
+        # an iGPU and a dGPU the two orderings are reversed. See devices.ep_selection_order.
         out.append(f"  timestampPeriod   EP {d['ep_period_ns']}  vulkaninfo {d['sdk_period_ns']}"
                    f"   {'agree' if d['agree'] else 'DISAGREE'}")
         out.append(f"  timestampValidBits EP {d['ep_valid_bits']}  vulkaninfo "
@@ -337,9 +383,22 @@ def describe(report: dict) -> str:
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", help="write the full report here")
+    ap.add_argument("--trace", action="append",
+                    help="a Chrome Trace JSON from a run with ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1; "
+                         "checks the conversion end to end. Repeat for several devices.")
     a = ap.parse_args(argv)
     report = audit()
+    if a.trace:
+        report["end_to_end"] = [end_to_end(t) for t in a.trace]
+        for e in report["end_to_end"]:
+            if e["status"] == "RED":
+                report["problems"].append(
+                    f"end-to-end conversion check on {e['trace']} went RED: "
+                    f"{e['integrality'].get('results')}")
     print(describe(report))
+    for e in report.get("end_to_end", []):
+        print("")
+        print(f"end-to-end conversion ({e.get('trace')}): {e['status']} — {e.get('note') or e.get('reason')}")
     if a.json:
         Path(a.json).parent.mkdir(parents=True, exist_ok=True)
         Path(a.json).write_text(json.dumps(report, indent=2), "utf-8")
