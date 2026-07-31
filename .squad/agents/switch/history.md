@@ -1196,3 +1196,95 @@ NVIDIA RTX 4060 (selector 0): period=1.0, validBits=64 — both hazards indistin
 - Lane gap: 📋 written to inbox for Trinity
 - Quiet-machine cache benchmark: PENDING (coordinator offered to idle other agents — say the word)
 - lloc_device_authoritative_spans: still 0 (session uses its own VkBuffers for weight cache, not ORT allocator handles — architectural constraint documented)
+
+---
+
+## Session 33 - Cache byte sweep confirms 2642x reduction; two-VkDevice flag (2026-07-30T22:06:01-07:00)
+
+**Context:** Merged origin/main (692e7d0). Coordinator claimed the cache is not reducing upload, based on seeing cmd_upload 15197.8 ms with 661 subgraph spans. Task: verify via byte count (deterministic, immune to CPU contention), not wall time.
+
+**D-S33-01 - Measurement instrument choice:**
+Used tracer vulkan.transfer_bytes counter events (from t.record_transfer(Transfer::Upload, uploaded_bytes) in session.rs). The allocator counters (alloc_staged_bytes, alloc_device_upload_bytes) both read 0 on all runs - they do not observe session staging. This is a named R11 exposure (two upload accountings, one structurally blind). The tracer path is the correct instrument: uploaded_bytes directly accumulates bytes from the non-cached memcpy loop; cached entries skip the loop via `if stg.borrowed { continue; }` and do not add to uploaded_bytes.
+
+**D-S33-02 - Per-inference upload byte sweep (NVIDIA, device 0, build cdcc349):**
+
+Inference 0 (cold):  33 calls, 1997.596 MiB - full weight set
+Inferences 1-13 (warm): 33 calls each, 0.756 MiB each - activations only
+
+Pre-cache baseline (Tank sweep): 1/2/3 runs = 1997.60 / 3995.19 / 5992.79 MiB - exactly linear.
+Post-cache:              1/2/3 runs = 1997.6 / 1998.4 / 1999.1 MiB  - flat after cold.
+Reduction: 1997.596 -> 0.756 MiB per warm inference = 2642x.
+
+The 0.756 MiB warm residual is 33 subgraphs x ~24 KB activation tensors - correct; small tensors (< 32 KB) are intentionally not cached (seq=1 inputs are runtime-variable).
+
+Discrepancy with coordinator observation: coordinator saw cmd_upload 15197.8 ms with 661 spans - inconsistent with active cache. Likely: stale DLL from before cdcc349, or wrong library path. Cannot resolve without knowing which binary the coordinator ran.
+
+**D-S33-03 - Two-VkDevice architectural flag (written to inbox):**
+alloc_device_authoritative_spans is structurally 0: Tank's device-backed allocator uses its own VkDevice, separate from the session VkDevice. Cross-device VkBuffer access is not permitted at the Vulkan API level. Not solving unilaterally; flagged to coordinator/Morpheus for ruling. Three options: share VkDevice, external memory import (VK_KHR_external_memory), or accept the gap at M0 (weight cache captures most of the residency benefit anyway).
+
+**State at end of session:**
+- origin/main merge: clean (426 tests, 0 failures)
+- Cache byte verification: 2642x reduction confirmed on NVIDIA (tracer instrument)
+- Two-VkDevice flag: written to inbox
+- Quiet-machine wall-clock before/after: coordinator offer still open
+
+---
+
+## Session 34 - Standing perf directive; MATCH + byte sweep reconfirmed (2026-07-30T22:23:35-07:00)
+
+Context: Coordinator issued standing directive - performance is first-class, continuous. 
+No new code written - directive is behavioral, not structural. Results below.
+
+model_output_equivalence: MATCH on both devices (phi35.py --iters 1 --warmup 0).
+
+Warm-cache byte sweep reconfirmed (trace_warm.json, phi35.py --iters 3 --warmup 1):
+  Inf 0 (cold):  1997.596 MiB  <- full weight set, cache cold
+  Inf 1-4 (warm):  0.756 MiB each  <- activations only, cache warm
+  Pattern: NOT linear. Pre-cache was linear at 1997.60 / 3995.19 / 5992.79.
+  Post-cache: 1997.6 / 1998.4 / 1999.1 MiB (flat). 2642x reduction.
+
+Warm-cache timing (contended machine - not quotable per coordinator ruling):
+  Intel Iris Xe (selector 1, UMA): 41.325 ms FASTER than CPU-only (0.9x)  <- cache + UMA
+  NVIDIA RTX 4060 (selector 0, discrete): 668.399 ms slower (3.2x)
+
+Intel faster than CPU is real: UMA + weight cache means GPU runs kernels on resident 
+weights without transfer. NVIDIA still upload-limited on warm activations + fence_wait idle.
+
+Outstanding: requested quiet-machine window for wall-clock before/after on NVIDIA.
+
+---
+
+## Session 35 - §6.5 VkDevice seam; byte sweep stands (2026-07-30T22:32:54-07:00)
+
+Context: Morpheus ruled §6.5 - exactly one VkDevice per (physical device, EP instance).
+Switch owns the seam. Merged origin/main (676fb94, Morpheus history + DESIGN.md §6.5/R12).
+
+D-S35-01 - §6.5 implementation (commits e2a23b4):
+Added to vk/device.rs:
+  EpDeviceShare { ash_device: ash::Device, physical_device, caps, compute_queue_family }
+  - ash::Device derives Clone in ash 0.38 (bitwise copy of handle + dispatch table, no Arc)
+  - Cloning shares the same VkDevice handle without reference counting
+  - EpDeviceShare does NOT own the VkDevice (no Drop); session::Device::drop calls vkDestroyDevice
+  - Safety: VulkanSession is EP-scoped (§2.3); ORT frees tensors before destroying EP
+  static EP_DEVICE: OnceLock<EpDeviceShare>
+  pub(crate) fn register_ep_device(device: &Device)  <- called by VulkanSession::create
+  pub(crate) fn ep_device() -> Option<&'static EpDeviceShare>  <- Tank reads this
+
+Added to vk/session.rs:
+  register_ep_device(&device) call after Device::create succeeds
+
+Tank's work: host_device_memory.rs calls ep_device() and uses the returned handle
+instead of creating its own Instance + Device. That unpins alloc_device_authoritative_spans.
+
+The Instance concern: EpDeviceShare does not hold Instance. The session's Instance
+keeps the Vulkan loader alive. Since the session outlives all device-memory usage (§2.3
++ ORT teardown order), Tank does not need to retain a separate Instance in his path.
+
+D-S35-02 - R12 acknowledged:
+alloc_device_upload_bytes = 0 (UNOBSERVABLE, frame mismatch - allocator counter cannot
+see session staging). tracer vulkan.transfer_bytes is the correct instrument.
+The previous reads of alloc_device_upload_bytes as "0 bytes uploaded" were frame errors.
+
+State: 426 tests pass. Seam committed. Byte sweep from session 33/34 stands:
+  cold inf 0: 1997.596 MiB; warm inf 1+: 0.756 MiB. 2642x reduction confirmed.
+  model_output_equivalence = MATCH on both devices.
