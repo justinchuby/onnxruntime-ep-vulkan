@@ -918,15 +918,29 @@ unsafe fn get_capability_impl(
     };
 
     // Build Island structs and evaluate each cluster.
-    // If there is only one cluster (the entire claimed set is already connected), bypass the
-    // partition-economics check — there is no alternative partition to choose, and the claim
-    // predicate has already vetted every node for correctness. The policy is for choosing between
-    // competing ways to carve a large graph; it should not block single-op unit tests or any
-    // graph where all claimed nodes form one component.
+    //
+    // Single-cluster exemption: when all claimed nodes form one connected component, the
+    // economics gate is bypassed. In a single-cluster graph there is no alternative partition
+    // to choose between — the graph is either wholly claimed or wholly rejected — and the
+    // claim predicate has already vetted every node for correctness.
+    //
+    // The gate applies to multi-cluster graphs: when claimed nodes form two or more disjoint
+    // components, each component is evaluated independently. A component that fails the economics
+    // check is handed back to the CPU EP; its [partition] decline code appears in the CLAIM_LOG.
+    // This is the path that `test_partition_gate.py` exercises.
+    //
+    // R10 note (Morpheus 2026-07-30): the gate IS called for multi-cluster graphs; its anchor
+    // exemption (anchors > 0 → Claim) and its decline paths (TooSmall, TransferDominated) are
+    // now both observable via CLAIM_LOG. The single-cluster bypass does not hide the gate —
+    // it limits the gate to the cases where it has a decision to make.
     let only_one_cluster = clusters.len() == 1;
 
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
     let mut n_rejected = 0usize;
+    // `n_viable_retained` counts islands that *passed* `partition::evaluate` (the net-benefit /
+    // `retain_viable` gate) in a multi-cluster graph. Single-cluster bypass does not increment
+    // this counter — that is intentional: the counter is the R10 wiring observable for the gate.
+    let mut n_viable_retained: u64 = 0;
     // Track island-level aggregate metrics for PartitionStats (§10.0 metric of record).
     let mut largest_island_flops: u64 = 0;
     let mut largest_island_nodes: u64 = 0;
@@ -1007,9 +1021,9 @@ unsafe fn get_capability_impl(
             }
         }
 
-        // When there is only one cluster, claim it unconditionally: there is no competing
-        // partition to choose between, so the economics check is moot. The claim predicate
-        // already vetted each node for correctness.
+        // Apply the partition economics gate to each cluster. For single-cluster graphs the gate
+        // is bypassed (see above). For multi-cluster graphs, each cluster is evaluated; a cluster
+        // that fails produces a [partition] decline code in the CLAIM_LOG.
         let verdict = if only_one_cluster {
             partition::Verdict::Claim
         } else {
@@ -1024,6 +1038,12 @@ unsafe fn get_capability_impl(
             total_boundary_bytes = total_boundary_bytes
                 .saturating_add(island.input_bytes)
                 .saturating_add(island.output_bytes);
+            // Increment the net-benefit wiring observable only for islands that went through
+            // partition::evaluate (multi-cluster path). Single-cluster bypass is intentionally
+            // excluded: the counter must vary with the gate's input, not with graph size.
+            if !only_one_cluster {
+                n_viable_retained += 1;
+            }
         } else {
             n_rejected += cluster_nodes.len();
             if let partition::Verdict::Reject(reason) = verdict {
@@ -1035,6 +1055,17 @@ unsafe fn get_capability_impl(
                         .entry(view.qualified_name())
                         .or_insert_with(|| (0, decline_reason.clone().into_owned(), Vec::new()));
                     entry.0 += 1;
+                    // Route partition declines into CLAIM_LOG so they are visible to tests and
+                    // tooling. Registry declines already appear there via claim_decision; partition
+                    // declines are post-registry and must be recorded here (R10: wiring is per
+                    // entry point, and the partition gate is a separate entry point from the
+                    // registry).
+                    crate::ops::claim_log::record(
+                        &view.qualified_name(),
+                        &view.name(),
+                        0, // opset unknown at this stage
+                        Err(&decline_reason),
+                    );
                 }
             }
         }
@@ -1057,6 +1088,7 @@ unsafe fn get_capability_impl(
     }
 
     counters::record_capability(n_claimed_total as u64, n_islands as u64);
+    counters::record_viable_islands_retained(n_viable_retained);
     log::info!(
         "GetCapability: {} claimed nodes → {} islands ({} nodes rejected by partition policy)",
         n_claimed_total,

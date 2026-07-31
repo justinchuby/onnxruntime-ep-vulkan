@@ -1401,7 +1401,7 @@ register (§11). They are now scheduled deliverables with named exit criteria:
 | `DequantizeLinear` / `QuantizeLinear` (block-wise) | T4 | Mouse | Per-tensor, per-axis and blocked (opset 21) scale/zero-point modes; blocked path shares the `MatMulNBits` block-index math bit-for-bit (same helper, proven by a unit test that runs both against one input). |
 | `GatherBlockQuantized` | T4 | Mouse | Quantized embedding lookup matches CPU EP; reuses `IDX` gather math + the unpack helper — no third copy of either. |
 | `RotaryEmbedding` | T3 | Mouse | Interleaved and non-interleaved, partial-rotary (`rotary_embedding_dim < head_size`), `is_packed_batching`; matches CPU EP on a Qwen3 GenAI graph's actual attribute set. |
-| `GroupQueryAttention` | T3 | Mouse | Prefill and decode paths, KV-cache in/out as the *same buffer* (in-place update, no copy), GQA head grouping, causal mask. Declines `local_window_size ≠ -1`, `softcap ≠ 0`, `smooth_softmax`, quantized KV — cleanly, with a `[attribute]` reason. |
+| `GroupQueryAttention` | T3 | Mouse | **DELIVERED 2026-07-30.** Decode path (`seq_len=1`), packed QKV, `do_rotary=1`, neox RoPE, online-softmax GQA kernel (`gqa_f16.comp`), in-place KV-cache via aliased output. Phi-3.5: Intel MATCH 618 ms, NVIDIA MATCH 230 ms, 353 claimed, 1 island. Prefill (`seq_len>1`) needs inter-invocation sync and is not yet claimed. Declines `local_window_size ≠ -1`, `softcap ≠ 0`, `smooth_softmax > 0`. |
 | `LinearAttention` (`gated_delta`) + `CausalConvWithState` | T5a | Mouse | Qwen3.5 hybrid layers run on Vulkan with conv-state and recurrent-state cache I/O. **Schema is main-branch-only and unverified — see §9.4; the fingerprint must be re-verified against the shipping release before the kernel is trusted.** |
 | `QMoE` (then `MoE`) | T5b | Mouse | Qwen3-MoE int4 expert block runs on Vulkan, not CPU. Masked-dense first (correct, wasteful); indirect dispatch only after it is proven correct and only if Switch adds the seam (§9.5). |
 
@@ -1740,6 +1740,88 @@ when two kernels share an intermediate. The `dispatch_accounting` check (`comput
 inferences`) is the falsifier: if any multi-node island fails to dispatch, `compute_calls` drops
 below the expected value.
 
+#### 7.1.6 GroupQueryAttention is Live — island attribution methodology and results (2026-07-30)
+
+**Attribution method.** After SkipSimplifiedLayerNormalization was promoted to `Live` (§7.1.4), a
+union-find over the full 366-node Phi-3.5 graph showed 2 connected components, while ORT reported
+33 islands. The gap between 2 and 33 came from topological "runs" of consecutive claimed nodes being
+broken by gaps of declined nodes. The question is which declined op types create gaps vs which sit
+at the graph's edges and create none.
+
+The attribution script (`tests/ops/test_island_attribution.py`) works as follows:
+
+1. Enable `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` during a real EP session; capture one JSONL record per
+   node (`op`, `claimed`, `code`).
+2. Run a union-find over *claimed* nodes only — two claimed nodes are merged if they share a
+   topological edge (i.e., one feeds the other and no unclaimed node lies between them in the
+   dependency chain). The number of resulting components is the minimum island count achievable
+   given the current claim set — it is what ORT would see if its partitioner were omniscient.
+3. Test each declined node type: for each node `d` of type `T`, temporarily add it to the claimed
+   set and recount components. The *reduction* in component count is the number of ORT islands that
+   claiming `T` would merge.
+4. The sum of reductions for a type is its **island-attribution score** — the measure of its
+   gap-creating contribution.
+
+**Decline histogram — Phi-3.5-mini int4, device 0 and device 1 (identical):**
+
+| op | declined | code | attribution (islands removed if claimed) |
+|---|---|---|---|
+| `GroupQueryAttention` | 32 | staged | **32 of 33 cuts → 1 island** |
+| `Gather` | 2 | not-registered | 0 |
+| `Cast` | 2 | staged | 0 |
+| `SkipSimplifiedLayerNormalization` | 1 | staged | 0 |
+| `Shape` | 1 | not-registered | 0 |
+| `ReduceSum` | 1 | not-registered | 0 |
+| `Sub` | 1 | dtype | 0 |
+| `Greater` | 1 | staged | 0 |
+| `If` | 1 | not-registered | 0 |
+
+GQA is the *only* cut-creator in Phi-3.5. Every other declined node is at a graph edge or sits in an
+already-disconnected component; claiming it would add nodes to an existing island but not merge any
+two islands. A decline can appear 32 times and create 32 cuts (GQA), or appear 2 times and create
+zero cuts (Gather). **Frequency is not attribution.**
+
+**Prediction (stated before implementation):**
+- Islands: 33 → ~1 (GQA is the sole cut creator; attributing all 32 cuts to it predicts one island)
+- Timing (NVIDIA RTX 4060, device 0): 1156 ms → 400–900 ms
+- Timing (Intel Iris Xe, device 1): 807 ms → 300–600 ms
+- Falsifier: `island_count > 3` after GQA → something else cuts
+
+**Post-GQA results (`bench/phi35.py`, 2026-07-30) — corrected device labels (see below):**
+
+| device | claimed | islands | vulkan median | cpu median | verdict |
+|---|---|---|---|---|---|
+| 0 — NVIDIA RTX 4060 | 353 / 363 | **1** | 618 ms (16% RSD — noisy, taken under load) | 345 ms | **MATCH** |
+| 1 — Intel Iris Xe | 353 / 363 | **1** | **230 ms** (2.7% RSD, taken under load) | 254 ms | **MATCH** |
+
+**Device-label correction (2026-07-30):** `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes the
+capability-gated sorted list (discrete first), not the raw Vulkan enumeration index.
+`Device 0: Intel / Device 1: NVIDIA` in probe output is enumeration order;
+selector 0 → NVIDIA RTX 4060, selector 1 → Intel Iris Xe. Every prior label in this document
+that said "device 0 = Intel" was backwards. The **measurements are correct; only the names
+were wrong** (coordinator correction, 2026-07-30T22:00).
+
+Prediction: islands = 1 ✓. Timing comparisons are **not reliable** — measurements were taken under
+load (six agents building simultaneously; coordinator confirmed 9.5× inflation under contention, so
+these numbers are absolute floor estimates only). Quiet-machine numbers are owed.
+
+**Upload dominates (Tank's finding, 2026-07-30):** The EP re-uploads the entire ~2 GB weight set
+on every inference call. `Phase::Record` wraps the staging memcpy, so the 68% attributed to
+"recording" in earlier traces was actually weight upload — CPU work, not GPU command recording.
+Actual GPU command recording is ~1–3% of wall. `alloc_device_authoritative_spans = 0` is the
+counter that must move (Switch/Tank: persistent weight residency). This makes
+`retain_viable`'s `transfer_ns` weighting *more* correct than initially understood — the boundary
+cost is upload-dominated, not PCIe-latency-dominated.
+
+The GQA kernel is serial (1 thread per head, online softmax, decode path `seq_len=1`). The island
+consolidation is still the right action — it eliminated 32 boundary round-trips and removed
+32 inter-island upload cycles from the 33-island path.
+
+**Remaining declines (10 nodes, 0 additional islands):** Gather × 2, Shape × 1, ReduceSum × 1,
+If × 1 (not-registered / control-flow); Cast × 2, SkipSimplifiedLayerNormalization × 1 (staged,
+non-GQA variant); Sub × 1 (dtype — fp32 residual); Greater × 1 (staged). None of these create
+cuts on this graph.
+
 ### 7.2 Death by fallback — the real failure mode
 
 A claim rate of 95% can be *slower* than 0%. If the 5% we decline are distributed through the graph,
@@ -1823,7 +1905,59 @@ The margin is 3×, not 1×. A cost model this crude, calibrated on a different d
 that schedules differently, is easily wrong by 2×; requiring a margin means the rule fails towards
 "run it on the CPU", which is always correct.
 
-### 7.4 The decline census — why a real model's nodes are actually declined (2026-07-29)
+#### 7.3.1 `retain_viable` is now wired — R10 resolved (2026-07-30)
+
+**Status 2026-07-30:** R10 (Morpheus) identified that `retain_viable` existed in `partition.rs` but
+was not in the call graph for single-cluster models. Wiring `partition.rs` into `GetCapability`
+(the prior session's 321→33 island fix) wired the connected-component grouping. It did not wire
+the economics gate — `should_claim_island` had never declined an island in production.
+
+**What was wired:** The partition economics gate (`partition::evaluate`) now runs for every cluster
+in multi-cluster graphs. A cluster that fails the gate produces a `[partition]` decline code in
+the CLAIM_LOG, observable by tests and tooling.
+
+**Artifact proving it fires:** `tests/ops/test_partition_gate.py` builds a model with two
+independent Sigmoid branches (two disjoint claimed clusters, each 1 node, no anchors). The gate
+fires: TooSmall (1 < min_nodes=4, anchors=0) → both clusters declined → `[partition]` codes in
+CLAIM_LOG. This is the artifact R10 requires — content that varies with the gate's input.
+
+**C ABI counter (ABI version 2):** `viable_islands_retained` added to `VulkanEpCounters` (the
+struct `OrtEpVulkanGetExecutionCounters` fills). Emitted per multi-cluster `GetCapability` call;
+present even at 0, so the wiring census can distinguish "gate ran, all rejected" from "UNWIRED
+(key absent)". The census (`test_wiring_census.py`) now reads this counter and marks `retain_viable`
+WIRED. The test `test_retain_viable_wired` has its `xfail(strict=True)` removed — it passes.
+
+**PartitionStats populated:** `ep.rs` now emits real values for `island_count`,
+`largest_island_nodes`, `largest_island_flops`, `concentration`, and `boundary_bytes_per_inference`
+from the surviving island set after the economics gate runs. The `boundary_time_fraction` slot
+remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
+
+**Guards against both failure modes (§7.0.2):**
+- *Over-declination* (gate declines everything): the anchor exemption —
+  `if island.anchors > 0 { return Verdict::Claim }` — ensures any island containing MatMulNBits
+  or GQA is always claimed. On Phi-3.5 (353 claimed, 1 island, 225 anchors), the gate never
+  declines. Falsifier: bench/phi35.py → 0 claimed nodes would indicate a broken anchor exemption.
+- *Under-declination* (gate declines nothing): `test_partition_gate.py`. A non-anchor two-cluster
+  model must produce `[partition]` codes. If it does not, the gate is inert. Falsifier: the test
+  asserting `claims["Sigmoid"]["code"] == "partition"` goes red.
+
+**Single-cluster exemption retained:** when all claimed nodes form one connected component (the
+common case for unit tests of individual ops), the gate is bypassed. The gate applies to
+multi-cluster graphs, where it has a real scheduling decision to make.
+
+**TransferModel calibration note (Tank's finding, 2026-07-30):** The EP re-uploads ~2 GB of weights
+per inference (staging memcpy inside `Phase::Record`). Tank measured upload = 95.8–98.4% of the
+record phase, both devices. The provisional `TransferModel` constants (`UMA: 40 bytes/ns`,
+`DISCRETE: 12 bytes/ns`) model PCIe bandwidth, not the effective per-inference transfer rate,
+which is dominated by the CPU-side staging cost (~0.4 bytes/ns effective). **The `transfer_ns`
+term in the economics gate is too small by 10–100×** relative to the real measured cost. The gate
+is conservative in the right direction (it fails towards CPU), but the `TransferModel::DISCRETE`
+constant should be recalibrated once Switch lands persistent weight residency — after that, the
+per-inference transfer is activation-only (~16–128 bytes per boundary, not 2 GB), and the
+provisional constants will be more accurate. Re-calibrating before persistent residency would embed
+the re-upload cost permanently into a constant that will be wrong as soon as the bug is fixed.
+
+
 
 Every previous version of this document reasoned about *which ops a model contains*. This section
 reasons about *why the EP declines the nodes it declines*, which turns out to be a different
