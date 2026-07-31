@@ -77,6 +77,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import sys
@@ -88,6 +89,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import devices as device_mod  # noqa: E402
+import contention  # noqa: E402
 import environment  # noqa: E402
 import phases as phases_mod  # noqa: E402
 import producers  # noqa: E402
@@ -684,13 +686,18 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
     cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--device",
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
+    mon = contention.Monitor().start()
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    window = mon.stop()
     if out.exists():
         rec = json.loads(out.read_text("utf-8"))
     else:
         rec = {"device_index": device_index, "model_output_equivalence": UNMEASURED,
                "refusals": [f"worker produced no result (exit {proc.returncode}): "
                             f"{proc.stderr.strip()[-800:]}"]}
+    # The load survey covers the worker's whole lifetime, and the worker is a child of this
+    # process, so its own CPU is subtracted rather than counted as competition.
+    rec["machine_quiescence"] = contention.quiescence(window, contention.occupancy_check())
     if counters.exists():
         try:
             rec["counters"] = json.loads(counters.read_text("utf-8"))
@@ -702,8 +709,21 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
     return rec
 
 
+def _is_integrated(facts: "device_mod.DeviceFacts | None") -> bool:
+    """Does this device share its power budget with the CPU?
+
+    Only used to weaken — never to strengthen — the GPU control in
+    :func:`phases.contention_signature`. On an integrated part, heavy CPU load can slow the
+    device too, so "GPU time moved as well" stops being an exoneration.
+    """
+    if facts is None:
+        return False
+    kind = str(getattr(facts, "kind", "") or "").lower()
+    return "integrated" in kind or "cpu" in kind or "virtual" in kind
+
+
 def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
-                    timed: dict) -> dict:
+                    timed: dict, integrated: bool = False) -> dict:
     """A second, instrumented process whose only product is the phase split.
 
     Separate from the timed pass on purpose. What comes back is *where the time goes*, in
@@ -725,11 +745,14 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
     cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", "--device",
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
+    mon = contention.Monitor().start()
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    window = mon.stop()
     rep: dict = {
         "iters": iters,
         "warmup": warmup,
         "trace_file": str(trace),
+        "machine_quiescence": contention.quiescence(window, contention.occupancy_check()),
         "note": ("a separate instrumented process. Proportions are the product; the absolute "
                  "totals here are inflated by the tracer and the query pool and are not the "
                  "benchmark's numbers."),
@@ -746,7 +769,8 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
         except json.JSONDecodeError:
             cnt = None
     try:
-        rep["analysis"] = phases_mod.analyse(phases_mod.load(trace), cnt)
+        rep["analysis"] = phases_mod.analyse(phases_mod.load(trace), cnt,
+                                             integrated_gpu=integrated)
     except Exception as exc:  # pragma: no cover - environment dependent
         rep["refusal"] = f"the trace could not be analysed: {exc!r}"
         return rep
@@ -764,6 +788,55 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
         "not computable: one of the two passes produced no median.")
     rep["traced_model_output_equivalence"] = traced_rec.get("model_output_equivalence")
     return rep
+
+
+def measurement_validity(rec: dict) -> dict:
+    """Two independent contention instruments, combined into one gate on the numbers.
+
+    ``bench/contention.py`` watches the machine from **outside** the process: how many cores
+    other processes kept busy while the worker ran. ``phases.contention_signature`` reads it from
+    **inside** the trace: whether identical repeated work took wildly different amounts of host
+    time while the device's own clock said it did not. They share no inputs — one is a system
+    idle counter, the other is a Vulkan query pool — so agreement raises confidence and either
+    one going red is evidence (R9, DESIGN.md §10.0.1).
+
+    The out-of-band survey is the primary gate because it covers the *timed* pass, which is the
+    pass the published number comes from. The in-band signature covers only the separate traced
+    pass, so it cannot by itself condemn the timed number — but it is the only instrument that
+    works on a trace captured before any of this existed, and every stored number in
+    ``docs/PERF.md`` depends on it.
+
+    Verdict is the worst of the two. ``QUIET`` requires the survey to say so *and* the in-band
+    signature not to contradict it.
+    """
+    survey = rec.get("machine_quiescence") or {}
+    sig = (((rec.get("phase_pass") or {}).get("analysis") or {})
+           .get("contention_signature") or {})
+    sig_pass = (rec.get("phase_pass") or {}).get("machine_quiescence") or {}
+
+    reasons: "list[str]" = []
+    verdict = survey.get("verdict") or contention.UNMEASURED
+    if verdict != contention.QUIET:
+        reasons.append(f"timed pass: out-of-band load survey says {verdict} — "
+                       + "; ".join(survey.get("reasons") or ["no detail"]))
+    if sig_pass.get("verdict") and sig_pass["verdict"] != contention.QUIET:
+        reasons.append(f"traced pass: out-of-band load survey says {sig_pass['verdict']}")
+    sv = sig.get("verdict")
+    if sv and sv != "STABLE":
+        reasons.append(f"traced pass: in-band trace signature says {sv} — {sig.get('reason')}")
+        if verdict == contention.QUIET:
+            # The survey saw a quiet machine and the trace saw stalls anyway. That is two
+            # instruments disagreeing, which is not a tie to break in favour of the convenient
+            # answer; something slowed the host that the survey does not account for.
+            verdict = contention.UNMEASURED
+    return {
+        "verdict": verdict,
+        "reasons": reasons or ["both contention instruments agree the machine was quiet"],
+        "out_of_band_survey": survey.get("verdict"),
+        "in_band_trace_signature": sv,
+        "refusal": contention.gate({"verdict": verdict, "reasons": reasons},
+                                   "phi-3.5 timing"),
+    }
 
 
 def _derive(rec: dict) -> None:
@@ -791,6 +864,8 @@ def _derive(rec: dict) -> None:
         None if refusal or not rec["cpu"]["median_ms"]
         else round(rec["vulkan"]["median_ms"] / rec["cpu"]["median_ms"], 4))
     claimed = rec.get("claimed_nodes")
+    validity = measurement_validity(rec)
+    rec["measurement_validity"] = validity
     ps = ((rec.get("phase_pass") or {}).get("analysis") or {}).get("partition_stats") or {}
     rec["metric_of_record"] = {
         "claimed_op_coverage": claimed,
@@ -812,6 +887,12 @@ def _derive(rec: dict) -> None:
             "It is reported as null here rather than as 0, because 'not computed' and 'zero "
             "FLOPs' are different states and only one of them is a measurement.",
         "gated_on": rec.get("model_output_equivalence"),
+        "machine_quiescence": validity["verdict"],
+        "quiescence_note":
+            "a second gate, alongside model_output_equivalence. The same device, build and test "
+            "measured 9.5x apart on host recording time depending only on what else was running "
+            "on the machine, so a timing taken on a contended box is not a slower measurement of "
+            "the same thing — it is a measurement of a different machine.",
     }
 
 
@@ -953,6 +1034,24 @@ def _describe(rec: dict, facts: "device_mod.DeviceFacts | None") -> "list[str]":
         lines.append("  → no timing is reported for this device.")
         return lines
     vk, cpu, b = rec.get("vulkan"), rec.get("cpu"), rec.get("boundary") or {}
+    mv = rec.get("measurement_validity") or {}
+    lines.append(f"  machine_quiescence       : {mv.get('verdict')} "
+                 f"(survey {mv.get('out_of_band_survey')}, "
+                 f"trace signature {mv.get('in_band_trace_signature')})")
+    for r in mv.get("reasons") or []:
+        lines.append(f"      {r}")
+    if mv.get("refusal"):
+        # Withheld, not annotated. Printing the medians under a contention warning is exactly
+        # how the 9.5x-inflated figure would enter a document: the number travels, the warning
+        # does not. What is still printed below is structural — counts, identity, accounting —
+        # which contention cannot corrupt.
+        lines.append(f"  ⛔ {mv['refusal']}")
+        lines.append(f"      withheld: vulkan median, cpu median, their delta and ratio "
+                     f"({vk['n']} + {cpu['n']} samples were collected and are in the JSON "
+                     f"record under `vulkan`/`cpu`, marked non-quotable).")
+        lines.append("      re-run when the machine is quiet: "
+                     "`python bench/contention.py --seconds 20` must exit 0 first.")
+        return lines + _describe_structure(rec)
     lines.append(f"  vulkan   median {vk['median_ms']:.3f} ms   "
                  f"p05-p95 {vk['p05_ms']:.3f}-{vk['p95_ms']:.3f}   "
                  f"mad {vk['mad_ms']:.3f}   rsd {vk['rsd']:.1%}   n={vk['n']}"
@@ -1015,6 +1114,71 @@ def _describe(rec: dict, facts: "device_mod.DeviceFacts | None") -> "list[str]":
     return lines
 
 
+def _describe_structure(rec: dict) -> "list[str]":
+    """The part of a contended run that is still worth printing.
+
+    Contention stretches durations. It does not change how many islands the partitioner made,
+    how many dispatches ran, whether every GPU span was accounted for, or whether the timestamp
+    conversion is arithmetically sound. Those are counts and integer identities, and they remain
+    valid evidence from a run whose timings do not. Withholding them alongside the timings would
+    throw away the falsifiers that cost the most to collect.
+    """
+    pp = rec.get("phase_pass") or {}
+    an = pp.get("analysis") or {}
+    if not an:
+        return []
+    out = ["", "  --- structural results from the traced pass (contention-independent) ---"]
+    fs = an.get("falsifiers") or {}
+    for name in ("gpu_span_accounting", "phase_containment", "trace_matches_counters",
+                 "timestamp_conversion_integrality", "valid_bits_applied"):
+        f = fs.get(name) or {}
+        if not f:
+            continue
+        mark = "RED" if f.get("red") else ("ok" if f.get("decisive", True) else "VACUOUS")
+        out.append(f"    [{mark:^7}] {name}: "
+                   f"{f.get('detail') or f.get('reason') or f.get('verdict')}")
+    ps = an.get("partition_stats") or {}
+    out.append(f"    largest_island_flops    : {ps.get('third_slot_state')} — "
+               f"{ps.get('third_slot_note') or 'populated'}")
+    cs = an.get("contention_signature") or {}
+    if cs:
+        out.append(f"    in-band trace signature : {cs.get('verdict')} — {cs.get('reason')}")
+        for s in (cs.get("stalled_slots") or [])[:4]:
+            out.append(f"        slot {s['slot']:2d} ({s['nodes']} dispatches): host "
+                       f"{s['host_range_ratio']}x vs its own GPU {s['gpu_range_ratio']}x — "
+                       f"{s['host_ms']} ms")
+        if cs.get("integrated_gpu_caveat"):
+            out.append(f"        caveat: {cs['integrated_gpu_caveat']}")
+    out.append("    the phase split, record-scaling and warmup verdicts are WITHHELD: every one "
+               "of them is a statement about durations, and durations are what contention "
+               "moves.")
+    return out
+
+
+def _preserve_traces(results: "list[dict]", out: Path) -> None:
+    """Copy each device's trace next to the result artifact it justifies.
+
+    ``_run_trace_pass`` writes to a deterministic scratch path, so the next run on the same
+    device silently destroys the evidence for the last published number. That happened: a
+    three-iteration smoke test overwrote the trace behind a section of ``docs/PERF.md``, and the
+    verdict for that device had to be transcribed by hand because it was no longer derivable.
+
+    Traces are the expensive artifact here — a two-device run is forty minutes, and both defects
+    found in the previous session were fixed by re-analysing stored traces with no re-run at all.
+    Keeping them beside the JSON costs half a megabyte each.
+    """
+    dest = out.parent / "traces"
+    for rec in results:
+        src = ((rec.get("phase_pass") or {}).get("trace_file")) or ""
+        if not src or not Path(src).is_file():
+            continue
+        target = dest / f"{out.stem}-dev{rec.get('device_index')}.trace.json"
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+        rec["phase_pass"]["trace_preserved_at"] = str(target)
+        print(f"preserved trace -> {target}")
+
+
 def main(argv: "list[str] | None" = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--worker" in argv:
@@ -1040,7 +1204,23 @@ def main(argv: "list[str] | None" = None) -> int:
                     help="Skip the traced pass. The wall time is then reported with no statement "
                          "about where it goes.")
     ap.add_argument("--out", help="write the full JSON record here")
+    ap.add_argument("--require-quiet", action="store_true",
+                    help="Refuse to start unless the machine is already quiet. A full run costs "
+                         "~40 minutes and produces nothing quotable if another process is "
+                         "compiling through it, so failing in ten seconds is cheaper than "
+                         "failing in forty minutes.")
+    ap.add_argument("--quiet-check-seconds", type=float, default=15.0,
+                    help="How long --require-quiet samples the machine before deciding.")
     a = ap.parse_args(argv)
+
+    if a.require_quiet:
+        pre = contention.quiescence(
+            contention.sample_now(a.quiet_check_seconds), contention.occupancy_check())
+        print(contention.describe(pre))
+        if pre["verdict"] != contention.QUIET:
+            print("⛔ refusing to start: --require-quiet was given and the machine is not quiet.")
+            print("   Nothing was measured. Quiesce the machine and re-run.")
+            return 2
 
     facts, source = device_mod.probe()
     ep_order = device_mod.ep_selection_order(facts)
@@ -1053,8 +1233,10 @@ def main(argv: "list[str] | None" = None) -> int:
                 for _ in range(max(1, a.repeats))]
         merged = _merge_repeats(reps)
         if not a.no_phases and not merged.get("refusals"):
+            cand = device_mod.by_ep_index(facts, i)
             merged["phase_pass"] = _run_trace_pass(
-                i, a.trace_iters, a.warmup, _HERE / "_scratch", merged)
+                i, a.trace_iters, a.warmup, _HERE / "_scratch", merged,
+                integrated=_is_integrated(cand))
             _derive(merged)
         resolved = _resolve_device_identity(merged, facts)
         identified.append(resolved["device"] or device_mod.by_ep_index(facts, i))
@@ -1100,6 +1282,7 @@ def main(argv: "list[str] | None" = None) -> int:
     }
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        _preserve_traces(results, Path(a.out))
         Path(a.out).write_text(json.dumps(payload, indent=2), "utf-8")
         print(f"wrote {a.out}")
     return 0 if any(not r.get("refusals") for r in results) else 2

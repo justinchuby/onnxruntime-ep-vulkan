@@ -78,6 +78,17 @@ CONTAINMENT_SLACK = 0.02
 #: integer by construction; this tolerance absorbs float32→float64 widening of the period only.
 INTEGRALITY_TOL = 1e-3
 
+#: How far a single inference's normalised host cost may sit from the run median before
+#: :func:`contention_signature` calls it an excursion. Two-fold is well outside anything a
+#: steady machine produces for identical repeated work, and well inside the 9.5x the coordinator
+#: measured under six concurrent agents — so it catches the real case without firing on noise.
+EXCURSION_FACTOR = 2.0
+
+#: How stable an island slot's own GPU busy time must be, across repetitions of identical work,
+#: for that slot's GPU time to serve as a control for its host time. Above this the two moved
+#: together and the host swing is explained by the work, not by the machine.
+GPU_STABLE_MAX = 1.25
+
 
 def load(path: "str | Path") -> "list[dict]":
     """Read a Chrome Trace JSON array (or an object with ``traceEvents``)."""
@@ -931,6 +942,250 @@ def record_scaling(attributed: "list[dict]", subgraphs: "list[dict]",
     return out
 
 
+def contention_signature(attributed: "list[dict]", subgraphs: "list[dict]",
+                         gpu_busy_us: "dict[int, float] | None" = None,
+                         integrated_gpu: bool = False) -> dict:
+    """Was the machine busy while this trace was captured? Answered from the trace alone.
+
+    Why this can be answered after the fact
+    ---------------------------------------
+    ``bench/contention.py`` samples the machine *while* a benchmark runs, but every trace this
+    project captured before it existed has no such record. That would normally make the question
+    unanswerable — except that a Vulkan trace already contains two clocks with completely
+    different exposure to host CPU load:
+
+    * **host phase spans** (``record``, ``submit``, ``fence_wait``) are wall-clock intervals on
+      a thread that must be scheduled to make progress. Take the core away and they stretch.
+    * **GPU spans** are differences of the device's own timestamp counter. The GPU does not care
+      how many copies of ``rustc`` are running. Take the core away and they do not move.
+
+    So the trace carries its own control. That is the whole method.
+
+    The statistic
+    -------------
+    Submissions repeat in a fixed cycle: the same islands, in the same order, once per
+    inference. **Island slot ``s`` on inference ``c`` does exactly the same work as island slot
+    ``s`` on inference ``c+1``.** So for each slot, take the spread (max/min) of its host record
+    time across repetitions, and the spread of its *own* GPU busy time across the same
+    repetitions. A slot whose host time swings while its GPU time does not has stalled on the
+    host.
+
+    ``stalled_slot_fraction`` is the share of controllable slots in that state. Three outcomes,
+    and only one of them is contention:
+
+    ============================  ==============================  ==========================
+    host spread on a slot         gpu spread on the same slot     that slot is
+    ============================  ==============================  ==========================
+    >= ``EXCURSION_FACTOR``       < ``GPU_STABLE_MAX``            a host-side stall
+    >= ``EXCURSION_FACTOR``       >= ``GPU_STABLE_MAX``           doing different work
+    < ``EXCURSION_FACTOR``        anything                        steady
+    ============================  ==============================  ==========================
+
+    A secondary statistic, ``per_inference_host_factor``, collapses each inference to a single
+    number to catch a run that was *uniformly* slow rather than sporadically stalled. It is
+    reported, but it is not the primary: it is a median across slots, and a median across slots
+    hides a stall that hits a minority of them. See the comment at the computation.
+
+    What this does and does not establish
+    -------------------------------------
+    A red verdict says the host stalled in a way the device did not. **It does not name the
+    cause.** Another process on the CPU is the obvious candidate — the coordinator measured the
+    same device, build and test 9.5× apart on load alone — but a page-fault storm, a driver
+    allocation, or a thermal event would look the same from inside the trace. What it does
+    establish is the thing that matters for deciding whether to trust a stored number: the run
+    was **not in a steady state**, so its mean is a mean over conditions that were not held
+    constant, and it cannot be compared with a number taken under different ones.
+
+    On an **integrated** GPU the control is weaker in one direction and must not be
+    over-claimed: the iGPU shares its power and thermal budget with the CPU cores, so heavy CPU
+    load can slow the device too. That cannot manufacture a false ``HOST_SIDE_EXCURSIONS`` — it
+    pushes the other way — but it can manufacture a false ``WORKLOAD_VARIATION``, which is why
+    that verdict carries a caveat and is not marked quotable.
+
+    Warmup is excluded before the statistic is computed, because a genuine warmup ramp produces
+    host-side excursions too, in the first cycles, for an entirely legitimate reason.
+    """
+    rec = [p for p in attributed if p["phase"] == "record" and p["subgraph_index"] is not None]
+    rec.sort(key=lambda p: p["ts"])
+    out: dict = {"n_record_spans": len(rec)}
+    if len(rec) < 12:
+        out.update(verdict="UNTESTABLE",
+                   reason="fewer than 12 attributed record spans; no cycle structure to use")
+        return out
+
+    nodes_seq = [p.get("nodes") for p in rec]
+    period = _cycle_period(nodes_seq)
+    if not period or period < 2 or len(rec) // period < 4:
+        out.update(verdict="UNTESTABLE",
+                   reason=f"no usable repeat structure (period={period}, "
+                          f"cycles={len(rec) // period if period else 0}; need >= 4)")
+        return out
+    cycles = len(rec) // period
+    out["islands_per_inference"] = period
+    out["cycles"] = cycles
+
+    # Drop the first cycle outright: warmup excursions are host-side and legitimate, and
+    # including them would let a correctly-behaving run answer "contended".
+    skip = 1
+    out["cycles_skipped_as_warmup"] = skip
+
+    def _series(value_of) -> "dict[int, list[float]]":
+        by_slot: "dict[int, list[float]]" = {}
+        for c in range(skip, cycles):
+            for s in range(period):
+                p = rec[c * period + s]
+                v = value_of(p)
+                if v is not None:
+                    by_slot.setdefault(s, []).append(v)
+        return by_slot
+
+    host_by_slot = _series(lambda p: p["dur"] / 1000.0)
+    gpu_ok = bool(gpu_busy_us)
+    gpu_by_slot = _series(
+        (lambda p: gpu_busy_us.get(p["subgraph_index"])) if gpu_ok else (lambda p: None)
+    )
+
+    def _range_ratio(vals: "list[float]") -> "float | None":
+        if len(vals) < 3 or min(vals) <= 0:
+            return None
+        return max(vals) / min(vals)
+
+    # ---- primary statistic: per-slot, GPU-controlled --------------------------------
+    #
+    # An earlier version of this took the median across slots of each inference's normalised
+    # host cost. That is the right shape for a run that is *uniformly* slow, and it is exactly
+    # wrong for the real case: on the RTX 4060 trace, island slot 0 recorded 12.48, 70.19 and
+    # 12.59 ms on three inferences while its GPU time was constant to 0.03%, and slot 5 went
+    # 301 -> 1156 -> 374 ms. A median over 33 slots reported that run STABLE. Stalls hit some
+    # islands and not others, so the statistic has to be per-slot; the median was averaging away
+    # the thing it was built to find.
+    slots = []
+    for s in sorted(host_by_slot):
+        hr = _range_ratio(host_by_slot[s])
+        gr = _range_ratio(gpu_by_slot.get(s, []))
+        slots.append({
+            "slot": s,
+            "nodes": rec[s].get("nodes"),
+            "host_range_ratio": None if hr is None else round(hr, 3),
+            "gpu_range_ratio": None if gr is None else round(gr, 4),
+            "host_ms": [round(v, 2) for v in host_by_slot[s]],
+        })
+    testable = [r for r in slots
+                if r["host_range_ratio"] is not None and r["gpu_range_ratio"] is not None]
+    stalled = [r for r in testable
+               if r["host_range_ratio"] >= EXCURSION_FACTOR
+               and r["gpu_range_ratio"] < GPU_STABLE_MAX]
+    moved_together = [r for r in testable
+                      if r["host_range_ratio"] >= EXCURSION_FACTOR
+                      and r["gpu_range_ratio"] >= GPU_STABLE_MAX]
+    out["slots_testable"] = len(testable)
+    out["stalled_slot_fraction"] = (
+        round(len(stalled) / len(testable), 4) if testable else None)
+    out["stalled_slots"] = sorted(
+        stalled, key=lambda r: -(r["host_range_ratio"] or 0))[:8]
+    out["slots_moving_with_gpu"] = len(moved_together)
+
+    # ---- secondary statistic: whole-inference inflation ------------------------------
+    def _factors(by_slot) -> "list[float]":
+        medians = {k: statistics.median(v) for k, v in by_slot.items() if v}
+        per_cycle: "list[float]" = []
+        for c in range(skip, cycles):
+            i = c - skip
+            ratios = [by_slot[s][i] / medians[s]
+                      for s in by_slot if medians.get(s) and i < len(by_slot[s])]
+            if ratios:
+                per_cycle.append(statistics.median(ratios))
+        return per_cycle
+
+    host = _factors(host_by_slot)
+    gpu = _factors(gpu_by_slot)
+
+    def _spread(vals: "list[float]") -> dict:
+        if len(vals) < 3:
+            return {"n": len(vals)}
+        return {
+            "n": len(vals),
+            "median": round(statistics.median(vals), 4),
+            "min": round(min(vals), 4),
+            "max": round(max(vals), 4),
+            "range_ratio": round(max(vals) / min(vals), 4) if min(vals) > 0 else None,
+            "excursion_fraction": round(
+                sum(1 for v in vals if v > EXCURSION_FACTOR) / len(vals), 4),
+        }
+
+    hs, gs = _spread(host), _spread(gpu)
+    out["per_inference_host_factor"] = hs
+    out["per_inference_gpu_factor"] = gs
+    out["per_inference_host_factors"] = [round(v, 3) for v in host]
+    out["per_inference_gpu_factors"] = [round(v, 3) for v in gpu]
+    out["whole_run_inflation"] = bool(
+        hs.get("n", 0) >= 3 and (hs.get("range_ratio") or 0) > EXCURSION_FACTOR)
+
+    integrated = bool(integrated_gpu)
+    gpu_testable = bool(testable)
+
+    if not gpu_testable:
+        verdict, reason = "HOST_EXCURSIONS_UNCONTROLLED", (
+            "no GPU busy time could be paired with host record spans, so the device-clock "
+            "control could not be run. Untested is not passed")
+    elif stalled:
+        worst = max(stalled, key=lambda r: r["host_range_ratio"])
+        verdict, reason = "HOST_SIDE_EXCURSIONS", (
+            f"{len(stalled)} of {len(testable)} island slots "
+            f"({(len(stalled) / len(testable)) * 100:.0f}%) recorded a >= {EXCURSION_FACTOR}x "
+            f"host spread across repetitions of identical work while their own GPU time stayed "
+            f"within {GPU_STABLE_MAX}x. Worst: slot {worst['slot']} "
+            f"({worst['nodes']} dispatches) host {worst['host_range_ratio']}x vs GPU "
+            f"{worst['gpu_range_ratio']}x. The stall is on the host, not the device: this run "
+            "was not in a steady state and its aggregates are means over conditions that were "
+            "not held constant")
+    elif out["whole_run_inflation"]:
+        verdict, reason = "NOT_STEADY", (
+            f"whole inferences of identical work varied {hs.get('range_ratio')}x "
+            f"(min {hs.get('min')}, max {hs.get('max')} of the run median), but GPU time moved "
+            f"alongside on every slot, so the control cannot isolate the cause to the host. "
+            "Either way the run was not in a steady state: this is not a quotable measurement, "
+            "and it is not an exoneration of the machine")
+    elif moved_together:
+        verdict, reason = "WORKLOAD_VARIATION", (
+            f"host spread exceeded {EXCURSION_FACTOR}x on {len(moved_together)} slots but their "
+            f"GPU time moved with it, so the work itself differed between inferences. That "
+            "explains the host spread; it does not establish that the machine was quiet")
+    elif cycles - skip < 4:
+        verdict, reason = "UNDERPOWERED", (
+            f"only {cycles - skip} post-warmup inferences over {len(testable)} controllable "
+            f"island slots; a stall lasting less than one inference would not be visible. "
+            "This is not a quiet-machine finding")
+    else:
+        verdict, reason = "STABLE", (
+            f"no island slot recorded a {EXCURSION_FACTOR}x host spread over "
+            f"{cycles - skip} repetitions of identical work; "
+            f"{len(testable)} slots controlled against their own GPU time")
+
+    out["verdict"] = verdict
+    out["reason"] = reason
+    if integrated:
+        out["integrated_gpu_caveat"] = (
+            "This device shares its power and thermal budget with the CPU cores. The control "
+            "here — 'the device clock does not care how busy the host is' — is therefore weaker "
+            "than on a discrete part: heavy CPU load can slow the GPU itself through DVFS, so "
+            "GPU time moving *with* host time does not cleanly exonerate the machine. On an "
+            "integrated device, WORKLOAD_VARIATION should be read as 'not established', not as "
+            "'quiet'.")
+    out["falsifier"] = {
+        "name": "gpu_range_control",
+        "red_if": (
+            "the same island slot's GPU busy time varies as much as its host record time, which "
+            "would mean the work differed between inferences and the host variation is explained"),
+        "slots_stalled_host_only": len(stalled),
+        "slots_moving_with_gpu": len(moved_together),
+        "slots_testable": len(testable),
+        "gpu_stable_max": GPU_STABLE_MAX,
+    }
+    out["quotable"] = verdict in ("STABLE",)
+    return out
+
+
 def _spearman(xs: "list[float]", ys: "list[float]") -> "float | None":
     if len(xs) < 3 or len(set(xs)) < 2 or len(set(ys)) < 2:
         return None
@@ -978,7 +1233,8 @@ def _cycle_period(seq: "list") -> "int | None":
 # Top-level
 # ---------------------------------------------------------------------------
 
-def analyse(events: "list[dict]", counters: "dict | None" = None) -> dict:
+def analyse(events: "list[dict]", counters: "dict | None" = None,
+            integrated_gpu: bool = False) -> dict:
     """The whole phase picture for one trace, with its falsifiers attached."""
     subs = subgraph_spans(events)
     attributed = attribute(subs, phase_spans(events))
@@ -999,6 +1255,8 @@ def analyse(events: "list[dict]", counters: "dict | None" = None) -> dict:
 
     phased_ms = sum(v["total_ms"] for v in host.values() if v.get("n"))
     scaling = record_scaling(attributed, subs, transfers)
+    ordinal = attribute_gpu_ordinally(subs, gpus)
+    contention = contention_signature(attributed, subs, ordinal.get("busy_us"), integrated_gpu)
 
     return {
         "subgraph_spans": len(subs),
@@ -1027,6 +1285,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None) -> dict:
         "transfers": transfer_totals(transfers),
         "partition_stats": partition_stats(events),
         "record_scaling": scaling,
+        "contention_signature": contention,
         "falsifiers": {
             "phase_containment": phase_containment(subs, attributed),
             "gpu_span_accounting": gpu_span_accounting(subs, gpus, counters),
@@ -1048,6 +1307,10 @@ def red_flags(report: dict) -> "list[str]":
     if ti and not ti.get("decisive"):
         out.append("timestamp_conversion_integrality: NOT DECISIVE on this device — "
                    + str(ti.get("detail")))
+    cs = report.get("contention_signature") or {}
+    if cs.get("verdict") in ("HOST_SIDE_EXCURSIONS", "HOST_EXCURSIONS_UNCONTROLLED",
+                             "WORKLOAD_VARIATION", "UNDERPOWERED", "UNTESTABLE"):
+        out.append(f"contention_signature: {cs['verdict']} — {cs.get('reason')}")
     return out
 
 

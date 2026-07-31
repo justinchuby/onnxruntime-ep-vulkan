@@ -18,6 +18,10 @@ JSON-serialisable dict:
   exactly the way op coverage is (``OP_COVERAGE.md`` §4.18): two exporters emit different op sets
   for the same architecture, so the graph's origin belongs next to the device and the driver.
   See ``producers.py``.
+* **contention** — how busy the machine was. Added after the same device, build and test were
+  measured 9.5× apart on host recording time depending only on what else was running. A stored
+  number whose environment record omits the machine's load cannot be re-checked later, because
+  the largest single influence on it left no trace. See ``contention.py``.
 
 Nothing here fails a run. A missing ``epctl`` yields ``devices: []`` and a recorded reason.
 """
@@ -154,8 +158,15 @@ def build_info() -> dict:
     return info
 
 
-def capture() -> dict:
-    """Collect the full environment record."""
+def capture(load_seconds: float = 0.0) -> dict:
+    """Collect the full environment record.
+
+    ``load_seconds > 0`` adds a machine-load spot-check. It is off by default because ``capture``
+    is called from several places that must stay instant, and it is *not* a substitute for the
+    monitor that runs across a measurement: a spot-check taken before a forty-minute run says
+    nothing about minute twenty. Its purpose is to make a stored artifact re-checkable — see
+    ``contention_note``.
+    """
     try:
         import onnxruntime as ort
 
@@ -187,7 +198,31 @@ def capture() -> dict:
         "device_note": device_note,
         "device_facts": device_facts,
         "env": {k: v for k, v in sorted(os.environ.items()) if k.startswith(EP_ENV_PREFIX)},
+        "contention": _contention_spot_check(load_seconds),
+        "contention_note": (
+            "How busy the machine was. This belongs next to the driver version and the CPU model "
+            "for the same reason those do: it changes the answer. The same device, build and test "
+            "measured 9.5x apart on host command-buffer recording depending only on what else was "
+            "running (docs/PERF.md §10). Without this field a stored number cannot be re-checked "
+            "later, because the one thing that most affected it left no trace. The authoritative "
+            "record is the per-pass `machine_quiescence` in the result artifact, which covers the "
+            "whole measurement; this is a spot-check of the moment the environment was captured."
+        ),
     }
+
+
+def _contention_spot_check(seconds: float) -> dict:
+    if seconds <= 0:
+        return {"verdict": "UNMEASURED",
+                "reason": "no load sample was requested at capture time; see the per-pass "
+                          "machine_quiescence records, which are the authoritative ones"}
+    try:
+        import contention as contention_mod
+
+        return contention_mod.quiescence(
+            contention_mod.sample_now(seconds), contention_mod.occupancy_check())
+    except Exception as exc:  # pragma: no cover - never fail a run over the environment record
+        return {"verdict": "UNMEASURED", "reason": f"load probe unavailable: {exc!r}"}
 
 
 def describe(record: dict) -> str:
@@ -217,6 +252,12 @@ def describe(record: dict) -> str:
         )
     if record.get("device_note"):
         lines.append(f"          note: {record['device_note']}")
+    c = record.get("contention") or {}
+    if c:
+        s = c.get("survey") or {}
+        detail = (f" — foreign load {s['mean_foreign_busy_cores']:.2f} of {s['cores']} cores"
+                  if s.get("available") else f" — {c.get('reason', '')}")
+        lines.append(f"load    : {c.get('verdict')}{detail}")
     for p in record.get("producers", []):
         lines.append(f"producer: {p.get('fingerprint')}")
     if record.get("env"):

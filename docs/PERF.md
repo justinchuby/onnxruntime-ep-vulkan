@@ -592,7 +592,9 @@ The instrument is built and calibrated. It has not yet been pointed at anything.
 > partitioner was wired into `GetCapability` (islands 321 → 33) and the `VkQueryPool` path
 > landed. The section is kept for its reasoning and its refusals, which still hold. **Its
 > figures may not be quoted — §9 replaces them.** Note also that §6's device *labels* are
-> subject to the ordering defect documented in §9.1.
+> subject to the ordering defect documented in §9.1, and its timings were taken with no record
+> of machine load, which §10 shows is worth up to 9.5× on its own. Three independent reasons
+> not to quote §6, any one of which would be sufficient.
 
 This is the first performance measurement this project has. **It is not a speedup and it is not
 good news.** It is a measurement, with its correctness verdict attached, of a configuration that
@@ -888,6 +890,24 @@ does not. The remaining work is in files owned by Switch (`vk/**`, `engine.rs`) 
 
 ## 9. The phase split — where the time actually goes (2026-07-30, both devices, current `main`)
 
+> ⛔ **THE TIMINGS IN THIS SECTION ARE WITHDRAWN — see §10.** Both traces behind §9 were
+> captured on a machine that other agents were compiling on. An instrument built afterwards
+> (`phases.contention_signature`) tested them from the inside and found that on the RTX 4060,
+> **20 of 33 island slots recorded a ≥ 2× spread in host time across repetitions of identical
+> work while the GPU's own clock said that work was constant to within 0.3%** — one slot swung
+> 190.93 → 501.56 → 1747.51 ms. The Intel run varied 5.25× across whole inferences. Neither run
+> was in a steady state, so every duration, share and ratio below is a mean over conditions that
+> were not held constant.
+>
+> **What survives** is everything that is a count, an integer identity or a structural fact:
+> the device-ordering defect and its correction (§9.1), the gate verdicts (§9.2), the
+> retirement of the per-island statistic (§9.7), the ratio refusal (§9.8), the
+> `largest_island_flops` state (§9.9), the 52× closure (§9.6), and the *qualitative* finding
+> that recording dominates and that the bulk of it is `memcpy` (§9.4) — the memcpy share is a
+> ratio measured inside each individual record span and is not a between-inference comparison.
+> **What does not survive** is every millisecond figure, every phase percentage, and the
+> record-scaling and warmup verdicts of §9.5, which are statements about durations.
+
 Everything in §6 predates two changes that invalidate it: `partition.rs` was wired into
 `GetCapability` (islands 321 → 33), and the `VkQueryPool` path landed. §6 is kept for its
 reasoning; **its numbers are superseded by this section.**
@@ -1086,6 +1106,29 @@ steady-state median is reported as provisional and must not be quoted as a stead
 answer to "is he optimising a constant or a distribution" is **a distribution, and on Intel one
 whose tail has not been established**.
 
+> ⛔ **§9.5 IS WITHDRAWN IN FULL — including the `REAL_WARMUP` verdict, which was wrong for a
+> reason I should have seen.** The island-identity control rules out *island mix*: it proves the
+> decline is not an artefact of which islands happen to run late. **It does not rule out a
+> machine that got quieter as the run went on**, because that confound is also monotone in time
+> and hits every island equally — which is precisely the signature the control was built to
+> confirm. A control that cannot distinguish the hypothesis from its most likely rival is not a
+> control for it.
+>
+> The two "100–160 ms excursions mid-run" on Intel, flagged above as unexplained, are now
+> identified: `contention_signature` puts them at inferences 5 and 6, at 2.65× and 2.68× the run
+> median, on a host clock whose device clock did not move proportionally. They are stalls, not
+> warmup. And the Intel decline runs 1.42 → 0.51 across the run — a machine progressively
+> freeing up looks exactly like that.
+>
+> Re-measurement on a verified-quiet machine is the only way to separate the two, and it is
+> cheap to make decisive: a genuine warmup ramp is **reproducible on demand** and a load
+> artefact is not. Two consecutive quiet runs that produce the same `cycles_to_steady` establish
+> warmup; two that disagree establish load. **`SCALES_WITH_BYTES_NOT_DISPATCHES` is the one
+> verdict in §9.5 with a defensible claim to survive** — it compares implied *bandwidth* between
+> two island sizes measured within the same run, and contention inflates both terms of that
+> ratio together — but it was computed from group medians that individual 9× excursions can skew,
+> so it is downgraded to **provisional** rather than withdrawn.
+
 ### 9.6 The 52× trap, closed end to end
 
 See §7.4 for the check. Verdicts on this run: **PASS and DECISIVE on Intel** (period 52.0833),
@@ -1203,3 +1246,289 @@ Per R9: *confidence scales with agreeing instruments; evidence scales only with 
 machine drift rather than negative overhead (it must be — but nothing in the harness rules the
 alternative out); and the Intel steady-state record median, which is provisional because the tail
 has not flattened.
+
+---
+
+## 10. Every number in this document was taken on an unmeasured machine (2026-07-30 evening)
+
+The coordinator measured the same device, the same build and the same test twice and got answers
+9.5× apart:
+
+```
+device 0, machine quiet          vulkan.record total    19 460 ms
+device 0, six agents compiling   vulkan.record total   184 356 ms      9.5x
+```
+
+Nothing in `bench/` could see that. Every guard in this harness was pointed at the *program* —
+is the EP loaded (`refuse_if_ep_absent`), did every island actually run (`dispatch_accounting`),
+did the output match (`model_output_equivalence`), is the sample drifting (`stats.drift`). None
+of them can see a number that is uniformly wrong because the machine was busy the whole time.
+
+`stats.drift` is the near miss and it is worth being precise about why it does not cover this.
+Drift detects a baseline **moving**. A machine that is loaded for the entire run produces a
+baseline that is *stable* and *wrong* — the best-looking possible output, and the one this
+harness would have blessed. That is the same defect class as the two fabricated speedups in
+`test_plausible_but_wrong.py`: a plausible number, from a working harness, meaning something
+other than what it says.
+
+### 10.0 The measurement is now gated on the machine, not only on the model
+
+`metric_of_record` carries a second gate beside `model_output_equivalence`:
+
+```
+machine_quiescence ∈ { QUIET, CONTENDED, UNMEASURED }      default UNMEASURED
+```
+
+**No performance number may be quoted beside a non-`QUIET` verdict.** It is a refusal, not a
+warning: `phi35.py` prints the refusal *in place of* the medians, the delta and the ratio.
+A number printed under a warning gets quoted without the warning — that rule cost this project
+`per_island_ms_lower_bound` and the unsteady-baseline ratio, and it applies here unchanged.
+
+What is still printed from a contended run is everything contention cannot corrupt: island
+counts, `dispatch_accounting`, `gpu_span_accounting`, timestamp integrality, the valid-bit mask,
+device identity. Those are counts and integer identities. Withholding them too would discard the
+falsifiers that cost the most to collect.
+
+### 10.1 Two instruments, and they fail differently
+
+Per **R9** (DESIGN.md §10.0.1) the point is not to have two instruments that agree; it is to have
+two that could each go red on their own. These share no inputs — one reads a system idle counter,
+the other reads a Vulkan query pool.
+
+**(1) Out-of-band: the load survey — `bench/contention.py`.**
+A background thread samples the system-wide idle counter once a second for the whole measurement.
+Busy CPU-seconds are `cores × wall − idle`; this process's own tree is subtracted; what is left is
+`foreign_busy_cores`, the average number of cores other processes kept busy while we measured.
+It needs no reference and no calibration, and because it reads a system counter rather than
+walking the process table it **cannot miss a short-lived process** — a `rustc` that starts and
+exits between two samples is still fully counted.
+
+*Sampling during the run is the point.* A machine quiet at the start and busy at minute 20 is the
+failure case, and a before-and-after check would miss it entirely.
+
+Its own falsifiers, because an instrument with no failure mode is an assumption:
+
+| falsifier | goes red if |
+|---|---|
+| `idle_accounting` | `(busy + idle)` fails to reconstruct `cores × wall` within 5% — the idle counter is not what we think it is |
+| `own_cpu_not_exceeding_busy` | our own tree used more CPU than the machine reports as busy — the tree walk is double-counting |
+| `monitor_not_perturbing` | the sampler's own CPU exceeds 0.05 cores — the instrument has become part of the load it measures |
+
+Any of them red yields `UNMEASURED`, never `QUIET`.
+
+**(2) Out-of-band: the tachometer — `occupancy_probe`.**
+A fixed quantity of single-threaded integer work, timed, best-of-7. It measures the thing that
+actually matters — not "is the machine busy" but "can this process get a core" — and it is
+sensitive to causes the survey cannot see: thermal throttling, a co-tenant VM, a power-plan
+change, CPU affinity. It is *relative*, so it needs a quiet reference persisted in
+`bench/results/machine-baseline.json`; with no reference it reports **`VACUOUS`**, never "pass",
+the same discipline `timestamp_audit` uses on a device whose `timestampPeriod` is 1.0.
+
+A quiet survey with a slow tachometer resolves to `CONTENDED`. Two instruments disagreeing is not
+a tie to be broken in favour of the convenient answer.
+
+**(3) In-band: the trace signature — `phases.contention_signature`.**
+This is the one that matters most, because it works on traces captured before any of the above
+existed — which is every stored number in this document.
+
+A Vulkan trace already contains two clocks with completely different exposure to host load:
+
+* **host phase spans** (`record`, `submit`, `fence_wait`) are wall-clock intervals on a thread
+  that must be scheduled to make progress. Take the core away and they stretch.
+* **GPU spans** are differences of the device's own timestamp counter. The GPU does not care how
+  many copies of `rustc` are running. Take the core away and they do not move.
+
+**The trace carries its own control.** Submissions repeat in a fixed cycle — island slot *s* on
+inference *c* does exactly the same work as island slot *s* on inference *c+1*. So for each slot,
+compare the spread of its host record time across repetitions against the spread of *its own* GPU
+busy time across the same repetitions:
+
+| host spread on a slot | GPU spread on the same slot | that slot is |
+|---|---|---|
+| ≥ 2× | < 1.25× | a **host-side stall** |
+| ≥ 2× | ≥ 1.25× | doing different work |
+| < 2× | anything | steady |
+
+The first cycle is discarded, because a genuine warmup ramp produces host-side excursions too,
+for a legitimate reason.
+
+**A defect found in this instrument while building it, because the first version got a real trace
+wrong.** The first version normalised each record span by its slot median and then took the
+*median across slots* per inference. That is the right shape for a run that is uniformly slow and
+exactly wrong for the real case: it reported the RTX 4060 trace `STABLE` while slot 0 was
+recording 12.48 / 70.19 / 12.59 ms and slot 5 was recording 301 / 1156 / 374 ms. Stalls hit some
+islands and not others, so a median across slots averages away the thing the statistic exists to
+find. The statistic is now per-slot; the per-inference figure is kept as a secondary detector for
+uniform inflation and is labelled as such.
+
+**Where this control is weak, stated rather than discovered later.** On an **integrated** GPU the
+device shares its power and thermal budget with the CPU cores, so heavy CPU load can slow the GPU
+itself through DVFS. That cannot manufacture a false `HOST_SIDE_EXCURSIONS` — it pushes the other
+way — but it can manufacture a false `WORKLOAD_VARIATION`, so on an integrated part that verdict
+means "not established", never "quiet", and it is not marked quotable. The method also requires
+the islands to have differing dispatch counts, because the cycle period is *recovered* from the
+dispatch-count sequence rather than assumed; an artifact whose islands were all the same size
+would report `UNTESTABLE`, which is the honest answer and not a period guessed from
+`subgraphs_live`.
+
+### 10.2 Verdict on the stored numbers: §9 is withdrawn
+
+Both §9 traces were re-analysed with the in-band signature. No re-run was needed — traces are
+cheap to re-analyse and expensive to collect, which is the second time today that has paid.
+
+| | NVIDIA RTX 4060 (`ep.device_index 0`) | Intel Iris Xe (`ep.device_index 1`) |
+|---|---|---|
+| verdict | **`HOST_SIDE_EXCURSIONS`** | **`NOT_STEADY`** |
+| controllable island slots | 33 | 33 |
+| slots stalled host-only | **20 of 33 (61%)** | 0 |
+| slots where GPU moved too | 2 | 33 |
+| worst slot | slot 31, host **9.39×** vs its own GPU **1.0024×** | — |
+| whole-inference spread | 1.40× | **5.25×** (min 0.51, max 2.68 of the run median) |
+| quotable | **no** | **no** |
+
+Worst offenders on the 4060, host milliseconds across three repetitions of *identical* work, with
+that slot's own GPU time beside it:
+
+```
+slot 31 (10 dispatches)   267.51   451.03    48.05     GPU spread 1.0024x
+slot 14 (10 dispatches)   190.93   501.56  1747.51     GPU spread 1.0019x
+slot 15 (10 dispatches)   271.61   557.05  1646.80     GPU spread 1.0035x
+slot  0 ( 1 dispatch )     12.48    70.19    12.59     GPU spread 1.0003x
+```
+
+A 9× swing in host time for work the device's own clock says was constant to three decimal
+places. That is not a slower measurement of the same thing; it is a measurement of a different
+machine.
+
+Intel reaches `NOT_STEADY` rather than `HOST_SIDE_EXCURSIONS` because its GPU time moved as well —
+and on an integrated part that is not an exoneration (§10.1). Either way the run was not steady.
+
+**This was foreseeable from §9's own output and I did not act on it.** Every one of these was
+already printed: cpu rsd 36.5%, run-to-run cpu spread 2.14×, `baseline_disagreement` firing at
+2.4×, an Intel tail that would not flatten, two unexplained 101/158 ms cycle excursions, and a
+`tracing_overhead_ratio` of 0.8659× — a traced pass that ran *faster* than the untraced one,
+which is impossible from tracing and obvious from load. Six symptoms of one cause, each recorded
+and each rationalised individually. The instrument did not tell me anything the data had not
+already; it made the alternative explanation impossible to keep ignoring.
+
+### 10.3 Live corroboration: this machine varies 2.65× in single-threaded throughput
+
+While writing this section, a background watcher sampled the machine every 20 seconds. Over the
+whole window foreign load ran **7.6–18.8 of 20 cores** (`Code.exe`, `copilot.exe`, `rustc.exe`,
+`python.exe`, `MsMpEng.exe`), and the tachometer — the same fixed integer loop each time, nothing
+to do with Vulkan, ORT or a trace — took:
+
+```
+22:09:44   86.46 ms      22:11:27  102.22 ms      22:17:45   59.96 ms   <- fastest seen
+22:10:35   76.62 ms      22:12:35  159.19 ms      22:20:02   63.27 ms
+                         22:13:36   83.53 ms      22:22:17   62.36 ms
+```
+
+**2.65× on identical work (59.96 → 159.19 ms), and 2.08× of that inside five minutes.** A
+benchmark that starts at 22:10 and a benchmark that starts at 22:12 are not measuring the same
+computer.
+
+The spread widened as the watcher ran: an earlier draft of this section said 2.08×, from a window
+that had not yet seen the quiet end. That is worth stating rather than silently correcting —
+**the spread of a machine is a lower bound until sampling stops**, so any single "how noisy is this
+box" figure is provisional in the direction of being too small.
+
+### 10.3.1 A defect in my own harness: the evidence did not outlive the next run
+
+`_run_trace_pass` wrote its trace to a deterministic scratch path, `phi35_trace_dev{N}.trace.json`.
+So the next run on the same device silently overwrote it. This is not hypothetical — while
+stamping the retroactive verdicts of §10.2 into the result artifact I found that **my own
+three-iteration smoke test had already destroyed §9's Intel trace**, and that device's verdict had
+to be transcribed by hand from the analysis output rather than re-derived from the evidence.
+
+That matters more here than it would elsewhere, because on this project **re-analysing a stored
+trace has repeatedly been worth more than a fresh run**: both defects found in the per-slot
+signature (§10.1) were caught by re-reading traces already on disk, at zero measurement cost, on a
+machine too loud to re-measure on. A trace is ~0.5 MB and a two-device run is forty minutes.
+
+Fixed: when `--out` is given, every pass's trace is copied to `results/traces/{artifact}-dev{N}.trace.json`
+and the path is recorded in the artifact as `phase_pass.trace_preserved_at`. Falsifier:
+`test_preserved_trace_survives_a_later_run_on_the_same_device` rewrites the scratch file after the
+copy and asserts the preserved one still holds the original data. §9's surviving NVIDIA trace has
+been moved under that scheme by hand.
+
+This is the same defect class as the rest of §10. A number whose evidence cannot be re-examined
+later is a number that has to be believed rather than checked.
+
+### 10.4 The Intel-versus-4060 inversion: I cannot adjudicate it, and here is exactly why
+
+The coordinator has been quoting Intel 807.2 ms against the 4060's 1156.0 ms — the integrated part
+beating the discrete one — and asked whether it survives. **I am not able to confirm or retract
+it, for two independent reasons, and the honest answer is to name both rather than produce a
+verdict.**
+
+1. **It is a cross-device comparison, which this project refuses structurally.** `bench/compare.py`
+   exits 2 on one. Different transfer class, different shared-memory budget, different
+   `timestampPeriod`. That refusal does not become optional because the result is interesting.
+2. **Neither figure has a quiescence record**, and figures of that kind now fail the gate by
+   default (`UNMEASURED`).
+
+What I *can* report, because it is a statement about reproducibility rather than about which
+device is faster: **the ordering is not stable across runs.** In §9's run the 4060 came out ahead
+of the Intel part on median wall time; in the coordinator's run the Intel part came out ahead.
+Both runs fail the quiescence gate. A quantity that reverses its sign between two runs of the same
+build, both of them taken on an unmeasured machine, is not a finding about hardware.
+
+**Recommendation to the coordinator: stop quoting the inversion.** Not because it has been refuted
+— it has not — but because it has never been established, and it is currently being carried as
+though it had been.
+
+### 10.5 Re-measurement is blocked on a quiet machine, and that is now provable
+
+A full two-device run is ~40 minutes and produces nothing quotable if anything else is compiling
+through it. `phi35.py --require-quiet` therefore refuses to *start* on a contended machine —
+failing in fifteen seconds is cheaper than failing in forty minutes:
+
+```powershell
+python bench\contention.py --seconds 20          # exit 0 = quiet, 2 = contended
+python bench\phi35.py --require-quiet --iters 20 --warmup 10 --repeats 3 --trace-iters 6
+```
+
+As of 2026-07-30 22:22 the machine had **not been quiet at any sample** during this session —
+every one of the watcher's observations returned `CONTENDED`, with `loud=100%` (i.e. every
+sub-sample above the loud threshold, not merely the window's average). The coordinator's offer to
+hold the other agents idle is the unblocking step; the guard now makes the window **provable**
+rather than assumed, and stamps the proof into the result artifact.
+
+Note for Switch: this applies to a before/after on the recording fix with more force than to
+anything else here. A 9.5× environmental swing will swamp a 3× improvement in either direction —
+it can make a real win look like a regression. The before and the after must both carry a `QUIET`
+verdict, and they now can.
+
+### 10.6 The environment record
+
+`bench/environment.py::capture()` now carries a `contention` field, for the same reason it carries
+the driver version and the CPU model: it changes the answer. A stored number whose environment
+record omits the machine's load cannot be re-checked later, because the single largest influence
+on it left no trace. `capture(load_seconds=N)` takes a spot-check; the authoritative record is the
+per-pass `machine_quiescence` in the result artifact, which covers the whole measurement rather
+than one moment of it.
+
+### 10.7 Instruments — what goes red if each claim in §10 is false
+
+| claim | instrument that goes red |
+|---|---|
+| the machine was quiet while this number was measured | `contention.Monitor` → `quiescence()`; **refuses**, does not warn. Exercised in `test_contention.py` on synthetic quiet/loud/unavailable windows. |
+| …and the load survey's own arithmetic is sound | `idle_accounting`, `own_cpu_not_exceeding_busy` — either red ⇒ `UNMEASURED`, never `QUIET` |
+| …and the guard is not itself the load | `monitor_not_perturbing`, measured in **thread CPU time**. Wall time was the first attempt and was confounded with the very contention it guards against: on a saturated machine a 5 ms sample takes 100 ms of wall clock. A falsifier that fires on the condition it must be independent of is not a control. |
+| this process could get a core at full speed | `occupancy_probe` against the persisted quiet reference; `VACUOUS` with no reference, never "pass" |
+| a *stored* trace was taken on a quiet machine | `phases.contention_signature` — per-slot host spread against that slot's own GPU spread |
+| …and that verdict is not just the workload varying | `gpu_range_control` — the same slot's GPU time. If it moved too, the host is exonerated (weakly, on integrated parts) |
+| …and the statistic can see a stall that hits only some islands | `test_host_stall_on_one_slot_is_caught_even_when_others_are_clean` — the exact case the first implementation got wrong on real data |
+| …and a legitimate warmup ramp is not reported as contention | first cycle discarded; `test_first_inference_is_excluded_as_warmup` |
+| a run with too few repetitions is not called quiet | `UNDERPOWERED` / `UNTESTABLE` verdicts. Untested is not quiet, exactly as untested is not steady |
+| the two guards are independent | they share no input: a system idle counter and a `VkQueryPool`. On the smoke run they agreed (`CONTENDED` + `HOST_SIDE_EXCURSIONS`) without being able to influence each other |
+| a published verdict can still be re-derived from its evidence months later | `test_preserved_trace_survives_a_later_run_on_the_same_device` — rewrites the scratch path after the copy and asserts the preserved trace is unchanged (§10.3.1) |
+
+**Not falsified here, and named so:** the `QUIET_BUSY_CORES = 0.5` threshold is a judgement, not
+a measurement — it is stated in `contention.py` beside the constant rather than buried in a
+comparison, and no run has yet been taken at the boundary to calibrate it. And
+`contention_signature` establishes that the host stalled; it **does not name the cause**. Another
+process is the obvious candidate, but a page-fault storm, a driver allocation or a thermal event
+would look identical from inside the trace. What it establishes is the thing that governs whether
+a stored number may be quoted: the run was not in a steady state.

@@ -166,3 +166,78 @@ is *invisible in wall clock* — which makes the trap worse, not better.
   `tracing_overhead_ratio` measured 1.02x on a 20-iter run and **7.89x** on a 2-iter one.
 - Verdicts from short runs are honest but different (no steady state, huge tracing overhead).
   Do not quote a smoke run's `size_verdict`.
+
+---
+
+## 2026-07-30 evening — the machine is an uninstrumented variable, and it was the biggest one
+
+### What happened
+The coordinator captured a trace while six agents were compiling, then **ran a control**: same
+device, same build, same test, quiet vs loaded. `vulkan.record` total went **19 460 ms -> 184 356 ms.
+9.5x on load alone.** Every number this project has taken is in scope, including mine.
+
+### The class of defect
+`stats.drift` sees a baseline *moving*. It cannot see a baseline that is **uniformly wrong because
+the machine was busy the whole time**. Same family as `dispatch_accounting` and `refuse_if_ep_absent`:
+defects that raise nothing and leave every existing counter green.
+
+### Three instruments, deliberately sharing no input
+1. **Survey** (`contention.py`) — system-wide idle counter. Absolute; cannot miss a short-lived
+   process. `busy = cores*wall - idle_delta`, **not** the sum of user+system+... — on Windows
+   interrupt/dpc overlap with system and the naive sum over-counted (61.64 against a 60.06 capacity).
+2. **Tachometer** — fixed-work integer spin, best-of-7. `min` is right because every error source is
+   one-sided. Needs a persisted quiet reference; without one it reports **VACUOUS, never "pass"**.
+3. **In-band signature** (`phases.contention_signature`) — the only one that works retroactively.
+   **A Vulkan trace carries its own control**: host phase spans are wall-clock on a schedulable
+   thread, GPU spans are differences of the device's own counter. The GPU does not care how many
+   copies of rustc are running.
+
+### Two defects in my own instruments, both caught on real data
+- The survey named `System Idle Process` as a top consumer — the one thing on the box *not*
+  competing with us. And its per-sample `children(recursive=True)` burned 9 CPU-seconds in 12,
+  enough to trip its own threshold. Cache children; add `monitor_not_perturbing`.
+- The signature v1 normalised per slot then took the **median across slots** — and called an RTX
+  trace STABLE while slot 0 ran 12.48/70.19/12.59 ms and slot 5 ran 301/1156/374 ms. Stalls hit
+  *some* islands; a median across slots averages away the thing the statistic exists to find.
+  Rewritten per-slot: each slot's host spread against **that same slot's** GPU spread.
+
+### `monitor_not_perturbing` must use thread CPU time, not wall time
+On a saturated box a 5 ms sample takes 100 ms of wall clock, so the wall-time version fired on the
+very condition it must be independent of. **A falsifier confounded with what it guards is not a control.**
+
+### Verdicts on my own stored numbers — S9 is withdrawn
+- NVIDIA: `HOST_SIDE_EXCURSIONS`, **20 of 33 slots (61%)**, worst 9.39x host against 1.0024x GPU.
+- Intel: `NOT_STEADY`, 5.25x whole-inference spread.
+Both non-quotable. I wrote the gate and my own numbers failed it.
+
+### The inversion cannot be adjudicated, and that is the answer
+Intel 807.2 vs 4060 1156.0 — I can neither confirm nor retract. It is a **cross-device comparison**
+(`compare.py` exits 2 on one) *and* neither figure has a quiescence record. What I can say: the
+ordering **reverses between runs of the same build**, both unmeasured. Stop quoting it — not
+refuted, never established.
+
+### The evidence did not outlive the next run
+`_run_trace_pass` used a deterministic scratch path, so my own 3-iter smoke test **destroyed S9's
+Intel trace** and its verdict had to be transcribed by hand. Traces are now copied to
+`results/traces/` when `--out` is given. On this project re-analysing a stored trace has repeatedly
+beaten a fresh run; 0.5 MB against 40 minutes.
+
+### The spread of a machine is a lower bound until sampling stops
+Tachometer was 2.08x when I first wrote it up, **2.65x (59.96 -> 159.19 ms)** by the end of the
+watcher's run. Any single "how noisy is this box" figure is provisional in the direction of too small.
+
+### Re-measurement is blocked, provably
+23 watcher samples over the session, **zero quiet**, `loud=100%` on every one, foreign load
+7.5-18.8 of 20 cores. `--require-quiet` refuses to *start* — failing in 15 s beats failing in 40 min.
+Log kept at `bench/results/machine-load-2026-07-30.log` so the block is evidence, not a claim.
+
+### For Switch
+A 9.5x environmental swing swamps a 3x win **in either direction** — it can make a real
+improvement look like a regression. Before and after must **both** carry `QUIET`.
+
+### Standing rules this reinforced
+- **Refuse, never warn.** Applied to contention exactly as to unsteady baselines.
+- **Untested is not quiet**, mirroring untested is not steady.
+- Two instruments disagreeing resolves **pessimistically**.
+- Structural results (counts, integer identities) survive a contended run and are still printed.
+  Only durations are withheld.
