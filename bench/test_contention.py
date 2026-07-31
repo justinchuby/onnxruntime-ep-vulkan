@@ -504,3 +504,251 @@ def test_upload_bytes_per_inference_is_a_count_and_survives_contention():
     # the durations, by contrast, differ by the bandwidth ratio -- so a share cannot be invariant
     dur = lambda tr: sum(t["us"] for t in tr)
     assert dur(slow) / (dur(fast) / 2) == pytest.approx(0.4454 / 0.1455, rel=0.01)
+
+
+# ---------------------------------------------------------------------------------------------
+# phase_nesting / sibling_phases / decomposition_identity
+#
+# The merge that landed `desc_alloc`, `pipeline_lookup` and `cmd_upload` in trace.rs put three
+# real ph:"X" spans *inside* vulkan.record. Summing them as siblings inflates the host total by
+# roughly 2x and every share derived from it, and nothing in the trace raises. These tests are
+# the guard.
+# ---------------------------------------------------------------------------------------------
+
+SUB = phases.SUB_PHASE_CAVEAT_PREFIX
+
+
+def _sp(name, ts, dur, caveat=None):
+    e = {"name": f"vulkan.{name}", "ph": "X", "ts": ts, "dur": dur}
+    if caveat:
+        e["args"] = {"caveat": caveat}
+    return e
+
+
+def _nested_trace(declared=True):
+    """One subgraph: record[0,1000) containing cmd_upload[100,900), plus a submit sibling."""
+    cav = f"{SUB} the host staging memcpy" if declared else "host: staging memcpy"
+    return [
+        {"name": "vulkan.subgraph", "ph": "X", "ts": 0, "dur": 1200, "args": {"nodes": 3}},
+        _sp("record", 0, 1000, "host: command-buffer recording"),
+        _sp("cmd_upload", 100, 800, cav),
+        _sp("submit", 1000, 20),
+    ]
+
+
+def test_nested_span_is_not_summed_as_a_sibling():
+    """The double-count this whole mechanism exists to prevent."""
+    ev = _nested_trace()
+    allp = phases.phase_spans(ev)
+    sibs = phases.sibling_phases(allp)
+    assert {p["phase"] for p in allp} == {"record", "cmd_upload", "submit"}
+    assert {p["phase"] for p in sibs} == {"record", "submit"}
+
+    r = phases.analyse(ev)
+    # record 1000us + submit 20us = 1.02 ms. Adding cmd_upload would give 1.82 ms.
+    total = sum(v["total_ms"] for v in r["host_phases_ms"].values() if v.get("n"))
+    assert total == pytest.approx(1.02)
+    assert "cmd_upload" not in r["host_phases_ms"]
+    assert r["nested_phases_ms"]["cmd_upload"]["total_ms"] == pytest.approx(0.8)
+
+
+def test_undeclared_but_contained_span_goes_red():
+    """The operational direction: a new sub-phase lands without its caveat.
+
+    Containment is the evidence; the caveat is only a name. R11 -- the name must not be the sole
+    source of truth, or a rename silently disables the check.
+    """
+    v = phases.phase_nesting(phases.phase_spans(_nested_trace(declared=False)))
+    assert v["ok"] is False
+    assert v["verdict"] == "MISMATCH"
+    assert "double-counts" in v["detail"]
+
+
+def test_declared_nested_span_that_escapes_its_parent_goes_red():
+    ev = _nested_trace()
+    ev[2] = _sp("cmd_upload", 1100, 50, f"{SUB} escaped")  # after record ends
+    v = phases.phase_nesting(phases.phase_spans(ev))
+    assert v["ok"] is False
+    assert "only 0/1" in v["detail"]
+
+
+def test_a_child_added_after_this_table_was_written_is_still_excluded():
+    """sibling_phases unions the static table with the trace's own declaration."""
+    ev = _nested_trace()
+    ev.append(_sp("desc_alloc", 200, 30, f"{SUB} descriptor allocation"))
+    sibs = {p["phase"] for p in phases.sibling_phases(phases.phase_spans(ev))}
+    assert "desc_alloc" not in sibs
+
+
+def test_internal_closure_is_always_marked_weak():
+    """The 99.0%-that-was-wrong. Both sides came from the same tracer, so it could not fire."""
+    r = phases.analyse(_nested_trace())
+    d = r["decomposition_identity"]
+    assert d["internal_closure"]["strength"] == "WEAK"
+    assert "99.0" in d["internal_closure"]["why_weak"]
+    assert "external_closure" not in d  # nothing independent was supplied
+    with_whole = phases.analyse(_nested_trace(), independent_whole_ms=2.0,
+                                whole_source="perf_counter")["decomposition_identity"]
+    assert with_whole["external_closure"]["strength"] == "CAN FIRE"
+
+
+def test_decomposition_without_an_independent_whole_is_not_publishable():
+    d = phases.analyse(_nested_trace())["decomposition_identity"]
+    assert d["verdict"] == "UNCHECKABLE"
+    assert d["ok"] is False
+
+
+def test_decomposition_that_exceeds_an_independent_wall_goes_red():
+    ev = _nested_trace()
+    # trace claims 1.2 ms inside Compute; an honest clock saw 0.6 ms of wall
+    d = phases.analyse(ev, independent_whole_ms=0.6, whole_source="perf_counter")[
+        "decomposition_identity"]
+    assert d["ok"] is False
+    assert d["verdict"] == "EXCEEDS_WALL"
+
+
+def test_decomposition_that_fits_inside_the_wall_closes():
+    d = phases.analyse(_nested_trace(), independent_whole_ms=2.0,
+                       whole_source="perf_counter")["decomposition_identity"]
+    assert d["ok"] is True
+    assert d["verdict"] == "CLOSES"
+
+
+def test_two_upload_accountings_must_agree_and_one_alone_is_vacuous():
+    """alloc_device_upload_bytes read 0 while cmd_upload was 15.2 s. Nothing went red."""
+    assert phases.upload_accounting(100.0, None)["verdict"] == "VACUOUS"
+    assert phases.upload_accounting(None, None)["n_instruments"] == 0
+    assert phases.upload_accounting(100.0, 105.0)["verdict"] == "AGREE"
+    bad = phases.upload_accounting(100.0, 0.0)
+    assert bad["ok"] is False and bad["verdict"] == "DISAGREE"
+    assert "is quotable" in bad["detail"]
+
+
+def test_nesting_and_identity_reach_red_flags():
+    r = phases.analyse(_nested_trace(declared=False))
+    flags = " | ".join(phases.red_flags(r))
+    assert "phase_nesting" in flags
+    assert "decomposition_identity" in flags
+
+
+# ---------------------------------------------------------------------------------------------
+# admissible.py -- whether a *stored* number may be quoted, re-checked long after the process
+# that wrote it exited. This is the gap the three fabricated results came through.
+# ---------------------------------------------------------------------------------------------
+
+import admissible
+import json as _json_for_admissible_tests
+json = _json_for_admissible_tests
+
+
+def _good_record(**over):
+    rec = {
+        "device_index": 0,
+        "providers": ["VulkanExecutionProvider", "CPUExecutionProvider"],
+        "claimed_nodes": 412,
+        "model_output_equivalence": "MATCH",
+        "device_identity": {"verdict": "MATCH"},
+        "machine_quiescence": {"verdict": "QUIET"},
+        "measurement_validity": {"ok": True},
+        "vulkan": {"median_ms": 800.0},
+        "cpu": {"median_ms": 250.0},
+    }
+    rec.update(over)
+    return rec
+
+
+def test_an_honest_slow_number_is_admissible():
+    """Admissibility is about provenance, not speed. 3.2x slower than CPU, and quotable."""
+    for name, fn in admissible.GATES:
+        ok, _ = fn(_good_record())
+        assert ok, name
+
+
+def test_an_ep_that_never_loaded_is_refused():
+    """The 1.70x defect: ORT printed the error and did not raise, so everything ran on CPU."""
+    ok, why = admissible._gate_ep_loaded(
+        _good_record(providers=["CPUExecutionProvider"]))
+    assert ok is False and "1.70x" in why
+
+
+def test_an_ep_that_claimed_nothing_is_refused():
+    """The 1.45x defect: the EP loaded and declined every node."""
+    ok, why = admissible._gate_ep_loaded(_good_record(claimed_nodes=0))
+    assert ok is False and "1.45x" in why
+
+
+def test_absence_of_a_check_is_not_a_pass():
+    """The rule the whole module turns on: a missing guard is a refusal, not a default green."""
+    for field in ("providers", "device_identity", "machine_quiescence",
+                  "measurement_validity"):
+        rec = _good_record()
+        rec.pop(field)
+        fails = [n for n, fn in admissible.GATES if not fn(rec)[0]]
+        assert fails, f"removing {field} produced no refusal"
+
+
+def test_unmeasured_equivalence_blocks_the_number():
+    ok, why = admissible._gate_equivalence(_good_record(model_output_equivalence="UNMEASURED"))
+    assert ok is False and "UNMEASURED is the default" in why
+
+
+def test_contended_machine_blocks_the_number():
+    ok, why = admissible._gate_quiescence(_good_record(machine_quiescence={"verdict": "CONTENDED"}))
+    assert ok is False and "not comparable" in why
+
+
+def test_a_moved_cpu_baseline_refuses_the_difference():
+    """The GQA claim. 6226.8 -> 345.2 ms of CPU baseline, with a Vulkan-only change in between.
+
+    Naively differenced this reads as a 5.44x speedup. Normalised to each run's own baseline the
+    Vulkan side got 3.3x *worse*. Both readings are inadmissible, and the instrument that says so
+    is integer-free and needs no tolerance argument: the CPU EP cannot be affected by a Vulkan EP.
+    """
+    v = admissible.baseline_comparability(
+        {"cpu": {"median_ms": 6226.828}, "vulkan": {"median_ms": 3363.946}},
+        {"cpu": {"median_ms": 345.223}, "vulkan": {"median_ms": 618.589}},
+        "pre-gqa-dev0.json", "post-gqa-dev0.json")
+    assert v["ok"] is False
+    assert v["verdict"] == "BASELINE_MOVED"
+    assert v["baseline_ratio"] == pytest.approx(18.0, abs=0.1)
+
+
+def test_comparable_baselines_permit_the_difference():
+    v = admissible.baseline_comparability(
+        {"cpu": {"median_ms": 250.0}, "vulkan": {"median_ms": 900.0}},
+        {"cpu": {"median_ms": 262.0}, "vulkan": {"median_ms": 700.0}}, "a", "b")
+    assert v["ok"] is True and v["verdict"] == "COMPARABLE"
+
+
+def test_a_missing_baseline_is_vacuous_not_comparable():
+    v = admissible.baseline_comparability({"vulkan": {"median_ms": 1.0}}, {"cpu": {}}, "a", "b")
+    assert v["verdict"] == "VACUOUS"
+    assert "not a pass" in v["detail"]
+
+
+def test_a_non_timing_artifact_is_not_graded_against_timing_gates(tmp_path):
+    """A false red costs a falsifier its authority as surely as a false green does."""
+    (tmp_path / "caps.json").write_text(json.dumps(
+        {"devices": [{"device_index": 0, "timestamp_period_ns": 52.0833}]}), "utf-8")
+    a = admissible.audit(tmp_path)
+    assert a["graded"][0]["grade"] == admissible.NOT_A_RESULT
+    assert a["inadmissible"] == []
+
+
+def test_the_audit_exits_non_zero_when_an_inadmissible_artifact_is_present(tmp_path):
+    (tmp_path / "bad.json").write_text(json.dumps(
+        {"device_index": 0, "vulkan": {"median_ms": 100.0}, "cpu": {"median_ms": 50.0}}), "utf-8")
+    assert admissible.main(["--results", str(tmp_path)]) == 1
+    (tmp_path / "bad.json").unlink()
+    (tmp_path / "ok.json").write_text(json.dumps(_good_record()), "utf-8")
+    assert admissible.main(["--results", str(tmp_path)]) == 0
+
+
+def test_a_withdrawn_artifact_is_not_a_failure(tmp_path):
+    """Withdrawal is the system working, not a defect to be re-flagged forever."""
+    (tmp_path / "w.json").write_text(json.dumps(
+        {"withdrawn": True, "withdrawn_reason": "taken under contention",
+         "vulkan": {"median_ms": 1.0}}), "utf-8")
+    a = admissible.audit(tmp_path)
+    assert a["graded"][0]["grade"] == admissible.WITHDRAWN
+    assert a["inadmissible"] == []

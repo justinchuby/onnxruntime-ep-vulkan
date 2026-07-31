@@ -78,7 +78,25 @@ import statistics
 from pathlib import Path
 
 #: Host-side phase spans, in the order `rust/src/trace.rs` documents them.
-HOST_PHASES = ("compile", "prepack", "record", "upload", "submit", "fence_wait", "readback")
+HOST_PHASES = ("compile", "prepack", "record", "upload", "desc_alloc", "pipeline_lookup",
+               "cmd_upload", "submit", "fence_wait", "readback")
+
+#: Phases the EP emits *nested inside* another phase's span.
+#:
+#: ``trace.rs`` marks each of these with a caveat beginning ``host/sub-record:``. They are real
+#: ``ph:"X"`` spans that open and close **inside** ``vulkan.record``, so summing ``HOST_PHASES``
+#: as if they were siblings double-counts every microsecond of them. That is not a small error:
+#: ``cmd_upload`` alone is ~98% of ``record``, so a naive sum inflates the host total by nearly
+#: 2× and every share computed from it.
+#:
+#: This tuple is the *expectation*. It is never trusted on its own — :func:`phase_nesting`
+#: re-derives parenthood from timestamp containment, which is evidence, and goes red when the two
+#: disagree. A sub-phase added to ``trace.rs`` tomorrow is therefore detected rather than silently
+#: double-counted.
+SUB_RECORD_PHASES = ("desc_alloc", "pipeline_lookup", "cmd_upload")
+
+#: Prefix ``trace.rs`` puts on a nested phase's caveat. The artifact declares its own structure.
+SUB_PHASE_CAVEAT_PREFIX = "host/sub-record:"
 
 #: Phases that **contain** other accounted work and are therefore NOT leaves.
 #:
@@ -95,7 +113,7 @@ HOST_PHASES = ("compile", "prepack", "record", "upload", "submit", "fence_wait",
 #:
 #: Maps parent phase -> the accounted children that live inside its span.
 PHASE_CHILDREN = {
-    "record": ("upload",),
+    "record": ("upload",) + SUB_RECORD_PHASES,
 }
 
 
@@ -187,6 +205,185 @@ def phase_spans(events: "list[dict]") -> "list[dict]":
     return out
 
 
+def phase_nesting(phases: "list[dict]") -> dict:
+    """Derive which phases nest inside which **from timestamp containment**, and check the names.
+
+    Two independent sources for the same fact, which is what makes this a falsifier that can fire:
+
+    * **Evidence** — a span whose ``[ts, end)`` lies inside another phase span on the same thread
+      is nested. Timestamps come from the EP's clock and do not know what the phase is called.
+    * **Declaration** — ``trace.rs`` prefixes a nested phase's caveat with ``host/sub-record:``.
+      That is a *name*, and R11 says a name is not a definition.
+
+    Goes red when they disagree in either direction: a phase declared nested that is not contained
+    (the caveat is wrong, or the span escaped its parent) or a phase contained that is not declared
+    (a new sub-phase landed and every sibling sum since then has been double-counting).
+
+    The second direction is the one that matters operationally. ``desc_alloc``,
+    ``pipeline_lookup`` and ``cmd_upload`` were added to ``trace.rs`` after this module was
+    written; without this check they would have been summed as siblings of ``record``, inflating
+    the host total by ~2× and every share derived from it, with nothing raising.
+    """
+    by_name: "dict[str, list[dict]]" = {}
+    for p in phases:
+        by_name.setdefault(p["phase"], []).append(p)
+
+    parents = [p for p in phases if p["phase"] == "record"]
+    parents.sort(key=lambda p: p["ts"])
+
+    def contained_in_record(sp: dict) -> bool:
+        for par in parents:
+            if par["ts"] <= sp["ts"] and sp["end"] <= par["end"] and par is not sp:
+                return True
+        return False
+
+    observed, declared, mismatches = {}, {}, []
+    for name, spans in sorted(by_name.items()):
+        if name == "record":
+            continue
+        inside = sum(1 for s in spans if contained_in_record(s))
+        observed[name] = {"n": len(spans), "inside_record": inside}
+        says_sub = any(str(s.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX)
+                       for s in spans)
+        declared[name] = says_sub
+        all_inside = inside == len(spans) and spans
+        if says_sub and not all_inside:
+            mismatches.append(
+                f"{name}: caveat declares '{SUB_PHASE_CAVEAT_PREFIX}' but only {inside}/"
+                f"{len(spans)} spans are contained by a vulkan.record span")
+        elif all_inside and not says_sub:
+            mismatches.append(
+                f"{name}: every one of its {len(spans)} spans is contained by vulkan.record but "
+                f"its caveat does not declare it nested — if it is summed as a sibling of "
+                f"'record' the host total double-counts it")
+
+    unexpected = sorted(n for n, d in declared.items()
+                        if d and n not in PHASE_CHILDREN.get("record", ()))
+    out = {
+        "check": "phase_nesting",
+        "asserts": "the phases summed as siblings do not overlap, so the host total counts each "
+                   "microsecond once",
+        "observed": observed,
+        "declared_nested": sorted(n for n, d in declared.items() if d),
+        "expected_nested": sorted(SUB_RECORD_PHASES),
+        "unexpected_nested": unexpected,
+    }
+    if mismatches:
+        out.update(ok=False, verdict="MISMATCH", detail="; ".join(mismatches))
+    elif not parents:
+        out.update(ok=True, verdict="VACUOUS",
+                   detail="no vulkan.record span in this trace; nothing can nest inside it.")
+    else:
+        out.update(ok=True, verdict="CONSISTENT",
+                   detail=(f"containment and caveats agree; nested = "
+                           f"{', '.join(out['declared_nested']) or 'none'}"))
+    if unexpected:
+        out["detail"] += (f". NOTE: {', '.join(unexpected)} declare themselves nested but are not "
+                          f"in PHASE_CHILDREN — they are being treated as children from the "
+                          f"trace's own declaration, not from this module's table.")
+    return out
+
+
+def sibling_phases(phases: "list[dict]") -> "list[dict]":
+    """The phase spans that may legitimately be summed together — nested children removed.
+
+    Children are identified from the trace's declaration (``host/sub-record:``) unioned with
+    :data:`SUB_RECORD_PHASES`. The union rather than either alone: the table catches a child whose
+    caveat is missing, the declaration catches a child added after this table was written.
+    """
+    nested = set(SUB_RECORD_PHASES)
+    for p in phases:
+        if str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX):
+            nested.add(p["phase"])
+    return [p for p in phases if p["phase"] not in nested]
+
+
+def decomposition_identity(host: dict, gpu: dict, in_compute_ms: float,
+                           independent_whole_ms: "float | None" = None,
+                           whole_source: str = "") -> dict:
+    """R11: does the decomposition close, and **against a whole from a different source**?
+
+    The rule this implements was paid for. A phase table closed at 99.0% —
+    ``68.3 + 16.3 + 14.1 + 0.3`` — and was wrong, because the missing 2 GB memcpy was *inside* one
+    of the rows. Both sides of that identity were sums over the same tracer's spans, so the parts
+    and the whole moved together and the check could not fire no matter how badly the rows were
+    named. **An identity whose two sides come from the same source is a falsifier that cannot
+    fire.**
+
+    So this returns two different things and never conflates them:
+
+    * ``internal_closure`` — parts against ``sum(vulkan.subgraph)``. Both from the EP's tracer.
+      Useful for spotting unattributed time; **not evidence that the rows mean what they say**,
+      and labelled as such. It is `WEAK` by construction.
+    * ``external_closure`` — ``sum(vulkan.subgraph)`` against a whole measured by a *different*
+      clock: the harness's own ``time.perf_counter`` around ``session.run``, which knows nothing
+      about phases. This one **can** fire. If the trace claims more time than the wall clock
+      contains, spans are being double-counted — which is exactly what summing nested sub-record
+      phases as siblings does.
+
+    Without an independent whole the verdict is ``UNCHECKABLE``, never ``ok``.
+    """
+    parts_ms = sum(v["total_ms"] for v in host.values() if v.get("n"))
+    out = {
+        "check": "decomposition_identity",
+        "asserts": "a published decomposition closes against a whole measured by a different "
+                   "instrument than the parts",
+        "parts_ms": round(parts_ms, 3),
+        "in_compute_ms": round(in_compute_ms, 3),
+    }
+
+    # --- internal: same source on both sides. Structurally weak, and says so. ---
+    if in_compute_ms > 0:
+        resid = in_compute_ms - parts_ms
+        out["internal_closure"] = {
+            "residual_ms": round(resid, 3),
+            "residual_share": round(resid / in_compute_ms, 5),
+            "over_subscribed": parts_ms > in_compute_ms * (1 + CONTAINMENT_SLACK),
+            "strength": "WEAK",
+            "why_weak": (
+                "both sides are sums over the same tracer's spans. A cost hidden inside a row "
+                "cancels from both and this check stays green — which is precisely how "
+                "'68.3+16.3+14.1+0.3 = 99.0%' closed while missing a 2 GB memcpy. Never quote "
+                "this as evidence that the rows are correctly named."),
+        }
+        if out["internal_closure"]["over_subscribed"]:
+            out["internal_closure"]["detail"] = (
+                f"parts ({parts_ms:.1f} ms) exceed the whole ({in_compute_ms:.1f} ms) by more "
+                f"than {CONTAINMENT_SLACK:.0%}. Phases are being counted more than once — the "
+                f"usual cause is summing nested sub-record spans as siblings.")
+
+    # --- external: a whole from a clock that does not know what a phase is. ---
+    if independent_whole_ms is None or independent_whole_ms <= 0:
+        out.update(ok=False, verdict="UNCHECKABLE",
+                   detail=("no independently measured whole was supplied, so the decomposition "
+                           "cannot be checked against anything that could contradict it. Per R11 "
+                           "it is not publishable in this state."))
+        return out
+
+    ratio = in_compute_ms / independent_whole_ms
+    out["external_closure"] = {
+        "independent_whole_ms": round(independent_whole_ms, 3),
+        "whole_source": whole_source or "unspecified",
+        "trace_share_of_wall": round(ratio, 5),
+        "strength": "CAN FIRE",
+    }
+    if ratio > 1 + CONTAINMENT_SLACK:
+        out.update(
+            ok=False, verdict="EXCEEDS_WALL",
+            detail=(f"the trace accounts for {in_compute_ms:.1f} ms inside Compute but the "
+                    f"harness's own clock measured only {independent_whole_ms:.1f} ms of wall "
+                    f"time for the same work ({ratio:.2f}x). Time is being counted more than "
+                    f"once. Two independent clocks disagreeing is not a rounding question."))
+    else:
+        out.update(
+            ok=True, verdict="CLOSES",
+            detail=(f"trace-side time inside Compute is {ratio:.1%} of the wall time measured by "
+                    f"{whole_source or 'the harness'} — a different clock that knows nothing "
+                    f"about phases. The remainder is ORT graph execution and CPU-EP nodes "
+                    f"between islands, which are real and outside the EP."))
+    return out
+
+
 def gpu_spans(events: "list[dict]") -> "list[dict]":
     """Every device-lane span, with duration taken from ``gpu_ns`` rather than ``dur``.
 
@@ -262,7 +459,8 @@ def _summarise(values: "list[float]") -> dict:
     }
 
 
-def host_phase_totals(attributed: "list[dict]", child_ms: "dict[str, float] | None" = None) -> dict:
+def host_phase_totals(attributed: "list[dict]", child_ms: "dict[str, float] | None" = None,
+                      child_names: "dict[str, tuple] | None" = None) -> dict:
     """Per-phase host totals, with non-leaf phases marked as such.
 
     Every entry carries ``is_leaf``. For a non-leaf phase the total is an **upper bound on the
@@ -290,7 +488,7 @@ def host_phase_totals(attributed: "list[dict]", child_ms: "dict[str, float] | No
         rec["is_leaf"] = is_leaf_phase(phase)
         if rec["is_leaf"]:
             continue
-        kids = PHASE_CHILDREN[phase]
+        kids = (child_names or {}).get(phase) or PHASE_CHILDREN[phase]
         rec["contains"] = list(kids)
         rec["caveat"] = (
             f"NOT A LEAF: this span also contains {', '.join(kids)}. Its total is an upper bound "
@@ -352,6 +550,51 @@ def phase_leaf_accounting(totals: dict) -> dict:
                    f"{k}: {v['child_share']:.1%} of it is {'+'.join(v['contains'])}, "
                    f"leaf residual {v['leaf_ms']:.1f} ms"
                    for k, v in sorted(non_leaf.items())))
+    return out
+
+
+def upload_accounting(counter_ms: "float | None", span_ms: "float | None",
+                      tol: float = 0.25) -> dict:
+    """Falsifier: two independent accountings of the same upload must agree.
+
+    The transfer counters (bytes, inverted through a rate into a duration) and the ``cmd_upload``
+    span (a wall-clock interval) measure the same host memcpy by different means. If both exist
+    and disagree, at least one is wrong and neither may be quoted -- the precedent is
+    ``alloc_device_upload_bytes`` reporting 0 on a run where ``cmd_upload`` was 15.2 s: two upload
+    accountings, one blind, and nothing went red.
+
+    Goes red on disagreement beyond ``tol``. Reports VACUOUS -- never a pass -- when only one
+    instrument is present, because one instrument cannot falsify itself.
+    """
+    out = {
+        "check": "upload_accounting",
+        "asserts": "the transfer-counter upload duration and the cmd_upload span agree",
+        "counter_ms": None if counter_ms is None else round(counter_ms, 3),
+        "span_ms": None if span_ms is None else round(span_ms, 3),
+        "tolerance": tol,
+    }
+    if counter_ms is None or span_ms is None:
+        present = "cmd_upload span" if span_ms is not None else (
+            "transfer counters" if counter_ms is not None else "neither instrument")
+        out.update(ok=True, verdict="VACUOUS", n_instruments=int(counter_ms is not None)
+                   + int(span_ms is not None),
+                   detail=f"only {present} available; a single instrument cannot falsify itself. "
+                          f"This is not a pass.")
+        return out
+    denom = max(counter_ms, span_ms)
+    rel = abs(counter_ms - span_ms) / denom if denom > 0 else 0.0
+    out["relative_difference"] = round(rel, 4)
+    out["n_instruments"] = 2
+    if rel > tol:
+        out.update(ok=False, red=True, verdict="DISAGREE",
+                   detail=(f"transfer counters say {counter_ms:.1f} ms of upload inside record; "
+                           f"the cmd_upload span says {span_ms:.1f} ms ({rel:.1%} apart, "
+                           f"tolerance {tol:.0%}). One of the two is wrong; no upload figure from "
+                           f"this trace is quotable until they are reconciled."))
+        return out
+    out.update(ok=True, verdict="AGREE",
+               detail=(f"counters {counter_ms:.1f} ms vs span {span_ms:.1f} ms, {rel:.1%} apart. "
+                       f"The span is used; the counters corroborate it."))
     return out
 
 
@@ -1365,19 +1608,50 @@ def _cycle_period(seq: "list") -> "int | None":
 # ---------------------------------------------------------------------------
 
 def analyse(events: "list[dict]", counters: "dict | None" = None,
-            integrated_gpu: bool = False) -> dict:
+            integrated_gpu: bool = False,
+            independent_whole_ms: "float | None" = None,
+            whole_source: str = "") -> dict:
     """The whole phase picture for one trace, with its falsifiers attached."""
     subs = subgraph_spans(events)
-    attributed = attribute(subs, phase_spans(events))
+    all_phases = phase_spans(events)
+    nesting = phase_nesting(all_phases)
+    attributed = attribute(subs, all_phases)
+    # Only true siblings may be summed. Nested sub-record spans (desc_alloc, pipeline_lookup,
+    # cmd_upload) are real X spans inside vulkan.record; adding them to the host total counts the
+    # same microseconds twice. They are reported separately, as a breakdown of `record`.
+    sib_spans = sibling_phases(all_phases)
+    nested_names = sorted({p["phase"] for p in all_phases} - {p["phase"] for p in sib_spans})
+    siblings = attribute(subs, sib_spans)
     gpus = gpu_spans(events)
     transfers = transfer_events(events)
     scaling = record_scaling(attributed, subs, transfers)
     # record_scaling owns the containment attribution; host_phase_totals consumes it rather than
     # re-deriving it, so there is exactly one answer to "how much of record is upload".
-    child_ms = ({"record": scaling["upload_inside_record_ms"]}
-                if scaling.get("usable") and scaling.get("upload_inside_record_ms") is not None
-                else {})
-    host = host_phase_totals(attributed, child_ms)
+    counter_upload_ms = (scaling["upload_inside_record_ms"]
+                         if scaling.get("usable")
+                         and scaling.get("upload_inside_record_ms") is not None else None)
+    # On traces that carry sub-record spans, `cmd_upload` measures the same memcpy the transfer
+    # counters measure. Adding both would double-count it; picking one silently would hide a
+    # disagreement between two instruments. Prefer the span (it is a wall-clock interval, not a
+    # rate inverted back into a duration) and record whether they agree.
+    nested_ms = {n: sum(p["dur"] for p in attributed if p["phase"] == n) / 1000.0
+                 for n in nested_names}
+    span_upload_ms = nested_ms.get("cmd_upload")
+    upload_agreement = upload_accounting(counter_upload_ms, span_upload_ms)
+    resolved_upload = span_upload_ms if span_upload_ms is not None else counter_upload_ms
+    child_ms = {}
+    if resolved_upload is not None or nested_ms:
+        child_ms["record"] = (resolved_upload or 0.0) + sum(
+            v for k, v in nested_ms.items() if k != "cmd_upload")
+    # Name only the children this trace actually contains, and that were actually subtracted.
+    # Listing PHASE_CHILDREN wholesale would claim to have accounted for sub-phases that are not
+    # in the trace at all -- the same over-claiming this module exists to prevent.
+    accounted_children = tuple(n for n in PHASE_CHILDREN["record"]
+                               if n in nested_names
+                               or (n == "upload" and span_upload_ms is None
+                                   and counter_upload_ms is not None))
+    host = host_phase_totals(siblings, child_ms, {"record": accounted_children})
+    nested_totals = host_phase_totals([p for p in attributed if p["phase"] in nested_names])
     gpu = gpu_totals(gpus)
 
     # The denominator for "share of what". The subgraph spans are the EP's own view of the time
@@ -1413,6 +1687,14 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "islands, and session setup are all outside it. Phase shares below are shares of "
             "this, and may not be restated as shares of the benchmark's wall time."),
         "host_phases_ms": host,
+        "nested_phases_ms": nested_totals,
+        "nested_phases_note": (
+            "sub-record spans, reported separately because they are INSIDE vulkan.record. They "
+            "are excluded from host_phases_ms and from every share, since adding them to their "
+            "own parent counts the same microseconds twice."),
+        "phase_nesting": nesting,
+        "decomposition_identity": decomposition_identity(
+            host, gpu, in_compute_ms, independent_whole_ms, whole_source),
         "phase_leaf_accounting": leaf_acct,
         "unattributed_in_compute_ms": round(in_compute_ms - phased_ms, 3),
         "unattributed_note": (
@@ -1440,6 +1722,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "timestamp_conversion_integrality": timestamp_conversion_integrality(gpus),
             "valid_bits_applied": valid_bits_applied(gpus),
             "trace_matches_counters": trace_matches_counters(subs, counters),
+            "upload_accounting": upload_agreement,
         },
     }
 
@@ -1461,6 +1744,12 @@ def red_flags(report: dict) -> "list[str]":
     la = report.get("phase_leaf_accounting") or {}
     if la and not la.get("ok"):
         out.append(f"phase_leaf_accounting: {la.get('verdict')} — {la.get('detail')}")
+    pn = report.get("phase_nesting") or {}
+    if pn and not pn.get("ok"):
+        out.append(f"phase_nesting: {pn.get('verdict')} — {pn.get('detail')}")
+    di = report.get("decomposition_identity") or {}
+    if di and not di.get("ok"):
+        out.append(f"decomposition_identity: {di.get('verdict')} — {di.get('detail')}")
     return out
 
 

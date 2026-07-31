@@ -1760,3 +1760,209 @@ duration measures what its name says. Neither can be satisfied by the mechanism 
 remain under §10's withdrawal for contention. Re-labelling a withdrawn number does not un-withdraw
 it. The ordering question in §11.1 stays open until two quiet-machine runs agree.
 
+
+---
+
+## 12. Admissibility: whether a stored number may be quoted at all (2026-07-30 night)
+
+**Standing directive from Justin, this session:** 「要确保我们性能是非常高 一致向高性能推进」 — performance
+is now a continuous, first-class goal. That raises the stakes on everything in this document,
+because a permanent push for speed is a permanent incentive to quote the most favourable number
+available. This section is the counterweight I own: **the gate that decides whether a performance
+claim is admissible at all.**
+
+It does not slow the push down. A slow honest number is admissible. Admissibility is about
+provenance, not speed.
+
+### 12.1 A double-count that a merge would have introduced, silently
+
+`origin/main` landed three new spans in `trace.rs`: `vulkan.desc_alloc`, `vulkan.pipeline_lookup`
+and `vulkan.cmd_upload`. They are real `ph:"X"` spans and they are emitted **inside**
+`vulkan.record`.
+
+Every phase total in `bench/phases.py` was, until this session, a sum over sibling spans. Summing
+these three alongside `record` counts the same microseconds twice: the host total inflates by
+roughly 2× and **every share derived from it** moves with it. Nothing in the trace raises; nothing
+in the test suite failed; the resulting table would have looked entirely ordinary.
+
+This is the same defect class as `record`-is-68%, one level down. §11 established that a phase
+whose children are invisible to the aggregation must not be reported as a leaf. This is the
+converse: **a child that becomes visible must be removed from the sibling sum on the same day it
+appears.**
+
+The guard is `phases.phase_nesting`. It derives parenthood **from timestamp containment**, and
+separately reads the `host/sub-record:` prefix the EP puts on the child's caveat, and goes red when
+the two disagree **in either direction**:
+
+| direction | what it catches |
+|---|---|
+| declared nested, not contained | the caveat is wrong, or a span escaped its parent |
+| contained, not declared | **a new sub-phase landed and every sibling sum since is double-counting** |
+
+The second row is the operational one, and it is why containment is the primary source. R11: *a
+measurement's name is not its definition.* Timestamps do not know what a phase is called; a rename
+in `trace.rs` cannot disable this check.
+
+`phases.sibling_phases` then takes the **union** of the static `SUB_RECORD_PHASES` table and the
+trace's own declaration. The union rather than either alone, and the asymmetry is deliberate: the
+table catches a child whose caveat is missing, the declaration catches a child added after the
+table was written. Each source covers the other's blind spot.
+
+Nested spans are still reported — under `nested_phases_ms`, as a breakdown *of* `record` — and are
+excluded from every share.
+
+### 12.2 Two upload accountings, and neither one alone is evidence
+
+`cmd_upload` measures the host staging memcpy as a wall-clock interval. The transfer counters
+measure the same memcpy as bytes, inverted through a rate into a duration. Adding both
+double-counts it; picking one silently discards a free cross-check.
+
+`phases.upload_accounting` prefers the span, uses the counters to corroborate it, and goes red when
+they disagree by more than 25%. When only one is present it reports **`VACUOUS`, explicitly not a
+pass** — one instrument cannot falsify itself.
+
+The precedent is Tank's: `alloc_device_upload_bytes` read **0** on a run where `cmd_upload` was
+**15.2 seconds**. Two accountings of the same upload, one of them blind, and nothing went red.
+
+### 12.3 R11 — and why our decomposition check could not fire
+
+The rule was paid for. The coordinator's phase table closed at **99.0%**:
+
+```
+68.3 + 16.3 + 14.1 + 0.3 = 99.0%
+```
+
+and it was wrong, because a 2 GB memcpy was missing — and it was missing *inside a row*, not
+between them. Both sides of that identity were sums over the same tracer's spans. The parts and
+the whole moved together. **An identity whose two sides come from the same source is a falsifier
+that cannot fire, no matter how badly the rows are named.**
+
+`phases.decomposition_identity` therefore reports two closures and labels them differently:
+
+| closure | whole comes from | strength |
+|---|---|---|
+| `internal_closure` | `sum(vulkan.subgraph)` — the same tracer | **`WEAK`**, with `why_weak` naming the 99.0% failure inline |
+| `external_closure` | the harness's own `perf_counter` | **`CAN FIRE`** |
+
+The weakness is written into the artifact, next to the number, so it travels with it.
+
+With no independent whole the verdict is **`UNCHECKABLE`** and `ok` is **false** — a decomposition
+that nothing could contradict is not publishable. The independent whole is now threaded through:
+`bench/stats.Sample.loop_wall_ms` records the wall time of the whole warmup+timed loop from
+`perf_counter`, a clock that knows nothing about phases, and `_run_trace_pass` passes it into
+`analyse()`.
+
+On the stored dev0 trace the check reads **`CLOSES`** — trace-side time inside Compute is 74.1% of
+the harness's wall time, the remainder being ORT graph execution, session setup and the CPU EP's
+nodes between islands. A synthetic 2× inflation reads **`EXCEEDS_WALL`**. The falsifier fires.
+
+**Per the strengthened §10.0: the wall-clock ratio leads. The decomposition may accompany it, never
+replace it, and is publishable only with this identity check attached.**
+
+### 12.4 `bench/admissible.py` — re-checking a number after its process exited
+
+Every other guard in `bench/` runs at measurement time, inside the process that produced the
+number. A JSON file in `bench/results/` carries none of them. It gets read by a human, pasted into
+a status report, or differenced against another file, hours later. **Nothing re-checks it.**
+
+All three fabricated results on this project came through that gap:
+
+- **1.70×** through an EP that could not load — ORT *printed* the error and did not raise
+- **1.45×** through an EP that loaded and declined every node
+- a **"GQA speedup"** obtained by differencing two runs whose CPU baselines were **18× apart**
+
+All three are visible in the stored artifact, if something looks. `bench/admissible.py` looks. It
+grades every file in `bench/results/` on five gates, and **exits non-zero** when an inadmissible
+artifact is present:
+
+| gate | refuses when | the defect it is named after |
+|---|---|---|
+| `ep_loaded` | EP absent from `get_providers()`, or claimed count zero/absent | the 1.70× and 1.45× |
+| `model_output_equivalence` | not `MATCH` | §10.0's gated triple; `UNMEASURED` is the default |
+| `device_identity` | absent, or not `MATCH`/`NON_DECISIVE` | the inverted device labels (§11.1) |
+| `machine_quiescence` | absent, or not `QUIET` | the 9.5× contention inflation (§10) |
+| `measurement_validity` | absent, or failed | the harness's own self-check |
+
+**Absence of a check is a refusal, not a default green.** That is the single design decision the
+module turns on, and it is tested directly: removing any one field from a good record must produce
+a refusal.
+
+`WITHDRAWN` is its own grade and is **not** a failure — an artifact whose author has already
+retracted it is the system working, and re-flagging it forever teaches people to ignore the output.
+
+### 12.5 The cross-artifact check: `baseline_comparability`
+
+The GQA defect does not live in either file. Both are individually unremarkable. It lives **between
+them**, and no per-file gate can see it.
+
+A speedup claim is a ratio of ratios, and its denominator is the CPU EP — which **no change to a
+Vulkan EP can affect.** So:
+
+> **Two runs may only be differenced if their CPU baselines agree.**
+
+| run | vulkan | **cpu** | vk/cpu |
+|---|---|---|---|
+| `pre-gqa-dev0` | 3363.9 ms | **6226.8 ms** | 0.54× |
+| `post-gqa-dev0` | 618.6 ms | **345.2 ms** | 1.79× |
+
+**The CPU baseline moved 18.0× across a Vulkan-only change.** Read naively — Vulkan before against
+Vulkan after — this is a **5.44× speedup**, and it is the most impressive number this project has
+ever produced. Normalised to each run's own baseline, the Vulkan side got **3.3× worse**.
+
+**Both readings are inadmissible.** The 6226.8 ms CPU figure is itself anomalous; every other run
+in `bench/results/` shows 185–350 ms. Something was wrong with the machine, and the only honest
+statement is that these two files cannot support any claim in either direction.
+
+`post-gqa-dev1` (230.7 ms Vulkan vs 254.0 ms CPU) would read as **this project's first win** —
+1.10× faster than CPU. It fails four of five gates and **must not be quoted.** That one is worth
+stating plainly: the guard's first real act was to refuse a result we wanted.
+
+### 12.6 Audit of `bench/results/` as it stands
+
+```
+WITHDRAWN     phi35-2026-07-30-phases.json   (withdrawn by me in §10, taken under contention)
+INADMISSIBLE  phi35.json                     no device_identity / quiescence / validity
+INADMISSIBLE  pre-gqa-dev0.json              same, and see §12.5
+INADMISSIBLE  post-gqa-dev0.json             same, and see §12.5
+INADMISSIBLE  post-gqa-dev1.json             same -- would have read as the first win
+NOT_A_RESULT  timestamp-audit.json           not a timing artifact; not graded against timing gates
+BASELINE_MOVED  pre-gqa-dev0 vs post-gqa-dev0  CPU baseline 18.0x apart
+```
+
+`NOT_A_RESULT` matters as much as the refusals. Grading a device-capability report against timing
+gates would produce a false red, and **a false red costs a falsifier its authority as surely as a
+false green does.**
+
+**There is currently no admissible end-to-end performance number in this repository.** That is the
+correct state of the record, and it is not a regression — the numbers were always this weak; only
+the reporting has caught up. Re-measurement is blocked on a quiet machine, which has not existed
+at any point today.
+
+### 12.7 The instrument that goes red — this section's claims
+
+| claim | instrument that goes red if it is false |
+|---|---|
+| nested sub-record spans are not double-counted | `phase_nesting` (containment vs caveat, red both directions) + `test_nested_span_is_not_summed_as_a_sibling` asserts the host total is 1.02 ms, not 1.82 ms |
+| a new sub-phase cannot silently join the sibling sum | `phase_nesting` "contained but not declared" branch; `sibling_phases` unions table with declaration |
+| the two upload accountings agree | `upload_accounting` — `DISAGREE` beyond 25%, `VACUOUS` (never pass) with one instrument |
+| the decomposition closes against something that could contradict it | `decomposition_identity.external_closure` vs `Sample.loop_wall_ms`; `UNCHECKABLE` is `ok=False` |
+| the internal closure is not evidence | it is labelled `WEAK` **in the artifact**, with the 99.0% failure quoted in `why_weak` |
+| a stored number's provenance is intact | `bench/admissible.py`, exit 1 |
+| the GQA files cannot support a speedup | `baseline_comparability` — `BASELINE_MOVED`, ratio 18.0 |
+| a non-timing artifact is not falsely refused | `test_a_non_timing_artifact_is_not_graded_against_timing_gates` |
+
+163 tests in `bench/` pass.
+
+### 12.8 What I owe, and what I am blocked on
+
+- **Blocked on a quiet machine** (unchanged from §10): re-measurement of both devices, and the
+  warmup-decline discriminator (two quiet runs agreeing on `cycles_to_steady`).
+- **For Switch:** verify the weight cache **on bytes, not wall time**. `device_upload_bytes` across
+  a 1/2/3 inference sweep currently reads 1997.60 / 3995.19 / 5992.79 MiB — exactly linear. **If it
+  stops being linear, the cache works.** Bytes are integers, deterministic, and immune to the 9.5×
+  contention swing; a wall-clock before/after on this machine is not measurable today.
+- **For Switch:** `rust/src/trace.rs:216` still attaches *"host: command-buffer recording; amortised
+  across replays"* to the `record` span. §11 established that span is 98.6% upload. **The false
+  caveat ships inside every trace we produce.** His file, not mine.
+- **`largest_island_flops`** (§10.0's third slot) remains unemitted; my harness consumes it the day
+  a `PartitionStats` event carries it.

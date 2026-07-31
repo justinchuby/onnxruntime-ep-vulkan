@@ -337,3 +337,64 @@ spent *on*.
 ### Note for Switch (in the decision inbox)
 `rust/src/trace.rs:715` attaches "host: command-buffer recording; amortised across replays" to the
 `record` span. **That caveat is now false and it ships inside every trace.** His file, not mine.
+
+---
+
+## 2026-07-30 night — admissibility: whether a stored number may be quoted at all
+
+**Context.** Standing directive from Justin that performance is now continuous and first-class,
+plus new rules R10/R11/R6-amendment-4. My charge: *"you own whether a performance claim is
+admissible."*
+
+**Merged `origin/main`** and immediately found what the merge would have done to me: `trace.rs` now
+emits `desc_alloc`, `pipeline_lookup` and `cmd_upload` as real `ph:"X"` spans **inside**
+`vulkan.record`. My sibling summation would have double-counted them — ~2x host inflation, every
+share moving with it, nothing raising, no test failing. Same defect class as record-is-68%, one
+level down.
+
+**Built:**
+- `phases.phase_nesting` — parenthood from **timestamp containment** (evidence), cross-checked
+  against the `host/sub-record:` caveat (name). Red in both directions. Containment is primary
+  because R11 says a name is not a definition; a rename cannot disable the check.
+- `phases.sibling_phases` — union of the static table and the trace's own declaration. Asymmetric
+  on purpose: table catches a missing caveat, declaration catches a child added after the table.
+- `phases.upload_accounting` — the counters and the `cmd_upload` span measure the same memcpy.
+  Prefer the span, corroborate with the counters, red on >25% disagreement, **VACUOUS not pass**
+  with one instrument. Named after Tank's `alloc_device_upload_bytes` reading 0 while `cmd_upload`
+  was 15.2 s.
+- `phases.decomposition_identity` — R11. `internal_closure` is labelled **`WEAK` in the artifact**
+  with the 99.0%-that-was-wrong quoted inline; only `external_closure` (harness `perf_counter`) can
+  fire. No independent whole => `UNCHECKABLE`, `ok=False`.
+- `stats.Sample.loop_wall_ms` + threading through `_run_trace_pass` so the external closure is real
+  rather than theoretical.
+- **`bench/admissible.py`** — the piece that did not exist. Every other guard runs at measurement
+  time inside the producing process; a JSON file in `results/` carries none of them. Five gates,
+  exit 1 on any inadmissible artifact. **Absence of a check is a refusal, not a default green.**
+- `admissible.baseline_comparability` — the cross-artifact check. Neither GQA file is individually
+  remarkable; the defect lives *between* them.
+
+**Found.** The GQA pair: CPU baseline **6226.8 -> 345.2 ms, 18x**, across a Vulkan-only change.
+Naive difference reads **5.44x speedup** — the best number this project has produced. Baseline-
+normalised, Vulkan got **3.3x worse**. Both inadmissible. `post-gqa-dev1` (230.7 vs 254.0) would
+have read as **the first win** and fails four of five gates.
+
+**The guard's first real act was to refuse a result we wanted.** That is the test of whether it is
+a guard or a decoration.
+
+**State of the record: there is no admissible end-to-end performance number in this repository.**
+Not a regression — the numbers were always this weak, the reporting has caught up.
+
+**Judgements I would defend:**
+- Containment over caveat as the primary nesting source. The alternative is a check a rename
+  disables.
+- `WEAK` written into the artifact rather than into the docs. Caveats travel with numbers or they
+  do not travel.
+- `NOT_A_RESULT` as a distinct grade. A false red costs a falsifier its authority as surely as a
+  false green does, and I nearly shipped one against `timestamp-audit.json`.
+- `WITHDRAWN` is not a failure. Re-flagging a retracted artifact forever teaches people to ignore
+  the output.
+
+**Still blocked on a quiet machine** (23 contention samples today, zero quiet): both-device
+re-measurement, and the warmup-decline discriminator.
+
+163 tests in `bench/` pass (was 141).

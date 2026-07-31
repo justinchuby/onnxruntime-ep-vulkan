@@ -1,0 +1,146 @@
+{
+  "results_dir": "bench\\results",
+  "n_files": 7,
+  "graded": [
+    {
+      "file": "admissibility.json",
+      "grade": "NOT_A_RESULT",
+      "detail": "no timing record in this document (audit or metadata artifact)"
+    },
+    {
+      "file": "phi35-2026-07-30-phases.json",
+      "grade": "WITHDRAWN",
+      "detail": "marked withdrawn by its author"
+    },
+    {
+      "file": "phi35.json",
+      "grade": "INADMISSIBLE",
+      "records": [
+        {
+          "record": 0,
+          "grade": "INADMISSIBLE",
+          "failed_gates": [
+            "device_identity: no device_identity check. The selector index is not the enumeration index (--device 0 is the RTX 4060, --device 1 the Iris Xe); a label nothing verified is a guess.",
+            "machine_quiescence: no machine_quiescence record. Recording inflates 9.5x under CPU contention; a number taken on an unknown machine has an unknown multiplier on it.",
+            "measurement_validity: no measurement_validity block; the harness's own self-check did not run."
+          ],
+          "passed_gates": [
+            "ep_loaded: EP in providers, 257 node(s)/island(s) claimed",
+            "model_output_equivalence: model_output_equivalence MATCH"
+          ],
+          "vulkan_median_ms": 2790.715,
+          "cpu_median_ms": 229.83
+        },
+        {
+          "record": 1,
+          "grade": "INADMISSIBLE",
+          "failed_gates": [
+            "device_identity: no device_identity check. The selector index is not the enumeration index (--device 0 is the RTX 4060, --device 1 the Iris Xe); a label nothing verified is a guess.",
+            "machine_quiescence: no machine_quiescence record. Recording inflates 9.5x under CPU contention; a number taken on an unknown machine has an unknown multiplier on it.",
+            "measurement_validity: no measurement_validity block; the harness's own self-check did not run."
+          ],
+          "passed_gates": [
+            "ep_loaded: EP in providers, 257 node(s)/island(s) claimed",
+            "model_output_equivalence: model_output_equivalence MATCH"
+          ],
+          "vulkan_median_ms": 1465.914,
+          "cpu_median_ms": 185.945
+        }
+      ]
+    },
+    {
+      "file": "post-gqa-dev0.json",
+      "grade": "INADMISSIBLE",
+      "records": [
+        {
+          "record": 0,
+          "grade": "INADMISSIBLE",
+          "failed_gates": [
+            "device_identity: no device_identity check. The selector index is not the enumeration index (--device 0 is the RTX 4060, --device 1 the Iris Xe); a label nothing verified is a guess.",
+            "machine_quiescence: no machine_quiescence record. Recording inflates 9.5x under CPU contention; a number taken on an unknown machine has an unknown multiplier on it.",
+            "measurement_validity: no measurement_validity block; the harness's own self-check did not run."
+          ],
+          "passed_gates": [
+            "ep_loaded: EP in providers, 353 node(s)/island(s) claimed",
+            "model_output_equivalence: model_output_equivalence MATCH"
+          ],
+          "vulkan_median_ms": 618.589,
+          "cpu_median_ms": 345.223
+        }
+      ]
+    },
+    {
+      "file": "post-gqa-dev1.json",
+      "grade": "INADMISSIBLE",
+      "records": [
+        {
+          "record": 1,
+          "grade": "INADMISSIBLE",
+          "failed_gates": [
+            "device_identity: no device_identity check. The selector index is not the enumeration index (--device 0 is the RTX 4060, --device 1 the Iris Xe); a label nothing verified is a guess.",
+            "machine_quiescence: no machine_quiescence record. Recording inflates 9.5x under CPU contention; a number taken on an unknown machine has an unknown multiplier on it.",
+            "measurement_validity: no measurement_validity block; the harness's own self-check did not run."
+          ],
+          "passed_gates": [
+            "ep_loaded: EP in providers, 353 node(s)/island(s) claimed",
+            "model_output_equivalence: model_output_equivalence MATCH"
+          ],
+          "vulkan_median_ms": 230.683,
+          "cpu_median_ms": 254.045
+        }
+      ]
+    },
+    {
+      "file": "pre-gqa-dev0.json",
+      "grade": "INADMISSIBLE",
+      "records": [
+        {
+          "record": 0,
+          "grade": "INADMISSIBLE",
+          "failed_gates": [
+            "device_identity: no device_identity check. The selector index is not the enumeration index (--device 0 is the RTX 4060, --device 1 the Iris Xe); a label nothing verified is a guess.",
+            "machine_quiescence: no machine_quiescence record. Recording inflates 9.5x under CPU contention; a number taken on an unknown machine has an unknown multiplier on it.",
+            "measurement_validity: no measurement_validity block; the harness's own self-check did not run."
+          ],
+          "passed_gates": [
+            "ep_loaded: EP in providers, 321 node(s)/island(s) claimed",
+            "model_output_equivalence: model_output_equivalence MATCH"
+          ],
+          "vulkan_median_ms": 3363.946,
+          "cpu_median_ms": 6226.828
+        }
+      ]
+    },
+    {
+      "file": "timestamp-audit.json",
+      "grade": "NOT_A_RESULT",
+      "detail": "no timing record in this document (audit or metadata artifact)"
+    }
+  ],
+  "cross_artifact": [
+    {
+      "check": "baseline_comparability",
+      "asserts": "two runs being differenced share a CPU baseline, so the difference is attributable to the change under test",
+      "runs": [
+        "pre-gqa-dev0.json",
+        "post-gqa-dev0.json"
+      ],
+      "cpu_median_ms": [
+        6226.828,
+        345.223
+      ],
+      "tolerance": 0.25,
+      "baseline_ratio": 18.037,
+      "ok": false,
+      "verdict": "BASELINE_MOVED",
+      "detail": "the CPU baseline moved 18.0x between pre-gqa-dev0.json (6226.8 ms) and post-gqa-dev0.json (345.2 ms). No Vulkan-EP change can make the CPU EP 18.0x faster, so the machine moved. Any speedup differenced across these two runs measures the machine, not the change."
+    }
+  ],
+  "inadmissible": [
+    "phi35.json",
+    "post-gqa-dev0.json",
+    "post-gqa-dev1.json",
+    "pre-gqa-dev0.json"
+  ],
+  "note": "admissibility is about provenance, not speed. A slow honest number passes; a fast number whose conditions cannot be reconstructed does not."
+}

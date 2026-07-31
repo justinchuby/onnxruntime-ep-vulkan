@@ -521,6 +521,7 @@ def dispatch_accounting(counters: "dict | None", island_count: "int | None",
 # ---------------------------------------------------------------------------
 
 def _time_run(sess, feeds, iters: int, warmup: int, name: str) -> Sample:
+    t_all = time.perf_counter()
     for _ in range(warmup):
         sess.run(None, feeds)
     samples = []
@@ -528,7 +529,12 @@ def _time_run(sess, feeds, iters: int, warmup: int, name: str) -> Sample:
         t0 = time.perf_counter()
         sess.run(None, feeds)
         samples.append((time.perf_counter() - t0) * 1000.0)
-    return Sample(name=name, samples=samples)
+    s = Sample(name=name, samples=samples)
+    # The wall time of the whole warmup+timed loop, from a clock that knows nothing about phases.
+    # This is the independent whole the trace's decomposition is checked against (R11): the trace
+    # covers exactly these inferences, and every span it contains happened inside this interval.
+    s.loop_wall_ms = (time.perf_counter() - t_all) * 1000.0
+    return s
 
 
 def _read_claim_log(path: Path) -> "list[dict]":
@@ -776,8 +782,16 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
         except json.JSONDecodeError:
             cnt = None
     try:
-        rep["analysis"] = phases_mod.analyse(phases_mod.load(trace), cnt,
-                                             integrated_gpu=integrated)
+        # R11: the decomposition is only publishable if it can be checked against a whole from an
+        # instrument that is not the tracer. The worker's perf_counter around the warmup+timed
+        # loop is that instrument -- it knows nothing about phases and cannot be inflated by the
+        # same bug that would inflate a phase sum.
+        whole = (traced_rec.get("vulkan") or {}).get("loop_wall_ms")
+        rep["analysis"] = phases_mod.analyse(
+            phases_mod.load(trace), cnt, integrated_gpu=integrated,
+            independent_whole_ms=whole,
+            whole_source=("the traced worker's own perf_counter around the warmup+timed run loop"
+                          if whole else ""))
     except Exception as exc:  # pragma: no cover - environment dependent
         rep["refusal"] = f"the trace could not be analysed: {exc!r}"
         return rep
