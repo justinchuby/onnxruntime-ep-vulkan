@@ -48,6 +48,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve()
 SRC = HERE.parents[1] / "src"
+REPO = HERE.parents[2]
+TESTS = REPO / "tests"
 BASELINE = HERE.parent / "instrument_census.json"
 
 # Files whose `pub fn`s are the instruments under audit. Everything the EP emits about
@@ -186,6 +188,203 @@ def uninvoked(rows: list[dict]) -> list[str]:
     return sorted(f"{r['file']}::{r['fn']}" for r in rows if r["state"] == "uninvoked")
 
 
+# ===========================================================================
+# HARNESS DOMAIN (tests/) — added by Trinity, 2026-07-31
+# ===========================================================================
+#
+# WHY THIS IS IN TANK'S FILE AND NOT A SECOND SCRIPT
+# --------------------------------------------------
+# A census whose answer depends on which of two censuses you ran is not a census.
+# The harness lives in a different language and has a different call graph, but the
+# question is identical — "is this instrument in the call graph, and has anything ever
+# observed it produce a varying artifact?" — so it gets the same baseline file, the same
+# `--check` drift semantics and the same five-state vocabulary.  One census, two domains.
+#
+# WHY `uninvoked` ALONE WOULD NOT HAVE CAUGHT GUARD D
+# ---------------------------------------------------
+# `assert_vulkan_executed_runtime` HAD four production callers from the day it landed.
+# The Rust screen's question would have answered "wired" and been right.  It raised
+# `NameError` at its first statement for its entire life and never read a profiling event,
+# because every one of those callers sat behind a GPU gate and, when they finally ran, the
+# crash was read as the guard firing.  So the harness domain needs one more machine-checkable
+# state, later in Tank's discoverability ordering than `uninvoked`:
+#
+#     unfalsified  called, but no always-on test has observed it in BOTH polarities, so a
+#                  guard that always passes, always crashes, or has inverted polarity is
+#                  indistinguishable from a working one.
+#
+# It is decided from the test AST: an instrument is screened iff some test that is NOT
+# GPU-gated calls it inside `pytest.raises(...)` (reject polarity) AND some non-gated test
+# calls it outside one (accept polarity).  Both are required: a reject-only suite certifies
+# a guard that rejects everything, and an accept-only suite certifies a guard that never
+# rejects anything.  Guard D had neither and would have been red from the first commit.
+#
+# The blind spot, stated: this cannot see whether the polarity test's INPUT actually varies
+# the thing under test (`test_guard_d.py` earns that by mutation, not by this screen), and
+# a guard whose falsifier needs real hardware cannot be screened here at all — those are
+# listed by hand under `hand.harness_notes` with the reason they are unscreenable.
+
+# Files whose module-level functions are the harness instruments under audit.
+HARNESS_INSTRUMENT_FILES = ["ops/_models.py"]
+
+# A harness instrument is a function that renders a verdict: it either raises on a bad
+# world or returns a number a gate reads.  Helpers that only build models or run sessions
+# are not instruments and are excluded by name.
+HARNESS_FN = re.compile(r"^(assert_|count_|check$|check_|require_|verify_|expect_)|_verdict$")
+
+# Decorators / fixtures that mean "this test does not run in the always-on lane".
+HARNESS_GATE = re.compile(r"require_vulkan|skipif|\bskip\b|xfail|slow|gpu|require_model")
+
+
+def _harness_instruments(tests_root=None, files=None) -> dict[str, str]:
+    """Return {fn_name: "file::fn"} for every harness instrument."""
+    import ast as _ast
+
+    tests_root = TESTS if tests_root is None else Path(tests_root)
+    files = HARNESS_INSTRUMENT_FILES if files is None else files
+    out: dict[str, str] = {}
+    for rel in files:
+        path = tests_root / rel
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                if HARNESS_FN.search(node.name):
+                    out[node.name] = f"tests/{rel}::{node.name}"
+    return out
+
+
+def _is_gated(fn) -> bool:
+    """True if *fn* (an ast.FunctionDef) is skipped/gated out of the always-on lane."""
+    import ast as _ast
+
+    for dec in fn.decorator_list:
+        if HARNESS_GATE.search(_ast.dump(dec)):
+            return True
+    for arg in fn.args.args:
+        if HARNESS_GATE.search(arg.arg):
+            return True
+    return False
+
+
+def harness_survey(tests_root=None, files=None) -> list[dict]:
+    """Screen every harness instrument for callers and for two-polarity coverage.
+
+    *tests_root* and *files* are parameters rather than constants so this screen can be
+    pointed at a synthetic tree and watched to disagree — see
+    ``tests/ops/test_harness_census.py``.  A screen that has only ever been run against the
+    real repository, where it happens to print a plausible answer, is precisely the Guard D
+    shape it exists to catch.
+    """
+    import ast as _ast
+
+    tests_root = TESTS if tests_root is None else Path(tests_root)
+    files = HARNESS_INSTRUMENT_FILES if files is None else files
+    names = _harness_instruments(tests_root, files)
+    stats = {n: {"calls": 0, "reject": 0, "accept": 0} for n in names}
+
+    owner_files = {tests_root / rel for rel in files}
+    # Calls from inside the owner module count as callers (an instrument invoked at import
+    # time, like the Q/DQ oracle probe, is wired) but can never supply a polarity: polarity
+    # is a property of a test that was written to watch it disagree.
+    for path in sorted(owner_files):
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.attr
+                if isinstance(func, _ast.Attribute)
+                else func.id
+                if isinstance(func, _ast.Name)
+                else None
+            )
+            if name in stats:
+                stats[name]["calls"] += 1
+
+    for path in sorted(tests_root.rglob("*.py")):
+        if path in owner_files:
+            continue
+        try:
+            tree = _ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for fn in [n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef)]:
+            gated = _is_gated(fn)
+            # Map every node in this function to whether it sits inside `pytest.raises`.
+            raising: set[int] = set()
+            for node in _ast.walk(fn):
+                if isinstance(node, _ast.With):
+                    if any(
+                        "raises" in _ast.dump(item.context_expr) for item in node.items
+                    ):
+                        for inner in _ast.walk(node):
+                            raising.add(id(inner))
+            for node in _ast.walk(fn):
+                if not isinstance(node, _ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, _ast.Attribute)
+                    else func.id
+                    if isinstance(func, _ast.Name)
+                    else None
+                )
+                if name not in stats:
+                    continue
+                stats[name]["calls"] += 1
+                if gated:
+                    continue
+                if id(node) in raising:
+                    stats[name]["reject"] += 1
+                else:
+                    stats[name]["accept"] += 1
+
+    rows: list[dict] = []
+    for name, qual in sorted(names.items()):
+        s = stats[name]
+        if s["calls"] == 0:
+            state = "uninvoked"
+        elif s["reject"] and s["accept"]:
+            state = "screened"
+        else:
+            state = "unfalsified"
+        rows.append({"id": qual, "fn": name, "state": state, **s})
+    return rows
+
+
+def harness_report(rows: list[dict]) -> tuple[list[str], list[str]]:
+    """Print the harness screen; return (uninvoked, unfalsified) id lists."""
+    print()
+    print("HARNESS INSTRUMENT SCREEN (tests/ — a guard nothing falsifies is not a guard)")
+    print(f"  scanned {len(rows)} harness instrument fn(s) in {HARNESS_INSTRUMENT_FILES}")
+    print()
+    un = sorted(r["id"] for r in rows if r["state"] == "uninvoked")
+    nf = sorted(r["id"] for r in rows if r["state"] == "unfalsified")
+    for r in rows:
+        if r["state"] == "screened":
+            continue
+        label = "UNINVOKED  " if r["state"] == "uninvoked" else "UNFALSIFIED"
+        print(
+            f"  {label} {r['id']:<58} calls={r['calls']} "
+            f"reject_polarity={r['reject']} accept_polarity={r['accept']}"
+        )
+    scr = [r for r in rows if r["state"] == "screened"]
+    print()
+    for r in scr:
+        print(
+            f"  SCREENED   {r['id']:<58} calls={r['calls']} "
+            f"reject_polarity={r['reject']} accept_polarity={r['accept']}"
+        )
+    print()
+    print("  UNFALSIFIED is not a bug report; it is the absence of one. It says only that")
+    print("  nothing in the always-on lane has ever watched this instrument disagree, so a")
+    print("  broken one and a working one would look the same. Guard D lived here for its")
+    print("  whole life while the Rust screen's question ('has it got a caller?') said WIRED.")
+    return un, nf
+
+
 def self_test() -> int:
     """The stripper gets its own falsifier, because its failure mode is silent.
 
@@ -250,12 +449,17 @@ def main(argv: list[str]) -> int:
     print("  NOTE: this screen cannot see whether a WIRED instrument reports the right thing.")
     print("  Phase::Record passed it cleanly while 96% of its time was a memcpy nested inside it.")
 
+    h_rows = harness_survey()
+    h_uninvoked, h_unfalsified = harness_report(h_rows)
+
     if "--write-baseline" in argv:
         base = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
         base["uninvoked"] = found
         base["ambiguous"] = sorted(f"{r['file']}::{r['fn']}" for r in ambiguous)
+        base["harness_uninvoked"] = h_uninvoked
+        base["harness_unfalsified"] = h_unfalsified
         BASELINE.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
-        print(f"\nwrote {BASELINE} ({len(found)} uninvoked)")
+        print(f"\nwrote {BASELINE} ({len(found)} uninvoked, {len(h_unfalsified)} unfalsified)")
         return 0
 
     if "--check" not in argv:
@@ -279,9 +483,51 @@ def main(argv: list[str]) -> int:
         )
         for x in gone:
             print(f"  - {x}", file=sys.stderr)
-    if new or gone:
+
+    # Harness domain. Drift is checked in BOTH directions for the same reason as above:
+    # a newly unfalsified guard is a hole, and a newly screened one must be recorded or the
+    # baseline slowly stops meaning anything.
+    h_bad = False
+    for key, current in (
+        ("harness_uninvoked", h_uninvoked),
+        ("harness_unfalsified", h_unfalsified),
+    ):
+        if key not in base:
+            print(f"\nFAIL: baseline has no `{key}`; run --write-baseline.", file=sys.stderr)
+            h_bad = True
+            continue
+        exp = sorted(base[key])
+        added = [x for x in current if x not in exp]
+        removed = [x for x in exp if x not in current]
+        if added:
+            h_bad = True
+            print(f"\nFAIL: {len(added)} NEW {key[8:]} harness instrument(s):", file=sys.stderr)
+            for x in added:
+                print(f"  + {x}", file=sys.stderr)
+            print(
+                "  A harness instrument with no two-polarity self-test is the Guard D shape.\n"
+                "  Give it one in the always-on lane (see tests/ops/test_guard_d.py), or add it\n"
+                "  to the baseline WITH a hand note in `hand.harness_notes` saying why it cannot\n"
+                "  be falsified without hardware.",
+                file=sys.stderr,
+            )
+        if removed:
+            h_bad = True
+            print(
+                f"\nFAIL: {len(removed)} harness instrument(s) left `{key[8:]}` — "
+                "good news, update the baseline:",
+                file=sys.stderr,
+            )
+            for x in removed:
+                print(f"  - {x}", file=sys.stderr)
+
+    if new or gone or h_bad:
         return 1
     print(f"\nOK: uninvoked set matches the baseline ({len(found)} known).")
+    print(
+        f"OK: harness screen matches the baseline "
+        f"({len(h_uninvoked)} uninvoked, {len(h_unfalsified)} unfalsified)."
+    )
     return 0
 
 

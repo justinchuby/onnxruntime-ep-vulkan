@@ -33,8 +33,6 @@ The three outcomes are now empirically distinct within the same test run.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -236,3 +234,162 @@ def test_count_vulkan_executions_from_profile() -> None:
     ]
     count = m.count_vulkan_executions_from_profile(events)
     assert count == 2, f"Expected 2 Vulkan events, got {count}"
+
+
+# ---------------------------------------------------------------------------
+# Mutation controls: does the two-polarity protocol discriminate?
+# ---------------------------------------------------------------------------
+#
+# R9: confidence scales with agreeing instruments; evidence scales only with
+# falsifying ones.  The six tests above all pass against the real Guard D.  That is
+# agreement, not evidence: a protocol that passes a correct guard tells us nothing
+# until we have watched it FAIL a broken one.  The historical defect is the exact
+# specimen — Guard D raised ``NameError`` at its first statement for its entire life,
+# every test that called it went red, and the redness was read as "Guard D works".
+#
+# The protocol is therefore factored out and applied to deliberately broken guards.
+# Each mutant below is a real failure mode we have shipped or could ship.
+
+_MUTANT_MESSAGE = "the two-polarity protocol did not reject a guard that is broken"
+
+
+def _apply_two_polarity_protocol(guard, tmp_path: Path, tag: str) -> None:
+    """Run the two-polarity protocol against *guard*; raise AssertionError if it fails it.
+
+    This is the same protocol the tests above apply to ``m.assert_vulkan_executed_runtime``,
+    expressed once so it can be pointed at a mutant.  A guard passes iff:
+
+      NEGATIVE polarity — a trace with zero VulkanEP Node events raises ``AssertionError``.
+      POSITIVE polarity — a trace with one VulkanEP Node event returns ``1`` and does not raise.
+
+    Anything else — no raise on the negative, a non-``AssertionError`` exception on either,
+    a wrong count on the positive — is a failed protocol.
+    """
+    neg = tmp_path / f"{tag}_neg.json"
+    _write_profile([_node_event("CPUExecutionProvider", "Add")], neg)
+    try:
+        guard(str(neg))
+    except AssertionError:
+        pass  # correct: fallback detected
+    except BaseException as exc:  # noqa: BLE001
+        raise AssertionError(
+            f"NEGATIVE polarity: guard raised {type(exc).__name__}, not AssertionError. "
+            f"A guard that crashes is not a guard that fired: {exc}"
+        ) from None
+    else:
+        raise AssertionError(
+            "NEGATIVE polarity: guard accepted a trace with zero VulkanEP Node events. "
+            "It cannot detect a runtime fallback."
+        )
+
+    pos = tmp_path / f"{tag}_pos.json"
+    _write_profile([_node_event(m.EP_NAME, "VulkanExecutionProvider_x_0")], pos)
+    try:
+        got = guard(str(pos))
+    except BaseException as exc:  # noqa: BLE001
+        raise AssertionError(
+            f"POSITIVE polarity: guard raised {type(exc).__name__} on a trace that DOES "
+            f"contain a VulkanEP Node event: {exc}"
+        ) from None
+    if got != 1:
+        raise AssertionError(f"POSITIVE polarity: guard returned {got!r}, expected 1")
+
+
+# --- the mutants ------------------------------------------------------------
+
+
+def _mutant_nameerror(profile_path):
+    """The actual historical defect: ``pathlib`` referenced but never imported.
+
+    Fixed on main as 3ea42fd.  Before that commit Guard D raised ``NameError`` at its
+    first statement, so it had never read a single profiling event in its life — and the
+    suite going from 8 passed to 5 failed was read as the guard working.
+    """
+    path = pathlib.Path(profile_path)  # noqa: F821 — deliberately undefined
+    return 1
+
+
+def _mutant_always_passes(profile_path):
+    """Returns a plausible count without reading anything. The vacuous-pass shape."""
+    return 1
+
+
+def _mutant_inverted(profile_path):
+    """Polarity inverted: raises when Vulkan DID run, passes when it did not."""
+    with open(profile_path) as fh:
+        events = json.load(fh)
+    count = m.count_vulkan_executions_from_profile(events)
+    assert count == 0, "inverted"
+    return 1
+
+
+def _mutant_wrong_provider_key(profile_path):
+    """Reads ``args['ep']`` instead of ``args['provider']`` — never matches, always 'fallback'.
+
+    Passes the negative polarity for the wrong reason and fails the positive one.  This is
+    the mutant that a negative-polarity-only test suite would certify as healthy: it is
+    the reason both polarities are required, not just the interesting one.
+    """
+    with open(profile_path) as fh:
+        events = json.load(fh)
+    count = sum(
+        1
+        for e in events
+        if e.get("cat") == "Node" and isinstance(e.get("args"), dict)
+        and e["args"].get("ep") == m.EP_NAME
+    )
+    assert count > 0, "fallback detected"
+    return count
+
+
+@pytest.mark.parametrize(
+    "mutant",
+    [
+        pytest.param(_mutant_nameerror, id="nameerror-the-historical-defect"),
+        pytest.param(_mutant_always_passes, id="always-passes"),
+        pytest.param(_mutant_inverted, id="polarity-inverted"),
+        pytest.param(_mutant_wrong_provider_key, id="wrong-provider-key"),
+    ],
+)
+def test_two_polarity_protocol_rejects_broken_guards(mutant, tmp_path: Path) -> None:
+    """Each mutant guard MUST fail the two-polarity protocol.
+
+    If this test passes, the protocol has been observed rejecting four distinct broken
+    guards — including a byte-accurate reconstruction of the defect that shipped.  That is
+    the falsifying observation R9 asks for; without it the six passing tests above are
+    agreement between a guard and a test that was never shown capable of disagreeing.
+    """
+    with pytest.raises(AssertionError):
+        _apply_two_polarity_protocol(mutant, tmp_path, tag=mutant.__name__)
+
+
+def test_two_polarity_protocol_accepts_the_real_guard(tmp_path: Path) -> None:
+    """The real Guard D MUST pass the same protocol the mutants fail.
+
+    Paired control.  Without this the previous test would also pass if the protocol
+    rejected everything unconditionally.
+    """
+    _apply_two_polarity_protocol(m.assert_vulkan_executed_runtime, tmp_path, tag="real")
+
+
+def test_a_crashing_guard_is_not_an_assertion_error(tmp_path: Path) -> None:
+    """A broken guard and a detected fallback must be distinguishable by exception type.
+
+    This is the reader-level claim, stated as a test rather than as prose:
+
+      ``AssertionError``  → a finding about the EP. Route to Switch/Mouse.
+      anything else       → a finding about the guard. Route to the harness owner.
+
+    On 2026-07-31 nobody could make that distinction unaided, because ``NameError`` and
+    a correct fallback detection both presented as "the gate went red".
+    """
+    trace = tmp_path / "p.json"
+    _write_profile([_node_event("CPUExecutionProvider", "Add")], trace)
+
+    # The historical mutant raises NameError — NOT AssertionError.
+    with pytest.raises(NameError):
+        _mutant_nameerror(str(trace))
+
+    # The real guard raises AssertionError on the same input.
+    with pytest.raises(AssertionError):
+        m.assert_vulkan_executed_runtime(str(trace))

@@ -580,7 +580,7 @@ def test_phi35_vulkan_matches_cpu_logits(
             f"not the EP): {_guard_d_err}"
         ) from _guard_d_err
     print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
-    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
+    print(f"  Guard D: VulkanEP executed {m.describe_vulkan_execution_count(vulkan_executed_count)} ✓")
 
     # --- CPU-only session ---
     cpu_opts = ort.SessionOptions()
@@ -790,7 +790,7 @@ def test_phi35_vulkan_cross_run_consistency(
         ) from _guard_d_err
 
     print(f"\n[Phi-3.5 cross-run consistency / Device {device_index}]")
-    print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
+    print(f"  Guard D: VulkanEP executed {m.describe_vulkan_execution_count(vulkan_executed_count)} ✓")
     print(f"  {len(run1)} outputs, 3 runs")
 
     ok12, diff12 = m.outputs_bit_equal(run1, run2)
@@ -1306,7 +1306,7 @@ def test_phi35_vulkan_multirun_logits_stable(
     profile_path = vk_sess.end_profiling()
     try:
         vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
-        print(f"  Guard D: VulkanEP executed {vulkan_executed_count} fused island(s) ✓  (each island may contain many graph nodes)")
+        print(f"  Guard D: VulkanEP executed {m.describe_vulkan_execution_count(vulkan_executed_count)} ✓")
     except AssertionError as _guard_d_err:
         pytest.fail(f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}")
     except RuntimeError as _guard_d_err:

@@ -844,17 +844,29 @@ def assert_ep_in_session(sess: "ort.InferenceSession") -> None:
 
 
 def count_vulkan_executions_from_profile(events: list[dict]) -> int:
-    """Return the number of Node events executed by the Vulkan EP in *events*.
+    """Return the number of *fused-island executions* the Vulkan EP performed in *events*.
+
+    R11 WARNING — THE NAME IS NOT THE DEFINITION
+    ============================================
+    The name says "executions".  A reader will hear "nodes".  It is neither: ORT emits one
+    ``cat == "Node"`` profiling event per **fused island** execution, and one fused island
+    can cover hundreds of graph nodes.  On Phi-3.5 today, **354 of 364 graph nodes execute
+    inside a single island**, so a healthy run reports ``1``.  Read bare, that ``1`` looks
+    like a catastrophe (``1 node ran on Vulkan``) when it is the best result the project has
+    produced.  Never print this number without printing what it counts; use
+    :func:`describe_vulkan_execution_count`.
+
+    The number is therefore a *presence* signal, not a *volume* signal:
+
+    - ``0``  — conclusive: the Vulkan EP ran nothing at all (runtime fallback).
+    - ``>=1`` — the Vulkan EP participated.  How MUCH work it did is a different
+      instrument (``claimed_count`` / ``dispatches_executed`` in the counters JSON).
+      Do not derive coverage from this value; it will not scale with it.
 
     Counts entries where ``cat == "Node"`` and ``args["provider"] == EP_NAME``.
     This is the post-run complement to ``assert_ep_in_session``: where that function
-    checks at session-create time (which is fixed before run()), this function checks
-    what actually executed during run().
-
-    ORT emits one ``Node`` profiling event per node execution.  For plugin EPs, fused
-    islands are single nodes from ORT's perspective — one event per island per run.
-
-    Returns 0 if the EP contributed nothing (runtime fallback occurred).
+    checks at session-create time (which is fixed before ``run()``), this function checks
+    what actually executed during ``run()``.
     """
     count = 0
     for ev in events:
@@ -866,6 +878,23 @@ def count_vulkan_executions_from_profile(events: list[dict]) -> int:
         if args.get("provider") == EP_NAME:
             count += 1
     return count
+
+
+def describe_vulkan_execution_count(count: int) -> str:
+    """Render a Guard D count together with its definition, for printing.
+
+    R11: a measurement's name is not its definition, and the definition has to travel with
+    the number or the next reader supplies their own.  Every artifact that quotes a Guard D
+    count goes through this function so there is exactly one wording to keep correct.
+    """
+    if count == 0:
+        return "0 fused-island executions — the Vulkan EP ran NOTHING (fallback)"
+    noun = "island" if count == 1 else "islands"
+    return (
+        f"{count} fused-{noun} execution(s) — NOT {count} graph nodes; one island can "
+        "cover hundreds of graph nodes (Phi-3.5: 354 of 364 nodes in one island, so 1 is "
+        "healthy). Presence signal only; read coverage from the counters JSON."
+    )
 
 
 def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> int:
@@ -961,6 +990,10 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
     assert vulkan_count > 0, (
         f"[Guard D: fallback detected] {EP_NAME} executed ZERO fused islands at run time.\n"
         f"Providers that did execute: {sorted(providers_seen) or 'none'}.\n"
+        "\n"
+        "WHAT WAS COUNTED (R11): fused-island executions, not graph nodes.  A healthy\n"
+        "Phi-3.5 run reports 1 — one island covering 354 of 364 graph nodes.  Zero is the\n"
+        "only value that is conclusive, and this is it.\n"
         "\n"
         "ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' during sess.run()\n"
         "and re-runs the entire graph on CPU without raising an exception.  The comparison\n"
