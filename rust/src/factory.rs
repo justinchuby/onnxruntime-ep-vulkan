@@ -749,6 +749,7 @@ pub(crate) fn registry_for_device(
         return Some(Arc::clone(r));
     }
     let r = crate::allocator::HandleRegistry::new()?;
+    r.set_device_index(device_index);
     map.insert(device_index, Arc::clone(&r));
     Some(r)
 }
