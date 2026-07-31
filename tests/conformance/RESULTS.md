@@ -57,8 +57,10 @@ Delta: −34 to −35 from prediction. **The simulation predicted islands for a 
 
 | Device | Session load | First inference | Outputs | Bit-stable (2× sessions) |
 |---|---|---|---|---|
-| 0 — Intel Iris Xe (1.4.309, UMA) | ✅ | ✅ | 65 tensors | ✅ |
-| 1 — NVIDIA RTX 4060 (1.4.325, discrete) | ✅ | ✅ | 65 tensors | ✅ |
+| 0 — NVIDIA RTX 4060 (1.4.325, discrete) | ✅ | ✅ | 65 tensors | ✅ |
+| 1 — Intel Iris Xe (1.4.309, UMA, oracle) | ✅ | ✅ | 65 tensors | ✅ |
+
+*(Device selector labels corrected 2026-07-30T21:23:53-07:00: discrete sorts first, so selector 0 = NVIDIA.)*
 
 ### Validation layer findings
 
@@ -92,8 +94,10 @@ These are **real EP bugs** — a descriptor set is being updated while it is alr
 
 | Device | Device name | Vulkan | Memory | PASSED | FAILED | SKIPPED |
 |--------|-------------|--------|--------|--------|--------|---------|
-| 0 | Intel Iris Xe Graphics | 1.4.309 | UMA 32 KiB shared | **46** | 120 | 74 |
-| 1 | NVIDIA GeForce RTX 4060 Laptop GPU | 1.4.325 | Discrete 48 KiB | **46** | 120 | 74 |
+| 0 | NVIDIA GeForce RTX 4060 Laptop GPU | 1.4.325 | Discrete 48 KiB | **46** | 120 | 74 |
+| 1 | Intel Iris Xe Graphics (oracle) | 1.4.309 | UMA 32 KiB shared | **46** | 120 | 74 |
+
+*(Device selector labels corrected 2026-07-30T21:23:53-07:00.)*
 
 **Validation layers:** `VK_LAYER_KHRONOS_validation` enabled. **Zero validation errors** on
 both devices across all 240 test runs.
