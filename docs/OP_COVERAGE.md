@@ -1783,25 +1783,39 @@ zero cuts (Gather). **Frequency is not attribution.**
 
 **Prediction (stated before implementation):**
 - Islands: 33 → ~1 (GQA is the sole cut creator; attributing all 32 cuts to it predicts one island)
-- Timing (Intel Iris Xe, device 0): 807 ms → 300–600 ms
-- Timing (NVIDIA RTX 4060, device 1): 1156 ms → 400–900 ms
+- Timing (NVIDIA RTX 4060, device 0): 1156 ms → 400–900 ms
+- Timing (Intel Iris Xe, device 1): 807 ms → 300–600 ms
 - Falsifier: `island_count > 3` after GQA → something else cuts
 
-**Post-GQA results (`bench/phi35.py`, 2026-07-30):**
+**Post-GQA results (`bench/phi35.py`, 2026-07-30) — corrected device labels (see below):**
 
 | device | claimed | islands | vulkan median | cpu median | verdict |
 |---|---|---|---|---|---|
-| 0 — Intel Iris Xe | 353 / 363 | **1** | 618 ms (16% RSD — noisy) | 345 ms | **MATCH** |
-| 1 — NVIDIA RTX 4060 | 353 / 363 | **1** | **230 ms** (2.7% RSD) | 254 ms | **MATCH** |
+| 0 — NVIDIA RTX 4060 | 353 / 363 | **1** | 618 ms (16% RSD — noisy, taken under load) | 345 ms | **MATCH** |
+| 1 — Intel Iris Xe | 353 / 363 | **1** | **230 ms** (2.7% RSD, taken under load) | 254 ms | **MATCH** |
 
-Prediction: islands = 1 ✓. Intel timing 618 ms is within the predicted range. NVIDIA 230 ms is
-better than predicted (below the lower bound of 400 ms) — the island merge eliminated 32
-device-boundary round-trips that imposed transfer overhead on the discrete GPU.
+**Device-label correction (2026-07-30):** `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes the
+capability-gated sorted list (discrete first), not the raw Vulkan enumeration index.
+`Device 0: Intel / Device 1: NVIDIA` in probe output is enumeration order;
+selector 0 → NVIDIA RTX 4060, selector 1 → Intel Iris Xe. Every prior label in this document
+that said "device 0 = Intel" was backwards. The **measurements are correct; only the names
+were wrong** (coordinator correction, 2026-07-30T22:00).
 
-The GQA kernel is serial (1 thread per head, online softmax, decode path `seq_len=1`). On Intel Iris
-Xe (UMA, lower throughput) the serial attention is slower than ORT CPU; on RTX 4060 it is 23 ms
-faster, not because the kernel is optimised but because the island consolidation moved the KV cache
-onto the device and eliminated the round-trip cost.
+Prediction: islands = 1 ✓. Timing comparisons are **not reliable** — measurements were taken under
+load (six agents building simultaneously; coordinator confirmed 9.5× inflation under contention, so
+these numbers are absolute floor estimates only). Quiet-machine numbers are owed.
+
+**Upload dominates (Tank's finding, 2026-07-30):** The EP re-uploads the entire ~2 GB weight set
+on every inference call. `Phase::Record` wraps the staging memcpy, so the 68% attributed to
+"recording" in earlier traces was actually weight upload — CPU work, not GPU command recording.
+Actual GPU command recording is ~1–3% of wall. `alloc_device_authoritative_spans = 0` is the
+counter that must move (Switch/Tank: persistent weight residency). This makes
+`retain_viable`'s `transfer_ns` weighting *more* correct than initially understood — the boundary
+cost is upload-dominated, not PCIe-latency-dominated.
+
+The GQA kernel is serial (1 thread per head, online softmax, decode path `seq_len=1`). The island
+consolidation is still the right action — it eliminated 32 boundary round-trips and removed
+32 inter-island upload cycles from the 33-island path.
 
 **Remaining declines (10 nodes, 0 additional islands):** Gather × 2, Shape × 1, ReduceSum × 1,
 If × 1 (not-registered / control-flow); Cast × 2, SkipSimplifiedLayerNormalization × 1 (staged,
@@ -1924,6 +1938,18 @@ remains 0.0 until Niobe wires VkQueryPool timestamps for calibration.
 **Single-cluster exemption retained:** when all claimed nodes form one connected component (the
 common case for unit tests of individual ops), the gate is bypassed. The gate applies to
 multi-cluster graphs, where it has a real scheduling decision to make.
+
+**TransferModel calibration note (Tank's finding, 2026-07-30):** The EP re-uploads ~2 GB of weights
+per inference (staging memcpy inside `Phase::Record`). Tank measured upload = 95.8–98.4% of the
+record phase, both devices. The provisional `TransferModel` constants (`UMA: 40 bytes/ns`,
+`DISCRETE: 12 bytes/ns`) model PCIe bandwidth, not the effective per-inference transfer rate,
+which is dominated by the CPU-side staging cost (~0.4 bytes/ns effective). **The `transfer_ns`
+term in the economics gate is too small by 10–100×** relative to the real measured cost. The gate
+is conservative in the right direction (it fails towards CPU), but the `TransferModel::DISCRETE`
+constant should be recalibrated once Switch lands persistent weight residency — after that, the
+per-inference transfer is activation-only (~16–128 bytes per boundary, not 2 GB), and the
+provisional constants will be more accurate. Re-calibrating before persistent residency would embed
+the re-upload cost permanently into a constant that will be wrong as soon as the bug is fixed.
 
 
 

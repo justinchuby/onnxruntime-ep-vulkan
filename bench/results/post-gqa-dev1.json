@@ -1903,5 +1903,11 @@
         "cpu_run_to_run_ratio": 1.1618
       }
     }
-  ]
+  ],
+  "device_label_correction": {
+    "note": "Corrected 2026-07-30: ONNXRUNTIME_EP_VULKAN_DEVICE uses sorted-best-first index, not enumeration index.",
+    "selector": 1,
+    "actual_device": "Intel(R) Iris(R) Xe Graphics",
+    "source": "coordinator correction \u2014 Tank verified epctl --probe-loader output"
+  }
 }
