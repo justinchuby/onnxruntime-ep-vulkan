@@ -1,3 +1,17 @@
 {
-  "version": 1
+  "version": 1,
+  "defaultModel": "claude-opus-5",
+  "agentModelOverrides": {
+    "morpheus": "claude-opus-5",
+    "switch": "claude-opus-5",
+    "mouse": "claude-opus-5",
+    "tank": "claude-opus-5",
+    "trinity": "claude-sonnet-5",
+    "niobe": "claude-opus-5",
+    "link": "claude-sonnet-5",
+    "fact-checker": "gpt-5.6-sol",
+    "rai": "claude-sonnet-5",
+    "scribe": "claude-sonnet-5"
+  },
+  "modelPolicyNote": "Justin's standing directive 2026-07-31: use strong models only — Opus 5, Opus 4.8, Sonnet 5, GPT-5.5/5.6. This project's defects are consistently subtle instrument and reasoning failures (R9-R12: uninvoked mechanisms, misnamed measurements, out-of-frame counters, falsifiers that cannot fire) which weaker models do not catch. Do not downgrade to save cost."
 }
