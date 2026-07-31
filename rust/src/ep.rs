@@ -554,25 +554,6 @@ unsafe fn get_capability_impl(
         declined.len()
     );
 
-    // --- Record partition metrics in the tracer (cross-owner edit, declared to coordinator) ---
-    // island_count and largest_island_flops are 0 until Mouse wires partition.rs into the fusing
-    // path (OP_COVERAGE.md §7.3). This call site is the owner of total_nodes, claimed_nodes, and
-    // the declined backlog; those three are populated correctly now.
-    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
-        total_nodes: num_nodes as u64,
-        claimed_nodes: claimed.len() as u64,
-        island_count: 0,         // Mouse: pending partition.rs wiring
-        largest_island_nodes: 0, // Mouse: pending partition.rs wiring
-        largest_island_flops: 0, // Mouse: pending partition.rs wiring
-        concentration: 0.0,
-        boundary_bytes_per_inference: 0,
-        boundary_time_fraction: 0.0,
-        declined: declined
-            .iter()
-            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
-            .collect(),
-    });
-
     if claimed.is_empty() {
         return ptr::null_mut();
     }
@@ -928,6 +909,11 @@ unsafe fn get_capability_impl(
 
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
     let mut n_rejected = 0usize;
+    // Track island-level aggregate metrics for PartitionStats (§10.0 metric of record).
+    let mut largest_island_flops: u64 = 0;
+    let mut largest_island_nodes: u64 = 0;
+    let mut total_flops: u64 = 0;
+    let mut total_boundary_bytes: u64 = 0;
     for cluster_nodes in clusters.values() {
         let mut island = partition::Island {
             nodes: cluster_nodes.len(),
@@ -1013,6 +999,13 @@ unsafe fn get_capability_impl(
         };
         if verdict.is_claim() {
             surviving.push(cluster_nodes.clone());
+            // §10.0 metric tracking: update aggregate stats for the surviving island.
+            largest_island_flops = largest_island_flops.max(island.flops);
+            largest_island_nodes = largest_island_nodes.max(island.nodes as u64);
+            total_flops = total_flops.saturating_add(island.flops);
+            total_boundary_bytes = total_boundary_bytes
+                .saturating_add(island.input_bytes)
+                .saturating_add(island.output_bytes);
         } else {
             n_rejected += cluster_nodes.len();
             if let partition::Verdict::Reject(reason) = verdict {
@@ -1052,6 +1045,30 @@ unsafe fn get_capability_impl(
         n_islands,
         n_rejected,
     );
+
+    // --- Record partition metrics in the tracer (§10.0 metric of record) ---
+    // All three slots of the performance triple are now populated:
+    //   (claimed_op_coverage, island_count, largest_island_flops)
+    // `declined` includes both per-node declines and partition-economics rejections.
+    let concentration = if total_flops > 0 {
+        largest_island_flops as f64 / total_flops as f64
+    } else {
+        0.0
+    };
+    crate::trace::tracer().record_partition(&crate::trace::PartitionStats {
+        total_nodes: num_nodes as u64,
+        claimed_nodes: n_claimed_total as u64,
+        island_count: n_islands as u64,
+        largest_island_nodes,
+        largest_island_flops,
+        concentration,
+        boundary_bytes_per_inference: total_boundary_bytes,
+        boundary_time_fraction: 0.0, // GPU timestamps needed; will be set by Niobe from trace data
+        declined: declined
+            .iter()
+            .map(|(op, (n, why, _names))| (op.clone(), *n as u64, why.clone()))
+            .collect(),
+    });
 
     if surviving.is_empty() {
         return ptr::null_mut();
