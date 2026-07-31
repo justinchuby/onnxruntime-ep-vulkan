@@ -490,16 +490,24 @@ rather than rewritten because the reasoning in it is what earned the right to re
 
 ### 5.0 What is true as of 2026-07-30T08:21-07:00
 
+> **Superseded 2026-07-30T18:xx by §9.** Three of the bullets below were true when written and
+> are false now: the `VkQueryPool` exists, GPU kernel time is measured on both devices, and the
+> partitioner is wired into `GetCapability`. They are struck rather than deleted. **§9 is the
+> current state; read it before quoting anything in §5 or §6.**
+
 * Shaders execute on both local devices, and the model they compute is **correct**: Phi-3.5 at
   the pinned producer-at-version returns `model_output_equivalence = MATCH` against a CPU-only
   run of the same artifact in the same process, on device 0 and on device 1 (§6).
 * Therefore §10.0's gate is open and the metric of record may be reported for this artifact.
-* **No GPU kernel time exists on any device.** No `VkQueryPool` is created and no
+* ~~**No GPU kernel time exists on any device.** No `VkQueryPool` is created and no
   `vkCmdWriteTimestamp` is recorded — the hooks are still comments in `rust/src/vk/session.rs`
   and `rust/src/vk/dispatch_integration.rs`. Every number in §6 is host wall time. §3 remains a
-  specification.
+  specification.~~ **FALSE as of 2026-07-30 evening.** Switch built the query-pool path; GPU
+  kernel time is measured on both devices and the tick→ns conversion is verified end to end on
+  the part where it can fail (§9.6). See §9.
 * Device-backed allocation is off by default, so every tensor is host-staged. §6 is a
-  measurement of a **staging-bound** configuration.
+  measurement of a **staging-bound** configuration. **Still true in §9**, and §9.3 shows it is
+  now the single largest cost in the run.
 
 The paragraph that follows was written before all of that and is retained verbatim, because a
 document that quietly edits its own past is the least trustworthy instrument in the room.
@@ -578,7 +586,15 @@ The instrument is built and calibrated. It has not yet been pointed at anything.
 
 ---
 
-## 6. The first measurement — Phi-3.5, both devices, 2026-07-30
+## 6. The first measurement — Phi-3.5, both devices, 2026-07-30 (**SUPERSEDED by §9**)
+
+> **Superseded 2026-07-30 evening.** Two changes since invalidate every number here: the
+> partitioner was wired into `GetCapability` (islands 321 → 33) and the `VkQueryPool` path
+> landed. The section is kept for its reasoning and its refusals, which still hold. **Its
+> figures may not be quoted — §9 replaces them.** Note also that §6's device *labels* are
+> subject to the ordering defect documented in §9.1, and its timings were taken with no record
+> of machine load, which §10 shows is worth up to 9.5× on its own. Three independent reasons
+> not to quote §6, any one of which would be sufficient.
 
 This is the first performance measurement this project has. **It is not a speedup and it is not
 good news.** It is a measurement, with its correctness verdict attached, of a configuration that
@@ -619,7 +635,7 @@ Measured **in the same process, in the same run, on the same session objects tha
 timed**, because §10.0's `UNMEASURED` is defined as "no CPU-only comparison was performed on this
 artifact in this run", and a verdict from an earlier run of an earlier build is exactly that.
 
-| | device 0 — Intel Iris Xe | device 1 — RTX 4060 |
+| | `--device 0` — **NVIDIA RTX 4060** | `--device 1` — **Intel Iris Xe** |
 |---|---|---|
 | `model_output_equivalence` | **MATCH** | **MATCH** |
 | argmax (vk / cpu) | 30751 / 30751 | 30751 / 30751 |
@@ -638,7 +654,10 @@ Median of 20 timed iterations after 10 discarded, three whole-process repeats pe
 **The devices are not compared with each other** — different transfer class, different shared
 memory budget, different `timestampPeriod`; `bench/compare.py` refuses it structurally.
 
-#### Device 0 — Intel(R) Iris(R) Xe Graphics, UMA, driver 101.6737, Vulkan 1.4.309
+#### `--device 0` — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
+
+> **Relabelled 2026-07-30.** This block was published as "Device 0 — Intel Iris Xe". It was
+> not. See §11.1. The measurements are unchanged; only the name was wrong.
 
 ```
 vulkan   median 2790.7 ms   MAD 31.9   p05-p95 2719.9-2842.8   rsd 1.7%   n=20
@@ -649,7 +668,10 @@ run-to-run medians (3 repeats): vulkan 2755.9 / 2790.7 / 2827.8 ms  (spread 1.03
 
 **Vulkan is 2561 ms slower — 12.1x slower — than pure CPU on this artifact.**
 
-#### Device 1 — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
+#### `--device 1` — Intel(R) Iris(R) Xe Graphics, UMA, driver 101.6737, Vulkan 1.4.309
+
+> **Relabelled 2026-07-30.** Published as "Device 1 — NVIDIA GeForce RTX 4060". It was not.
+> See §11.1.
 
 ```
 vulkan   median 1465.9 ms   MAD 26.2   p05-p95 1418.4-1590.7   rsd 2.6%   n=20
@@ -666,8 +688,8 @@ Attributing the entire host-side difference to the island boundaries:
 
 | device | delta | islands | per island |
 |---|---|---|---|
-| Intel Iris Xe | +2561 ms | 257 | **≥ 9.96 ms** |
-| RTX 4060 | +1280 ms | 257 | **≥ 4.98 ms** |
+| NVIDIA RTX 4060 (`--device 0`) | +2561 ms | 257 | **≥ 9.96 ms** |
+| Intel Iris Xe (`--device 1`) | +1280 ms | 257 | **≥ 4.98 ms** |
 
 **This is a lower bound, not an estimate, and the direction is counter-intuitive.** The same
 difference also contains whatever the GPU *saved* on the 257 GEMVs it took over. If the Vulkan
@@ -686,6 +708,24 @@ KiB of activations. Two hypotheses, and the instrument that separates them:
    an allocation each way. Predicts a cost that scales with tensor bytes, and that is
    *qualitatively different on the two devices* — the Iris Xe is UMA, so the "copy" is a copy
    within one memory pool, while the 4060 crosses PCIe.
+
+> **Corrected 2026-07-30 — this paragraph's premise was a mislabel, and the mislabel is what made
+> the paragraph interesting.** As published it read: *"The Intel part being 2× more expensive per
+> island than the discrete part while having no bus to cross argues against (2) being dominant and
+> for (1)."* With the labels right (§11.1) the observation is the reverse: **the discrete part paid
+> ~2× per island (9.96 ms) and the UMA part paid ~4.98 ms.** That is what hypothesis (2) predicts —
+> the device that crosses PCIe pays more for a staging round trip than the device that does not —
+> and it is so unremarkable that it would never have prompted a hypothesis at all.
+>
+> This is the whole chain: a mislabelled row produced a surprising observation, the surprise
+> produced my fixed-per-submission hypothesis, the hypothesis got a `VkQueryPool` built to test it,
+> and the query pool then produced a phase table that was itself misread (§11.2). **Two of the
+> three links were mine.** The instrument was worth building regardless — it is what closed the
+> 52× trap and what now measures upload — but the honest account is that the premise was an
+> artifact, not a finding. §11.1 records why `device_identity_check` exists and why it is green on
+> everything published after it.
+>
+> **Retained below unedited** so the reasoning chain can be audited rather than quietly repaired.
 
 The Intel part being **2x more expensive per island than the discrete part while having no bus
 to cross** argues against (2) being dominant and for (1), or for a fixed per-submission cost
@@ -799,14 +839,37 @@ Mobile makes it worse, not better: Adreno and Mali report periods in the tens of
 valid bits well under 64, so this is the *common* case in the targets that justify the project,
 and the desktop configuration is the outlier.
 
-### 7.4 End-to-end GPU timing — UNMEASURED
+### 7.4 End-to-end GPU timing — ~~UNMEASURED~~ **MEASURED, and the 52× trap is falsified**
 
-Not "passing". Not "probably fine". `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` sets a flag that nothing
-consumes: no `VkQueryPool` is created, no `vkCmdWriteTimestamp` is recorded, no
+> **Rewritten 2026-07-30 evening.** The paragraph struck below was accurate when written and is
+> now false. A stale caveat is the most expensive kind of documentation defect this project has
+> produced: it survives every review because it *reads* like caution.
+
+~~Not "passing". Not "probably fine". `ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` sets a flag that
+nothing consumes: no `VkQueryPool` is created, no `vkCmdWriteTimestamp` is recorded, no
 `vkGetQueryPoolResults` is called, and `VulkanTracer::record_gpu_intervals` has never been handed
-a tick produced by a GPU. §3 is a specification with verified inputs and verified arithmetic and
-no plumbing. `trace.rs` already emits the caveat in the trace itself when the flag is off; it
-should be read as applying whether it is off or on, until the query pool exists.
+a tick produced by a GPU.~~
+
+`ONNXRUNTIME_EP_VULKAN_TRACE_GPU=1` now produces real device-lane spans on both local devices.
+The end-to-end conversion check is in `bench/phases.py::timestamp_conversion_integrality` and is
+reachable from `bench/timestamp_audit.py --trace <file>`. Its verdicts on 2026-07-30:
+
+| device | verdict |
+|---|---|
+| Intel Iris Xe (`timestampPeriod` 52.0833, 36 valid bits) | **PASS, and DECISIVE** |
+| NVIDIA RTX 4060 (`timestampPeriod` 1.0, 64 valid bits) | **VACUOUS** — reported as a gap, never as a pass |
+
+The check: `gpu_ns` is a tick count times `timestampPeriod`, and tick counts are integers, so
+`gpu_ns ÷ period` must be a whole number. A build that dropped the period scale emits raw ticks,
+and ticks ÷ 52.0833 is fractional. This is **only decisive where the period is not 1.0**, which
+is exactly why the audit exits non-zero when no such device is present: on NVIDIA, and on the
+lavapipe CI runner, the arithmetic is a no-op and the check cannot fail. It is reported as
+`decisive: false` and surfaced by `red_flags()` as "NOT DECISIVE", never as a pass.
+
+**Why this matters more now, not less.** GPU kernel time is 12.6% (NVIDIA) / 43.9% (Intel) of
+time inside `Compute` (§9.3). A 52× under-report of the Intel GPU column would move the *wall
+clock* not at all — the wall clock is dominated by host staging — so it is invisible to every
+end-to-end benchmark on the project. Only the integrality check sees it.
 
 ---
 
@@ -846,3 +909,1060 @@ does not. The remaining work is in files owned by Switch (`vk/**`, `engine.rs`) 
   no GPU work.
 * `VulkanTracer::record_gpu_intervals` fed from the §3 query pool, which is the only thing that
   turns any of this into GPU time.
+
+---
+
+## 9. The phase split — where the time actually goes (2026-07-30, both devices, current `main`)
+
+> ⛔ **THE TIMINGS IN THIS SECTION ARE WITHDRAWN — see §10.** Both traces behind §9 were
+> captured on a machine that other agents were compiling on. An instrument built afterwards
+> (`phases.contention_signature`) tested them from the inside and found that on the RTX 4060,
+> **20 of 33 island slots recorded a ≥ 2× spread in host time across repetitions of identical
+> work while the GPU's own clock said that work was constant to within 0.3%** — one slot swung
+> 190.93 → 501.56 → 1747.51 ms. The Intel run varied 5.25× across whole inferences. Neither run
+> was in a steady state, so every duration, share and ratio below is a mean over conditions that
+> were not held constant.
+>
+> **What survives** is everything that is a count, an integer identity or a structural fact:
+> the device-ordering defect and its correction (§9.1), the gate verdicts (§9.2), the
+> retirement of the per-island statistic (§9.7), the ratio refusal (§9.8), the
+> `largest_island_flops` state (§9.9), the 52× closure (§9.6), and the *qualitative* finding
+> that recording dominates and that the bulk of it is `memcpy` (§9.4) — the memcpy share is a
+> ratio measured inside each individual record span and is not a between-inference comparison.
+> **What does not survive** is every millisecond figure, every phase percentage, and the
+> record-scaling and warmup verdicts of §9.5, which are statements about durations.
+
+Everything in §6 predates two changes that invalidate it: `partition.rs` was wired into
+`GetCapability` (islands 321 → 33), and the `VkQueryPool` path landed. §6 is kept for its
+reasoning; **its numbers are superseded by this section.**
+
+Run record: `bench/results/phi35-2026-07-30-phases.json`. Command:
+
+```powershell
+$env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"; $env:PATH="$env:VULKAN_SDK\Bin;$env:PATH"
+$env:ONNXRUNTIME_VULKAN_EP_LIB="$PWD\rust\target\release\onnxruntime_vulkan_ep.dll"
+python bench\phi35.py --iters 20 --warmup 10 --repeats 3 --trace-iters 6
+```
+
+### 9.0 A hypothesis died, and that is the result
+
+A fixed per-submission cost was proposed and deliberately **not** designed around until an
+instrument existed. The instrument now exists, and the hypothesis is dead:
+
+| | share of time inside `Compute` |
+|---|---|
+| `vulkan.submit` | **0.6%** (NVIDIA) / **16.4%** (Intel) |
+
+Submission is not the cost on the discrete part. The reasoning that produced the hypothesis was
+drawn from real data and was about the wrong stage — which is what `DESIGN.md` §10.0.1 R9 means
+by *evidence scales only with falsifying instruments*. **It took an instrument, not an argument.**
+
+### 9.1 Two devices, two orderings, one mislabelled table — read this before any number
+
+The first version of this table named the wrong GPU on **every row**. It is documented rather
+than quietly corrected, because the trap is still live for every other harness in the repo.
+
+There are two orderings of the same two devices on this machine:
+
+| ordering | who uses it | index 0 | index 1 |
+|---|---|---|---|
+| `vkEnumeratePhysicalDevices` | `vulkaninfo`, `bench/devices.py::probe()`, `epctl --probe-loader`'s "Device N" | Intel Iris Xe | NVIDIA RTX 4060 |
+| **best-first** (`DeviceKind::score`: discrete 4 > integrated 3) | **`ep.device_index`** — `engine.rs::probe_devices` is documented "sorted best-first, so index 0 is the default device" | **NVIDIA RTX 4060** | **Intel Iris Xe** |
+
+A harness that passes `ep.device_index = 0` and then labels the row with `probe()[0]` prints
+Intel's name, driver, transfer class and `timestampPeriod` over NVIDIA's numbers. Nothing raises.
+Every gate stays green. The result is not noisy — it is *wrong and confident*.
+
+**Instrument:** `bench/devices.py::device_identity_check`. It reads the `timestampPeriod` and
+`timestampValidBits` the EP wrote into that row's *own trace* (52.0833/36 = Intel, 1.0/64 =
+NVIDIA) and compares them to the device the label claims. Disagreement → `MISLABELLED`, and the
+row is relabelled from the trace. No fingerprint → `UNVERIFIED`, and `_describe` prints
+`UNIDENTIFIED DEVICE` rather than a plausible wrong name. Ambiguous fingerprint (NVIDIA and
+lavapipe are both 1.0/64) → no identification, never a first match.
+
+*This is also a routing note.* `engine.rs:543` documents `DeviceInfo::index` as both "index into
+`vkEnumeratePhysicalDevices`" *and* "the value of the `ep.device_index` option". Those are two
+different numbers. One doc comment, two orderings — that is where the defect lives.
+
+### 9.2 Gate first (§10.0) — no number below may be read without this
+
+| | NVIDIA RTX 4060 Laptop (`ep.device_index` 0) | Intel Iris Xe (`ep.device_index` 1) |
+|---|---|---|
+| `model_output_equivalence` | **MATCH** | **MATCH** |
+| device identity | MATCH (trace fingerprint agrees with best-first order) | MATCH |
+| `EP_NAME in get_providers()` | yes | yes |
+| claimed nodes | 321 of 363 probed | 321 of 363 |
+| islands (`subgraphs_live`) | 33 | 33 |
+| `dispatch_accounting` | **ok** — `compute_calls 1023 == 33 islands × 31 inferences` | **ok** — same |
+| `gpu_span_accounting` | **ok** — `sum(subgraph.nodes) 5457 == 5457 GPU spans` | **ok** — same |
+| memory configuration | **staging-bound** (`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` unset) | staging-bound |
+
+`compute_failures` is 0 on both. Per §9.1.3 that is an **execution-status counter and never a
+correctness signal**; it is recorded and not relied on. The gate is `model_output_equivalence`.
+
+**The two devices are not compared.** Different transfer class (UMA vs discrete), different
+shared-memory budget, different `timestampPeriod`. `bench/compare.py` exits 2 on a cross-device
+comparison and that refusal stands.
+
+### 9.3 The phase split
+
+Shares are of **time inside `Compute`** — the sum of `vulkan.subgraph` spans. That is the EP's
+own view of its execution and is **not** process wall time; ORT's graph execution, the CPU EP's
+nodes between islands and session setup are all outside it. These shares may not be restated as
+shares of the benchmark's wall clock.
+
+The timed pass runs with tracing **off**; the split comes from a separate instrumented pass, and
+`tracing_overhead_ratio` (traced median ÷ untraced median) is measured rather than assumed:
+1.0207× on NVIDIA, 0.8659× on Intel. The Intel figure being below 1.0 is not negative overhead —
+it means the machine state moved between the two passes, and it is reported for that reason.
+
+**NVIDIA RTX 4060 Laptop** — 48563.24 ms inside `Compute`, 561 subgraph invocations:
+
+| phase | total | share | n | median |
+|---|---|---|---|---|
+| `vulkan.record` | **33456.17 ms** | **68.9%** | 561 | 50.774 ms |
+| ├ of which: host **upload memcpy** | **33042.07 ms** | **98.8% of record** | 561 | — |
+| └ of which: command construction | **414.10 ms** | 1.2% of record | 561 | 0.459 ms |
+| `vulkan.submit` | 308.18 ms | 0.6% | 561 | 0.452 ms |
+| `vulkan.fence_wait` | 13980.26 ms | 28.8% | 561 | 27.776 ms |
+| unattributed inside `Compute` | 818.63 ms | 1.7% | — | — |
+| **GPU kernels (sum)** | **6110.00 ms** | **12.6%** | 5457 | — |
+
+**Intel Iris Xe** — 72148.67 ms inside `Compute`, 561 subgraph invocations:
+
+| phase | total | share | n | median |
+|---|---|---|---|---|
+| `vulkan.record` | **23946.22 ms** | **33.2%** | 561 | 25.368 ms |
+| ├ of which: host **upload memcpy** | **17231.74 ms** | **72.0% of record** | 561 | — |
+| └ of which: command construction | 6714.48 ms | 28.0% of record | 561 | 1.393 ms |
+| `vulkan.submit` | 11830.53 ms | 16.4% | 561 | 0.349 ms |
+| `vulkan.fence_wait` | 34978.91 ms | 48.5% | 561 | 56.652 ms |
+| unattributed inside `Compute` | 1393.01 ms | 1.9% | — | — |
+| **GPU kernels (sum)** | **31652.94 ms** | **43.9%** | 5457 | — |
+
+Per-kernel GPU time (summed from the per-span `gpu_ns` float, **not** from the integer-µs `dur`
+— several of these kernels run in 2–3 µs, where truncation is a 15–30% error over 5457 spans):
+
+| kernel | n | NVIDIA | Intel |
+|---|---|---|---|
+| `q_gemv_matmul_nbits_f16` | 2737 | 5990.73 ms | 31432.43 ms |
+| `skip_simplified_layer_norm_f16` | 1088 | 97.65 ms | 149.10 ms |
+| `ew_binary_mul_f16` | 1088 | 14.39 ms | 48.69 ms |
+| `ew_unary_sigmoid_f16` | 544 | 7.22 ms | 22.73 ms |
+
+`unattributed` is reported rather than folded into a neighbouring phase: it is the input-pointer
+reads, buffer allocation and descriptor-pool work before recording, plus the readback memcpy and
+the writes into ORT's output tensors after the fence. **A phase split whose parts do not sum to
+the whole should say so.**
+
+### 9.4 The 68% is not `vkCmd*`. It is `memcpy`. — the finding Switch needs
+
+`vulkan.record` is not one activity. It brackets `vkBeginCommandBuffer` → `vkEndCommandBuffer`,
+and **the host memcpy of the island's inputs into staging buffers happens inside it.**
+
+| | NVIDIA | Intel |
+|---|---|---|
+| upload bytes per full run | **33959.1 MiB** over 561 invocations | same |
+| upload memcpy time | 33042.07 ms | 17231.74 ms |
+| implied host bandwidth | 1.0037 GiB/s | 1.9245 GiB/s |
+| command construction residual | **414.10 ms** | 6714.48 ms |
+| readback | 13.7 MiB, 38.45 ms | 13.7 MiB, 38.65 ms |
+
+**~60 MiB is copied into staging on every single `Compute` call**, for a 33-island partition over
+31 inferences. The weights are being re-uploaded per invocation. On NVIDIA, optimising the
+recording loop can recover at most **414 ms of a 33456 ms phase**; the other 98.8% goes away only
+if the data stops being re-copied. This is a memory-residency problem, not a recording-loop
+problem, and `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` being unset is why.
+
+**Instrument:** `phases.transfer_totals`. The EP pushes `vulkan.transfer_bytes` and
+`vulkan.transfer_gib_s` counters **per transfer**, so `bytes ÷ gib_s` recovers exactly the
+duration the EP itself measured — the split is not inferred from span nesting. If upload time
+ever exceeded the enclosing `record` span, `phase_containment` goes red.
+
+### 9.5 Does recording scale with island size? **No — with bytes.** Is the warmup decline real? **Yes.**
+
+Both devices return `size_verdict = SCALES_WITH_BYTES_NOT_DISPATCHES`.
+
+| | NVIDIA | Intel |
+|---|---|---|
+| dispatch count spans | 10× (1 vs 10 dispatches) | 10× |
+| steady-state record median, 1 vs 10 dispatches | 13.053 → 50.637 ms (**3.9×**) | 6.657 → 24.880 ms (**3.7×**) |
+| mean upload bytes, 1 vs 10 dispatches | 15.93 MB → 64.96 MB (**4.08×**) | same |
+| **implied record bandwidth by island size** | **1.1367 vs 1.1947 GiB/s (spread 1.051×)** | **2.229 vs 2.4316 GiB/s (spread 1.091×)** |
+| command-construction residual, 1 vs 10 dispatches | 0.2775 → 0.4635 ms (**1.7×**) | 1.468 → 1.391 ms (**1.1×**) |
+| Spearman(dispatches, record) | 0.2613 | 0.2533 |
+| Spearman(upload bytes, record) | 0.3870 | 0.2863 |
+
+A 10× change in dispatch count moves the record median 3.7–3.9×, which looks like a size effect —
+but upload bytes also move 4.08×, and **the implied bandwidth is constant to within 1.05–1.09×**.
+The part that genuinely is per-dispatch, command construction, moves only 1.1–1.7× for that same
+10× change. **Recording is a byte-throughput cost wearing a size label.** Switch is optimising a
+distribution over *bytes*, not over dispatches.
+
+**Caveat that must travel with this:** only **2 distinct island sizes** exist in the current
+33-island partition (1 and 10 dispatches). Two points do not establish a functional form. This is
+a discrimination between two hypotheses, not a fitted model, and it is stated as such in
+`record_scaling.size_confound`. A partition with more size diversity would strengthen it.
+
+**The warmup decline is real** — `decline_verdict = REAL_WARMUP` on both devices, and it survives
+the island-identity control, which is the control that matters. "Recording gets faster" could be
+an artefact of *which* islands happen to run late. It is not:
+
+* **100% of islands** (33 of 33, both devices) record faster on their last inference than on
+  their first. Median last/first: 0.392 (NVIDIA), 0.106 (Intel).
+* Per-cycle means fall across cycles that each contain **exactly the same 33 islands in the same
+  order** — the cycle period is recovered from the record sequence's own repeat structure,
+  deliberately independently of `subgraphs_live`.
+
+But the *shape* differs, and this is the part Switch needs:
+
+| | NVIDIA | Intel |
+|---|---|---|
+| warmup shape | `ONE_OFF_FIRST_INFERENCE` | `RAMP_OVER_12_INFERENCES` |
+| cycles to steady | 2 | 12 |
+| cycle means (ms) | 144.9, 41.0, 32.2, 53.0, 52.9, 51.9, … 53.4 | 113.8, 40.6, 28.1, 26.5, 22.3, 101.3, 158.5, 26.4, … 17.4, 13.1 |
+| tail spread (last 3 cycles) | 1.0747× — **flattened** | 1.5712× — **NOT flattened** |
+| steady-state record median | **50.53 ms** | 24.46 ms — **provisional** |
+
+**On NVIDIA the steady state is established and 50.53 ms is the number to optimise.** On Intel it
+is not: the last three cycles still span 1.57×, with two 100–160 ms excursions mid-run. The Intel
+steady-state median is reported as provisional and must not be quoted as a steady state. The
+answer to "is he optimising a constant or a distribution" is **a distribution, and on Intel one
+whose tail has not been established**.
+
+> ⛔ **§9.5 IS WITHDRAWN IN FULL — including the `REAL_WARMUP` verdict, which was wrong for a
+> reason I should have seen.** The island-identity control rules out *island mix*: it proves the
+> decline is not an artefact of which islands happen to run late. **It does not rule out a
+> machine that got quieter as the run went on**, because that confound is also monotone in time
+> and hits every island equally — which is precisely the signature the control was built to
+> confirm. A control that cannot distinguish the hypothesis from its most likely rival is not a
+> control for it.
+>
+> The two "100–160 ms excursions mid-run" on Intel, flagged above as unexplained, are now
+> identified: `contention_signature` puts them at inferences 5 and 6, at 2.65× and 2.68× the run
+> median, on a host clock whose device clock did not move proportionally. They are stalls, not
+> warmup. And the Intel decline runs 1.42 → 0.51 across the run — a machine progressively
+> freeing up looks exactly like that.
+>
+> Re-measurement on a verified-quiet machine is the only way to separate the two, and it is
+> cheap to make decisive: a genuine warmup ramp is **reproducible on demand** and a load
+> artefact is not. Two consecutive quiet runs that produce the same `cycles_to_steady` establish
+> warmup; two that disagree establish load. **`SCALES_WITH_BYTES_NOT_DISPATCHES` is the one
+> verdict in §9.5 with a defensible claim to survive** — it compares implied *bandwidth* between
+> two island sizes measured within the same run, and contention inflates both terms of that
+> ratio together — but it was computed from group medians that individual 9× excursions can skew,
+> so it is downgraded to **provisional** rather than withdrawn.
+
+### 9.6 The 52× trap, closed end to end
+
+See §7.4 for the check. Verdicts on this run: **PASS and DECISIVE on Intel** (period 52.0833),
+**VACUOUS on NVIDIA** (period 1.0), surfaced by `red_flags()` as "NOT DECISIVE" rather than as a
+pass. `valid_bits_applied` green on both. Switch's conversion path is confirmed correct on the
+only device that can falsify it.
+
+**`gpu_containment` had to be rebuilt to say this.** Its first version attributed GPU spans to
+submissions by timestamp containment and reported **14 violations** on Intel — on a build that had
+just passed the integrality check decisively. The traces carry their own explanation:
+`anchor_uncertainty_us` reaches **314618 µs (314 ms)** on Intel and 23907 µs on NVIDIA. A
+device-lane span's `ts` is a GPU tick projected onto the host timeline through a single
+calibration anchor; deciding which submission a 2 µs kernel belongs to by asking whose interval
+contains it is a coin flip at that error. Attribution is now **ordinal** — each `vulkan.subgraph`
+dispatches exactly `nodes` kernels and writes their queries in order, so the two lists walk in
+lockstep and no clock is consulted. The 14 violations are gone and both devices are clean.
+
+The precondition is asserted, not assumed: `gpu_span_accounting` requires
+`sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed` as **integer equality with no
+tolerance** — 5457 on both devices. That equality is also the falsifier for a dispatch whose
+query was never written, which raises nothing, leaves `compute_failures` at 0, and silently
+removes time from the GPU column.
+
+**Device-lane span *positions* are not evidence.** Durations are unaffected by anchor error;
+placement is not. Nothing in this document infers overlap or serialisation from the GPU lane.
+
+### 9.7 The per-island statistic is retired, not fixed
+
+`per_island_ms_lower_bound` is gone: `null`, with
+`per_island_ms_lower_bound_status: "RETIRED 2026-07-30"` and the reason carried alongside.
+
+It was `(vulkan_median − cpu_median) ÷ island_count`, and it read as a per-island boundary cost.
+The phase split shows the delta is dominated by per-inference host work — staging memcpy inside
+command-buffer recording — that is **not proportional to island count**. The proof it was never
+measuring what its name said: across the change that collapsed islands **321 → 33** and cut Intel
+wall time **2954.6 → 807.2 ms**, the statistic went **up**, 8.5 → 16.6 ms. A per-island cost that
+rises when islands fall by 10× and the run gets 3.7× faster is not a per-island cost.
+
+The arithmetic survives, renamed and disclaimed, as `delta_over_island_count_ms` with
+`delta_over_island_count_is_per_island_cost: False`. **Gating it behind a warning was rejected:
+a number printed under a warning gets quoted without the warning.** It is replaced by the
+directly measured `vulkan.record` median and by the `phases.record_scaling` breakdown, which
+measure the thing the retired statistic was reached for.
+
+### 9.8 No ratio is emitted from an unsteady baseline
+
+`stats.drift` used to print a warning beside the ratio. It now **refuses the ratio**.
+
+| | NVIDIA | Intel |
+|---|---|---|
+| vulkan median | 3023.472 ms (rsd 6.8%) | 3313.618 ms (rsd 22.3%, **noisy**) |
+| cpu median | 3698.736 ms (rsd 36.5%, **noisy**) | 1553.654 ms (rsd 28.7%, **noisy**) |
+| cpu drift | **NOT steady** — 2731.4 → 3478.7 ms (1.27×), 63% of steps one-way | steady |
+| `vulkan_over_cpu_ratio` | **`null` — REFUSED** | 2.13× |
+| run-to-run vulkan spread (3 repeats) | 1.30× | 1.11× |
+| run-to-run cpu spread (3 repeats) | **2.14×** | 1.32× |
+
+Refusal text, carried in the record so the absence is explained where the number would have been:
+
+> *no vulkan/cpu ratio is reported: the cpu sample is not steady […]. A ratio inherits the
+> instability of its worse operand, and a ratio printed under a warning is quoted without the
+> warning. The two absolutes above stand on their own and are unaffected.*
+
+The refusal also fires when steadiness is **untestable** (fewer than 4 samples). Untested is not
+steady. The Vulkan absolutes are unaffected and are still reported — the refusal is scoped to the
+derived quantity, not used as an excuse to report nothing.
+
+`baseline_disagreement` additionally fires on this run: the two workers' CPU baselines differ by
+2.4× (3698.7 vs 1553.7 ms) for the same artifact on the same host. Both were noisy; the NVIDIA
+worker's was also drifting. **This is a reason to distrust every CPU-relative figure in this
+run**, and the 2.13× Intel ratio should be read with it. It is not a device difference — the CPU
+baseline does not depend on which GPU the other pass used.
+
+### 9.9 `largest_island_flops` — the third slot is plumbed and empty. It is not 0.
+
+§10.0's metric of record is a triple. The third slot is still unfilled, but the failure mode
+changed: the EP now **emits** the key.
+
+`vulkan.getcapability` carries `largest_island_flops: 0` — and, on the same event,
+`island_count: 0`, `concentration: 0.0`, `boundary_bytes_per_inference: 0`, while the EP's own
+`subgraphs_live` counter reports **33**. `PartitionStats` is constructed and never populated:
+`CoverageReport` computes no FLOP estimate.
+
+**"Not computed" is now wearing the appearance of "zero FLOPs", which is strictly worse than the
+key being absent.** `phases.partition_stats` reports `third_slot_state: UNPOPULATED` and
+`metric_of_record.largest_island_flops` is `null`, never 0, with the emitted value preserved
+separately as `largest_island_flops_emitted_value: 0`. **The third slot may not be quoted.**
+
+Ownership: `partition.rs` and `CoverageReport` are **Mouse's**. Exactly one owner is needed and
+that is Mouse; the harness already consumes the key and will report a real value the moment one
+is emitted, with no further change here. Routed via `.squad/decisions/inbox/`.
+
+### 9.10 Instruments — what goes red if each number is false
+
+Per R9: *confidence scales with agreeing instruments; evidence scales only with falsifying ones.*
+
+| claim | instrument that goes red |
+|---|---|
+| the EP actually ran | `EP_NAME in session.get_providers()` **and** non-zero `claimed_nodes`, asserted before timing. Two fabricated speedups on this project (1.70× through an EP that could not load, 1.45× through one that declined everything) are why both halves exist. |
+| every island executed on every inference | `dispatch_accounting`: `compute_calls == islands × inferences`, **integer equality, no tolerance**. Caught a subgraph never invoked — which raises nothing and leaves `compute_failures` at 0. |
+| every dispatch produced GPU time | `gpu_span_accounting`: `sum(subgraph.nodes) == len(gpu_spans) == dispatches_executed`, integer equality. 5457 on both. |
+| the row names the device that ran | `devices.device_identity_check` — trace's own `timestampPeriod`/`validBits` vs the label. Caught the entire table naming the wrong GPU. |
+| the phase split sums correctly | `phase_containment` — every phase span lies inside its `vulkan.subgraph` span; `unattributed_in_compute_ms` reported, never folded away. |
+| GPU time is not over-scaled | `gpu_containment` — per-submission GPU busy ≤ `submit + fence_wait`, **ordinal attribution**, immune to the 314 ms anchor error. |
+| the 52× conversion is applied | `timestamp_conversion_integrality` — `gpu_ns ÷ period` must be a whole integer. **Decisive only where period ≠ 1.0**; reports `VACUOUS`, never "pass", on NVIDIA and lavapipe. `bench/timestamp_audit.py` exits non-zero when no local device can falsify it. |
+| valid bits are masked | `valid_bits_applied` — green on both. |
+| the trace describes the run that was timed | `trace_matches_counters` — trace span counts vs the EP's own counter file. |
+| the ratio describes a steady state | `stats.drift` → `ratio_refusal`. **Refuses**, does not warn. |
+| the CPU baseline is trustworthy | `baseline_disagreement` — **fired on this run at 2.4×**. |
+| tracing did not distort the measurement | `tracing_overhead_ratio` from a separate untraced timed pass — 1.0207× / 0.8659×, measured not assumed. |
+| the number is about the EP and not about staging | `memory_configuration` — reports `staging-bound` and forbids quoting the result as "what the Vulkan EP does". |
+| the two devices are not compared | `bench/compare.py` exits **2** on a cross-device comparison. |
+
+**Not falsified here, and named so:** whether the Intel `tracing_overhead_ratio` of 0.8659× is
+machine drift rather than negative overhead (it must be — but nothing in the harness rules the
+alternative out); and the Intel steady-state record median, which is provisional because the tail
+has not flattened.
+
+---
+
+## 10. Every number in this document was taken on an unmeasured machine (2026-07-30 evening)
+
+The coordinator measured the same device, the same build and the same test twice and got answers
+9.5× apart:
+
+```
+device 0, machine quiet          vulkan.record total    19 460 ms
+device 0, six agents compiling   vulkan.record total   184 356 ms      9.5x
+```
+
+Nothing in `bench/` could see that. Every guard in this harness was pointed at the *program* —
+is the EP loaded (`refuse_if_ep_absent`), did every island actually run (`dispatch_accounting`),
+did the output match (`model_output_equivalence`), is the sample drifting (`stats.drift`). None
+of them can see a number that is uniformly wrong because the machine was busy the whole time.
+
+`stats.drift` is the near miss and it is worth being precise about why it does not cover this.
+Drift detects a baseline **moving**. A machine that is loaded for the entire run produces a
+baseline that is *stable* and *wrong* — the best-looking possible output, and the one this
+harness would have blessed. That is the same defect class as the two fabricated speedups in
+`test_plausible_but_wrong.py`: a plausible number, from a working harness, meaning something
+other than what it says.
+
+### 10.0 The measurement is now gated on the machine, not only on the model
+
+`metric_of_record` carries a second gate beside `model_output_equivalence`:
+
+```
+machine_quiescence ∈ { QUIET, CONTENDED, UNMEASURED }      default UNMEASURED
+```
+
+**No performance number may be quoted beside a non-`QUIET` verdict.** It is a refusal, not a
+warning: `phi35.py` prints the refusal *in place of* the medians, the delta and the ratio.
+A number printed under a warning gets quoted without the warning — that rule cost this project
+`per_island_ms_lower_bound` and the unsteady-baseline ratio, and it applies here unchanged.
+
+What is still printed from a contended run is everything contention cannot corrupt: island
+counts, `dispatch_accounting`, `gpu_span_accounting`, timestamp integrality, the valid-bit mask,
+device identity. Those are counts and integer identities. Withholding them too would discard the
+falsifiers that cost the most to collect.
+
+### 10.1 Two instruments, and they fail differently
+
+Per **R9** (DESIGN.md §10.0.1) the point is not to have two instruments that agree; it is to have
+two that could each go red on their own. These share no inputs — one reads a system idle counter,
+the other reads a Vulkan query pool.
+
+**(1) Out-of-band: the load survey — `bench/contention.py`.**
+A background thread samples the system-wide idle counter once a second for the whole measurement.
+Busy CPU-seconds are `cores × wall − idle`; this process's own tree is subtracted; what is left is
+`foreign_busy_cores`, the average number of cores other processes kept busy while we measured.
+It needs no reference and no calibration, and because it reads a system counter rather than
+walking the process table it **cannot miss a short-lived process** — a `rustc` that starts and
+exits between two samples is still fully counted.
+
+*Sampling during the run is the point.* A machine quiet at the start and busy at minute 20 is the
+failure case, and a before-and-after check would miss it entirely.
+
+Its own falsifiers, because an instrument with no failure mode is an assumption:
+
+| falsifier | goes red if |
+|---|---|
+| `idle_accounting` | `(busy + idle)` fails to reconstruct `cores × wall` within 5% — the idle counter is not what we think it is |
+| `own_cpu_not_exceeding_busy` | our own tree used more CPU than the machine reports as busy — the tree walk is double-counting |
+| `monitor_not_perturbing` | the sampler's own CPU exceeds 0.05 cores — the instrument has become part of the load it measures |
+
+Any of them red yields `UNMEASURED`, never `QUIET`.
+
+**(2) Out-of-band: the tachometer — `occupancy_probe`.**
+A fixed quantity of single-threaded integer work, timed, best-of-7. It measures the thing that
+actually matters — not "is the machine busy" but "can this process get a core" — and it is
+sensitive to causes the survey cannot see: thermal throttling, a co-tenant VM, a power-plan
+change, CPU affinity. It is *relative*, so it needs a quiet reference persisted in
+`bench/results/machine-baseline.json`; with no reference it reports **`VACUOUS`**, never "pass",
+the same discipline `timestamp_audit` uses on a device whose `timestampPeriod` is 1.0.
+
+A quiet survey with a slow tachometer resolves to `CONTENDED`. Two instruments disagreeing is not
+a tie to be broken in favour of the convenient answer.
+
+**(3) In-band: the trace signature — `phases.contention_signature`.**
+This is the one that matters most, because it works on traces captured before any of the above
+existed — which is every stored number in this document.
+
+A Vulkan trace already contains two clocks with completely different exposure to host load:
+
+* **host phase spans** (`record`, `submit`, `fence_wait`) are wall-clock intervals on a thread
+  that must be scheduled to make progress. Take the core away and they stretch.
+* **GPU spans** are differences of the device's own timestamp counter. The GPU does not care how
+  many copies of `rustc` are running. Take the core away and they do not move.
+
+**The trace carries its own control.** Submissions repeat in a fixed cycle — island slot *s* on
+inference *c* does exactly the same work as island slot *s* on inference *c+1*. So for each slot,
+compare the spread of its host record time across repetitions against the spread of *its own* GPU
+busy time across the same repetitions:
+
+| host spread on a slot | GPU spread on the same slot | that slot is |
+|---|---|---|
+| ≥ 2× | < 1.25× | a **host-side stall** |
+| ≥ 2× | ≥ 1.25× | doing different work |
+| < 2× | anything | steady |
+
+The first cycle is discarded, because a genuine warmup ramp produces host-side excursions too,
+for a legitimate reason.
+
+**A defect found in this instrument while building it, because the first version got a real trace
+wrong.** The first version normalised each record span by its slot median and then took the
+*median across slots* per inference. That is the right shape for a run that is uniformly slow and
+exactly wrong for the real case: it reported the RTX 4060 trace `STABLE` while slot 0 was
+recording 12.48 / 70.19 / 12.59 ms and slot 5 was recording 301 / 1156 / 374 ms. Stalls hit some
+islands and not others, so a median across slots averages away the thing the statistic exists to
+find. The statistic is now per-slot; the per-inference figure is kept as a secondary detector for
+uniform inflation and is labelled as such.
+
+**Where this control is weak, stated rather than discovered later.** On an **integrated** GPU the
+device shares its power and thermal budget with the CPU cores, so heavy CPU load can slow the GPU
+itself through DVFS. That cannot manufacture a false `HOST_SIDE_EXCURSIONS` — it pushes the other
+way — but it can manufacture a false `WORKLOAD_VARIATION`, so on an integrated part that verdict
+means "not established", never "quiet", and it is not marked quotable. The method also requires
+the islands to have differing dispatch counts, because the cycle period is *recovered* from the
+dispatch-count sequence rather than assumed; an artifact whose islands were all the same size
+would report `UNTESTABLE`, which is the honest answer and not a period guessed from
+`subgraphs_live`.
+
+### 10.2 Verdict on the stored numbers: §9 is withdrawn
+
+Both §9 traces were re-analysed with the in-band signature. No re-run was needed — traces are
+cheap to re-analyse and expensive to collect, which is the second time today that has paid.
+
+| | NVIDIA RTX 4060 (`ep.device_index 0`) | Intel Iris Xe (`ep.device_index 1`) |
+|---|---|---|
+| verdict | **`HOST_SIDE_EXCURSIONS`** | **`NOT_STEADY`** |
+| controllable island slots | 33 | 33 |
+| slots stalled host-only | **20 of 33 (61%)** | 0 |
+| slots where GPU moved too | 2 | 33 |
+| worst slot | slot 31, host **9.39×** vs its own GPU **1.0024×** | — |
+| whole-inference spread | 1.40× | **5.25×** (min 0.51, max 2.68 of the run median) |
+| quotable | **no** | **no** |
+
+Worst offenders on the 4060, host milliseconds across three repetitions of *identical* work, with
+that slot's own GPU time beside it:
+
+```
+slot 31 (10 dispatches)   267.51   451.03    48.05     GPU spread 1.0024x
+slot 14 (10 dispatches)   190.93   501.56  1747.51     GPU spread 1.0019x
+slot 15 (10 dispatches)   271.61   557.05  1646.80     GPU spread 1.0035x
+slot  0 ( 1 dispatch )     12.48    70.19    12.59     GPU spread 1.0003x
+```
+
+A 9× swing in host time for work the device's own clock says was constant to three decimal
+places. That is not a slower measurement of the same thing; it is a measurement of a different
+machine.
+
+Intel reaches `NOT_STEADY` rather than `HOST_SIDE_EXCURSIONS` because its GPU time moved as well —
+and on an integrated part that is not an exoneration (§10.1). Either way the run was not steady.
+
+**This was foreseeable from §9's own output and I did not act on it.** Every one of these was
+already printed: cpu rsd 36.5%, run-to-run cpu spread 2.14×, `baseline_disagreement` firing at
+2.4×, an Intel tail that would not flatten, two unexplained 101/158 ms cycle excursions, and a
+`tracing_overhead_ratio` of 0.8659× — a traced pass that ran *faster* than the untraced one,
+which is impossible from tracing and obvious from load. Six symptoms of one cause, each recorded
+and each rationalised individually. The instrument did not tell me anything the data had not
+already; it made the alternative explanation impossible to keep ignoring.
+
+### 10.3 Live corroboration: this machine varies 2.65× in single-threaded throughput
+
+While writing this section, a background watcher sampled the machine every 20 seconds. Over the
+whole window foreign load ran **7.6–18.8 of 20 cores** (`Code.exe`, `copilot.exe`, `rustc.exe`,
+`python.exe`, `MsMpEng.exe`), and the tachometer — the same fixed integer loop each time, nothing
+to do with Vulkan, ORT or a trace — took:
+
+```
+22:09:44   86.46 ms      22:11:27  102.22 ms      22:17:45   59.96 ms   <- fastest seen
+22:10:35   76.62 ms      22:12:35  159.19 ms      22:20:02   63.27 ms
+                         22:13:36   83.53 ms      22:22:17   62.36 ms
+```
+
+**2.65× on identical work (59.96 → 159.19 ms), and 2.08× of that inside five minutes.** A
+benchmark that starts at 22:10 and a benchmark that starts at 22:12 are not measuring the same
+computer.
+
+The spread widened as the watcher ran: an earlier draft of this section said 2.08×, from a window
+that had not yet seen the quiet end. That is worth stating rather than silently correcting —
+**the spread of a machine is a lower bound until sampling stops**, so any single "how noisy is this
+box" figure is provisional in the direction of being too small.
+
+### 10.3.1 A defect in my own harness: the evidence did not outlive the next run
+
+`_run_trace_pass` wrote its trace to a deterministic scratch path, `phi35_trace_dev{N}.trace.json`.
+So the next run on the same device silently overwrote it. This is not hypothetical — while
+stamping the retroactive verdicts of §10.2 into the result artifact I found that **my own
+three-iteration smoke test had already destroyed §9's Intel trace**, and that device's verdict had
+to be transcribed by hand from the analysis output rather than re-derived from the evidence.
+
+That matters more here than it would elsewhere, because on this project **re-analysing a stored
+trace has repeatedly been worth more than a fresh run**: both defects found in the per-slot
+signature (§10.1) were caught by re-reading traces already on disk, at zero measurement cost, on a
+machine too loud to re-measure on. A trace is ~0.5 MB and a two-device run is forty minutes.
+
+Fixed: when `--out` is given, every pass's trace is copied to `results/traces/{artifact}-dev{N}.trace.json`
+and the path is recorded in the artifact as `phase_pass.trace_preserved_at`. Falsifier:
+`test_preserved_trace_survives_a_later_run_on_the_same_device` rewrites the scratch file after the
+copy and asserts the preserved one still holds the original data. §9's surviving NVIDIA trace has
+been moved under that scheme by hand.
+
+This is the same defect class as the rest of §10. A number whose evidence cannot be re-examined
+later is a number that has to be believed rather than checked.
+
+### 10.4 The Intel-versus-4060 inversion: I cannot adjudicate it, and here is exactly why
+
+> **Updated 2026-07-30 — see §11.1.** The device labels in the figures below are inverted: the
+> 807.2 ms figure is the **NVIDIA** part and 1156.0 ms is the **Intel** part. That does not change
+> this section's conclusion, and it adds a third independent reason for it — after correct
+> labelling the coordinator's run and §6 **disagree about which device is faster**. The ordering
+> is not merely unquotable, it does not reproduce.
+
+The coordinator has been quoting Intel 807.2 ms against the 4060's 1156.0 ms — the integrated part
+beating the discrete one — and asked whether it survives. **I am not able to confirm or retract
+it, for two independent reasons, and the honest answer is to name both rather than produce a
+verdict.**
+
+1. **It is a cross-device comparison, which this project refuses structurally.** `bench/compare.py`
+   exits 2 on one. Different transfer class, different shared-memory budget, different
+   `timestampPeriod`. That refusal does not become optional because the result is interesting.
+2. **Neither figure has a quiescence record**, and figures of that kind now fail the gate by
+   default (`UNMEASURED`).
+
+What I *can* report, because it is a statement about reproducibility rather than about which
+device is faster: **the ordering is not stable across runs.** In §9's run the 4060 came out ahead
+of the Intel part on median wall time; in the coordinator's run the Intel part came out ahead.
+Both runs fail the quiescence gate. A quantity that reverses its sign between two runs of the same
+build, both of them taken on an unmeasured machine, is not a finding about hardware.
+
+**Recommendation to the coordinator: stop quoting the inversion.** Not because it has been refuted
+— it has not — but because it has never been established, and it is currently being carried as
+though it had been.
+
+### 10.5 Re-measurement is blocked on a quiet machine, and that is now provable
+
+A full two-device run is ~40 minutes and produces nothing quotable if anything else is compiling
+through it. `phi35.py --require-quiet` therefore refuses to *start* on a contended machine —
+failing in fifteen seconds is cheaper than failing in forty minutes:
+
+```powershell
+python bench\contention.py --seconds 20          # exit 0 = quiet, 2 = contended
+python bench\phi35.py --require-quiet --iters 20 --warmup 10 --repeats 3 --trace-iters 6
+```
+
+As of 2026-07-30 22:22 the machine had **not been quiet at any sample** during this session —
+every one of the watcher's observations returned `CONTENDED`, with `loud=100%` (i.e. every
+sub-sample above the loud threshold, not merely the window's average). The coordinator's offer to
+hold the other agents idle is the unblocking step; the guard now makes the window **provable**
+rather than assumed, and stamps the proof into the result artifact.
+
+Note for Switch: this applies to a before/after on the recording fix with more force than to
+anything else here. A 9.5× environmental swing will swamp a 3× improvement in either direction —
+it can make a real win look like a regression. The before and the after must both carry a `QUIET`
+verdict, and they now can.
+
+### 10.6 The environment record
+
+`bench/environment.py::capture()` now carries a `contention` field, for the same reason it carries
+the driver version and the CPU model: it changes the answer. A stored number whose environment
+record omits the machine's load cannot be re-checked later, because the single largest influence
+on it left no trace. `capture(load_seconds=N)` takes a spot-check; the authoritative record is the
+per-pass `machine_quiescence` in the result artifact, which covers the whole measurement rather
+than one moment of it.
+
+### 10.7 Instruments — what goes red if each claim in §10 is false
+
+| claim | instrument that goes red |
+|---|---|
+| the machine was quiet while this number was measured | `contention.Monitor` → `quiescence()`; **refuses**, does not warn. Exercised in `test_contention.py` on synthetic quiet/loud/unavailable windows. |
+| …and the load survey's own arithmetic is sound | `idle_accounting`, `own_cpu_not_exceeding_busy` — either red ⇒ `UNMEASURED`, never `QUIET` |
+| …and the guard is not itself the load | `monitor_not_perturbing`, measured in **thread CPU time**. Wall time was the first attempt and was confounded with the very contention it guards against: on a saturated machine a 5 ms sample takes 100 ms of wall clock. A falsifier that fires on the condition it must be independent of is not a control. |
+| this process could get a core at full speed | `occupancy_probe` against the persisted quiet reference; `VACUOUS` with no reference, never "pass" |
+| a *stored* trace was taken on a quiet machine | `phases.contention_signature` — per-slot host spread against that slot's own GPU spread |
+| …and that verdict is not just the workload varying | `gpu_range_control` — the same slot's GPU time. If it moved too, the host is exonerated (weakly, on integrated parts) |
+| …and the statistic can see a stall that hits only some islands | `test_host_stall_on_one_slot_is_caught_even_when_others_are_clean` — the exact case the first implementation got wrong on real data |
+| …and a legitimate warmup ramp is not reported as contention | first cycle discarded; `test_first_inference_is_excluded_as_warmup` |
+| a run with too few repetitions is not called quiet | `UNDERPOWERED` / `UNTESTABLE` verdicts. Untested is not quiet, exactly as untested is not steady |
+| the two guards are independent | they share no input: a system idle counter and a `VkQueryPool`. On the smoke run they agreed (`CONTENDED` + `HOST_SIDE_EXCURSIONS`) without being able to influence each other |
+| a published verdict can still be re-derived from its evidence months later | `test_preserved_trace_survives_a_later_run_on_the_same_device` — rewrites the scratch path after the copy and asserts the preserved trace is unchanged (§10.3.1) |
+
+**Not falsified here, and named so:** the `QUIET_BUSY_CORES = 0.5` threshold is a judgement, not
+a measurement — it is stated in `contention.py` beside the constant rather than buried in a
+comparison, and no run has yet been taken at the boundary to calibrate it. And
+`contention_signature` establishes that the host stalled; it **does not name the cause**. Another
+process is the obvious candidate, but a page-fault storm, a driver allocation or a thermal event
+would look identical from inside the trace. What it establishes is the thing that governs whether
+a stored number may be quoted: the run was not in a steady state.
+
+---
+
+## 11. Two corrections from the coordinator, checked against my own artifacts (2026-07-30 evening)
+
+The coordinator issued two corrections that invalidate numbers broadcast to the whole team: the
+device labels are inverted, and the "68% command-buffer recording" is upload. **Both are correct
+about the world.** One of them is *not* correct about `bench/`, and the difference matters, because
+applying it blindly would have introduced the error it was meant to remove.
+
+Each is recorded below with the check I ran, not the instruction I received. That is the standing
+rule on this project and it now cuts toward the coordinator as often as away.
+
+### 11.1 The device labels — right about the world, wrong about `bench/results/`
+
+**The correction.** `enumerate_capable_devices()` sorts best-first (`Reverse(kind.score())`,
+discrete before integrated) and `select_device` indexes *that sorted list*, while probes print
+unsorted `vkEnumeratePhysicalDevices` order. So:
+
+> `ONNXRUNTIME_EP_VULKAN_DEVICE=0` (and `phi35.py --device 0`) is the **NVIDIA RTX 4060**.
+> `ONNXRUNTIME_EP_VULKAN_DEVICE=1` is the **Intel Iris Xe** — which remains the conformance oracle.
+
+**Check 1 — the source.** `instance.rs:536` is `result.sort_by_key(|d| Reverse(d.info.kind.score()))`,
+and `select_device` indexes the result. Confirmed.
+
+**Check 2 — was it true when the numbers were taken?** A correction to a *label* is worthless
+without a date: if best-first sorting post-dated a run, that run's labels would have been right.
+`git log -S'Reverse(d.info.kind.score())'` puts it at **`bb885d9`, 2026-07-29** — before every
+measurement in this document. So the mapping held throughout.
+
+**Check 3 — what did my artifacts actually record?** This is where the correction stops applying.
+`bench/results/phi35-2026-07-30-phases.json` already carries, per result row:
+
+```json
+"device_identity": {
+  "ep_device_index": 0,
+  "assumed_from_ep_order": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "observed_from_trace":  "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "reason": "timestamp fingerprint period=1.0 bits=64 matches exactly one device",
+  "verdict": "MATCH", "name_may_be_quoted": true }
+```
+
+and the mirror for index 1 at `period=52.0833 bits=36`. **`devices.device_identity_check` exists
+precisely for this trap and it is green on every row it covers.** The rows are not labelled from
+the index at all — they are labelled from the *trace's own* timestamp fingerprint, and the check
+goes red if that disagrees with the ep-order name.
+
+So: **`bench/results/` needed no re-labelling, and re-labelling it would have inverted correct
+rows.** I re-labelled `docs/PERF.md` §6 instead, which is prose written before the check existed
+and which was wrong.
+
+**Why the fingerprint is the right label and the index is not.** An index is an assertion about a
+convention; a `timestampPeriod` of 52.0833 with 36 valid bits is a property of the silicon that
+appears in the trace the number came from. The label therefore travels *with the evidence* rather
+than beside it. Limit, stated: NVIDIA and lavapipe both report 1.0/64, so the fingerprint
+distinguishes Intel from either but cannot distinguish those two from each other — the check
+reports that as a non-decisive case rather than a pass, exactly as the 52× audit does.
+
+**What did NOT survive.** §6.4's premise. Published as "the Intel part is 2× more expensive per
+island *while having no bus to cross*", it is really "the discrete part is 2× more expensive" —
+which is what a staging round trip predicts and is not surprising at all. **That surprise is what
+produced my fixed-per-submission hypothesis.** The hypothesis was worth testing and the instrument
+built for it closed the 52× trap and now measures upload, so the chain paid for itself — but its
+first link was an artifact.
+
+**And it does not restore the inversion story either.** Relabelling cuts opposite ways in the two
+runs:
+
+| run | as published | after relabel |
+|---|---|---|
+| coordinator's | "Intel 807.2 beats NVIDIA 1156.0" | NVIDIA 807.2 beats Intel 1156.0 |
+| §6 (this doc) | NVIDIA 1465.9 beats Intel 2790.7 | **Intel 1465.9 beats NVIDIA 2790.7** |
+
+**The two runs disagree about which device is faster, after correct labelling, on the same build.**
+So the inversion neither survives nor dissolves — it was never measured. Both runs also fail the
+§10 quiescence gate. My §10.4 recommendation is unchanged and now has a second independent reason:
+stop quoting the ordering. It is a cross-device comparison (`compare.py` exits 2), taken on
+unmeasured machines, that does not reproduce.
+
+### 11.2 The 68% was upload, and my own trace says so
+
+**The correction.** `Phase::Record` opens before `vkBeginCommandBuffer` and closes after
+`vkEndCommandBuffer`, and the host staging memcpy runs **inside** that window, reporting through
+`record_transfer` into a `ph:"C"` counter that deliberately emits no span. An aggregation over
+`ph:"X"` spans is therefore *structurally incapable* of seeing it and silently folds it into
+`record`.
+
+**Check — my own stored NVIDIA trace, re-analysed at zero measurement cost:**
+
+```
+vulkan.record          54389.02 ms   <- NOT A LEAF
+  = 53635.57 ms upload (98.6%) + 753.46 ms actual command construction (1.2% of Compute)
+host upload memcpy     7990.4 MiB over 4 inferences = 1997.6 MiB / inference
+```
+
+**1997.6 MiB per inference — the same figure Tank obtained from a different instrument.** Per R9
+that is agreement, so it raises confidence, not evidence; the thing that would have refuted it is
+that the counters and the phase spans are independent records and could have disagreed. They do
+not, to four significant figures.
+
+Real command-buffer construction is **1.2% of time in Compute**, consistent with Tank's 1–3% of
+wall. The EP re-uploads the entire weight set every inference.
+
+#### 11.2.1 The invariant is the byte count, not the share — and the share does not generalise
+
+Tank reported upload as "95.8–98.4% of the `record` phase in every cell, both devices, both
+settings". **That share does not reproduce on my Intel trace, and it should not be expected to.**
+
+| | upload per inference | upload bandwidth | upload share of `record` |
+|---|---|---|---|
+| NVIDIA RTX 4060 (`--device 0`, discrete) | **1997.6 MiB** | 0.1455 GiB/s | 98.6% |
+| Intel Iris Xe (`--device 1`, UMA) | **1997.6 MiB** | 0.4454 GiB/s | 59.9% |
+
+**The byte count is identical to five significant figures across two devices, two traces and two
+run lengths (4 and 8 inferences).** That is the finding, and it is the one that transfers: it is a
+*count*, so by §10's own rule it survives a contended run, and it independently reproduces Tank's
+1997.6 MiB from a different instrument on different silicon.
+
+The *share* is not an invariant and must not be quoted as one. It is
+`bytes ÷ bandwidth ÷ record_total`, and the bandwidth is a property of the transfer class — the
+UMA part is copying within one memory pool, the discrete part is crossing PCIe. A ratio whose
+denominator differs by transfer class will differ by transfer class. **This is also why Tank's own
+per-device transfer ceilings differ so widely (~94.8% of wall on the discrete part, ~44.0% on the
+UMA part) — my numbers agree with those ceilings and not with the "every cell" share claim.**
+
+Two cautions on the table above, both mine to state:
+
+* The two rates are listed **per device and are not ranked**. `bench/compare.py` refuses
+  cross-device performance comparison (exit 2) and that refusal is not suspended because the
+  quantity is a bandwidth. The reason both appear here is to show that the *share* is
+  class-dependent, which is a statement about the arithmetic, not about which part is better.
+* The Intel row comes from a **`CONTENDED`** run, so its 59.9% share is provisional in the
+  direction of being too low — contention inflates the command-construction residual in the
+  denominator. Its byte count is not provisional. That asymmetry is exactly §10's leaf/duration
+  distinction, applied here.
+
+**What Switch should take from this:** the target is the 1997.6 MiB, on both devices. The share
+tells you how much of `record` disappears when you fix it, and that answer is device-specific.
+
+**This also re-reads §10's contention finding rather than overturning it.** 9.5× inflation of
+`record` under CPU contention was correctly diagnosed as *host CPU work* — it just is not the work
+the span is named after. A ~2 GB memcpy is exactly the kind of host work that degrades when six
+processes are compiling. The contention guard stands; its explanation improves.
+
+**What I changed so the misreading is not available.** `phases.py` now knows that phases form a
+tree:
+
+* `PHASE_CHILDREN` records that `record` contains `upload`; `is_leaf_phase()` is the predicate.
+* `host_phase_totals()` marks every entry `is_leaf`, and for a non-leaf emits `child_ms`,
+  `leaf_ms` and a caveat. With no transfer data `leaf_ms` is **`None`, not the total** —
+  the leaf cost is UNKNOWN, and unknown is not equal to the parent.
+* The share table renames the parent's share to `record_INCLUDING_upload` and adds
+  `record_excl_upload`, so the honest number is the one closest to hand.
+* `describe()` prints `<- NOT A LEAF` on the same line as the total, and the split on the next.
+* **`phase_leaf_accounting`** is the falsifier: `UNRESOLVED` when a non-leaf phase's children
+  cannot be subtracted, and it says so *more loudly* when that phase is also the largest in the
+  run — because that is precisely when "record is the bottleneck" is the natural misreading. It
+  is `VACUOUS`, never "pass", on a trace with no non-leaf phase.
+
+One deliberate restraint: `host_phase_totals` does **not** derive the upload total itself. It
+consumes `record_scaling`'s interval-containment attribution. A second, weaker attribution of the
+same quantity — by transfer direction alone — would have been easy and would have created two
+numbers that could disagree. One number that can be checked beats two that agree by luck.
+
+### 11.3 The general rule this produced
+
+Both corrections, and three of the five defects catalogued in this document, are the same shape:
+**an artifact that is wired, produces output, and whose output's name misdescribes its content.**
+`record` is a real span with a real duration and a caveat string that asserts it is command-buffer
+recording. `index` is a real integer that indexes a different list than its reader assumes.
+Neither is missing, neither raises, and a census that checks whether a mechanism *exists* passes
+both.
+
+> **A name is an assertion about content, and it must have a falsifier like any other assertion.**
+
+Concretely, the two falsifiers this section adds are the pattern: `device_identity_check` tests a
+label against evidence carried in the same artifact, and `phase_leaf_accounting` tests whether a
+duration measures what its name says. Neither can be satisfied by the mechanism merely existing.
+
+### 11.4 Instruments — what goes red if each claim in §11 is false
+
+| claim | instrument that goes red |
+|---|---|
+| the device named on a results row is the device that ran it | `devices.device_identity_check` — timestamp fingerprint from the row's own trace vs the ep-order name; `MATCH`/`MISMATCH`, and `name_may_be_quoted` gates the name |
+| …and it is decisive on this pair | period 52.0833/36 bits vs 1.0/64. **Non-decisive** between NVIDIA and lavapipe, reported as a gap, not a pass |
+| the label mapping held when the numbers were taken | `git log -S'Reverse(d.info.kind.score())'` → `bb885d9`, 2026-07-29, before every run here |
+| a phase total measures the activity its name names | `phase_leaf_accounting` — `UNRESOLVED` unless the children are subtracted; louder when the non-leaf phase is the largest |
+| …and the leaf residual is not silently the total | `leaf_ms is None` + `test_unsubtractable_children_make_the_total_unquotable_not_approximate` |
+| …and a reader quoting one line cannot quote the wrong one | `test_describe_never_prints_records_share_without_the_marker` |
+| upload is ~98.6% of `record` | two independent records in one trace — `ph:"C"` transfer counters and `ph:"X"` phase spans — that could have disagreed and do not; and Tank's separate probe, agreeing at 1997.6 MiB/inference |
+| upload is **1997.6 MiB/inference on both devices** | two traces, two devices, two run lengths (4 and 8 inferences), agreeing to 5 s.f.; it is a byte *count*, so contention cannot move it. If the EP ever stops re-uploading, this number changes and `alloc_device_authoritative_spans` moves off 0 |
+| …but the *share* of `record` is not an invariant | 98.6% discrete vs 59.9% UMA, in my own traces. Any restatement of "upload is ~98% of record" as device-independent is refuted by the Intel row |
+| the contention finding survives the re-attribution | it is unaffected: `contention_signature` compares host spread against GPU spread per slot and never depended on what the host time was spent *on* |
+
+**Not falsified, and named so:** §6's absolute numbers are re-labelled, not re-measured, and they
+remain under §10's withdrawal for contention. Re-labelling a withdrawn number does not un-withdraw
+it. The ordering question in §11.1 stays open until two quiet-machine runs agree.
+
+
+---
+
+## 12. Admissibility: whether a stored number may be quoted at all (2026-07-30 night)
+
+**Standing directive from Justin, this session:** 「要确保我们性能是非常高 一致向高性能推进」 — performance
+is now a continuous, first-class goal. That raises the stakes on everything in this document,
+because a permanent push for speed is a permanent incentive to quote the most favourable number
+available. This section is the counterweight I own: **the gate that decides whether a performance
+claim is admissible at all.**
+
+It does not slow the push down. A slow honest number is admissible. Admissibility is about
+provenance, not speed.
+
+### 12.1 A double-count that a merge would have introduced, silently
+
+`origin/main` landed three new spans in `trace.rs`: `vulkan.desc_alloc`, `vulkan.pipeline_lookup`
+and `vulkan.cmd_upload`. They are real `ph:"X"` spans and they are emitted **inside**
+`vulkan.record`.
+
+Every phase total in `bench/phases.py` was, until this session, a sum over sibling spans. Summing
+these three alongside `record` counts the same microseconds twice: the host total inflates by
+roughly 2× and **every share derived from it** moves with it. Nothing in the trace raises; nothing
+in the test suite failed; the resulting table would have looked entirely ordinary.
+
+This is the same defect class as `record`-is-68%, one level down. §11 established that a phase
+whose children are invisible to the aggregation must not be reported as a leaf. This is the
+converse: **a child that becomes visible must be removed from the sibling sum on the same day it
+appears.**
+
+The guard is `phases.phase_nesting`. It derives parenthood **from timestamp containment**, and
+separately reads the `host/sub-record:` prefix the EP puts on the child's caveat, and goes red when
+the two disagree **in either direction**:
+
+| direction | what it catches |
+|---|---|
+| declared nested, not contained | the caveat is wrong, or a span escaped its parent |
+| contained, not declared | **a new sub-phase landed and every sibling sum since is double-counting** |
+
+The second row is the operational one, and it is why containment is the primary source. R11: *a
+measurement's name is not its definition.* Timestamps do not know what a phase is called; a rename
+in `trace.rs` cannot disable this check.
+
+`phases.sibling_phases` then takes the **union** of the static `SUB_RECORD_PHASES` table and the
+trace's own declaration. The union rather than either alone, and the asymmetry is deliberate: the
+table catches a child whose caveat is missing, the declaration catches a child added after the
+table was written. Each source covers the other's blind spot.
+
+Nested spans are still reported — under `nested_phases_ms`, as a breakdown *of* `record` — and are
+excluded from every share.
+
+### 12.2 Two upload accountings, and neither one alone is evidence
+
+`cmd_upload` measures the host staging memcpy as a wall-clock interval. The transfer counters
+measure the same memcpy as bytes, inverted through a rate into a duration. Adding both
+double-counts it; picking one silently discards a free cross-check.
+
+`phases.upload_accounting` prefers the span, uses the counters to corroborate it, and goes red when
+they disagree by more than 25%. When only one is present it reports **`VACUOUS`, explicitly not a
+pass** — one instrument cannot falsify itself.
+
+The precedent is Tank's: `alloc_device_upload_bytes` read **0** on a run where `cmd_upload` was
+**15.2 seconds**. Two accountings of the same upload, one of them blind, and nothing went red.
+
+### 12.3 R11 — and why our decomposition check could not fire
+
+The rule was paid for. The coordinator's phase table closed at **99.0%**:
+
+```
+68.3 + 16.3 + 14.1 + 0.3 = 99.0%
+```
+
+and it was wrong, because a 2 GB memcpy was missing — and it was missing *inside a row*, not
+between them. Both sides of that identity were sums over the same tracer's spans. The parts and
+the whole moved together. **An identity whose two sides come from the same source is a falsifier
+that cannot fire, no matter how badly the rows are named.**
+
+`phases.decomposition_identity` therefore reports two closures and labels them differently:
+
+| closure | whole comes from | strength |
+|---|---|---|
+| `internal_closure` | `sum(vulkan.subgraph)` — the same tracer | **`WEAK`**, with `why_weak` naming the 99.0% failure inline |
+| `external_closure` | the harness's own `perf_counter` | **`CAN FIRE`** |
+
+The weakness is written into the artifact, next to the number, so it travels with it.
+
+With no independent whole the verdict is **`UNCHECKABLE`** and `ok` is **false** — a decomposition
+that nothing could contradict is not publishable. The independent whole is now threaded through:
+`bench/stats.Sample.loop_wall_ms` records the wall time of the whole warmup+timed loop from
+`perf_counter`, a clock that knows nothing about phases, and `_run_trace_pass` passes it into
+`analyse()`.
+
+On the stored dev0 trace the check reads **`CLOSES`** — trace-side time inside Compute is 74.1% of
+the harness's wall time, the remainder being ORT graph execution, session setup and the CPU EP's
+nodes between islands. A synthetic 2× inflation reads **`EXCEEDS_WALL`**. The falsifier fires.
+
+**Per the strengthened §10.0: the wall-clock ratio leads. The decomposition may accompany it, never
+replace it, and is publishable only with this identity check attached.**
+
+### 12.4 `bench/admissible.py` — re-checking a number after its process exited
+
+Every other guard in `bench/` runs at measurement time, inside the process that produced the
+number. A JSON file in `bench/results/` carries none of them. It gets read by a human, pasted into
+a status report, or differenced against another file, hours later. **Nothing re-checks it.**
+
+All three fabricated results on this project came through that gap:
+
+- **1.70×** through an EP that could not load — ORT *printed* the error and did not raise
+- **1.45×** through an EP that loaded and declined every node
+- a **"GQA speedup"** obtained by differencing two runs whose CPU baselines were **18× apart**
+
+All three are visible in the stored artifact, if something looks. `bench/admissible.py` looks. It
+grades every file in `bench/results/` on five gates, and **exits non-zero** when an inadmissible
+artifact is present:
+
+| gate | refuses when | the defect it is named after |
+|---|---|---|
+| `ep_loaded` | EP absent from `get_providers()`, or claimed count zero/absent | the 1.70× and 1.45× |
+| `model_output_equivalence` | not `MATCH` | §10.0's gated triple; `UNMEASURED` is the default |
+| `device_identity` | absent, or not `MATCH`/`NON_DECISIVE` | the inverted device labels (§11.1) |
+| `machine_quiescence` | absent, or not `QUIET` | the 9.5× contention inflation (§10) |
+| `measurement_validity` | absent, or failed | the harness's own self-check |
+
+**Absence of a check is a refusal, not a default green.** That is the single design decision the
+module turns on, and it is tested directly: removing any one field from a good record must produce
+a refusal.
+
+`WITHDRAWN` is its own grade and is **not** a failure — an artifact whose author has already
+retracted it is the system working, and re-flagging it forever teaches people to ignore the output.
+
+### 12.5 The cross-artifact check: `baseline_comparability`
+
+The GQA defect does not live in either file. Both are individually unremarkable. It lives **between
+them**, and no per-file gate can see it.
+
+A speedup claim is a ratio of ratios, and its denominator is the CPU EP — which **no change to a
+Vulkan EP can affect.** So:
+
+> **Two runs may only be differenced if their CPU baselines agree.**
+
+| run | vulkan | **cpu** | vk/cpu |
+|---|---|---|---|
+| `pre-gqa-dev0` | 3363.9 ms | **6226.8 ms** | 0.54× |
+| `post-gqa-dev0` | 618.6 ms | **345.2 ms** | 1.79× |
+
+**The CPU baseline moved 18.0× across a Vulkan-only change.** Read naively — Vulkan before against
+Vulkan after — this is a **5.44× speedup**, and it is the most impressive number this project has
+ever produced. Normalised to each run's own baseline, the Vulkan side got **3.3× worse**.
+
+**Both readings are inadmissible.** The 6226.8 ms CPU figure is itself anomalous; every other run
+in `bench/results/` shows 185–350 ms. Something was wrong with the machine, and the only honest
+statement is that these two files cannot support any claim in either direction.
+
+`post-gqa-dev1` (230.7 ms Vulkan vs 254.0 ms CPU) would read as **this project's first win** —
+1.10× faster than CPU. It fails four of five gates and **must not be quoted.** That one is worth
+stating plainly: the guard's first real act was to refuse a result we wanted.
+
+### 12.6 Audit of `bench/results/` as it stands
+
+```
+WITHDRAWN     phi35-2026-07-30-phases.json   (withdrawn by me in §10, taken under contention)
+INADMISSIBLE  phi35.json                     no device_identity / quiescence / validity
+INADMISSIBLE  pre-gqa-dev0.json              same, and see §12.5
+INADMISSIBLE  post-gqa-dev0.json             same, and see §12.5
+INADMISSIBLE  post-gqa-dev1.json             same -- would have read as the first win
+NOT_A_RESULT  timestamp-audit.json           not a timing artifact; not graded against timing gates
+BASELINE_MOVED  pre-gqa-dev0 vs post-gqa-dev0  CPU baseline 18.0x apart
+```
+
+`NOT_A_RESULT` matters as much as the refusals. Grading a device-capability report against timing
+gates would produce a false red, and **a false red costs a falsifier its authority as surely as a
+false green does.**
+
+**There is currently no admissible end-to-end performance number in this repository.** That is the
+correct state of the record, and it is not a regression — the numbers were always this weak; only
+the reporting has caught up. Re-measurement is blocked on a quiet machine, which has not existed
+at any point today.
+
+### 12.7 The instrument that goes red — this section's claims
+
+| claim | instrument that goes red if it is false |
+|---|---|
+| nested sub-record spans are not double-counted | `phase_nesting` (containment vs caveat, red both directions) + `test_nested_span_is_not_summed_as_a_sibling` asserts the host total is 1.02 ms, not 1.82 ms |
+| a new sub-phase cannot silently join the sibling sum | `phase_nesting` "contained but not declared" branch; `sibling_phases` unions table with declaration |
+| the two upload accountings agree | `upload_accounting` — `DISAGREE` beyond 25%, `VACUOUS` (never pass) with one instrument |
+| the decomposition closes against something that could contradict it | `decomposition_identity.external_closure` vs `Sample.loop_wall_ms`; `UNCHECKABLE` is `ok=False` |
+| the internal closure is not evidence | it is labelled `WEAK` **in the artifact**, with the 99.0% failure quoted in `why_weak` |
+| a stored number's provenance is intact | `bench/admissible.py`, exit 1 |
+| the GQA files cannot support a speedup | `baseline_comparability` — `BASELINE_MOVED`, ratio 18.0 |
+| a non-timing artifact is not falsely refused | `test_a_non_timing_artifact_is_not_graded_against_timing_gates` |
+
+163 tests in `bench/` pass.
+
+### 12.8 What I owe, and what I am blocked on
+
+- **Blocked on a quiet machine** (unchanged from §10): re-measurement of both devices, and the
+  warmup-decline discriminator (two quiet runs agreeing on `cycles_to_steady`).
+- **For Switch:** verify the weight cache **on bytes, not wall time**. `device_upload_bytes` across
+  a 1/2/3 inference sweep currently reads 1997.60 / 3995.19 / 5992.79 MiB — exactly linear. **If it
+  stops being linear, the cache works.** Bytes are integers, deterministic, and immune to the 9.5×
+  contention swing; a wall-clock before/after on this machine is not measurable today.
+- **For Switch:** `rust/src/trace.rs:216` still attaches *"host: command-buffer recording; amortised
+  across replays"* to the `record` span. §11 established that span is 98.6% upload. **The false
+  caveat ships inside every trace we produce.** His file, not mine.
+- **`largest_island_flops`** (§10.0's third slot) remains unemitted; my harness consumes it the day
+  a `PartitionStats` event carries it.
