@@ -889,11 +889,11 @@ def describe_vulkan_execution_count(count: int) -> str:
     """
     if count == 0:
         return "0 fused-island executions — the Vulkan EP ran NOTHING (fallback)"
-    noun = "island" if count == 1 else "islands"
+    plural = "" if count == 1 else "s"
     return (
-        f"{count} fused-{noun} execution(s) — NOT {count} graph nodes; one island can "
-        "cover hundreds of graph nodes (Phi-3.5: 354 of 364 nodes in one island, so 1 is "
-        "healthy). Presence signal only; read coverage from the counters JSON."
+        f"{count} fused-island execution{plural} — NOT {count} graph node{plural}; one "
+        "island can cover hundreds of graph nodes (Phi-3.5: 354 of 364 nodes in one island, "
+        "so 1 is healthy). Presence signal only; read coverage from the counters JSON."
     )
 
 
