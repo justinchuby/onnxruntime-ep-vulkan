@@ -403,8 +403,15 @@ def boundary_cost(vk_median_ms: float, cpu_median_ms: float,
     What replaces it is not a redefinition of the same quotient. It is two directly measured
     numbers from the trace, neither of which is an attribution of a residual:
 
-    * ``phases.host_phases_ms['record'].median_ms`` — the actual per-island recording cost.
-    * ``phases.record_scaling`` — whether that cost scales with island size at all.
+    * ``phases.host_phases_ms['record']`` — the per-island ``Record`` phase. **Corrected
+      2026-07-30: this is not "the recording cost".** The span brackets the host staging memcpy,
+      which is 98.6% of it, so the entry now carries ``is_leaf: false`` and the leaf residual is
+      ``leaf_ms`` / ``record_scaling['command_construction_ms']``. Quoting the total under the name
+      "recording" is the mistake this project made twice; ``phases.phase_leaf_accounting`` goes red
+      on it. See ``docs/PERF.md`` §11.2.
+    * ``phases.record_scaling`` — whether that cost scales with island size at all, asked of the
+      upload-free residual rather than of the total, because a bigger island uploads more bytes and
+      would otherwise "scale" for a reason unrelated to ``vkCmd*`` calls.
 
     ``delta_over_island_count_ms`` is still emitted, because deleting a number that has been
     quoted leaves a reader unable to reconcile older reports. It carries ``is_per_island_cost:

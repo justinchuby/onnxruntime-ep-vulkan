@@ -387,3 +387,120 @@ def test_preservation_is_silent_when_no_trace_was_captured(tmp_path):
     ]
     phi35._preserve_traces(results, out)
     assert not (out.parent / "traces").exists()
+
+
+# ---------------------------------------------------------------------------------------------
+# phase_leaf_accounting — a phase whose children are invisible must not be quoted as a leaf
+# ---------------------------------------------------------------------------------------------
+
+def _attr(phase, *durs_us, sg=0):
+    return [{"phase": phase, "dur": d, "subgraph_index": sg} for d in durs_us]
+
+
+def test_record_is_not_a_leaf_and_says_so():
+    """The defect: `record` brackets the upload memcpy, which emits no span."""
+    assert phases.is_leaf_phase("submit")
+    assert phases.is_leaf_phase("fence_wait")
+    assert not phases.is_leaf_phase("record")
+
+    tot = phases.host_phase_totals(_attr("record", 1000, 1000) + _attr("submit", 10, 10))
+    assert tot["submit"]["is_leaf"] is True
+    assert tot["record"]["is_leaf"] is False
+    assert "upload" in tot["record"]["contains"]
+    assert "NOT A LEAF" in tot["record"]["caveat"]
+
+
+def test_unsubtractable_children_make_the_total_unquotable_not_approximate():
+    """With no transfer data the leaf cost is UNKNOWN. It is emphatically not the total.
+
+    This is the exact state that produced 'command-buffer recording is 68%'. The falsifier must
+    go red here, and must say so more loudly because `record` is also the largest phase.
+    """
+    tot = phases.host_phase_totals(_attr("record", 90_000) + _attr("submit", 300))
+    assert tot["record"]["leaf_ms"] is None
+    assert "UNKNOWN" in tot["record"]["leaf_ms_note"]
+
+    v = phases.phase_leaf_accounting(tot)
+    assert v["ok"] is False
+    assert v["verdict"] == "UNRESOLVED"
+    assert v["largest_phase"] == "record"
+    assert v["largest_phase_is_non_leaf"] is True
+    assert "LARGEST" in v["detail"]
+
+
+def test_subtracted_children_resolve_and_expose_the_leaf_residual():
+    tot = phases.host_phase_totals(_attr("record", 100_000), {"record": 98.6})
+    r = tot["record"]
+    assert r["total_ms"] == pytest.approx(100.0)
+    assert r["child_ms"] == pytest.approx(98.6)
+    assert r["leaf_ms"] == pytest.approx(1.4)
+    assert r["child_share"] == pytest.approx(0.986, abs=1e-3)
+
+    v = phases.phase_leaf_accounting(tot)
+    assert v["ok"] is True and v["verdict"] == "RESOLVED"
+
+
+def test_a_trace_of_only_leaf_phases_is_vacuous_not_pass():
+    v = phases.phase_leaf_accounting(phases.host_phase_totals(_attr("submit", 10)))
+    assert v["verdict"] == "VACUOUS"
+    assert v["non_leaf_phases"] == []
+
+
+def test_child_cost_can_never_exceed_its_parent():
+    tot = phases.host_phase_totals(_attr("record", 10_000), {"record": 999_999.0})
+    assert tot["record"]["leaf_ms"] == 0.0
+
+
+def test_describe_never_prints_records_share_without_the_marker():
+    """A reader who quotes one line must not be able to quote the wrong one."""
+    tot = phases.host_phase_totals(_attr("record", 90_000) + _attr("submit", 300))
+    report = {"time_in_compute_ms": 100.0, "subgraph_spans": 1, "host_phases_ms": tot,
+              "shares_of_time_in_compute": {"record_INCLUDING_upload": 0.9, "submit": 0.003},
+              "phase_leaf_accounting": phases.phase_leaf_accounting(tot)}
+    text = "\n".join(phases.describe(report))
+    rec_line = [ln for ln in text.splitlines() if "vulkan.record" in ln][0]
+    assert "NOT A LEAF" in rec_line
+    assert "Do NOT quote it as 'record'" in text
+
+
+def test_leaf_accounting_surfaces_in_red_flags():
+    tot = phases.host_phase_totals(_attr("record", 90_000))
+    flags = phases.red_flags({"phase_leaf_accounting": phases.phase_leaf_accounting(tot)})
+    assert any("phase_leaf_accounting" in f for f in flags)
+
+
+def test_upload_bytes_per_inference_is_a_count_and_survives_contention():
+    """The finding that transfers across devices is the byte count, not the share.
+
+    Two stored traces (NVIDIA 4 inferences, Intel 8) both give 1997.6 MiB/inference. A share
+    would not: it divides by a bandwidth that is a property of the transfer class. This test
+    locks the *shape* of that claim -- that the harness reports a count, and that the count is
+    independent of how long the run was.
+    """
+    import phases as ph
+
+    def trace(n_inferences, gib_s):
+        ev = []
+        ts = 0
+        per_island = 1997.6 * (2 ** 20) / 33
+        for _ in range(n_inferences):
+            for slot in range(33):
+                ev.append({"name": "vulkan.subgraph", "ph": "X", "ts": ts, "dur": 1000,
+                           "args": {"nodes": 1 + (slot % 3)}})
+                ev.append({"name": "vulkan.transfer_bytes", "cat": "counter", "ph": "C",
+                           "ts": ts + 1, "args": {"upload": int(per_island)}})
+                ev.append({"name": "vulkan.transfer_gib_s", "cat": "counter", "ph": "C",
+                           "ts": ts + 1, "args": {"upload": gib_s}})
+                ts += 2000
+        return ev
+
+    fast = ph.transfer_events(trace(8, 0.4454))   # UMA
+    slow = ph.transfer_events(trace(4, 0.1455))   # discrete
+
+    mib = lambda tr, n: sum(t["bytes"] for t in tr) / 2 ** 20 / n
+    assert mib(fast, 8) == pytest.approx(1997.6, abs=0.1)
+    assert mib(slow, 4) == pytest.approx(1997.6, abs=0.1)
+
+    # the durations, by contrast, differ by the bandwidth ratio -- so a share cannot be invariant
+    dur = lambda tr: sum(t["us"] for t in tr)
+    assert dur(slow) / (dur(fast) / 2) == pytest.approx(0.4454 / 0.1455, rel=0.01)

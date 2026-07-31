@@ -13,15 +13,32 @@ So this module reads the trace the EP already writes and splits the wall time in
 EP already labels. It invents nothing: every phase name, every caveat string and every unit comes
 out of ``rust/src/trace.rs``. If a phase is not in the trace, it is absent here, not zero.
 
-WHAT KILLED A HYPOTHESIS
-========================
+WHAT KILLED A HYPOTHESIS, AND WHAT KILLED ITS REPLACEMENT
+=========================================================
 The reason this file exists in this shape is that the phase split falsified a plausible inference
 of mine. From the first Phi-3.5 measurement I observed Intel paying roughly 2× per island what
 NVIDIA paid *while having no bus to cross*, and reasoned towards a fixed per-submission cost —
 submit-and-wait per island. I declined to design around it and asked for the instrument. The
-instrument said ``vulkan.submit`` is **0.3%** of the run. The cost is host-side command-buffer
-recording at ~68%, and the GPU is idle for most of the wall clock. The inference was drawn from
-real data and was about the wrong stage; nothing short of a measurement was going to say so.
+instrument said ``vulkan.submit`` is **0.3%** of the run, and the GPU is idle for most of the wall
+clock. The inference was drawn from real data and was about the wrong stage.
+
+**Then the replacement hypothesis died the same way, and it was mine to catch.** The phase table
+that killed "submission is the cost" said ``vulkan.record`` was ~68% and it was read — including
+by me, in this docstring — as "command-buffer recording is the bottleneck". It is not.
+``Phase::Record`` opens before ``vkBeginCommandBuffer`` and closes after ``vkEndCommandBuffer``,
+and **the host staging memcpy runs inside that window**, reporting through ``record_transfer``
+into a ``ph:"C"`` counter that emits *no span* (deliberately, to avoid double-counting). An
+aggregation over ``ph:"X"`` spans is therefore structurally incapable of seeing it.
+
+Measured on the stored NVIDIA trace by this module: upload is **98.6%** of the ``record`` phase.
+Command-buffer construction is **753 ms of 65090 ms wall — 1.2%**, not 68%. The real cost is that
+the EP re-uploads the entire weight set every inference (~1997.6 MiB/inference, exactly linear in
+run count).
+
+The lesson is structural, not arithmetic: **a phase whose children are invisible to the
+aggregation must never be reported as a leaf.** Summing sibling spans and reporting the largest by
+name attributes a child's cost to its parent's name, and the name then travels. ``phase_totals``
+now refuses to present ``record`` as a leaf, and ``phase_leaf_accounting`` goes red if it is.
 
 UNITS, AND ONE TRAP IN THEM
 ===========================
@@ -62,6 +79,34 @@ from pathlib import Path
 
 #: Host-side phase spans, in the order `rust/src/trace.rs` documents them.
 HOST_PHASES = ("compile", "prepack", "record", "upload", "submit", "fence_wait", "readback")
+
+#: Phases that **contain** other accounted work and are therefore NOT leaves.
+#:
+#: ``Phase::Record`` opens before ``vkBeginCommandBuffer`` and closes after
+#: ``vkEndCommandBuffer``, and the host staging memcpy runs inside that window. Upload reports
+#: through ``record_transfer`` into a ``ph:"C"`` counter and deliberately emits no span, so an
+#: aggregation over ``ph:"X"`` cannot see it and silently folds it into ``record``.
+#:
+#: This is not a rounding problem. Measured on the stored NVIDIA trace, upload is **98.6%** of
+#: ``record`` — so a table that lists ``record`` beside ``upload`` as siblings reports the single
+#: largest cost in the run under a name that means something else, and points optimisation work at
+#: the ``vkCmd*`` loop instead of at weight residency. Both readings of "record is 68%" made on
+#: this project drew that conclusion.
+#:
+#: Maps parent phase -> the accounted children that live inside its span.
+PHASE_CHILDREN = {
+    "record": ("upload",),
+}
+
+
+def is_leaf_phase(phase: str) -> bool:
+    """True when a phase's duration is entirely its own work.
+
+    A non-leaf phase's total is an upper bound on the activity its name describes, never a
+    measurement of it. Use ``record_scaling()['command_construction_ms']`` for the leaf residual.
+    """
+    return phase not in PHASE_CHILDREN
+
 
 #: `X` (complete) events on the host lane that bound one `Compute` call.
 SUBGRAPH = "vulkan.subgraph"
@@ -217,11 +262,97 @@ def _summarise(values: "list[float]") -> dict:
     }
 
 
-def host_phase_totals(attributed: "list[dict]") -> dict:
+def host_phase_totals(attributed: "list[dict]", child_ms: "dict[str, float] | None" = None) -> dict:
+    """Per-phase host totals, with non-leaf phases marked as such.
+
+    Every entry carries ``is_leaf``. For a non-leaf phase the total is an **upper bound on the
+    activity its name names**, not a measurement of it, and ``leaf_ms`` carries the residual once
+    the accounted children are subtracted.
+
+    This is not decoration. The one number this project got most wrong — "command-buffer recording
+    is 68% of the run" — came from reading ``record``'s total as though it measured ``vkCmd*``
+    calls, when 98.6% of it was the weight upload happening inside the same span. The reading was
+    made twice, by two people, from a table that gave them no way to tell.
+
+    ``child_ms`` maps a parent phase to the milliseconds of accounted child work inside it. It is
+    supplied by the caller from :func:`record_scaling`, which attributes each transfer to the
+    record span whose interval **contains** it. Deriving it here from transfer direction alone
+    would be a second, weaker attribution of the same quantity, and two attributions that can
+    disagree are worse than one that can be checked.
+    """
     by: "dict[str, list[float]]" = {}
     for p in attributed:
         by.setdefault(p["phase"], []).append(p["dur"] / 1000.0)
-    return {k: _summarise(v) for k, v in by.items()}
+    out = {k: _summarise(v) for k, v in by.items()}
+    child_ms = child_ms or {}
+
+    for phase, rec in out.items():
+        rec["is_leaf"] = is_leaf_phase(phase)
+        if rec["is_leaf"]:
+            continue
+        kids = PHASE_CHILDREN[phase]
+        rec["contains"] = list(kids)
+        rec["caveat"] = (
+            f"NOT A LEAF: this span also contains {', '.join(kids)}. Its total is an upper bound "
+            f"on {phase} itself, not a measurement of it. Quoting it as '{phase}' attributes a "
+            f"child's cost to the parent's name."
+        )
+        known = child_ms.get(phase)
+        if known is None:
+            rec["leaf_ms"] = None
+            rec["leaf_ms_note"] = (
+                "no transfer counters in this trace, so the children cannot be subtracted and the "
+                "leaf cost is UNKNOWN — not equal to the total."
+            )
+        else:
+            rec["child_ms"] = round(known, 3)
+            rec["leaf_ms"] = round(max(rec["total_ms"] - known, 0.0), 3)
+            rec["child_share"] = (round(known / rec["total_ms"], 4)
+                                  if rec["total_ms"] else None)
+    return out
+
+
+def phase_leaf_accounting(totals: dict) -> dict:
+    """Falsifier: no phase total may be quotable under its own name unless it is a leaf.
+
+    Goes **red** when a non-leaf phase is present and its children were not subtracted — i.e.
+    exactly the state in which "record is 68%" is derivable from the table. Goes red *loudly* when
+    a non-leaf phase is the largest phase in the run, because that is when the misreading is not
+    merely possible but the natural one.
+    """
+    non_leaf = {k: v for k, v in totals.items() if not v.get("is_leaf", True)}
+    out = {
+        "check": "phase_leaf_accounting",
+        "asserts": "a phase total is only quoted under its own name when that span contains no "
+                   "other accounted work",
+        "non_leaf_phases": sorted(non_leaf),
+    }
+    if not non_leaf:
+        out.update(ok=True, verdict="VACUOUS",
+                   detail="no non-leaf phase in this trace; nothing to mis-attribute.")
+        return out
+
+    unresolved = [k for k, v in non_leaf.items() if v.get("leaf_ms") is None]
+    largest = max(totals, key=lambda k: totals[k].get("total_ms") or 0.0)
+    out["largest_phase"] = largest
+    out["largest_phase_is_non_leaf"] = largest in non_leaf
+
+    if unresolved:
+        out.update(
+            ok=False, verdict="UNRESOLVED", unresolved=unresolved,
+            detail=(f"{', '.join(unresolved)} contains other accounted work that this trace does "
+                    f"not let us subtract. Its total must not be quoted under its own name."))
+        if largest in unresolved:
+            out["detail"] += (f" It is also the LARGEST phase here, so the natural reading of this "
+                              f"table — '{largest} is the bottleneck' — is unsupported.")
+        return out
+
+    out.update(ok=True, verdict="RESOLVED",
+               detail="; ".join(
+                   f"{k}: {v['child_share']:.1%} of it is {'+'.join(v['contains'])}, "
+                   f"leaf residual {v['leaf_ms']:.1f} ms"
+                   for k, v in sorted(non_leaf.items())))
+    return out
 
 
 def gpu_totals(gpus: "list[dict]") -> dict:
@@ -1240,7 +1371,13 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     attributed = attribute(subs, phase_spans(events))
     gpus = gpu_spans(events)
     transfers = transfer_events(events)
-    host = host_phase_totals(attributed)
+    scaling = record_scaling(attributed, subs, transfers)
+    # record_scaling owns the containment attribution; host_phase_totals consumes it rather than
+    # re-deriving it, so there is exactly one answer to "how much of record is upload".
+    child_ms = ({"record": scaling["upload_inside_record_ms"]}
+                if scaling.get("usable") and scaling.get("upload_inside_record_ms") is not None
+                else {})
+    host = host_phase_totals(attributed, child_ms)
     gpu = gpu_totals(gpus)
 
     # The denominator for "share of what". The subgraph spans are the EP's own view of the time
@@ -1250,11 +1387,20 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
         k: round(v["total_ms"] / in_compute_ms, 5)
         for k, v in host.items() if v.get("n") and in_compute_ms > 0
     }
-    if gpu["all"].get("n") and in_compute_ms > 0:
-        shares["gpu_kernels"] = round(gpu["all"]["total_ms"] / in_compute_ms, 5)
+    # A share carries the same misreading risk as the total it is computed from: "record is 68%"
+    # was a share. Non-leaf shares are re-emitted under an explicitly parent-shaped name and the
+    # leaf residual is given its own share, so the honest number is the one closest to hand.
+    for k, v in list(host.items()):
+        if v.get("is_leaf", True) or k not in shares:
+            continue
+        shares[f"{k}_INCLUDING_{'_'.join(v['contains'])}"] = shares.pop(k)
+        if v.get("leaf_ms") is not None and in_compute_ms > 0:
+            shares[f"{k}_excl_{'_'.join(v['contains'])}"] = round(v["leaf_ms"] / in_compute_ms, 5)
 
     phased_ms = sum(v["total_ms"] for v in host.values() if v.get("n"))
-    scaling = record_scaling(attributed, subs, transfers)
+    leaf_acct = phase_leaf_accounting(host)
+    if gpu["all"].get("n") and in_compute_ms > 0:
+        shares["gpu_kernels"] = round(gpu["all"]["total_ms"] / in_compute_ms, 5)
     ordinal = attribute_gpu_ordinally(subs, gpus)
     contention = contention_signature(attributed, subs, ordinal.get("busy_us"), integrated_gpu)
 
@@ -1267,6 +1413,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "islands, and session setup are all outside it. Phase shares below are shares of "
             "this, and may not be restated as shares of the benchmark's wall time."),
         "host_phases_ms": host,
+        "phase_leaf_accounting": leaf_acct,
         "unattributed_in_compute_ms": round(in_compute_ms - phased_ms, 3),
         "unattributed_note": (
             "time inside vulkan.subgraph that no phase span covers: reading ORT input pointers, "
@@ -1311,6 +1458,9 @@ def red_flags(report: dict) -> "list[str]":
     if cs.get("verdict") in ("HOST_SIDE_EXCURSIONS", "HOST_EXCURSIONS_UNCONTROLLED",
                              "WORKLOAD_VARIATION", "UNDERPOWERED", "UNTESTABLE"):
         out.append(f"contention_signature: {cs['verdict']} — {cs.get('reason')}")
+    la = report.get("phase_leaf_accounting") or {}
+    if la and not la.get("ok"):
+        out.append(f"phase_leaf_accounting: {la.get('verdict')} — {la.get('detail')}")
     return out
 
 
@@ -1323,9 +1473,24 @@ def describe(report: dict) -> "list[str]":
     for phase in HOST_PHASES:
         if phase in host and host[phase].get("n"):
             s = host[phase]
+            leaf = s.get("is_leaf", True)
+            key = (phase if leaf
+                   else f"{phase}_INCLUDING_{'_'.join(s.get('contains') or ())}")
+            mark = "" if leaf else "  <- NOT A LEAF"
             lines.append(f"    vulkan.{phase:<11} {s['total_ms']:>10.2f} ms  "
-                         f"{shares.get(phase, 0) * 100:5.1f}%   n={s['n']:<6} "
-                         f"median {s['median_ms']:.3f} ms")
+                         f"{shares.get(key, 0) * 100:5.1f}%   n={s['n']:<6} "
+                         f"median {s['median_ms']:.3f} ms{mark}")
+            if not leaf:
+                kids = "+".join(s.get("contains") or ())
+                if s.get("leaf_ms") is None:
+                    lines.append(f"      ! this span also contains {kids}, which this trace does "
+                                 f"not let us subtract. Do NOT quote it as '{phase}'.")
+                else:
+                    lines.append(
+                        f"      = {s['child_ms']:.2f} ms {kids} "
+                        f"({(s.get('child_share') or 0) * 100:.1f}%) + "
+                        f"{s['leaf_ms']:.2f} ms actual {phase} "
+                        f"({shares.get(f'{phase}_excl_{kids}', 0) * 100:.1f}% of Compute)")
     rs = report.get("record_scaling") or {}
     if rs.get("usable") and rs.get("upload_inside_record_ms") is not None:
         lines.append(f"      \u2514 of vulkan.record: {rs['upload_inside_record_ms']:.2f} ms is the "

@@ -635,7 +635,7 @@ Measured **in the same process, in the same run, on the same session objects tha
 timed**, because §10.0's `UNMEASURED` is defined as "no CPU-only comparison was performed on this
 artifact in this run", and a verdict from an earlier run of an earlier build is exactly that.
 
-| | device 0 — Intel Iris Xe | device 1 — RTX 4060 |
+| | `--device 0` — **NVIDIA RTX 4060** | `--device 1` — **Intel Iris Xe** |
 |---|---|---|
 | `model_output_equivalence` | **MATCH** | **MATCH** |
 | argmax (vk / cpu) | 30751 / 30751 | 30751 / 30751 |
@@ -654,7 +654,10 @@ Median of 20 timed iterations after 10 discarded, three whole-process repeats pe
 **The devices are not compared with each other** — different transfer class, different shared
 memory budget, different `timestampPeriod`; `bench/compare.py` refuses it structurally.
 
-#### Device 0 — Intel(R) Iris(R) Xe Graphics, UMA, driver 101.6737, Vulkan 1.4.309
+#### `--device 0` — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
+
+> **Relabelled 2026-07-30 22:xx.** This block was published as "Device 0 — Intel Iris Xe". It was
+> not. See §11.1. The measurements are unchanged; only the name was wrong.
 
 ```
 vulkan   median 2790.7 ms   MAD 31.9   p05-p95 2719.9-2842.8   rsd 1.7%   n=20
@@ -665,7 +668,10 @@ run-to-run medians (3 repeats): vulkan 2755.9 / 2790.7 / 2827.8 ms  (spread 1.03
 
 **Vulkan is 2561 ms slower — 12.1x slower — than pure CPU on this artifact.**
 
-#### Device 1 — NVIDIA GeForce RTX 4060 Laptop GPU, discrete, driver 591.55, Vulkan 1.4.325
+#### `--device 1` — Intel(R) Iris(R) Xe Graphics, UMA, driver 101.6737, Vulkan 1.4.309
+
+> **Relabelled 2026-07-30.** Published as "Device 1 — NVIDIA GeForce RTX 4060". It was not.
+> See §11.1.
 
 ```
 vulkan   median 1465.9 ms   MAD 26.2   p05-p95 1418.4-1590.7   rsd 2.6%   n=20
@@ -682,8 +688,8 @@ Attributing the entire host-side difference to the island boundaries:
 
 | device | delta | islands | per island |
 |---|---|---|---|
-| Intel Iris Xe | +2561 ms | 257 | **≥ 9.96 ms** |
-| RTX 4060 | +1280 ms | 257 | **≥ 4.98 ms** |
+| NVIDIA RTX 4060 (`--device 0`) | +2561 ms | 257 | **≥ 9.96 ms** |
+| Intel Iris Xe (`--device 1`) | +1280 ms | 257 | **≥ 4.98 ms** |
 
 **This is a lower bound, not an estimate, and the direction is counter-intuitive.** The same
 difference also contains whatever the GPU *saved* on the 257 GEMVs it took over. If the Vulkan
@@ -702,6 +708,24 @@ KiB of activations. Two hypotheses, and the instrument that separates them:
    an allocation each way. Predicts a cost that scales with tensor bytes, and that is
    *qualitatively different on the two devices* — the Iris Xe is UMA, so the "copy" is a copy
    within one memory pool, while the 4060 crosses PCIe.
+
+> **Corrected 2026-07-30 — this paragraph's premise was a mislabel, and the mislabel is what made
+> the paragraph interesting.** As published it read: *"The Intel part being 2× more expensive per
+> island than the discrete part while having no bus to cross argues against (2) being dominant and
+> for (1)."* With the labels right (§11.1) the observation is the reverse: **the discrete part paid
+> ~2× per island (9.96 ms) and the UMA part paid ~4.98 ms.** That is what hypothesis (2) predicts —
+> the device that crosses PCIe pays more for a staging round trip than the device that does not —
+> and it is so unremarkable that it would never have prompted a hypothesis at all.
+>
+> This is the whole chain: a mislabelled row produced a surprising observation, the surprise
+> produced my fixed-per-submission hypothesis, the hypothesis got a `VkQueryPool` built to test it,
+> and the query pool then produced a phase table that was itself misread (§11.2). **Two of the
+> three links were mine.** The instrument was worth building regardless — it is what closed the
+> 52× trap and what now measures upload — but the honest account is that the premise was an
+> artifact, not a finding. §11.1 records why `device_identity_check` exists and why it is green on
+> everything published after it.
+>
+> **Retained below unedited** so the reasoning chain can be audited rather than quietly repaired.
 
 The Intel part being **2x more expensive per island than the discrete part while having no bus
 to cross** argues against (2) being dominant and for (1), or for a fixed per-submission cost
@@ -1457,6 +1481,12 @@ later is a number that has to be believed rather than checked.
 
 ### 10.4 The Intel-versus-4060 inversion: I cannot adjudicate it, and here is exactly why
 
+> **Updated 2026-07-30 — see §11.1.** The device labels in the figures below are inverted: the
+> 807.2 ms figure is the **NVIDIA** part and 1156.0 ms is the **Intel** part. That does not change
+> this section's conclusion, and it adds a third independent reason for it — after correct
+> labelling the coordinator's run and §6 **disagree about which device is faster**. The ordering
+> is not merely unquotable, it does not reproduce.
+
 The coordinator has been quoting Intel 807.2 ms against the 4060's 1156.0 ms — the integrated part
 beating the discrete one — and asked whether it survives. **I am not able to confirm or retract
 it, for two independent reasons, and the honest answer is to name both rather than produce a
@@ -1532,3 +1562,200 @@ comparison, and no run has yet been taken at the boundary to calibrate it. And
 process is the obvious candidate, but a page-fault storm, a driver allocation or a thermal event
 would look identical from inside the trace. What it establishes is the thing that governs whether
 a stored number may be quoted: the run was not in a steady state.
+
+---
+
+## 11. Two corrections from the coordinator, checked against my own artifacts (2026-07-30 evening)
+
+The coordinator issued two corrections that invalidate numbers broadcast to the whole team: the
+device labels are inverted, and the "68% command-buffer recording" is upload. **Both are correct
+about the world.** One of them is *not* correct about `bench/`, and the difference matters, because
+applying it blindly would have introduced the error it was meant to remove.
+
+Each is recorded below with the check I ran, not the instruction I received. That is the standing
+rule on this project and it now cuts toward the coordinator as often as away.
+
+### 11.1 The device labels — right about the world, wrong about `bench/results/`
+
+**The correction.** `enumerate_capable_devices()` sorts best-first (`Reverse(kind.score())`,
+discrete before integrated) and `select_device` indexes *that sorted list*, while probes print
+unsorted `vkEnumeratePhysicalDevices` order. So:
+
+> `ONNXRUNTIME_EP_VULKAN_DEVICE=0` (and `phi35.py --device 0`) is the **NVIDIA RTX 4060**.
+> `ONNXRUNTIME_EP_VULKAN_DEVICE=1` is the **Intel Iris Xe** — which remains the conformance oracle.
+
+**Check 1 — the source.** `instance.rs:536` is `result.sort_by_key(|d| Reverse(d.info.kind.score()))`,
+and `select_device` indexes the result. Confirmed.
+
+**Check 2 — was it true when the numbers were taken?** A correction to a *label* is worthless
+without a date: if best-first sorting post-dated a run, that run's labels would have been right.
+`git log -S'Reverse(d.info.kind.score())'` puts it at **`bb885d9`, 2026-07-29** — before every
+measurement in this document. So the mapping held throughout.
+
+**Check 3 — what did my artifacts actually record?** This is where the correction stops applying.
+`bench/results/phi35-2026-07-30-phases.json` already carries, per result row:
+
+```json
+"device_identity": {
+  "ep_device_index": 0,
+  "assumed_from_ep_order": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "observed_from_trace":  "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "reason": "timestamp fingerprint period=1.0 bits=64 matches exactly one device",
+  "verdict": "MATCH", "name_may_be_quoted": true }
+```
+
+and the mirror for index 1 at `period=52.0833 bits=36`. **`devices.device_identity_check` exists
+precisely for this trap and it is green on every row it covers.** The rows are not labelled from
+the index at all — they are labelled from the *trace's own* timestamp fingerprint, and the check
+goes red if that disagrees with the ep-order name.
+
+So: **`bench/results/` needed no re-labelling, and re-labelling it would have inverted correct
+rows.** I re-labelled `docs/PERF.md` §6 instead, which is prose written before the check existed
+and which was wrong.
+
+**Why the fingerprint is the right label and the index is not.** An index is an assertion about a
+convention; a `timestampPeriod` of 52.0833 with 36 valid bits is a property of the silicon that
+appears in the trace the number came from. The label therefore travels *with the evidence* rather
+than beside it. Limit, stated: NVIDIA and lavapipe both report 1.0/64, so the fingerprint
+distinguishes Intel from either but cannot distinguish those two from each other — the check
+reports that as a non-decisive case rather than a pass, exactly as the 52× audit does.
+
+**What did NOT survive.** §6.4's premise. Published as "the Intel part is 2× more expensive per
+island *while having no bus to cross*", it is really "the discrete part is 2× more expensive" —
+which is what a staging round trip predicts and is not surprising at all. **That surprise is what
+produced my fixed-per-submission hypothesis.** The hypothesis was worth testing and the instrument
+built for it closed the 52× trap and now measures upload, so the chain paid for itself — but its
+first link was an artifact.
+
+**And it does not restore the inversion story either.** Relabelling cuts opposite ways in the two
+runs:
+
+| run | as published | after relabel |
+|---|---|---|
+| coordinator's | "Intel 807.2 beats NVIDIA 1156.0" | NVIDIA 807.2 beats Intel 1156.0 |
+| §6 (this doc) | NVIDIA 1465.9 beats Intel 2790.7 | **Intel 1465.9 beats NVIDIA 2790.7** |
+
+**The two runs disagree about which device is faster, after correct labelling, on the same build.**
+So the inversion neither survives nor dissolves — it was never measured. Both runs also fail the
+§10 quiescence gate. My §10.4 recommendation is unchanged and now has a second independent reason:
+stop quoting the ordering. It is a cross-device comparison (`compare.py` exits 2), taken on
+unmeasured machines, that does not reproduce.
+
+### 11.2 The 68% was upload, and my own trace says so
+
+**The correction.** `Phase::Record` opens before `vkBeginCommandBuffer` and closes after
+`vkEndCommandBuffer`, and the host staging memcpy runs **inside** that window, reporting through
+`record_transfer` into a `ph:"C"` counter that deliberately emits no span. An aggregation over
+`ph:"X"` spans is therefore *structurally incapable* of seeing it and silently folds it into
+`record`.
+
+**Check — my own stored NVIDIA trace, re-analysed at zero measurement cost:**
+
+```
+vulkan.record          54389.02 ms   <- NOT A LEAF
+  = 53635.57 ms upload (98.6%) + 753.46 ms actual command construction (1.2% of Compute)
+host upload memcpy     7990.4 MiB over 4 inferences = 1997.6 MiB / inference
+```
+
+**1997.6 MiB per inference — the same figure Tank obtained from a different instrument.** Per R9
+that is agreement, so it raises confidence, not evidence; the thing that would have refuted it is
+that the counters and the phase spans are independent records and could have disagreed. They do
+not, to four significant figures.
+
+Real command-buffer construction is **1.2% of time in Compute**, consistent with Tank's 1–3% of
+wall. The EP re-uploads the entire weight set every inference.
+
+#### 11.2.1 The invariant is the byte count, not the share — and the share does not generalise
+
+Tank reported upload as "95.8–98.4% of the `record` phase in every cell, both devices, both
+settings". **That share does not reproduce on my Intel trace, and it should not be expected to.**
+
+| | upload per inference | upload bandwidth | upload share of `record` |
+|---|---|---|---|
+| NVIDIA RTX 4060 (`--device 0`, discrete) | **1997.6 MiB** | 0.1455 GiB/s | 98.6% |
+| Intel Iris Xe (`--device 1`, UMA) | **1997.6 MiB** | 0.4454 GiB/s | 59.9% |
+
+**The byte count is identical to five significant figures across two devices, two traces and two
+run lengths (4 and 8 inferences).** That is the finding, and it is the one that transfers: it is a
+*count*, so by §10's own rule it survives a contended run, and it independently reproduces Tank's
+1997.6 MiB from a different instrument on different silicon.
+
+The *share* is not an invariant and must not be quoted as one. It is
+`bytes ÷ bandwidth ÷ record_total`, and the bandwidth is a property of the transfer class — the
+UMA part is copying within one memory pool, the discrete part is crossing PCIe. A ratio whose
+denominator differs by transfer class will differ by transfer class. **This is also why Tank's own
+per-device transfer ceilings differ so widely (~94.8% of wall on the discrete part, ~44.0% on the
+UMA part) — my numbers agree with those ceilings and not with the "every cell" share claim.**
+
+Two cautions on the table above, both mine to state:
+
+* The two rates are listed **per device and are not ranked**. `bench/compare.py` refuses
+  cross-device performance comparison (exit 2) and that refusal is not suspended because the
+  quantity is a bandwidth. The reason both appear here is to show that the *share* is
+  class-dependent, which is a statement about the arithmetic, not about which part is better.
+* The Intel row comes from a **`CONTENDED`** run, so its 59.9% share is provisional in the
+  direction of being too low — contention inflates the command-construction residual in the
+  denominator. Its byte count is not provisional. That asymmetry is exactly §10's leaf/duration
+  distinction, applied here.
+
+**What Switch should take from this:** the target is the 1997.6 MiB, on both devices. The share
+tells you how much of `record` disappears when you fix it, and that answer is device-specific.
+
+**This also re-reads §10's contention finding rather than overturning it.** 9.5× inflation of
+`record` under CPU contention was correctly diagnosed as *host CPU work* — it just is not the work
+the span is named after. A ~2 GB memcpy is exactly the kind of host work that degrades when six
+processes are compiling. The contention guard stands; its explanation improves.
+
+**What I changed so the misreading is not available.** `phases.py` now knows that phases form a
+tree:
+
+* `PHASE_CHILDREN` records that `record` contains `upload`; `is_leaf_phase()` is the predicate.
+* `host_phase_totals()` marks every entry `is_leaf`, and for a non-leaf emits `child_ms`,
+  `leaf_ms` and a caveat. With no transfer data `leaf_ms` is **`None`, not the total** —
+  the leaf cost is UNKNOWN, and unknown is not equal to the parent.
+* The share table renames the parent's share to `record_INCLUDING_upload` and adds
+  `record_excl_upload`, so the honest number is the one closest to hand.
+* `describe()` prints `<- NOT A LEAF` on the same line as the total, and the split on the next.
+* **`phase_leaf_accounting`** is the falsifier: `UNRESOLVED` when a non-leaf phase's children
+  cannot be subtracted, and it says so *more loudly* when that phase is also the largest in the
+  run — because that is precisely when "record is the bottleneck" is the natural misreading. It
+  is `VACUOUS`, never "pass", on a trace with no non-leaf phase.
+
+One deliberate restraint: `host_phase_totals` does **not** derive the upload total itself. It
+consumes `record_scaling`'s interval-containment attribution. A second, weaker attribution of the
+same quantity — by transfer direction alone — would have been easy and would have created two
+numbers that could disagree. One number that can be checked beats two that agree by luck.
+
+### 11.3 The general rule this produced
+
+Both corrections, and three of the five defects catalogued in this document, are the same shape:
+**an artifact that is wired, produces output, and whose output's name misdescribes its content.**
+`record` is a real span with a real duration and a caveat string that asserts it is command-buffer
+recording. `index` is a real integer that indexes a different list than its reader assumes.
+Neither is missing, neither raises, and a census that checks whether a mechanism *exists* passes
+both.
+
+> **A name is an assertion about content, and it must have a falsifier like any other assertion.**
+
+Concretely, the two falsifiers this section adds are the pattern: `device_identity_check` tests a
+label against evidence carried in the same artifact, and `phase_leaf_accounting` tests whether a
+duration measures what its name says. Neither can be satisfied by the mechanism merely existing.
+
+### 11.4 Instruments — what goes red if each claim in §11 is false
+
+| claim | instrument that goes red |
+|---|---|
+| the device named on a results row is the device that ran it | `devices.device_identity_check` — timestamp fingerprint from the row's own trace vs the ep-order name; `MATCH`/`MISMATCH`, and `name_may_be_quoted` gates the name |
+| …and it is decisive on this pair | period 52.0833/36 bits vs 1.0/64. **Non-decisive** between NVIDIA and lavapipe, reported as a gap, not a pass |
+| the label mapping held when the numbers were taken | `git log -S'Reverse(d.info.kind.score())'` → `bb885d9`, 2026-07-29, before every run here |
+| a phase total measures the activity its name names | `phase_leaf_accounting` — `UNRESOLVED` unless the children are subtracted; louder when the non-leaf phase is the largest |
+| …and the leaf residual is not silently the total | `leaf_ms is None` + `test_unsubtractable_children_make_the_total_unquotable_not_approximate` |
+| …and a reader quoting one line cannot quote the wrong one | `test_describe_never_prints_records_share_without_the_marker` |
+| upload is ~98.6% of `record` | two independent records in one trace — `ph:"C"` transfer counters and `ph:"X"` phase spans — that could have disagreed and do not; and Tank's separate probe, agreeing at 1997.6 MiB/inference |
+| upload is **1997.6 MiB/inference on both devices** | two traces, two devices, two run lengths (4 and 8 inferences), agreeing to 5 s.f.; it is a byte *count*, so contention cannot move it. If the EP ever stops re-uploading, this number changes and `alloc_device_authoritative_spans` moves off 0 |
+| …but the *share* of `record` is not an invariant | 98.6% discrete vs 59.9% UMA, in my own traces. Any restatement of "upload is ~98% of record" as device-independent is refuted by the Intel row |
+| the contention finding survives the re-attribution | it is unaffected: `contention_signature` compares host spread against GPU spread per slot and never depended on what the host time was spent *on* |
+
+**Not falsified, and named so:** §6's absolute numbers are re-labelled, not re-measured, and they
+remain under §10's withdrawal for contention. Re-labelling a withdrawn number does not un-withdraw
+it. The ordering question in §11.1 stays open until two quiet-machine runs agree.

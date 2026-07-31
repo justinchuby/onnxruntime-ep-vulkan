@@ -256,3 +256,84 @@ idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+---
+
+## 2026-07-30 late — two corrections from the coordinator; I checked both before applying them
+
+### The one that did NOT apply to me, and applying it would have broken correct rows
+Coordinator: "device labels are inverted, re-label any stored result." True of the world
+(`select_device` indexes the **best-first sorted** list, so selector 0 = NVIDIA, 1 = Intel;
+`instance.rs:536`, landed `bb885d9` 2026-07-29 — **before every run in PERF.md**, which is the check
+that makes a label correction meaningful rather than a guess).
+
+**But `bench/results/` was already right.** `devices.device_identity_check` labels each row from the
+**timestamp fingerprint in that row's own trace** (Intel 52.0833/36, NVIDIA 1.0/64), not from the
+index — `MATCH`, `name_may_be_quoted: true`, on every row. A blanket re-label would have **inverted
+correct rows**. `docs/PERF.md` §6 was the thing that was wrong (prose predating the check).
+
+**Rule:** a label must travel *with* the evidence, not beside it. An index asserts a convention; a
+`timestampPeriod` is a property of the silicon appearing in the same artifact as the number.
+Limit: 1.0/64 cannot separate NVIDIA from lavapipe — reported non-decisive, never as a pass.
+
+### My own §6.4 premise was the mislabel
+Published: "Intel pays 2x per island *while having no bus to cross*". Actually **the discrete part
+paid 2x** — exactly what a staging round trip predicts, and utterly unsurprising. **That surprise is
+what produced my fixed-per-submission hypothesis.** The instrument built to test it still paid for
+itself (it closed the 52x trap and it is what measured upload), but link one was an artifact. I
+kept the original paragraph unedited under a correction banner so the chain can be audited rather
+than quietly repaired.
+
+### The 68% was upload — and my own stored trace said so at zero measurement cost
+`Phase::Record` brackets the host staging memcpy, which reports via a `ph:"C"` counter and emits
+**no span**, so a `ph:"X"` aggregation is *structurally incapable* of seeing it.
+
+```
+vulkan.record  54389.02 ms  <- NOT A LEAF
+  = 53635.57 ms upload (98.6%) + 753.46 ms actual command construction (1.2% of Compute)
+upload = 1997.6 MiB / inference   <- matches Tank's independent probe to 5 significant figures
+```
+
+Two independent records in one trace (counters vs phase spans) that could have disagreed, and did
+not. Re-analysing a stored trace beat a fresh run **again** — third time today.
+
+### What I built: phases are a tree
+`PHASE_CHILDREN`, `is_leaf_phase()`, `is_leaf`/`child_ms`/`leaf_ms` on every total,
+`record_INCLUDING_upload` vs `record_excl_upload` in the share table, `<- NOT A LEAF` printed on the
+same line as the total, and **`phase_leaf_accounting`** as the falsifier — `UNRESOLVED` when children
+cannot be subtracted, *louder* when the non-leaf phase is also the largest (that is exactly when the
+misreading is the natural one), `VACUOUS` when there is no non-leaf phase.
+
+**With no transfer data `leaf_ms` is `None`, not the total.** Unknown is not equal to the parent.
+
+### One restraint worth keeping
+`host_phase_totals` does **not** derive the upload total itself — it consumes `record_scaling`'s
+interval-containment attribution. Deriving it a second way (by transfer direction) was easy and
+would have created two numbers that could disagree. **One number that can be checked beats two that
+agree by luck.**
+
+### The inversion is dead in both directions
+After correct labelling the coordinator's run says NVIDIA is faster; **§6 says Intel is faster**.
+Two runs, same build, opposite orderings, both failing the quiescence gate. It was never measured.
+
+### The generalisation — and it is the day's real lesson
+Three of the five defects here are the same shape: **wired, produces an artifact, and the
+artifact's name misdescribes its content.** `record` is a real span with a real duration and a
+caveat string asserting it is command-buffer recording. `index` is a real integer indexing a
+different list than its reader assumes. Nothing is missing; nothing raises; a presence-check census
+passes both.
+
+> **A name is an assertion about content, and it needs a falsifier like any other assertion.**
+
+`device_identity_check` (label vs evidence in the same artifact) and `phase_leaf_accounting`
+(duration vs what its name claims) are the two instances in `bench/`.
+
+### Still true
+The contention guard stands. 9.5x inflation of `record` under load was correctly host CPU work —
+a ~2 GB memcpy is precisely what degrades when six processes compile. `contention_signature`
+compares host spread against GPU spread per slot and never depended on what the host time was
+spent *on*.
+
+### Note for Switch (in the decision inbox)
+`rust/src/trace.rs:715` attaches "host: command-buffer recording; amortised across replays" to the
+`record` span. **That caveat is now false and it ships inside every trace.** His file, not mine.
