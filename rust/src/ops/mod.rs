@@ -61,6 +61,9 @@ pub mod attention;
 /// The RMSNorm family the LLM path runs on.
 pub mod norm;
 
+/// Indexing — `Gather` and the ops that read a tensor through another tensor's values.
+pub mod indexing;
+
 /// Weight-only quantization: `MatMulNBits` and the block-quantized dequant path.
 pub mod quant;
 

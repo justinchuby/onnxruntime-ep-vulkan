@@ -58,3 +58,12 @@ onnxruntime_profile__*.json
 vulkan_test*.json
 island_attribution.json
 trace_*.json
+
+# CI lane evidence (criterion 10 gate artifacts, Link 2026-07-31).
+# Written by ci/gate_chain_fp32.py into bench/results/ci-lane/ on a runner and
+# uploaded as a build artifact. Never committed: probe output goes to
+# bench/results/ or a temp path, never the repo root.
+bench/results/ci-lane/
+bench/results/link-gate/
+gate_chain_fp32_profile_*.json
+bench/results/claim_log_attribution.jsonl

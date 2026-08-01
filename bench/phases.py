@@ -54,7 +54,11 @@ false. These are checks, not statistics:
 
 * :func:`phase_containment` — every phase span must lie inside a ``vulkan.subgraph`` span, and the
   phases inside one subgraph must not sum to more than the subgraph itself. Goes red if the
-  nesting assumption used to attribute spans to islands is wrong.
+  nesting assumption used to attribute spans to islands is wrong. It checks **two tiers
+  separately** (siblings against their subgraph, children against their own ``record`` parent)
+  because summing a parent together with its children against the grandparent is not a
+  containment violation, it is an arithmetic mistake in the checker — and that mistake reported
+  RED for a whole day. See :data:`CONTAINMENT_BASIS` and the ``ERROR`` state below.
 * :func:`gpu_containment` — per submission, GPU busy time must be ≤ ``submit`` + ``fence_wait``.
   The CPU was blocked on the fence for that long; the GPU cannot have been busy longer. Goes red
   if the tick→nanosecond conversion **over**-scales, which is what a wrongly applied
@@ -137,6 +141,16 @@ GPU_PREFIX = "vulkan.gpu."
 #: absorbs the microsecond truncation of `dur` across ~7 spans, nothing more.
 CONTAINMENT_SLACK = 0.02
 
+#: What set of spans :func:`phase_containment` is entitled to sum, written into the artifact.
+#:
+#: The containment claim is only meaningful about the spans that are actually *added together*
+#: somewhere — which is ``sibling_phases()``, the same set ``host_phase_totals`` and every share
+#: consume. Handing it the unfiltered list adds ``record`` to the ``cmd_upload`` that lives inside
+#: ``record``, so a run in which ``cmd_upload`` is 97% of ``record`` reports the parent's time
+#: nearly twice and "exceeds its own duration" with no defect present anywhere in the EP.
+CONTAINMENT_BASIS = ("sibling phase spans only — nested sub-record spans are checked separately "
+                     "against their own parent, never against the subgraph")
+
 #: How close `gpu_ns / timestamp_period_ns` must be to a whole number. The tick count is an
 #: integer by construction; this tolerance absorbs float32→float64 widening of the period only.
 INTEGRALITY_TOL = 1e-3
@@ -197,6 +211,7 @@ def phase_spans(events: "list[dict]") -> "list[dict]":
             "dur": e.get("dur", 0),
             "end": e["ts"] + e.get("dur", 0),
             "caveat": (e.get("args") or {}).get("caveat"),
+            "nested_in": (e.get("args") or {}).get("nested_in"),
         }
         for e in events
         if e.get("ph") == "X" and e.get("name") in names
@@ -284,17 +299,38 @@ def phase_nesting(phases: "list[dict]") -> dict:
     return out
 
 
-def sibling_phases(phases: "list[dict]") -> "list[dict]":
-    """The phase spans that may legitimately be summed together — nested children removed.
+def nested_phase_names(phases: "list[dict]") -> "set[str]":
+    """Every phase name that must NOT be summed as a top-level sibling.
 
-    Children are identified from the trace's declaration (``host/sub-record:``) unioned with
-    :data:`SUB_RECORD_PHASES`. The union rather than either alone: the table catches a child whose
-    caveat is missing, the declaration catches a child added after this table was written.
+    Three sources, unioned, because each catches a failure the others cannot:
+
+    * :data:`SUB_RECORD_PHASES` — this module's table. Catches a child whose trace-side
+      declaration was dropped.
+    * the ``host/sub-record:`` caveat prefix — prose, but prose the EP author writes deliberately.
+    * the ``nested_in`` span arg — machine-readable parentage, emitted from ``Phase::nested_in()``
+      whose ``match`` is exhaustive with no ``_`` arm, so a new phase cannot default to sibling.
+
+    A union and not a vote: any one of them saying "child" is sufficient. Being wrongly excluded
+    from a sum costs a line in ``nested_phases_ms``; being wrongly *included* double-counts the
+    largest cost in the run, which is the error this project actually made.
     """
     nested = set(SUB_RECORD_PHASES)
     for p in phases:
         if str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX):
             nested.add(p["phase"])
+        parent = p.get("nested_in")
+        if parent and parent != "none":
+            nested.add(p["phase"])
+    return nested
+
+
+def sibling_phases(phases: "list[dict]") -> "list[dict]":
+    """The phase spans that may legitimately be summed together — nested children removed.
+
+    Children come from :func:`nested_phase_names`. This is the only set any total, share or
+    containment sum may be computed over.
+    """
+    nested = nested_phase_names(phases)
     return [p for p in phases if p["phase"] not in nested]
 
 
@@ -724,31 +760,129 @@ def partition_stats(events: "list[dict]") -> dict:
 # Falsifiers
 # ---------------------------------------------------------------------------
 
-def phase_containment(subgraphs: "list[dict]", attributed: "list[dict]") -> dict:
-    """Every phase span inside a subgraph, and phases never summing past their subgraph."""
-    orphans = [p for p in attributed
+def phase_containment(subgraphs: "list[dict]", siblings: "list[dict]",
+                      nested: "list[dict] | None" = None) -> dict:
+    """Two tiers of containment, each checked against its own parent. R13 three-state.
+
+    **Tier 1 — siblings against their subgraph.** The phases that get summed (``record``,
+    ``submit``, ``fence_wait``, …) are wall-clock intervals opened inside one ``Compute`` call.
+    They may not sum past the ``vulkan.subgraph`` span that brackets that call, and none of them
+    may fall outside every subgraph.
+
+    **Tier 2 — children against their own ``record``.** ``desc_alloc``, ``pipeline_lookup`` and
+    ``cmd_upload`` are real ``ph:"X"`` spans *inside* ``vulkan.record``. Their parent is
+    ``record``, not the subgraph. Checking them against the subgraph while ``record`` is also in
+    the sum asks the subgraph to contain the same microseconds twice.
+
+    # The three terminal states (R13)
+
+    ``PASS`` — both tiers close.
+    ``FAIL`` — a real containment violation in the EP or in the attribution.
+    ``ERROR`` — **this checker was handed the wrong set of spans**, so it is not entitled to a
+    verdict at all. Specifically: a span declaring itself nested appearing in the sibling list.
+    An instrument error is not a detection, and reporting it as one costs the guard its
+    authority.
+
+    # Why the ERROR arm exists
+
+    It exists because that is exactly what happened. ``analyse()`` computed ``siblings`` correctly
+    for every total and every share, and then passed the *unfiltered* ``attributed`` list to this
+    function. On a one-island Phi-3.5 run, ``record`` is 8.32 s and the ``cmd_upload`` inside it
+    is 7.97 s, so the "sum" came to 16.66 s against a 13.67 s subgraph and reported
+
+        RED: 1 subgraphs whose phases exceed their own duration
+
+    for three consecutive days, on both devices, with nothing wrong in the EP. Every phase share
+    in the project was withheld on it. Sibling-only, the same trace sums to 8.60 s inside
+    13.67 s — 63%, comfortable. The failing side was the checker.
+
+    This is R11's inverse: not a decomposition that closes falsely, but one made *not* to close by
+    adding a term to it. The remedy is the same — say which set the identity is over, in the
+    artifact, next to the number.
+    """
+    misfiled = sorted({p["phase"] for p in siblings
+                       if str(p.get("caveat") or "").startswith(SUB_PHASE_CAVEAT_PREFIX)
+                       or (p.get("nested_in") not in (None, "none"))})
+    if misfiled:
+        return {
+            "red": False,
+            "state": "ERROR",
+            "basis": CONTAINMENT_BASIS,
+            "instrument_error": (
+                f"{', '.join(misfiled)} declare themselves nested inside another phase but were "
+                f"handed to phase_containment as siblings. Summing a parent with its own children "
+                f"against the grandparent is an arithmetic mistake in this checker, not a "
+                f"containment violation in the EP. No verdict is issued."),
+            "orphan_phase_spans": None,
+            "over_subscribed_subgraphs": None,
+            "examples": [],
+            "detail": ("ERROR (instrument): phase_containment was given nested spans in the "
+                       f"sibling set ({', '.join(misfiled)}). Per R13 an instrument error is not "
+                       "a detection — this is neither a pass nor a failure."),
+        }
+
+    orphans = [p for p in siblings
                if p["subgraph_index"] is None and p["phase"] not in ("compile", "prepack")]
     per: "dict[int, float]" = {}
-    for p in attributed:
+    for p in siblings:
         if p["subgraph_index"] is not None:
             per[p["subgraph_index"]] = per.get(p["subgraph_index"], 0) + p["dur"]
     over = [
-        {"subgraph_index": i, "phases_us": per[i], "subgraph_us": subgraphs[i]["dur"]}
+        {"subgraph_index": i, "phases_us": per[i], "subgraph_us": subgraphs[i]["dur"],
+         "ratio": round(per[i] / subgraphs[i]["dur"], 4)}
         for i in per
         if subgraphs[i]["dur"] > 0 and per[i] > subgraphs[i]["dur"] * (1 + CONTAINMENT_SLACK)
     ]
+
+    # Tier 2. Parents are located by timestamp containment, not by name order: `record` spans are
+    # disjoint, so the enclosing one is unique when it exists.
+    kids = list(nested or [])
+    parents = sorted([p for p in siblings if p["phase"] == "record"], key=lambda p: p["ts"])
+    stray_children, per_parent = [], {}
+    for k in kids:
+        owner = next((i for i, r in enumerate(parents)
+                      if r["ts"] <= k["ts"] and k["end"] <= r["end"]), None)
+        if owner is None:
+            stray_children.append(k)
+        else:
+            per_parent[owner] = per_parent.get(owner, 0) + k["dur"]
+    over_parents = [
+        {"record_index": i, "children_us": per_parent[i], "record_us": parents[i]["dur"],
+         "ratio": round(per_parent[i] / parents[i]["dur"], 4)}
+        for i in per_parent
+        if parents[i]["dur"] > 0 and per_parent[i] > parents[i]["dur"] * (1 + CONTAINMENT_SLACK)
+    ]
+
+    red = bool(orphans or over or stray_children or over_parents)
+    if red:
+        detail = (
+            f"FAIL: tier 1 — {len(orphans)} sibling phase spans outside any subgraph, "
+            f"{len(over)} subgraphs whose sibling phases exceed their own duration; "
+            f"tier 2 — {len(stray_children)} sub-record spans outside every vulkan.record span, "
+            f"{len(over_parents)} record spans whose children exceed them. The attribution of "
+            f"phases to islands is not sound and no phase share below may be read.")
+    else:
+        detail = (
+            f"PASS: {len(siblings)} sibling spans all lie inside a subgraph and no subgraph's "
+            f"siblings sum past it; {len(kids)} sub-record spans all lie inside a vulkan.record "
+            f"span and no record's children sum past it. Checked over "
+            f"{len(subgraphs)} subgraph spans. Basis: {CONTAINMENT_BASIS}.")
+
     return {
-        "red": bool(orphans or over),
+        "red": red,
+        "state": "FAIL" if red else "PASS",
+        "basis": CONTAINMENT_BASIS,
         "orphan_phase_spans": len(orphans),
         "over_subscribed_subgraphs": len(over),
-        "examples": over[:3],
-        "detail": ("ok: every phase span lies inside a subgraph span and no subgraph's phases "
-                   "sum past it"
-                   if not (orphans or over) else
-                   f"RED: {len(orphans)} phase spans outside any subgraph, "
-                   f"{len(over)} subgraphs whose phases exceed their own duration. The "
-                   f"attribution of phases to islands is not sound and no phase share below may "
-                   f"be read."),
+        "stray_sub_record_spans": len(stray_children),
+        "over_subscribed_record_spans": len(over_parents),
+        "sibling_spans_checked": len(siblings),
+        "nested_spans_checked": len(kids),
+        "examples": (over + over_parents)[:3],
+        "worst_subgraph_ratio": (max((o["ratio"] for o in (
+            {"ratio": round(per[i] / subgraphs[i]["dur"], 4)}
+            for i in per if subgraphs[i]["dur"] > 0)), default=None)),
+        "detail": detail,
     }
 
 
@@ -1388,12 +1522,23 @@ def contention_signature(attributed: "list[dict]", subgraphs: "list[dict]",
         return out
 
     nodes_seq = [p.get("nodes") for p in rec]
-    period = _cycle_period(nodes_seq)
-    if not period or period < 2 or len(rec) // period < 4:
+    period = _cycle_period(nodes_seq) or (1 if len({*nodes_seq}) == 1 else None)
+    # `period == 1` is the single-island graph, which is the configuration this project is
+    # *trying* to reach — and the original `period < 2` guard turned the in-band control off
+    # exactly there, permanently, as a side effect of success. Nothing in the statistic needs two
+    # slots: slot 0 still yields one host series and one GPU series over the same repeated work,
+    # which is the whole method. What is lost is the ability to see a stall hit some islands and
+    # not others, so `stalled_slot_fraction` degenerates to 0.0 or 1.0 and is annotated as such.
+    cycles = len(rec) // period if period else 0
+    if not period or cycles < 4:
         out.update(verdict="UNTESTABLE",
-                   reason=f"no usable repeat structure (period={period}, "
-                          f"cycles={len(rec) // period if period else 0}; need >= 4)")
+                   reason=(f"no usable repeat structure: "
+                           + ("the subgraph order has no repeating period"
+                              if not period else
+                              f"only {cycles} complete cycles of {period} island(s) "
+                              f"(need >= 4, and the first is dropped as warmup)")))
         return out
+    out["single_slot"] = period == 1
     cycles = len(rec) // period
     out["islands_per_inference"] = period
     out["cycles"] = cycles
@@ -1604,6 +1749,196 @@ def _cycle_period(seq: "list") -> "int | None":
 
 
 # ---------------------------------------------------------------------------
+# Steady state — the first inference is now a different workload from the rest
+# ---------------------------------------------------------------------------
+
+#: Relative standard deviation a GPU-busy suffix must be under to be called steady.
+#: The device clock does not see host load, so on a discrete part a genuinely steady tail comes
+#: in around 0.03% — three orders of magnitude inside this. 2% is loose enough not to reject the
+#: integrated part, where the GPU shares a power budget with the loaded CPU cores.
+GPU_TAIL_RSD_MAX = 0.02
+
+#: Fewest samples a steady tail may be declared from.
+GPU_TAIL_MIN_N = 5
+
+
+def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
+    """The longest stable suffix of the per-inference GPU-busy series, found from the device clock.
+
+    # Why one cold inference is not enough warmup
+
+    :func:`steady_state_split` drops the first *cycle*, which removes the one-time weight upload.
+    It does not remove a **multi-inference ramp**, and there is one: on the RTX 4060 the GPU-busy
+    series runs 48.85, 48.91, 48.87, 48.88, 47.82 and then steps to 40.19 and stays there to
+    within 0.03% for ten inferences. Averaging across the step reports 42.6 ms for a machine that
+    settles at 40.20 ms — an 6% overstatement produced entirely by counting the ramp.
+
+    # Why the criterion is the GPU clock and not the host clock
+
+    A warmup detector run on host wall time cannot tell a ramp from a contended machine; both look
+    like "early samples are slower". The device timestamp counter does not see host load at all,
+    so a step in *this* series is a property of the device or the driver, and finding the tail
+    this way stays valid on a box that is not quiet. That is the only reason this figure is
+    reportable today.
+
+    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``NO_STEADY_TAIL`` when no
+    sufficiently long suffix settles, or ``INSUFFICIENT``.
+    """
+    vals = [v / 1000.0 for v in busy_us if v]
+    out = {"n_inferences": len(vals),
+           "series_ms": [round(v, 3) for v in vals][:64]}
+    if len(vals) < GPU_TAIL_MIN_N + 1:
+        out.update(verdict="INSUFFICIENT",
+                   detail=f"{len(vals)} usable inferences; need at least {GPU_TAIL_MIN_N + 1}.")
+        return out
+    best = None
+    for start in range(0, len(vals) - GPU_TAIL_MIN_N + 1):
+        suffix = vals[start:]
+        mean = statistics.fmean(suffix)
+        if mean <= 0:
+            continue
+        rsd = statistics.pstdev(suffix) / mean
+        if rsd <= GPU_TAIL_RSD_MAX:
+            best = (start, suffix, rsd)
+            break
+    if best is None:
+        out.update(verdict="NO_STEADY_TAIL",
+                   detail=(f"no suffix of >= {GPU_TAIL_MIN_N} inferences holds GPU busy time "
+                           f"within {GPU_TAIL_RSD_MAX:.0%} RSD. The device never settled, so "
+                           f"there is no steady-state GPU figure to quote from this run."))
+        return out
+    start, suffix, rsd = best
+    out.update(
+        verdict="STEADY",
+        discarded_inferences=start,
+        n=len(suffix),
+        median_ms=round(statistics.median(suffix), 4),
+        mean_ms=round(statistics.fmean(suffix), 4),
+        min_ms=round(min(suffix), 4),
+        max_ms=round(max(suffix), 4),
+        rsd=round(rsd, 6),
+        detail=(f"GPU busy settles after {start} inference(s) and holds "
+                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them at "
+                f"{rsd:.4%} RSD. Device-clock only: this is the summed duration of the "
+                f"dispatches, not the wall time of an inference, and it is NOT a substitute "
+                f"for the end-to-end figure."),
+    )
+    return out
+
+
+def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
+                       nested: "list[dict]", busy_us: "dict[int, float] | None" = None,
+                       transfers: "list[dict] | None" = None) -> dict:
+    """The phase split over warm inferences only, reported beside the cold one it excludes.
+
+    # Why this had to exist the day persistent weight residency landed
+
+    Before residency, every inference re-uploaded the weights, so every inference cost roughly the
+    same and averaging over all of them was harmless. After residency the **first** ``Compute``
+    call uploads 1997.977 MiB and every later one uploads 0.387 MiB — a 5162× step, in the same
+    trace, under the same span name.
+
+    Averaged over four inferences that single upload is 91% of the ``record`` total and 99.98% of
+    the ``cmd_upload`` total, so an all-inference share table reports the cost of a *fixed
+    one-time transfer* as if it were a per-inference cost, and points optimisation at the
+    transfer that was just eliminated. That is the record-is-68% mistake for the third time, with
+    residency as the new disguise: the mean of two populations, presented under the name of one of
+    them.
+
+    The cold span is not discarded — it is reported separately, because a user pays it once and it
+    is the correct place to read model-load cost.
+
+    # How warm is decided
+
+    From the trace's own repeat structure, not from a warmup flag the harness passes in. Islands
+    execute in a fixed order once per inference, so the cycle period recovered by
+    :func:`_cycle_period` is the island count, and the first cycle is the cold one. Fewer than
+    three cycles and this returns ``INSUFFICIENT`` rather than a number: two warm samples cannot
+    show that they agree with each other.
+    """
+    order = [s["nodes"] for s in subgraphs]
+    period = _cycle_period(order) or (1 if len({*order}) == 1 else None)
+    if period is None:
+        return {"verdict": "NO_CYCLE",
+                "detail": ("the subgraph order has no repeating period, so which invocations are "
+                           "the first-of-each-island cannot be recovered from the trace.")}
+    cycles = len(subgraphs) // period
+    cold = {s["index"] for s in subgraphs[:period]}
+    warm = [s for s in subgraphs[period:]]
+    if cycles < 3:
+        return {"verdict": "INSUFFICIENT", "cycles": cycles, "island_count": period,
+                "detail": (f"{cycles} inference(s) in this trace; at least 3 are needed to drop "
+                           f"the cold one and still have two warm samples that can disagree.")}
+
+    warm_idx = {s["index"] for s in warm}
+    warm_ms = sum(s["dur"] for s in warm) / 1000.0
+    cold_ms = sum(s["dur"] for s in subgraphs if s["index"] in cold) / 1000.0
+
+    def fold(spans, keep):
+        out: "dict[str, float]" = {}
+        for p in spans:
+            if p["subgraph_index"] in keep:
+                out[p["phase"]] = out.get(p["phase"], 0.0) + p["dur"] / 1000.0
+        return out
+
+    warm_sib, warm_kid = fold(siblings, warm_idx), fold(nested, warm_idx)
+    cold_sib, cold_kid = fold(siblings, cold), fold(nested, cold)
+    warm_gpu = sum((busy_us or {}).get(i, 0.0) for i in warm_idx) / 1000.0
+    record_leaf = warm_sib.get("record", 0.0) - sum(warm_kid.values())
+    fence = warm_sib.get("fence_wait", 0.0)
+    accounted = sum(warm_sib.values())
+
+    up_cold = up_warm = None
+    if transfers:
+        ups = [t for t in transfers if t["direction"] == "upload"]
+        if ups:
+            up_cold = round(ups[0]["bytes"] / 1024 ** 2, 3)
+            rest = [t["bytes"] for t in ups[1:]]
+            up_warm = round(statistics.fmean(rest) / 1024 ** 2, 4) if rest else None
+
+    n = cycles - 1
+    tail = gpu_steady_tail([(busy_us or {}).get(s["index"]) for s in subgraphs])
+    return {
+        "verdict": "OK",
+        "island_count": period,
+        "cycles": cycles,
+        "warm_inferences": n,
+        "cold_in_compute_ms": round(cold_ms, 3),
+        "warm_in_compute_ms": round(warm_ms, 3),
+        "warm_per_inference_ms": round(warm_ms / n, 3),
+        "cold_over_warm_ratio": (round(cold_ms / (warm_ms / n), 2) if warm_ms else None),
+        "warm_phases_ms": {k: round(v, 3) for k, v in sorted(warm_sib.items())},
+        "warm_nested_ms": {k: round(v, 3) for k, v in sorted(warm_kid.items())},
+        "cold_phases_ms": {k: round(v, 3) for k, v in sorted(cold_sib.items())},
+        "cold_nested_ms": {k: round(v, 3) for k, v in sorted(cold_kid.items())},
+        "warm_shares": ({
+            **{k: round(v / warm_ms, 5) for k, v in warm_sib.items() if k != "record"},
+            "record_INCLUDING_children": round(warm_sib.get("record", 0) / warm_ms, 5),
+            "record_excl_children": round(record_leaf / warm_ms, 5),
+            **{f"in_record/{k}": round(v / warm_ms, 5) for k, v in warm_kid.items()},
+            "gpu_busy": round(warm_gpu / warm_ms, 5),
+            "fence_wait_gpu_idle": round(max(fence - warm_gpu, 0.0) / warm_ms, 5),
+            "unattributed": round((warm_ms - accounted) / warm_ms, 5),
+        } if warm_ms else {}),
+        "warm_gpu_busy_ms": round(warm_gpu, 3),
+        "gpu_steady_tail": tail,
+        "upload_mib_cold": up_cold,
+        "upload_mib_warm_mean": up_warm,
+        "gpu_busy_note": (
+            "GPU busy overlaps submit+fence_wait and is NOT a sibling of the host phases — it is "
+            "printed as a share of the same denominator so the two can be compared, never so "
+            "they can be added. `fence_wait_gpu_idle` is the part of the fence wait the GPU was "
+            "demonstrably not executing in, and it is the only GPU-idle figure that may be "
+            "quoted."),
+        "duration_caveat": (
+            "these are durations and durations move with machine load. The *structure* here — "
+            "that recording is paid on every inference rather than once, and that the cold "
+            "inference is a different workload from the warm ones — is a count of spans and "
+            "survives contention. The percentages do not."),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Top-level
 # ---------------------------------------------------------------------------
 
@@ -1622,6 +1957,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     sib_spans = sibling_phases(all_phases)
     nested_names = sorted({p["phase"] for p in all_phases} - {p["phase"] for p in sib_spans})
     siblings = attribute(subs, sib_spans)
+    nested_attr = attribute(subs, [p for p in all_phases if p["phase"] in nested_names])
     gpus = gpu_spans(events)
     transfers = transfer_events(events)
     scaling = record_scaling(attributed, subs, transfers)
@@ -1714,9 +2050,11 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
         "transfers": transfer_totals(transfers),
         "partition_stats": partition_stats(events),
         "record_scaling": scaling,
+        "steady_state": steady_state_split(subs, siblings, nested_attr,
+                                           ordinal.get("busy_us"), transfers),
         "contention_signature": contention,
         "falsifiers": {
-            "phase_containment": phase_containment(subs, attributed),
+            "phase_containment": phase_containment(subs, siblings, nested_attr),
             "gpu_span_accounting": gpu_span_accounting(subs, gpus, counters),
             "gpu_containment": gpu_containment(subs, attributed, gpus),
             "timestamp_conversion_integrality": timestamp_conversion_integrality(gpus),
@@ -1728,10 +2066,19 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
 
 
 def red_flags(report: dict) -> "list[str]":
-    """Every falsifier that went red, as text. Empty means every check that *could* fail did not."""
+    """Every falsifier that went red, as text. Empty means every check that *could* fail did not.
+
+    R13: a check has three terminal states. ``ERROR(instrument)`` is listed here — an unchecked
+    claim is still not quotable — but it is prefixed so that it is never read as a detection.
+    "5 failed" was read as a working guard when the guard was throwing ``NameError``; the text of
+    a failure, not its count, is the thing that carries the diagnosis.
+    """
     out = []
     for name, f in (report.get("falsifiers") or {}).items():
-        if f.get("red"):
+        if f.get("state") == "ERROR":
+            out.append(f"{name}: ERROR(instrument) — NOT a detection, the check did not run: "
+                       f"{f.get('instrument_error') or f.get('detail')}")
+        elif f.get("red"):
             out.append(f"{name}: {f.get('detail')}")
     ti = (report.get("falsifiers") or {}).get("timestamp_conversion_integrality") or {}
     if ti and not ti.get("decisive"):

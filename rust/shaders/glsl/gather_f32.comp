@@ -1,0 +1,66 @@
+// Gather (f32) — ONNX `Gather` along an arbitrary axis, flattened to three extents.
+//
+// Any `Gather` is the same loop once the data tensor is folded around its axis:
+//
+//   outer    = prod(data.shape[:axis])
+//   gathered = data.shape[axis]
+//   inner    = prod(data.shape[axis+1:])
+//   n_idx    = prod(indices.shape)
+//
+//   out[o, j, i] = data[o, indices[j], i]        o < outer, j < n_idx, i < inner
+//
+// so one shader covers every axis and every indices rank. The output's *shape* is
+// data.shape[:axis] ++ indices.shape ++ data.shape[axis+1:], which the translate handler
+// computes; the shader only needs the three extents.
+//
+// Index dtype:
+//   `indices` is int32 or int64 per the ONNX schema. Rather than two shader variants, the
+//   buffer is read as uints and `idx_stride_words` selects the step: 1 for int32, 2 for int64.
+//   For int64 the low word is read, which is the little-endian low half. That is exact for
+//   every index the specification defines: ONNX requires indices in [-gathered, gathered-1],
+//   and gathered is a tensor extent, so a *valid* int64 index always sign-extends from its low
+//   32 bits. An out-of-range index is undefined behaviour in ONNX; this shader clamps rather
+//   than reading out of bounds, so an invalid graph produces a defined wrong answer instead of
+//   a device fault. It does not require the shaderInt64 device feature.
+//
+// Negative indices: ONNX allows idx < 0, meaning gathered + idx. Handled below.
+//
+// Grid-stride loop so the workgroup count can be capped well under any device's
+// maxComputeWorkGroupCount[0] rather than scaling with the tensor.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint outer;            // prod(data.shape[:axis])
+    uint gathered;         // data.shape[axis]
+    uint inner;            // prod(data.shape[axis+1:])
+    uint n_idx;            // prod(indices.shape)
+    uint idx_stride_words; // 1 for int32 indices, 2 for int64
+    uint total;            // outer * n_idx * inner  (output element count)
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer Data    { float data[]; } u_data;
+layout(set = 0, binding = 1) readonly  buffer Indices { uint  data[]; } u_idx;
+layout(set = 0, binding = 2) writeonly buffer Out     { float data[]; } u_out;
+
+int load_index(uint j) {
+    int v = int(u_idx.data[j * pc.idx_stride_words]);
+    if (v < 0) {
+        v += int(pc.gathered);
+    }
+    return clamp(v, 0, int(pc.gathered) - 1);
+}
+
+void main() {
+    uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    for (uint o = gl_GlobalInvocationID.x; o < pc.total; o += stride) {
+        uint i       = o % pc.inner;
+        uint j       = (o / pc.inner) % pc.n_idx;
+        uint outer_i = o / (pc.inner * pc.n_idx);
+        uint row     = outer_i * pc.gathered + uint(load_index(j));
+        u_out.data[o] = u_data.data[row * pc.inner + i];
+    }
+}

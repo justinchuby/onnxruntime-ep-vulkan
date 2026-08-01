@@ -34,6 +34,7 @@ use crate::ops::common::templates;
 use crate::registry::OpStatus::{Ready, Staged};
 use crate::registry::{
     ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OPSET_STD_NORM_MAX, OpSpec, PINNED_BASELINE,
+    UNEXERCISED,
 };
 use crate::require;
 
@@ -41,6 +42,11 @@ use crate::require;
 ///
 /// Distinct from `NO_SHADER` on purpose: this says "one piece of shared work unblocks all of
 /// these", which is a schedule fact the table should carry.
+///
+/// **Retired 2026-07-31.** The shared row-reduction shader exists
+/// (`shaders/glsl/simplified_layer_norm_{f32,f16}.comp`), so no row is blocked on it any more.
+/// The constant stays for the doc comment above and is asserted *unused by any row* — a staged
+/// reason that has stopped being true is a schedule claim the table would otherwise keep making.
 pub const NEEDS_REDUCTION: &str =
     "it needs the shared row-reduction template, which has not been written yet";
 
@@ -99,6 +105,20 @@ fn simplified_layer_norm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
          axis, which is what every LLM norm uses",
         spec.op_type
     );
+    // gamma (scale) is required and shares X's dtype; the kernel reads both through one load.
+    claim::typed_input(view, spec, 1, "scale")?;
+    // The optional second output (`inv_std_var`) is not written by the kernel. Declining is the
+    // honest answer: writing slot 0 and leaving slot 1 unwritten is exactly the defect class that
+    // produced the never-written KV outputs, and nothing in either Foundry Local graph asks for
+    // it — so a variant that supported it could not be exercised.
+    let n_out = view.num_outputs();
+    require!(
+        n_out <= 1,
+        Arity,
+        "`{}` declares {n_out} outputs; this kernel writes slot 0 only, and an unwritten output \
+         slot is worse than a declined node",
+        spec.op_type
+    );
     Ok(())
 }
 
@@ -114,9 +134,15 @@ fn skip_simplified_layer_norm(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult
 
 crate::op_table! {
     //  op                                    domain  opsets                       caps    kernel          claim                       translate                  status                    schema
-    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
+    "SimplifiedLayerNormalization",           Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
     "SkipSimplifiedLayerNormalization",       Ms,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  skip_simplified_layer_norm, templates::skip_norm,      Ready,                    schema: &SKIP_SIMPLIFIED_LAYER_NORM;
-    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION);
+
+    // `RMSNormalization` is the same maths under the standard-domain spelling and runs the same
+    // kernel. It stays staged behind `UNEXERCISED` rather than `NEEDS_REDUCTION` because the
+    // reduction shader now exists — the blocker is no longer "no kernel", it is "no device has
+    // run this row". No graph on this machine emits it, so flipping it would be a claim with no
+    // instrument behind it (§8.9, R9).
+    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Staged(UNEXERCISED);
 
     // The same op again, in the **default domain**. Not a duplicate and not defensive coding: the
     // ORT GenAI model builder writes `SimplifiedLayerNormalization` with `node.domain == ""`, and
@@ -125,7 +151,11 @@ crate::op_table! {
     // which reads as "we have never heard of this op" when the truth is "we registered it under
     // the wrong name". It carries the *fingerprint* rather than trusting its opset window, because
     // ONNX publishes no schema for it — see `registry::ORT_FUSED_IN_DEFAULT_DOMAIN`.
-    "SimplifiedLayerNormalization",           Ai,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::unimplemented,  Staged(NEEDS_REDUCTION),  schema: &SIMPLIFIED_LAYER_NORM;
+    //
+    // **This is the row Phi-3.5's one remaining norm node keys against**: the single
+    // `/model/layers.0/input_layernorm/LayerNorm` (every other layer's input norm is fused into
+    // `SkipSimplifiedLayerNormalization`).
+    "SimplifiedLayerNormalization",           Ai,     1 ..= OPSET_ANY,             FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready,                   schema: &SIMPLIFIED_LAYER_NORM;
 }
 
 #[cfg(test)]
@@ -187,29 +217,58 @@ mod tests {
     }
 
     #[test]
-    fn both_norms_share_one_blocker() {
-        // SkipSimplifiedLayerNormalization is now Live/Ready with its own kernel.
-        // The remaining rows (SimplifiedLayerNormalization, RMSNormalization) still share
-        // the NEEDS_REDUCTION blocker — once the shared reduction template is written, they
-        // all go live together.
+    fn the_reduction_blocker_is_retired_and_only_the_unexercised_row_remains() {
+        // The shared row-reduction shader now exists (`simplified_layer_norm_{f32,f16}.comp`),
+        // so `NEEDS_REDUCTION` is no longer a true statement about any row. The one remaining
+        // staged row — `RMSNormalization`, the standard-domain spelling — is blocked on evidence,
+        // not on a kernel: no graph on this machine emits it, so it has never run on a device.
+        // Keeping the *reason* accurate is the point of this test. A row staged behind a retired
+        // blocker is a lie the table tells about its own schedule.
         let staged: Vec<_> = OPS
             .iter()
             .filter(|s| matches!(s.status, OpStatus::Staged(_)))
             .collect();
         let live: Vec<_> = OPS.iter().filter(|s| s.is_live()).collect();
         assert!(
-            !staged.is_empty(),
-            "some rows should still be staged (waiting for reduction template)"
-        );
-        assert!(
             !live.is_empty(),
-            "SkipSimplifiedLayerNormalization should be live"
+            "the norm rows backed by a shader should be live"
         );
         for s in &staged {
             assert!(
-                matches!(s.status, OpStatus::Staged(NEEDS_REDUCTION)),
-                "{} is staged behind something else",
+                !matches!(s.status, OpStatus::Staged(NEEDS_REDUCTION)),
+                "{} is still staged behind NEEDS_REDUCTION, but the reduction shader exists",
                 s.op_type
+            );
+            assert!(
+                matches!(s.status, OpStatus::Staged(UNEXERCISED)),
+                "{} is staged behind an unexpected blocker: {:?}",
+                s.op_type,
+                s.status
+            );
+        }
+    }
+
+    /// Every row that shares the RMSNorm kernel and is emitted by a producer we test against
+    /// must be live. This is the claim-side falsifier for the coverage number: if
+    /// `SimplifiedLayerNormalization` silently regresses to `Staged`, Phi-3.5's last norm node
+    /// goes back to the CPU and this test goes red before the model does.
+    #[test]
+    fn both_spellings_of_simplified_layer_norm_are_live() {
+        let rows: Vec<_> = OPS
+            .iter()
+            .filter(|s| s.op_type == "SimplifiedLayerNormalization")
+            .collect();
+        assert_eq!(rows.len(), 2, "one row per domain the builders emit");
+        for r in rows {
+            assert!(
+                r.is_live(),
+                "SimplifiedLayerNormalization ({:?}) must be Ready; got {:?}",
+                r.domain,
+                r.status
+            );
+            assert_eq!(
+                r.translate as usize, templates::simplified_norm as usize,
+                "a live row must point at the RMSNorm handler, not `unimplemented`"
             );
         }
     }

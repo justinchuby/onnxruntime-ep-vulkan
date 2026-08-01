@@ -36,12 +36,33 @@ env:
 # ------------------------------------------------------------------
 # CI lanes:
 #   format          : rustfmt check (ubuntu, fast, no build)
+#   lane-checks     : two-polarity self-test of the gate readers in
+#                     ci/ — no Vulkan, no GPU, no ORT session
 #   build-test-linux: cargo build + clippy + op tests (lavapipe)
 #                     + validation layers (zero errors enforced)
-#                     + layering lint
+#                     + layering lint + CRITERION 10 GATE
 #   build-test-windows: cargo build + clippy + op tests (lavapipe
 #                     via mesa-dist-win) + no-ICD fallback test
 #                     + validation layers via LunarG SDK
+#                     + CRITERION 10 GATE
+#
+# WHAT A GREEN LANE MEANS HERE, AND WHAT IT MEANT BEFORE 2026-07-31:
+#   Before: the pytest process exited zero. That is all it meant, and
+#   on 2026-07-30 it was true for most of a day while this EP executed
+#   ZERO nodes and ORT silently re-ran everything on CPU.
+#   Now: the lane additionally carries a gate artifact (gate_chain_fp32,
+#   docs/PLATFORMS.md §7.8) whose pass condition includes the
+#   model_output_equivalence VERDICT — so a run that did not measure
+#   reports UNMEASURED, a run in which this EP executed nothing reports
+#   UNATTRIBUTED, and neither of those is a pass. Each lane also runs a
+#   NEGATIVE CONTROL that removes the ICD and requires the gate to go
+#   red, because a check observed only to pass is not known to be a check.
+#
+#   `continue-on-error` appears NOWHERE in this file, and no verdict-bypass
+#   flag does either (one exists for local debugging; it is deliberately not
+#   spelled out here so that a grep for it in this file finds nothing).
+#   Absence of a check is a refusal, not a default green — the same
+#   principle bench/admissible.py carries for Niobe.
 # ------------------------------------------------------------------
 
 jobs:
@@ -72,7 +93,40 @@ jobs:
           fi
 
   # ----------------------------------------------------------------
-  # 2. Linux: build + clippy + op tests (lavapipe GPU-less lane)
+  # 2. Lane-check self-test (no Vulkan, no GPU, no ORT session)
+  # ----------------------------------------------------------------
+  # The lanes below gate on ci/check_verdict.py and ci/check_fatal_log.py.
+  # Those are instruments, and R9 says evidence scales only with
+  # falsifying instruments — so the instruments themselves need a
+  # falsifier, and it must run where the thing they check is broken
+  # or absent. Hence: synthesised verdict records and synthesised
+  # logs, both polarities, asserting the printed TOKEN and not only
+  # the exit code (R13: two different things spelled the same way
+  # are not a signal).
+  #
+  # This job needs no Vulkan and no GPU on purpose. If it needed the
+  # subject under test to be healthy, it could not tell us anything
+  # on the day the subject is sick, which is the only day it matters.
+  # ----------------------------------------------------------------
+  lane-checks:
+    name: Lane-check self-test (two polarities, no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest
+
+      - name: Two-polarity tests for ci/ lane checks
+        run: python -m pytest ci/test_lane_checks.py -q -p no:randomly
+
+  # ----------------------------------------------------------------
+  # 3. Linux: build + clippy + op tests (lavapipe GPU-less lane)
+  #    + criterion 10 gate artifact + negative control
   # ----------------------------------------------------------------
   build-test-linux:
     name: Build + op tests (Linux, lavapipe)
@@ -278,7 +332,116 @@ jobs:
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          python -m pytest tests/ops -q --tb=short -p no:randomly --strict-markers
+          mkdir -p bench/results/ci-lane
+          # 2>&1: ORT writes `EP_FAIL ... Falling back` from C++ to fd 2. A tee of
+          # stdout alone captures a log in which that line cannot appear, and the
+          # grep below would then agree with everything (R12: a counter whose event
+          # cannot occur in its frame is UNOBSERVABLE, not 0).
+          set -o pipefail
+          python -m pytest tests/ops -q --tb=short -p no:randomly --strict-markers \
+            2>&1 | tee bench/results/ci-lane/pytest-linux.log
+
+      # -------------------------------------------------------
+      # CRITERION 10 — the gate this lane did not carry until
+      # 2026-07-31, and the reason it needed to.
+      #
+      # Until now this lane's pass condition was "the pytest
+      # process exited zero". On 2026-07-30 that condition held
+      # for most of a day while the EP executed ZERO nodes: ORT
+      # printed `EP_FAIL ... Falling back to CPUExecutionProvider`
+      # inside run(), re-ran the whole graph on CPU, and raised
+      # nothing. get_providers() still listed VulkanExecutionProvider
+      # because the provider list is fixed at session-create time.
+      # The suite was green. Nothing ran on Vulkan.
+      #
+      # Three steps, deliberately three processes, with three
+      # different failure modes (DESIGN.md §10.0.1 R13 obligation 3):
+      #   1. produce a verdict record from a right-sized artifact
+      #   2. read the record back in a separate process
+      #   3. grep the captured suite log for the known-fatal line
+      # A guard can crash; a grep cannot NameError. Each covers the
+      # other's outage.
+      #
+      # `continue-on-error` appears on NONE of them, and neither does
+      # any verdict-bypass flag. Absence of a check is a refusal, not
+      # a default green.
+      # -------------------------------------------------------
+      - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ${{ github.workspace }}/bench/results/ci-lane/counters-linux.json
+        run: |
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p bench/results/ci-lane
+          python ci/gate_chain_fp32.py \
+            --verdict-out bench/results/ci-lane/verdict-linux.json \
+            --workdir bench/results/ci-lane
+
+      - name: Criterion 10 verdict gate (independent reader)
+        if: env.BUILD_SKIPPED != '1'
+        run: python ci/check_verdict.py bench/results/ci-lane/verdict-linux.json
+
+      - name: Criterion 10 verdict gate (epctl --check-counters)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          rust/target/release/epctl --check-counters \
+            bench/results/ci-lane/counters-linux.json --require-dispatches 1
+
+      - name: Known-fatal log line is a lane failure (R13 second witness)
+        # Runs even when an earlier gate failed: when the EP falls back, the log line
+        # is the most legible evidence in the whole lane and it must reach the reader
+        # rather than being cancelled by the failure it explains.
+        if: env.BUILD_SKIPPED != '1' && always()
+        run: |
+          python ci/check_fatal_log.py \
+            bench/results/ci-lane/pytest-linux.log \
+            bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
+
+      # -------------------------------------------------------
+      # POSITIVE CONTROL FOR THE GATE ITSELF (R9) — see the Windows
+      # lane for the full rationale. Evidence scales only with
+      # falsifying instruments: a check observed only to pass is not
+      # known to be a check. Remove the ICD, keep everything else
+      # identical, and require UNATTRIBUTED.
+      # -------------------------------------------------------
+      - name: Gate negative control — no ICD must produce UNATTRIBUTED
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          VK_ICD_FILENAMES: /nonexistent/lvp_icd.json
+          VK_DRIVER_FILES: /nonexistent/lvp_icd.json
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
+        run: |
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p bench/results/ci-lane
+          set +e
+          out=$(python ci/gate_chain_fp32.py \
+            --verdict-out bench/results/ci-lane/negative-control.json \
+            --workdir bench/results/ci-lane 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          # Quote the text, never the count (R13 second clause).
+          if [ "$code" -eq 0 ]; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate passed with no Vulkan ICD present. It cannot distinguish a run that executed from one that did not, so every green in this lane is uninterpretable."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q 'FAIL(condition=UNATTRIBUTED)'; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate exited $code but did not report FAIL(condition=UNATTRIBUTED). An instrument error is not a detection (R13); a red that could mean either is not a signal."
+            exit 1
+          fi
+          if printf '%s' "$out" | grep -q 'FAIL(condition=DIVERGENT)'; then
+            echo "::error::NEGATIVE CONTROL FAILED: UNATTRIBUTED was reported as DIVERGENT. These have different owners and different fixes and must never be folded together."
+            exit 1
+          fi
+          echo "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+
+      - name: Upload lane evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lane-evidence-linux
+          path: bench/results/ci-lane/
+          if-no-files-found: warn
 
   # ----------------------------------------------------------------
   # 3. Windows: build + clippy + op tests (lavapipe via mesa-dist-win)
@@ -474,8 +637,53 @@ jobs:
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
           $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          # 2>&1 merges ORT's native stderr, where `EP_FAIL ... Falling back` is
+          # written. Without it the grep step scans a log in which its own subject
+          # cannot appear.
           python -m pytest tests\ops -q --tb=short `
-            -p no:randomly --strict-markers
+            -p no:randomly --strict-markers 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\pytest-windows.log
+          exit $LASTEXITCODE
+
+      # -------------------------------------------------------
+      # CRITERION 10 — see the Linux lane for the full rationale.
+      # Same three steps, same three failure modes, same absence
+      # of any verdict-bypass escape.
+      # -------------------------------------------------------
+      - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ${{ github.workspace }}\bench\results\ci-lane\counters-windows.json
+        run: |
+          $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          python ci\gate_chain_fp32.py `
+            --verdict-out bench\results\ci-lane\verdict-windows.json `
+            --workdir bench\results\ci-lane
+          exit $LASTEXITCODE
+
+      - name: Criterion 10 verdict gate (independent reader)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          python ci\check_verdict.py bench\results\ci-lane\verdict-windows.json
+          exit $LASTEXITCODE
+
+      - name: Criterion 10 verdict gate (epctl --check-counters)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          rust\target\release\epctl.exe --check-counters `
+            bench\results\ci-lane\counters-windows.json --require-dispatches 1
+          exit $LASTEXITCODE
+
+      - name: Known-fatal log line is a lane failure (R13 second witness)
+        if: env.BUILD_SKIPPED != '1' && always()
+        run: |
+          python ci\check_fatal_log.py `
+            bench\results\ci-lane\pytest-windows.log `
+            bench\results\ci-lane\gate_chain_fp32_ort_stderr.log
+          exit $LASTEXITCODE
 
       # -------------------------------------------------------
       # No-ICD fallback test (always runs, even without a build).
@@ -493,3 +701,60 @@ jobs:
           }
           python -m pytest tests\ops\test_claim_diagnostics.py::test_no_vulkan_icd_falls_back_to_cpu `
             -q --tb=short
+
+      # -------------------------------------------------------
+      # POSITIVE CONTROL FOR THE GATE ITSELF (R9).
+      #
+      # Evidence scales only with falsifying instruments. The three
+      # gate steps above have, on a healthy run, only ever been
+      # observed to pass — and a check observed only to pass is not
+      # known to be a check. This step removes the ICD, so the EP
+      # can execute nothing, and requires the gate to say so.
+      #
+      # It is the cheapest available proof that a green lane above
+      # means something: the SAME artifact, the SAME script, one
+      # environment variable different, and it must come back
+      # UNATTRIBUTED with a non-zero exit. If this step ever passes
+      # silently, every green in this lane is uninterpretable.
+      #
+      # UNATTRIBUTED and not DIVERGENT, asserted by name: the model
+      # was not wrong, the subject was absent (§10.0 clause 4).
+      # -------------------------------------------------------
+      - name: Gate negative control — no ICD must produce UNATTRIBUTED
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
+        run: |
+          $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
+          $env:VK_ICD_FILENAMES = "C:\nonexistent\lvp_icd.json"
+          $env:VK_DRIVER_FILES  = "C:\nonexistent\lvp_icd.json"
+          $env:ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE = ""
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          $out = python ci\gate_chain_fp32.py `
+            --verdict-out bench\results\ci-lane\negative-control.json `
+            --workdir bench\results\ci-lane 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          # Quote the text, never the count (R13 second clause): the assertion is on
+          # the token the gate printed, not on how many things went wrong.
+          if ($code -eq 0) {
+            Write-Error "NEGATIVE CONTROL FAILED: the gate passed with no Vulkan ICD present. It cannot distinguish a run that executed from one that did not, so every green in this lane is uninterpretable."
+            exit 1
+          }
+          if ($out -notmatch 'FAIL\(condition=UNATTRIBUTED\)') {
+            Write-Error "NEGATIVE CONTROL FAILED: the gate exited $code but did not report FAIL(condition=UNATTRIBUTED). An instrument error is not a detection (R13); a red that could mean either is not a signal."
+            exit 1
+          }
+          if ($out -match 'FAIL\(condition=DIVERGENT\)') {
+            Write-Error "NEGATIVE CONTROL FAILED: UNATTRIBUTED was reported as DIVERGENT. These have different owners and different fixes and must never be folded together."
+            exit 1
+          }
+          Write-Host "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+
+      - name: Upload lane evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lane-evidence-windows
+          path: bench/results/ci-lane/
+          if-no-files-found: warn

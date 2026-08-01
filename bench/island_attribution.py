@@ -29,6 +29,11 @@ import numpy as np
 _HERE = pathlib.Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 _TESTS = _ROOT / "tests" / "ops"
+# Probe output belongs under bench/results/, never the repo root. An earlier version wrote
+# island_attribution.json and claim_log_attribution.jsonl into the working directory, which put
+# them in front of `git add` and got them committed.
+_RESULTS = _HERE / "results"
+_RESULTS.mkdir(parents=True, exist_ok=True)
 
 if str(_TESTS) not in sys.path:
     sys.path.insert(0, str(_TESTS))
@@ -317,7 +322,7 @@ def main():
         print(f"ERROR: model not found at {_ONNX_FILE}")
         sys.exit(1)
 
-    log_path = _HERE.parent / "claim_log_attribution.jsonl"
+    log_path = _RESULTS / "claim_log_attribution.jsonl"
     log_path.unlink(missing_ok=True)
 
     print(f"[island_attribution] Collecting claim log → {log_path}")
@@ -371,7 +376,7 @@ def main():
             for op, cuts in sorted(attr.items(), key=lambda x: -x[1])
         ],
     }
-    out_path = _HERE.parent / "island_attribution.json"
+    out_path = _RESULTS / "island_attribution.json"
     out_path.write_text(json.dumps(out, indent=2))
     print(f"\n[island_attribution] Full result → {out_path}")
 

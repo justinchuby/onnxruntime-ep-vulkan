@@ -452,6 +452,8 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers" -Name $icdPath -V
 
 > **The WSL lane is not a CI lane.** It provides first-claimed-node evidence and a three-way capability diff. CI must be updated to run `test_elementwise` and `test_barrier_parity` on both CI lanes (Linux and Windows) to make this evidence continuous rather than one-time. The §7.5 CI lane spec reflects what the CI lanes need to become.
 
+> **Update 2026-07-31: the "Claimed-node execution" column above is superseded by §7.4.4.** Both CI lanes run the whole of `tests/ops` and now additionally carry criterion 10's gate artifact plus a negative control. The column's readings were also, before today, unable to distinguish "executed claimed nodes" from "fell back to CPU inside `run()` and passed anyway" — which is the state the whole of §7.4.4 exists to end. Read that section for the current per-lane classification; treat this table as capability data, not as evidence of execution.
+
 Both CI lanes expose `VK_KHR_synchronization2` and support subgroup arithmetic in compute (probe-verified on Linux lane). The §9 forced-legacy run (`ep.force_legacy_barriers=1`) is the **only** way the `vkCmdPipelineBarrier` code path is exercised before physical Android hardware is available; the subgroup arithmetic path is now exercised in both normal CI runs.
 
 **What GPU-less CI does NOT cover:**
@@ -468,6 +470,98 @@ For anything in the matrix column labeled **untested**, the project must either 
 
 - Run `epctl --dump-capabilities` in both Windows and Linux lanes immediately after the smoke-check step. This reports device state without ORT and makes the next instance-creation failure self-diagnosing.
 - Switch's EP diagnostic (`ONNXRUNTIME_VULKAN_EP_VALIDATE=1`) already logs what the loader sees before instance creation — ensure this log appears in the CI step output, not only in the test harness stderr.
+
+#### 7.4.4 Lane classification: `operational` vs `green` — every lane, by the new definition (2026-07-31T22:15-07:00)
+
+**This is the section to read if you read only one.** As of this revision the CI lanes carry criterion 10's gate. Before it, a green lane proved that a process exited zero and **nothing else**.
+
+##### What was wrong, stated without softening
+
+I grepped `.github/workflows/ci.yml` for `check-verdict`, `gate_chain`, `model_output_equivalence`, `MATCH`, `UNMEASURED`, `UNATTRIBUTED`, `guard_d` and `assert_vulkan_executed`. **Zero matches.** Both lanes ran the suite and read an exit code.
+
+That is not a theoretical hole. On 2026-07-30 the EP claimed 353 nodes, failed at run time on a zero-size allocation, and ORT printed `EP_FAIL … Falling back to CPUExecutionProvider`, re-ran the entire graph on CPU, and **raised nothing**. `get_providers()` still listed `VulkanExecutionProvider`, because the provider list is fixed at session-create time and the fallback happens inside `run()`. **The whole suite was green while zero nodes executed on Vulkan.** That is the fifth appearance of that log line on this project with every gate passing.
+
+Morpheus's ruling is the one I am implementing: a lane that does not carry criterion 10's gate would *"measure the same silence in a new location"*, and **`operational` ≠ `green`** — a lane's pass condition must include the verdict field, so `UNMEASURED` reports `UNMEASURED` and not PASS.
+
+##### The definitions, restated with the fourth state
+
+| State | Definition | What may be claimed | Gate required? |
+|---|---|---|---|
+| **`operational`** | The lane exists, builds, runs, and reports. It may even execute claimed nodes. | That the lane is up, and that it is a **prerequisite** for running criterion 10 anywhere but a development desk. | No |
+| **`green`** | The lane's pass condition includes a `model_output_equivalence` verdict of `MATCH` **carrying an `executed_by` frame parsed from ORT profiling**, *and* the lane has demonstrated on this same run that its gate can fail. | That criterion 10's tail is satisfied **for the gate artifact only** — never for another artifact, never for fp16, never for performance. | Yes |
+
+**A lane that cannot fail when the EP does nothing is not evidence.** That sentence is the whole classification.
+
+##### Every lane, and what it is
+
+| Lane | Where | Runs claimed nodes? | Carries criterion 10's gate? | Has a falsifier for its own gate? | **Classification** | Why it is not more than that |
+|---|---|---|---|---|---|---|
+| `format` (rustfmt) | ubuntu-latest | No — no build, no Vulkan | Not applicable | Not applicable | **`operational`, and correctly so** | It is a formatting check. It makes no claim about execution and none is expected of it. `UNOBSERVABLE`, not zero (R12). |
+| `lane-checks` (new) | ubuntu-latest | No — no Vulkan by design | It **is** the gate's falsifier | Yes — 16 tests, two polarities, synthesised inputs | **`green` for the claim it makes**, which is *"the lane checks work"* and nothing about the EP | Deliberately GPU-less: an instrument test that needed the subject healthy could say nothing on the day the subject is sick. |
+| `build-test-linux` (Ubuntu 22.04, lavapipe) | GitHub-hosted | Yes | **Yes, as of this revision** — `gate_chain_fp32` → `ci/check_verdict.py` → `epctl --check-counters` → fatal-log grep | **Yes** — a negative-control step removes the ICD and requires `FAIL(condition=UNATTRIBUTED)` | **`operational` today; `green` on the first run in which all five steps pass** | Not yet observed on a runner. I will not classify a lane `green` from reading its YAML — that is precisely R10, and I would be doing to my own work what R10 forbids. |
+| `build-test-windows` (Server 2025, lavapipe via mesa-dist-win) | GitHub-hosted | Yes | **Yes, as of this revision** — same five steps | **Yes** — same negative control, reusing the existing no-ICD path | **`operational` today; `green` on the first passing run** | Same reason. |
+| `conformance` (onnx-tests, `workflow_dispatch`) | ubuntu-22.04 | Yes | Gate steps added; the conformance step itself remains `continue-on-error` | Inherits the gate's control indirectly (no negative control of its own) | **`operational` — and its conformance table is *not evidence*** | The census step is a diagnostic by design. It carries no verdict per row, so under §10.0 it says nothing about this EP. Labelled as such in the step summary now. |
+| WSL Ubuntu 24.04 / lavapipe (local dev, §7.7) | My desk | Yes — 196 tests, `subgroup_size = 8`, barrier parity 58/0 as a third independent implementation | No | No | **`operational`. Not `green`.** | This is the one I most want to promote and will not. It was a real result and it is not evidence for criterion 10: it is not a CI lane, it ran once, it had no verdict, and it had no falsifier. Its value is the capability diff (§7.5) and the third barrier-parity implementation, which are claims it *can* support. |
+| Local Windows / RTX 4060 (selector 0) | My desk | Yes | Gate runs here (that is where it was developed) | Yes — verified both polarities on this hardware | **`operational`** | Not a lane. A development desk is not a lane no matter what it proves, because nothing re-runs it. |
+| Local Windows / Intel Iris Xe (selector 1) | My desk | Yes | Same | Same | **`operational`** | Same. Also: `ep.device_index` is still a TODO in `conftest.py`, so I make **no claim** that selector 1 selected a different physical device in my runs. |
+| Android / Adreno / Mali | Nowhere | — | — | — | **`untested`** | No hardware. OQ-12 unchanged. lavapipe is not Adreno or Mali and never becomes it. |
+| macOS / MoltenVK | Nowhere | — | — | — | **`untested`** | No runner. |
+
+##### What still is not `green`, plainly
+
+1. **No CI lane is `green` yet.** Both now *carry* the gate; neither has been observed to pass it on a runner. The correct word for a wired-but-unobserved lane is `operational`.
+2. **The WSL lavapipe result is not `green` and I am not going to launder it into one.** 196 passing tests with no verdict is 196 assertions about outputs whose executor was never established.
+3. **`green` is per artifact.** When these lanes go green they are green for `gate_chain_fp32` — a 2-node fp32 `Add → Relu` on 256 elements. Not for Phi-3.5, not for `MatMulNBits`, not for fp16 (no `storageBuffer16BitAccess` confirmation on lavapipe; those claims remain `UNMEASURED`).
+4. **Single-run blindness is not fixed by the gate** (§7.4.2). The gate artifact also runs once.
+5. **No timing figure is quotable from any lane.** Every earlier wall-clock ratio on this project, including 3.1× and 3.7×, was recorded without an attribution and is **withdrawn**. A ratio may return when it comes from a run whose verdict is an attributed `MATCH`.
+
+##### How a lane fails when the EP executes nothing — the actual mechanism
+
+Five steps per lane, three processes, three different failure modes, no `continue-on-error` on any of them:
+
+1. **`ci/gate_chain_fp32.py`** builds the §7.8.1 artifact, writes the verdict record to disk as `UNMEASURED` **before opening any session**, runs it under ORT profiling against a CPU-only run of the same artifact, and constructs the verdict through Trinity's `EquivalenceVerdict.from_comparison()` — which takes a parsed `ExecutionAttribution` as a *required* argument and therefore **cannot emit `MATCH` at a zero own-provider count**. It emits `UNATTRIBUTED` instead, and says which providers did execute.
+2. **`ci/check_verdict.py`** re-reads the record **in a separate process**. A missing record is `FAIL(condition=UNMEASURED)`, not a skip. A `MATCH` with an empty `executed_by`, a zero own-count, or an `attribution_source` that is not `ort_profile` is rejected as `UNATTRIBUTED` — a gate that trusts its input is a gate that trusts whatever replaced its input.
+3. **`epctl --check-counters <file> --require-dispatches 1`** reads the verdict spliced into the counters snapshot. Tank's exit codes: `DIVERGENT` → 1, `UNMEASURED`/absent → 3.
+4. **`ci/check_fatal_log.py`** greps the captured suite output for `Falling back to CPUExecutionProvider`. R13 obligation 3: *a grep cannot `NameError`, and a guard cannot be silenced by a log format change.* The logs are captured with `2>&1` because ORT writes that line from C++ to fd 2 — a tee of stdout alone would scan a log in which its own subject cannot appear, and would agree with everything.
+5. **The negative control** removes the Vulkan ICD, runs the *same* artifact through the *same* script, and **requires** `FAIL(condition=UNATTRIBUTED)` with a non-zero exit. If the gate ever passes with no ICD present, the step fails the lane with the sentence *"every green in this lane is uninterpretable"* — which it would be.
+
+Measured on local hardware, both polarities, 2026-07-31:
+
+```
+positive (RTX 4060, ICD present)     GATE: PASS
+  verdict=MATCH  executed_by={'VulkanExecutionProvider': 1}
+  counters_dispatches_executed=2  profile_node_events=1  max_abs_diff=0
+  epctl --check-counters → PASS (exit 0);  check_verdict.py → PASS (exit 0)
+
+negative (same script, VK_DRIVER_FILES → nonexistent)
+  GATE: FAIL(condition=UNATTRIBUTED)                          exit 1
+  executed_by={'CPUExecutionProvider': 2}   own count 0   permits_triple_and_ratio=false
+  check_verdict.py → FAIL(condition=UNATTRIBUTED)             exit 1
+```
+
+Note what the negative case did **not** report: `DIVERGENT`. The comparison agreed — of course it did, both sides were CPU. **`UNATTRIBUTED` is not `DIVERGENT`**: the model was not wrong, the subject was absent. They have different owners (`UNATTRIBUTED` routes to whoever owns run-time fallback; `DIVERGENT` routes to the kernel authors), different fixes, and different next questions, and a lane that printed one red for both would have R13's defect.
+
+##### R13 in the lane's terminal states
+
+Every check in `ci/` has three terminal states, three exit codes, and three distinct printed tokens:
+
+| Exit | Token | Meaning |
+|---|---|---|
+| 0 | `PASS` | the check reached its observation and the observation is good |
+| 1 | `FAIL(condition=<name>)` | the check reached its observation and the observation is the thing it exists to detect |
+| 4 | `ERROR(instrument=<name>)` | the check **did not reach its observation** |
+
+Exit 4 and not 3, because `epctl` already spends 3 on "the lane did not report" and two meanings on one code is exactly the defect. **An instrument error never counts as a detection**, and a lane with one is not a lane that ran. Every failure path prints the **text** it observed — the `Falling back` line in full, the `executed_by` map, the max-abs-diff — and no failure path reports a count without the text beside it. I read `5 failed` as a working guard on 2026-07-31 when the guard was raising `NameError`; a CI lane that reports only a count is that mistake at scale.
+
+One ordering bug of exactly this shape was found and fixed while writing the gate: the verdict-splice into the counters snapshot fails when the EP executed nothing, **because** the EP never dispatched and so never wrote a snapshot. Reported naively that came out as `ERROR(instrument=counters_snapshot_unwritable)` — a real detection wearing an outage's costume, which is R13 with the polarity reversed and is worse, because it routes a finding to the harness owner. The splice outcome is now recorded and may only be terminal when the verdict is `MATCH`.
+
+##### Vocabulary — Trinity's, and only Trinity's
+
+`ci/gate_chain_fp32.py`, `ci/check_verdict.py` and `ci/check_fatal_log.py` **import `tests/ops/_verdict.py`** and define no verdict tokens, no marker strings and no comparison outcomes of their own. `MATCH`, `DIVERGENT`, `UNMEASURED`, `UNATTRIBUTED`, `SPLIT-FRAME`, `AGREE`/`DISAGREE`/`NOT_PERFORMED`, `FATAL_LOG_MARKERS` — all hers. If that module is absent the lane checks fail collection with `ERROR(instrument=...)` rather than skipping, because a skipped test reports the same green as a passing one.
+
+**Supersession note.** My §7.8.2 design brief called the gate `epctl --check-verdict`. That name does not exist and will not: Morpheus assigned the verdict gate to `epctl --check-counters` (Tank), which already reads `model_output_equivalence` and now fails on `UNATTRIBUTED` and on a missing `executed_by`. One vocabulary, one flag. `ci/check_verdict.py` is a *second reader with a different parser*, not a second gate — it exists so the decision survives the producer and so a lane whose `epctl` predates the fourth state still refuses.
+
+---
 
 ---
 
@@ -608,7 +702,7 @@ Environment: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`, `ONNXRUNTI
 
 **What it does not say:**
 - lavapipe is not an Adreno or Mali driver. Its UMA topology matches, but its ISA, cache hierarchy, command-submission model, and driver bugs are entirely different from a real Android GPU. lavapipe results cannot be quoted as Android evidence.
-- The ~32.67% sync2-lacking Android fraction (as of 2026-07-30; 2026-07-28 pull: 31.43%; see §10.0.1 for provenance and error direction — this figure is a ceiling on the legacy-path benefit, not a measured usability value, and it is moving) remains **entirely unverified** as a usability claim. A lavapipe pass does not de-risk Adreno 5xx / Mali Bifrost memory access patterns, cache coherence, or the device-specific bugs in §6.3 (A1, A2, A3, M1, M2).
+- The ~32.67% sync2-lacking Android fraction (as of 2026-07-30; 2026-07-28 pull: 31.43%; see §10.0.1 for provenance and §10.0.2 for error direction — this figure is **simultaneously a ceiling** on the legacy-path usability benefit, because some gap devices also fail the §7.2 gate, **and a floor** on the gap population, because gpuinfo.org under-represents budget Android; it is not a measured usability value in either direction, and it is moving) remains **entirely unverified** as a usability claim. A lavapipe pass does not de-risk Adreno 5xx / Mali Bifrost memory access patterns, cache coherence, or the device-specific bugs in §6.3 (A1, A2, A3, M1, M2).
 - lavapipe does not exercise `storageBuffer16BitAccess`, `shaderFloat16`, or any fp16-specific code path. fp16/int8 capability flags are not confirmed on lavapipe.
 - The `synchronization2_is_core = true` path (Vulkan 1.4 core, exercised here) is different from the Vulkan 1.1/1.2 + `VK_KHR_synchronization2` extension path that some Android devices would use.
 
@@ -625,11 +719,20 @@ Morpheus ruled on these two states directly, because without the ruling they res
 
 **The lavapipe WSL lane is `operational` as of 2026-07-30.** It is not `green`. This is not a demotion — `operational` was a prerequisite for `green`, and the prerequisite was not met before today. The path from `operational` to `green` is §7.8 (gate artifact) wired into CI by Trinity.
 
+> **Superseded in part by §7.4.4 (2026-07-31).** The gate is wired, by Link, into both CI lanes and the conformance lane; the two-state table above gains a third requirement in §7.4.4 (the lane must also demonstrate that its gate can fail) and a fourth verdict state (`UNATTRIBUTED`). **The WSL lane's classification is unchanged: `operational`, not `green`.** Read §7.4.4 for the current per-lane table.
+
 The mechanism that makes `green` structurally non-accidental: a lane's pass condition includes the verdict field. A run that does not measure produces `UNMEASURED`. `UNMEASURED` ≠ PASS and ≠ FAIL — it is §7.9's third state in the CI lane. A lane can be accidentally silent; it cannot be accidentally green.
 
 ---
 
 ## 7.8 Gate Artifact Design for Criterion 10 (lavapipe lane)
+
+> **STATUS: IMPLEMENTED AND WIRED, 2026-07-31T22:15-07:00.** This section is the design brief and is preserved as written. What actually shipped, where it lives, and the two corrections the brief needed are in **§7.4.4**. In short:
+>
+> - The artifact is `ci/gate_chain_fp32.py`, built exactly to §7.8.1 (2-node `Add → Relu`, fp32, `[256]`, `X = linspace(-1, 1, 256)`, `Y = -0.5` so the sum crosses zero inside the tensor and the `Relu` clamp is exercised on real data).
+> - **Correction 1 — the flag name in §7.8.2 was wrong.** `epctl --check-verdict` does not exist. The verdict gate is `epctl --check-counters <file> --require-dispatches 1` (Tank), which already reads `model_output_equivalence`. One flag, not two.
+> - **Correction 2 — the three-verdict table in §7.8.2 is now four**, per DESIGN.md §10.0's third amendment: `UNATTRIBUTED` joins `MATCH` / `DIVERGENT` / `UNMEASURED`, and `SPLIT-FRAME` is a fifth when the two witnesses disagree. The vocabulary is Trinity's `tests/ops/_verdict.py`, imported rather than restated.
+> - The lane debugging flag named at the end of §7.8.2 is not spelled anywhere in `.github/workflows/`, and a grep of those files for it finds nothing. That was the point of naming it.
 
 **Context:** DESIGN.md §8.9 ruling (2026-07-30T06:32:18-07:00): *"Each lane carries a gate artifact: the smallest real producer-at-version model that (a) claims a non-zero node count on that lane, (b) contains at least one island of two or more nodes, and (c) exercises at least one proof key in every dtype that lane claims. Trinity chooses and pins it; Link wires it into the lanes."*
 
@@ -763,6 +866,30 @@ The lavapipe lane already runs `test_elementwise.py` (33 fp32 cases with `assert
 
 **Risk status: not open — instrument exists.** The note in §7.6 and history.md that "Switch and Mouse must not bake 32" is still correct advice. But the standing risk item can be closed: the lavapipe lane, running the elementwise and MatMulNBits suites, is a working red instrument against baked-32 assumptions in any shader that those suites exercise. The risk becomes open again only when a new shader template is added without a lavapipe test.
 
+### 7.10.1 Re-statement of the argument end to end, after R10–R13 (2026-07-31T22:15-07:00)
+
+The risk stays closed. But the argument was stated before R10 and R13 existed, and it has a link in it that those rules make visible. Stating the chain as a chain, because a decomposition that appears to close is the hardest kind of wrong (R11):
+
+| # | Link in the chain | Status |
+|---|---|---|
+| 1 | A shader that bakes `32` computes wrong reductions where `subgroupSize` is not 32. | **Holds by construction.** Arithmetic. |
+| 2 | lavapipe reports `subgroup_size = 8`. | **Holds — measured**, WSL Mesa 25.2.8, and independently on both CI lanes' Mesa builds. |
+| 3 | A wrong reduction produces outputs that differ from the ORT CPU oracle. | **Holds** for every op whose kernel reduces. Elementwise ops do not reduce; the falsifier for those is not this one. |
+| 4 | The numerical suite runs on lavapipe. | **Holds** — 196 tests, §7.7.4, and both CI lanes run `tests/ops`. |
+| 5 | Those tests execute **on the GPU**, rather than on CPU via a silent fallback that makes them pass anyway. | **THIS WAS THE WEAK LINK, AND IT WAS UNSECURED UNTIL TODAY.** |
+| 6 | Therefore a baked-32 shader turns a lane red. | **Holds — now**, and only because link 5 does. |
+
+**Link 5 is the whole point of the missing gate.** A run-time fallback makes `assert_matches_cpu` compare CPU output against CPU output; it agrees, the test passes, and a shader baking 32 sails through untouched because it was never executed. On 2026-07-30 that state persisted for most of a day. The falsifier was not weak — it was *not connected to its subject*, which is R10 exactly: a mechanism in the source tree and not in the call graph is indistinguishable from one never written, and here the "call graph" is the execution path of the graph itself.
+
+**What closes link 5, and it is not the gate artifact alone.** `gate_chain_fp32` is `Add → Relu` — elementwise, no reduction. It cannot itself falsify a baked-32 reduction. What it does is establish, per lane and per run, that **this EP executed at run time on this lane**, with an attribution from ORT's profiling. Combined with the fatal-log grep, which fails the lane on `Falling back` anywhere in the captured suite output — including during the numerical tests themselves — the lane can no longer run the reduction suite on CPU and report green. That is what links 4 and 5 together: the gate proves execution is possible on this lane and the grep proves it did not silently stop being so during the suite.
+
+**So the chain holds end to end, with two conditions I am naming rather than assuming:**
+
+1. **It holds only where the suite actually covers the shader.** Zero of 168+ compiled variants use subgroup intrinsics today (§7.6), so today the chain is a guarantee about an empty set — which is a real state and is worth saying plainly rather than presenting as coverage (R12: `UNOBSERVABLE`, not zero). The `Staged → Ready` rule above is what keeps it non-empty as templates arrive.
+2. **It holds only on runs where the fatal-log grep had an input.** A lane that does not capture ORT's stderr scans a log in which `Falling back` cannot appear and reports a clean scan. Both lanes now tee with `2>&1`, and `ci/check_fatal_log.py` reports `ERROR(instrument=log_not_captured)` — never a pass — when the log is missing. That is the falsifier for the falsifier.
+
+**What would break it again**, so it is written down rather than rediscovered: removing the `2>&1` from a tee; adding a lane that runs the numerical suite without the gate steps; a new reducing shader template reaching `Ready` without a lavapipe test; or ORT changing the wording of its fallback line — which is why the grep is a *second* witness to Guard D's profile parse and not a replacement for it. Each of those is a specific, checkable thing, which is the only kind of caveat that survives.
+
 ---
 
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
@@ -789,11 +916,26 @@ Coverage = devices that expose the extension string **or** report Vulkan 1.3 (wh
 |---|---|---|
 | Windows | 87.78% | **12.22%** |
 | Linux | 99.05% | 0.95% |
-| Android | 68.57% | **31.43%** ← decisive |
+| Android | 68.57% → **~67.33%** (2026-07-30) | **31.43% → ~32.67%** ← decisive, and **moving** |
 | macOS (MoltenVK) | 97.5% | 2.5% |
 | iOS (MoltenVK) | 100% | 0% |
 
 *Source: [vulkan.gpuinfo.org — VK_KHR_synchronization2](https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_KHR_synchronization2), pulled 2026-07-28*
+
+> **The Android row is a reading with a date, not a constant.** Fact Checker re-sourced it
+> on **2026-07-30** at **~67.33% coverage / ~32.67% gap** and rated the earlier 68.57% ❌
+> **incorrect *as a stable constant*** — it was correct on 2026-07-28 and is not a
+> property of the world. Every quotation of it carries the date. The database is live and
+> the number moves with every submitted device report.
+>
+> **Error direction, both ways at once (§10.0.2):** the gap figure is **simultaneously a
+> ceiling and a floor**. A *ceiling* on the legacy-barrier path's usability benefit,
+> because some gap devices also fail the §7.2 device gate and would not run this EP with
+> or without sync2. A *floor* on the gap population, because gpuinfo.org skews toward
+> developer-submitted reports from newer, higher-end hardware and under-represents budget
+> Android. It is not a measured usability value in either direction and must never be
+> quoted as one. The other four rows in this table were pulled on 2026-07-28 and have
+> **not** been re-sourced since; treat them the same way.
 
 #### VK_EXT_subgroup_size_control
 
@@ -916,6 +1058,8 @@ Every CI lane that runs the test suite must run it **twice**:
 #### 10.0.1 Source and currency of the 68.57% figure
 
 **Source (correctly identified in §8.2):** [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/) — VK_KHR_synchronization2, Sascha Willems, CC-BY 4.0. The §8.2 pull was dated **2026-07-28**. A web query against the same source on 2026-07-30 returned **~67.33%** Android coverage (gap ~32.67%).
+
+> **Re-sourced 2026-07-31 (Fact Checker, recorded here by Link):** the current reading is **~67.33% Android coverage as of 2026-07-30**, gap **~32.67%**. The older 68.57% / 31.43% pair is rated **❌ incorrect *as a stable constant*** — not wrong as a 2026-07-28 snapshot, wrong as a number quoted without its date. Error direction is unchanged and is stated in §10.0.2: the gap figure is **simultaneously a ceiling** (on legacy-path usability benefit — some gap devices fail the §7.2 gate anyway) **and a floor** (on gap-population size — the database under-represents budget hardware). Any citation of this figure must carry its date and both error directions. Same correction applied at §7.7.5 and §8.2.
 
 **Rating: ⚠️ Unverified as a current figure.** The gpuinfo.org page is JavaScript-rendered and cannot be fetched directly; the 67.33% figure comes from a web-indexed rendering, not a live page read. The direction is consistent with what would be expected if budget or legacy devices were submitted to the database in the interval: the coverage decreased (more sync2-lacking devices entered the sample), meaning the gap *grew* by roughly 1.2 points in two days. The exact current value cannot be confirmed without direct page access.
 
