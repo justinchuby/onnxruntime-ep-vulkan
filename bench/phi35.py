@@ -91,6 +91,7 @@ if str(_HERE) not in sys.path:
 import devices as device_mod  # noqa: E402
 import admissible  # noqa: E402
 import contention  # noqa: E402
+import device_state  # noqa: E402
 import environment  # noqa: E402
 import phases as phases_mod  # noqa: E402
 import producers  # noqa: E402
@@ -191,7 +192,8 @@ def _stream_tail(raw: "bytes | str | None", limit: int) -> str:
     return _decode_child_stream(raw).strip()[-limit:]
 
 
-def _run_worker(cmd: "list[str]", env: dict) -> "tuple[subprocess.CompletedProcess | None, str]":
+def _run_worker(cmd: "list[str]", env: dict,
+                on_start=None) -> "tuple[subprocess.CompletedProcess | None, str]":
     """Run a worker with **bytes** capture. Returns ``(proc, instrument_error)``.
 
     ``text=True`` is the defect: it hands the decode to ``subprocess``'s reader thread, where a
@@ -199,13 +201,34 @@ def _run_worker(cmd: "list[str]", env: dict) -> "tuple[subprocess.CompletedProce
     measuring apparatus wearing the costume of a measurement failure (R13). Bytes cannot fail to
     be read. Whatever the child wrote is decoded later, by an instrument that is allowed to say
     it could not read it.
+
+    ``on_start`` is called with the child's PID **as soon as it exists and before it is waited
+    on**, because a companion that only learns our PID after the child has exited cannot tell our
+    own worker from a stranger. That is not a hypothetical: wiring it the other way made the
+    device-state companion report ``FOREIGN_GPU_WORK`` in 93% of samples against a single PID
+    holding 0.0 MiB — our own worker — on a run with nothing else on the board. A detector that
+    fires on every run is not a detector, it is a constant.
     """
     try:
-        return subprocess.run(cmd, env=env, capture_output=True), ""
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as exc:  # pragma: no cover - environment dependent
         return None, (f"ERROR(instrument=worker_capture): the worker subprocess could not be run "
                       f"or captured: {exc!r}. This is the harness failing, not a property of the "
                       f"EP: no verdict about the run may be drawn from it.")
+    if on_start is not None:
+        try:
+            on_start(proc.pid)
+        except Exception:
+            pass
+    try:
+        out, err = proc.communicate()
+    except Exception as exc:  # pragma: no cover - environment dependent
+        proc.kill()
+        proc.communicate()
+        return None, (f"ERROR(instrument=worker_capture): the worker's output could not be "
+                      f"collected: {exc!r}. This is the harness failing, not a property of the "
+                      f"EP: no verdict about the run may be drawn from it.")
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err), ""
 
 
 def _note_instrument_error(rec: dict, message: str) -> None:
@@ -860,13 +883,24 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
     mon = contention.Monitor().start()
-    proc, capture_error = _run_worker(cmd, env)
+    # R9 rule 5. The device-state companion samples the *same window* as the trace, because a
+    # record taken at another time is a record about another run. Without it the GPU steady tail
+    # comes back UNCERTIFIED, and that is the intended behaviour rather than a degraded mode.
+    companion = device_state.Companion(board_index=device_index).start()
+    proc, capture_error = _run_worker(cmd, env, on_start=companion.own_root)
+    dev_state = companion.stop()
     window = mon.stop()
     rep: dict = {
         "iters": iters,
         "warmup": warmup,
         "trace_file": str(trace),
         "machine_quiescence": contention.quiescence(window, contention.occupancy_check()),
+        "device_state": dev_state,
+        "device_state_note": ("the tenancy verdict and SM-clock record for this window. It is a "
+                              "required companion, not a diagnostic: `gpu_steady_tail` is a "
+                              "variance test over a suffix and cannot see a bias, and it has "
+                              "reported STEADY at 10.99x and 21.4x wrong -- both times with a "
+                              "BETTER RSD than the correct run. See bench/device_state.py."),
         "note": ("a separate instrumented process. Proportions are the product; the absolute "
                  "totals here are inflated by the tracer and the query pool and are not the "
                  "benchmark's numbers."),
@@ -895,7 +929,8 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
             phases_mod.load(trace), cnt, integrated_gpu=integrated,
             independent_whole_ms=whole,
             whole_source=("the traced worker's own perf_counter around the warmup+timed run loop"
-                          if whole else ""))
+                          if whole else ""),
+            device_state=dev_state)
     except Exception as exc:  # pragma: no cover - environment dependent
         rep["refusal"] = f"the trace could not be analysed: {exc!r}"
         return rep

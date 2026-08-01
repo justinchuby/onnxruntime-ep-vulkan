@@ -1820,10 +1820,41 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
     it would have refused Switch's ``contended`` row. That is the point: those are the runs whose
     numbers were wrong, and a refusal that costs a real measurement is cheaper than a pass that
     ships a fabricated one.
+
+    # The floor above is necessary and it is nowhere near sufficient -- amendment of 2026-08-01
+
+    **Same day, later: the premise I ruled on was withdrawn, and the floor is not the fix.** I was
+    told this gate "either lands within 0.08% of solo or refuses outright". Switch's
+    ``probe_gputenancy.py`` shows the opposite, from committed artifacts, with no GPU needed:
+    ``contended3`` truncated to 20, 28 and 34 inferences reports **STEADY at 126.647 ms, 10.99x
+    wrong, RSD 0.79-0.91%**; and a board held at its 210 MHz idle clock against a 3105 MHz boost
+    reports **STEADY at 246.735 ms, 21.4x wrong, RSD 0.1163%, nothing discarded**.
+
+    **In both failures the wrong number carried the BETTER RSD than the right one.** That is the
+    whole lesson and it is fatal to any repair from inside this function. This is a variance test
+    over a suffix: **it cannot see a bias.** A uniformly wrong series is a *perfectly steady* one,
+    so the gate answers a run that is entirely wrong with its most confident possible verdict. A
+    low clock does not raise RSD; it lowers it.
+
+    So: **more samples make a biased series more confident, not less.** The ``n`` and coverage
+    floors above do real work -- they catch a *wandering* device, which is a different failure and
+    a real one -- but they must never be presented as closing this. Under DESIGN.md **R9 rule 5**
+    the remedy for an anti-correlated falsifier is **a different instrument**, and this check is
+    demoted from a gate to a **precondition**. Every tail returned here is therefore born
+    ``certification: UNCERTIFIED``, and only :mod:`bench.device_state` -- a tenancy verdict and an
+    SM-clock record taken over the same window, from outside this series -- can lift it.
     """
     vals = [v / 1000.0 for v in busy_us if v]
     out = {"n_inferences": len(vals),
-           "series_ms": [round(v, 3) for v in vals][:64]}
+           "series_ms": [round(v, 3) for v in vals][:64],
+           # R9 rule 5. Set here, unconditionally, so that *every* tail this function returns is
+           # born unquotable. `analyse(device_state=...)` is the only thing that can lift it, and
+           # only on the evidence of a second instrument that watched the same window. A default
+           # of "quotable until someone objects" is the shape that let a 21.4x-wrong figure out.
+           "certification": {"verdict": "UNCERTIFIED", "quotable": False,
+                             "detail": ("no device-state companion was supplied to "
+                                        "phases.analyse(). An RSD over a suffix is silent about "
+                                        "the level of that suffix; see bench/device_state.py.")}}
     if len(vals) < GPU_TAIL_MIN_N + 1:
         out.update(verdict="INSUFFICIENT",
                    detail=f"{len(vals)} usable inferences; need at least {GPU_TAIL_MIN_N + 1}.")
@@ -1884,7 +1915,10 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
                 f"({coverage:.0%} of the series) at "
                 f"{rsd:.4%} RSD. Device-clock only: this is the summed duration of the "
                 f"dispatches, not the wall time of an inference, and it is NOT a substitute "
-                f"for the end-to-end figure."),
+                f"for the end-to-end figure. STEADY is a precondition and not a release: this "
+                f"same verdict was returned at 10.99x and at 21.4x wrong, both times with a "
+                f"better RSD than the correct run. See `certification` -- until a device-state "
+                f"companion certifies it, there is no quotable number here."),
     )
     return out
 
@@ -2008,8 +2042,15 @@ def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
 def analyse(events: "list[dict]", counters: "dict | None" = None,
             integrated_gpu: bool = False,
             independent_whole_ms: "float | None" = None,
-            whole_source: str = "") -> dict:
-    """The whole phase picture for one trace, with its falsifiers attached."""
+            whole_source: str = "",
+            device_state: "dict | None" = None) -> dict:
+    """The whole phase picture for one trace, with its falsifiers attached.
+
+    ``device_state`` is the **required companion** for any device-clock figure: a tenancy verdict
+    and an SM-clock record taken by :mod:`bench.device_state` over the same window as this trace.
+    Omitting it is not a shortcut -- the GPU steady tail stays ``UNCERTIFIED`` and its median is
+    not a quotable number. See :func:`gpu_steady_tail`'s amendment of 2026-08-01.
+    """
     subs = subgraph_spans(events)
     all_phases = phase_spans(events)
     nesting = phase_nesting(all_phases)
@@ -2077,7 +2118,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     ordinal = attribute_gpu_ordinally(subs, gpus)
     contention = contention_signature(attributed, subs, ordinal.get("busy_us"), integrated_gpu)
 
-    return {
+    report = {
         "subgraph_spans": len(subs),
         "time_in_compute_ms": round(in_compute_ms, 3),
         "time_in_compute_note": (
@@ -2126,6 +2167,20 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "upload_accounting": upload_agreement,
         },
     }
+    # R9 rule 5. The tail arrives UNCERTIFIED from `gpu_steady_tail`; only a second instrument,
+    # which watched the same window from outside the series, can lift that. Passing no companion
+    # leaves it UNCERTIFIED -- there is no code path here that turns absence of evidence into a
+    # pass, because that is precisely how a 21.4x-wrong figure was published with a 0.12% RSD.
+    from device_state import certify as _certify
+    tail = (report.get("steady_state") or {}).get("gpu_steady_tail")
+    if isinstance(tail, dict):
+        tail["certification"] = _certify(tail, device_state)
+    report["device_state"] = device_state or {
+        "verdict": "ABSENT",
+        "detail": ("no tenancy verdict and no SM-clock record was taken over this trace's window. "
+                   "Device-clock figures in this report are UNCERTIFIED."),
+    }
+    return report
 
 
 def red_flags(report: dict) -> "list[str]":
@@ -2151,6 +2206,12 @@ def red_flags(report: dict) -> "list[str]":
     if cs.get("verdict") in ("HOST_SIDE_EXCURSIONS", "HOST_EXCURSIONS_UNCONTROLLED",
                              "WORKLOAD_VARIATION", "UNDERPOWERED", "UNTESTABLE"):
         out.append(f"contention_signature: {cs['verdict']} — {cs.get('reason')}")
+    cert = ((report.get("steady_state") or {}).get("gpu_steady_tail") or {}).get("certification")
+    if cert and not cert.get("quotable"):
+        kind = cert.get("verdict")
+        prefix = ("gpu_steady_tail: ERROR(instrument=device_state) — NOT a detection: "
+                  if kind == "ERROR" else f"gpu_steady_tail: {kind} — ")
+        out.append(prefix + str(cert.get("detail")))
     la = report.get("phase_leaf_accounting") or {}
     if la and not la.get("ok"):
         out.append(f"phase_leaf_accounting: {la.get('verdict')} — {la.get('detail')}")
