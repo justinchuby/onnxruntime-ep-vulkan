@@ -158,12 +158,54 @@ GATES = (
 )
 
 
+def phase_share_admissibility(rec: dict) -> dict:
+    """Whether this record's **phase split** may be quoted — scoped separately from its timings.
+
+    Deliberately NOT one of :data:`GATES`. ``phase_containment`` is a statement about how phase
+    spans were attributed to islands; it says nothing about whether the end-to-end wall clock is
+    sound. Folding it into the overall grade would make a perfectly good latency number
+    inadmissible because a sub-span accounting rule was off, and a false red costs a falsifier its
+    authority exactly as fast as a false green does.
+
+    Three states, per R13, and ``ERROR`` is not a detection: it means the check did not run, so
+    the shares are unquotable for want of evidence rather than because a defect was found.
+    """
+    f = _get(rec, "phase_pass", "analysis", "falsifiers", "phase_containment")
+    if not isinstance(f, dict):
+        return {"quotable": False, "state": "ABSENT",
+                "detail": ("no phase_containment result in this record; the attribution of phases "
+                           "to islands was never checked. Absence of a check is a refusal.")}
+    state = f.get("state") or ("FAIL" if f.get("red") else "PASS")
+    return {
+        "quotable": state == "PASS",
+        "state": state,
+        "detail": f.get("instrument_error") or f.get("detail"),
+        "scope": ("gates the phase split and every share derived from it. It does NOT gate the "
+                  "end-to-end wall clock, which does not depend on phase attribution."),
+    }
+
+
 # ---------------------------------------------------------------------------------------------
 # Cross-artifact check: the defect that lives *between* two admissible-looking files
 # ---------------------------------------------------------------------------------------------
 
+#: How far two CPU-EP baselines may differ before they may not be differenced or compared.
+#:
+#: **One number, used everywhere.** `phi35.baseline_disagreement` carried its own threshold of
+#: 2.0x while this module used 1.25x, so the same claim — "the control did not move" — had two
+#: answers eight-fold apart, and a run whose CPU baseline moved 1.276x between its two device
+#: passes printed no warning at all while being inadmissible by this file's own rule. Two
+#: instruments for one claim must not carry two constants; the looser one silently wins wherever
+#: it happens to be the one that runs.
+#:
+#: 25% and not tighter: the CPU EP baseline is a control, re-measured minutes apart on a machine
+#: that has just paged a 2.2 GB model, so some movement is honest. 25% and not looser: 27.6% is
+#: larger than most of the effects anyone here is trying to measure.
+BASELINE_TOL = 0.25
+
+
 def baseline_comparability(a: dict, b: dict, name_a: str, name_b: str,
-                           tol: float = 0.25) -> dict:
+                           tol: float = BASELINE_TOL) -> dict:
     """Falsifier: two runs may only be differenced if their **CPU baselines** agree.
 
     A speedup claim is a ratio of ratios, and the denominator is the CPU EP -- which no change to
@@ -235,6 +277,7 @@ def grade(path: Path) -> dict:
             "passed_gates": passes,
             "vulkan_median_ms": _get(rec, "vulkan", "median_ms"),
             "cpu_median_ms": _get(rec, "cpu", "median_ms"),
+            "phase_shares": phase_share_admissibility(rec),
         })
     worst = INADMISSIBLE if any(r["grade"] == INADMISSIBLE for r in rows) else ADMISSIBLE
     return {"file": path.name, "grade": worst, "records": rows}
@@ -278,12 +321,16 @@ def report(a: dict) -> "list[str]":
         if g.get("detail"):
             out.append(f"                  {g['detail']}")
         for r in g.get("records") or []:
+            ps = r.get("phase_shares") or {}
             if r["grade"] == INADMISSIBLE:
                 vk, cpu = r["vulkan_median_ms"], r["cpu_median_ms"]
                 shown = (f"vulkan {vk} ms / cpu {cpu} ms" if vk else "no timing")
                 out.append(f"                  record {r['record']}: {shown} -- NOT QUOTABLE")
                 for f in r["failed_gates"]:
                     out.append(f"                    x {f}")
+            if ps and not ps.get("quotable"):
+                out.append(f"                  record {r['record']}: phase split NOT QUOTABLE "
+                           f"[{ps.get('state')}] {str(ps.get('detail'))[:110]}")
     for c in a["cross_artifact"]:
         out.append("")
         out.append(f"  {c['verdict']:<13} {' vs '.join(c['runs'])}")

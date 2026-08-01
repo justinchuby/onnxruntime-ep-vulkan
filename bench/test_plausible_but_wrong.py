@@ -805,7 +805,7 @@ def test_a_cpu_baseline_that_moved_between_workers_is_called_out():
         {"device_index": 1, "cpu": {"median_ms": 664.7}},
     ]
     warn = phi35.baseline_disagreement(results)
-    assert warn and "3.0x" in warn
+    assert warn and "3.045x" in warn
     steady = [
         {"device_index": 0, "cpu": {"median_ms": 229.8}},
         {"device_index": 1, "cpu": {"median_ms": 185.9}},
