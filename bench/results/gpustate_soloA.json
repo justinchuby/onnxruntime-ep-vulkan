@@ -1,0 +1,50 @@
+{
+  "n": 50,
+  "seconds": 23.6,
+  "sm_mhz": {
+    "n": 50,
+    "min": 210.0,
+    "median": 2010.0,
+    "mean": 1379.1,
+    "max": 2490.0
+  },
+  "sm_max_mhz": 3105.0,
+  "util_pct": {
+    "n": 50,
+    "min": 0.0,
+    "median": 0.0,
+    "mean": 3.8,
+    "max": 51.0
+  },
+  "power_w": {
+    "n": 50,
+    "min": 2.8,
+    "median": 17.4,
+    "mean": 14.3,
+    "max": 52.4
+  },
+  "foreign_sample_fraction": 0.0,
+  "foreign_pids": {},
+  "own_pids_on_gpu": [
+    24412
+  ],
+  "clock_ramp_x": 11.8571,
+  "clock_at_max_pct": 44.4,
+  "verdict": "SOLE_TENANT",
+  "tag": "soloA",
+  "command": [
+    "python",
+    "bench\\results\\probe_gemv.py",
+    "--device",
+    "0",
+    "--iters",
+    "44",
+    "--warmup",
+    "1",
+    "--tag",
+    "soloA"
+  ],
+  "command_exit": 0,
+  "own_root_pid": 15228,
+  "wall_s": 23.5
+}
