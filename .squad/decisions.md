@@ -3,437 +3,242 @@
 <!-- Round 1: 2026-07-28T17:59:54-07:00 (design session)              → ARCHIVED -->
 <!-- Round 2: 2026-07-28T22:28:08-07:00 (implementation round)        → ARCHIVED -->
 <!-- Round 3: 2026-07-29T09:00:39-07:00 (first-hardware round)        → ARCHIVED -->
-<!-- Round 4: 2026-07-30T19:05:03-07:00 (correctness-and-measurement) → ACTIVE  -->
+<!-- Round 4: 2026-07-30T19:05:03-07:00 (correctness-and-measurement) → ARCHIVED -->
+<!-- Round 5: 2026-08-01T09:53:14-07:00 (execution-and-instrumentation) → ACTIVE -->
 
 ## Active Decisions
 
 <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
-<!-- ARCHIVAL POINTER — 2026-07-30T20:58:11-07:00                                  -->
-<!-- Rounds 1–3 + earlier-today session entries archived to:                        -->
-<!--   .squad/decisions-archive/2026-07-30T20-58-11-07-00-rounds-1-3.md            -->
-<!-- Archived: 122 entries total (57 from 07-28, 22 from 07-29, 43 from 07-30      -->
-<!--   predating this Scribe session — the 43 include agent direct-to-file writes  -->
-<!--   from sessions earlier today; many overlap with inbox-merged Round 4 entries) -->
-<!-- Restored from archive: 1 entry (2026-07-30T05:48:29 Morpheus metric-of-record -->
-<!--   — today-dated, semantically active, should remain in the live file)          -->
-<!-- Trigger: decisions.md reached 164 KB (volume threshold: 40 KB).               -->
-<!-- Policy: archive all entries before the current Scribe run's Round separator.   -->
-<!-- Floor (refined): "before the current session's Round marker" not "calendar     -->
-<!--   day" — the floor was mis-stated as calendar-day; the implementation used the -->
-<!--   Round 4 separator which is correct; 43 same-calendar-day entries from        -->
-<!--   earlier sessions were archived, which is acceptable since the boundary is    -->
-<!--   the Scribe-run boundary, not the wall-clock date.                           -->
-<!-- Supersession: corrections are always in later rounds; the live file is         -->
-<!--   authoritative; archived entries may have been superseded.                   -->
-<!-- Previous archival check (2026-07-30T19:05:03-07:00): 0 entries, age gate only -->
+<!-- ARCHIVAL POINTER — 2026-08-01T09:53:14-07:00                                  -->
+<!-- Round 4 (26 entries, the full correctness-and-measurement round) archived to:  -->
+<!--   .squad/decisions-archive/2026-08-01T09-53-14-07-00-round4.md                -->
+<!-- Trigger: decisions.md was 45,337 bytes (volume threshold: 40 KB) before this   -->
+<!--   run's merge, and the 47-record inbox batch below is far larger than Round 4. -->
+<!-- Floor: Round 4 was written 2026-07-30T19:05:03-07:00, ~38.8 hours before this   -->
+<!--   run — past the 24-hour floor. Boundary: the Scribe-run boundary (this run's   -->
+<!--   Round 5 marker), not a calendar date, per established policy.                -->
+<!-- Supersession (why archiving all of Round 4 is safe): several Round 5 entries    -->
+<!--   below correct Round 4 claims by name — device labels inverted (corrects the   -->
+<!--   Round-4 "Intel beats the 4060" reading), Phase::Record misattributed ~50x     -->
+<!--   (corrects the Round-4 "68.9% recording" figure), the fixed-per-submission     -->
+<!--   hypothesis (dead, was never asserted as Round-4 fact but is now retired by    -->
+<!--   name), and every wall-clock figure including 3.1x/3.7x (withdrawn). The       -->
+<!--   corrections are all in Round 5 and stay live; only the things they correct    -->
+<!--   move to archive — never the reverse.                                        -->
+<!-- Previous archival check (2026-07-30T19:05:03-07:00): 0 entries, age gate only  -->
+<!-- Previous archival (2026-07-30T20:58:11-07:00): Rounds 1-3, 122 entries         -->
 <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
 
-### 2026-07-30T05:48:29-07:00: Metric of record gated on `model_output_equivalence`; M0 sequencing — criterion 10 before CI tail [morpheus-metric-correctness-gate.md]
-
-**By:** Morpheus (Lead / EP Architect)
-**What:** The metric of record (triple: `claimed_op_coverage`, `island_count`, `largest_island_flops`) is now gated on `model_output_equivalence`: `MATCH` → triple may be reported as a result; `DIVERGENT` → triple may not be reported as progress (run reports which outputs, max-abs-diff, argmax/top-k agreement); `UNMEASURED` → triple may not be reported as progress (may be reported as a claim-path diagnostic, labelled `UNMEASURED`). Four rulings: (1) `UNMEASURED` is the default, not a soft `MATCH`. (2) Verdict is per artifact at producer-at-version; never generalises. (3) Gate not a term — correctness is not commensurable with coverage so must not appear in a row that invites arithmetic. (4) Comparison is against a CPU-only run of the same session on the same artifact, not a stored golden vector. Owners: Trinity emits, Niobe carries in `PERF.md`, Mouse carries in census. Sequencing ruling: criterion 10 goes `MATCH` before the M0 CI tail (lavapipe/Windows/Linux) is worth closing; CI lanes must carry criterion 10's gate when they run, or they measure the same silence in a new location. Link is not blocked — parallel Linux lane work is correct and prerequisite for running criterion 10 on CI.
-**Why:** Coverage went 0 → 161 nodes and the model went from correct via CPU fallback to wrong via GPU. A coverage number that rises while the answer becomes wrong is worse than no number — it recruits effort in the wrong direction with the full authority of a metric of record. `UNMEASURED` as the default is R7 arriving for the fifth time on the execution path.
-
-
 <!-- =============================================================================== -->
-<!-- ROUND 4 DECISIONS -- 2026-07-30T19:05:03-07:00 (correctness-and-measurement)  -->
-<!-- 32 inbox records merged; 3 consolidated entries; 27 effective entries          -->
+<!-- ROUND 5 DECISIONS -- 2026-08-01T09:53:14-07:00 (execution-and-instrumentation)  -->
+<!-- 47 inbox records merged (48 expected per spawn manifest; verified 47 present --  -->
+<!--   see Scribe health report); consolidated into 18 entries below where two or    -->
+<!--   more records described one event from independent angles (R9: corroboration,  -->
+<!--   not redundancy -- both angles preserved rather than one discarded).           -->
 <!-- =============================================================================== -->
 
-### 2026-07-30T19:05:03-07:00: Binding-arity defect -- zero logits root cause, independent diagnosis by Switch and Mouse (consolidated)
+### 2026-08-01T09:53:14-07:00: §6.5 closed on both selectors — exactly one VkDevice per (physical device, EP instance) (consolidated)
 
-**By:** Switch, Mouse (independent routes to same root cause)
-**Why consolidated:** Switch reached the root cause through runtime diagnostics (validation layer + output-byte dump probe); Mouse reached it through static code analysis (session.rs dispatch path). Per R9: agreement raises confidence only when routes are genuinely independent -- this is evidence, not redundancy. switch-merge-mouse-fix documents the merge resolution; switch-kv-cache-explained documents the KV symptom as the same root cause. All four inbox records describe one event from different angles.
+**By:** Switch (`two-vkdevice-flag`, `defects-1-2-3-and-offer-gate`, `sec65-closed`, `index-space-unified-by-single-offer`, `index-spaces-closed`), Tank (`frame-provenance`), Morpheus (ruling D-M26-03)
+**Why consolidated:** one architectural saga told from three angles — the original flag raised by Switch, the ruling by Morpheus, the consumer-side interface built by Tank, and Switch's own three-stage implementation (gated → unconditional → both selectors fixed). All describe one closure.
 
-**Root cause:** push_dynamic_kernel built a descriptor-set layout with n_bindings = n_plan_inputs + n_plan_outputs (4 for 3-input MatMulNBits without zero_points). The translate handler (quant.rs) correctly emits 5 binding tokens -- scales is bound twice at slots 2 and 3 as a zero-point placeholder. The shader q_gemv.comp declares 5 bindings (0-4); slot 4 is output OutY. On the dynamic-shape path, the pipeline layout had only 4 slots; the write to slot 4 was against an undeclared descriptor. Both Intel and NVIDIA silently discard writes to undeclared descriptors. DeviceLocal output buffer stayed at zero-initialized value. compute_failures: 0 throughout -- the failure was downstream of the dispatch, invisible to all execution-status counters.
+**What:** Two independent Vulkan logical devices existed per process (the compute session's and the allocator's device-memory provider's) with no shared ownership plan — "a design decision nobody made deliberately." Morpheus ruled (D-M26-03) exactly one `VkDevice` per (physical device, EP instance); seam owned by Switch (owns the lifetime), Tank as consumer. Switch built `acquire_ep_device` returning a `&'static EpDeviceOwner`, deliberately leaked (`Box::leak`), so `VulkanSession` borrows rather than owns; three sequential sessions in one process now survive (previously a multi-session UAF: the offered device was session-scoped and destroyed at teardown while `HandleRegistry` is process-global — the fix was "stop destroying the device," not "stop offering it"). Tank's consumer-side surface: `SharedVkDevice` trait + `offer_shared_device(device_index, ctx)`, called once from `CreateEp` before the first ORT allocation, `Arc` retained for process lifetime — cross-owner diff on `vk/session.rs`/`instance.rs`/`cmd.rs`/`device.rs`/`trace.rs` is **empty by construction**.
 
-**Switch's diagnostic route:** Added DUMP_OUTPUT_BYTES probe; found 33 of 257 dispatches produced all-zero staging buffers (32 qkv_proj + 1 lm_head). Push-constant and workgroup dump confirmed dispatch geometry correct. Armed validation layer; messenger reported "vkCreateComputePipelines(): SPIR-V uses descriptor [Set 0, Binding 4] but the binding was not declared." This was the direct pointer.
+**The two-selector wrinkle:** §6.5 first closed only on selector 0 (NVIDIA); selector 1 (Intel) still reported `SPLIT-DEVICE` because the offer was keyed by the raw `vkEnumeratePhysicalDevices` index while `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes the best-first sorted list — a third instance of the two-index-space defect (after `epctl --probe-loader` and `dispatches_executed` vs `compute_calls`). Switch's first fix attempt made ORT's bound device authoritative but this **silently relocated** a run onto the wrong physical device while still reporting `MATCH` — "a silently relocated run is an unattributed result wearing a MATCH," caught only because the timing shape didn't match. Reverted. Final fix: `devices_to_advertise()` treats a pinned `ONNXRUNTIME_EP_VULKAN_DEVICE` as advertising **only** that device, so ORT cannot bind a device not advertised — the two spaces become one rather than being translated between. Verified on both selectors: `alloc_device_frame: SHARED`, correct device name per selector, `alloc_device_authoritative_spans: 0` (int, not the `"UNOBSERVABLE"` string) on both.
 
-**Mouse's diagnostic route:** Read compile_impl -> push_dynamic_kernel -> ShapeOnlyRecorder::dispatch. Counted binding tokens from node-desc counts (4) vs translate-handler output (5). The mismatch was readable in the code without running.
-
-**Why static-shape tests passed:** test_matmulnbits_fp16_matrix uses concrete rows, so is_dynamic = False. Static path runs through CompileRecorder which captures the 5-element binding vector from the translate handler directly. Only the symbolic-batch form triggers push_dynamic_kernel.
-
-**Fix:** ShapeOnlyRecorder::dispatch() now captures k.bindings (the translate-handler token sequence at Compute time). At dispatch, eff_bindings for dynamic kernels comes from the capture; both pipeline layout entry count and descriptor buffer writes iterate over eff_bindings. Mouse's structural split (captured 4-tuple + captured_bindings: Option<Vec<u64>>) adopted. Switch's diagnostic infrastructure and plant/messenger test retained per M0 criterion 3 requirement. Merged to main as 93aca04.
-
-**KV-cache symptom (same root cause):** Tank observed two populations -- logits exactly 0.0 on runs 2+ (dirty arena, something wrote zeros) and KV cache bitwise different between runs (unwritten, shows arena residue). Post-fix probe_run2.py: BIT-IDENTICAL across all 65 outputs on both devices for 3 runs. The KV cache is produced entirely by CPU ops (SDPA); dirty arena residue on run 2+ was the consequence of CPU attention computing from zero QKV inputs.
-
-**General invariant added:** For any dynamic-shape kernel, push_dynamic_kernel is a positional approximation. Pipeline descriptor count MUST come from the translate-time capture (ShapeOnlyRecorder::captured_bindings), not from kernel.bindings.len() (the compile-time count). Any translate handler that produces a different binding count than n_inputs + n_outputs will trigger this mismatch for dynamic-shape kernels -- the fix covers the whole class.
-
-**Falsifier:** test_matmulnbits_fp16_dynamic_batch and test_matmulnbits_fp16_dynamic_batch_multirun -- FAIL pre-fix, PASS post-fix, both devices.
+**Falsifier:** unit test built on the **inverted** pairing (discrete = enum 1 / selector 0 on this desk), so an identity-mapping regression fails it rather than passing silently.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Multi-run evidence required; cross-run consistency gate (consolidated)
+### 2026-08-01T09:53:14-07:00: `alloc_device_authoritative_spans` — UNOBSERVABLE → UNWIRED → measurement, and R12's fifth census state (consolidated)
 
-**By:** Mouse (rule authorship), Trinity (gate implementation)
-**Why consolidated:** Tank's finding led Mouse to formulate the rule (mouse-multirun-evidence-rule) and led Trinity to implement the corresponding gate (trinity-multi-run-cross-run-2026-07-30). Same event, different angles.
+**By:** Tank (`frame-provenance`, `tank-residency-screen-and-r13-ruling` / D-T85), Switch (`leaked-device-validation-unobservable`), Morpheus (ruling, R12)
+**Why consolidated:** the same counter's three-state life story, told once by the author who moved it through each transition, framed by the taxonomic rule that makes the transitions meaningful.
 
-**What:** ORT's memory-pattern planner does not engage on run 1 of a session. The arena is OS-zeroed. An unwritten output buffer shows zeros on run 1 -- indistinguishable from a kernel that computes zeros. From run 2 onward the arena is dirty; an unwritten buffer shows residue, a zero-computing kernel still shows zeros. Therefore: a single-run MATCH cannot distinguish "written correctly" from "unwritten in a clean arena." Any test claiming write-completeness MUST run the session at least 3 times.
+**The counter's three states, each a different JSON type so arithmetic on it fails loudly:** `"UNOBSERVABLE"` (str, R12 — the event cannot occur in this run's frame, e.g. `SPLIT-DEVICE`); `"UNWIRED"` (str, R10 — frame allows it but the increment point has no production caller, `evaluations == 0`); measured `0`/`n>0` (int). D-T85: `HandleRegistry::free` is the only point a span's residency state is terminal; `on_residency_evaluated` increments an unconditional evaluations counter plus a conditional authoritative counter from the same call site, so the count **cannot be forged** — only the unconditional twin moves without it. Measured: selector 0 → `authoritative=0 (int), evaluations=3` → genuine measurement; selector 1 → still `UNOBSERVABLE` even though `evaluations=3`, because **R12 outranks R10** (a wired instrument in the wrong frame is still not a measurement). `alloc_device_buffer_binds` remains 0 — the engine still resolves inputs through `host_backing_for` rather than binding the mirror buffer, so no honest implementation can report non-zero authoritative count yet; that is Switch's, not a counter change.
 
-**Cross-run comparison:** Run-N vs run-N+1 (same session, identical feeds, byte-level) detects unwritten buffers in dirty arenas. This is a distinct axis from EP-vs-CPU: cross-run detects write completeness; EP-vs-CPU detects arithmetic correctness given a write occurred. Both are necessary; neither is sufficient.
+**R12 fifth census state — `out-of-frame`:** distinct from `unreachable`. The four original states (absent/uninvoked/unreachable/misnamed) are each repaired by their author touching their own file; `out-of-frame` has **no author-side repair** — you cannot fix this counter by editing `allocator.rs`; the repair is §6.5, in a different file. Tank re-derived the coordinator's proposed `quarantine_retired` specimen and found it is actually `unreachable` (event occurred, only the *reading* path was missing an API call), not `out-of-frame` (event structurally cannot occur) — "they look identical from a reader's chair and are opposites in the workshop." Ordering: `absent → uninvoked → unreachable → out-of-frame → misnamed`; R10's screen catches the first two mechanically, nothing but a second independent instrument catches the last two.
 
-**Tank's measurement:** 0 interior pointers at 1 run, 596 per run from run 2 onward, linear, zero intercept. The planner nearly stops allocating and freeing from run 2.
-
-**Mouse's additions:** test_matmulnbits_fp16_dynamic_batch_multirun (3 runs, symbolic_batch=True) and test_phi35_vulkan_multirun_logits_stable (3 runs, Phi-3.5). Both PASS post-fix.
-
-**Trinity's gate:** test_phi35_vulkan_matches_cpu_logits now runs 3 EP runs and uses run 2 (dirty arena) for EP-vs-CPU comparison. test_phi35_vulkan_cross_run_consistency asserts byte-equality of all 65 outputs across 3 runs. Byte comparison uses a.tobytes() == b.tobytes() -- not max|a-b| which returns NaN when either side has NaN, even when bit-identical. compare_layers() changed to np.nanmax(abs_diff) + nan_count field.
-
-**Falsifier:** test_phi35_vulkan_cross_run_consistency was xfail(strict=True) until the binding-arity fix; xfail removed after probe_run2.py confirmed BIT-IDENTICAL across all 65 outputs.
+**Switch's companion finding:** "0 validation errors at shutdown" on the *production* path is itself `UNOBSERVABLE`, never `0` — the EP's `VkDevice` is deliberately leaked (never destroyed) per §6.5, so the validation layer's leak-report frame (which fires at `vkDestroyDevice`) never runs on production. Criterion 3 must not be certified by that gate; `ep_messenger_fires_for_planted_fence_leak` remains the correct positive control because it owns and destroys its own throwaway device.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Device-backed allocation -- prediction pre-registered, result recorded, prediction falsified on discrete GPU (consolidated)
+### 2026-08-01T09:53:14-07:00: Device labels were inverted — three independent discoveries (consolidated)
 
-**By:** Tank (D-T82 through D-T89)
-**Why consolidated:** Prediction (tank-device-memory-prediction.md) was written before implementation as required by the coordinator. Result (tank-device-memory-result.md) was written at session end. Both are facts about the same experiment; the prediction is load-bearing precisely because it was falsified.
+**By:** Tank (`transfer-bound`, Defect A), Niobe (`phase-split-and-two-defects`, defect 4), Switch (corroboration via `bench/devices.py` fingerprinting in `kernel-spread-reconciliation-niobe`/`intel-gap-separated`), Morpheus (ruling D-M25-03, R6 amendment 4)
+**Why consolidated:** Per R9, three independently-authored routes converged on one root cause — this is evidence, not restated redundancy, and destroying two of the three angles would destroy exactly what makes it trustworthy.
 
-**Prediction (D-T82, written before implementation):** Device-backed allocation on its own will make Phi-3.5 SLOWER on both devices. RTX 4060: 1.1x-1.6x slower (PCIe crossing); Iris Xe: 1.0x-1.2x slower (UMA). Mechanism: session.rs resolves every kernel input through host_backing_for and allocates its own GpuBuffer per Compute call; device-backing changes where CopyTensors writes, not the re-upload loop.
+**Root cause:** `enumerate_capable_devices()` sorts best-first (discrete > integrated), and `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes *that* sorted list, while `vulkaninfo`, `epctl --probe-loader` and raw `vkEnumeratePhysicalDevices` order use **enumeration** order — two index spaces under one label. On this desk: selector 0 = NVIDIA RTX 4060 (discrete), selector 1 = Intel Iris Xe — the opposite of every label the team had quoted, including the "Intel beats the 4060, 807.2 vs 1156.0 ms" finding, which dissolves once corrected (and was never quotable anyway, being a cross-device comparison with no quiescence record).
 
-**Result (D-T83 through D-T89):** Falsifier fired on the discrete card. RTX 4060: 0.94x (faster), not 1.1x-1.6x slower. Iris Xe: 1.01x (within noise). Root cause of falsification: alloc_device_uploads = 386 for 19 inferences -- upload fires once per allocation (at weight deserialization, during warm-up, outside the measured timing loop).
-
-**Mirror architecture (D-T83):** Making a device-backed handle refuse to yield a host address caused CopyTensors failures and ORT CPU fallback. Fix: every span gets a real VkBuffer in DEVICE_LOCAL memory in addition to its host staging block (mirror). Host receives writes from ORT; device receives vkCmdCopyBuffer from host; device never read back. Correctness by construction (one writer, one direction). alloc_device_backed_spans > 0; alloc_device_authoritative_spans = 0 (never incremented). staging_verdict() adds MIRRORED state.
-
-**epctl still exits 1 (correct):** Every span is both staged and device-backed; the flag's question ("tensors resident in device memory where kernels read them") is still answered No.
-
-**Seam handed to Switch:** transfer::device_buffer_for(ptr, len) -> Option<(BufferView, usize)>. The usize interior offset is not optional -- the planner sub-divides one span across several tensors; binding at offset 0 for an interior pointer overwrites a neighbour.
+**Tank's route:** confirmed physically — the coordinator's own island result becomes plausible once corrected — and fixed his own consumer-side bug (Defect B: the device-backed memory mirror had independently landed on the wrong physical device via the same index confusion, one level up from the label bug).
+**Niobe's route:** built `bench/devices.py::device_identity_check`, which labels each result row from the **timestamp fingerprint in that row's own trace** (Intel 52.0833 ns/36-bit; NVIDIA/lavapipe 1.0/64-bit) rather than from the selector index — "a label must travel with the evidence, not beside it." This is durable: it separately caught that a blanket re-label of already-correctly-labelled `bench/results/` files would have inverted correct rows, while `docs/PERF.md` prose (written before the check existed) was genuinely wrong and got fixed.
+**Morpheus's ruling (R6 amendment 4):** filed under R6, not a new rule — "our own tooling manufactured the number." New standing rule: *a result surprising enough to be a discovery is first a reason to check the instrument; surprise is a free instrument check, and we spent it on celebration.* Owed: `epctl --probe-loader` must print the selection index alongside enumeration order, or neither.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Fact Checker -- OQ-12 figure currency; opset-26 verified; Q/DQ oracle risk; no-bump class growing
+### 2026-08-01T09:53:14-07:00: `Phase::Record` misattributed the upload cost by ~50x — R11 named (consolidated)
 
-**By:** Fact Checker
-**Date:** 2026-07-30T07:05:09-07:00
+**By:** Niobe (`phase-split-and-two-defects`, `niobe-name-falsifiers`, `phase-containment-was-mine`), Switch (`phase-containment-niobe`, retracted claim in `weight-cache-recording-bottleneck`, `measurement-contamination`), Tank (`instrument-census`, misnamed finding #8), Morpheus (ruling D-M25-01, R11)
+**Why consolidated:** the same defect discovered, fixed, and ruled on by four people in one day — the "68.9% command-buffer recording" figure that was actually 96-99% host memcpy.
 
-**OQ-12:** The 68.57% sync2 Android coverage figure (31.43% gap) is a live database snapshot from 2026-07-28. As of 2026-07-30 the figure is ~67.33% (gap ~32.67%). The figure is simultaneously a ceiling on the legacy-path benefit (sync2-lacking devices may also fail the S7.2 device gate) and a floor on the real gap (gpuinfo.org over-represents newer hardware). Drop conditions for the legacy barrier path: both Android AND Windows database coverage >= 99% simultaneously, AND OQ-12 confirms gap devices fail S7.2. Neither condition is close today. Legacy path justified.
+**What:** `Phase::Record` brackets `vkBeginCommandBuffer`→`vkEndCommandBuffer`, and the host staging memcpy runs *inside* that window via `Tracer::record_transfer`, which reports through `phase_us[Upload]` but emits **no `ph:"X"` span** — so any span-based aggregation structurally cannot see it. Measured: upload is 95.8–98.6% of `record`; real command-buffer construction is 1–3% of wall, not 68.3/68.9%. Both Switch's and Niobe's independent instruments (span-derived vs counter-derived) agreed to within a few points — the corroboration itself is evidence. Switch additionally corrected `trace.rs`'s caveat ("host: command-buffer recording; amortised across replays"), which had been false since the weight cache landed and shipped inside every trace — every child of `record` was named, "which made the decomposition look closed," while ~93% of a warm `record` had no span of its own (the R11 case Switch found in his own trace).
 
-**Opset 26 verified:** ONNX 1.21.0 (2026-04-27) introduced opset 26. ONNX 1.22.0 (2026-06-15) introduced opset 27. ORT 1.28 supports through opset 27. The onnxruntime.ai compatibility table is stale. "Support opset 26" is fully exercisable against ORT 1.28, with headroom to opset 27.
+**Niobe's phase_containment RED false alarm (same defect, opposite direction):** the containment checker went RED reporting "1 subgraph whose phases exceed their own duration" — but the defect was in `bench/phases.py` double-counting nested children (`cmd_upload`, `desc_alloc`, `pipeline_lookup`) as siblings of their own parent `record`, not in Switch's spans. Verified by five independent geometry checks before accepting blame (R13: confirming results get more scrutiny). Fixed with a two-tier check (siblings vs subgraph; children vs their own record) using R13's PASS/FAIL(condition)/ERROR(instrument) states.
 
-**onnx#8182 Q/DQ oracle failure (AFFECTS OUR TIER PLAN):** Q/DQ-23 and Q/DQ-25 reference implementations not registered in onnx <= 1.22.0. ReferenceEvaluator silently falls back to opset-21 implementations. Result: TypeError on output_dtype (detectable) or silent wrong reference (if basic Q/DQ form tested without those attributes -- not detectable by C2). Action: pin onnx >= 1.23 for Q/DQ-23/-25 oracle; avoid output_dtype/precision in conformance tests until 1.23 ships. Trinity owns the guard (assert_qdq_reference_oracle_safe).
-
-**No-bump class:** 9 known instances as of 2026-07-30 (6 existing + #8182 + #8099 ScatterND + #8194 TopK). All three new instances post-date onnx 1.22.0. The table needs a monthly sweep owner (Mouse or Trinity).
+**Morpheus's rule (R11):** *a measurement's name is not its definition, and a decomposition that appears to close is the hardest kind of wrong.* Distinct from R10 (never called) — here the artifact existed, was correct, varied with input, and was believed; the failure is at interpretation, not observation. New obligations for any phase/counter table: declare extent (inclusive/exclusive of children) at definition; a flat table asserts disjointness; check the decomposition identity against an independently-measured whole and publish the residual; any row above 50% gets its name checked against its content before quoting. Criterion 12 (wiring census) amended (not reopened) to add these three checks — it "would have certified `Phase::Record`" as written.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Link -- lavapipe first claimed-node execution; gate artifact; subgroup-32 red instrument; is_uma verified
+### 2026-08-01T09:53:14-07:00: Binding-arity + KV-cache + weight-cache-leak defects (1, 2, 3) closed on real Phi-3.5
 
-**By:** Link
-**Dates:** 2026-07-30T05:48:29-07:00, 2026-07-30T08:21:19-07:00
+**By:** Switch (`defects-1-2-3-and-offer-gate`, `kv-aliased-output-fix`)
 
-**Lavapipe first claimed-node execution:** Linux lavapipe (Mesa 25.2.8, Ubuntu 24.04, WSL2, Vulkan 1.4.318) executed claimed nodes end-to-end. Subgroup_size=8 confirmed. Sync2 promoted to 1.3 core -> Barriers::select -> Sync2Backend::Core. Barrier parity: 58 passed / 0 failed / 28 skipped. Zero lavapipe-specific failures. Zero numerical correctness failures. Lane is operational, NOT green (green requires criterion 10 gate artifact with MATCH verdict; UNMEASURED is the default by construction).
+**Defect 1 (weight-cache device leak, FIXED and wired):** `release_weight_cache` existed but had no caller — "a mechanism in the tree but not the graph." `VulkanSession::Drop` now drains every weight cache before dumping counters; predicted device high-water FLAT across N sessions (falsifier: 3 sessions ~3x one session's peak or OOM) — measured FLAT (~3.907 GiB after 3 sessions, same as 1), every device alloc freed. Original failure mode was **silent CPU fallback**, not a surfaced error — fifth instance on this project.
 
-**WSL build notes:** CARGO_TARGET_DIR must be set outside /tmp (systemd private-tmp recycling); WSL root bash subshells have empty PATH; use wsl -d Ubuntu -u root for elevated operations. VK_ICD_FILENAMES works for non-elevated processes in WSL.
+**Defect 2 (50 KV outputs never written, FIXED):** `bind_aliased_output`'s default impl ignored the `out` descriptor; `ShapeOnlyRecorder` had no override, so aliased KV outputs got a zero-byte placeholder and were silently skipped in `write_outputs_to_ort`. Root cause: empty-past decode feeds (`[1,32,0,96]`) sized the present-KV descriptor to zero. Fix (both files): `bind_aliased_output` gained a `desc: TensorDesc` parameter; `attention.rs::translate_gqa` gates on `empty_past` and binds present as REAL outputs when past is empty. Cross-run evidence: all 65 outputs bit-identical across 3 runs, differing-output count 0 (was 50).
 
-**Gate artifact for lavapipe:** gate_chain_fp32 -- Add(X,Y) -> Relu(Z) on fp32 [256]. Claims 2 nodes; 1 island of 2 nodes; fp32 ew_binary + ew_unary proof keys. Feed: linspace(-1,1,256) + ones(256) (spans zero, exercises Relu clamp). Oracle: ORT CPU EP, FP32_ELEMENTWISE tolerance. fp16 deferred until storageBuffer16BitAccess and shaderFloat16 confirmed on lavapipe. Trinity implements the verdict file mechanism; Link wires it into the lavapipe lane spec (PLATFORMS.md S7.8).
+**Defect 3 (`compute_calls=1` after 5 runs):** confirmed downstream of Defect 1 — once the OOM was fixed, `compute_calls == N` and `compute_failures = 0`, both single- and multi-session sweeps. "Confirmed by observation, not assumed."
 
-**Subgroup-32 red instrument (closed):** A shader baking gl_SubgroupSize == 32 produces wrong reduction outputs on lavapipe (subgroup_size=8). Wrong outputs diverge from CPU reference. test_elementwise.py on lavapipe goes RED. New shader templates must have a lavapipe numerical test before op moves Staged -> Ready. This is a meaningful threat because the test checks numerical output, not just dispatch.
-
-**is_uma verified correct:** "Every heap is DEVICE_LOCAL" predicate correctly returns false for RTX 4060 with ReBAR (two heaps, DEVICE_LOCAL|HV + empty) and true for lavapipe (one DEVICE_LOCAL|HV heap), for the correct reason. Unit test at caps.rs:671-679 specifically tests the ReBAR case.
-
-**OQ-12 figure update adopted from Fact Checker:** Figure now ~67.33% (gap ~32.67%) as of 2026-07-30; pull date updated in PLATFORMS.md with floor-and-ceiling analysis preserved.
+**offer_shared_device index-space bug (fixed) + multi-session UAF (gated, later resolved — see §6.5 entry above):** offer was keyed on the sorted-capables selector index rather than the factory's advertised (raw enumeration) index; fixed, then found the offer's process-global consumer outlived per-session devices, causing `STATUS_ACCESS_VIOLATION` with ≥2 sessions — gated OFF by default until §6.5's architectural fix (later closed unconditionally, see above).
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Morpheus -- claiming gated on proven correctness (S7.0.1 / S8.9)
+### 2026-08-01T09:53:14-07:00: Weight residency landed on bytes — and the halving that was already in the control (consolidated)
 
-**By:** Morpheus
-**Date:** 2026-07-30T06:32:18-07:00
+**By:** Switch (`weight-cache-recording-bottleneck`, `cb-cache-prediction`), Tank (`staging-bytes`, `transfer-bound`), Mouse (`transfer-recalibration`), Morpheus (ruling D-M25-05/D-M26-06)
+**Why consolidated:** Switch built and measured the cache; Tank independently instrumented and confirmed the byte identity from the allocator side; Mouse then measured a further claimed halving and caught himself before publishing someone else's win as his own.
 
-**Ruling:** Claiming is gated on proven correctness. An op we have not proven correct on a form is, for claiming purposes, an op we cannot run on that form. S7.0 was silent on ops that can dispatch but have not been proven; S7.0.1 closes that gap.
+**The cache:** per-subgraph `HashMap<(cpu_ptr, byte_size), GpuBuffer>` in `VulkanSession`; tensors ≥32 KB promoted after first fence-signal; subsequent calls serve `borrowed_ref` handles — no re-upload. Per-inference upload fell from ~1997.6 MiB (full weight set every call) to steady-state **0.755–0.817 MiB** (Mouse's later, more precise byte-exact figure), a **~2646:1** ratio, flat/linear across 1/2/3/5-run sweeps on both devices (Tank's independent confirmation via `session_staging_upload_bytes`/`alloc_device_upload_bytes`, agreeing to 1.0002x with a separate allocator-side accounting). CB-caching (command-buffer reuse) was predicted and measured to buy <1% further gain once the weight cache landed, because most descriptor bindings (activations) still change every call — not implemented this session on that basis.
 
-**Mechanism:** Claimability derived per-form from a proof ledger. claim_decision claims only if status == Ready AND the ledger holds an entry under the node's proof key. No entry -> decline with [unproven]. Proof key 7-tuple: (domain, op_type, opset_bucket, element dtypes, kernel_variant_key, shape_class, populated_optional_input_set). Ledger generated by differential harness, never hand-edited, baked into cdylib. Tier 1 (per-form proof) gates claiming; Tier 2 (per-producer-at-version model proof) gates reporting and can retract Tier 1.
+**Mouse's correction (the halving that wasn't):** after claiming `SimplifiedLayerNormalization` + `Gather`, Mouse measured per-inference upload at 0.38 MiB and was "one step from reporting a halving as the payoff of my work." Built the pre-change control commit and re-ran the same instrument: the halving (1997.6→0.756 MiB) was **already present in the control** — it belongs to residency (Switch's work), not op coverage. Mouse's own two claims account for exactly 6,136 bytes/inference, not the halving. "Had I skipped the control I would have published a 2x that was someone else's and mine only by accident" — R13's confirming-result-gets-more-scrutiny clause made concrete. Corrected boundary figures now pinned as constants with unit tests: upload 399,376 B/inf (46.6%), readback 457,344 B/inf (53.4%), total 0.817 MiB — asymmetric, not the old symmetric 0.756/2 model.
 
-**Escape hatch:** ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN takes a comma-separated list of full proof keys only -- no boolean, no wildcard. A parser that can express "everything" must not exist (enforced by 6 planted rejection tests). Default is safe: unset -> unproven forms decline. Three disclosures: session WARN naming every enabled key; unproven_forms_enabled in counters artifact; epctl --check-counters fails on non-empty list without --allow-unproven. Available in release builds (Trinity and Link's lanes build release).
-
-**Cost acknowledged:** Phi-3.5 goes 161 -> 0 claimed nodes when gate activates. The honest number was already 0 (DIVERGENT verdict voids the metric triple; the reporting was wrong, not the code).
-
-**OpStatus::Live retired:** Deprecated as a hand-written duplicate of a machine-known fact (R7: derive, do not declare). Add-i32 Live on an f32-only predicate was the first specimen; MatMulNBits Live on a FLOAT mask with f32-only proof was the second, and it shipped.
+**Morpheus's ruling:** rank 1 on the performance ladder survives (residency), but its *content* changes from "make the weights resident" to "make residency **bounded**" (arena lifetime/eviction) — a performance mechanism that fails into silent CPU fallback (Defect 1, above) "is a correctness defect wearing a performance costume." M1's weight-residency criterion (<1% upload/inference) stands at 0.0002 today — comfortably passed while the criterion stays open on its interlocks, "the clearest evidence yet that the interlocks are the criterion."
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Morpheus -- correctness gate is precondition for *green* lanes, not for bring-up
+### 2026-08-01T09:53:14-07:00: q_gemv column-tile kernel — the first measured kernel speedup, and the Intel portability gap (consolidated)
 
-**By:** Morpheus
-**Date:** 2026-07-30T06:32:18-07:00
+**By:** Switch (`gemv-column-tile`, `intel-gap-separated`, `kernel-spread-reconciliation-niobe`), Fact Checker (`gemv-hardware-clock`)
 
-**Ruling:** Operational (lane exists, executes, reports) and Green (lane result is admissible as evidence) are different. Link may declare Operational without criterion 10; Green requires the gate (criterion 10 MATCH verdict). Made unrepresentable: a lane's pass condition includes the verdict field; UNMEASURED reports UNMEASURED (not PASS). A lane cannot accidentally go green.
+**The kernel change:** Niobe's device-clock census made `q_gemv_matmul_nbits_f16` rank 1 by Amdahl (95-98% of GPU time). Switch reproduced her 40.202 ms/inference baseline independently before touching anything ("that agreement is the only reason I trust either number"), predicted ~18 ms post-tile, then rewrote the kernel around a `QB_COLS` column tile (workgroup computes multiple adjacent output columns, reusing the activation row load), workgroup sizing that divides rather than covers `blocks_per_col`, hoisted scale multiply, paired unpacked fp16 loads, and a paired non-atomic store. Measured (NVIDIA, both `STEADY`): 40.390 → **12.294 ms** GPU busy/inference (**3.29x**), kernel mean 244.09 → 65.36 µs (**3.73x**) — beat his own prediction. Negative ablation result: forcing the atomic store back cost nothing (468.32 vs 465.18 µs) — his leading hypothesis for the bottleneck was wrong.
 
-**Gate artifact sizing:** Not Phi-3.5 on CI (2.2 GB on a software rasterizer in CI is infeasible). Each lane carries the smallest real producer-at-version model that (a) claims non-zero nodes, (b) has an island of >= 2 nodes, (c) exercises >= 1 proof key per claimed dtype. Trinity chooses and pins; Link wires.
+**The Intel gap:** raw ratio was 13.5x (Intel/NVIDIA) at baseline. Contention made single-run Intel/NVIDIA ratios unusable (2.65x disagreement between two "identical" Intel runs), so Switch normalised against an untouched control kernel (`gqa_f16`) measured in the *same* run — contention is common-mode and cancels in the ratio. Result: **2.85x of the 13.5x gap was our kernel design** (baseline), unaffected by the arithmetic/workgroup-sizing changes (2.85→2.87, device-neutral), and reduced to **1.36x by the column tile alone** — "the tile is the entire portability fix." Diagnosis: the baseline's redundant per-column activation reload and per-column barrier/reduction hit Intel's weaker shared-memory bandwidth and barrier throughput hardest; NVIDIA's bandwidth/occupancy hid it.
 
-**Why not gate-as-follow-on:** Three ungated lanes agreeing are three more corroborating instruments added to a set with no falsifier -- the precise mechanism by which the wrong conclusion became persuasive on 2026-07-30.
-
----
-
-### 2026-07-30T19:05:03-07:00: Mouse -- accuracy_level=0 vs =1 oracle pinning is correct
-
-**By:** Mouse
-**Date:** 2026-07-30T09:14:00-07:00
-
-ORT CPU kernel maps levels 0-3 to SQNBIT_CompFp32 (fp32 accumulation). Only level 4 selects int8 VNNI. GPU shader accumulates in float acc = 0.0 unconditionally; attribute not passed as push constant or spec constant. Levels 0 and 1 are identical computations on x86. Oracle pinning (level 1) is correct for a model declaring level 0. No change needed. If ORT 1.28+ changes the level-0/1 mapping: re-run test_matmulnbits_accuracy_level_pinning() to verify.
+**Fact Checker's independent verification:** corrected the *hardware*-bandwidth-only framing — the theoretical RTX 4060/Iris Xe bandwidth ratio is 3.08x (256/83.2 GB/s), not 13.5x, so the measured 13.52x gap leaves a **4.39x residual that is genuinely our design** (matches Switch's 2.85-4.6x range depending on build). Confirmed Intel's 52.0833 ns/tick counter is reference-clock (19.2 MHz) based and trustworthy — CPU load changes GT work-per-tick, not the tick conversion itself, so `NO_STEADY_TAIL` correctly reflects real workload instability, not a broken instrument. Recommended keeping the subgroup-free shared-tree kernel mandatory (portability) while adding optional subgroup/hybrid variants without assuming width 32 — llama.cpp's structural advantage is packed/vector loads and multiple accumulators, not subgroup ops.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Mouse -- multi-node island dispatch: intermediate buffer aliasing root cause and fix
+### 2026-08-01T09:53:14-07:00: The EP is GPU-bound and one kernel is 95-98% of it — old ranking void
 
-**By:** Mouse
-**Date:** 2026-07-30T09:14:00-07:00
+**By:** Niobe (`gpu-bound-lever-rerank`)
 
-**The defect:** After partition.rs wiring, dispatch_accounting RED: compute_calls 1 != expected 1023. 33 islands compiled live; only 1 Compute call dispatched successfully. model_output_equivalence = MATCH appeared to hold (CPU vs CPU). compute_failures: 0 throughout.
-
-**Root cause:** Positional token scheme resetting next_bind = 0 per kernel in ShapeOnlyRecorder. For 2-node island {A,B}: A's output -> token n_plan_inputs+0 at Compile time; B's output -> token n_plan_inputs+1. At Compute pre-pass: ShapeOnlyRecorder restarts for B -> B's output -> n_plan_inputs+0. Dispatch: eff_bindings for B has token n_plan_inputs+1 -> j=1 >= n_ort=1 -> gpu_temps[0] (empty) -> panic. guard_ffi_status caught panic; ORT abandoned EP after first failure; all subsequent inferences on CPU.
-
-**Fix:** Name-based token assignment from the island's plan at Compile time. Token ranges non-overlapping by construction: 0..n_plan_inputs (ORT inputs), n_plan_inputs..n_plan_inputs+n_plan_outputs (ORT outputs), intermediates, alloc_temp scratch. compile_impl builds name_to_token: HashMap<String, u64>. Inter-kernel barriers (SHADER_WRITE -> SHADER_READ) on intermediates between dispatches.
-
-**Results:** Intel: 2954.6 ms -> 807.2 ms (3.7x). NVIDIA: 7.9x -> 4.1x slowdown (still slow, but all 1023 Compute calls executing). dispatch_accounting GREEN: compute_calls 1023 == 33 x 31 on both devices.
-
-**The general rule:** A mechanism that exists in a file and not in a call graph is indistinguishable from a mechanism that does not exist. partition.rs existed in full; the wiring was absent; the improvement was invisible to every counter except dispatch_accounting.
+The prior residency/declines/fence-wait/kernels ranking was derived from a phase decomposition taken while Phi-3.5 ran on CPU fallback and is void — it described a run in which this EP did not execute. With 353 of 363 nodes now executing in one Vulkan island, the new ranking: **#1 `q_gemv_matmul_nbits_f16`** (95.11% NVIDIA / 98.28% Intel of all GPU time — everything else sums to ≤5%, so by Amdahl perfecting everything else buys at most that); #2 command-buffer reuse (23.5% of NVIDIA in-Compute time, **NVIDIA-only, 1.0% on Intel**); #3 5.97% unattributed inside Compute (needs spans from Switch); #4 device-backed allocation (`UNOBSERVABLE` per R12 until §6.5 closes); fence-wait GPU idle **retired to dead** (0.99%/0.18%) — "the fence wait is the GPU working." This claim is robust to a contended machine because contention inflates host work and cannot touch the GPU's own timestamp counter, so it can only push GPU-busy share up, never down, on a quieter box.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Mouse -- proof ledger scaffolding (S8.9 groundwork)
+### 2026-08-01T09:53:14-07:00: Guard D — NameError vs detection, proven by two-polarity mutation testing, R13 (consolidated)
 
-**By:** Mouse
-**Date:** 2026-07-30T08:29:00-07:00
+**By:** Trinity (`guard-d-fires-two-polarity`, `broken-guard-vs-detected-fallback`, `guard-d-counts-islands-not-nodes`), Morpheus (ruling D-M27-02, R13), Tank (ruling: R13 is an axis, not a sixth census state)
+**Why consolidated:** Morpheus's own specimen (he merged the broken guard and reported it working), Trinity's remedy (mutation-tested two-polarity protocol), and Tank's taxonomic ruling on where R13 sits, all describing one incident and its closure.
 
-Built: OpStatus::Ready (new variant; Live deprecated); DeclineCode::Unproven (tag "unproven"); ProofKey struct (7-tuple per S8.9.2, string form domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs); claim_unproven_keys() (parses env var, comma-separated full keys only; invalid key -> WARN + empty list); ledger_contains() stub (always false pending Trinity's harness); 6 planted rejection tests (reject *, 1, all, bare op-type, empty).
+**The incident:** `assert_vulkan_executed_runtime` (Guard D) raised `NameError: name 'pathlib' is not defined` at its first statement — it had never read a profiling event. Merged; the suite went `8 passed → 5 failed`; Morpheus reported "Guard D works." The red matched the prediction, which is precisely why nobody looked further.
 
-Gate NOT yet activated in claim_audit -- requires Trinity's harness, build.rs bake, ledger read, and CI gate.
+**Trinity's remedy:** `RuntimeError`(instrument failure, e.g. unreadable trace) is now a distinct exception type from `AssertionError` (fallback genuinely detected), so the distinction survives to the pytest reader rather than living only in a message a human reads with an existing hypothesis. Landed via mutation testing, not code review: `tests/ops/test_guard_d.py` runs the real guard and **four deliberately broken mutants** (NameError reconstruction, always-passes, inverted polarity, wrong-provider-key) against a paired-polarity protocol — all four must fail it, the real guard must pass it. New standing rule: any verdict-rendering harness function ships a paired-polarity self-test in the always-on lane, or is listed `unfalsified` in the census with a reason — "I read the code" is not a third option.
 
-The populated_optional_input_set component was motivated by the binding-arity defect: MatMulNBits without zero_points has 4 bindings; with zero_points has 5. A proof of the 4-binding form cannot cover the 5-binding form.
+**Guard D's count is fused islands, not graph nodes (R11, caught before it bit):** ORT emits one profiling `Node` event per fused island, so a healthy run reports `1` even though 354/364 graph nodes ran. Remedy: tag, don't rename (`describe_vulkan_execution_count`) — the count is a presence signal only, never a volume signal.
 
-The 6 planted rejection tests must never be deleted or weakened without a S8.9.4 amendment.
+**Morpheus's rule (R13):** *a check has at least three terminal states — PASS, FAIL(condition), ERROR(instrument) — and must report them as three distinct tokens.* Not R10 (absent), R11 (misnamed) or R12 (correct, wrong world) — here the check *ran, failed, and its failure wore the costume of its finding.* Second clause, the more dangerous half: *a result that confirms a prediction deserves more scrutiny than one that contradicts it* — quote the failure text, never the failure count.
 
----
-
-### 2026-07-30T19:05:03-07:00: Mouse -- SkipSimplifiedLayerNorm island measurement; alloc_temp infrastructure fix
-
-**By:** Mouse
-**Date:** 2026-07-30T09:14:00-07:00
-
-**Finding:** Promoting SkipSimplifiedLayerNorm (128 nodes) increased island count 257 -> 321 (delta: +64 islands). No islands merged. Coordinator's prediction of 128-200 fewer islands was wrong (falsifier fired).
-
-**Why:** Claiming a new op type adds islands before it removes them. Islands removed only when the newly claimed op is the *last* unclaimed gap between two existing islands. On Phi-3.5, other unclaimed ops (Mul, Sigmoid) sit in the same regions; ORT cannot merge the new SkipNorm islands with MatMulNBits islands while those remain.
-
-**New rule (in OP_COVERAGE.md S7.1.4):** Use the declined_nodes histogram to compute island-removal potential before implementing an op. The question is: "how many of X's nodes are the last unclaimed gap between two existing islands?"
-
-**alloc_temp fix:** skip_norm is the first translate handler to call alloc_temp in production (slot 3 absent -> scratch buffer for residual write). dispatch_ort had never exercised this code path; buf_bindings indexed only gpu_outputs, panicking on temp tokens. Fixed: CompileRecorder::alloc_temp records pending_temp_sizes; dispatch_ort allocates gpu_temps pool; routes temp tokens via temp_starts[ki] + (j - n_ort). Falsifier: test_skip_norm_f32_slot0_matches_cpu and test_skip_norm_f16_slot0_matches_cpu were RED before fix (panic), GREEN after.
+**Tank's ruling:** R13 is not a seventh/sixth census state — it is an axis over all census states (a property of the *channel* the verdict travels down, e.g. pytest's two-token summary line), not a property of an instrument's position in the system. Consequence: `audit_instruments.py` now reports three terminal tokens (PASS/FAIL(drift)/ERROR(instrument)) via `main_guarded`, and `test_wiring_census` timing out under contention is ruled `ERROR(instrument)`, never `FAIL(condition)` — the census is deterministic and byte-based, so a timeout is evidence about the box, not the call graph.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Niobe -- first real measurement; benchmark discipline; tracer wiring gap
+### 2026-08-01T09:53:14-07:00: `model_output_equivalence` becomes a record — five-token vocabulary, `UNATTRIBUTED` added (consolidated)
 
-**By:** Niobe
-**Date:** 2026-07-30T08:21:19-07:00
+**By:** Trinity (`equivalence-record-vocabulary`), Morpheus (ruling D-M27-01), Link (`unattributed-vocabulary` — imports, does not redefine)
+**Why consolidated:** Morpheus's ruling, Trinity's implementation, and Link's CI-side adoption of the exact same vocabulary rather than inventing a second one.
 
-**First measurement (D-N41), 257 islands, staging-bound, model_output_equivalence = MATCH:**
-| device | vulkan | cpu-only | delta | per-island lower bound |
-|---|---|---|---|---|
-| Intel Iris Xe (UMA) | 2790.7 ms | 229.8 ms | +2561 ms (12.1x) | >= 9.96 ms |
-| RTX 4060 (discrete) | 1465.9 ms | 185.9 ms | +1280 ms (7.9x) | >= 4.98 ms |
+**The specimen that motivated it:** before Switch's `alloc(size=0)` fix, ORT hit `EP_FAIL … Falling back to CPUExecutionProvider` on Phi-3.5's empty-past KV inputs and **raised nothing**; `get_providers()` still listed the Vulkan EP (fixed at session-create time); the correctness gate then compared CPU against CPU and returned `MATCH`. Every gate in the lane passed while this EP executed zero nodes.
 
-dispatch_accounting: 7967 == 257 x 31 GREEN on both devices.
+**The five tokens** (`tests/ops/_verdict.py`, canonical; precedence `SPLIT-FRAME → UNMEASURED → UNATTRIBUTED → MATCH/DIVERGENT`): `MATCH` (agree AND ≥1 own-provider node executed — the only token permitting a quoted triple/ratio); `DIVERGENT` (ran, wrong answer — owner: kernel authors); `UNATTRIBUTED` (ran, executed **zero** own-provider nodes — a CPU-vs-CPU comparison — owner: whoever owns runtime fallback, **never** kernel authors); `SPLIT-FRAME` (two attribution witnesses disagree — report nothing); `UNMEASURED` (no comparison performed). Two distinctions that must never collapse: `UNATTRIBUTED` is not `DIVERGENT` (different owner, different fix) and not `UNMEASURED` (it ran and agreed — "the more dangerous of the two precisely because it looks like a pass — it *was* a pass, for a whole day"). Binding clause: `MATCH` is unrepresentable at zero own-provider count — a caller may not pass a literal; the attribution comes from an instrument we do not own (ORT's own profiling), never our own `dispatches_executed`, which lives inside the frame in question. **Retroactive consequence, not grandfathered:** every prior `MATCH` on this project is `UNATTRIBUTED` until re-emitted with a profile beside it.
 
-**Benchmark disciplines (D-N29 through D-N38):** Benchmark computes its own S10.0 verdict in-run. Correctness gate before timing; timing unreachable on non-MATCH. island_count from subgraphs_live counter only. dispatch_accounting = hard check, no tolerance. stats.drift() reports trending runs (a trending run is invalidated by more samples, not improved by them -- measured on Iris Xe: 724 -> 695 -> 903 -> 1447 -> 2080 -> 2669 -> flat near 2790 ms). --repeats=3 whole-process repeats; within-run rsd != cross-run stability. baseline_disagreement fires above 2x (CPU baseline 218 ms vs 665 ms on same hardware minutes apart due to page-cache pressure after loading a 2.2 GB model).
-
-**Timestamp audit (D-N37 through D-N39):** Intel: 52.0833 ns/tick, 36 valid bits (wrap period 3579 s). NVIDIA/lavapipe: 1.0 ns/tick, 64 bits. timestamp_audit.py exits non-zero when period_mistake_detectable_on or mask_exercisable_on lists are empty. Intel Iris Xe is the ONLY local instrument for period or mask bugs; CI has none.
-
-**Tracer wiring (D-N40) -- four separate facts, fourth is NOT DONE:** dependency pinned OK; module written and tested OK; env wiring OK; called from execution path: NO. Verified empirically: 257 islands, 4 inferences, no trace file. Switch addressed in session 25.
-
-**Key implications:**
-- Cheapest large win is fewer islands, not faster MatMulNBits. At >= 5 ms/crossing on NVIDIA, every GQA (32) and SkipNorm that lands removes two crossings.
-- Intel costs ~2x more per island than discrete while having no bus to cross -- argues for fixed per-submission cost, not per-boundary PCIe transfer. Hypothesis, pending S3 timestamps.
-- 85.9% of inference runtime (recording + fence-wait idle + submit) involves no GPU kernel work. Kernel optimisation is not the best move right now.
+**Link's adoption:** all CI-side tokens/constructors are **imported** from Trinity's `_verdict.py`, contributing no token of Link's own — "a second vocabulary would be R11 in its purest form: two names for one measurement, appearing to close." `epctl --check-verdict` (Link's own earlier Session-8 brief) does not exist; the canonical gate is `epctl --check-counters ... --require-dispatches 1`, extended to fail on `UNATTRIBUTED`/`SPLIT-FRAME`/missing `executed_by`.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Rai -- silent inference: two verdicts, the line, and the mechanism
+### 2026-08-01T09:53:14-07:00: CI lanes now carry criterion 10's gate — `operational` vs `green`, no lane is green yet (consolidated)
 
-**By:** Rai (RAI Reviewer)
-**Date:** 2026-07-30T07:12:15-07:00
-**Status:** Red on shipping architecture; Reviewer Rejection Protocol applies. Green on gated architecture.
+**By:** Link (`criterion10-gate-wired`, `lane-classification`, `unattributed-vocabulary`)
 
-**Verdict 1 (the architecture without gate):** An EP that claims nodes and writes zeros without notification crosses the line at RAI framework S6.1 -- "silent model degradation without user awareness." The user cannot distinguish a session where the EP ran correctly from one where it silently produced zeros. Rai rules Red on the shipping-without-gate architecture.
+Every CI lane now runs a right-sized gate artifact (§7.8.1's 2-node fp32 `Add→Relu`) through five checks in order: (1) `gate_chain_fp32.py` writes `UNMEASURED` before opening any session, promotes only on a completed comparison; (2) `check_verdict.py`, an independent second reader in a separate process, rejects `MATCH` with empty/zero-count `executed_by`; (3) `epctl --check-counters --require-dispatches 1` (Tank's, third reader); (4) `check_fatal_log.py` grep for `Falling back` under `always()` — a second witness with a genuinely different failure mode from (1)-(3) (a grep cannot `NameError`); (5) a negative control removing the ICD, required to go red with `FAIL(condition=UNATTRIBUTED)` text.
 
-**Verdict 2 (Morpheus's gate):** The S8.9 proof-ledger gate closes the loop. With the gate active: unproven forms decline; CPU EP runs; user gets a correct answer. Rai rules Green on the gated architecture, conditional on the three disclosures being present and non-bypassable.
-
-**The line:** An EP may decline, fall back, and log. It must not silently produce wrong answers. The difference between "no GPU" and "GPU running incorrectly" must be observable without reading source code. compute_failures: 0 while producing zeros fails this standard.
-
-**Independence note:** Rai's ruling does not depend on the engineering rationale and would not change if the engineering rationale were withdrawn -- stated explicitly so a reader cannot mistake parallel reasoning for corroboration (R9's failure mode applied to agents rather than counters).
+**`operational` vs `green` (§7.4.4):** `operational` = exists, builds, runs, reports — a prerequisite, not a satisfaction. `green` = the pass condition includes an *attributed* `MATCH`, and the lane has demonstrated it can fail. **No CI lane is `green` yet** — both build lanes now *carry* the gate but have not been *observed* to pass it on a runner; Link will not classify a lane green from reading its YAML (R10 applied to his own work). The WSL lavapipe result (196 tests, subgroup_size=8, barrier parity 58/0) is explicitly `operational, not green` and "I will not launder it" — its supportable claims are the capability diff and a third independent barrier-parity implementation, nothing about correctness. Subgroup-32 falsifier chain's previously-unsecured link (tests actually executing on GPU, not silently falling back) is now closed by the gate + teed fatal-log grep. OQ-12 Android coverage corrected to ~67.33% as of 2026-07-30 (carried from prior session, restated here with both error directions).
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Switch -- ENGINE_ACCEPTS_RUNTIME_EXTENTS flipped; 97 nodes unlocked (D-S18-01)
+### 2026-08-01T09:53:14-07:00: Full-suite baseline, both devices — 976s under 3.2x contention, and the "68 failed" regression that did not exist
 
-**By:** Switch
-**Date:** 2026-07-30T01:00:00-07:00
+**By:** Trinity (`full-suite-baseline-both-devices`)
 
-ENGINE_ACCEPTS_RUNTIME_EXTENTS = true. 97 nodes on Phi-3.5 (Mul x64, Sigmoid x32, Sub x1) were declined [dynamic-shape] solely because the engine baked extents at Compile. No new kernels needed -- only the dispatch path changed. Three preconditions met: (1) CompiledKernel stops baking at Compile for dynamic nodes via DynKernelRecipe; (2) dispatch_ort reads real shapes at Compute via GetTensorSizeInBytes + read_tensor_desc_from_ort; (3) translate handlers re-run against real shapes via ShapeOnlyRecorder. OQ-15 resolved for M1: re-record per shape (M2+ bucketing is an optimization for persistent-buffer mode). Verified: 161 claimed on both devices; variable seqlen (seq=1 and seq=5 in same session) correct on both devices; cargo ci green.
-
----
-
-### 2026-07-30T19:05:03-07:00: Switch -- EP validation messenger; fence-leak plant; counter scoping fixes
-
-**By:** Switch
-**Date:** 2026-07-30T03:52:28-07:00
-
-**EP-side messenger:** EP_VALIDATION_ERROR_COUNT AtomicU32 static; validation_log_callback installed as VkDebugUtilsMessengerEXT callback routing ERROR to log::error! AND incrementing the counter; Instance gains debug_messenger; Instance::create requests VK_EXT_debug_utils when enable_validation=true.
-
-**Fence-leak plant (M0 criterion 3):** env-gated (ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION). vkDestroyDevice fires VUID-vkDestroyDevice-device-05137. EP_VALIDATION_ERROR_COUNT = 1 confirmed on RTX 4060.
-
-**Counter scoping fixes:** Removed FIRST_DISPATCH_DUMPED one-shot; record_dispatches() calls dump_if_requested() on every dispatch (conftest.py Add-probe no longer overwrites Phi-3.5 counters). Islands regex fixed: count distinct args["op_name"] values among VulkanExecutionProvider events (actual ORT plugin-EP event names have a large hash). Verified: compile_calls=1, subgraphs_live=161, compute_calls=161, compute_failures=0, dispatches_executed=161, islands=161 on both devices.
-
-Multi-run interior-pointer safety test: test_phi35_multi_run_same_session_interior_pointer_safety -- 5 consecutive inferences, asserts all 5 outputs bit-identical and dispatches_executed == 5 x subgraphs_live.
+345 tests/device, 38 failed (dev0) / 34 failed (dev1) / 267-271 passed, both runs ~976s against a ~5min quiet reference (**3.2x slower** per Niobe's contention guard, CONTENDED before and after both runs). No timing figure from either run is quotable. 31/38 (dev0) and 31/34 (dev1) failures share one cause and are **main's pre-existing state**, not a regression from this branch (`git diff --stat origin/main` shows the relevant test files byte-identical) — `assert_vulkan_claims` correctly fails because `Min` is staged-but-not-enabled per §8.9's evidence gating, a policy/expectation mismatch, not a kernel bug; Trinity declined to loosen the assertions to manufacture green. `test_wiring_census` failed with `subprocess.TimeoutExpired` on dev0 only — ruled `UNATTRIBUTABLE` (see Tank's R13-timeout ruling above), not counted as pass or fail. Guard D itself passed in production, reporting `3 fused-island executions` on real hardware — the R10 falsifier a code reading could never supply. One open item handed to Mouse, unresolved: two sessions in one process disagreeing about whether the same node form is claimed (1/1 then 0/1).
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Switch -- VkQueryPool GPU timestamps; tracer end-to-end; phase split measured
+### 2026-08-01T09:53:14-07:00: All wall-clock figures withdrawn; machine-quiescence gating and admissibility grading (consolidated)
 
-**By:** Switch
-**Dates:** 2026-07-30T11:27:08-07:00 (implementation), 2026-07-30T15:41:27-07:00 (session 27 results)
+**By:** Niobe (`contention-guard`, `admissibility-audit`, `niobe-endtoend-withheld-priors-withdrawn`), Switch (`measurement-contamination`), Morpheus (rulings D-M26-01 standing directive, D-M27-01/04 withdrawal)
+**Why consolidated:** the gating mechanism (Niobe), its application to Switch's own session-28-30 data (Switch), and the governance ruling that makes withdrawal mandatory rather than optional (Morpheus) are one policy enacted from three directions.
 
-**Implementation:** timestamp.rs + barrier.rs helper (cmd_write_compute_timestamp confines PipelineStageFlags to barrier.rs per layering rule 7.5). Bracketing calibration: host_anchor_us = (before_submit_us + after_fence_us) / 2; no VK_EXT_calibrated_timestamps (not universal on MoltenVK). tracer().export() wired in VulkanEp::drop() -- was the missing link (tracer accumulated spans; file never written). record_partition() cross-owner edit to ep.rs.
+**Niobe's gate:** `bench/` now requires a machine-quiescence verdict (`QUIET`/`CONTENDED`/`UNMEASURED`, default `UNMEASURED`) via three independent instruments sharing no input (system-wide idle survey; a persisted-reference tachometer; an in-band trace contention signature) before releasing any duration; a non-`QUIET` verdict withholds medians/delta/ratio rather than printing them with a warning. Motivated by the coordinator's control: `vulkan.record` went 19,460→184,356 ms (9.5x) under six-agent load, undetected by drift-only checks. `bench/admissible.py` separately grades stored artifacts `ADMISSIBLE`/`INADMISSIBLE`/`WITHDRAWN`/`NOT_A_RESULT` — "absence of a check is a refusal, not a default green." Applied to Mouse's GQA files: a naive before/after read as 5.44x speedup, but the CPU baseline moved 18.0x across a Vulkan-only change — both readings inadmissible; a would-be "first win" (1.10x) also fails four of five gates. Niobe polled ~2.5 hours for a quiet window across the session and never got one, and explicitly declined to publish the exciting (fast) sample while withholding the disappointing (slow, Intel) one — both fail the same three checks for the same reason.
 
-**Empirical confirmation (D-S27-01):** 322 GPU kernel spans with real durations on Intel Iris Xe (52.0833 ns/tick). 33 islands in vulkan.getcapability event args. 1 span per claimed node.
+**Switch's application to his own data:** sessions 28-30 timing was taken under multi-agent contention; correctness findings and qualitative *direction* survive (cache reduces upload; recording cost is fixed per-Compute), but the quantified "2.85x speedup from weight cache" and the Intel-faster-than-NVIDIA inversion are explicitly withdrawn as contaminated.
 
-**Phase split (D-S27-04), 34 submissions, 322 kernel dispatches, 1 inference:**
-| Metric | Intel Iris Xe | NVIDIA RTX 4060 |
-|---|---|---|
-| GPU kernel total | 784.6 ms | 48.3 ms |
-| Fence-wait total | 893.8 ms | 82.7 ms |
-| Record total (CPU) | 1340.3 ms | 1316.6 ms |
-| Per-submission record time | 39.4 ms | 38.7 ms |
-
-**85.9% of runtime involves no GPU kernel work:** recording 68.3% + fence-wait GPU idle 16.3% + submit 0.3%. Command-buffer re-recording is the dominant mechanism (not driver dispatch overhead; not per-boundary transfer). NVIDIA recording (1317 ms) is 27x GPU kernel time (48 ms). Niobe's fixed-per-submission hypothesis: CONFIRMED that there is a fixed cost, but the dominant term is re-recording, not submit overhead (submit is 0.3%).
-
-**Expected speedup from record-once/replay:** 94% NVIDIA, 60% Intel. This is the highest-leverage optimization available.
-
-**Declined-op histogram (D-S27-05):** GQA x32 staged (primary island splitter), Gather x2, Cast x2, SimplifiedLayerNorm x1, Shape x1, ReduceSum x1, Sub i64 x1, Greater x1, If x1. GQA is Mouse's highest-priority kernel (potentially reduces 33 -> 1 island if all are bridge positions).
+**Morpheus's governance:** the standing directive to push performance continuously (D-M26-01) does **not** add a performance gate to M0 — "slowness is loud, wrongness is silent," and a speed gate is passable by claiming nothing; it changes sequencing (performance work runs continuously and in parallel, instrumented as a *rate obligation* — a falsifiable series, not a threshold) and adds one clause on Morpheus's own authority: no timing figure is quotable from a run whose verdict is not (now: attributed) `MATCH`. Every wall-clock figure this project holds, **including the previously-quoted 3.1x/3.7x**, is withdrawn — they were measured on runs where this EP executed zero nodes (CPU-vs-CPU). Published instead: `docs/PERF.md` §13.4.3, **NVIDIA 40.201 ms/inference GPU-busy device-clock, 0.033% RSD** (first admissible number in the project's history) — contention inflates host work but cannot touch the GPU clock. Intel is `NO_STEADY_TAIL` and withheld — an iGPU shares its power budget with loaded CPU cores, so its device clock is not contention-immune.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Switch -- session 26: multi-node island merge resolution + clippy fixes
+### 2026-08-01T09:53:14-07:00: Instrument census gains a sixth mechanical state, `unfalsified`, and R10/R11 named as separate rules (consolidated)
 
-**By:** Switch
-**Date:** 2026-07-30T15:41:27-07:00
+**By:** Tank (`instrument-census`), Trinity (`harness-instrument-census`), Morpheus (rulings `r10-unwired-and-perf-criterion`, `r11-naming-and-decomposition` — full text of D-M-R10, D-M-702, D-M-M0-4, D-M-PERF, D-M-SEQ4, D-M25 series also recorded here for provenance)
+**Why consolidated:** Tank's Rust-side static census and Trinity's Python-side harness census are explicitly one census with two domains sharing one baseline file (schema bumped 1→2), motivated by the same finding (Guard D) and governed by the same two Morpheus rulings.
 
-Mouse's dc36166 wired partition.rs into GetCapability (321 -> 33 islands, Intel 2954 ms -> 807 ms). git merge origin/main conflicted in session.rs. Resolution: take BOTH sides for all three conflict hunks. alloc_temp named/positional mode: Mouse's named mode adopted for multi-node first-kernel case (gpu_intermediates token names must be stable across kernels within an island). dispatch_ort opening: tracer Phase guards + upload record_transfer() alongside n_plan_inputs/n_plan_outputs declarations. Submission section: split-fence wait + GPU timestamp read alongside gpu_intermediates in both free_all calls.
+**Tank's four original states** (absent/uninvoked/unreachable/misnamed) found and fixed several specimens: `SIBLING TOTAL` excluded `Phase::Prepack` from its own hand-summed total (a composite whose total excluded a term); the dead-instrument screen itself was defeated twice — once by NOT-WIRED strings naming their own instrument (textual reference-counting scored dead instruments as wired), once by a comment/string stripper leaving an unterminated quote that mis-scored six wired counters as dead — now a single-pass stripper with a 7-case self-test that must pass before the census reports anything. Rule candidate offered to Morpheus: *"name the thing this number excludes; if nobody can, it is not a measurement, it is a label."*
 
-dispatch_ort now 11 arguments: #[allow(clippy::too_many_arguments)] added (deferred to M2+ refactor). Mouse's new ep.rs unsafe blocks documented with SAFETY comments per -D clippy::undocumented_unsafe_blocks. Verified: 366 tests, 0 failed; Mouse's fp16 tests PASS on both devices; trace file EXISTS; messenger EP_VALIDATION_ERROR_COUNT=1.
+**Trinity's harness domain (`unfalsified`, the state that would have caught Guard D):** *called, possibly often, but no always-on test has observed it in both polarities.* R10's `uninvoked` screen would **not** have caught Guard D — it had four production callers. Decided from the test AST (non-GPU-gated test calls it inside `pytest.raises` AND another outside one); first run found `assert_matches_cpu` — the correctness oracle itself — has been watched agreeing 9 times, disagreeing 0, and "we would not know" if it were `return` — first in the queue by blast radius. Ordering: `absent → uninvoked → unfalsified (harness) → unreachable → out-of-frame → misnamed`.
 
----
-
-### 2026-07-30T19:05:03-07:00: Tank -- allocator exercised through claimed path; single-run structural blindness; two-population finding
-
-**By:** Tank
-**Dates:** 2026-07-30T05:01:09-07:00, 2026-07-30T05:48:29-07:00
-
-**D-T67 -- Allocator in ORT's path:** 648 pointers came back at the base of device handles in one op-table run (255 allocations, 255 matched frees, both devices). All 255 spans: host memory. alloc_device_backed_spans: 0. "Device memory is on" != "tensors are on the device."
-
-**D-T68 -- Single-run structural blindness:** Every tests/ops/ helper is _session(...).run(...) -- one run, session dropped. 184 single-run sessions: pointers_interior = 0. One five-run session: 52 interior pointers. The suite that runs most often is structurally incapable of producing a single interior pointer. probe_planner.py --require-interior fails when zero interior pointers observed.
-
-**D-T69 -- Staging verdict as assertion:** allocator::tally::staging_verdict() computes whole-run claim at teardown with MIRRORED state. epctl --check-counters --require-device-memory asserts it. Key absent -> exits 3 (absent key is not zero, is not a pass).
-
-**D-T75/D-T76 -- Two-population finding:** With allocator IN or OUT of path: logits 0.0 in all positions on all runs (something wrote zeros); KV cache outputs 1..64 bitwise different between run 1 and runs 2+ (unwritten, dirty arena). Two distinct failure modes. Handed to Switch and Mouse (binding-arity bug resolved both).
-
-**D-T77 -- Interior-pointer path at model scale:** 3-run Phi-3.5 probe -> 1192 interior pointers. probe_run2.py and probe_planner.py --require-interior are currently the only lanes reaching this path.
+**Morpheus's R10:** *a mechanism's existence is a claim about the call graph, not the source tree; the falsifier for "X is wired" is an artifact whose content varies with input — never a code reading, never an author-set flag.* Six specimens found this way, including `partition.rs`'s `retain_viable` (called only from `#[cfg(test)]`) and the EP's own validation messenger (layer loaded, output to stderr, no listener). Companion rule §7.0.2: *a claim is a scheduling decision, not a capability statement — correctness is necessary, not sufficient; net-benefit is a property of an op in a graph at a coverage level, never of the op alone* (evidence: `SkipSimplifiedLayerNormalization` and `Cast`, both flipping from harmful to helpful as coverage changed). M0 tally as of that ruling: 6 met/4 partial/2 not met of 12; no performance criterion enters M0 (four reasons, chiefly "slowness is loud, wrongness is silent"), but a disclosure obligation is added instead (the end-to-end CPU ratio, never omitted, never gated) and M1 gains a non-gameable counter-before-a-clock criterion.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Tank -- coverage falsifier confirmed; 2.09 GB scope error resolved; quarantine status
+### 2026-08-01T09:53:14-07:00: Mouse — the last ten CPU nodes: claim 2, decline 8 permanently
 
-**By:** Tank
-**Date:** 2026-07-30T07:51:58-07:00
+**By:** Mouse (`last-ten-nodes`)
 
-**D-T78 -- Run-count confirmed:** probe at PROBE_RUNS=1 -> 0 interior pointers (matches coordinator's zero). At 2: 596, at 3: 1192, at 4: 1788 -- linear, zero intercept. Coordinator's reading CONFIRMED. Reserved-VA design met a real planner at 2 GB, zero guard-band hits in 21,460 opportunities (two vendors).
-
-**D-T79 -- Scope error resolved:** The "322 device handles still live" warning was a scope error. HandleRegistry is process-global; reading live_spans at one allocator's release counted spans from other still-running sessions. alloc_allocations: 2511, alloc_frees: 2511 on Phi-3.5 under pytest -- ORT hands back every span. Warning corrected: scoped to warn! only for the last allocator on a device.
-
-**D-T80 -- Counter reproduced the bug it was built to fix:** First version of alloc_frees_after_release tested allocators_released > 0 (monotone), reporting 2508 late frees on a healthy run. Same scope error as the warning it replaced. Fixed to require allocators_live == 0. General rule: a diagnostic that names an owner is making a scope claim, and the scope claim needs the same falsification as the value.
-
-**D-T81 -- Quarantine gap worse under multi-run:** ORT's free traffic grows by only 2 per additional run (planner stops allocating from run 2). Multi-run is the regime LEAST likely to present a stale handle. The gap will not close with more runs. Status unchanged: "ORT has not presented us with a freed handle under any allocation pattern we have run." Not "quarantine is verified."
+Phi-3.5's remaining 10 CPU-side nodes were three structurally different things, not ten gaps: 2 claimed (`SimplifiedLayerNormalization` needing a second predicate row for the ORT GenAI builder's spelling; `Gather` with float-only caps, deliberately not widened to `ANY` to avoid silently corrupting the integer-index `seqlens_k` output), and 8 declined **permanently on technical merit**: 6-node INT64 control plane (would need `shaderInt64` + a Cast matrix + a reduction template to move scalar arithmetic the host computes for free), 1 `Shape` node (round-tripping 16 bytes the host already holds), 1 `If` control-flow node (GRAPH-typed attribute, no subgraph-execution machinery, would force a fence stall mid-island for session-invariant outputs). Result, both devices, byte-identical: 355 claimed/1 island/8 declines/0 cut-instances; 24 CPU node-executions over 3 runs (8×3), argmax 30751 matching CPU. Per R13, no wall-clock figure is quoted (`phase_containment` was RED on both devices at time of writing, predating Niobe's fix above). Standing guidance: the remaining 8 should not be reopened as coverage debt — the number to move is boundary bytes, not the claimed percentage.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Tank -- model-scale allocator verification (D-T72 through D-T77)
+### 2026-08-01T09:53:14-07:00: `retain_viable` gate has never run on the real model, and the byte transfer model just moved 1,750x — the highest-risk combination in the partition path (consolidated)
 
-**By:** Tank
-**Date:** 2026-07-30T05:48:29-07:00
+**By:** Mouse (`retain-viable-gap`, `transfer-recalibration`)
+**Why consolidated:** Mouse explicitly links the two findings as one risk in his own text — the gate that would catch an under-claim has no real exercise, at precisely the moment its threshold moved by three orders of magnitude.
 
-**D-T72 -- NaN-comparison instrument fixed:** probe_run2.py first used np.max(np.abs(a-b)) which returns NaN when either side has NaN, even if bit-identical. Replaced with raw-byte equality (a.tobytes() == b.tobytes()) + np.nanmax over finite subset. The verdict survived (outputs really differ) -- the instrument was right by luck, and a lucky instrument is indistinguishable from a reliable one.
+**`retain_viable` gap:** the net-benefit economics gate is WIRED per the wiring census (correctly — R10-resolved), but Phi-3.5 partitions into exactly **one** cluster, so `only_one_cluster == true` short-circuits `GetCapability` before the gate ever runs — `viable_islands_retained == 0` means the gate was **bypassed**, not that it rejected everything, and the census vocabulary cannot currently express that distinction (present-and-0 vs UNWIRED, correctly separated by type, but "bypassed" vs "ran and found nothing" is not). The gate's only exercise is a synthetic two-branch test built specifically to give it something to decline — "improving the partition result made the partition gate untestable on the thing it partitions." Escalated to Morpheus (does WIRED-synthetic-only need its own census state?) and Niobe (a second real model that partitions into ≥2 clusters, or an accepted counterfactual run, is what closes this).
 
-**D-T73 -- Verification 1 at model scale:** Phi-3.5 (2.2 GB), DEVICE_MEMORY=1, 3 runs, both devices: pointers_interior: 1192, pointers_in_guard_band: 0, alloc_allocations: 427, alloc_bytes: 2,095,251,328. Reserved-VA design met 1192 interior pointers from a real planner, zero guard-band hits in 21,460 opportunities. All 427 spans: host staging. epctl --require-device-memory exits 1 (correct).
-
-**D-T74 -- Quarantine:** pointers_use_after_free: 0 across 18,460 pointer observations. Honest statement: "ORT has not presented us with a freed handle under any pattern we have run." Not "quarantine is verified."
+**Transfer recalibration:** the brief's claimed halving (1997.6→0.756 MiB) was Switch's residency win, already present in a pre-Mouse control commit — Mouse's own two op claims account for exactly 6,136 of 399,376 bytes/inference (see weight-residency entry above for the full correction). Corrected boundary: 0.817 MiB total (upload 46.6%, readback 53.4%, asymmetric). Consequence: with transfer now ~1,750x cheaper, the net-benefit gate's remaining discriminating power sits almost entirely in `fixed_ns`, the one parameter with **no measurement behind it** (transfer's *nanoseconds*, unlike its *bytes*, still cannot be calibrated under R13 without an attributed-`MATCH` run) — for small-boundary islands the gate has degenerated to `2 × fixed_ns`, insensitive to the byte count it nominally reasons about. An under-declining gate is a **silent** failure mode (slow inference, never a wrong answer) — paired with the gate never having run on the real model, this is flagged as the highest-risk combination in the partition path.
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Tank -- remeasure prediction for 33-island configuration (D-T90, sealed)
+### 2026-08-01T09:53:14-07:00: Criterion 3/4/5/12 controls landed; validation-messenger scope clarified (consolidated)
 
-**By:** Tank
-**Date:** 2026-07-30T16:11:31-07:00
-**Status:** Prediction, sealed before measurement. Coordinator asked for a prediction falsifiable in advance.
+**By:** Trinity (`criterion-3-4-5-12-controls`), Switch (`criterion3-lane-gap`, `validation-control-trinity`)
 
-**Claim:** alloc_device_backed_spans substantially unchanged (within +/-10% of 427); DEVICE_MEMORY on/off wall-clock ratio ~1.00 on BOTH devices. Mirror upload fires once per allocation (at weight deserialization during warm-up, outside the measured loop). Island count changes boundary crossings per inference, not tensor allocation count.
-
-**Weaker claim (stated separately):** The 0.94x speedup on RTX 4060 (321-island measurement) does not reproduce under 33 islands; ratio returns within noise of 1.00.
-
-**Falsifiers:** backed spans outside 380-470; ratio outside 0.97-1.03 in a direction that repeats across 3 process repeats; alloc_device_uploads scaling with inference count.
-
-**NOT claimed:** device backing is useful. alloc_device_authoritative_spans = 0 and expected to stay 0.
+Trinity landed paired positive/negative controls for criteria 4 (ICD-present vs absent) and 5 (shaders-compiled vs shader-less), the criterion-3 validation lane (armed check, in-lane plant, clean-after-fix), and the criterion-12 wiring-census harness, all passing on both devices. Switch's `criterion3-lane-gap` flagged that the EP's own-instance messenger plant (`ep_messenger_fires_for_planted_fence_leak`) was `#[ignore]`d and so outside the always-run lane — resolved by Trinity's subprocess wrapper (`cargo test --lib --release -- --ignored ...`), which Switch confirmed is the correct and sufficient home; the `#[ignore]` stays (the test deliberately provokes a real Vulkan error and must own the process). Switch's one open ask: the wrapper should require `Instance::validation_armed()` before treating a silent messenger as a pass, else a machine without validation layers reports a green messenger test while listening to nothing — "the exact shape of the NameError-as-green-guard mistake." (See separate entry above for the related but distinct finding that a "0 errors at shutdown" gate on the *production*, never-destroyed device is `UNOBSERVABLE`, not `0`.)
 
 ---
 
-### 2026-07-30T19:05:03-07:00: Trinity -- model_output_equivalence verdict implementation
+### 2026-08-01T09:53:14-07:00: Morpheus — M0 criterion 10 reopened on `UNATTRIBUTED`, cheap re-closure specified; ranked performance order survives
 
-**By:** Trinity
-**Date:** 2026-07-30
+**By:** Morpheus (ruling D-M27-03, D-M27-04 — see also the R12/R13/vocabulary rulings folded into their respective entries above)
 
-**Verdict field:** JSON-only addition. C struct VulkanEpCounters unchanged; abi_version stays 1. Correct design: the EP cannot compute the verdict (no oracle access); it is computed externally and written into JSON. to_json_with_equiv() on VulkanEpCounters; to_json() calls it with UNMEASURED default; dump_observations_if_requested() reads existing verdict and rebuilds (preserves MATCH/DIVERGENT written by Python gate before teardown overwrites).
-
-**epctl enforcement:** EquivalenceDivergent (DIVERGENT with dispatches >= required -> exit 1); EquivalenceUnmeasured (UNMEASURED with dispatches >= required -> exit 3). DIVERGENT always fails. UNMEASURED always exits 3. No bypass flag. Check order: ABI -> dispatches -> guard-band -> dispatch count -> equivalence.
-
-**One declared gap:** write_equivalence_verdict() Python write path has no Rust unit test -- correctness verified by inspection only. If this write path has a bug, epctl will report the wrong verdict and no automated check will catch it before a human runs epctl manually.
-
----
-
-### 2026-07-30T19:05:03-07:00: Trinity -- Q/DQ opset-23+ oracle guard; ORT 1.28 ceiling corrected; no-bump audit ownership
-
-**By:** Trinity
-**Date:** 2026-07-30T08:46:10-07:00
-
-**Q/DQ guard:** assert_qdq_reference_oracle_safe(opset, attributes) raises RuntimeError for any ReferenceEvaluator path on Q/DQ >= 23 with output_dtype or block_size. _probe_qdq_reference_oracle() runs at pytest_configure; prints status to stderr. No current test uses ReferenceEvaluator for Q/DQ at any opset.
-
-**ORT 1.28 ceiling corrected to opset 27:** ORT 1.28 registers ONNX opsets through 27 (upgraded to ONNX 1.22.0). The onnxruntime.ai table is stale. "Support opset 26" is fully exercisable, with headroom to opset 27.
-
-**No-bump ownership split:** Trinity owns detection (session-start probe + guard function per affected oracle path; extensible pattern). Semantic audit of whether a new no-bump correction affects ops we claim is Fact Checker's standing task (monthly sweep of onnx PRs merged since previous release). Findings from Fact Checker go into OP_COVERAGE.md per-row notes and are relayed to Trinity for probe/guard additions.
-
----
-
-### 2026-07-30T19:05:03-07:00: Trinity -- shape-delta test refound; three-class taxonomy; Max exception
-
-**By:** Trinity
-**Date:** 2026-07-30T09:14:00-07:00
-
-**What was wrong:** test_uninferred_shape_ep_declines failed on 12 CLASS-1 ops after Switch's runtime-extents fix made them claimable without output-shape annotation. The test asserted DECLINE; the code had gotten better. The false premise was in the function name (invisible to docstring-grep audit).
-
-**Three-class taxonomy (in module docstring):** CLASS 1 (rank-known, extents-symbolic) -> claimable with ENGINE_ACCEPTS_RUNTIME_EXTENTS=true; CLASS 2 (rank-unknown) -> not claimable; CLASS 3 (data-dependent) -> permanently unclaimable.
-
-**Fix:** test renamed test_ep_claims_without_output_annotation with inverted assertion (CLAIMS). test_inferred_shape_ep_claims[Max-fp32-dyn] -> xfail(strict=True) (Max declines even after annotation; root cause unknown).
-
-**Audit method extension:** Must also grep function names containing _ep_declines or _ep_claims, not only docstrings. This is the transferable finding: a test whose only statement of its premise is its function name is invisible to docstring-grep audits.
-
----
-
-### 2026-07-30T19:05:03-07:00: Trinity -- xfail markers flipped; binding-arity coverage dimension named
-
-**By:** Trinity
-**Date:** 2026-07-30T09:16:27-07:00
-
-**xfail removed:** test_phi35_vulkan_matches_cpu_logits and test_phi35_vulkan_cross_run_consistency both active correctness gates. Evidence: argmax vk=cpu=30751, top-10 overlap 10/10 on both devices, BIT-IDENTICAL across all 65 outputs on both devices via probe_run2.py. max|vk-cpu| ~0.03 (fp16 accumulation-order divergence, expected).
-
-**Binding-arity as coverage dimension:** Bug was at (3-input) x (symbolic/dynamic batch). Static-batch forms used push_static_kernel/push_normal_kernel, which captured bindings correctly. Dtype (fp16) was not the axis; input arity x batch-path was. Proof-ledger populated_optional_input_set component would have caught it: 3-input form and 4-input form get different keys.
-
-**Coverage axis added to test_matmulnbits.py:** axes tracked: bits | block_size | input_arity | batch_path | dtype | rows | runs. Covered: 3-input x static, 4-input x static, 3-input x symbolic. Declared gap: 4-input x symbolic (lower priority; on the debt list).
-
-**epctl FreeAfterRelease test isolation:** Tank's new test hit Trinity's equivalence check (base snapshot was UNMEASURED). Fixed by using snapshot_match() as base for FreeAfterRelease tests. FreeAfterRelease is checked BEFORE equivalence in the check order (unconditional, like OutOfBounds).
-
----
+M0 criterion 10 (and, through it, criterion 2) is **reopened**, not "met with recorded scope" — the prior evidence was void (measured a different thing: CPU-vs-CPU) rather than narrow, so scope cannot repair it. Reopening is deliberately cheap and specified in advance, not punitive: **three consecutive attributed-`MATCH` runs in one session on Phi-3.5 close it the day they arrive, with no new conditions** — the multi-run requirement already existed (2026-07-30 cross-run gate), this only applies it to a row not previously assessed against it. Tally: 4 met/6 partial/2 not met of 12 (was 6/4/2). The genuine new evidence — ORT's own profiling now reports 1 fused-island Vulkan execution + 10 CPU (Mouse's exact declined set) with argmax matching CPU — "is worth more than the reading it replaces," but is one run where three are required. The ranked performance order (residency > net-benefit declines > fence-wait > kernels) survives unchanged in *position*, because it was always derived from counts and ratios, never from withdrawn wall-clock figures — "a count and a ratio do not care what the absolute number was." Rank 1's *content* moves to bounded residency (see weight-residency entry above). The project did not go backwards: the EP executed a real model on GPU for the first time today, and per-inference upload fell 1997.6→0.756 MiB — "both are real; neither is a criterion. A milestone table is not a progress report — it is a list of claims we are prepared to defend."

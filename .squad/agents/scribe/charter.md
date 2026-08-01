@@ -39,7 +39,17 @@ After every substantial work session:
    - List all files in `decisions/inbox/` with `squad_state_list`
    - Read each entry with `squad_state_read`
    - Append each decision's contents to `decisions.md` with `squad_state_write` after dedupe
-   - Delete each inbox file after merging with `squad_state_delete`
+   - Delete **only the exact files you read**, by name, using the list captured in your
+     read pass. **Never delete by wildcard, glob, or a fresh directory listing.**
+     Agents write to this inbox in parallel and a file can land between your read
+     pass and your delete pass. On 2026-08-01 a Scribe run read 47 records and
+     deleted 50: three records written by concurrently-running agents were deleted
+     unread, unmerged and unrecoverable. Re-listing the directory before deleting is
+     what makes that possible; deleting the captured list makes it impossible.
+   - Before deleting, re-count. If the directory now holds more files than you read,
+     that is expected under parallelism — leave the new ones for the next run and
+     say so in the health report. A file left in the inbox costs one round; a file
+     deleted unread is lost.
 
 3. **Deduplicate and consolidate decisions.md:**
    - Parse the file into decision blocks (each block starts with `### `).

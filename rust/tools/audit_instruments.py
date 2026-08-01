@@ -4,18 +4,52 @@ R10 (Morpheus, §10.0.1): a mechanism that exists in the source tree and not in 
 graph is indistinguishable from one that was never written, and review cannot tell them
 apart. This is the screen that tells them apart.
 
-# The four states
+# The six states, ordered by how late the failure is discoverable
 
     absent       no listener exists at all
     uninvoked    exists, never called from production code (tests do not count)
-    unreachable  called, but its output goes where nothing reads it
-    misnamed     wired, invoked, correct — and its name misdescribes its content
+    unfalsified  called, and nothing has ever observed it produce BOTH answers, so a
+                 guard that always passes, always crashes, or has inverted polarity is
+                 indistinguishable from a working one
+    unreachable  called, but its output goes where nothing reads it — including a guard
+                 that raises before it reads its input, which is invoked and never in a
+                 position to report
+    out-of-frame wired, invoked, correct — and the event it counts *cannot occur* in the
+                 frame it observes, so its honest report is `UNOBSERVABLE`, never `0` (R12)
+    misnamed     wired, invoked, correct — and its name misdescribes its content (R11)
 
-Only **uninvoked** is decidable from text, so only that one is automated here. `absent`
-needs a spec, `unreachable` needs to know who reads which artifact, and `misnamed` needs
-to know what the name promises. Those three are in `.squad/decisions/inbox/` as a hand
-census; this script keeps the one machine-checkable column honest and, crucially, makes
-the census *fail* when it drifts rather than quietly ageing.
+Two are decidable from text and are automated here: **uninvoked** (Rust and harness) and
+**unfalsified** (harness, from the test AST). `absent`, `unreachable`, `out-of-frame` and
+`misnamed` need a spec, a reader, a frame and a promise respectively; they live in
+`instrument_census.json` as a hand census.
+
+# RULING (Tank, 2026-08-01): R13 does NOT add a seventh state. It is the reporting layer.
+
+The question was whether Guard D — which raised `NameError` before reading a single
+profiling event, went red, and was reported as working — is a new census state.
+
+It is not, and the reason is worth stating because the classification is load-bearing.
+Ask what the state is a property OF. All six above are properties of **an instrument's
+position in the system**: does it exist, is it called, has it been seen to discriminate,
+does anything read it, can its event occur, does its name match. Guard D's own position
+is already covered: invoked, never in a position to report = `unreachable`, the state
+whose whole definition is "ran, produced nothing observable".
+
+What R13 names is a property of **the channel the verdict travels down**: pytest's
+summary line has a two-token alphabet (`PASS`, `FAILED`) and was carrying three states.
+That confusion is not specific to `unreachable`. An `out-of-frame` counter quoted through
+a two-token gate is misread exactly as badly; so is a `misnamed` one. R13 applies to every
+row of this census at once, which is precisely what makes it a different axis and not a
+seventh row. A state that applies to all states is not a state.
+
+The consequence is mechanical rather than taxonomic, and it binds this script:
+
+  **This census reports three terminal tokens, never two.** `PASS` (exit 0), `FAIL(drift)`
+  (exit 1) — the condition it exists to detect — and `ERROR(instrument)` (exit 2), in which
+  the census did not reach its observation. A traceback and a drift are different findings;
+  before this, both left through the same door as "non-zero exit". `subprocess.TimeoutExpired`
+  in a caller of this script is `ERROR(instrument)`, never a detection, and a lane that
+  records one has not run the census whatever else it reports.
 
 # Why it compares against a checked-in baseline instead of just printing
 
@@ -36,7 +70,7 @@ forced to look at is a number nobody looks at.
 
 Usage:
     python rust/tools/audit_instruments.py            # print the screen
-    python rust/tools/audit_instruments.py --check    # exit 1 on drift
+    python rust/tools/audit_instruments.py --check    # 0 PASS / 1 FAIL(drift) / 2 ERROR
 """
 
 from __future__ import annotations
@@ -225,12 +259,25 @@ def uninvoked(rows: list[dict]) -> list[str]:
 # listed by hand under `hand.harness_notes` with the reason they are unscreenable.
 
 # Files whose module-level functions are the harness instruments under audit.
-HARNESS_INSTRUMENT_FILES = ["ops/_models.py"]
+#
+# `ops/_verdict.py` added 2026-08-01 (Trinity).  It was written after this screen and the
+# screen did not know about it, so the census read "9 harness instruments" while fifteen
+# more — including every guard the §10.0 third amendment and R13 rest on — sat outside its
+# frame.  A census whose frame excludes the newest instruments reports a number about a
+# world it has not surveyed, which is the shape this whole file exists to catch (R12).
+HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py"]
 
 # A harness instrument is a function that renders a verdict: it either raises on a bad
 # world or returns a number a gate reads.  Helpers that only build models or run sessions
 # are not instruments and are excluded by name.
-HARNESS_FN = re.compile(r"^(assert_|count_|check$|check_|require_|verify_|expect_)|_verdict$")
+#
+# `classify_` added with `ops/_verdict.py`: an R13 classifier that maps (exit code, text)
+# onto PASS/FAIL/ERROR renders a verdict as surely as an `assert_` does — it just returns
+# the token instead of raising it.  See `hand.harness_notes`: the raise-based polarity
+# model below cannot screen a total function, and saying so is the point.
+HARNESS_FN = re.compile(
+    r"^(assert_|count_|check$|check_|require_|verify_|expect_|classify_)|_verdict$"
+)
 
 # Decorators / fixtures that mean "this test does not run in the always-on lane".
 HARNESS_GATE = re.compile(r"require_vulkan|skipif|\bskip\b|xfail|slow|gpu|require_model")
@@ -415,10 +462,18 @@ def self_test() -> int:
     return 1 if bad else 0
 
 
+class CensusInstrumentError(RuntimeError):
+    """The census did not reach its observation. R13: never a detection."""
+
+
 def main(argv: list[str]) -> int:
     if self_test():
-        print("FAIL: the comment/string stripper is broken; census not run.", file=sys.stderr)
-        return 1
+        # ERROR(instrument), not FAIL: a broken stripper means the census never reached its
+        # observation. Raising rather than returning 1 keeps that distinction out of the
+        # caller's hands — see `main_guarded`.
+        raise CensusInstrumentError(
+            "the comment/string stripper is broken; census not run and nothing was screened"
+        )
     rows = survey()
     found = uninvoked(rows)
 
@@ -466,8 +521,10 @@ def main(argv: list[str]) -> int:
         return 0
 
     if not BASELINE.exists():
-        print(f"\nFAIL: no baseline at {BASELINE}", file=sys.stderr)
-        return 1
+        raise CensusInstrumentError(
+            f"no baseline at {BASELINE}; the comparison input is missing, so no drift was "
+            "observed either way"
+        )
     base = json.loads(BASELINE.read_text(encoding="utf-8"))
     expected = sorted(base["uninvoked"])
     new = [x for x in found if x not in expected]
@@ -522,14 +579,63 @@ def main(argv: list[str]) -> int:
                 print(f"  - {x}", file=sys.stderr)
 
     if new or gone or h_bad:
+        print("\nCENSUS VERDICT: FAIL(drift)")
         return 1
     print(f"\nOK: uninvoked set matches the baseline ({len(found)} known).")
     print(
         f"OK: harness screen matches the baseline "
         f"({len(h_uninvoked)} uninvoked, {len(h_unfalsified)} unfalsified)."
     )
+    print("\nCENSUS VERDICT: PASS")
     return 0
 
 
+# §10.0.1 R13 — three terminal tokens, never two.
+#
+# Before this wrapper, a drift and a traceback both left through the same door: "non-zero
+# exit". That is the Guard D shape applied to the census itself — a mechanism whose outage
+# is spelled the same way as its finding — and it would have been the harder specimen,
+# because the census is the thing everyone else's evidence rests on.
+#
+# The token is printed on its own line AND encoded in the exit code, because a caller that
+# reads only one of the two must still get three states:
+#
+#     0  PASS               the census ran and the baseline matches
+#     1  FAIL(drift)        the census ran and found the condition it exists to detect
+#     2  ERROR(instrument)  the census did not reach its observation. NEVER a detection.
+#
+# `subprocess.TimeoutExpired` in a caller of this script is ERROR(instrument) and belongs
+# in the same bucket as an exception here: it is a lane failure of a different kind, and a
+# lane that records one has not run the census, whatever else it reports.
+EXIT_PASS = 0
+EXIT_FAIL_DRIFT = 1
+EXIT_ERROR_INSTRUMENT = 2
+
+
+def main_guarded(argv: list[str]) -> int:
+    """Run `main` and translate any escape into `ERROR(instrument)` rather than a FAIL."""
+    try:
+        rc = main(argv)
+    except Exception as exc:  # noqa: BLE001 — the whole point is to catch everything
+        import traceback
+
+        traceback.print_exc()
+        print(
+            f"\nCENSUS VERDICT: ERROR(instrument) — {type(exc).__name__}: {exc}\n"
+            "  The census did NOT reach its observation, so it detected nothing. Quote this "
+            "text, not an exit code and not a failure count (R13).",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR_INSTRUMENT
+    if rc not in (EXIT_PASS, EXIT_FAIL_DRIFT):
+        print(
+            f"\nCENSUS VERDICT: ERROR(instrument) — main() returned {rc}, which is not one of "
+            "the two states it is allowed to return.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR_INSTRUMENT
+    return rc
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main_guarded(sys.argv[1:]))

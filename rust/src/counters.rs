@@ -90,6 +90,27 @@ pub const EQUIVALENCE_MATCH: &str = "MATCH";
 pub const EQUIVALENCE_DIVERGENT: &str = "DIVERGENT";
 /// Verdict value (default): no CPU comparison was performed in this run.
 pub const EQUIVALENCE_UNMEASURED: &str = "UNMEASURED";
+/// Verdict value: the comparison was performed and **this EP executed zero nodes**.
+///
+/// Added 2026-07-31 by §10.0's third metric amendment. This is **not** `DIVERGENT`:
+/// `DIVERGENT` says our kernels computed the wrong answer, `UNATTRIBUTED` says our kernels
+/// did not run and the comparison was CPU-vs-CPU. Different owners, different fixes,
+/// different next questions — "a lane that prints one red for both is a lane with R13's
+/// defect". Written by the Python harness (`tests/ops/_verdict.py`), which derives it and
+/// cannot be made to emit `MATCH` at a zero own-provider count.
+pub const EQUIVALENCE_UNATTRIBUTED: &str = "UNATTRIBUTED";
+/// Verdict value: the two attribution witnesses disagree about whether this EP ran.
+///
+/// The ORT profile (an instrument we do not own) and `dispatches_executed` (ours) must
+/// agree about *presence*, not magnitude. One saying "ran" while the other says "did not"
+/// means one of the two instruments is lying and we do not know which; nothing may be
+/// reported until we do (§10.0 third amendment, clause 2).
+pub const EQUIVALENCE_SPLIT_FRAME: &str = "SPLIT-FRAME";
+/// The JSON key for the full verdict record: `executed_by`, `attribution_source`,
+/// `attribution_witnesses`, `artifact`, device identity. Written beside the token by
+/// `tests/ops/_verdict.py::write_equivalence_record`, because *a caveat that lives in a
+/// different artifact from the number it qualifies is not attached to it*.
+pub const EQUIVALENCE_RECORD_KEY: &str = "model_output_equivalence_record";
 
 /// Extract the `model_output_equivalence` value from an existing JSON snapshot string.
 ///
@@ -117,7 +138,71 @@ pub fn extract_equivalence(doc: &str) -> &'static str {
     if rest.starts_with(EQUIVALENCE_DIVERGENT) {
         return EQUIVALENCE_DIVERGENT;
     }
+    if rest.starts_with(EQUIVALENCE_UNATTRIBUTED) {
+        return EQUIVALENCE_UNATTRIBUTED;
+    }
+    if rest.starts_with(EQUIVALENCE_SPLIT_FRAME) {
+        return EQUIVALENCE_SPLIT_FRAME;
+    }
     EQUIVALENCE_UNMEASURED
+}
+
+/// Extract the raw `model_output_equivalence_record` **object** from an existing snapshot.
+///
+/// Returns the object text including its braces, or `None` if the key is absent or the value
+/// is not a brace-delimited object.
+///
+/// # Why this exists
+///
+/// `dump_observations_if_requested` rebuilds the counters file from scratch at teardown and
+/// carried the verdict *token* across but not the *record*. The observable consequence was a
+/// file on disk reading `"model_output_equivalence": "MATCH"` with no `executed_by` frame
+/// anywhere in it — which is precisely the shape §10.0's third metric amendment forbids, and
+/// precisely the shape `epctl` now refuses. The verdict was correct in the process that wrote
+/// it and lost its attribution on the way to the artifact a human reads.
+///
+/// This is the same defect as Defect C (two writers, one artifact, different schemas), and it
+/// is a *caveat detached from the number it qualifies*: the token survived, the sentence
+/// saying which world it was about did not.
+///
+/// Nesting-aware because the record contains nested objects (`executed_by`,
+/// `attribution_witnesses`); string-aware because a value could contain a brace.
+pub fn extract_equivalence_record(doc: &str) -> Option<&str> {
+    let needle = format!("\"{EQUIVALENCE_RECORD_KEY}\"");
+    let start = doc.find(&needle)?;
+    let rest = &doc[start + needle.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Host↔device staging traffic, counted **unconditionally**, outside the tracer.
@@ -606,11 +691,21 @@ pub fn dump_observations_if_requested() {
 
     // Preserve any verdict that Trinity wrote during the comparison run.
     // Default to UNMEASURED if the file is absent or the field is missing.
-    let existing_equiv = std::fs::read_to_string(&path)
-        .ok()
+    //
+    // The RECORD travels with the token (§10.0 third metric amendment). Carrying the token
+    // alone was a real defect: the artifact on disk read `"model_output_equivalence": "MATCH"`
+    // with no `executed_by` anywhere in it, which is exactly the unattributed shape the
+    // amendment forbids and `epctl` now refuses. A verdict that loses its attribution between
+    // the process that derived it and the file a human reads is not a verdict about this EP.
+    let existing_raw = std::fs::read_to_string(&path).ok();
+    let existing_equiv = existing_raw
         .as_deref()
         .map(extract_equivalence)
         .unwrap_or(EQUIVALENCE_UNMEASURED);
+    let existing_record = existing_raw
+        .as_deref()
+        .and_then(extract_equivalence_record)
+        .map(str::to_string);
 
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
@@ -621,12 +716,24 @@ pub fn dump_observations_if_requested() {
     // frame the event it counts cannot occur, so the artifact prints the JSON *string*
     // `"UNOBSERVABLE"` rather than the number 0: a reader doing arithmetic on it fails loudly
     // instead of quietly reading a structural pin as a measurement.
+    //
+    // R10 adds the second string. Even in the shared frame, the counter is only a measurement if
+    // the predicate that feeds it has actually run on something; before it does, its zero is
+    // `"UNWIRED"`. So the key has THREE JSON types across its life —
+    // `"UNOBSERVABLE"` → `"UNWIRED"` → an integer — and each transition is a *type* change rather
+    // than a value change. That is deliberate and it is the falsifier: an increment can forge a
+    // number, and no increment can forge a type.
     let (frame, frame_device) = crate::allocator::tally::device_frame();
-    let authoritative = if crate::allocator::tally::device_authoritative_observable() {
-        t.device_authoritative_spans.to_string()
-    } else {
+    let authoritative = if !crate::allocator::tally::device_authoritative_observable() {
         "\"UNOBSERVABLE\"".to_string()
+    } else if !crate::allocator::tally::device_authoritative_wired() {
+        "\"UNWIRED\"".to_string()
+    } else {
+        t.device_authoritative_spans.to_string()
     };
+    let frame_sides = crate::allocator::tally::frame_sides_sentence();
+    let session_devices = crate::allocator::tally::session_devices();
+    let alloc_device_index = crate::allocator::tally::allocator_device_index();
     let snap = snapshot();
     let mut doc = snap.to_json_with_equiv(existing_equiv);
     // Splice the observation keys in before the closing brace rather than appending after it, so
@@ -653,9 +760,13 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_buffer_binds\": {},\n  \
              \"alloc_failed_lookups\": {},\n  \
              \"alloc_device_authoritative_ceiling\": {},\n  \
+             \"alloc_device_residency_evaluations\": {},\n  \
              \"alloc_device_authoritative_spans\": {},\n  \
              \"alloc_device_frame\": \"{}\",\n  \
              \"alloc_device_frame_device\": \"{}\",\n  \
+             \"alloc_device_frame_allocator_index\": \"{}\",\n  \
+             \"alloc_device_frame_session_devices\": \"{}\",\n  \
+             \"alloc_device_frame_sides\": \"{}\",\n  \
              \"session_staging_uploads\": {},\n  \
              \"session_staging_upload_bytes\": {},\n  \
              \"session_staging_upload_us\": {},\n  \
@@ -699,9 +810,13 @@ pub fn dump_observations_if_requested() {
             t.device_buffer_binds,
             t.failed_lookups,
             t.device_authoritative_ceiling,
+            t.device_residency_evaluations,
             authoritative,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
+            alloc_device_index.replace('\\', "\\\\").replace('"', "\\\""),
+            session_devices.replace('\\', "\\\\").replace('"', "\\\""),
+            frame_sides.replace('\\', "\\\\").replace('"', "\\\""),
             st.0,
             st.1,
             st.2,
@@ -717,6 +832,17 @@ pub fn dump_observations_if_requested() {
             wc.6,
             wc.7,
         ));
+    }
+    // Splice the preserved record back in, same technique, so the token and the frame that
+    // says which world it is about stay in one artifact.
+    if let Some(record) = existing_record.as_deref() {
+        if let Some(cut) = doc.rfind('}') {
+            doc.truncate(cut);
+            doc = doc.trim_end().trim_end_matches('\n').to_string();
+            doc.push_str(&format!(
+                ",\n  \"{EQUIVALENCE_RECORD_KEY}\": {record}\n}}\n"
+            ));
+        }
     }
     if let Err(e) = std::fs::write(&path, doc) {
         log::warn!(
@@ -927,7 +1053,31 @@ mod tests {
             "the split frame must be named in the artifact; got:\n{doc}"
         );
 
-        // Frame 3: §6.5 satisfied. Now — and only now — the zero is a real measurement.
+        // Frame 2b: the split frame must NAME BOTH SIDES, not merely say that they differ.
+        // A reader holding only "SPLIT-DEVICE" cannot tell a selector-1 run from a selector-0 one,
+        // which is the third time two index spaces have produced a correct counter about the
+        // wrong situation on this project.
+        crate::allocator::tally::set_allocator_device_index(0);
+        crate::allocator::tally::note_session_device(1, "The Session's Device");
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_frame_session_devices\": \"1=The Session's Device\""),
+            "the split artifact must name the SESSION side's device; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frame_allocator_index\": \"0\""),
+            "the split artifact must name which index the ALLOCATOR side was stood up for; \
+             got:\n{doc}"
+        );
+        assert!(
+            doc.contains("ALLOCATOR side: 'Some Other Device'"),
+            "the frame-sides sentence must name the allocator's device in prose; got:\n{doc}"
+        );
+
+        // Frame 3: §6.5 satisfied — observable at last, and STILL not a measurement, because the
+        // residency predicate has not run on anything. R10's third state, in the artifact's type
+        // system: `"UNWIRED"` is a JSON string, so arithmetic on it fails loudly.
         crate::allocator::tally::set_device_frame(
             crate::allocator::tally::FRAME_SHARED,
             "The Session's Device",
@@ -935,9 +1085,30 @@ mod tests {
         dump_observations_if_requested();
         let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
         assert!(
-            doc.contains("\"alloc_device_authoritative_spans\": 0"),
-            "once the device is shared the counter is observable and its zero is evidence; \
+            doc.contains("\"alloc_device_authoritative_spans\": \"UNWIRED\""),
+            "a shared frame with zero residency evaluations is UNWIRED, not a measured 0; \
              got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_residency_evaluations\": 0"),
+            "the evaluation count is what distinguishes UNWIRED from measured and must be in the \
+             artifact; got:\n{doc}"
+        );
+
+        // Frame 4: the predicate runs on one span and finds it staged. NOW the zero is evidence,
+        // and the key's JSON type changes from string to integer. An increment cannot forge a
+        // type change, which is why this transition is proof rather than assertion.
+        crate::allocator::tally::on_residency_evaluated(false);
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": 0"),
+            "once the predicate has run, its zero is a measurement and must be emitted as a \
+             number; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_residency_evaluations\": 1"),
+            "the measured zero must carry the evaluation count that earns it; got:\n{doc}"
         );
 
         // SAFETY: see above.
@@ -1011,10 +1182,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_equivalence_parses_the_three_states() {
+    fn extract_equivalence_parses_the_five_states() {
         let match_doc = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
         let div_doc = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
         let unm_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);
+        let unattr_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNATTRIBUTED);
+        let split_doc = snapshot().to_json_with_equiv(EQUIVALENCE_SPLIT_FRAME);
         // Build a document that physically lacks the field (old snapshot format).
         // to_json() writes `"model_output_equivalence": "UNMEASURED"` — strip both key and value.
         let without_field = {
@@ -1033,6 +1206,34 @@ mod tests {
         assert_eq!(extract_equivalence(&match_doc), EQUIVALENCE_MATCH);
         assert_eq!(extract_equivalence(&div_doc), EQUIVALENCE_DIVERGENT);
         assert_eq!(extract_equivalence(&unm_doc), EQUIVALENCE_UNMEASURED);
+
+        // §10.0 third metric amendment (2026-07-31): two states more. UNATTRIBUTED must not
+        // fold into DIVERGENT — a run we could not attribute is not a run that disagreed —
+        // and SPLIT-FRAME must not fold into either, because it is a statement about the
+        // instruments and not about the arithmetic.
+        assert_eq!(extract_equivalence(&unattr_doc), EQUIVALENCE_UNATTRIBUTED);
+        assert_ne!(extract_equivalence(&unattr_doc), EQUIVALENCE_DIVERGENT);
+        assert_ne!(extract_equivalence(&unattr_doc), EQUIVALENCE_UNMEASURED);
+        assert_eq!(extract_equivalence(&split_doc), EQUIVALENCE_SPLIT_FRAME);
+        assert_ne!(extract_equivalence(&split_doc), EQUIVALENCE_UNATTRIBUTED);
+
+        // Mutation control: a parser that returned a constant would satisfy every equality
+        // above if that constant were UNMEASURED, so prove the five tokens are five values.
+        let seen = [
+            extract_equivalence(&match_doc),
+            extract_equivalence(&div_doc),
+            extract_equivalence(&unm_doc),
+            extract_equivalence(&unattr_doc),
+            extract_equivalence(&split_doc),
+        ];
+        let mut uniq = seen.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            5,
+            "five tokens must parse to five distinct values"
+        );
         // Absence must be treated the same as UNMEASURED (R7: absence ≠ negative).
         assert_eq!(
             extract_equivalence(&without_field),
@@ -1040,5 +1241,46 @@ mod tests {
             "a snapshot without the field predates the verdict; absence = UNMEASURED"
         );
         assert_eq!(extract_equivalence("{}"), EQUIVALENCE_UNMEASURED);
+    }
+
+    /// §10.0 third metric amendment: the RECORD must survive the teardown rebuild, not just
+    /// the token.
+    ///
+    /// The specimen this test was written from: a real device-0 Phi-3.5 run on 2026-07-31
+    /// left `bench/results/counters-phi35-dev0.json` reading
+    /// `"model_output_equivalence": "MATCH"` with `model_output_equivalence_record: null` —
+    /// the Python harness wrote both keys, `dump_observations_if_requested` rebuilt the file
+    /// and carried only the token. An unattributed MATCH on disk, produced by a correctly
+    /// attributed run. Defect C's shape (two writers, one artifact) applied to a caveat.
+    #[test]
+    fn the_verdict_record_survives_a_rebuild_and_is_not_confused_by_nesting() {
+        let record = "{ \"verdict\": \"MATCH\", \"executed_by\": { \
+                      \"VulkanExecutionProvider\": 3, \"CPUExecutionProvider\": 30 }, \
+                      \"detail\": \"a } brace inside a string must not end the object\" }";
+        let doc = format!(
+            "{{\n  \"{EQUIVALENCE_KEY}\": \"MATCH\",\n  \
+             \"{EQUIVALENCE_RECORD_KEY}\": {record},\n  \"dispatches_executed\": 3883\n}}\n"
+        );
+
+        let got = extract_equivalence_record(&doc).expect("the record must be found");
+        assert_eq!(
+            got, record,
+            "nested objects and braces-in-strings must not truncate it"
+        );
+        assert!(got.contains("VulkanExecutionProvider"));
+
+        // Absence is None, not an empty object and not a panic: a snapshot predating the
+        // amendment simply has no record, and that is the UNATTRIBUTED case, not a crash.
+        let bare = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
+        assert!(
+            extract_equivalence_record(&bare).is_none(),
+            "a MATCH with no record must read as absent so the gate can refuse it"
+        );
+        assert!(extract_equivalence_record("{}").is_none());
+        assert!(
+            extract_equivalence_record(&format!("{{\"{EQUIVALENCE_RECORD_KEY}\": null}}"))
+                .is_none(),
+            "a null record is not an object and must not be spliced back as one"
+        );
     }
 }

@@ -18,6 +18,16 @@ THREE OBLIGATIONS (DESIGN.md §10 M0 criterion 3, 2026-07-30):
       ``EP_VALIDATION_ERROR_COUNT after planted fence leak = N`` (N > 0) — travels with
       the test result.  Owner: Trinity (the wiring); Switch (the ``#[ignore]`` itself).
 
+      The ``#[ignore]`` is now settled and STAYS: ``EP_VALIDATION_ERROR_COUNT`` is a
+      process-wide static and the messenger is instance-scoped, so the assertion is only
+      sound when the test owns the process.  Subprocess isolation — what this wrapper
+      does — is the right way to run it, not the workaround.
+
+      Gated (Switch's request, 2026-07-31) on the same predicate as
+      ``Instance::validation_armed()``: an unarmed machine reports **ERROR(instrument)**,
+      because with no messenger the counter's event cannot occur in its frame (R12) and a
+      zero would be neither a pass nor a detection.  This is criterion 3's last open item.
+
   (c) CLEAN AFTER FIX — after Switch's binding-arity fix, running the dispatch integration
       test under validation produces no VUID errors.  The earlier reading ("no errors
       surfaced") was void because the messenger was not wired.  This takes it fresh.
@@ -46,6 +56,7 @@ import onnxruntime as ort
 import pytest
 
 import _models as m
+import _verdict
 
 HERE = Path(__file__).parent
 _REPO_ROOT = HERE.parent.parent
@@ -79,6 +90,35 @@ def _cargo_env() -> dict[str, str]:
     return env
 
 
+def _probe_validation_frame(env: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return ``(state, reason)`` for the validation frame on this machine.
+
+    The frame is what ``Instance::validation_armed()`` reports for the EP's own instance:
+    is there a ``VkDebugUtilsMessengerEXT`` that could receive the layer's output at all?
+    ``epctl --probe-validation`` answers it in-lane, from a process that builds exactly
+    that instance.
+
+    Raises :class:`_verdict.InstrumentError` if the probe cannot be run — an absent or
+    hung probe is an outage, never a statement about validation.
+    """
+    epctl = _epctl_path()
+    if epctl is None:
+        raise _verdict.InstrumentError(
+            "[criterion 3 instrument failure] ERROR(instrument): epctl was not found next "
+            "to ONNXRUNTIME_VULKAN_EP_LIB, so the validation frame could not be probed. "
+            "Build it: cargo build --release. This is not a finding about validation."
+        )
+    result = _verdict.run_subprocess_checked(
+        [str(epctl), "--probe-validation"],
+        what="criterion 3 validation probe",
+        quiet_seconds=20,
+        env=env,
+    )
+    return _verdict.classify_validation_probe(
+        result.returncode, (result.stdout or "") + (result.stderr or "")
+    )
+
+
 # ---------------------------------------------------------------------------
 # (a) Armed — epctl --probe-validation exits 0
 # ---------------------------------------------------------------------------
@@ -109,7 +149,8 @@ def test_validation_messenger_armed() -> None:
 
     result = subprocess.run(
         [str(epctl), "--probe-validation"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True,
+        timeout=_verdict.contention_tolerant_timeout(20),
     )
     output = result.stdout + result.stderr
     print(f"\n[CRITERION 3a] epctl --probe-validation output:\n{output}", file=sys.stderr)
@@ -184,7 +225,26 @@ def test_ep_messenger_plant_fires_in_lane() -> None:
       - Remove ``#[ignore]`` from ``ep_messenger_fires_for_planted_fence_leak`` in
         ``rust/src/vk/dispatch_integration.rs`` so the plant also runs in the cargo-test lane.
       - After that, this test becomes redundant and can be demoted to a cross-check.
+
+      RESOLVED 2026-07-31 (Switch): the ``#[ignore]`` STANDS, and the reason is sound —
+      ``EP_VALIDATION_ERROR_COUNT`` is a process-wide static while the messenger is
+      instance-scoped, so the assertion is only valid when the test owns the process.
+      Subprocess isolation, which this wrapper already provides, is the correct way to
+      run it.  In exchange he asked for the gate below.
+
+    THE GATE (Switch's request, 2026-07-31; R12; R13).
+      Before the plant is run at all, this test establishes that validation is ARMED on
+      this machine.  If it is not, ``EP_VALIDATION_ERROR_COUNT`` cannot become non-zero
+      for ANY state of the EP — the event cannot occur in the frame — so the control's
+      ``assert count > 0`` would fail for a reason that says nothing about the messenger.
+      An unarmed machine therefore reports **ERROR(instrument)**, not green and not a
+      detection.  That closes criterion 3's last open item: the control can no longer be
+      satisfied by a machine incapable of running it, in either direction.
     """
+    state, reason = _probe_validation_frame()
+    _verdict.require_validation_armed(state, reason)
+    print(f"\n[CRITERION 3b] validation frame: {state} — {reason}", file=sys.stderr)
+
     env = _cargo_env()
     cmd = [
         "cargo", "test", "--lib", "--release",
@@ -192,50 +252,39 @@ def test_ep_messenger_plant_fires_in_lane() -> None:
         "ep_messenger_fires_for_planted_fence_leak",
         "--", "--nocapture", "--ignored",
     ]
-    print(f"\n[CRITERION 3b] running: {' '.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(
+    print(f"[CRITERION 3b] running: {' '.join(cmd)}", file=sys.stderr)
+    # cargo may rebuild before it runs; 300 s is the quiet-machine estimate and the
+    # wrapper inflates it, because a build that is merely slow is not a messenger defect.
+    result = _verdict.run_subprocess_checked(
         cmd,
-        capture_output=True, text=True,
+        what="criterion 3b planted fence leak",
+        quiet_seconds=300,
         env=env,
-        timeout=300,  # cargo build + test; first run is slow
     )
-    output = result.stdout + result.stderr
+    output = (result.stdout or "") + (result.stderr or "")
     print(f"[CRITERION 3b] cargo test output:\n{output[-3000:]}", file=sys.stderr)
 
-    if result.returncode != 0 and "SKIP" in output.upper():
-        # The Rust test itself may skip (no shaders, no ICD). That is acceptable here —
-        # the plant cannot fire on a machine with no Vulkan. The armed test covers the layer.
-        pytest.skip(
-            "ep_messenger_fires_for_planted_fence_leak skipped itself (no shaders or no ICD). "
-            "The armed test (test_validation_messenger_armed) still verifies the layer is live."
+    plant_state, plant_reason, count = _verdict.classify_plant_run(result.returncode, output)
+
+    if plant_state == "ERROR":
+        raise _verdict.InstrumentError(
+            "[criterion 3b instrument failure] ERROR(instrument): "
+            f"{plant_reason}\n"
+            f"Validation was ARMED before the run ({reason}), so this outage is downstream "
+            "of the frame check and is still not a finding about the messenger.\n"
+            f"exit code: {result.returncode}\n"
+            f"output (last 2000 chars):\n{output[-2000:]}",
+            observed=count,
         )
 
-    assert result.returncode == 0, (
-        "ep_messenger_fires_for_planted_fence_leak failed or did not run.\n"
-        f"Exit code: {result.returncode}\n"
-        f"Output (last 2000 chars):\n{output[-2000:]}"
-    )
-
-    # The Rust test prints: [EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak = N
-    import re
-    match = re.search(r"EP_VALIDATION_ERROR_COUNT after planted fence leak\s*=\s*(\d+)", output)
-    assert match is not None, (
-        "ep_messenger_fires_for_planted_fence_leak ran and passed but did not print "
-        "the EP_VALIDATION_ERROR_COUNT artifact line. "
-        "The assertion is not checking the right output — look for the #[ignore]'d test "
-        "actually running (not being compiled out).\n"
-        f"Output:\n{output[-2000:]}"
-    )
-    count = int(match.group(1))
-    assert count > 0, (
-        f"EP_VALIDATION_ERROR_COUNT = {count} after planted fence leak. "
-        "Expected > 0 — the EP's VkDebugUtilsMessengerEXT did not fire. "
-        "Either the EP's instance does not have a messenger, or the VUID is not caught "
-        "by this validation layer build. Check VK_LAYER_KHRONOS_validation version."
+    assert plant_state == "PASS", (
+        "[CRITERION 3b] FAIL(condition): the EP's own VkDebugUtilsMessengerEXT did not "
+        f"catch a planted violation.\n{plant_reason}\n"
+        f"exit code: {result.returncode}\n"
+        f"output (last 2000 chars):\n{output[-2000:]}"
     )
     print(
-        f"[CRITERION 3b] PASS: EP_VALIDATION_ERROR_COUNT = {count} after planted fence leak. "
-        f"EP's own VkDebugUtilsMessengerEXT is wired and fires on a real violation.",
+        f"[CRITERION 3b] PASS: {plant_reason}",
         file=sys.stderr,
     )
 
@@ -275,7 +324,16 @@ def test_validation_clean_after_binding_arity_fix() -> None:
 
     Device coverage: the Rust integration test runs on all capable devices (Intel Iris Xe
     and RTX 4060 on the local dev machine). Criterion 3's ruling requires both devices.
+
+    R13/R12: a clean read is only a clean read inside a frame that could have been dirty.
+    The armed gate runs first here for the same reason it runs in (b) — zero VUID lines
+    from a machine with no messenger is not evidence of cleanliness, it is the absence of
+    an instrument.
     """
+    state, reason = _probe_validation_frame()
+    _verdict.require_validation_armed(state, reason)
+    print(f"\n[CRITERION 3c] validation frame: {state} — {reason}", file=sys.stderr)
+
     env = _cargo_env()
     cmd = [
         "cargo", "test", "--lib", "--release",
@@ -283,23 +341,27 @@ def test_validation_clean_after_binding_arity_fix() -> None:
         "add_f32_dispatches_end_to_end",
         "--", "--nocapture",
     ]
-    print(f"\n[CRITERION 3c] running: {' '.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(
+    print(f"[CRITERION 3c] running: {' '.join(cmd)}", file=sys.stderr)
+    result = _verdict.run_subprocess_checked(
         cmd,
-        capture_output=True, text=True,
+        what="criterion 3c clean validation read",
+        quiet_seconds=300,
         env=env,
-        timeout=300,
     )
-    output = result.stdout + result.stderr
+    output = (result.stdout or "") + (result.stderr or "")
     print(f"[CRITERION 3c] cargo test output:\n{output[-3000:]}", file=sys.stderr)
 
     if result.returncode != 0 and (
         "no capable device" in output or "no shaders" in output.lower()
         or "[SKIP]" in output
     ):
-        pytest.skip(
-            "add_f32_dispatches_end_to_end skipped (no ICD or no shaders). "
-            "Criterion 3c requires a capable device with validation layers."
+        raise _verdict.InstrumentError(
+            "[criterion 3c instrument failure] ERROR(instrument): "
+            "add_f32_dispatches_end_to_end did not run (no ICD, no shaders, or no capable "
+            "device), so no clean read was taken.  Validation was ARMED "
+            f"({reason}), so the outage is downstream of the frame.  This is not a "
+            "detection and it is not a pass.\n"
+            f"output (last 2000 chars):\n{output[-2000:]}"
         )
 
     assert result.returncode == 0, (
@@ -324,5 +386,80 @@ def test_validation_clean_after_binding_arity_fix() -> None:
     print(
         f"[CRITERION 3c] PASS: zero VUID errors in add_f32_dispatches_end_to_end output "
         f"(messenger armed, binding-arity fix in place). Criterion 3 clean reading is valid.",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# (d) THE GATE'S OWN FALSIFIER — on this machine, not on a synthesised string
+#
+# (b) and (c) now refuse to run on an unarmed machine.  That is a claim about a
+# machine state this dev box does not have, so on its own it is a code reading:
+# every run here is ARMED and the branch never executes.  R10's falsifier for
+# "the gate is wired" is an artifact whose content varies with its input, so this
+# test *removes the layer* from a real epctl process and requires the classifier
+# to change its answer.
+#
+# The layer is removed the same way `rust/tests/validation_control.rs` does it —
+# VK_LAYER_PATH pointed at a directory with no layer manifests — so no machine
+# configuration is touched and the effect lasts one subprocess.
+#
+# Both polarities in one test, which is what makes it evidence: the armed probe
+# must pass the gate and the unarmed one must not, and a gate that answered the
+# same either way fails here regardless of which answer it picked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set — no epctl to run",
+)
+def test_the_armed_gate_changes_its_answer_when_the_layer_is_removed() -> None:
+    armed_state, armed_reason = _probe_validation_frame()
+    print(f"\n[CRITERION 3d] real frame: {armed_state} — {armed_reason}", file=sys.stderr)
+
+    no_layer_env = _cargo_env()
+    no_layer_env["VK_LAYER_PATH"] = str(_REPO_ROOT / "rust")
+    no_layer_env["VK_ADD_LAYER_PATH"] = str(_REPO_ROOT / "rust")
+    no_layer_env.pop("ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION", None)
+    stripped_state, stripped_reason = _probe_validation_frame(no_layer_env)
+    print(
+        f"[CRITERION 3d] frame with VK_LAYER_PATH stripped: {stripped_state} — "
+        f"{stripped_reason}",
+        file=sys.stderr,
+    )
+
+    assert stripped_state != _verdict.VALIDATION_PROBE_ERROR, (
+        "removing the layer manifests must produce a *classified* unavailability, not a "
+        "broken probe.\n"
+        f"{stripped_reason}"
+    )
+
+    if stripped_state == _verdict.VALIDATION_ARMED:
+        # Some loaders find the layer through registry entries VK_LAYER_PATH does not
+        # override.  Then the simulation did not take, and this test has established
+        # nothing — which is an instrument outage and must not be reported as a pass.
+        # `rust/tests/validation_control.rs` accepts the same two outcomes for the same
+        # reason; the difference is that this branch is not green.
+        raise _verdict.InstrumentError(
+            "[criterion 3d instrument failure] ERROR(instrument): VK_LAYER_PATH was "
+            "redirected to a directory with no layer manifests and this loader still "
+            "reports ARMED, so the unarmed branch of the gate could not be exercised on "
+            "this machine. The gate's classification is still falsified without a machine "
+            "in tests/ops/test_r13_lane.py; what is missing here is the on-hardware half."
+        )
+
+    # The gate must let the real frame through and refuse the stripped one.
+    _verdict.require_validation_armed(armed_state, armed_reason)
+    with pytest.raises(_verdict.InstrumentError) as exc:
+        _verdict.require_validation_armed(stripped_state, stripped_reason)
+    text = str(exc.value)
+    assert "UNOBSERVABLE" in text and "NOT A PASS" in text.upper(), (
+        "the refusal must say what it is: R12's UNOBSERVABLE, not a zero and not a green"
+    )
+    print(
+        f"[CRITERION 3d] PASS: the gate answers ARMED->run and {stripped_state}->"
+        "ERROR(instrument) on this machine, so criterion 3's control can no longer be "
+        "satisfied by a machine incapable of running it.",
         file=sys.stderr,
     )

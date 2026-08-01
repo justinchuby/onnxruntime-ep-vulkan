@@ -471,7 +471,7 @@ For anything in the matrix column labeled **untested**, the project must either 
 - Run `epctl --dump-capabilities` in both Windows and Linux lanes immediately after the smoke-check step. This reports device state without ORT and makes the next instance-creation failure self-diagnosing.
 - Switch's EP diagnostic (`ONNXRUNTIME_VULKAN_EP_VALIDATE=1`) already logs what the loader sees before instance creation — ensure this log appears in the CI step output, not only in the test harness stderr.
 
-#### 7.4.4 Lane classification: `operational` vs `green` — every lane, by the new definition (2026-07-31T22:15-07:00)
+#### 7.4.4 Lane classification: `operational` vs `green` — every lane, by the new definition (revised 2026-08-01T09:55-07:00)
 
 **This is the section to read if you read only one.** As of this revision the CI lanes carry criterion 10's gate. Before it, a green lane proved that a process exited zero and **nothing else**.
 
@@ -497,49 +497,159 @@ Morpheus's ruling is the one I am implementing: a lane that does not carry crite
 | Lane | Where | Runs claimed nodes? | Carries criterion 10's gate? | Has a falsifier for its own gate? | **Classification** | Why it is not more than that |
 |---|---|---|---|---|---|---|
 | `format` (rustfmt) | ubuntu-latest | No — no build, no Vulkan | Not applicable | Not applicable | **`operational`, and correctly so** | It is a formatting check. It makes no claim about execution and none is expected of it. `UNOBSERVABLE`, not zero (R12). |
-| `lane-checks` (new) | ubuntu-latest | No — no Vulkan by design | It **is** the gate's falsifier | Yes — 16 tests, two polarities, synthesised inputs | **`green` for the claim it makes**, which is *"the lane checks work"* and nothing about the EP | Deliberately GPU-less: an instrument test that needed the subject healthy could say nothing on the day the subject is sick. |
-| `build-test-linux` (Ubuntu 22.04, lavapipe) | GitHub-hosted | Yes | **Yes, as of this revision** — `gate_chain_fp32` → `ci/check_verdict.py` → `epctl --check-counters` → fatal-log grep | **Yes** — a negative-control step removes the ICD and requires `FAIL(condition=UNATTRIBUTED)` | **`operational` today; `green` on the first run in which all five steps pass** | Not yet observed on a runner. I will not classify a lane `green` from reading its YAML — that is precisely R10, and I would be doing to my own work what R10 forbids. |
-| `build-test-windows` (Server 2025, lavapipe via mesa-dist-win) | GitHub-hosted | Yes | **Yes, as of this revision** — same five steps | **Yes** — same negative control, reusing the existing no-ICD path | **`operational` today; `green` on the first passing run** | Same reason. |
-| `conformance` (onnx-tests, `workflow_dispatch`) | ubuntu-22.04 | Yes | Gate steps added; the conformance step itself remains `continue-on-error` | Inherits the gate's control indirectly (no negative control of its own) | **`operational` — and its conformance table is *not evidence*** | The census step is a diagnostic by design. It carries no verdict per row, so under §10.0 it says nothing about this EP. Labelled as such in the step summary now. |
+| `lane-checks` | ubuntu-latest | No — no Vulkan by design | It **is** the gate's falsifier | Yes — 21 tests, two polarities each, synthesised inputs | **`green` for the claim it makes**, which is *"the lane checks work"* and nothing about the EP | Deliberately GPU-less: an instrument test that needed the subject healthy could say nothing on the day the subject is sick. |
+| `build-test-linux` (Ubuntu 22.04, lavapipe) | GitHub-hosted | Yes | **Yes** — vocabulary preflight → `gate_chain_fp32` → `ci/check_verdict.py` → `epctl --check-counters` → fatal-log grep | **Yes, two of them** — ICD-removal, *and* the loader-independent decline probe | **`operational` today; `green` on the first run in which all steps pass** | Not yet observed on a runner. I will not classify a lane `green` from reading its YAML — that is precisely R10, and I would be doing to my own work what R10 forbids. |
+| `build-test-windows` (Server 2025, lavapipe via mesa-dist-win) | GitHub-hosted | Yes | **Yes** — same steps | **Yes — and only one of the two actually fires here.** The ICD-removal control cannot be relied on: the LunarG loader silently ignores `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` in elevated processes (§7.4.1) and GitHub's Windows runners are elevated. It now *checks whether the suppression took* and reports `ERROR(instrument=icd_suppression_ineffective)` instead of blaming the gate. The decline probe is the falsifier this lane relies on. | **`operational` today; `green` on the first passing run** | Same reason — plus, until today, this lane's only negative control was one that may never have fired. |
+| `conformance` (onnx-tests, `workflow_dispatch`) | ubuntu-22.04 | Yes | Gate steps + preflight; the conformance step itself remains `continue-on-error` | **Yes, as of today** — the decline-probe control was added; it had none of its own before | **`operational` — and its conformance table is *not evidence*** | The census step is a diagnostic by design. It carries no verdict per row, so under §10.0 it says nothing about this EP. Labelled as such in the step summary. |
 | WSL Ubuntu 24.04 / lavapipe (local dev, §7.7) | My desk | Yes — 196 tests, `subgroup_size = 8`, barrier parity 58/0 as a third independent implementation | No | No | **`operational`. Not `green`.** | This is the one I most want to promote and will not. It was a real result and it is not evidence for criterion 10: it is not a CI lane, it ran once, it had no verdict, and it had no falsifier. Its value is the capability diff (§7.5) and the third barrier-parity implementation, which are claims it *can* support. |
-| Local Windows / RTX 4060 (selector 0) | My desk | Yes | Gate runs here (that is where it was developed) | Yes — verified both polarities on this hardware | **`operational`** | Not a lane. A development desk is not a lane no matter what it proves, because nothing re-runs it. |
-| Local Windows / Intel Iris Xe (selector 1) | My desk | Yes | Same | Same | **`operational`** | Same. Also: `ep.device_index` is still a TODO in `conftest.py`, so I make **no claim** that selector 1 selected a different physical device in my runs. |
+| Local Windows / RTX 4060 (selector 0) | My desk | Yes | Gate runs here (that is where it was developed) | Yes — **three** polarities verified on this hardware today: PASS, `FAIL` with no ICD, `FAIL` on a declined artifact with the loader healthy | **`operational`** | Not a lane. A development desk is not a lane no matter what it proves, because nothing re-runs it. |
+| Local Windows / Intel Iris Xe (selector 1) | My desk | Yes | Same | Same — PASS and decline-probe `FAIL` both verified today | **`operational`** | Same. Also: **selector 1 is `SPLIT-DEVICE`** — the env var indexes the best-first sorted list while the offer is keyed by raw enumeration index (§6.5), so I make **no claim** that selector 1 selected a different physical device. |
 | Android / Adreno / Mali | Nowhere | — | — | — | **`untested`** | No hardware. OQ-12 unchanged. lavapipe is not Adreno or Mali and never becomes it. |
 | macOS / MoltenVK | Nowhere | — | — | — | **`untested`** | No runner. |
 
+##### What the EP now demonstrably does — and what that does *not* upgrade
+
+Recorded here because it is the strongest execution evidence this project has, and because
+its limits are what decide the classifications above rather than its size:
+
+- **Three consecutive runs, both local devices, from ORT profiling: 3 `VulkanExecutionProvider` node events (one fused node covering ~355 graph nodes) + 24 `CPUExecutionProvider`.** All 65 outputs bit-identical across runs; argmax 30751, matching CPU. Mouse's census: **355 claimed / 1 island / 8 permanent declines with recorded reasons.**
+- **What that establishes:** the EP executes, at scale, on real hardware, and its outputs are attributable and reproducible. Every `UNATTRIBUTED` finding on this project is now a finding about a *specific* run, not about whether the EP works at all.
+- **What it does not establish, and no amount of it will:** that any *lane* is `green`. Those runs happened on my desk. A lane is `green` when **the lane** carries a verdict and **the lane** has shown it can fail, and neither of those is a property of how well the EP runs anywhere else. Execution evidence and lane evidence are different claims with different falsifiers; folding the first into the second is exactly the move §7.4.4 exists to refuse.
+- Nor does it license a timing figure. Only Niobe's device-clock number (NVIDIA 40.201 ms/inference GPU busy, 0.033% RSD; Intel withheld as `NO_STEADY_TAIL`) is quotable, and only because it comes from an attributed run.
+
 ##### What still is not `green`, plainly
 
-1. **No CI lane is `green` yet.** Both now *carry* the gate; neither has been observed to pass it on a runner. The correct word for a wired-but-unobserved lane is `operational`.
+1. **No CI lane is `green` yet.** All three now *carry* the gate and its falsifier; none has been observed to pass it on a runner. The correct word for a wired-but-unobserved lane is `operational`.
 2. **The WSL lavapipe result is not `green` and I am not going to launder it into one.** 196 passing tests with no verdict is 196 assertions about outputs whose executor was never established.
 3. **`green` is per artifact.** When these lanes go green they are green for `gate_chain_fp32` — a 2-node fp32 `Add → Relu` on 256 elements. Not for Phi-3.5, not for `MatMulNBits`, not for fp16 (no `storageBuffer16BitAccess` confirmation on lavapipe; those claims remain `UNMEASURED`).
-4. **Single-run blindness is not fixed by the gate** (§7.4.2). The gate artifact also runs once.
-5. **No timing figure is quotable from any lane.** Every earlier wall-clock ratio on this project, including 3.1× and 3.7×, was recorded without an attribution and is **withdrawn**. A ratio may return when it comes from a run whose verdict is an attributed `MATCH`.
+4. **The Phi-3.5 execution evidence does not make any lane `green`.** 355 claimed nodes in one island, three reproducible runs and 65 bit-identical outputs are a claim about the EP, on my desk. They are not a claim about a lane, and no quantity of them becomes one.
+5. **Single-run blindness is not fixed by the gate** (§7.4.2). The gate artifact also runs once.
+6. **No timing figure is quotable from a run whose verdict is not an attributed `MATCH`.** Every earlier wall-clock ratio on this project, including 3.1× and 3.7×, is **withdrawn**. The only admissible number today is Niobe's device-clock one, and Intel's is withheld as `NO_STEADY_TAIL`.
+7. **The Windows lane's ICD-removal control has never been shown to fire.** It may have been suppressing nothing on every elevated runner it ever ran on. It now says so instead of blaming the gate — and the decline probe, which does not depend on the loader, is what that lane's falsifier claim actually rests on.
+
+##### The measurement, both polarities, both devices — 2026-08-01, on merged `main` (5eda83b)
+
+Positive pole. A verdict record with a real `executed_by`, not a green from a skipped check:
+
+```
+RTX 4060 (selector 0)                     Intel Iris Xe (selector 1)
+GATE: PASS                                GATE: PASS
+  verdict = MATCH                           verdict = MATCH
+  executed_by = {'VulkanExecutionProvider': 1}   (same)
+  attribution_source = ort_profile          (same)
+  counters_dispatches_executed = 2          (same)
+  profile_node_events = 1                   (same)
+  max_abs_diff = 0                          (same)
+  artifact = gate_chain_fp32@ci-gate-v1 sha256:aba0cd3847ec28ac  (same digest — same artifact)
+ci/check_verdict.py       → VERDICT-CHECK: PASS   (exit 0, separate process, separate parser)
+epctl --check-counters    → PASS, 2 dispatch(es) executed (required 1)   (exit 0)
+```
+
+Negative pole 1 — **the EP cannot start** (`VK_DRIVER_FILES` → a nonexistent ICD, everything else identical):
+
+```
+GATE: FAIL(condition=UNATTRIBUTED)                                        exit 1
+  executed_by = {'CPUExecutionProvider': 2}   own count 0
+  permits_triple_and_ratio = false
+  "the comparison ran and this EP did not run … the model was not wrong, the subject was"
+```
+
+Negative pole 2 — **the EP starts and executes nothing**, loader untouched, driver healthy, device passing the §7.2 gate (`--artifact decline_probe`: one `Det` node, an op this EP does not implement):
+
+```
+RTX 4060 (selector 0)                     Intel Iris Xe (selector 1)
+GATE: FAIL(condition=UNATTRIBUTED)        GATE: FAIL(condition=UNATTRIBUTED)      exit 1
+  executed_by = {'CPUExecutionProvider': 1}    (same)
+  own_provider_execution_count = 0             (same)
+  profile_node_events = 0 of 1 total           (same)
+  permits_triple_and_ratio = false             (same)
+ci/check_verdict.py → VERDICT-CHECK: FAIL(condition=UNATTRIBUTED)   exit 1
+```
+
+The second negative is the one that matters. The first proves the gate notices a missing
+driver; the failure that was actually live on 2026-07-30 was a **healthy** EP that claimed
+and executed nothing, and until today no control on this project reproduced that state. It
+is also the only negative control available on an elevated Windows runner, where the ICD
+cannot be removed by environment variable at all.
+
+Neither negative reported `DIVERGENT`, and both were checked for it. The comparison agreed
+— of course it did, both sides were CPU. **`UNATTRIBUTED` is not `DIVERGENT`**: the model
+was not wrong, the subject was absent. Different owners, different fixes, different next
+questions.
+
+##### `ERROR(instrument)` must not become the lane's normal state — and how a maintainer tells
+
+The gate imports its entire vocabulary from `tests/ops/_verdict.py` and defines no token of
+its own, so when that module cannot be imported **every verdict-carrying step reports an
+instrument outage at once**:
+
+```
+GATE: ERROR(instrument=verdict_vocabulary_unavailable)
+```
+
+That is the honest report and it is a hazard, because two different situations produce the
+identical line: **(a)** this checkout legitimately does not contain the module — an older
+branch, a bisect, a PR that predates it, a sparse checkout — and **(b)** the lane is broken:
+the file is right there and the job cannot load it. Reported the same way, an instrument
+outage becomes the weather, and a signal that is always on is not a signal.
+
+`ci/check_vocabulary.py` runs **before** the gate in every lane and answers that question
+from the repository's own state, giving each case its own token:
+
+| Exit | Token | What it means | Who owns it |
+|---|---|---|---|
+| 0 | `VOCAB: PASS` | present, importable; prints path, **sha256**, byte count, git-tracked status, commit, Python version, and the verdict tokens the module defines | — and this is the load-bearing part: **any later `verdict_vocabulary_unavailable` in the same job is now a lane fault by elimination**, because the module imported in this interpreter, in this checkout, moments earlier |
+| 4 | `VOCAB: ERROR(instrument=verdict_vocabulary_absent_from_checkout)` | the file is not in the tree | **repository state, not a lane defect.** The lane is still red — a lane that cannot emit a verdict cannot be green — but red for a reason no CI change will fix, and the message says which file has to arrive |
+| 4 | `VOCAB: ERROR(instrument=verdict_vocabulary_broken)` | the file is in the tree and does not import | **lane or source defect**, with the exception text quoted in full (R13: quote the text, never the count) |
+
+Same exit code for the two outages, because both are outages and neither is a detection.
+**Deliberately not the same token**, because the token is what a maintainer greps.
+
+The distinguishing rule, stated as a procedure rather than a feeling:
+
+- **Every lane on this commit says `absent_from_checkout` →** the commit does not carry the vocabulary. Repository state. No CI change fixes it; the fix is the file landing.
+- **One lane says `PASS` and another says `unavailable` →** that second lane is broken, and the difference between the two jobs is the fault. This comparison is possible only because the preflight prints the module's sha256 and git-tracked status on every path.
+- **Every lane says `broken` with the same sha256 →** the module itself, not the lanes.
+
+And it is surfaced rather than buried: with `--github-summary` the outcome is written to
+`$GITHUB_STEP_SUMMARY` and emitted as an annotation whose **title differs per token**, so
+the distinction is visible on the run's summary page without opening a log. A caveat that
+lives in a different artifact from the thing it qualifies is not attached to it.
+
+Verified locally, all three states, exit codes included: `PASS` (exit 0),
+`absent_from_checkout` (exit 4), `broken` (exit 4, `SyntaxError` quoted). Four of the 21
+`ci/test_lane_checks.py` tests assert these, one of them asserting only that the two outage
+tokens are **not equal** — stated as its own test because it is the property, not a side
+effect.
+
+##### Verified state of `main` at the time of this revision
+
+`32 failed / 272 passed` on Intel with `test_wiring_census` excluded (it times out under
+three-agent contention; Trinity is giving it a contention-tolerant timeout and the
+`ERROR(instrument)` classification it deserves). **No wall-clock threshold appears anywhere
+in the gate, and none will be added**: the same suite took 708 s under load and 161 s quiet
+— 4.4× — and I read the resulting timeouts as a "68 failed" regression that did not exist.
+That is R13's second clause with a stopwatch attached: a count without its text, from an
+instrument measuring the machine's other tenants.
 
 ##### How a lane fails when the EP executes nothing — the actual mechanism
 
-Five steps per lane, three processes, three different failure modes, no `continue-on-error` on any of them:
+Seven steps per lane, five processes, five different failure modes, no `continue-on-error`
+on any of them:
 
+0. **`ci/check_vocabulary.py`** runs first and decides *which kind* of instrument outage a
+   vocabulary failure would be, so that the six steps below cannot collapse into one
+   indistinguishable red. See the preceding subsection.
 1. **`ci/gate_chain_fp32.py`** builds the §7.8.1 artifact, writes the verdict record to disk as `UNMEASURED` **before opening any session**, runs it under ORT profiling against a CPU-only run of the same artifact, and constructs the verdict through Trinity's `EquivalenceVerdict.from_comparison()` — which takes a parsed `ExecutionAttribution` as a *required* argument and therefore **cannot emit `MATCH` at a zero own-provider count**. It emits `UNATTRIBUTED` instead, and says which providers did execute.
 2. **`ci/check_verdict.py`** re-reads the record **in a separate process**. A missing record is `FAIL(condition=UNMEASURED)`, not a skip. A `MATCH` with an empty `executed_by`, a zero own-count, or an `attribution_source` that is not `ort_profile` is rejected as `UNATTRIBUTED` — a gate that trusts its input is a gate that trusts whatever replaced its input.
 3. **`epctl --check-counters <file> --require-dispatches 1`** reads the verdict spliced into the counters snapshot. Tank's exit codes: `DIVERGENT` → 1, `UNMEASURED`/absent → 3.
 4. **`ci/check_fatal_log.py`** greps the captured suite output for `Falling back to CPUExecutionProvider`. R13 obligation 3: *a grep cannot `NameError`, and a guard cannot be silenced by a log format change.* The logs are captured with `2>&1` because ORT writes that line from C++ to fd 2 — a tee of stdout alone would scan a log in which its own subject cannot appear, and would agree with everything.
-5. **The negative control** removes the Vulkan ICD, runs the *same* artifact through the *same* script, and **requires** `FAIL(condition=UNATTRIBUTED)` with a non-zero exit. If the gate ever passes with no ICD present, the step fails the lane with the sentence *"every green in this lane is uninterpretable"* — which it would be.
+5. **Negative control 1 — the ICD is removed**, the *same* artifact runs through the *same* script, and the step **requires** `FAIL(condition=UNATTRIBUTED)` with a non-zero exit. If the gate ever passes with no ICD present, the step fails the lane with the sentence *"every green in this lane is uninterpretable"* — which it would be. **On Windows this control first checks whether the suppression actually took**, because the LunarG loader silently ignores `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` in elevated processes (§7.4.1) and GitHub's Windows runners are elevated. If the ICD is still there the step reports `ERROR(instrument=icd_suppression_ineffective)` and asserts nothing — rather than blaming the gate for a control that never fired, which would route a finding to the wrong owner.
+6. **Negative control 2 — the loader-independent one**, and the one the Windows lane actually rests on. `--artifact decline_probe` is a single `Det` node: an op this EP does not implement and is not going to. The EP loads, the driver is present, the device passes the §7.2 gate, capability detection succeeds — and the EP claims **nothing**, so the graph runs on CPU and the lane must report `FAIL(condition=UNATTRIBUTED)`. It reproduces the failure that was actually live on 2026-07-30 — a *healthy* EP executing nothing — which the ICD-removal control does not. If the EP ever claims `Det`, this control stops being one; the step's error text says so explicitly and tells the maintainer to re-point it at an op that is still declined, rather than letting the control quietly turn into a positive.
 
-Measured on local hardware, both polarities, 2026-07-31:
-
-```
-positive (RTX 4060, ICD present)     GATE: PASS
-  verdict=MATCH  executed_by={'VulkanExecutionProvider': 1}
-  counters_dispatches_executed=2  profile_node_events=1  max_abs_diff=0
-  epctl --check-counters → PASS (exit 0);  check_verdict.py → PASS (exit 0)
-
-negative (same script, VK_DRIVER_FILES → nonexistent)
-  GATE: FAIL(condition=UNATTRIBUTED)                          exit 1
-  executed_by={'CPUExecutionProvider': 2}   own count 0   permits_triple_and_ratio=false
-  check_verdict.py → FAIL(condition=UNATTRIBUTED)             exit 1
-```
-
-Note what the negative case did **not** report: `DIVERGENT`. The comparison agreed — of course it did, both sides were CPU. **`UNATTRIBUTED` is not `DIVERGENT`**: the model was not wrong, the subject was absent. They have different owners (`UNATTRIBUTED` routes to whoever owns run-time fallback; `DIVERGENT` routes to the kernel authors), different fixes, and different next questions, and a lane that printed one red for both would have R13's defect.
+The three polarities measured on local hardware are recorded above ("The measurement, both
+polarities, both devices — 2026-08-01"), superseding the 2026-07-31 two-polarity record on
+the same mechanism. Note what neither negative case reported: `DIVERGENT`. The comparison agreed — of course it did, both sides were CPU. **`UNATTRIBUTED` is not `DIVERGENT`**: the model was not wrong, the subject was absent. They have different owners (`UNATTRIBUTED` routes to whoever owns run-time fallback; `DIVERGENT` routes to the kernel authors), different fixes, and different next questions, and a lane that printed one red for both would have R13's defect.
 
 ##### R13 in the lane's terminal states
 
@@ -890,6 +1000,47 @@ The risk stays closed. But the argument was stated before R10 and R13 existed, a
 
 **What would break it again**, so it is written down rather than rediscovered: removing the `2>&1` from a tee; adding a lane that runs the numerical suite without the gate steps; a new reducing shader template reaching `Ready` without a lavapipe test; or ORT changing the wording of its fallback line — which is why the grep is a *second* witness to Guard D's profile parse and not a replacement for it. Each of those is a specific, checkable thing, which is the only kind of caveat that survives.
 
+### 7.10.2 Closing the subgroup-32 argument (2026-08-01T09:55-07:00)
+
+Link 5 is now secured on my desk in all three polarities (§7.4.4) and wired into all three
+CI lanes with a falsifier each, including one that does not depend on the loader. The chain
+therefore stands as stated, and this is the last time I intend to re-open it.
+
+**The independent support, which is what makes it closeable rather than merely unrefuted.**
+Fact Checker verified that llama.cpp — a Vulkan compute backend far ahead of this one in
+device coverage — ships a **subgroup-free shared-memory tree reduction as its fallback path,
+with subgroup variants gated behind capability queries**, not baked in. Two things follow,
+and only the second is about us:
+
+1. Our constraint is not eccentric. The most-deployed Vulkan inference backend in the field
+   made the same choice on the same reasoning, which is what a decomposition that is *right*
+   rather than merely internally consistent tends to look like from outside (R11).
+2. **Our no-subgroups constraint is cheap.** Fact Checker's stronger finding is that the
+   dominant performance gap in that codebase comes from **packed loads and multiple
+   accumulators, not from subgroup operations**. So the thing we gave up by refusing to bake
+   32 costs us much less than the thing we have not yet done — which relocates the
+   optimisation argument to memory access patterns, where the Intel/NVIDIA residual already
+   points (bandwidth predicts only 3.08× of the measured 13.52× kernel gap; the 4.39×
+   residual is our design, not the hardware's).
+
+**And the falsifier is still the same one, by construction.** lavapipe reports
+`subgroup_size = 8` on every lane we run it in. A shader that assumed 32 computes a wrong
+reduction there and nowhere else in our matrix — both Windows devices report 32 and cannot
+catch it. That is not an argument that improves with agreement; it is arithmetic plus one
+measured capability value, and the only way it fails is if the suite that would notice never
+executes on the GPU. That was link 5, and link 5 is what the gate and its two negative
+controls now hold.
+
+**What is still an empty set, said plainly rather than dressed as coverage (R12).** Zero of
+168+ compiled shader variants use subgroup intrinsics today. The chain is currently a
+guarantee about nothing, correctly constructed and waiting for a subject. The
+`Staged → Ready` rule (§7.10) is what keeps it non-empty as templates arrive; the day a
+reducing template lands without a lavapipe correctness test, the guarantee is open again and
+this section is wrong until a test is added.
+
+**Status: closed.** Re-open on any of the four break conditions listed above, or on a new
+reducing shader template reaching `Ready` without lavapipe coverage. Not on general unease.
+
 ---
 
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
@@ -968,7 +1119,7 @@ Coverage = devices that expose the extension string **or** report Vulkan 1.3.
 
 ### 8.3 What the data showed and what was decided
 
-The measurement **disproved** the "near-universal" assumption for Android sync2: a **31.43-point Android gap** and a **12.22-point Windows gap** were measured from the database. The Windows number matters as much as the Android one — nearly one Windows device in eight would be declined.
+The measurement **disproved** the "near-universal" assumption for Android sync2: an Android gap of **31.43 points as pulled 2026-07-28, re-sourced to ~32.67 points as of 2026-07-30** and a **12.22-point Windows gap** were measured from the database. The Windows number matters as much as the Android one — nearly one Windows device in eight would be declined. Neither figure is a constant; see §10.0.1 for provenance and §10.0.2 for the two error directions (ceiling on usability benefit, floor on population size).
 
 The Android gap is *structurally* missing, not stochastically missing:
 - **Adreno 500-series** (Snapdragon 625/630/636/660, Adreno 506/508/509/512): frozen OEM blobs predate the extension (published 2021); no update path exists.
@@ -992,7 +1143,7 @@ The Android gap is *structurally* missing, not stochastically missing:
 > `synchronization2` and `subgroup_size_control` are probed into `vk::caps::Capabilities` and used to select an engine strategy. Neither may block device advertisement. `subgroup_size_control` is consulted as a *properties query* only — `subgroupSizeControl = VK_TRUE` is never required.
 
 Consequences for this document:
-- **`synchronization2` gap:** Switch implements a two-backend barrier abstraction (`vk/barrier.rs`). The legacy `vkCmdPipelineBarrier` path covers the 31.43% of Android and 12.22% of Windows that lack the extension. See §9 for the CI requirement.
+- **`synchronization2` gap:** Switch implements a two-backend barrier abstraction (`vk/barrier.rs`). The legacy `vkCmdPipelineBarrier` path covers the **~32.67% of Android as of 2026-07-30** (31.43% as pulled 2026-07-28 — the figure moves, and it is simultaneously a ceiling and a floor; §10.0.1, §10.0.2) and 12.22% of Windows that lack the extension. See §9 for the CI requirement.
 - **`subgroup_size_control` gap:** `VkPhysicalDeviceSubgroupSizeControlProperties` is queried where available to inform workgroup size selection. No device is excluded.
 - **macOS:** Fully in scope. MoltenVK reports the extension string; `subgroupSizeControl = VK_FALSE` is acceptable because we require only the properties query.
 
@@ -1000,7 +1151,7 @@ Consequences for this document:
 
 ### 8.4 What was considered and rejected
 
-**Requiring `VK_KHR_synchronization2` (the pre-decision proposal):** Excludes 31.43% of Android and 12.22% of Windows by measurement. Under the compatibility-first directive, indefensible.
+**Requiring `VK_KHR_synchronization2` (the pre-decision proposal):** Excludes **~32.67% of Android as of 2026-07-30** (31.43% as pulled 2026-07-28; a moving snapshot of a live sample, not a constant — §10.0.1) and 12.22% of Windows by measurement. Under the compatibility-first directive, indefensible.
 
 **Option B — bundling `VK_LAYER_KHRONOS_synchronization2`:** Proposed by Link as a way to avoid a dual code path; rejected by Morpheus on two grounds, both verified from primary sources.
 
@@ -1055,7 +1206,17 @@ Every CI lane that runs the test suite must run it **twice**:
 
 > **Checked by:** Fact Checker — Verification mode. Applies R9 (commit `4ff4595`, §10.0.1): for every claim, name the instrument that would go red if the claim were false.
 
-#### 10.0.1 Source and currency of the 68.57% figure
+#### 10.0.1 Source and currency of the Android sync2 figure
+
+> ### The canonical form of this figure — quote it this way or not at all
+>
+> **~32.67% of Android devices in the vulkan.gpuinfo.org sample lacked `VK_KHR_synchronization2` as of 2026-07-30** (coverage ~67.33%), re-sourced by Fact Checker on 2026-07-31. It is **simultaneously a ceiling** on the legacy-path usability benefit — some gap devices fail the §7.2 device gate anyway and the legacy path buys them nothing — **and a floor** on the gap-population size, because the database under-represents budget Android hardware.
+>
+> The earlier 68.57% / 31.43% pair (pulled 2026-07-28) is rated **❌ incorrect *as a stable constant*.** It was never wrong as a snapshot; it is wrong the moment it is quoted without its date. The figure moved 1.2 points in two days.
+>
+> **Three obligations on any citation of it, anywhere in this repository:** carry the **date**, carry **both error directions**, and never state it as a bare percentage. A number without its date is a claim that the world stopped.
+>
+> **And a standing refusal that is not negotiable: lavapipe is not Adreno and is not Mali.** No lavapipe result — not 196 passing tests, not barrier parity 58/0, not a `green` lane — may be cited as Android evidence, in this document or any other. Software rasterisation on x86 shares no driver, no memory system, no cache hierarchy and no OEM blob with the devices this figure is about. The Android column of §5 says **untested**, and it says so until something runs on Android hardware.
 
 **Source (correctly identified in §8.2):** [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/) — VK_KHR_synchronization2, Sascha Willems, CC-BY 4.0. The §8.2 pull was dated **2026-07-28**. A web query against the same source on 2026-07-30 returned **~67.33%** Android coverage (gap ~32.67%).
 
@@ -1067,23 +1228,23 @@ Every CI lane that runs the test suite must run it **twice**:
 
 **Falsifiability instrument:** A direct read of `https://vulkan.gpuinfo.org/displayextensiondetail.php?extension=VK_KHR_synchronization2&platform=android` on any given date yields the current coverage percentage. If this value ever crosses 99%, the gap has closed to the point where the legacy-path decision can be revisited. Until then the figure is bounded but not pinned.
 
-#### 10.0.2 Error direction: is 31.43% the right reading?
+#### 10.0.2 Error direction: is the gap figure the right reading?
 
 The §8.2 measurement already correctly defines coverage as "devices that expose the extension string **or** report Vulkan 1.3 (where sync2 is core)." The 1.3 promotion is therefore already captured; there is no undercounting from devices that support sync2 natively without the extension string. This part of the claim is sound.
 
-However, "31.43% of Android devices lack sync2" and "31.43% of Android devices are reachable via the legacy barrier path" are not the same claim. Two error directions exist:
+However, "~32.67% of Android devices lack sync2 (2026-07-30)" and "~32.67% of Android devices are reachable via the legacy barrier path" are not the same claim. Two error directions exist:
 
-**Overcounting the benefit (ceiling):** Devices that lack sync2 may *also* fail the §7.2 device gate (Vulkan < 1.1, no compute queue, insufficient `maxComputeWorkGroupInvocations`, etc.). Those devices are rejected before the barrier backend is even selected; the legacy path buys them nothing. The gpuinfo.org figure is silent on whether sync2-lacking devices pass §7.2. **31.43% is therefore a ceiling on the legacy-path benefit, not a measured value.** How much below 31.43% the real benefit falls cannot be determined without the OQ-12 experiment.
+**Overcounting the benefit (ceiling):** Devices that lack sync2 may *also* fail the §7.2 device gate (Vulkan < 1.1, no compute queue, insufficient `maxComputeWorkGroupInvocations`, etc.). Those devices are rejected before the barrier backend is even selected; the legacy path buys them nothing. The gpuinfo.org figure is silent on whether sync2-lacking devices pass §7.2. **The gap figure is therefore a ceiling on the legacy-path benefit, not a measured value.** How much below it the real benefit falls cannot be determined without the OQ-12 experiment.
 
-**Undercounting the real population (floor):** The database skews toward developer-submitted reports from newer and higher-end hardware. Budget Android devices — which are exactly the ones most likely to lack sync2 and to be running obsolete OEM blobs — are under-represented in the submission pool. The real installed-base fraction lacking sync2 is likely *higher* than 31.43%, not lower. This means the legacy path potentially benefits a larger fraction of real users than the number suggests, but the usability of those devices is the unknown.
+**Undercounting the real population (floor):** The database skews toward developer-submitted reports from newer and higher-end hardware. Budget Android devices — which are exactly the ones most likely to lack sync2 and to be running obsolete OEM blobs — are under-represented in the submission pool. The real installed-base fraction lacking sync2 is likely *higher* than the database figure of the day, not lower. This means the legacy path potentially benefits a larger fraction of real users than the number suggests, but the usability of those devices is the unknown.
 
-**Net position per R9:** 31.43% is simultaneously a ceiling on usability-benefit (some gap devices fail the gate) and a lower bound on the gap-population size (database skew). The two errors partially offset but the direction cannot be resolved without the experiment. **A single gpuinfo.org reading names a database-sample fraction, not a device-market fraction, not a usability fraction.** The legacy path is justified by the existence of a non-negligible gap population, not by the precision of this number.
+**Net position per R9:** the gap figure — ~32.67% as of 2026-07-30 — is simultaneously a ceiling on usability-benefit (some gap devices fail the gate) and a lower bound on the gap-population size (database skew). The two errors partially offset but the direction cannot be resolved without the experiment. **A single gpuinfo.org reading names a database-sample fraction, not a device-market fraction, not a usability fraction.** The legacy path is justified by the existence of a non-negligible gap population, not by the precision of this number.
 
 #### 10.0.3 Conditions required to drop the legacy barrier path
 
 The dual-backend architecture (DESIGN.md §7.3) exists to serve two independent gaps:
 
-| Gap | Current figure (2026-07-28 pull) | Drop condition |
+| Gap | Current figure — **always with its date; never a constant** | Drop condition |
 |---|---|---|
 | Android sync2 coverage | ~67.33% (gap: ~32.67%) as of 2026-07-30; 2026-07-28 pull: 68.57% (gap: 31.43%); see §10.0.1 — figure is moving | Database coverage ≥ 99% on Android **and** OQ-12 confirms gap devices fail §7.2 for other reasons |
 | Windows sync2 coverage | 87.78% (gap: 12.22%) | Database coverage ≥ 99% on Windows |
@@ -1098,7 +1259,7 @@ There is a weaker sufficient condition: if OQ-12 (Stage 1) shows that **all** sy
 
 ---
 
-**How much of the 31.43% claim is currently unverified:** All of it, as a *usability* claim. The gpuinfo.org data proves those devices lack `VK_KHR_synchronization2`. It says nothing about whether they can run correct compute at all, whether they pass the §7.2 device gate, or whether Vulkan inference on them outperforms their own CPU. Until the experiment runs, every statement about "the legacy backend benefits the 31% Android population" is a database extrapolation, not a measurement.
+**How much of the gap claim is currently unverified:** All of it, as a *usability* claim. The gpuinfo.org data proves those devices lack `VK_KHR_synchronization2`. It says nothing about whether they can run correct compute at all, whether they pass the §7.2 device gate, or whether Vulkan inference on them outperforms their own CPU. Until the experiment runs, every statement about "the legacy backend benefits the 31% Android population" is a database extrapolation, not a measurement.
 
 **Can any of it be de-risked without physical devices?**
 

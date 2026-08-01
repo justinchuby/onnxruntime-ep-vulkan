@@ -225,3 +225,5 @@ case the code was correct; the wiring was absent; the absence was invisible to r
 idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
+
+📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe

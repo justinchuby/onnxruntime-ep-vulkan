@@ -113,6 +113,13 @@ jobs:
       # happened to run the graph, and on 2026-07-30 that was CPU
       # for a whole day without anything saying so.
       # -------------------------------------------------------
+      - name: Verdict vocabulary preflight (which kind of instrument outage?)
+        # Distinguishes "this checkout does not carry tests/ops/_verdict.py" (repository
+        # state) from "the file is here and this job cannot import it" (lane defect).
+        # Without it both appear as ERROR(instrument=verdict_vocabulary_unavailable) in
+        # every step below and the difference is invisible.
+        run: python3 ci/check_vocabulary.py --github-summary
+
       - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ env.VULKAN_EP_LIB }}
@@ -128,6 +135,33 @@ jobs:
 
       - name: Criterion 10 verdict gate (independent reader)
         run: python3 ci/check_verdict.py bench/results/ci-lane/verdict-conformance.json
+
+      # The falsifier for this lane's own gate: loader untouched, an artifact the EP
+      # declines, and the lane must go red. Without it the conformance lane carries a
+      # gate that has only ever been observed passing (R9).
+      - name: Gate negative control — a declined artifact must produce UNATTRIBUTED
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ env.VULKAN_EP_LIB }}
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          set +e
+          out=$(python3 ci/gate_chain_fp32.py --artifact decline_probe \
+            --verdict-out bench/results/ci-lane/negative-control-decline.json \
+            --workdir bench/results/ci-lane 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate passed on an artifact the EP is supposed to decline. Either the EP now claims that op and this control has silently stopped being one, or the gate cannot tell execution from non-execution."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q 'FAIL(condition=UNATTRIBUTED)'; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate exited $code on the declined artifact but did not report FAIL(condition=UNATTRIBUTED). An instrument error is not a detection (R13)."
+            exit 1
+          fi
+          echo "NEGATIVE CONTROL PASSED (loader untouched): the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
 
       - name: Known-fatal log line is a lane failure (R13 second witness)
         if: always()

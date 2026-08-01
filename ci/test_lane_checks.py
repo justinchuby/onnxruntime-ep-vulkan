@@ -17,6 +17,7 @@ lane where the thing they check is broken.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -229,3 +230,119 @@ def test_gate_writes_unmeasured_before_it_can_fail(tmp_path):
     follow_up = run_check("check_verdict.py", str(out))
     assert follow_up.returncode == EXIT_FAIL_CONDITION
     assert "FAIL(condition=UNMEASURED)" in follow_up.stdout
+
+
+# ---------------------------------------------------------------------------
+# check_vocabulary.py — the step that keeps ERROR(instrument) from becoming the
+# lane's normal state.  Its three outcomes are exercised in a synthesised repository
+# so this suite never mutates the real one.
+# ---------------------------------------------------------------------------
+
+
+def _fake_repo(tmp_path: Path, vocab_body: str | None) -> Path:
+    """A minimal tree with ci/check_vocabulary.py and an optional tests/ops/_verdict.py."""
+    (tmp_path / "ci").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tests" / "ops").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(CI_DIR / "check_vocabulary.py", tmp_path / "ci" / "check_vocabulary.py")
+    if vocab_body is not None:
+        (tmp_path / "tests" / "ops" / "_verdict.py").write_text(
+            vocab_body, encoding="utf-8"
+        )
+    return tmp_path / "ci" / "check_vocabulary.py"
+
+
+def _run_vocab(script: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True
+    )
+
+
+def test_vocabulary_present_and_importable_passes(tmp_path):
+    """The positive pole, and the one that makes the other two mean something.
+
+    Its message is load-bearing: after it passes, any later
+    ``verdict_vocabulary_unavailable`` in the same job is a lane fault by elimination.
+    """
+    script = _fake_repo(tmp_path, 'VERDICT_MATCH = "MATCH"\nVERDICT_UNMEASURED = "UNMEASURED"\n')
+    r = _run_vocab(script)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "VOCAB: PASS" in r.stdout
+    assert "is a LANE fault" in r.stdout
+
+
+def test_absent_vocabulary_is_a_repository_state_with_its_own_token(tmp_path):
+    """Case (a): the checkout does not carry the module.
+
+    Red, because a lane that cannot emit a verdict cannot be green — but red under a
+    token no CI change will clear, and the text says so.  This is the whole mechanism
+    that stops ``ERROR(instrument)`` from becoming the weather.
+    """
+    script = _fake_repo(tmp_path, None)
+    r = _run_vocab(script)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=verdict_vocabulary_absent_from_checkout)" in r.stdout
+    assert "ERROR(instrument=verdict_vocabulary_broken)" not in r.stdout
+    assert "REPOSITORY STATE, not a lane defect" in r.stdout
+
+
+def test_present_but_unimportable_vocabulary_is_a_lane_defect_with_a_different_token(
+    tmp_path,
+):
+    """Case (b): the file is right there and this interpreter cannot load it.
+
+    Same exit code as case (a) — both are instrument outages and neither is a detection
+    — and deliberately **not** the same token, because the token is what a maintainer
+    greps and the two cases have different owners and different fixes.
+    """
+    script = _fake_repo(tmp_path, "def broken(:\n")
+    r = _run_vocab(script)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "ERROR(instrument=verdict_vocabulary_broken)" in r.stdout
+    assert "ERROR(instrument=verdict_vocabulary_absent_from_checkout)" not in r.stdout
+    assert "SyntaxError" in r.stdout
+
+
+def test_the_two_vocabulary_outages_do_not_share_a_token(tmp_path):
+    """Stated as its own assertion because it is the property, not a side effect."""
+    absent = _run_vocab(_fake_repo(tmp_path / "a", None)).stdout
+    broken = _run_vocab(_fake_repo(tmp_path / "b", "def broken(:\n")).stdout
+    absent_token = [l for l in absent.splitlines() if l.startswith("VOCAB: ")][0]
+    broken_token = [l for l in broken.splitlines() if l.startswith("VOCAB: ")][0]
+    assert absent_token != broken_token
+
+
+# ---------------------------------------------------------------------------
+# gate_chain_fp32.py — the loader-independent negative control artifact
+# ---------------------------------------------------------------------------
+
+
+def test_decline_probe_is_a_distinct_artifact_built_from_an_unclaimed_op():
+    """The negative control must not be the gate artifact wearing a different name.
+
+    ``VK_DRIVER_FILES``/``VK_ICD_FILENAMES`` are silently ignored by the LunarG loader in
+    elevated processes (PLATFORMS.md §7.4.1), and GitHub's Windows runners are elevated —
+    so the ICD-removal negative control cannot be relied on there.  This artifact makes
+    the EP execute nothing with the loader untouched.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import gate_chain_fp32 as gate  # type: ignore
+
+    assert set(gate.ARTIFACTS) == {"chain_fp32", "decline_probe"}
+    assert gate.ARTIFACTS["decline_probe"][0] != gate.ARTIFACTS["chain_fp32"][0]
+
+    onnx = pytest.importorskip("onnx")
+    np = pytest.importorskip("numpy")
+
+    decline_bytes, decline_feeds = gate.build_decline_probe_fp32(onnx, np)
+    chain_bytes, _ = gate.build_gate_chain_fp32(onnx, np)
+    assert decline_bytes != chain_bytes
+
+    model = onnx.load_from_string(decline_bytes)
+    op_types = [n.op_type for n in model.graph.node]
+    assert op_types == [gate.DECLINE_OP]
+    # If this op ever becomes claimable the probe stops being a negative control; the
+    # lane step catches that by requiring UNATTRIBUTED, and this assertion names it.
+    assert gate.DECLINE_OP not in {"Add", "Relu", "Mul", "Sub", "MatMulNBits"}
+    # Non-singular by construction, so a CPU-vs-CPU comparison cannot agree on zeros.
+    dets = np.linalg.det(decline_feeds["A"].astype(np.float64))
+    assert np.all(np.abs(dets) > 1e-3)

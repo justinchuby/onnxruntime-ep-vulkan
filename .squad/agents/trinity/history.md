@@ -381,3 +381,258 @@ reading can supply.
 - **Switch:** zero-size alloc must return a valid zero-length buffer, not `None`; and the
   `#[ignore]` on `ep_messenger_fires_for_planted_fence_leak` (carried from Round 20).
 - **Me, next:** falsify `assert_matches_cpu` first, then wire `assert_qdq_reference_oracle_safe`.
+
+## Round 22 (2026-07-31T21:08:53-07:00) — the verdict becomes a record; MATCH made unrepresentable
+
+**Task:** implement §10.0's third metric amendment and §10.0.1 R13. Both were rulings of record
+with no mechanism behind them. I grepped `tests/ops/_models.py` for `executed_by` and
+`UNATTRIBUTED`; neither symbol existed. **A specified-but-unimplemented mechanism is R10's own
+shape** — and it had happened to the amendment that fixed the last instance of it.
+
+### 1. `MATCH` is unrepresentable at a zero own-provider count — three interlocking mechanisms
+
+Not an assertion that runs afterwards. A construction-time impossibility, per Morpheus:
+*Guard D's observation becomes the constructor argument.*
+
+1. **`MATCH` is not an input to any constructor.** Callers pass a *comparison outcome* —
+   `AGREE` / `DISAGREE` / `NOT_PERFORMED`. Passing a verdict token raises `ValueError`.
+   `verdict` is a derived read-only property. The old `write_equivalence_verdict(path, MATCH)`
+   — a literal, taken from its caller — is **deleted**; that sentence no longer parses.
+2. **`from_comparison(attribution=...)` requires an `ExecutionAttribution` instance.**
+   `TypeError` on a dict, a string or `None`. This closes the obvious cheat of handing it
+   `{"VulkanExecutionProvider": 1}`.
+3. **`ExecutionAttribution.__init__` is sentinel-guarded.** Its only source is
+   `from_profile()`, parsing a real ORT profile. Path, mtime_ns and sha256[:16] are recorded
+   in the artifact and the file is deleted after reading, so a stale profile cannot be
+   re-presented.
+
+Precedence: `SPLIT-FRAME` → `UNMEASURED` → `UNATTRIBUTED` → `MATCH`/`DIVERGENT`.
+
+`tests/ops/test_verdict.py` attempts every route to a `MATCH` at zero own-count and fails to
+find one. That is the falsifier; the mechanism is `tests/ops/_verdict.py`.
+
+### 2. `UNATTRIBUTED` surfaces in five places and stays distinct from `DIVERGENT` in all of them
+
+`tests/ops/_verdict.py` (canonical) · `rust/src/counters.rs` (token + record key) ·
+`rust/src/bin/epctl.rs` (own variant, own exit code, message that says *THIS IS NOT DIVERGENT*
+and names a different owner) · `bench/admissible.py` (names the token instead of "not MATCH") ·
+`tests/ops/test_wiring_census.py` (criterion 12 (g)/(h)).
+
+Two distinctions, never collapsed:
+- **not `DIVERGENT`** — that says our kernels computed the wrong answer; this says they did not
+  run. Different owner, different fix. Routing an `UNATTRIBUTED` to Mouse costs a day.
+- **not `UNMEASURED`** — that says the instrument never ran; this says it ran, **agreed**, and
+  was about the wrong world. The more dangerous of the two, because it looks like a pass.
+
+`bench/test_contention.py::test_divergent_and_unattributed_do_not_produce_the_same_reason` is
+the mutation control: it fails the moment three states collapse into one string.
+
+### 3. Criterion 10 is now a test, not a script of Justin's
+
+`tests/ops/test_criterion10.py` — one session, three consecutive runs, attribution taken from
+ORT's own profile, CPU oracle per run, cross-run bit-identity, series verdict, artifact to
+`bench/results/criterion10-dev{N}.json`. **Both devices, and they agree exactly:**
+
+```
+selector 0 (NVIDIA RTX 4060)          selector 1 (Intel Iris Xe)
+   3  VulkanExecutionProvider            3  VulkanExecutionProvider
+  30  CPUExecutionProvider              30  CPUExecutionProvider
+  argmax 30751 (== CPU) x3               argmax 30751 (== CPU) x3
+  cross-run identical (all 65): True     cross-run identical (all 65): True
+  series verdict: MATCH                  series verdict: MATCH
+```
+
+Reproduces Justin's hand-run numbers to the digit. **The naming trap is written into the
+record**, not into a comment: one `VulkanExecutionProvider` Node event is one *fused island*
+covering 353 of 363 graph nodes, so three runs report `3` and `3` is the success value. A
+second test asserts the record says what it counts. "Consecutive" is enforced as
+`own_count >= runs AND own_count % runs == 0` — `end_profiling()` cannot be restarted, so the
+instrument is session-scoped and a mid-series fallback is caught by breaking the multiple.
+
+### 4. R13 across the whole harness
+
+`conftest.py` classifies every check into `PASS` / `FAIL(condition)` / `ERROR(instrument)` by
+exception type — `AssertionError` is a finding, `InstrumentError` and everything else is an
+outage — and prints all three counts **with the failure text quoted**. Guards now raise
+`InstrumentError` strictly *before* they have a value and `AssertionError` strictly *after*.
+Second witness: a `Falling back to CPUExecutionProvider` grep over captured stderr can fail
+even a *passing* test (opt-out marker `expects_ort_fallback`).
+
+It earned its keep the same session: my own new test raised `AttributeError` on a constant
+name, and the lane reported `ERROR(instrument) ... AttributeError` rather than a red I could
+have counted as a detection.
+
+### 5. R10 caught a real defect in the artifact — the amendment would have been a code reading
+
+The mechanism was complete and correct **in memory**, and the file on disk still read
+`"model_output_equivalence": "MATCH"` with `model_output_equivalence_record: null`.
+`counters.rs::dump_observations_if_requested` rebuilds the file at teardown and carried the
+token but not the record. Defect C's shape applied to a caveat.
+
+Fixed with `counters::extract_equivalence_record` (nesting- and string-aware) spliced back into
+the rebuilt document, plus a Rust falsifier that round-trips a record containing a `}` inside a
+string. **Paired control on real bytes, not synthesised:** the actual device-0 artifact passes
+`epctl` (exit 0); the same file with one key removed fails as `UNATTRIBUTED` (exit 1).
+
+R13's second corollary bit me on the way: I read a stale `epctl.exe` printing `PASS` as
+evidence the gate was unwired, because that *confirmed my prediction*. `cargo test --lib` and
+`cargo test --bin epctl` do not rebuild `target/debug/epctl.exe`.
+
+### Results
+
+- GPU-free lane: **70 passed**, 1 red — `test_census_baseline_has_no_drift`, quoting
+  `vk/host_device_memory.rs::offer_shared_device` got wired. Switch's, inherited, still true.
+- `test_phi35.py`: **8 passed / 1 skipped on both devices**, record written with its frame.
+- `test_criterion10.py`: **2 passed on both devices**.
+- Rust: epctl **13 passed** (3 new), counters **10 passed** (2 new/extended).
+- `bench/test_contention.py`: **62 passed** (5 new + fixture updated).
+
+### A red that is not mine, falsified rather than asserted
+
+`tests/ops/test_barrier_parity.py` crashes the interpreter with a **native access violation**
+(exit `-1073741819`) on device 0. I did not assert it was pre-existing — I isolated it:
+it reproduces with `ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` unset (so my teardown splice is not on
+the path) **and** it reproduces at my branch base `77d5d2a` with my Rust edits stashed out and
+the DLL rebuilt. A DLL built from the main worktree's local `a239482` passes the same module
+58/28. So: present on `origin/main`, fixed in somebody's unpushed local work. **Switch/Mouse —
+please push it.**
+
+### Owed to others
+- **Niobe:** the vocabulary, in
+  `.squad/decisions/inbox/trinity-equivalence-record-vocabulary.md`. Five tokens, precedence,
+  the two JSON keys, and the disclosure rule: the wall-clock ratio must **publish**
+  `UNATTRIBUTED` when that is the state. `_gate_equivalence` is updated and mirrored constants
+  point at `tests/ops/_verdict.py` as canonical. If you add a bench fixture it now needs a
+  `model_output_equivalence_record`.
+- **Switch:** `counters.rs` is your file; my change is additive (one `pub fn`, one splice, no
+  key removed or renamed). And the barrier-parity crash above.
+- **Tank:** `epctl.rs` gained two `CounterVerdict` variants and three tests. Additive.
+- **Me, next:** falsify `assert_matches_cpu` (still `UNFALSIFIED`, still the correctness
+  oracle), then wire `assert_qdq_reference_oracle_safe`.
+
+## Round 23 (2026-08-01) — R13 reaches the subprocesses; criterion 3's frame gate
+
+Merged `origin/main@efbf18c` first (fast-forward; the branch was 10 commits behind and every
+number below is post-merge). Round 22's work — `_verdict.py`, `test_criterion10.py`,
+`test_verdict.py`, `test_r13_lane.py`, the `counters.rs`/`epctl.rs` record splice — was still
+uncommitted in the worktree; it survived the merge, was re-verified against the rebuilt DLL,
+and is committed here together with this round.
+
+### 1. Criterion 3's last open item — closed, both devices
+
+Switch: *gate the wrapper on `Instance::validation_armed()` so an unarmed machine reports
+ERROR(instrument) rather than green.* Done, and the `#[ignore]` stands — his reason is right:
+a process-wide `EP_VALIDATION_ERROR_COUNT` with an instance-scoped messenger is only sound
+when the test owns the process, so subprocess isolation is the mechanism, not a workaround.
+
+`epctl --probe-validation` is the in-lane predicate. `classify_validation_probe()` ->
+ARMED / LAYER-ABSENT / NO-LOADER / PROBE-ERROR, and **exit 0 with no ARMED line is
+PROBE-ERROR** — exit 0 alone is not the observation. `require_validation_armed()` raises
+`InstrumentError` for everything else, so an unarmed machine is neither green (the old
+`pytest.skip`) nor a detection (which would accuse Switch's messenger of a defect the
+machine made unobservable). R12: UNOBSERVABLE, never 0.
+
+**Not a code reading.** `test_the_armed_gate_changes_its_answer_when_the_layer_is_removed`
+strips `VK_LAYER_PATH` on a real epctl process here and requires the classifier to change its
+answer: ARMED -> LAYER-ABSENT, gate refuses. If a loader still armed under the redirection the
+test raises `InstrumentError` rather than passing — a simulation that did not take establishes
+nothing.
+
+Both devices: `EP_VALIDATION_ERROR_COUNT = 1`, frame ARMED checked first. 3 passed each.
+
+`classify_plant_run()` splits the control's own transcript three ways. The branch that
+matters: **no artifact line at all is ERROR**, because a control that crashed before the plant
+and a control that watched the plant fail both exit non-zero — a bare `assert returncode == 0`
+scores the crash as a detection, which is the Guard D `NameError` verbatim. A count of `0` IS
+an observation (armed frame checked first) and is the only genuine FAIL in the table.
+
+### 2. The census timeout — and outages leave the detection channel
+
+`test_wiring_census` shelled out on 60 s / 120 s budgets calibrated for a quiet machine.
+`run_subprocess_checked(quiet_seconds=N)` now inflates every budget by 6.0 (Niobe's measured
+worst case is 4.4×; the extra is headroom, because over-waiting costs minutes and under-waiting
+costs a fabricated regression the whole team then investigates) with a 120 s floor and a
+`$ONNXRUNTIME_EP_VULKAN_TIMEOUT_SCALE` override that ignores junk values rather than falling
+to zero.
+
+`TimeoutExpired` / `FileNotFoundError` / `OSError` become `InstrumentError`. An unobservable
+mechanism records `INSTRUMENT-ERROR (...)` and **never enters `failures`**, so a timed-out
+mechanism is not reported as UNWIRED. Any instrument error then raises after the
+mandatory-wired assertion — ordering deliberate: a real UNWIRED outranks an outage elsewhere,
+because it was actually observed.
+
+Selector 1: **2 passed, 1 xfailed in 468 s** — nearly 4× the old 120 s budget for one of its
+two subprocesses, which is exactly why it had to be `--ignore`d. Selector 0: 45 s warm, census
+line now carries the frame: `verdict=MATCH executed_by={'CPUExecutionProvider': 24,
+'VulkanExecutionProvider': 3} source=ort_profile permits_triple=True`.
+
+No assertion anywhere in this harness compares a wall-clock duration to a threshold. A timeout
+is a ceiling on waiting, not a measurement.
+
+### 3. XPASS is a fourth token, and it was in the outage bucket
+
+The full run classified `test_gqa_present_kv_shape[0]` — an `xfail(strict)` that PASSED — as
+ERROR(instrument), i.e. into the bucket labelled *none of these is evidence about the EP*. It
+is evidence about the EP: **the condition the xfail recorded has been fixed.** R13's third
+corollary is that a result contradicting a prediction deserves more scrutiny than one
+confirming it, and burying somebody else's good news in the outage bucket guarantees it gets
+none. `XPASS(stale expect)` is now its own token with its own falsifier and a paired control
+that fails if the other three states stop being reachable.
+
+**Switch:** `test_gqa_present_kv_shape[0]` XPASSes on selector 1. Your zero-size-alloc fix
+appears to have landed; the xfail reason (`absent optional inputs produce size=0 alloc
+requests; EP falls back to CPU`) is stale for that parametrisation only. Yours to remove.
+
+### 4. The harness screen could not see the guards this project now rests on
+
+`audit_instruments.py` scanned `ops/_models.py` alone, so it reported *9 harness instruments*
+while everything §10.0's third amendment and R13 rest on sat outside its frame — a census
+reporting a number about a world it has not surveyed. Added `ops/_verdict.py` and the
+`classify_` prefix; 12 instruments now, `require_validation_armed` **SCREENED**.
+
+**Stated limit rather than a silent exclusion:** `classify_validation_probe` and
+`classify_plant_run` read UNFALSIFIED and the screen is wrong about them. Its polarity model
+is raise-based; these are total functions that return the token instead of raising it. The
+generalisation is mechanically decidable and not implemented in this pass — **value-polarity:
+screened iff a non-gated test asserts two different return values for two different inputs.**
+In `hand.harness_notes`. Baseline rewritten; it also absorbs `offer_shared_device` becoming
+wired (Switch, §6.5), which I looked at rather than ignored.
+
+### 5. A stale literal that would have punished progress
+
+`test_verdict.py` pinned `"353"` as the Phi-3.5 fusion ratio. It is 355 of 363 since Mouse
+claimed `SimplifiedLayerNormalization` and `Gather`, so that assertion would have gone red for
+the EP doing MORE work. Replaced with the property: the description must carry
+`<claimed> of <total> graph nodes` whose claimed figure exceeds 100× the island count.
+
+Same discipline in `test_criterion10.py`, and it paid: the CPU count fell **30 -> 24** on both
+devices this round, for exactly that good reason. A suite that pinned `30` would be red.
+
+### Results (post-merge, DLL rebuilt from this tree)
+
+| lane | selector 0 (RTX 4060) | selector 1 (Iris Xe) |
+|---|---|---|
+| `test_criterion10.py` | 2 passed — 3 VulkanEP / 24 CPU, argmax 30751 ×3, identical, MATCH | 2 passed — identical figures |
+| `test_validation.py` | 3 passed (3a/3b/3c) | 3 passed + 3d gate falsifier |
+| `test_wiring_census.py` | 2 passed, 1 xfailed, 45 s | 2 passed, 1 xfailed, 469 s |
+| full `tests/ops` | — | **351 passed / 32 failed** in 1018 s, census INCLUDED |
+
+R13 splits that 32 into **31 FAIL(condition) + 1 XPASS**, and the 31 are one cause: §8.9
+evidence gating declines `Min`/`Max`/`Cast`/comparisons/bitwise as `[staged]` against a suite
+that still asserts they are claimed. Policy/expectation mismatch, still not mine to patch, and
+I am still not loosening 31 assertions to make a suite green. Justin's baseline was 32 failed
+/ 272 passed with the census `--ignore`d: **same failures, 79 more passes, census back in.**
+
+GPU-free: 95 passed (`test_r13_lane` 37, `test_verdict` 44, `test_harness_census` 7,
+`test_guard_d` 12 — ERROR(instrument) 0). Rust: epctl 13, counters 10,
+`validation_control` 3. `bench/test_contention.py` 62.
+
+### Owed to others
+- **Switch:** the stale GQA xfail (above). `counters.rs` additive splice from Round 22 stands.
+- **Niobe:** vocabulary decision from Round 22 plus this round's timeout wrapper — if a bench
+  probe shells out, `_verdict.run_subprocess_checked` gives it a contention-tolerant budget
+  and turns a hang into ERROR(instrument) instead of a fabricated red.
+- **Tank:** `audit_instruments.py` extended again, additively (two entries in the file list
+  and one regex alternative). Say the word and I move the harness domain out of your file.
+- **Me, next:** value-polarity in the harness screen; then `assert_matches_cpu`, still
+  UNFALSIFIED and still the correctness oracle; then wire `assert_qdq_reference_oracle_safe`.

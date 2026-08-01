@@ -119,7 +119,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pytest
+        run: python -m pip install --upgrade pytest onnx numpy
+
+      - name: Verdict vocabulary preflight (which kind of instrument outage?)
+        # This job's tests fail COLLECTION when tests/ops/_verdict.py is missing, which
+        # is correct (a skip reports the same green as a pass) and unreadable on its own:
+        # a collection error looks the same whether the vocabulary is legitimately absent
+        # from this checkout or the job is broken. This step answers that first, by
+        # token, and puts the answer in the job summary.
+        run: python ci/check_vocabulary.py --github-summary
 
       - name: Two-polarity tests for ci/ lane checks
         run: python -m pytest ci/test_lane_checks.py -q -p no:randomly
@@ -366,6 +374,19 @@ jobs:
       # any verdict-bypass flag. Absence of a check is a refusal, not
       # a default green.
       # -------------------------------------------------------
+      - name: Verdict vocabulary preflight (which kind of instrument outage?)
+        # Runs BEFORE the gate. Every ci/ check imports its vocabulary from
+        # tests/ops/_verdict.py and defines none of its own, so if that module cannot
+        # be imported EVERY step below reports ERROR(instrument=...) at once. This step
+        # exists so that outcome is readable rather than ambient: it separates "this
+        # checkout does not carry the vocabulary" (a repository state; token
+        # verdict_vocabulary_absent_from_checkout) from "the file is here and this job
+        # cannot load it" (a lane defect; token verdict_vocabulary_broken), prints the
+        # module's sha256 and git-tracked status so two lanes can be diffed, and writes
+        # the answer to the job summary instead of leaving it in a log.
+        if: env.BUILD_SKIPPED != '1'
+        run: python ci/check_vocabulary.py --github-summary
+
       - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
         if: env.BUILD_SKIPPED != '1'
         env:
@@ -434,6 +455,48 @@ jobs:
             exit 1
           fi
           echo "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+
+      # -------------------------------------------------------
+      # SECOND NEGATIVE CONTROL — LOADER-INDEPENDENT (R9).
+      #
+      # The control above suppresses the ICD. That is a fine control here and an
+      # unreliable one on Windows, where the LunarG loader silently ignores
+      # VK_DRIVER_FILES/VK_ICD_FILENAMES in elevated processes (PLATFORMS.md §7.4.1)
+      # — so a control that depends on it can fail to suppress anything and then
+      # report "the gate cannot fail" when what failed was the suppression.
+      #
+      # This one never touches the loader. `--artifact decline_probe` is a single
+      # `Det` node, an op this EP does not implement: the EP loads, the driver is
+      # present, the device is real, and the EP still claims nothing, so the graph
+      # runs on CPU and the lane must report FAIL(condition=UNATTRIBUTED).
+      #
+      # It is also the stronger negative. "The EP could not start" and "the EP
+      # started and executed nothing" are different failures, and the second is the
+      # one that was live on 2026-07-30.
+      # -------------------------------------------------------
+      - name: Gate negative control — a declined artifact must produce UNATTRIBUTED
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
+        run: |
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p bench/results/ci-lane
+          set +e
+          out=$(python ci/gate_chain_fp32.py --artifact decline_probe \
+            --verdict-out bench/results/ci-lane/negative-control-decline.json \
+            --workdir bench/results/ci-lane 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate passed on an artifact the EP is supposed to decline. Either the EP now claims that op — in which case this control has silently stopped being one and must be re-pointed at an op that is still declined — or the gate cannot tell execution from non-execution with the loader healthy, which is worse."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q 'FAIL(condition=UNATTRIBUTED)'; then
+            echo "::error::NEGATIVE CONTROL FAILED: the gate exited $code on the declined artifact but did not report FAIL(condition=UNATTRIBUTED). An instrument error is not a detection (R13)."
+            exit 1
+          fi
+          echo "NEGATIVE CONTROL PASSED (loader untouched): with a healthy EP that claimed nothing, the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
 
       - name: Upload lane evidence
         if: always()
@@ -651,6 +714,16 @@ jobs:
       # Same three steps, same three failure modes, same absence
       # of any verdict-bypass escape.
       # -------------------------------------------------------
+      - name: Verdict vocabulary preflight (which kind of instrument outage?)
+        # See the Linux lane. Separates "this checkout does not carry
+        # tests/ops/_verdict.py" (repository state) from "the file is here and this job
+        # cannot import it" (lane defect) — two situations that otherwise produce the
+        # identical ERROR(instrument=verdict_vocabulary_unavailable) in every step below.
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          python ci\check_vocabulary.py --github-summary
+          exit $LASTEXITCODE
+
       - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
         if: env.BUILD_SKIPPED != '1'
         env:
@@ -730,6 +803,23 @@ jobs:
           $env:VK_DRIVER_FILES  = "C:\nonexistent\lvp_icd.json"
           $env:ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE = ""
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          # ---------------------------------------------------------------
+          # FIRST: did the suppression take? On Windows this is a real
+          # question, not a formality. PLATFORMS.md §7.4.1: the LunarG
+          # loader SILENTLY IGNORES VK_DRIVER_FILES/VK_ICD_FILENAMES in
+          # elevated processes, and GitHub's Windows runners are elevated —
+          # which is exactly why this lane registers lavapipe in the
+          # registry instead. If the ICD is still there, the gate will
+          # execute and pass, and reporting that as "the gate cannot fail"
+          # would blame the gate for a control that never fired. That is a
+          # real detection's costume on an instrument outage, and it routes
+          # the finding to the wrong owner (R13).
+          # ---------------------------------------------------------------
+          $probe = rust\target\release\epctl.exe --probe-loader 2>&1 | Out-String
+          if ($probe -match 'passed the §7\.2 capability gate') {
+            Write-Host "::warning title=ICD-removal negative control did not fire::ERROR(instrument=icd_suppression_ineffective) — VK_DRIVER_FILES/VK_ICD_FILENAMES did not remove the ICD (elevated runner; PLATFORMS.md §7.4.1). This step asserts NOTHING about the gate: it did not reach its observation. The gate's falsifier on this lane is the loader-independent decline-probe control in the next step, which is mandatory and cannot be skipped."
+            exit 0
+          }
           $out = python ci\gate_chain_fp32.py `
             --verdict-out bench\results\ci-lane\negative-control.json `
             --workdir bench\results\ci-lane 2>&1 | Out-String
@@ -750,6 +840,44 @@ jobs:
             exit 1
           }
           Write-Host "NEGATIVE CONTROL PASSED: with no ICD the gate reported FAIL(condition=UNATTRIBUTED) and exited $code. The gate can fail, so its passes are readable."
+
+      # -------------------------------------------------------
+      # THE FALSIFIER THIS LANE ACTUALLY RELIES ON.
+      #
+      # Loader-independent, so it fires on an elevated runner where the
+      # step above cannot. `--artifact decline_probe` is a single `Det`
+      # node — an op this EP does not implement. The EP loads, lavapipe
+      # is present, the device passes the §7.2 gate, and the EP still
+      # claims nothing: the graph runs on CPU and the lane must report
+      # FAIL(condition=UNATTRIBUTED).
+      #
+      # This is the stronger negative of the two. "The EP could not
+      # start" and "the EP started and executed nothing" are different
+      # failures; the second is the one that was live on 2026-07-30 and
+      # the one a green lane hid.
+      # -------------------------------------------------------
+      - name: Gate negative control — a declined artifact must produce UNATTRIBUTED
+        if: env.BUILD_SKIPPED != '1'
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
+        run: |
+          $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          $out = python ci\gate_chain_fp32.py --artifact decline_probe `
+            --verdict-out bench\results\ci-lane\negative-control-decline.json `
+            --workdir bench\results\ci-lane 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -eq 0) {
+            Write-Error "NEGATIVE CONTROL FAILED: the gate passed on an artifact the EP is supposed to decline. Either the EP now claims that op — in which case this control has silently stopped being one and must be re-pointed at an op that is still declined — or the gate cannot tell execution from non-execution with the loader healthy, which is worse."
+            exit 1
+          }
+          if ($out -notmatch 'FAIL\(condition=UNATTRIBUTED\)') {
+            Write-Error "NEGATIVE CONTROL FAILED: the gate exited $code on the declined artifact but did not report FAIL(condition=UNATTRIBUTED). An instrument error is not a detection (R13)."
+            exit 1
+          }
+          Write-Host "NEGATIVE CONTROL PASSED (loader untouched): with a healthy EP that claimed nothing, the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
 
       - name: Upload lane evidence
         if: always()

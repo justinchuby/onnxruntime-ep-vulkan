@@ -1162,3 +1162,165 @@ idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+---
+
+## Session 24 — 2026-07-31T20:35 — the last 10 nodes: PREDICTION (written before building)
+
+Merged `origin/main` (77d5d2a) into `squad/mouse`. Re-ran `bench/island_attribution.py` on
+selector 0: **353 claimed / 1 island / 0 cut-instances**, decline histogram exactly the 10 the
+brief lists. Then read the graph neighbourhood of all 10 declined nodes (producer, consumer,
+dtype, shape) rather than reasoning from the op names. That changed the plan, so it goes first.
+
+### What the graph says (the part the op-name histogram hides)
+
+The 10 declined nodes are not ten independent gaps. They are **three structurally different
+things**, and only one of them is on the data path:
+
+1. **Data path (2 nodes).** `/model/embed_tokens/Gather` → `/model/layers.0/input_layernorm/
+   LayerNorm`. `Gather` output is `FLOAT16[batch,seq,3072]` and feeds **two** consumers:
+   the declined LayerNorm *and* the claimed `layers.0/post_attention_layernorm/SkipLayerNorm`.
+   The LayerNorm output is `FLOAT16[batch,seq,3072]` and feeds the claimed `layers.0/attn/
+   qkv_proj/MatMul_Q4`. So **two full hidden-state tensors cross host→device per inference**
+   solely because of these two nodes.
+2. **Control plane (6 nodes).** `attn_mask_reformat/attn_mask_subgraph/{Shape, Gather, Gather/Cast,
+   ReduceSum, Sub, Sub/Cast}` plus `rotemb_caches_subgraph/Greater`. Every tensor in this cluster
+   is `INT64[]`, `INT64[2]` or `INT64[batch,1]` — scalars. It produces `seqlens_k INT32[batch,1]`
+   and `total_seq_len INT32[]`, consumed by all 32 GQA nodes. Total arithmetic: O(total_seq_len)
+   int64 adds. Total bytes: a few hundred.
+3. **Control flow (1 node).** `rotemb_caches_subgraph/If` — `else_branch`/`then_branch` are
+   GRAPH-typed attributes; predicate is `BOOL[]`; outputs are `cos_cache`/`sin_cache`
+   `FLOAT16[max_sequence_length, head_dim/2]`, session-invariant.
+
+### What I will claim, and what I will decline on purpose
+
+**Claim (2):** `SimplifiedLayerNormalization` (1 node) and `Gather` (1 node, embed_tokens).
+**Decline permanently, with reasons recorded (8):** the 6-node int64 control-plane cluster,
+`Shape`, and `If`. Reasons in §7.4 of OP_COVERAGE.md and in the decision file.
+
+### Falsifiable predictions
+
+**P1 — island count does not change.** After claiming either or both, `island_count` stays **1**
+on both devices. Rationale: each new node is *adjacent* to the single existing island
+(`Gather` via SkipLayerNorm(0); `LayerNorm` via qkv MatMul_Q4(0)), so neither can seed a new one.
+*Falsifier:* `bench/island_attribution.py` reports `Islands: 2` or more.
+*(This is the prediction I got wrong on SkipNorm — there I predicted a **drop** from merging and
+got a **rise** from seeding. Here I predict **no change**, which the same instrument falsifies.)*
+
+**P2 — claimed count goes 353 → 355 and declines go 10 → 8.** *Falsifier:* any other pair.
+
+**P3 — hidden-state-sized crossings into the island go 2 → 0.** After both claims the island's
+entry from the prologue is `input_ids INT64[batch,seq]` (8·s bytes) instead of two
+`FLOAT16[batch,seq,3072]` tensors (2 × 6144·s bytes).
+*Predicted per-inference host→device drop:* **2×6144·s − 8·s = 12280·s bytes.**
+*Falsifier:* Switch's `rust/tools/probe_staging_bytes.py` shows a per-inference upload drop
+smaller than 6144·s bytes (i.e. less than one of the two tensors).
+
+**P4 — a cost, predicted so it cannot be quietly absorbed.** Claiming `Gather` makes
+`model.embed_tokens.weight` FLOAT16[32064,3072] a device-resident weight: **+197,001,216 B
+= +187.9 MiB** on the *first* inference (1997.6 MiB → ~2185.5 MiB), constant thereafter.
+*Falsifier:* if first-inference upload does **not** grow by ~188 MiB, the tensor is not being
+cached and I am paying it every inference — in which case P3 is inverted and `Gather` must be
+reverted, not tuned.
+
+**P5 — 0 cut-creating declines stays 0.** *Falsifier:* attribution reports any nonzero cut.
+
+**Not predicted, deliberately:** wall-clock. Per R13 no timing figure is quotable while
+`phase_containment` is RED; coverage counts, island counts and byte counts are.
+
+
+---
+
+## Session 24 — RESULT (written after measuring; prediction block is above)
+
+**Commits on `squad/mouse`:** `35025b8` (SimplifiedLayerNormalization), `6b24a3b` (Gather),
+`e98de4c` (transfer recalibration + OP_COVERAGE 7.8/7.9/7.10).
+
+### Prediction scoring
+
+| # | prediction | falsifier | outcome |
+|---|---|---|---|
+| P1 | islands stay 1 | islands != 1 on either device | **CONFIRMED** |
+| P2 | 353 -> 355 claimed, declines 10 -> 8 | any other pair | **CONFIRMED exactly** |
+| P3 | per-inference upload drops 12,280 B at s=1 | drop < 6,144 B | **MISSED — 2x too large; actual 6,136 B** |
+| P4 | first-inference +187.9 MiB (embedding table becomes resident) | growth < 150 MiB | **CONFIRMED**, +188.25 MiB |
+| P5 | 0 cut-instances stays 0 | any cut appears | **CONFIRMED** |
+
+Last turn I logged P3 as a 32x *under*-estimate. **That was wrong, and the control run corrected
+it.** I had compared my post-change number against the brief's 0.756 MiB instead of against a
+baseline I had measured myself. The real comparison is 405,512 -> 399,376 B, so P3 was 2x too
+*large*, not 32x too small. Two lessons, and the second is the expensive one:
+
+1. Four of five predictions confirming is not evidence the model of the graph was good. It is
+   evidence that four easy predictions were easy. The upload counter instruments uploads only, and
+   both claims together remove one crossing, not two.
+2. **I nearly scored my own prediction against someone else's number.** A prediction is only
+   falsifiable against an instrument I ran myself, on this machine, at a commit I chose. Comparing
+   against a figure inherited from a brief is not measurement, it is arithmetic on hearsay — and it
+   produced a wrong verdict in *both* directions before it settled.
+
+### What was claimed / declined
+
+Claimed 2 (`SimplifiedLayerNormalization`, `Gather`) — the only two on the tensor data path.
+Declined 8 permanently with reasons: 6-node INT64 control plane (needs shaderInt64 + a Cast
+dtype-pair matrix + a reduction template, to move three digits of bytes), `Shape` (output derives
+from shape not data; host already holds it), `If` (GRAPH-typed attribute branches, no subgraph
+machinery, BOOL[] predicate would force a fence stall mid-island, outputs session-invariant).
+Full reasoning in `docs/OP_COVERAGE.md` 7.8.4 and `mouse-last-ten-nodes.md`.
+
+The `Gather` caps stayed FLOAT deliberately. The attn-mask `Gather` moving
+`[not-registered]` -> `[dtype]` is the correct observable: still declined, now for the right
+reason. Widening to ANY would silently corrupt `seqlens_k`.
+
+### Measured, both devices, byte-identical
+
+| state | claimed | islands | CPU node-exec / 3 runs | declines | cuts |
+|---|---|---|---|---|---|
+| baseline `77d5d2a` | 353 | 1 | 30 | 10 | 0 |
+| + SimplifiedLayerNorm | 354 | 1 | 27 | 9 | 0 |
+| + Gather | **355** | **1** | **24** | **8** | **0** |
+
+`cross_run_identical = True`; `argmax = 30751` matching CPU on every run of both devices.
+413 rust tests green; 17 passed / 1 skipped on both devices (phi35 + skipnorm + partition_gate).
+
+### Transfer (Task 2)
+
+Control at `77d5d2a`, same instrument, same machine: **405,512 B/inference**. After both claims:
+**399,376 B**. Readback **457,344 B**. Total boundary **856,720 B = 0.817 MiB**, asymmetric with
+readback larger — the old constants modelled two symmetric 0.378 MiB halves. Exact attribution:
+`session_staging_upload_bytes - weight_cache_release_bytes == 399,376` == the per-run delta, to
+the byte. This also closes the open question from last session: `cos_cache`/`sin_cache` do not
+cross per inference.
+
+**Bytes are calibrated; nanoseconds are not.** `TransferModel::fit` has still never seen a real
+sample and under R13 cannot until `phase_containment` goes green. `session_staging_upload_us`
+exists in the counters and I deliberately did not use it. Pinned the three measured constants with
+tests so the prose cannot drift.
+
+Consequence: modelled DISCRETE cost ~191 us total (was ~167 ms/direction pre-residency), threshold
+~574 us. **The gate will decline far less; islands previously uneconomic may be worth claiming.**
+Risk: `fixed_ns` is now ~63% of the modelled cost, so the gate's teeth are in the one uncalibrated
+parameter, and under-declination is a silent failure.
+
+### `retain_viable` (Task 3)
+
+Phi-3.5 has exactly one cluster, so `only_one_cluster == true` and the gate **never runs**.
+`viable_islands_retained == 0` means *bypassed*, not *all-rejected*, and only the code
+distinguishes them. Recorded as OP_COVERAGE 7.10 with an amendment on 7.3.1 so "WIRED" is never
+quoted alone. Noted the irony: claiming GQA drove islands to 1, which is exactly what removed the
+gate's only real-model exercise.
+
+### Housekeeping
+
+`bench/island_attribution.py` now writes under `bench/results/` instead of the repo root — that
+root write is how `island_attribution.json` got committed. Added the raw claim-log dump to
+`.gitignore`.
+
+### For next session
+
+- 355/363 is where op coverage stops being the right metric. The remaining 8 are declined on
+  technical merit; the number to move is **boundary bytes** (856,720/inference), not the percentage.
+- The single highest-value change in `partition.rs` is not a new op — it is Niobe feeding
+  `TransferModel::fit` a real staircase once R13 permits it.
+
+📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
