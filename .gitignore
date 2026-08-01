@@ -57,3 +57,4 @@ tests/_run_*.txt
 onnxruntime_profile__*.json
 vulkan_test*.json
 island_attribution.json
+trace_*.json
