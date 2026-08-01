@@ -72,6 +72,8 @@ pub(crate) struct EpDeviceShare {
 // required; ash's documentation notes this). `vk::PhysicalDevice` is a `u64`, trivially Send.
 // `Capabilities` is Copy. `EpDeviceShare` is therefore both Send and Sync.
 unsafe impl Send for EpDeviceShare {}
+// SAFETY: see the comment above `impl Send` — the same reasoning (thread-safe ash handles,
+// `u64` physical device, `Copy` capabilities) establishes `Sync`.
 unsafe impl Sync for EpDeviceShare {}
 
 /// The process-global device share, set exactly once by `VulkanSession::create` and never
@@ -107,7 +109,6 @@ pub(crate) fn register_ep_device(device: &Device) {
 pub(crate) fn ep_device() -> Option<&'static EpDeviceShare> {
     EP_DEVICE.get()
 }
-
 
 /// The engine's logical device.
 ///
@@ -301,8 +302,66 @@ impl Device {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Tests
+// §6.5 — SessionSharedCtx: the EP's device context for host_device_memory
+//
+// Holds raw copies of the session's Vulkan handles so `host_device_memory` can
+// stand up a `HostDeviceMemory` on the SAME `VkDevice` the kernels run on.
+//
+// SAFETY: `ash::Device` and `ash::Instance` are handles (integers + Arc'd dispatch
+// tables). Cloning them gives a borrowed copy; calling `vkDestroyDevice` remains
+// the session's `Device::drop` responsibility.  These copies MUST NOT outlive the
+// session's Device — but ORT guarantees tensor frees (the only use of the device
+// through this ctx) complete before EP teardown, so no call can reach a destroyed
+// device. The Arc held in `host_device_memory::OFFERED` is process-lifetime but
+// will never be accessed after the session is torn down.
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Shareable EP device context for `host_device_memory::offer_shared_device`.
+///
+/// Created in `VulkanSession::create` after the logical device is live, and stored
+/// in `host_device_memory::OFFERED` for the process lifetime.  All fields are raw
+/// copies of the session's handles; `Drop` does NOT destroy any Vulkan objects.
+pub(crate) struct SessionSharedCtx {
+    /// Cloned `ash::Instance` handle (ref-counted dispatch table; no `vkDestroyInstance` on drop).
+    pub(crate) instance: ash::Instance,
+    /// Cloned `ash::Device` handle (ref-counted dispatch table; no `vkDestroyDevice` on drop).
+    pub(crate) ash_device: ash::Device,
+    pub(crate) physical_device: vk::PhysicalDevice,
+    pub(crate) compute_queue: vk::Queue,
+    pub(crate) compute_queue_family: u32,
+    pub(crate) is_uma: bool,
+    pub(crate) name: String,
+}
+
+// SAFETY: Vulkan handles are safe to share across threads when external synchronisation is
+// provided. All accesses through this ctx go via `HostDeviceMemory`'s internal mutex.
+unsafe impl Send for SessionSharedCtx {}
+// SAFETY: as above.
+unsafe impl Sync for SessionSharedCtx {}
+
+impl super::host_device_memory::SharedVkDevice for SessionSharedCtx {
+    fn instance_ash(&self) -> &ash::Instance {
+        &self.instance
+    }
+    fn ash_device(&self) -> &ash::Device {
+        &self.ash_device
+    }
+    fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
+    fn compute_queue_family(&self) -> u32 {
+        self.compute_queue_family
+    }
+    fn compute_queue(&self) -> vk::Queue {
+        self.compute_queue
+    }
+    fn is_uma(&self) -> bool {
+        self.is_uma
+    }
+    fn device_name(&self) -> &str {
+        &self.name
+    }
+}
 
 #[cfg(test)]
 mod tests {

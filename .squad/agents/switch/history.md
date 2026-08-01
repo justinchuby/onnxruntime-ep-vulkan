@@ -1288,3 +1288,51 @@ The previous reads of alloc_device_upload_bytes as "0 bytes uploaded" were frame
 State: 426 tests pass. Seam committed. Byte sweep from session 33/34 stands:
   cold inf 0: 1997.596 MiB; warm inf 1+: 0.756 MiB. 2642x reduction confirmed.
   model_output_equivalence = MATCH on both devices.
+
+
+## Session 35 (2026-07-31) — Defects 1/2/3 closed on real Phi-3.5; offer gated
+
+Fresh session; prior work merged. Guard D (with Trinity's `pathlib.Path`->`Path` fix) now
+reports 4 real defects; 2 are mine. All measured on NVIDIA dev 0, real Phi-3.5 (2GB), one
+process. Bytes are deterministic (immune to the 9.5x contention swing), so valid on a busy box.
+
+DEFECT 1 (weight-cache device leak) — FIXED + WIRED (R10). `VulkanSession::Drop` now
+`drain_weight_caches()` then dumps counters AFTER drain (the DataTransfer release path fired
+before the weight-cache release, so the old dump site recorded release_calls=0 — a frame error,
+not a real 0). Predict-then-measure device high-water after N sessions: predicted FLAT (one
+session's peak, not linear); measured over 3 sequential sessions high_water=4,195,027,596 (~3.907
+GiB) = ONE session's peak, sub-MB delta N=1->N=3 (a ~2GB/session leak would show ~6-12GB or OOM).
+bytes_in_use=0 at teardown; allocs==frees=3975. R10 artifact (content varies with input):
+release_calls=3 (one drain/session Drop), release_buffers=972 (326x3), release_bytes=6.28GB
+(2.095GBx3). Original failure mode was SILENT CPU FALLBACK (5th instance), not a surfaced error.
+
+DEFECT 2 (50 KV outputs never written) — FIXED. Write path is mine. Root cause from test source:
+empty past [1,32,0,96] -> past_len_max=0 -> present sized 0 -> sz==0 placeholder branch -> never
+written; ORT expects [1,32,1,96]. Fix in translate_gqa: gate empty_past=(past_len_max==0), bind
+present as REAL bind_output [B,Nkv,seq_len,D], push kv_len=seq_len as stride; past>0 keeps
+aliasing. Shader unchanged (present bindings 7,8 already separate from past 1,2). Evidence: 65
+outputs bit-identical across 3 runs, kv_all_zero_run0=0, differing=0 (was 50). Logits (out 0)
+never differed. Added falsifying test translate_gqa_empty_past_binds_real_present_buffers.
+
+DEFECT 3 (compute_calls=1 after 5 runs) — DOWNSTREAM of Defect 1 (confirmed by observation).
+With no OOM, compute_calls==N and compute_failures=0 in both the N-run sweep and the 3-session
+run. The 1 was run-1 OOMing and later runs never reaching Compute.
+
+offer_shared_device (§6.5): fixed index-space bug (key on capable.info.index = factory/physical
+enumerate index, NOT the sorted-capables selector idx). With offer ON single-session:
+alloc_device_frame SPLIT-DEVICE->SHARED, alloc_device_authoritative_spans UNOBSERVABLE->0 (the
+transition IS the §6.5-closed artifact, R12). BUT offering unconditionally -> multi-session UAF:
+SessionSharedCtx holds borrowed cloned ash handles (no refcount), provider is process-global &
+cached, each session builds a fresh VkDevice; session 0 Drop destroys it -> STATUS_ACCESS_VIOLATION
+(0xC0000005) on session 1. Real fix = sessions reuse the process-global EP device
+(register_ep_device), the one-VkDevice-per-process refactor already flagged
+(switch-two-vkdevice-flag.md). Gated: default OFF (safe, SPLIT-DEVICE), opt-in
+ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE=1 for single-session SHARED verification. Verified: 3
+sessions survive default-env, no OOM/crash.
+
+Owed closed: Trinity — tests/validation_control.rs needs nothing further from me; #[ignore] on
+ep_messenger_fires_for_planted_fence_leak justification accepted, closed. Niobe — trace.rs
+"command-buffer recording" caveat fixed (false in every shipped trace; real recording 87-229ms
+~1-3% wall, upload was 98% of that phase; R11).
+
+cargo ci green (fmt+clippy+tests). Release DLL builds. Committed on squad/switch, not pushed.

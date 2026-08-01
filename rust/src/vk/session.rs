@@ -351,6 +351,10 @@ struct ShapeOnlyRecorder {
     pub output_desc_by_token: Vec<(u64, TensorDesc)>,
     /// Descriptors from `alloc_temp()` calls — scratch buffers not tied to ORT outputs.
     pub temp_descs: Vec<TensorDesc>,
+    /// Aliased output pairs: (out_token, in_token).  Populated by `bind_aliased_output`.
+    /// `dispatch_ort` uses this to borrow an input buffer for the matching output slot,
+    /// avoiding a redundant device allocation for in-place KV cache updates.
+    pub aliased_pairs: Vec<(u64, u64)>,
 }
 
 impl ShapeOnlyRecorder {
@@ -367,6 +371,7 @@ impl ShapeOnlyRecorder {
             captured_bindings: None,
             output_desc_by_token: Vec::new(),
             temp_descs: Vec::new(),
+            aliased_pairs: Vec::new(),
         }
     }
 
@@ -387,6 +392,7 @@ impl ShapeOnlyRecorder {
             captured_bindings: None,
             output_desc_by_token: Vec::new(),
             temp_descs: Vec::new(),
+            aliased_pairs: Vec::new(),
         }
     }
 
@@ -426,6 +432,27 @@ impl DispatchContext for ShapeOnlyRecorder {
 
     fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
         Ok(BufferView::from_raw(self.bind_token(&o.name, desc)))
+    }
+
+    /// Register an aliased output (in-place KV cache update).
+    ///
+    /// Records:
+    /// - The output descriptor so `dispatch_ort` sets `actual_output_byte_sizes[j]` correctly.
+    /// - The (out_token, in_token) pair so the output loop can borrow the input buffer
+    ///   instead of allocating a new device buffer — the shader writes to the input in-place.
+    ///
+    /// Returns the input's token so the `KernelRequest` binding routes the shader to the
+    /// right buffer (same buffer for both reads and writes).
+    fn bind_aliased_output(
+        &mut self,
+        input: &TensorRef,
+        out: &OutRef,
+        desc: TensorDesc,
+    ) -> EpResult<BufferView> {
+        let out_token = self.bind_token(&out.name, desc);
+        let in_token = self.resolve_token(&input.name);
+        self.aliased_pairs.push((out_token, in_token));
+        Ok(BufferView::from_raw(in_token))
     }
 
     fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
@@ -653,13 +680,60 @@ impl VulkanSession {
         // device after VulkanSession::drop.
         register_ep_device(&device);
 
+        // §6.5 seam: offer the EP device context to host_device_memory so that ORT-tensor
+        // allocations land on the SAME VkDevice the compute kernels use.  Must be called BEFORE
+        // any ORT tensor is allocated — `ensure_registered` is lazy and consults OFFERED at first
+        // use.
+        //
+        // KEY (index-space, R12): `ensure_registered` is called by the allocator with the
+        // *factory's advertised* device index (`HandleRegistry::set_device_index`, factory.rs) —
+        // which is the physical `vkEnumeratePhysicalDevices` index, i.e. `capable.info.index`.
+        // It is NOT the sorted-capables selector `idx` (the `ONNXRUNTIME_EP_VULKAN_DEVICE` value).
+        // Those two agree only when enumerate order equals best-first sort order; keying the offer
+        // on `idx` left `offered_device()` returning None on any desk where they diverge, so the
+        // provider silently built a SECOND VkDevice (`alloc_device_frame = SPLIT-DEVICE`). Offer
+        // under `capable.info.index` so the registry lookup finds it and the frame becomes SHARED.
+        //
+        // LIFETIME (why this is opt-in, not on by default): the offered context holds *borrowed*,
+        // bitwise-cloned ash handles (see `EpDeviceShare` / `SessionSharedCtx` — no refcount, no
+        // Drop). The device-memory provider that consumes them is process-global and built once,
+        // then cached (`host_device_memory::PROVIDERS`). But every `VulkanSession::create` builds a
+        // *fresh* VkDevice — §6.5's "exactly one VkDevice per physical device per EP instance"
+        // invariant is not yet enforced across sessions. Consequences of offering unconditionally:
+        //   1. Single session: correct — `alloc_device_frame` flips SPLIT-DEVICE → SHARED and
+        //      `alloc_device_authoritative_spans` transitions UNOBSERVABLE → 0 (a measurement).
+        //   2. Multiple sessions in one process: the cached provider outlives session 0's device,
+        //      which `VulkanSession::drop` destroys (vkDestroyDevice) → use-after-free. Measured:
+        //      STATUS_ACCESS_VIOLATION (0xC0000005) on the 2nd session's inference. Even if the
+        //      device were leaked to keep the handle valid, session N>0's kernels run on a
+        //      *different* device than the provider's, so its ORT tensors would be bound on the
+        //      wrong device.
+        // Closing this for real requires sessions to *reuse* the process-global EP device
+        // (`register_ep_device`) rather than create their own — an architectural change on the
+        // §6.5 seam, not a call-site fix. Until then the offer is gated: default OFF (safe for any
+        // session count, SPLIT-DEVICE), opt-in ON via `ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE=1`
+        // for single-session runs that want to exercise/verify the SHARED frame.
+        if std::env::var_os("ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE").is_some_and(|v| v == "1") {
+            let ctx = crate::vk::device::SessionSharedCtx {
+                instance: instance.ash().clone(),
+                ash_device: device.ash().clone(),
+                physical_device: device.physical_device(),
+                compute_queue: device.compute_queue(),
+                compute_queue_family: device.compute_queue_family(),
+                is_uma: capable.caps.is_uma,
+                name: capable.info.name.clone(),
+            };
+            crate::vk::host_device_memory::offer_shared_device(
+                capable.info.index,
+                std::sync::Arc::new(ctx),
+            );
+        }
+
         // Allocate the 4-byte zero-element placeholder buffer.  A zero-element tensor maps
         // to this buffer in descriptor writes — Vulkan requires a non-null buffer handle and
         // range > 0.  The shader never touches it (outer dim = 0 at compute time).
         // SAFETY: alloc and device are live; 4 bytes is always a valid allocation size.
-        let zero_elem_placeholder = unsafe {
-            alloc.alloc_device("zero_elem_placeholder", 4)
-        };
+        let zero_elem_placeholder = unsafe { alloc.alloc_device("zero_elem_placeholder", 4) };
         if zero_elem_placeholder.is_none() {
             log::error!("VulkanSession::create: failed to allocate zero-element placeholder");
             return None;
@@ -688,10 +762,39 @@ impl VulkanSession {
     /// an active `Compute`), so this invariant holds by the ORT contract.
     pub(crate) fn release_weight_cache(&mut self, subgraph_id: u64) {
         if let Some(cache) = self.weight_caches.remove(&subgraph_id) {
+            let mut buffers = 0u64;
+            let mut bytes = 0u64;
             for (_, buf) in cache {
+                buffers += 1;
+                bytes += buf.size;
                 // SAFETY: buf is owned; last Compute has completed; no outstanding GPU work.
                 unsafe { self.alloc.free(buf) };
             }
+            // R10 wiring artifact: this call count is produced by the call graph, not by review.
+            // A run whose cache is never released leaves `weight_cache_release_calls` at 0.
+            crate::counters::weights::on_cache_release(buffers, bytes);
+        } else {
+            // Still record the invocation: the caller reached the release path even for a subgraph
+            // that never populated a cache. The call-count artifact must not depend on there being
+            // buffers to free, or "never wired" and "wired but empty" become indistinguishable.
+            crate::counters::weights::on_cache_release(0, 0);
+        }
+    }
+
+    /// Free **every** remaining weight cache, for every subgraph.
+    ///
+    /// This is the session-owned backstop for the cache lifetime (Defect 1). The per-subgraph
+    /// release path is `SubgraphComputeInfo::Drop → release_weight_cache`, which fires when ORT
+    /// calls `ReleaseNodeComputeInfos`. That path is correct, but it makes the cache's lifetime
+    /// owned by ORT's teardown order rather than by the session that allocated the buffers. If a
+    /// compute-info is ever dropped out of order — or not at all before the session tears down —
+    /// the device buffers would leak until the `gpu-allocator` Drop reclaimed the whole heap with a
+    /// leak warning. Draining here makes the session the owner of last resort: whatever the
+    /// per-subgraph path missed is freed before `alloc` drops.
+    fn drain_weight_caches(&mut self) {
+        let ids: Vec<u64> = self.weight_caches.keys().copied().collect();
+        for id in ids {
+            self.release_weight_cache(id);
         }
     }
 
@@ -870,6 +973,11 @@ impl VulkanSession {
         // TensorDesc cache for intermediate outputs produced by earlier kernels in the same island.
         // Keys are tokens in [n_plan_inputs+n_plan_outputs, first_temp_token).
         let mut computed_descs: HashMap<u64, TensorDesc> = HashMap::new();
+        // Aliased output → input map: output_index → input_index.
+        // Populated during the ShapeOnlyRecorder pre-pass from `bind_aliased_output` calls.
+        // Used in the output allocation loop to borrow an input buffer instead of allocating
+        // a new device buffer for in-place KV cache outputs.
+        let mut aliased_output_to_input: HashMap<usize, usize> = HashMap::new();
 
         for (ki, kernel) in kernels.iter().enumerate() {
             let recipe = match &kernel.dyn_recipe {
@@ -962,6 +1070,16 @@ impl VulkanSession {
                     .iter()
                     .map(|d| d.byte_size().unwrap_or(0) as u64)
                     .collect();
+                // Collect aliased output→input pairs for the output allocation loop.
+                for (out_tok, in_tok) in sor.aliased_pairs {
+                    if out_tok >= n_plan_inputs as u64
+                        && out_tok < (n_plan_inputs + n_plan_outputs) as u64
+                        && in_tok < n_plan_inputs as u64
+                    {
+                        let j = (out_tok - n_plan_inputs as u64) as usize;
+                        aliased_output_to_input.insert(j, in_tok as usize);
+                    }
+                }
             } else {
                 log::error!(
                     "dispatch_ort: dynamic re-run of translate for op '{}' failed",
@@ -1074,7 +1192,11 @@ impl VulkanSession {
             // SAFETY: weight_cache_ptr is a valid, exclusive pointer to the per-subgraph
             // HashMap entry; no other code accesses weight_caches during this call.
             if let Some(cached) = unsafe { (*weight_cache_ptr).get(&cpu_key) } {
-                gpu_inputs.push(GpuBuffer::borrowed_ref(cached.buffer, cached.size, cached.mem_class));
+                gpu_inputs.push(GpuBuffer::borrowed_ref(
+                    cached.buffer,
+                    cached.size,
+                    cached.mem_class,
+                ));
                 // Push a sentinel staging entry so the Vecs stay parallel.  The sentinel is also
                 // borrowed_ref (no staging needed for cached inputs) and will be a no-op in
                 // free_all.  We never write to it or submit a vkCmdCopyBuffer for it.
@@ -1122,6 +1244,22 @@ impl VulkanSession {
                     0,
                     MemClass::Download,
                 ));
+                continue;
+            }
+            // Aliased output (in-place KV cache update): the shader writes to the input buffer
+            // directly.  Borrow the input's GPU buffer for the output slot — no new device
+            // allocation — and allocate only a real download staging buffer so the barrier and
+            // vkCmdCopyBuffer path can flush the written data back to ORT.
+            if let Some(&in_idx) = aliased_output_to_input.get(&i) {
+                let in_buf = &gpu_inputs[in_idx];
+                gpu_outputs.push(GpuBuffer::borrowed_ref(in_buf.buffer, sz, in_buf.mem_class));
+                // SAFETY: same allocator/device; sz > 0 verified above.
+                let Some(stg) =
+                    (unsafe { self.alloc.alloc_download(&format!("ep_stg_out_{i}"), sz) })
+                else {
+                    bail!("alloc_download failed for aliased output staging");
+                };
+                staging_dls.push(stg);
                 continue;
             }
             // Output buffers: STORAGE_BUFFER (shader writes) + TRANSFER_SRC (copy to staging).
@@ -1777,7 +1915,11 @@ impl VulkanSession {
             let sz = actual_input_byte_sizes[i];
             if !stg.borrowed && sz >= WEIGHT_CACHE_MIN_BYTES {
                 // Read fields before the mutable replace to avoid a borrow conflict.
-                let (handle, cached_sz, cls) = (gpu_inputs[i].buffer, gpu_inputs[i].size, gpu_inputs[i].mem_class);
+                let (handle, cached_sz, cls) = (
+                    gpu_inputs[i].buffer,
+                    gpu_inputs[i].size,
+                    gpu_inputs[i].mem_class,
+                );
                 // Take ownership of the device buffer and insert into cache.
                 // Replace with a borrowed_ref so free_all treats it as a no-op.
                 let owned = std::mem::replace(
@@ -1785,9 +1927,14 @@ impl VulkanSession {
                     GpuBuffer::borrowed_ref(handle, cached_sz, cls),
                 );
                 let key = (input_cpu_ptrs[i] as usize, sz);
+                crate::counters::weights::on_cache_insert(sz);
                 // If a stale entry exists for this key (e.g., pointer was reused at the same
                 // size by a different tensor), free it first to avoid a GPU memory leak.
+                // SAFETY: `weight_cache_ptr` is a valid, exclusive pointer to the per-subgraph
+                // HashMap; no other code accesses `weight_caches` during this call.
                 if let Some(old) = unsafe { (*weight_cache_ptr).insert(key, owned) } {
+                    // The replaced entry leaves the cache; account for it before the device free.
+                    crate::counters::weights::on_cache_evict(old.size);
                     // SAFETY: `old` is a device-local buffer owned by the cache; the fence
                     // has signalled so no GPU work references it.
                     unsafe { self.alloc.free(old) };
@@ -1975,6 +2122,10 @@ impl VulkanSession {
 
 impl Drop for VulkanSession {
     fn drop(&mut self) {
+        // Defect 1 backstop: free any weight-cache buffers the per-subgraph release path did not
+        // reclaim, before `alloc` drops. The session owns the device memory it allocated; its
+        // lifetime, not ORT's teardown order, is the guarantee that the cache is released.
+        self.drain_weight_caches();
         // The zero-element placeholder must be freed before `alloc` drops (field order would
         // drop `alloc` before `zero_elem_placeholder` otherwise). The explicit Drop body runs
         // before any field drop glue, so `alloc` is still live here.
@@ -1984,5 +2135,12 @@ impl Drop for VulkanSession {
             // release).
             unsafe { self.alloc.free(placeholder) };
         }
+        // R10 artifact timing: the observation file is otherwise flushed at data-transfer
+        // teardown (transfer.rs), which ORT releases *before* the weight-cache release path
+        // runs — so that snapshot records `weight_cache_release_calls = 0` and the full cache
+        // still resident, hiding the release entirely. Emit one final snapshot here, after the
+        // drain, so the artifact carries the post-release truth (release_calls > 0, device
+        // bytes drained). Counters are cumulative atomics, so this can only add information.
+        crate::counters::dump_if_requested();
     }
 }
