@@ -1,0 +1,3053 @@
+{
+  "kind": "phi35",
+  "environment": {
+    "captured_at": "2026-08-01T14:47:19-0700",
+    "host": {
+      "os": "Windows",
+      "release": "11",
+      "version": "10.0.26220",
+      "machine": "AMD64",
+      "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+      "cpu_count": 20,
+      "python": "3.12.7",
+      "onnxruntime": "1.28.0"
+    },
+    "build": {
+      "lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-niobe\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "present": true,
+      "bytes": 1757184,
+      "mtime": "2026-08-01T13:20:09",
+      "profile": "release"
+    },
+    "devices": [
+      {
+        "index": 0,
+        "name": "Intel(R) Iris(R) Xe Graphics",
+        "detail": "Vulkan 1.4.309",
+        "line": "Device 0 [Vulkan enum index 0]: Intel(R) Iris(R) Xe Graphics [Vulkan 1.4.309]"
+      },
+      {
+        "index": 1,
+        "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "detail": "Vulkan 1.4.325",
+        "line": "Device 1 [Vulkan enum index 1]: NVIDIA GeForce RTX 4060 Laptop GPU [Vulkan 1.4.325]"
+      }
+    ],
+    "device_note": "",
+    "device_facts": {
+      "devices": [
+        {
+          "index": 0,
+          "name": "Intel(R) Iris(R) Xe Graphics",
+          "device_type": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+          "api_version": "1.4.309",
+          "driver_version": "101.6737",
+          "driver_name": "Intel Corporation",
+          "timestamp_period_ns": 52.0833,
+          "timestamp_valid_bits": 36,
+          "compute_queue_family": 0,
+          "compute_queue_count": 1,
+          "max_compute_shared_memory": 32768,
+          "max_workgroup_invocations": 1024,
+          "subgroup_size": 32,
+          "min_subgroup_size": 8,
+          "max_subgroup_size": 32,
+          "uma": true,
+          "device_local_host_visible": true,
+          "device_local_bytes": 34267721728,
+          "has_calibrated_timestamps": true,
+          "has_host_query_reset": true,
+          "notes": [],
+          "fingerprint": "intel(r)-iris(r)-xe-graphics/vk_physical_device_type_integrated_gpu/api1.4.309/drv101.6737",
+          "timestamp_wrap_seconds": 3579.137122684109,
+          "timestamps_usable": true,
+          "transfer_class": "uma"
+        },
+        {
+          "index": 1,
+          "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "device_type": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+          "api_version": "1.4.325",
+          "driver_version": "591.55",
+          "driver_name": "NVIDIA",
+          "timestamp_period_ns": 1,
+          "timestamp_valid_bits": 64,
+          "compute_queue_family": 0,
+          "compute_queue_count": 16,
+          "max_compute_shared_memory": 49152,
+          "max_workgroup_invocations": 1024,
+          "subgroup_size": 32,
+          "min_subgroup_size": 32,
+          "max_subgroup_size": 32,
+          "uma": false,
+          "device_local_host_visible": true,
+          "device_local_bytes": 8345616384,
+          "has_calibrated_timestamps": true,
+          "has_host_query_reset": true,
+          "notes": [],
+          "fingerprint": "nvidia-geforce-rtx-4060-laptop-gpu/vk_physical_device_type_discrete_gpu/api1.4.325/drv591.55",
+          "timestamp_wrap_seconds": 18446744073.709553,
+          "timestamps_usable": true,
+          "transfer_class": "discrete"
+        }
+      ],
+      "note": "",
+      "source": "vulkaninfo (Vulkan SDK)"
+    },
+    "env": {},
+    "contention": {
+      "verdict": "UNMEASURED",
+      "reason": "no load sample was requested at capture time; see the per-pass machine_quiescence records, which are the authoritative ones"
+    },
+    "contention_note": "How busy the machine was. This belongs next to the driver version and the CPU model for the same reason those do: it changes the answer. The same device, build and test measured 9.5x apart on host command-buffer recording depending only on what else was running (docs/PERF.md \u00a710). Without this field a stored number cannot be re-checked later, because the one thing that most affected it left no trace. The authoritative record is the per-pass `machine_quiescence` in the result artifact, which covers the whole measurement; this is a spot-check of the moment the environment was captured."
+  },
+  "devices": {
+    "devices": [
+      {
+        "index": 0,
+        "name": "Intel(R) Iris(R) Xe Graphics",
+        "device_type": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+        "api_version": "1.4.309",
+        "driver_version": "101.6737",
+        "driver_name": "Intel Corporation",
+        "timestamp_period_ns": 52.0833,
+        "timestamp_valid_bits": 36,
+        "compute_queue_family": 0,
+        "compute_queue_count": 1,
+        "max_compute_shared_memory": 32768,
+        "max_workgroup_invocations": 1024,
+        "subgroup_size": 32,
+        "min_subgroup_size": 8,
+        "max_subgroup_size": 32,
+        "uma": true,
+        "device_local_host_visible": true,
+        "device_local_bytes": 34267721728,
+        "has_calibrated_timestamps": true,
+        "has_host_query_reset": true,
+        "notes": [],
+        "fingerprint": "intel(r)-iris(r)-xe-graphics/vk_physical_device_type_integrated_gpu/api1.4.309/drv101.6737",
+        "timestamp_wrap_seconds": 3579.137122684109,
+        "timestamps_usable": true,
+        "transfer_class": "uma"
+      },
+      {
+        "index": 1,
+        "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "device_type": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+        "api_version": "1.4.325",
+        "driver_version": "591.55",
+        "driver_name": "NVIDIA",
+        "timestamp_period_ns": 1,
+        "timestamp_valid_bits": 64,
+        "compute_queue_family": 0,
+        "compute_queue_count": 16,
+        "max_compute_shared_memory": 49152,
+        "max_workgroup_invocations": 1024,
+        "subgroup_size": 32,
+        "min_subgroup_size": 32,
+        "max_subgroup_size": 32,
+        "uma": false,
+        "device_local_host_visible": true,
+        "device_local_bytes": 8345616384,
+        "has_calibrated_timestamps": true,
+        "has_host_query_reset": true,
+        "notes": [],
+        "fingerprint": "nvidia-geforce-rtx-4060-laptop-gpu/vk_physical_device_type_discrete_gpu/api1.4.325/drv591.55",
+        "timestamp_wrap_seconds": 18446744073.709553,
+        "timestamps_usable": true,
+        "transfer_class": "discrete"
+      }
+    ],
+    "note": "",
+    "source": "vulkaninfo (Vulkan SDK)"
+  },
+  "producer": {
+    "name": "onnxruntime-genai/builder.py",
+    "kind": "model",
+    "version": "Phi-3.5-mini-instruct/cuda-int4-rtn-block-32",
+    "digest": "8e5005d36bbd046524e4408fcb02ec43388f5addf39ad4d8ec1bfd20e76e9a84",
+    "opsets": {
+      "com.microsoft": 1,
+      "ai.onnx": 14
+    },
+    "model_family": "phi",
+    "fingerprint": "onnxruntime-genai/builder.py@Phi-3.5-mini-instruct/cuda-int4-rtn-block-32#8e5005d36bbd",
+    "notes": "com.microsoft contrib graph (GroupQueryAttention, SimplifiedLayerNormalization). Not interchangeable with the mobius standard-domain graph."
+  },
+  "baseline_disagreement": null,
+  "results": [
+    {
+      "artifact": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+      "device_index": 0,
+      "iters": 24,
+      "warmup": 3,
+      "ort_version": "1.28.0",
+      "producer": {
+        "name": "onnxruntime-genai/builder.py",
+        "kind": "model",
+        "version": "Phi-3.5-mini-instruct/cuda-int4-rtn-block-32",
+        "digest": "8e5005d36bbd046524e4408fcb02ec43388f5addf39ad4d8ec1bfd20e76e9a84",
+        "opsets": {
+          "com.microsoft": 1,
+          "ai.onnx": 14
+        },
+        "model_family": "phi",
+        "fingerprint": "onnxruntime-genai/builder.py@Phi-3.5-mini-instruct/cuda-int4-rtn-block-32#8e5005d36bbd",
+        "notes": "com.microsoft contrib graph (GroupQueryAttention, SimplifiedLayerNormalization). Not interchangeable with the mobius standard-domain graph."
+      },
+      "model_output_equivalence": "MATCH",
+      "refusals": [],
+      "providers": [
+        "VulkanExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "claimed_nodes": 355,
+      "total_nodes_probed": 363,
+      "reason": null,
+      "outputs": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            32064
+          ],
+          "all_finite": true,
+          "vk_max_abs": 13.140625,
+          "cpu_max_abs": 13.0859375,
+          "max_abs_diff": 0.0625,
+          "max_rel_diff": 0.004776119402985075,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 30751,
+          "argmax_cpu": 30751,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.32421875,
+          "cpu_max_abs": 5.32421875,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 9.170946441672781e-05,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 42,
+          "argmax_cpu": 42,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.2144775390625,
+          "cpu_max_abs": 0.2144775390625,
+          "max_abs_diff": 1.52587890625e-05,
+          "max_rel_diff": 7.11439954467843e-05,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 27,
+          "argmax_cpu": 27,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 3,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 7.96875,
+          "cpu_max_abs": 7.96875,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0004901960784313725,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 34,
+          "argmax_cpu": 34,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 4,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.474853515625,
+          "cpu_max_abs": 0.474853515625,
+          "max_abs_diff": 0.0001220703125,
+          "max_rel_diff": 0.0002570694087403599,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 58,
+          "argmax_cpu": 58,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 5,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 9.4140625,
+          "cpu_max_abs": 9.4140625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0004149377593360996,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 3,
+          "argmax_cpu": 3,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 6,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.58984375,
+          "cpu_max_abs": 4.59375,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0008503401360544217,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 5,
+          "argmax_cpu": 5,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 7,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.59375,
+          "cpu_max_abs": 1.59375,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0012254901960784314,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 83,
+          "argmax_cpu": 83,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 8,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.2178955078125,
+          "cpu_max_abs": 0.2178955078125,
+          "max_abs_diff": 6.103515625e-05,
+          "max_rel_diff": 0.00028011204481792715,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 52,
+          "argmax_cpu": 52,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 9,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.798828125,
+          "cpu_max_abs": 1.798828125,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0010857763300760044,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 0,
+          "argmax_cpu": 0,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 10,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.399658203125,
+          "cpu_max_abs": 0.399658203125,
+          "max_abs_diff": 6.103515625e-05,
+          "max_rel_diff": 0.00015271838729383018,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 31,
+          "argmax_cpu": 31,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 11,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 2.177734375,
+          "cpu_max_abs": 2.177734375,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0008968609865470852,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 36,
+          "argmax_cpu": 36,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 12,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.5263671875,
+          "cpu_max_abs": 0.5263671875,
+          "max_abs_diff": 0.0001220703125,
+          "max_rel_diff": 0.00023191094619666049,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 59,
+          "argmax_cpu": 59,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 13,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 2.779296875,
+          "cpu_max_abs": 2.779296875,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0007027406886858749,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 36,
+          "argmax_cpu": 36,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 14,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.61181640625,
+          "cpu_max_abs": 0.61181640625,
+          "max_abs_diff": 0.0001220703125,
+          "max_rel_diff": 0.00019952114924181964,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 87,
+          "argmax_cpu": 87,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 15,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 3.6015625,
+          "cpu_max_abs": 3.6015625,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0005422993492407809,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 93,
+          "argmax_cpu": 93,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 16,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.90185546875,
+          "cpu_max_abs": 0.90185546875,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.0002707092582566324,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 67,
+          "argmax_cpu": 67,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 17,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 3.67578125,
+          "cpu_max_abs": 3.67578125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0010626992561105207,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 36,
+          "argmax_cpu": 36,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 18,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.67333984375,
+          "cpu_max_abs": 0.67333984375,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.00036258158085569254,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 2,
+          "argmax_cpu": 2,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 19,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 3.86328125,
+          "cpu_max_abs": 3.86328125,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0005055611729019212,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 35,
+          "argmax_cpu": 35,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 20,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.2568359375,
+          "cpu_max_abs": 1.2568359375,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.00019425019425019425,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 48,
+          "argmax_cpu": 48,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 21,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.73828125,
+          "cpu_max_abs": 4.734375,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0008250825082508251,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 35,
+          "argmax_cpu": 35,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 22,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.1220703125,
+          "cpu_max_abs": 1.1220703125,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.0004351610095735422,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 82,
+          "argmax_cpu": 82,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 23,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 7.47265625,
+          "cpu_max_abs": 7.47265625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0005227391531625719,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 91,
+          "argmax_cpu": 91,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 24,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.041015625,
+          "cpu_max_abs": 1.041015625,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.00046904315196998124,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 81,
+          "argmax_cpu": 81,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 25,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.24609375,
+          "cpu_max_abs": 4.25,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0009191176470588235,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 36,
+          "argmax_cpu": 36,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 26,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.28515625,
+          "cpu_max_abs": 1.28515625,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.00037993920972644377,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 6,
+          "argmax_cpu": 6,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 27,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.91015625,
+          "cpu_max_abs": 4.90625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007961783439490446,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 95,
+          "argmax_cpu": 95,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 28,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 0.9609375,
+          "cpu_max_abs": 0.9609375,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.0005081300813008131,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 44,
+          "argmax_cpu": 44,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 29,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.77734375,
+          "cpu_max_abs": 4.78125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0008169934640522876,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 88,
+          "argmax_cpu": 88,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 30,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.1767578125,
+          "cpu_max_abs": 1.1767578125,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.0004149377593360996,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 88,
+          "argmax_cpu": 88,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 31,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.46875,
+          "cpu_max_abs": 5.46875,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007142857142857143,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 38,
+          "argmax_cpu": 38,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 32,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.681640625,
+          "cpu_max_abs": 1.681640625,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.00014518002322880372,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 56,
+          "argmax_cpu": 56,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 33,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 13.78125,
+          "cpu_max_abs": 13.78125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0002834467120181406,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 83,
+          "argmax_cpu": 83,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 34,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.755859375,
+          "cpu_max_abs": 1.755859375,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.0005561735261401557,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 20,
+          "argmax_cpu": 20,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 35,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.75390625,
+          "cpu_max_abs": 5.75390625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0006788866259334691,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 86,
+          "argmax_cpu": 86,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 36,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.40625,
+          "cpu_max_abs": 1.40625,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.0006944444444444445,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 25,
+          "argmax_cpu": 25,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 37,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.59765625,
+          "cpu_max_abs": 5.59765625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0006978367062107466,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 37,
+          "argmax_cpu": 37,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 38,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.2705078125,
+          "cpu_max_abs": 1.2705078125,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.0003843197540353574,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 79,
+          "argmax_cpu": 79,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 39,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.046875,
+          "cpu_max_abs": 5.046875,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007739938080495357,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 83,
+          "argmax_cpu": 83,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 40,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.24609375,
+          "cpu_max_abs": 1.24609375,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.00019592476489028212,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 53,
+          "argmax_cpu": 53,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 41,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.4140625,
+          "cpu_max_abs": 5.4140625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007215007215007215,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 89,
+          "argmax_cpu": 89,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 42,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 2.166015625,
+          "cpu_max_abs": 2.166015625,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.0001127141568981064,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 90,
+          "argmax_cpu": 90,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 43,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.75390625,
+          "cpu_max_abs": 5.75390625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0006788866259334691,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 80,
+          "argmax_cpu": 80,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 44,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.3349609375,
+          "cpu_max_abs": 1.3349609375,
+          "max_abs_diff": 0.000244140625,
+          "max_rel_diff": 0.000182882223847842,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 36,
+          "argmax_cpu": 36,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 45,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.99609375,
+          "cpu_max_abs": 4.99609375,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.00039093041438623924,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 34,
+          "argmax_cpu": 34,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 46,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.1484375,
+          "cpu_max_abs": 1.1484375,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.00042517006802721087,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 8,
+          "argmax_cpu": 8,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 47,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 4.984375,
+          "cpu_max_abs": 4.98828125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007830853563038371,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 82,
+          "argmax_cpu": 82,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 48,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.1826171875,
+          "cpu_max_abs": 1.1826171875,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.00041288191577208916,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 67,
+          "argmax_cpu": 67,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 49,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.6015625,
+          "cpu_max_abs": 5.6015625,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.000697350069735007,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 43,
+          "argmax_cpu": 43,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 50,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.5380859375,
+          "cpu_max_abs": 1.537109375,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.0006353240152477764,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 27,
+          "argmax_cpu": 27,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 51,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.05859375,
+          "cpu_max_abs": 5.05859375,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007722007722007722,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 39,
+          "argmax_cpu": 39,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 52,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.7529296875,
+          "cpu_max_abs": 1.75390625,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.0005567928730512249,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 70,
+          "argmax_cpu": 70,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 53,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.4140625,
+          "cpu_max_abs": 5.4140625,
+          "max_abs_diff": 0.0078125,
+          "max_rel_diff": 0.001443001443001443,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 34,
+          "argmax_cpu": 34,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 54,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.4716796875,
+          "cpu_max_abs": 1.4716796875,
+          "max_abs_diff": 0.00048828125,
+          "max_rel_diff": 0.00033178500331785003,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 41,
+          "argmax_cpu": 41,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 55,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.30078125,
+          "cpu_max_abs": 5.30078125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0007369196757553427,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 83,
+          "argmax_cpu": 83,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 56,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.2177734375,
+          "cpu_max_abs": 1.2177734375,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.0008019246190858059,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 67,
+          "argmax_cpu": 67,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 57,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 6.59765625,
+          "cpu_max_abs": 6.59375,
+          "max_abs_diff": 0.0078125,
+          "max_rel_diff": 0.001184834123222749,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 34,
+          "argmax_cpu": 34,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 58,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 1.6845703125,
+          "cpu_max_abs": 1.68359375,
+          "max_abs_diff": 0.0009765625,
+          "max_rel_diff": 0.000580046403712297,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 54,
+          "argmax_cpu": 54,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 59,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 6.83203125,
+          "cpu_max_abs": 6.83203125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.0005717552887364208,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 87,
+          "argmax_cpu": 87,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 60,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 2.349609375,
+          "cpu_max_abs": 2.349609375,
+          "max_abs_diff": 0.001953125,
+          "max_rel_diff": 0.0008312551953449709,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 8,
+          "argmax_cpu": 8,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 61,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 6.08984375,
+          "cpu_max_abs": 6.09765625,
+          "max_abs_diff": 0.0078125,
+          "max_rel_diff": 0.0012812299807815502,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 35,
+          "argmax_cpu": 35,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 62,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 2.955078125,
+          "cpu_max_abs": 2.95703125,
+          "max_abs_diff": 0.00390625,
+          "max_rel_diff": 0.001321003963011889,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 32,
+          "argmax_cpu": 32,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 63,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 5.76953125,
+          "cpu_max_abs": 5.76953125,
+          "max_abs_diff": 0.005859375,
+          "max_rel_diff": 0.001015572105619499,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 86,
+          "argmax_cpu": 86,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        },
+        {
+          "index": 64,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "all_finite": true,
+          "vk_max_abs": 25.265625,
+          "cpu_max_abs": 25.265625,
+          "max_abs_diff": 0.015625,
+          "max_rel_diff": 0.0006184291898577613,
+          "vk_is_effectively_zero": false,
+          "argmax_vk": 3,
+          "argmax_cpu": 3,
+          "argmax_agrees": true,
+          "top_k": 10,
+          "top_k_overlap": 10,
+          "top_k_agrees": true,
+          "disagrees": false
+        }
+      ],
+      "vulkan": {
+        "name": "phi35.vulkan.dev0",
+        "n": 24,
+        "median_ms": 113.837,
+        "min_ms": 89.1072,
+        "mad_ms": 10.719,
+        "iqr_ms": 21.0466,
+        "p05_ms": 94.7431,
+        "p95_ms": 214.4205,
+        "rsd": 0.1396,
+        "noisy": true,
+        "loop_wall_ms": 3700.3175
+      },
+      "cpu": {
+        "name": "phi35.cpu",
+        "n": 24,
+        "median_ms": 2304.902,
+        "min_ms": 1113.8917,
+        "mad_ms": 500.9756,
+        "iqr_ms": 1215.5935,
+        "p05_ms": 1314.7314,
+        "p95_ms": 3782.7654,
+        "rsd": 0.3312,
+        "noisy": true,
+        "loop_wall_ms": 66053.5829
+      },
+      "vulkan_samples_ms": [
+        228.9638,
+        226.294,
+        140.5936,
+        119.2713,
+        104.9792,
+        95.7904,
+        122.5287,
+        102.7132,
+        103.5228,
+        94.5583,
+        95.9334,
+        106.4545,
+        89.1072,
+        105.9672,
+        116.3795,
+        111.2945,
+        97.8261,
+        122.6815,
+        109.2146,
+        122.0675,
+        120.2638,
+        142.0528,
+        147.1372,
+        129.4236
+      ],
+      "cpu_samples_ms": [
+        1279.0381,
+        3861.469,
+        2031.7773,
+        1957.5318,
+        2604.955,
+        3249.7509,
+        2600.0845,
+        2098.6572,
+        1603.0038,
+        2061.2646,
+        3163.9904,
+        2402.136,
+        2386.3126,
+        1933.8631,
+        3176.8615,
+        1113.8917,
+        3254.2809,
+        3336.7782,
+        1516.9934,
+        2099.505,
+        1925.4222,
+        1998.9852,
+        2995.6902,
+        3988.9652
+      ],
+      "vulkan_drift": {
+        "n": 24,
+        "first_half_median_ms": 105.7168,
+        "second_half_median_ms": 118.3217,
+        "ratio": 1.1192,
+        "monotone_fraction": 0.5652,
+        "steady": true,
+        "direction": "slower",
+        "reason": null
+      },
+      "cpu_drift": {
+        "n": 24,
+        "first_half_median_ms": 2250.3966,
+        "second_half_median_ms": 2242.9088,
+        "ratio": 0.9967,
+        "monotone_fraction": 0.5217,
+        "steady": true,
+        "direction": "faster",
+        "reason": null
+      },
+      "vk_inference_count": 28,
+      "machine_quiescence": {
+        "verdict": "CONTENDED",
+        "reasons": [
+          "other processes kept 3.48 cores busy on average (threshold 0.5); 358 foreign CPU-seconds over 103s wall",
+          "93% of samples exceeded 1.0 foreign busy cores (threshold 10%)"
+        ],
+        "survey": {
+          "available": true,
+          "reason": "",
+          "cores": 20,
+          "wall_s": 103.081,
+          "busy_cpu_s": 980.59,
+          "own_cpu_s": 622.22,
+          "foreign_cpu_s": 358.37,
+          "mean_foreign_busy_cores": 3.477,
+          "median_foreign_busy_cores": 3.485,
+          "peak_foreign_busy_cores": 12.228,
+          "loud_sample_fraction": 0.9302,
+          "n_samples": 87,
+          "top_foreign": [
+            {
+              "name": "Code.exe",
+              "cpu_s": 78.14
+            },
+            {
+              "name": "copilot.exe",
+              "cpu_s": 63.78
+            },
+            {
+              "name": "System",
+              "cpu_s": 32.47
+            },
+            {
+              "name": "GlobalSecureAccessClient.exe",
+              "cpu_s": 23.45
+            },
+            {
+              "name": "audiodg.exe",
+              "cpu_s": 18.3
+            }
+          ],
+          "falsifiers": {
+            "idle_accounting": {
+              "red_if": "median (busy+idle)/(cores*wall) departs from 1.0 by more than 5%",
+              "value": 1.0,
+              "red": false
+            },
+            "own_cpu_not_exceeding_busy": {
+              "red_if": "our own process tree used more CPU than the machine reports as busy",
+              "own_cpu_s": 622.22,
+              "busy_cpu_s": 980.59,
+              "red": false
+            },
+            "monitor_not_perturbing": {
+              "red_if": "the sampler's own CPU cost exceeds 0.05 cores, at which point the instrument is part of the load it is measuring",
+              "monitor_cores": 0.0042,
+              "red": false
+            }
+          }
+        },
+        "occupancy": {
+          "verdict": "VACUOUS",
+          "spin_s": 0.10468,
+          "reference_s": null,
+          "ratio": null,
+          "red": false,
+          "reason": "no quiet-machine reference recorded for this host+python; the tachometer cannot falsify the survey here. Untested is not passed."
+        },
+        "thresholds": {
+          "quiet_busy_cores": 0.5,
+          "loud_sample_cores": 1.0,
+          "quiet_loud_fraction": 0.1,
+          "occupancy_tolerance": 1.15
+        }
+      },
+      "counters": {
+        "abi_version": 2,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 28,
+        "compute_failures": 0,
+        "dispatches_executed": 9940,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": "UNOBSERVABLE",
+        "net_benefit_gate": "BYPASSED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 0,
+        "net_benefit_gate_bypasses": 1,
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "fault_injection": "NONE",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 1=NVIDIA GeForce RTX 4060 Laptop GPU.",
+        "session_staging_uploads": 28,
+        "session_staging_upload_bytes": 2302808512,
+        "session_staging_upload_us": 5044375,
+        "session_staging_readbacks": 28,
+        "session_staging_readback_bytes": 12805632,
+        "session_staging_readback_us": 15434,
+        "session_device_allocs": 15754,
+        "session_device_frees": 15754,
+        "session_device_bytes_in_use": 0,
+        "session_device_high_water_bytes": 2297082560,
+        "weight_cache_release_calls": 1,
+        "weight_cache_release_buffers": 325,
+        "weight_cache_release_bytes": 2291625984,
+        "weight_cache_bytes_resident": 0
+      },
+      "memory_configuration": {
+        "device_memory_env": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY",
+        "device_memory_enabled": false,
+        "staged_spans": 0,
+        "staged_bytes": 0,
+        "device_backed_spans": 0,
+        "configuration": "staging-bound",
+        "basis": "configuration",
+        "note": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY is not set, so device-backed allocation is off and every tensor is host-staged by construction. This number measures a staging-bound configuration and may not be quoted as 'what the Vulkan EP does'."
+      },
+      "island_count": 1,
+      "dispatch_accounting": {
+        "inference_count": 28,
+        "island_count": 1,
+        "compute_calls": 28,
+        "dispatches_executed": 9940,
+        "compute_failures": 0,
+        "compute_failures_note": "an execution-status counter, never a correctness signal (DESIGN.md \u00a79.1.3). It is recorded, not relied on.",
+        "expected_compute_calls": 28,
+        "consistent": true,
+        "detail": "compute_calls 28 == 1 islands x 28 inferences"
+      },
+      "boundary": {
+        "vk_median_ms": 113.837,
+        "cpu_median_ms": 2304.902,
+        "delta_ms": -2191.065,
+        "island_count": 1,
+        "island_count_source": "EP counter `subgraphs_live`",
+        "per_island_ms_lower_bound": null,
+        "per_island_ms_lower_bound_status": "RETIRED 2026-07-30",
+        "per_island_ms_lower_bound_retirement_reason": "it was total-host-delta over island count, and the phase split shows the delta is dominated by per-inference host work (command-buffer recording, and inside it the staging memcpy) that is not proportional to island count. It rose 8.5 -> 16.6 ms (Intel) across a change that collapsed islands 321 -> 33 and cut wall time 2954.6 -> 807.2 ms. Replaced by the directly measured vulkan.record median and by phases.record_scaling.",
+        "delta_over_island_count_ms": -2191.065,
+        "delta_over_island_count_is_per_island_cost": false,
+        "delta_over_island_count_note": "an arithmetic restatement of delta_ms, kept only so older reports can be reconciled. It is NOT a per-island or per-boundary cost and must not be quoted as one.",
+        "separating_instrument": "bench/phases.py, over the EP's own Chrome Trace JSON (vulkan.record / submit / fence_wait / vulkan.gpu.*)"
+      },
+      "ratio_refusal": null,
+      "vulkan_over_cpu_ratio": 0.0494,
+      "measurement_validity": {
+        "verdict": "CONTENDED",
+        "reasons": [
+          "timed pass: out-of-band load survey says CONTENDED \u2014 other processes kept 3.48 cores busy on average (threshold 0.5); 358 foreign CPU-seconds over 103s wall; 93% of samples exceeded 1.0 foreign busy cores (threshold 10%)",
+          "traced pass: out-of-band load survey says CONTENDED",
+          "traced pass: in-band trace signature says NOT_STEADY \u2014 whole inferences of identical work varied 7.4395x (min 0.3821, max 2.8423 of the run median), but GPU time moved alongside on every slot, so the control cannot isolate the cause to the host. Either way the run was not in a steady state: this is not a quotable measurement, and it is not an exoneration of the machine"
+        ],
+        "out_of_band_survey": "CONTENDED",
+        "in_band_trace_signature": "NOT_STEADY",
+        "refusal": "REFUSED: phi-3.5 timing withheld \u2014 machine was CONTENDED during measurement. timed pass: out-of-band load survey says CONTENDED \u2014 other processes kept 3.48 cores busy on average (threshold 0.5); 358 foreign CPU-seconds over 103s wall; 93% of samples exceeded 1.0 foreign busy cores (threshold 10%); traced pass: out-of-band load survey says CONTENDED; traced pass: in-band trace signature says NOT_STEADY \u2014 whole inferences of identical work varied 7.4395x (min 0.3821, max 2.8423 of the run median), but GPU time moved alongside on every slot, so the control cannot isolate the cause to the host. Either way the run was not in a steady state: this is not a quotable measurement, and it is not an exoneration of the machine. Same device and build measured 9.5x apart on load alone (docs/PERF.md \u00a710)."
+      },
+      "metric_of_record": {
+        "claimed_op_coverage": 355,
+        "nodes_probed": 363,
+        "island_count": 1,
+        "island_count_source": "EP counter `subgraphs_live`",
+        "islands_equal_claimed_nodes": false,
+        "islands_equal_claimed_nodes_note": "two independent counters. Per R9 (DESIGN.md \u00a710.0.1) agreement raises confidence, not evidence; the falsifier is `dispatch_accounting`, which goes red if the islands did not all run.",
+        "largest_island_flops": null,
+        "largest_island_flops_emitted_value": 23020437504,
+        "largest_island_flops_state": "populated",
+        "largest_island_flops_note": "the EP now *emits* the key on its `vulkan.getcapability` trace event, but emits 0: `CoverageReport` computes no FLOP estimate, and `PartitionStats.island_count` is 0 on the same event while `subgraphs_live` is not. The slot is plumbed and unfilled. It is reported as null here rather than as 0, because 'not computed' and 'zero FLOPs' are different states and only one of them is a measurement.",
+        "gated_on": "MATCH",
+        "machine_quiescence": "CONTENDED",
+        "quiescence_note": "a second gate, alongside model_output_equivalence. The same device, build and test measured 9.5x apart on host recording time depending only on what else was running on the machine, so a timing taken on a contended box is not a slower measurement of the same thing \u2014 it is a measurement of a different machine."
+      },
+      "worker_stderr_tail": null,
+      "repeat_records": [
+        {
+          "vulkan": {
+            "name": "phi35.vulkan.dev0",
+            "n": 24,
+            "median_ms": 125.0004,
+            "min_ms": 70.6509,
+            "mad_ms": 33.96,
+            "iqr_ms": 66.653,
+            "p05_ms": 78.7798,
+            "p95_ms": 199.2083,
+            "rsd": 0.4028,
+            "noisy": true,
+            "loop_wall_ms": 4027.0978
+          },
+          "cpu": {
+            "name": "phi35.cpu",
+            "n": 24,
+            "median_ms": 2334.191,
+            "min_ms": 1468.4149,
+            "mad_ms": 546.6797,
+            "iqr_ms": 1033.743,
+            "p05_ms": 1774.6788,
+            "p95_ms": 3891.6445,
+            "rsd": 0.3472,
+            "noisy": true,
+            "loop_wall_ms": 66852.7184
+          },
+          "vulkan_drift": {
+            "n": 24,
+            "first_half_median_ms": 165.3618,
+            "second_half_median_ms": 95.973,
+            "ratio": 0.5804,
+            "monotone_fraction": 0.6087,
+            "steady": false,
+            "direction": "faster",
+            "reason": "the run drifted: first half median 165.4 ms, second half 96.0 ms (0.58x), 61% of steps in one direction. The median is not describing a steady state \u2014 extend the warmup until it is, rather than reporting a number that depends on when the measurement stopped."
+          },
+          "cpu_drift": {
+            "n": 24,
+            "first_half_median_ms": 2756.563,
+            "second_half_median_ms": 2228.3126,
+            "ratio": 0.8084,
+            "monotone_fraction": 0.5652,
+            "steady": true,
+            "direction": "faster",
+            "reason": null
+          },
+          "refusals": [],
+          "model_output_equivalence": "MATCH",
+          "claimed_nodes": 355
+        },
+        {
+          "vulkan": {
+            "name": "phi35.vulkan.dev0",
+            "n": 24,
+            "median_ms": 111.5818,
+            "min_ms": 62.5105,
+            "mad_ms": 4.6213,
+            "iqr_ms": 14.9742,
+            "p05_ms": 65.065,
+            "p95_ms": 122.4538,
+            "rsd": 0.0614,
+            "noisy": false,
+            "loop_wall_ms": 3474.1819
+          },
+          "cpu": {
+            "name": "phi35.cpu",
+            "n": 24,
+            "median_ms": 2304.9019,
+            "min_ms": 1600.6142,
+            "mad_ms": 244.1145,
+            "iqr_ms": 442.6382,
+            "p05_ms": 1682.8745,
+            "p95_ms": 3325.4958,
+            "rsd": 0.157,
+            "noisy": true,
+            "loop_wall_ms": 62922.9543
+          },
+          "vulkan_drift": {
+            "n": 24,
+            "first_half_median_ms": 106.0233,
+            "second_half_median_ms": 112.3784,
+            "ratio": 1.0599,
+            "monotone_fraction": 0.5217,
+            "steady": true,
+            "direction": "slower",
+            "reason": null
+          },
+          "cpu_drift": {
+            "n": 24,
+            "first_half_median_ms": 2396.4862,
+            "second_half_median_ms": 2235.7188,
+            "ratio": 0.9329,
+            "monotone_fraction": 0.5652,
+            "steady": true,
+            "direction": "faster",
+            "reason": null
+          },
+          "refusals": [],
+          "model_output_equivalence": "MATCH",
+          "claimed_nodes": 355
+        },
+        {
+          "vulkan": {
+            "name": "phi35.vulkan.dev0",
+            "n": 24,
+            "median_ms": 113.837,
+            "min_ms": 89.1072,
+            "mad_ms": 10.719,
+            "iqr_ms": 21.0466,
+            "p05_ms": 94.7431,
+            "p95_ms": 214.4205,
+            "rsd": 0.1396,
+            "noisy": true,
+            "loop_wall_ms": 3700.3175
+          },
+          "cpu": {
+            "name": "phi35.cpu",
+            "n": 24,
+            "median_ms": 2242.9088,
+            "min_ms": 1113.8917,
+            "mad_ms": 500.9756,
+            "iqr_ms": 1215.5935,
+            "p05_ms": 1314.7314,
+            "p95_ms": 3782.7654,
+            "rsd": 0.3312,
+            "noisy": true,
+            "loop_wall_ms": 66053.5829
+          },
+          "vulkan_drift": {
+            "n": 24,
+            "first_half_median_ms": 105.7168,
+            "second_half_median_ms": 118.3217,
+            "ratio": 1.1192,
+            "monotone_fraction": 0.5652,
+            "steady": true,
+            "direction": "slower",
+            "reason": null
+          },
+          "cpu_drift": {
+            "n": 24,
+            "first_half_median_ms": 2250.3966,
+            "second_half_median_ms": 2242.9088,
+            "ratio": 0.9967,
+            "monotone_fraction": 0.5217,
+            "steady": true,
+            "direction": "faster",
+            "reason": null
+          },
+          "refusals": [],
+          "model_output_equivalence": "MATCH",
+          "claimed_nodes": 355
+        }
+      ],
+      "repeat_spread": {
+        "repeats": 3,
+        "usable": true,
+        "vulkan_medians_ms": [
+          125.0,
+          111.582,
+          113.837
+        ],
+        "cpu_medians_ms": [
+          2334.191,
+          2304.902,
+          2242.909
+        ],
+        "vulkan_median_of_medians_ms": 113.837,
+        "cpu_median_of_medians_ms": 2304.902,
+        "vulkan_run_to_run_ratio": 1.1203,
+        "cpu_run_to_run_ratio": 1.0407
+      },
+      "phase_pass": {
+        "iters": 46,
+        "warmup": 3,
+        "trace_file": "C:\\Users\\justinchu\\dev\\ep-vulkan-niobe\\bench\\_scratch\\phi35_trace_dev0.trace.json",
+        "machine_quiescence": {
+          "verdict": "CONTENDED",
+          "reasons": [
+            "other processes kept 4.65 cores busy on average (threshold 0.5); 1004 foreign CPU-seconds over 216s wall",
+            "99% of samples exceeded 1.0 foreign busy cores (threshold 10%)"
+          ],
+          "survey": {
+            "available": true,
+            "reason": "",
+            "cores": 20,
+            "wall_s": 215.782,
+            "busy_cpu_s": 2202.76,
+            "own_cpu_s": 1199.09,
+            "foreign_cpu_s": 1003.66,
+            "mean_foreign_busy_cores": 4.651,
+            "median_foreign_busy_cores": 4.448,
+            "peak_foreign_busy_cores": 9.427,
+            "loud_sample_fraction": 0.9903,
+            "n_samples": 208,
+            "top_foreign": [
+              {
+                "name": "copilot.exe",
+                "cpu_s": 190.83
+              },
+              {
+                "name": "Code.exe",
+                "cpu_s": 105.34
+              },
+              {
+                "name": "System",
+                "cpu_s": 89.62
+              },
+              {
+                "name": "svchost.exe",
+                "cpu_s": 86.94
+              },
+              {
+                "name": "MsMpEng.exe",
+                "cpu_s": 68.7
+              }
+            ],
+            "falsifiers": {
+              "idle_accounting": {
+                "red_if": "median (busy+idle)/(cores*wall) departs from 1.0 by more than 5%",
+                "value": 1.0,
+                "red": false
+              },
+              "own_cpu_not_exceeding_busy": {
+                "red_if": "our own process tree used more CPU than the machine reports as busy",
+                "own_cpu_s": 1199.09,
+                "busy_cpu_s": 2202.76,
+                "red": false
+              },
+              "monitor_not_perturbing": {
+                "red_if": "the sampler's own CPU cost exceeds 0.05 cores, at which point the instrument is part of the load it is measuring",
+                "monitor_cores": 0.0049,
+                "red": false
+              }
+            }
+          },
+          "occupancy": {
+            "verdict": "VACUOUS",
+            "spin_s": 0.204936,
+            "reference_s": null,
+            "ratio": null,
+            "red": false,
+            "reason": "no quiet-machine reference recorded for this host+python; the tachometer cannot falsify the survey here. Untested is not passed."
+          },
+          "thresholds": {
+            "quiet_busy_cores": 0.5,
+            "loud_sample_cores": 1.0,
+            "quiet_loud_fraction": 0.1,
+            "occupancy_tolerance": 1.15
+          }
+        },
+        "device_state": {
+          "n": 144,
+          "seconds": 210.6,
+          "sm_mhz": {
+            "n": 144,
+            "min": 210.0,
+            "median": 210.0,
+            "mean": 414.2,
+            "max": 2010.0
+          },
+          "sm_max_mhz": 3105.0,
+          "util_pct": {
+            "n": 144,
+            "min": 0.0,
+            "median": 0.0,
+            "mean": 2.6,
+            "max": 58.0
+          },
+          "power_w": {
+            "n": 144,
+            "min": 2.5,
+            "median": 2.8,
+            "mean": 5.3,
+            "max": 16.8
+          },
+          "foreign_sample_fraction": 0.0,
+          "foreign_pids": {},
+          "own_pids_on_gpu": [
+            324
+          ],
+          "clock_ramp_x": 9.5714,
+          "clock_at_max_pct": 13.3,
+          "verdict": "SOLE_TENANT",
+          "silence_set": [
+            "Samples the board at 4 Hz over the whole command, so it characterises the *regime* a run sat in and cannot resolve a single inference. A boost that happened while our kernel was not submitting would satisfy the peak-clock floor.",
+            "Reads the driver's own account. A clock the driver misreports is invisible to it.",
+            "`nvidia-smi` is NVIDIA-only. On any other vendor the tenancy and clock record is UNOBSERVABLE \u2014 which is not SOLE_TENANT and not a pass (R12).",
+            "Says nothing about host contention. That is `bench/contention.py`'s subject and it gates a different quantity."
+          ],
+          "sampler": "bench/results/probe_gpustate.py (Switch)"
+        },
+        "device_state_note": "the tenancy verdict and SM-clock record for this window. It is a required companion, not a diagnostic: `gpu_steady_tail` is a variance test over a suffix and cannot see a bias, and it has reported STEADY at 10.99x and 21.4x wrong -- both times with a BETTER RSD than the correct run. See bench/device_state.py.",
+        "note": "a separate instrumented process. Proportions are the product; the absolute totals here are inflated by the tracer and the query pool and are not the benchmark's numbers.",
+        "analysis": {
+          "subgraph_spans": 50,
+          "time_in_compute_ms": 12751.635,
+          "time_in_compute_note": "the sum of vulkan.subgraph spans \u2014 the EP's own view of time inside Compute. It is NOT the process wall clock: ORT's own graph execution, the CPU EP's nodes between islands, and session setup are all outside it. Phase shares below are shares of this, and may not be restated as shares of the benchmark's wall time.",
+          "host_phases_ms": {
+            "record": {
+              "n": 50,
+              "total_ms": 6261.162,
+              "mean_ms": 125.2232,
+              "median_ms": 22.023,
+              "min_ms": 8.278,
+              "max_ms": 5214.561,
+              "is_leaf": false,
+              "contains": [
+                "desc_alloc",
+                "pipeline_lookup",
+                "cmd_upload"
+              ],
+              "caveat": "NOT A LEAF: this span also contains desc_alloc, pipeline_lookup, cmd_upload. Its total is an upper bound on record itself, not a measurement of it. Quoting it as 'record' attributes a child's cost to the parent's name.",
+              "child_ms": 5345.768,
+              "leaf_ms": 915.394,
+              "child_share": 0.8538
+            },
+            "submit": {
+              "n": 50,
+              "total_ms": 32.249,
+              "mean_ms": 0.645,
+              "median_ms": 0.61,
+              "min_ms": 0.275,
+              "max_ms": 1.451,
+              "is_leaf": true
+            },
+            "fence_wait": {
+              "n": 50,
+              "total_ms": 2371.129,
+              "mean_ms": 47.4226,
+              "median_ms": 37.0745,
+              "min_ms": 14.113,
+              "max_ms": 359.701,
+              "is_leaf": true
+            }
+          },
+          "nested_phases_ms": {
+            "cmd_upload": {
+              "n": 50,
+              "total_ms": 5007.594,
+              "mean_ms": 100.1519,
+              "median_ms": 0.4285,
+              "min_ms": 0.122,
+              "max_ms": 4986.137,
+              "is_leaf": true
+            },
+            "pipeline_lookup": {
+              "n": 17750,
+              "total_ms": 96.899,
+              "mean_ms": 0.0055,
+              "median_ms": 0.003,
+              "min_ms": 0.001,
+              "max_ms": 9.952,
+              "is_leaf": true
+            },
+            "desc_alloc": {
+              "n": 17750,
+              "total_ms": 241.275,
+              "mean_ms": 0.0136,
+              "median_ms": 0.01,
+              "min_ms": 0.003,
+              "max_ms": 9.336,
+              "is_leaf": true
+            }
+          },
+          "nested_phases_note": "sub-record spans, reported separately because they are INSIDE vulkan.record. They are excluded from host_phases_ms and from every share, since adding them to their own parent counts the same microseconds twice.",
+          "phase_nesting": {
+            "check": "phase_nesting",
+            "asserts": "the phases summed as siblings do not overlap, so the host total counts each microsecond once",
+            "observed": {
+              "cmd_upload": {
+                "n": 50,
+                "inside_record": 50
+              },
+              "desc_alloc": {
+                "n": 17750,
+                "inside_record": 17750
+              },
+              "fence_wait": {
+                "n": 50,
+                "inside_record": 0
+              },
+              "pipeline_lookup": {
+                "n": 17750,
+                "inside_record": 17750
+              },
+              "submit": {
+                "n": 50,
+                "inside_record": 0
+              }
+            },
+            "declared_nested": [
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "expected_nested": [
+              "cmd_upload",
+              "desc_alloc",
+              "pipeline_lookup"
+            ],
+            "unexpected_nested": [],
+            "ok": true,
+            "verdict": "CONSISTENT",
+            "detail": "containment and caveats agree; nested = cmd_upload, desc_alloc, pipeline_lookup"
+          },
+          "decomposition_identity": {
+            "check": "decomposition_identity",
+            "asserts": "a published decomposition closes against a whole measured by a different instrument than the parts",
+            "parts_ms": 8664.54,
+            "in_compute_ms": 12751.635,
+            "internal_closure": {
+              "residual_ms": 4087.095,
+              "residual_share": 0.32052,
+              "over_subscribed": false,
+              "strength": "WEAK",
+              "why_weak": "both sides are sums over the same tracer's spans. A cost hidden inside a row cancels from both and this check stays green \u2014 which is precisely how '68.3+16.3+14.1+0.3 = 99.0%' closed while missing a 2 GB memcpy. Never quote this as evidence that the rows are correctly named."
+            },
+            "external_closure": {
+              "independent_whole_ms": 9126.567,
+              "whole_source": "the traced worker's own perf_counter around the warmup+timed run loop",
+              "trace_share_of_wall": 1.3972,
+              "strength": "CAN FIRE"
+            },
+            "ok": false,
+            "verdict": "EXCEEDS_WALL",
+            "detail": "the trace accounts for 12751.6 ms inside Compute but the harness's own clock measured only 9126.6 ms of wall time for the same work (1.40x). Time is being counted more than once. Two independent clocks disagreeing is not a rounding question."
+          },
+          "phase_leaf_accounting": {
+            "check": "phase_leaf_accounting",
+            "asserts": "a phase total is only quoted under its own name when that span contains no other accounted work",
+            "non_leaf_phases": [
+              "record"
+            ],
+            "largest_phase": "record",
+            "largest_phase_is_non_leaf": true,
+            "ok": true,
+            "verdict": "RESOLVED",
+            "detail": "record: 85.4% of it is desc_alloc+pipeline_lookup+cmd_upload, leaf residual 915.4 ms"
+          },
+          "unattributed_in_compute_ms": 4087.095,
+          "unattributed_note": "time inside vulkan.subgraph that no phase span covers: reading ORT input pointers, buffer allocation and descriptor-pool work before recording, the readback memcpy and the writes into ORT's output tensors after the fence. It is reported rather than folded into a neighbouring phase, because a phase split whose parts do not sum to the whole should say so.",
+          "gpu": {
+            "per_kernel": {
+              "gather_f16": {
+                "n": 50,
+                "total_ms": 0.609,
+                "mean_ms": 0.0122,
+                "median_ms": 0.0123,
+                "min_ms": 0.0051,
+                "max_ms": 0.0291
+              },
+              "simplified_layer_norm_f16": {
+                "n": 50,
+                "total_ms": 1.193,
+                "mean_ms": 0.0239,
+                "median_ms": 0.0225,
+                "min_ms": 0.0072,
+                "max_ms": 0.0758
+              },
+              "q_gemv_matmul_nbits_f16": {
+                "n": 8050,
+                "total_ms": 1537.099,
+                "mean_ms": 0.1909,
+                "median_ms": 0.1526,
+                "min_ms": 0.0266,
+                "max_ms": 2.556
+              },
+              "gqa_f16": {
+                "n": 1600,
+                "total_ms": 248.236,
+                "mean_ms": 0.1551,
+                "median_ms": 0.1526,
+                "min_ms": 0.0379,
+                "max_ms": 0.4014
+              },
+              "skip_simplified_layer_norm_f16": {
+                "n": 3200,
+                "total_ms": 111.716,
+                "mean_ms": 0.0349,
+                "median_ms": 0.0348,
+                "min_ms": 0.0113,
+                "max_ms": 0.1106
+              },
+              "ew_unary_sigmoid_f16": {
+                "n": 1600,
+                "total_ms": 10.775,
+                "mean_ms": 0.0067,
+                "median_ms": 0.0072,
+                "min_ms": 0.002,
+                "max_ms": 0.0164
+              },
+              "ew_binary_mul_f16": {
+                "n": 3200,
+                "total_ms": 21.226,
+                "mean_ms": 0.0066,
+                "median_ms": 0.0072,
+                "min_ms": 0.002,
+                "max_ms": 0.0154
+              }
+            },
+            "all": {
+              "n": 17750,
+              "total_ms": 1930.853,
+              "mean_ms": 0.1088,
+              "median_ms": 0.0645,
+              "min_ms": 0.002,
+              "max_ms": 2.556
+            }
+          },
+          "device_fingerprint": {
+            "timestamp_period_ns": 1.0,
+            "timestamp_valid_bits": 64,
+            "periods_seen": [
+              1.0
+            ],
+            "valid_bits_seen": [
+              64
+            ],
+            "consistent": true,
+            "detail": "period=[1.0] bits=[64]"
+          },
+          "anchor_quality": {
+            "available": true,
+            "max_us": 180453,
+            "median_us": 19224,
+            "detail": "device-lane spans may sit up to 180.5 ms from their true host position. Durations are unaffected; positions are not evidence. Attribution is ordinal for exactly this reason."
+          },
+          "gpu_note": "summed from the per-span gpu_ns float, not from the integer-microsecond `dur`: several of these kernels run in 2-3 us, where truncation is a 15-30% error over thousands of spans.",
+          "shares_of_time_in_compute": {
+            "submit": 0.00253,
+            "fence_wait": 0.18595,
+            "record_INCLUDING_desc_alloc_pipeline_lookup_cmd_upload": 0.49101,
+            "record_excl_desc_alloc_pipeline_lookup_cmd_upload": 0.07179,
+            "gpu_kernels": 0.15142
+          },
+          "transfers": {
+            "readback": {
+              "n": 50,
+              "bytes": 22867200,
+              "mib": 21.8,
+              "host_copy_ms": 39.42,
+              "mean_gib_s": 0.5403,
+              "inside_record_span": false
+            },
+            "upload": {
+              "n": 50,
+              "bytes": 2311594784,
+              "mib": 2204.5,
+              "host_copy_ms": 5006.591,
+              "mean_gib_s": 0.43,
+              "inside_record_span": true
+            }
+          },
+          "partition_stats": {
+            "present": true,
+            "claimed_nodes": 355,
+            "island_count": 1,
+            "largest_island_flops": 23020437504,
+            "concentration": 1.0,
+            "boundary_bytes_per_inference": 89199100032,
+            "boundary_time_fraction": 0.0,
+            "declined_kinds": 7,
+            "third_slot_state": "populated",
+            "third_slot_note": null,
+            "island_count_state": "populated"
+          },
+          "record_scaling": {
+            "n": 50,
+            "usable": true,
+            "total_ms": 6261.162,
+            "mean_ms": 125.2232,
+            "median_ms": 22.023,
+            "min_ms": 8.278,
+            "max_ms": 5214.561,
+            "upload_inside_record_ms": 5006.591,
+            "upload_share_of_record": 0.7996,
+            "command_construction_ms": 1254.571,
+            "composition_note": "vulkan.record is not one activity. It brackets vkBeginCommandBuffer through vkEndCommandBuffer, and the host memcpy of this island's inputs into staging buffers happens inside it. The two are reported separately because they have different fixes: the memcpy goes away if the data stops being re-copied per Compute call; the residual is the recording loop itself.",
+            "islands_per_inference_inferred": 1,
+            "steady_state_basis": "excludes the first inference",
+            "steady_state_record": {
+              "n": 49,
+              "total_ms": 1046.601,
+              "mean_ms": 21.3592,
+              "median_ms": 21.667,
+              "min_ms": 8.278,
+              "max_ms": 61.584
+            },
+            "steady_state_command_construction": {
+              "n": 49,
+              "total_ms": 1026.094,
+              "mean_ms": 20.9407,
+              "median_ms": 21.255,
+              "min_ms": 8.157,
+              "max_ms": 61.394
+            },
+            "by_island_size_record": {
+              "355": {
+                "n": 49,
+                "total_ms": 1046.601,
+                "mean_ms": 21.3592,
+                "median_ms": 21.667,
+                "min_ms": 8.278,
+                "max_ms": 61.584
+              }
+            },
+            "by_island_size_command_construction": {
+              "355": {
+                "n": 49,
+                "total_ms": 1026.094,
+                "mean_ms": 20.9407,
+                "median_ms": 21.255,
+                "min_ms": 8.157,
+                "max_ms": 61.394
+              }
+            },
+            "by_island_size_upload_bytes": {
+              "355": 399376.0
+            },
+            "implied_record_gib_s_by_island_size": {
+              "355": 0.0172
+            },
+            "implied_bandwidth_spread": null,
+            "size_rank_correlation_record": null,
+            "size_rank_correlation_command_construction": null,
+            "bytes_rank_correlation_record": null,
+            "distinct_island_sizes": 1,
+            "size_verdict": "UNDECIDABLE",
+            "size_detail": "every island in this run has the same dispatch count, so island size does not vary and this run cannot say whether recording scales with it. Not a refutation.",
+            "pooled_first_cycle_mean_ms": 5214.561,
+            "pooled_last_cycle_mean_ms": 9.658,
+            "pooled_decline_ratio": 0.0019,
+            "per_island_last_over_first": {
+              "n": 1,
+              "median": 0.0019,
+              "fraction_declining": 1.0
+            },
+            "cycle_means_ms": [
+              5214.561,
+              23.47,
+              48.712,
+              61.584,
+              54.503,
+              38.15,
+              14.676,
+              25.578,
+              25.681,
+              20.197,
+              24.324,
+              25.849,
+              25.28,
+              29.526,
+              25.19,
+              31.822,
+              10.03,
+              23.707,
+              12.243,
+              9.622,
+              10.247,
+              9.995,
+              8.278,
+              14.423,
+              25.319,
+              8.976,
+              22.775,
+              21.667,
+              8.889,
+              8.763,
+              27.113,
+              10.159,
+              22.379,
+              25.127,
+              23.434,
+              18.281,
+              12.339,
+              11.067,
+              24.151,
+              21.468,
+              8.993,
+              20.994,
+              8.93,
+              15.451,
+              25.314,
+              20.38,
+              20.426,
+              27.345,
+              24.116,
+              9.658
+            ],
+            "cycle_count": 50,
+            "tail_spread_ratio": 2.8313,
+            "flattened": false,
+            "tail_median_ms": 24.116,
+            "cycles_to_steady": 2,
+            "warmup_shape": "ONE_OFF_FIRST_INFERENCE",
+            "warmup_shape_note": "cycles_to_steady is the first inference whose mean record cost is within 25% of the median of the last three. A value of 2 means the cost is a one-off paid on inference 1 and everything after it is steady state \u2014 a fixed cost to amortise, not a curve to fit.",
+            "decline_verdict": "REAL_WARMUP",
+            "decline_detail": "the decline holds within island identity: 100% of islands record faster on their last inference than on their first, and the per-cycle means fall across cycles that each contain exactly the same 1 islands in the same order. It is a warmup effect, not an island-mix artifact. Shape: ONE_OFF_FIRST_INFERENCE (steady within 25% of the tail median 24.116 ms from inference 2). It has NOT flattened: the last three cycle means still span 2.8313\u00d7, so the steady state is not established and the steady-state median is provisional."
+          },
+          "steady_state": {
+            "verdict": "OK",
+            "island_count": 1,
+            "cycles": 50,
+            "warm_inferences": 49,
+            "cold_in_compute_ms": 8879.639,
+            "warm_in_compute_ms": 3871.996,
+            "warm_per_inference_ms": 79.02,
+            "cold_over_warm_ratio": 112.37,
+            "warm_phases_ms": {
+              "fence_wait": 2011.428,
+              "record": 1046.601,
+              "submit": 31.12
+            },
+            "warm_nested_ms": {
+              "cmd_upload": 21.457,
+              "desc_alloc": 211.095,
+              "pipeline_lookup": 61.17
+            },
+            "cold_phases_ms": {
+              "fence_wait": 359.701,
+              "record": 5214.561,
+              "submit": 1.129
+            },
+            "cold_nested_ms": {
+              "cmd_upload": 4986.137,
+              "desc_alloc": 30.18,
+              "pipeline_lookup": 35.729
+            },
+            "warm_shares": {
+              "submit": 0.00804,
+              "fence_wait": 0.51948,
+              "record_INCLUDING_children": 0.2703,
+              "record_excl_children": 0.19444,
+              "in_record/cmd_upload": 0.00554,
+              "in_record/pipeline_lookup": 0.0158,
+              "in_record/desc_alloc": 0.05452,
+              "gpu_busy": 0.49551,
+              "fence_wait_gpu_idle": 0.02397,
+              "unattributed": 0.20218
+            },
+            "warm_gpu_busy_ms": 1918.6,
+            "gpu_steady_tail": {
+              "n_inferences": 50,
+              "series_ms": [
+                12.254,
+                243.617,
+                12.202,
+                13.338,
+                13.356,
+                13.329,
+                13.308,
+                13.336,
+                13.368,
+                18.216,
+                19.648,
+                20.583,
+                21.673,
+                23.255,
+                24.614,
+                25.641,
+                25.641,
+                26.757,
+                27.955,
+                28.066,
+                29.327,
+                30.086,
+                31.617,
+                31.656,
+                32.53,
+                33.466,
+                35.4,
+                35.972,
+                36.48,
+                37.533,
+                38.872,
+                40.244,
+                41.612,
+                43.161,
+                43.668,
+                44.593,
+                44.648,
+                46.635,
+                48.572,
+                48.558,
+                50.78,
+                53.175,
+                53.202,
+                53.174,
+                53.226,
+                53.213,
+                55.87,
+                55.803,
+                58.78,
+                58.843
+              ],
+              "certification": {
+                "quotable": false,
+                "tail_verdict": "NO_STEADY_TAIL",
+                "companion": "SOLE_TENANT",
+                "silence_set": [
+                  "Samples the board at 4 Hz over the whole command, so it characterises the *regime* a run sat in and cannot resolve a single inference. A boost that happened while our kernel was not submitting would satisfy the peak-clock floor.",
+                  "Reads the driver's own account. A clock the driver misreports is invisible to it.",
+                  "`nvidia-smi` is NVIDIA-only. On any other vendor the tenancy and clock record is UNOBSERVABLE \u2014 which is not SOLE_TENANT and not a pass (R12).",
+                  "Says nothing about host contention. That is `bench/contention.py`'s subject and it gates a different quantity."
+                ],
+                "basis": "DESIGN.md R9 rule 5: an RSD over a suffix is silent about the level of that suffix, so a device-clock figure is UNMEASURED until a second quantity from outside the series records the state of the device.",
+                "peak_sm_mhz": 2010.0,
+                "sm_max_mhz": 3105.0,
+                "clock_ramp_x": 9.5714,
+                "verdict": "UNCERTIFIED",
+                "detail": "the device state is clean (sole tenant, peak 2010 of 3105 MHz) but the tail itself is NO_STEADY_TAIL. The companion cannot make a number out of a run that produced none."
+              },
+              "verdict": "NO_STEADY_TAIL",
+              "detail": "no suffix of >= 5 inferences holds GPU busy time within 2% RSD. The device never settled, so there is no steady-state GPU figure to quote from this run."
+            },
+            "upload_mib_cold": 2185.846,
+            "upload_mib_warm_mean": 0.3809,
+            "gpu_busy_note": "GPU busy overlaps submit+fence_wait and is NOT a sibling of the host phases \u2014 it is printed as a share of the same denominator so the two can be compared, never so they can be added. `fence_wait_gpu_idle` is the part of the fence wait the GPU was demonstrably not executing in, and it is the only GPU-idle figure that may be quoted.",
+            "duration_caveat": "these are durations and durations move with machine load. The *structure* here \u2014 that recording is paid on every inference rather than once, and that the cold inference is a different workload from the warm ones \u2014 is a count of spans and survives contention. The percentages do not."
+          },
+          "contention_signature": {
+            "n_record_spans": 50,
+            "single_slot": true,
+            "islands_per_inference": 1,
+            "cycles": 50,
+            "cycles_skipped_as_warmup": 1,
+            "slots_testable": 1,
+            "stalled_slot_fraction": 0.0,
+            "stalled_slots": [],
+            "slots_moving_with_gpu": 1,
+            "per_inference_host_factor": {
+              "n": 49,
+              "median": 1.0,
+              "min": 0.3821,
+              "max": 2.8423,
+              "range_ratio": 7.4395,
+              "excursion_fraction": 0.0612
+            },
+            "per_inference_gpu_factor": {
+              "n": 49,
+              "median": 1.0,
+              "min": 0.3447,
+              "max": 6.8819,
+              "range_ratio": 19.9657,
+              "excursion_fraction": 0.0204
+            },
+            "per_inference_host_factors": [
+              1.083,
+              2.248,
+              2.842,
+              2.515,
+              1.761,
+              0.677,
+              1.181,
+              1.185,
+              0.932,
+              1.123,
+              1.193,
+              1.167,
+              1.363,
+              1.163,
+              1.469,
+              0.463,
+              1.094,
+              0.565,
+              0.444,
+              0.473,
+              0.461,
+              0.382,
+              0.666,
+              1.169,
+              0.414,
+              1.051,
+              1.0,
+              0.41,
+              0.404,
+              1.251,
+              0.469,
+              1.033,
+              1.16,
+              1.082,
+              0.844,
+              0.569,
+              0.511,
+              1.115,
+              0.991,
+              0.415,
+              0.969,
+              0.412,
+              0.713,
+              1.168,
+              0.941,
+              0.943,
+              1.262,
+              1.113,
+              0.446
+            ],
+            "per_inference_gpu_factors": [
+              6.882,
+              0.345,
+              0.377,
+              0.377,
+              0.377,
+              0.376,
+              0.377,
+              0.378,
+              0.515,
+              0.555,
+              0.581,
+              0.612,
+              0.657,
+              0.695,
+              0.724,
+              0.724,
+              0.756,
+              0.79,
+              0.793,
+              0.828,
+              0.85,
+              0.893,
+              0.894,
+              0.919,
+              0.945,
+              1.0,
+              1.016,
+              1.031,
+              1.06,
+              1.098,
+              1.137,
+              1.176,
+              1.219,
+              1.234,
+              1.26,
+              1.261,
+              1.317,
+              1.372,
+              1.372,
+              1.434,
+              1.502,
+              1.503,
+              1.502,
+              1.504,
+              1.503,
+              1.578,
+              1.576,
+              1.66,
+              1.662
+            ],
+            "whole_run_inflation": true,
+            "verdict": "NOT_STEADY",
+            "reason": "whole inferences of identical work varied 7.4395x (min 0.3821, max 2.8423 of the run median), but GPU time moved alongside on every slot, so the control cannot isolate the cause to the host. Either way the run was not in a steady state: this is not a quotable measurement, and it is not an exoneration of the machine",
+            "falsifier": {
+              "name": "gpu_range_control",
+              "red_if": "the same island slot's GPU busy time varies as much as its host record time, which would mean the work differed between inferences and the host variation is explained",
+              "slots_stalled_host_only": 0,
+              "slots_moving_with_gpu": 1,
+              "slots_testable": 1,
+              "gpu_stable_max": 1.25
+            },
+            "quotable": false
+          },
+          "falsifiers": {
+            "phase_containment": {
+              "red": false,
+              "state": "PASS",
+              "basis": "sibling phase spans only \u2014 nested sub-record spans are checked separately against their own parent, never against the subgraph",
+              "orphan_phase_spans": 0,
+              "over_subscribed_subgraphs": 0,
+              "stray_sub_record_spans": 0,
+              "over_subscribed_record_spans": 0,
+              "sibling_spans_checked": 150,
+              "nested_spans_checked": 35550,
+              "examples": [],
+              "worst_subgraph_ratio": 0.9271,
+              "detail": "PASS: 150 sibling spans all lie inside a subgraph and no subgraph's siblings sum past it; 35550 sub-record spans all lie inside a vulkan.record span and no record's children sum past it. Checked over 50 subgraph spans. Basis: sibling phase spans only \u2014 nested sub-record spans are checked separately against their own parent, never against the subgraph."
+            },
+            "gpu_span_accounting": {
+              "red": false,
+              "asserts": "sum(subgraph.nodes)(17750) == gpu spans(17750) == dispatches_executed(17750)",
+              "expected_from_nodes": 17750,
+              "observed_gpu_spans": 17750,
+              "dispatches_executed": 17750,
+              "detail": "ok: 17750 == 17750 == 17750 \u2014 every dispatch produced exactly one timestamped span, so ordinal attribution is exact"
+            },
+            "gpu_containment": {
+              "red": false,
+              "attribution": "ordinal (count-based); timestamps are not used to assign spans",
+              "submissions_with_gpu_spans": 50,
+              "violations": 0,
+              "examples": [],
+              "detail": "ok: GPU busy time never exceeds submit+fence_wait for the same submission"
+            },
+            "timestamp_conversion_integrality": {
+              "periods_seen": [
+                1.0
+              ],
+              "red": false,
+              "decisive": false,
+              "results": [
+                {
+                  "period_ns": 1.0,
+                  "n": 17750,
+                  "verdict": "VACUOUS",
+                  "detail": "timestampPeriod is 1.0: raw ticks and nanoseconds are numerically identical, so dropping the scale is undetectable on this device. Not a pass."
+                }
+              ],
+              "detail": "no device in this trace reports timestampPeriod != 1.0, so the 52\u00d7 trap cannot be falsified by this run. That is a gap in the instrument set, not a pass \u2014 run the Intel part."
+            },
+            "valid_bits_applied": {
+              "red": false,
+              "checked": 0,
+              "max_fraction_of_wrap_period": null,
+              "examples": [],
+              "detail": "no device in this trace reports validBits < 64; the mask is not exercisable here"
+            },
+            "trace_matches_counters": {
+              "red": false,
+              "subgraph_spans": 50,
+              "compute_calls": 50,
+              "detail": "ok: 50 vulkan.subgraph spans == compute_calls 50"
+            },
+            "upload_accounting": {
+              "check": "upload_accounting",
+              "asserts": "the transfer-counter upload duration and the cmd_upload span agree",
+              "counter_ms": 5006.591,
+              "span_ms": 5007.594,
+              "tolerance": 0.25,
+              "relative_difference": 0.0002,
+              "n_instruments": 2,
+              "ok": true,
+              "verdict": "AGREE",
+              "detail": "counters 5006.6 ms vs span 5007.6 ms, 0.0% apart. The span is used; the counters corroborate it."
+            }
+          },
+          "device_state": {
+            "n": 144,
+            "seconds": 210.6,
+            "sm_mhz": {
+              "n": 144,
+              "min": 210.0,
+              "median": 210.0,
+              "mean": 414.2,
+              "max": 2010.0
+            },
+            "sm_max_mhz": 3105.0,
+            "util_pct": {
+              "n": 144,
+              "min": 0.0,
+              "median": 0.0,
+              "mean": 2.6,
+              "max": 58.0
+            },
+            "power_w": {
+              "n": 144,
+              "min": 2.5,
+              "median": 2.8,
+              "mean": 5.3,
+              "max": 16.8
+            },
+            "foreign_sample_fraction": 0.0,
+            "foreign_pids": {},
+            "own_pids_on_gpu": [
+              324
+            ],
+            "clock_ramp_x": 9.5714,
+            "clock_at_max_pct": 13.3,
+            "verdict": "SOLE_TENANT",
+            "silence_set": [
+              "Samples the board at 4 Hz over the whole command, so it characterises the *regime* a run sat in and cannot resolve a single inference. A boost that happened while our kernel was not submitting would satisfy the peak-clock floor.",
+              "Reads the driver's own account. A clock the driver misreports is invisible to it.",
+              "`nvidia-smi` is NVIDIA-only. On any other vendor the tenancy and clock record is UNOBSERVABLE \u2014 which is not SOLE_TENANT and not a pass (R12).",
+              "Says nothing about host contention. That is `bench/contention.py`'s subject and it gates a different quantity."
+            ],
+            "sampler": "bench/results/probe_gpustate.py (Switch)"
+          }
+        },
+        "red_flags": [
+          "timestamp_conversion_integrality: NOT DECISIVE on this device \u2014 no device in this trace reports timestampPeriod != 1.0, so the 52\u00d7 trap cannot be falsified by this run. That is a gap in the instrument set, not a pass \u2014 run the Intel part.",
+          "gpu_steady_tail: UNCERTIFIED \u2014 the device state is clean (sole tenant, peak 2010 of 3105 MHz) but the tail itself is NO_STEADY_TAIL. The companion cannot make a number out of a run that produced none.",
+          "decomposition_identity: EXCEEDS_WALL \u2014 the trace accounts for 12751.6 ms inside Compute but the harness's own clock measured only 9126.6 ms of wall time for the same work (1.40x). Time is being counted more than once. Two independent clocks disagreeing is not a rounding question."
+        ],
+        "traced_vulkan_median_ms": 171.2332,
+        "untraced_vulkan_median_ms": 113.837,
+        "tracing_overhead_ratio": 1.5042,
+        "tracing_overhead_note": "traced median / untraced median, both from this machine minutes apart. Above ~1.5 the phase proportions describe a run the benchmark did not measure and should be read as indicative only.",
+        "traced_model_output_equivalence": "MATCH",
+        "trace_preserved_at": "bench\\results\\traces\\phi35-certified-dev0-c-dev0.trace.json"
+      },
+      "device_identity": {
+        "check": "device_identity",
+        "ep_device_index": 0,
+        "assumed_from_ep_order": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "observed_from_trace": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "reason": "timestamp fingerprint period=1.0 bits=64 matches exactly one device",
+        "asserts": "the device named on a results row is the device whose timestamp fingerprint appears in that row's trace",
+        "ok": true,
+        "verdict": "MATCH",
+        "name_may_be_quoted": true,
+        "detail": "trace and ep-order agree: NVIDIA GeForce RTX 4060 Laptop GPU"
+      }
+    }
+  ]
+}

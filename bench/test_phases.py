@@ -792,3 +792,60 @@ def test_gpu_steady_tail_reaches_the_steady_state_block():
     assert t["verdict"] == "STEADY"
     assert t["discarded_inferences"] == 5
     assert t["median_ms"] == pytest.approx(0.3, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# The minimum-n / coverage floor on a settled tail (2026-08-01)
+#
+# The 2% RSD bar constrains the tail's internal spread, not its agreement with the device's
+# true steady rate. Both specimens below are real: Switch's `contended` row passed at n=8 while
+# sitting 2.1% above his solo figure, and my own pre-barrier-fix A/B produced tails at n=7 and
+# n=5 -- 20.06 ms and 37.56 ms -- on a device whose two clean runs from the same DLL both read
+# 13.346 ms. A flat suffix that is a small share of the run is an excursion, not a steady state.
+# ---------------------------------------------------------------------------
+
+def test_a_flat_suffix_that_is_a_small_share_of_the_run_is_not_a_number():
+    """The n=5-of-43 specimen: RSD 1.3%, median 37.56, and the run's warm mean was 26.4."""
+    wandering = [26.0, 41.2, 22.9, 30.1, 44.8, 21.7, 33.4, 45.9, 20.8, 28.6,
+                 39.7, 24.3, 47.1, 22.2, 31.8, 43.6, 25.5, 36.9, 21.1, 46.4,
+                 29.7, 34.2, 23.8, 42.5, 27.3, 45.1, 20.4, 38.8, 24.9, 32.6,
+                 47.8, 21.9, 35.7, 43.1, 26.8, 30.4, 22.6, 44.3, 28.1]
+    steady_excursion = [37.5, 37.6, 37.4, 37.6, 37.5]
+    t = phases.gpu_steady_tail([v * 1000 for v in wandering + steady_excursion])
+    assert t["verdict"] == "MARGINAL_TAIL"
+    assert t["median_ms"] is None, "a marginal tail must not offer a median to quote"
+    assert t["withheld_median_ms"] == pytest.approx(37.5, abs=0.1)
+    assert t["n"] == 5
+    assert t["coverage"] < phases.GPU_TAIL_MIN_COVERAGE
+    # R13: quote the failure text, never the failure count.
+    assert "is 11% of the 44 usable inferences" in t["detail"]
+    assert "internal spread" in t["detail"]
+
+
+def test_the_floor_that_would_have_refused_switchs_contended_row():
+    """n=8 after discarding 38 — passed the RSD bar, sat 2.1% above solo."""
+    noisy = [11.2 + (i % 7) * 0.9 for i in range(38)]
+    t = phases.gpu_steady_tail([v * 1000 for v in noisy + [11.77] * 8])
+    assert t["verdict"] == "MARGINAL_TAIL"
+    assert t["n"] == 8
+    assert t["median_ms"] is None
+
+
+def test_a_long_tail_after_a_short_warmup_ramp_is_still_quotable():
+    """The floor must not refuse the shape it was built to preserve: ramp then settle."""
+    series = [14.96, 14.95, 13.62] + [13.34 + (i % 3) * 0.01 for i in range(40)]
+    t = phases.gpu_steady_tail([v * 1000 for v in series])
+    assert t["verdict"] == "STEADY"
+    assert t["n"] >= 40
+    assert t["coverage"] >= phases.GPU_TAIL_MIN_COVERAGE
+    assert t["median_ms"] == pytest.approx(13.35, abs=0.02)
+
+
+def test_the_marginal_verdict_is_not_a_steady_one_to_any_consumer():
+    """Consumers gate on ``verdict == "STEADY"``; MARGINAL_TAIL must never satisfy that."""
+    t = phases.gpu_steady_tail([v * 1000 for v in
+                                [20.0, 45.0, 22.0, 48.0, 21.0, 44.0, 23.0, 47.0,
+                                 20.5, 46.0, 24.0, 43.0, 25.0, 41.0, 26.0, 40.0,
+                                 12.18, 12.19, 12.18, 12.17, 12.18]])
+    assert t["verdict"] != "STEADY"
+    assert t["verdict"] in ("MARGINAL_TAIL", "NO_STEADY_TAIL")

@@ -872,3 +872,84 @@ def test_a_uma_misclassification_is_caught_too():
     r = timestamp_audit.cross_check(ep, sdk)
     assert r["agree"] is False
     assert "UMA classification disagrees" in r["problems"][0]
+
+
+# ---------------------------------------------------------------------------------------------
+# The worker's stderr is a shared handle and it is not UTF-8 (2026-08-01)
+#
+# `subprocess.run(..., text=True)` decoded the worker's stderr as UTF-8. ORT's default logging
+# sink on Windows writes UTF-16LE to that same handle, and Tank's runtime WARN goes through it,
+# so the reader thread raised
+#
+#     UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa7 in position 1006
+#
+# and the secondary AttributeError -- `proc.stderr.strip()` on None -- turned the harness's own
+# error path into a second traceback. R12: two instruments each correct about a different world.
+# R13: a reader-thread crash is ERROR(instrument), never a detection.
+# ---------------------------------------------------------------------------------------------
+
+def test_the_worker_stderr_tail_survives_ort_wide_bytes_and_a_missing_stream():
+    """The exact bytes that killed the harness, plus the None that killed its error path."""
+    # ORT's sink, verbatim shape: a decorated WARN written as UTF-16LE.
+    wide = "[W:onnxruntime:, ep.rs:1] BROKEN COMMITMENT: node add0\n".encode("utf-16le")
+    # Our own narrow line on the same handle, containing the 0xa7 that raised in position 1006.
+    narrow = ("x" * 1000).encode("utf-8") + b"\xa7 \xa7\n"
+    raw = narrow + wide
+
+    # 1. The decode does not raise, and the wide line is legible in the result.
+    tail = phi35._stream_tail(raw, 4000)
+    assert "BROKEN COMMITMENT" in tail, "Tank's WARN must be readable in the tail we store"
+
+    # 2. The error path itself: None is a real value here and must not raise.
+    assert phi35._stream_tail(None, 2000) == ""
+    assert phi35._decode_child_stream(None) == ""
+
+
+def test_the_tail_uses_tanks_decoder_and_refuses_rather_than_growing_a_third_one():
+    """R12: one description of the channel. With no decoder the tail is ERROR(instrument)."""
+    assert phi35._tank_decoder() is not None, (
+        "rust/tools/probe_broken_commitment.py::decode_both must be importable; this harness "
+        "deliberately has no decoder of its own for that channel")
+
+    import builtins
+    real_import = builtins.__import__
+
+    def no_tank(name, *a, **k):
+        if name == "probe_broken_commitment":
+            raise ImportError("simulated: Tank's probe is not on this checkout")
+        return real_import(name, *a, **k)
+
+    builtins.__import__ = no_tank
+    sys.modules.pop("probe_broken_commitment", None)
+    try:
+        assert phi35._tank_decoder() is None
+        out = phi35._decode_child_stream(b"\xa7\xa7")
+        assert out.startswith("ERROR(instrument=stream_decoder)")
+    finally:
+        builtins.__import__ = real_import
+
+
+def test_an_instrument_error_is_recorded_as_one_and_never_as_a_refusal():
+    """R13: a refusal is a detection. The harness failing to look is not a finding."""
+    rec: dict = {"device_index": 0}
+    phi35._note_instrument_error(rec, "ERROR(instrument=worker_capture): boom")
+    assert rec["instrument_errors"] == ["ERROR(instrument=worker_capture): boom"]
+    assert "refusals" not in rec, "an instrument error must never be counted as a detection"
+    assert "not detections" in rec["instrument_error_note"]
+
+    phi35._note_instrument_error(rec, "")
+    assert len(rec["instrument_errors"]) == 1
+
+
+def test_the_worker_runner_classifies_its_own_failure_instead_of_raising():
+    """A harness that dies on its own error path cannot report the error it found."""
+    import subprocess as sp
+    real_run = sp.run
+    sp.run = lambda *a, **k: (_ for _ in ()).throw(OSError("no such executable"))
+    try:
+        proc, err = phi35._run_worker(["nonexistent"], {})
+    finally:
+        sp.run = real_run
+    assert proc is None
+    assert err.startswith("ERROR(instrument=worker_capture)")
+    assert "not a property of the" in err

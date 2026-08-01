@@ -459,3 +459,86 @@ Commits `e551ca7` and `9a8a42c` on `squad/niobe`, not pushed. 186 tests. Three d
 I am one quiet six-minute window away from the end-to-end figure and no code has to change to get it.
 
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+---
+
+## 2026-08-01 — the harness died on someone else's WARN, and the exciting reading was the false one
+
+**Merged local `main`, not `origin/main`.** `origin/main` is 21 commits behind and carries neither
+Switch's barrier fix nor Tank's WARN; the branch I was told about is the local one (`1cd0b55`).
+Worth knowing before the next merge: `rust/tools/probe_broken_commitment.py` — which `bench/` now
+imports — exists only on local `main`.
+
+### The crash was R12 and the fix was to borrow, not to write
+
+`subprocess.run(..., text=True)` decoded the worker as UTF-8. ORT's sink writes UTF-16LE on Windows,
+our narrow lines share the handle, and Tank's WARN goes through ORT's sink, so the reader thread
+raised at byte `0xa7`. Then the error path raised on top of it: `proc.stderr.strip()` on `None`.
+**A harness that dies on its own error path cannot report the error it found.**
+
+Two instruments each correct about a different world, colliding as a crash rather than as a wrong
+number — which is the good version of this failure. I took Tank's `decode_both` rather than writing
+a third decoder; his docstring already records what each naive version got wrong, and a second
+dialect for one channel is what Link refused to create for the verdict vocabulary. If his module is
+absent the tail is `ERROR(instrument=stream_decoder)` — not a private fallback decode, because an
+unreadable tail is an instrument error and a mangled string is evidence.
+
+Capture is bytes now. `text=True` puts the decode in `subprocess`'s reader thread, which is the one
+place a failure cannot be classified: it arrives as a traceback from inside the apparatus.
+Instrument errors go to `instrument_errors`, never `refusals` (R13) — a refusal is a condition I
+found, an instrument error is my not having looked.
+
+### The A/B, and why interleaved
+
+The machine was never quiet: 4.7–11.4 foreign cores all afternoon, and the survey named the sources
+— the other agents' `copilot.exe`, `Code.exe`, Defender. Justin's project had indeed stopped; we
+replaced it ourselves. **The gate refused end-to-end on both devices and I did not override it. Third
+session running.**
+
+So I measured what survives a loud machine. Switch's prediction — host moves sharply, device barely
+— cannot be tested by "run old DLL, run new DLL, subtract", because host time is exactly what load
+moves and the load is not constant across two runs minutes apart. Alternated the DLLs **A B A B** in
+one sitting instead, each arm carrying its own survey. `bench/results/probe_barrier_ab.py`.
+
+- **Host `record`: 16.412/20.344 ms → 3.780/3.687 ms median; leaf-only 810.0 → 139.0 ms over 43
+  recordings (5.8×).** The load ordering scrambled — the second post run ran at *more* foreign load
+  (8.12 cores) than the first pre run (5.06) and was still 4.3× cheaper. Load cannot make that shape.
+- **Device: 13.3463 pre vs 13.3432 post on the matched pair (both n=43, both 100% coverage, back to
+  back) — 0.02%.** No shader changed between the two DLLs, so a device movement would have had to be
+  the barrier. There isn't one. **Both halves of his prediction hold.**
+- His ~94 ns/struct falls out of my numbers independently: 86–106 ns over the same 147,618 structs.
+
+### The ruling, and it cost me the headline
+
+Morpheus asked for a call on a minimum-n floor. **Yes, and the floor is on coverage more than on n.**
+The 2% RSD bar constrains the tail's *internal spread*, not its agreement with the device's true
+rate, so five samples from a flat stretch of a wandering series clear it as easily as a settled
+device. My own two bad tails: n=5/coverage 12% reading 37.562 ms against its run's warm mean of
+26.412 (+42%), and n=7/coverage 15% reading 20.055 against 15.03 (+33%). Every good tail sat at
+87–100% coverage and agreed with its warm mean inside 0.6%. A warmup ramp is a short *prefix*; a
+device that never settled makes a short flat *suffix*. Floors: `n >= 8` **and** `coverage >= 50%`;
+`MARGINAL_TAIL` otherwise, median parked in `withheld_median_ms`.
+
+**Its first act was to refuse the reading that said the barrier fix improved GPU time by 33%.** That
+was my exciting number, it was produced by a 5-sample tail, and it was false — under the floor the
+two arms agree to 0.02%. Switch's `contended` row (n=8, 17% coverage, 2.1% above solo) is refused
+by the same rule.
+
+### Numbers of record, current `main`
+
+- **NVIDIA RTX 4060: 13.3432 ms/inference GPU busy** (STEADY, n=43, coverage 100%, RSD 1.72%),
+  `MATCH`, 355/363 nodes claimed, 1 island, 16,330 dispatch spans. Comparable to the same figure on
+  the same box minutes apart, which is what §14.2 is. **Not** comparable to my 40.201 ms of
+  2026-07-31 — the GEMV rewrite, the partitioner fusion and residency all landed in between, and
+  dividing them credits four people's work to whichever one is under discussion. 40.201 ms is
+  **retired as a baseline, not beaten by one.**
+- **Intel Iris Xe: withheld, `NO_STEADY_TAIL`.** The series wanders 53.4–91.3 ms with no flat region.
+  Same refusal and the same structural reason as last time: an iGPU shares its power budget with the
+  loaded CPU cores, so the device clock is not contention-immune there.
+- **End-to-end wall clock and the Vulkan/CPU ratio: withheld on both devices, gate `CONTENDED`.**
+- The devices are not compared. `bench/compare.py`'s cross-device refusal stands.
+
+199 tests in `bench/` pass (was 195). Three decision records filed. Not pushed.
+
+**Left standing:** the pre-fix worktree at `../ep-vulkan-niobe-ab` (detached at `42deaba`) is the A/B
+arm — remove it with `git worktree remove` when the comparison stops being interesting.
