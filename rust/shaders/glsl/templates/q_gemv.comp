@@ -1,15 +1,51 @@
 // `com.microsoft.MatMulNBits` — block-dequantising GEMV.
 //
-// One workgroup computes one output element `Y[m][n]`. The grid is `(N, M, 1)`, so this kernel is
-// *correct* for every `M` and merely unoptimal for `M > 1`; prefill is a tiling problem, not a
-// correctness problem, and shipping the correct shape first is `OP_COVERAGE.md` §11's rule.
+// One workgroup computes `QB_COLS` adjacent output elements `Y[m][n0 .. n0+QB_COLS)`. The grid is
+// `(ceil(N / QB_COLS), M, 1)`, so this kernel is *correct* for every `M` and merely unoptimal for
+// `M > 1`; prefill is a tiling problem, not a correctness problem, and shipping the correct shape
+// first is `OP_COVERAGE.md` §11's rule.
+//
+// # Why a workgroup produces more than one output
+//
+// The first shipped version computed exactly one `Y[m][n]` per workgroup. That is the clearest
+// possible expression of the reduction, and on the measured trace it left the discrete part at
+// ~18% of its memory bandwidth and ~12% of its ALU throughput *simultaneously* — the signature of
+// a latency-bound kernel, not a bandwidth-bound one. Every cause was **per output element**
+// rather than per multiply-add:
+//
+//   * **The activation row was re-read once per output column.** Every workgroup streams the
+//     whole `A[m][0..K)`. With one column per workgroup that is `N` reads of the row *as load
+//     instructions*; the bytes hit L1 but the instructions still issue. `QB_COLS` columns per
+//     workgroup amortises those loads by `QB_COLS` exactly, because the same `A` values feed
+//     every column of the tile — the innermost loop is now over columns, inside the `A` load.
+//   * **The reduction tree and its barriers were paid once per output element.** `log2(wg)`
+//     barriers for ~32 multiply-adds per thread is a ratio no amount of occupancy hides. The tile
+//     reduces `QB_COLS` columns inside the *same* barrier sequence, so barriers per output fall
+//     by `QB_COLS` with no extra synchronisation and no extra barrier.
+//   * **The scale multiplied every element.** `acc += a * (q - zp) * s` is one multiply per
+//     weight; the block partial sum is now accumulated first and scaled once per (column, block),
+//     which is `QB_BLOCK`× fewer multiplies. See the accuracy note below — this changes the
+//     rounding and the falsifier for that is `model_output_equivalence`, not an argument.
+//   * **fp16 activations were unpacked one lane at a time.** `unpackHalf2x16` yields both lanes;
+//     the 4-bit path consumes `k` in adjacent pairs, so the second lane was being fetched by a
+//     second load of the same word. `load_a2` returns the pair.
+//   * **Every output store was a two-atomic read-modify-write.** Unavoidable when neighbouring
+//     `Y` lanes belong to different workgroups. With an even `QB_COLS` the tile owns both lanes of
+//     every word it writes, so the store is a plain aligned `uint` write. A discrete part barely
+//     notices; on an integrated part global atomics are expensive and this was `N` of them per
+//     dispatch.
+//
+// The workgroup size is also now chosen to *divide* `blocks_per_col` rather than merely to cover
+// it, so no invocation sits out the reduction it still has to synchronise with — at `K = 3072`
+// the old rule picked 128 invocations for 96 blocks and idled a quarter of them. See `quant.rs`'s
+// `gemv_workgroup`.
 //
 // # The three things this file deliberately does not do
 //
 // 1. **No subgroup operations.** Both development GPUs report a subgroup size of 32, which is the
-//    strongest possible invitation to bake 32 in and pass every local test. `VkPhysicalDeviceSub-
-//    groupProperties::subgroupSize` is not guaranteed to be anything, so the cross-workgroup
-//    reduction is a shared-memory tree sized by `gl_WorkGroupSize.x`.
+//    strongest possible invitation to bake 32 in and pass every local test — and lavapipe reports
+//    **8**. `VkPhysicalDeviceSubgroupProperties::subgroupSize` is not guaranteed to be anything,
+//    so the cross-workgroup reduction is a shared-memory tree sized by `gl_WorkGroupSize.x`.
 // 2. **No 16-bit storage capability.** fp16 activations are read and written through
 //    `unpackHalf2x16`/`packHalf2x16` over `uint` buffers, which is core GLSL 4.2 and needs no
 //    device feature at all. `shaderFloat16` and `storageBuffer16BitAccess` therefore gate nothing
@@ -20,6 +56,16 @@
 // 3. **No dequantised weight in memory.** `B` is unpacked into registers inside the block loop and
 //    never written anywhere. This is the P-series constraint from §8.2 and it is the reason int4
 //    is worth having at all.
+//
+// # Accuracy
+//
+// Hoisting `s` out of the element loop changes the summation order: the block partial sum is
+// formed in fp32 over `QB_BLOCK` unscaled terms and scaled once, rather than each term being
+// scaled before it is added. Both are fp32 accumulations of the same exact products, and the
+// hoisted form has strictly *fewer* rounding steps and sums terms that share a magnitude class
+// because they share a scale. That is an argument, not evidence. The evidence is the falsifier
+// that already exists — `model_output_equivalence` against the CPU EP on the real model — and it
+// must stay `MATCH`.
 //
 // # Layout, derived from the ORT CPU EP rather than from the schema prose
 //
@@ -37,13 +83,17 @@
 //
 // # Specialisation constants
 //
-//   id 0  local_size_x      power of two in [32, 256]; the host picks the smallest that covers
+//   id 0  local_size_x      power of two in [32, 256]; the host picks the largest that divides
 //                           `blocks_per_col`, capped at the 256-invocation floor of §7.2.
 //   id 1  QB_BITS           4 or 8. A spec constant rather than a `-D` define on purpose: both
 //                           bit widths are then one SPIR-V source and one pipeline-cache key, so
 //                           gpt-oss's mixed 4/8-bit graph is not a second shader.
 //   id 2  QB_BLOCK          16/32/64/128.
 //   id 3  QB_HAS_ZP         0 when the node has no `zero_points` input.
+//   id 4  QB_COLS           output columns per workgroup, 1..QB_MAX_COLS. The host guarantees
+//                           `local_size_x * QB_COLS <= QB_RED_WORDS`, which is what keeps the
+//                           shared-memory requirement a static property of this module rather
+//                           than a device-dependent one.
 //
 // # Bindings
 //
@@ -64,6 +114,12 @@ layout(local_size_x_id = 0, local_size_x = 256) in;
 layout(constant_id = 1) const uint QB_BITS = 4u;
 layout(constant_id = 2) const uint QB_BLOCK = 32u;
 layout(constant_id = 3) const uint QB_HAS_ZP = 0u;
+layout(constant_id = 4) const uint QB_COLS = 1u;
+
+// Largest column tile this module can hold in registers. Every per-column array below is sized by
+// this literal, never by the specialisation constant, so the register budget is a static property
+// of the module. `quant.rs` clamps `QB_COLS` to it.
+#define QB_MAX_COLS 8u
 
 layout(push_constant) uniform Params {
     uint m_total;         // product of all leading dims of A times M
@@ -80,10 +136,16 @@ layout(set = 0, binding = 2) readonly buffer InS { uint data[]; } ins;
 layout(set = 0, binding = 4) buffer OutY { uint data[]; } outy;
 
 float load_a(uint i) { return unpackHalf2x16(ina.data[i >> 1u])[i & 1u]; }
+
+// Both fp16 lanes of the word holding elements `i` and `i+1`. `i` must be even — every caller
+// indexes `k` in adjacent pairs starting at a multiple of `QB_BLOCK`, and `a_base = row * k` with
+// `k` a multiple of `block_size`, so evenness holds by construction rather than by luck.
+vec2 load_a2(uint i) { return unpackHalf2x16(ina.data[i >> 1u]); }
+
 float load_s(uint i) { return unpackHalf2x16(ins.data[i >> 1u])[i & 1u]; }
 
-// Store one fp16 lane without disturbing its neighbour. The two lanes of a word are written by
-// two different workgroups, so this is a read-modify-write on shared memory — but on **disjoint
+// Store one fp16 lane without disturbing its neighbour. The two lanes of a word may be written by
+// two different workgroups, so this is a read-modify-write on device memory — but on **disjoint
 // bit lanes**, which is race-free in any interleaving. Same argument as the byte-typed stores in
 // `indexing.glsl`, and the same requirement on the allocator: the buffer must be rounded up to a
 // whole `uint`. The claim predicate additionally requires `m_total * n` to be even, so the final
@@ -94,14 +156,26 @@ void store_y(uint i, float v) {
     atomicAnd(outy.data[i >> 1u], ~(0xFFFFu << lane));
     atomicOr(outy.data[i >> 1u], half_bits << lane);
 }
+
+// Write both lanes of the word holding elements `i` and `i+1` in one non-atomic store. Legal only
+// when this workgroup owns *both* elements, which the caller establishes from `QB_COLS` and the
+// tile's base offset — never assumed.
+void store_y_pair(uint i, float v0, float v1) {
+    outy.data[i >> 1u] = packHalf2x16(vec2(v0, v1));
+}
 #else
 layout(set = 0, binding = 0) readonly buffer InA { float data[]; } ina;
 layout(set = 0, binding = 2) readonly buffer InS { float data[]; } ins;
 layout(set = 0, binding = 4) writeonly buffer OutY { float data[]; } outy;
 
 float load_a(uint i) { return ina.data[i]; }
+vec2 load_a2(uint i) { return vec2(ina.data[i], ina.data[i + 1u]); }
 float load_s(uint i) { return ins.data[i]; }
 void store_y(uint i, float v) { outy.data[i] = v; }
+void store_y_pair(uint i, float v0, float v1) {
+    outy.data[i] = v0;
+    outy.data[i + 1u] = v1;
+}
 #endif
 
 layout(set = 0, binding = 1) readonly buffer InB { uint data[]; } inb;
@@ -136,65 +210,132 @@ int load_zp(uint col, uint blk) {
 
 // -- reduction --------------------------------------------------------------------------------
 
-// 256 floats = 1 KiB, comfortably inside the 16 KiB shared-memory floor of §7.2. Sized by the
-// literal maximum rather than by the specialisation constant so the storage requirement is a
-// static property of the module and cannot become device-dependent.
-shared float red[256];
+// Shared floats reserved for the reduction: 1024 = 4 KiB, comfortably inside the 16 KiB
+// shared-memory floor of §7.2 and inside the 32 KiB an Intel Xe subslice offers without
+// collapsing occupancy. Sized by the literal rather than by `local_size_x * QB_COLS` so the
+// storage requirement is a static property of the module and cannot become device-dependent.
+// `quant.rs` guarantees `local_size_x * QB_COLS <= 1024`.
+#define QB_RED_WORDS 1024
+shared float red[QB_RED_WORDS];
 
 void main() {
-    uint col = gl_WorkGroupID.x;   // n
-    uint row = gl_WorkGroupID.y;   // m
+    uint col0 = gl_WorkGroupID.x * QB_COLS;  // first output column of this tile
+    uint row = gl_WorkGroupID.y;             // m
     uint tid = gl_LocalInvocationID.x;
     uint wg = gl_WorkGroupSize.x;
+    uint bpc = pc.blocks_per_col;
 
-    float acc = 0.0;
+    // Per-column state, hoisted out of the block loop. A column past the end of `N` — only
+    // possible in the tail tile when `QB_COLS` does not divide `N` — is redirected to `col0`
+    // rather than clamped away, so the inner loop stays branch-free and uniform; its result is
+    // discarded at the store, which is the only place `N` is re-checked.
+    float acc[QB_MAX_COLS];
+    uint ucol[QB_MAX_COLS];
+    for (uint c = 0u; c < QB_COLS; ++c) {
+        acc[c] = 0.0;
+        ucol[c] = ((col0 + c) < pc.n) ? (col0 + c) : col0;
+    }
 
-    if (col < pc.n && row < pc.m_total) {
+    if (row < pc.m_total && col0 < pc.n) {
         uint a_base = row * pc.k;
         uint bb = blob_bytes();
         uint nwords = bb >> 2u;
 
-        for (uint blk = tid; blk < pc.blocks_per_col; blk += wg) {
-            float s = load_s(col * pc.blocks_per_col + blk);
-            int zp = load_zp(col, blk);
-            uint word_base = ((col * pc.blocks_per_col + blk) * bb) >> 2u;
+        for (uint blk = tid; blk < bpc; blk += wg) {
             uint k0 = blk * QB_BLOCK;
 
+            // Scale and zero point are invariant across the block. Loading them here rather than
+            // per element is what makes the inner loop pure multiply-add.
+            float s[QB_MAX_COLS];
+            float zpf[QB_MAX_COLS];
+            float bacc[QB_MAX_COLS];
+            for (uint c = 0u; c < QB_COLS; ++c) {
+                s[c] = load_s(ucol[c] * bpc + blk);
+                zpf[c] = float(load_zp(ucol[c], blk));
+                bacc[c] = 0.0;
+            }
+
             for (uint w = 0u; w < nwords; ++w) {
-                uint packed = inb.data[word_base + w];
+                // `A` is loaded ONCE per word of `B` and reused by every column of the tile. This
+                // is the whole point of the tile: the column loop is inside the `A` load, not
+                // outside it.
                 if (QB_BITS == 4u) {
-                    uint ke = k0 + w * 8u;
-                    for (uint j = 0u; j < 4u; ++j) {
-                        uint bv = (packed >> (j * 8u)) & 0xFFu;
-                        int q0 = int(bv & 0xFu);
-                        int q1 = int(bv >> 4u);
-                        acc += load_a(a_base + ke + j * 2u) * float(q0 - zp) * s;
-                        acc += load_a(a_base + ke + j * 2u + 1u) * float(q1 - zp) * s;
+                    uint ke = a_base + k0 + w * 8u;
+                    vec2 a01 = load_a2(ke);
+                    vec2 a23 = load_a2(ke + 2u);
+                    vec2 a45 = load_a2(ke + 4u);
+                    vec2 a67 = load_a2(ke + 6u);
+                    for (uint c = 0u; c < QB_COLS; ++c) {
+                        uint packed = inb.data[(((ucol[c] * bpc + blk) * bb) >> 2u) + w];
+                        float z = zpf[c];
+                        uint b0 = packed & 0xFFu;
+                        uint b1 = (packed >> 8u) & 0xFFu;
+                        uint b2 = (packed >> 16u) & 0xFFu;
+                        uint b3 = packed >> 24u;
+                        float t = a01.x * (float(b0 & 0xFu) - z);
+                        t += a01.y * (float(b0 >> 4u) - z);
+                        t += a23.x * (float(b1 & 0xFu) - z);
+                        t += a23.y * (float(b1 >> 4u) - z);
+                        t += a45.x * (float(b2 & 0xFu) - z);
+                        t += a45.y * (float(b2 >> 4u) - z);
+                        t += a67.x * (float(b3 & 0xFu) - z);
+                        t += a67.y * (float(b3 >> 4u) - z);
+                        bacc[c] += t;
                     }
                 } else {
-                    uint ke = k0 + w * 4u;
-                    for (uint j = 0u; j < 4u; ++j) {
-                        int q = int((packed >> (j * 8u)) & 0xFFu);
-                        acc += load_a(a_base + ke + j) * float(q - zp) * s;
+                    uint ke = a_base + k0 + w * 4u;
+                    vec2 a01 = load_a2(ke);
+                    vec2 a23 = load_a2(ke + 2u);
+                    for (uint c = 0u; c < QB_COLS; ++c) {
+                        uint packed = inb.data[(((ucol[c] * bpc + blk) * bb) >> 2u) + w];
+                        float z = zpf[c];
+                        float t = a01.x * (float(packed & 0xFFu) - z);
+                        t += a01.y * (float((packed >> 8u) & 0xFFu) - z);
+                        t += a23.x * (float((packed >> 16u) & 0xFFu) - z);
+                        t += a23.y * (float(packed >> 24u) - z);
+                        bacc[c] += t;
                     }
                 }
+            }
+
+            for (uint c = 0u; c < QB_COLS; ++c) {
+                acc[c] += bacc[c] * s[c];
             }
         }
     }
 
-    // Shared-memory tree. `wg` is a power of two (the host guarantees it), and every barrier below
-    // is reached by every invocation in the workgroup — the early-out above sets `acc` to zero
-    // rather than returning, precisely so that stays true.
-    red[tid] = acc;
+    // Shared-memory tree, one pass for the whole tile. `wg` is a power of two (the host guarantees
+    // it) and every barrier below is reached by every invocation in the workgroup — the early-out
+    // above leaves `acc` at zero rather than returning, precisely so that stays true. Column `c`
+    // occupies `red[c * wg .. c * wg + wg)`, so for a fixed `c` consecutive invocations touch
+    // consecutive words and the tree stays bank-conflict free exactly as it was with one column.
+    for (uint c = 0u; c < QB_COLS; ++c) {
+        red[c * wg + tid] = acc[c];
+    }
     barrier();
     for (uint stride = wg >> 1u; stride > 0u; stride >>= 1u) {
         if (tid < stride) {
-            red[tid] += red[tid + stride];
+            for (uint c = 0u; c < QB_COLS; ++c) {
+                red[c * wg + tid] += red[c * wg + tid + stride];
+            }
         }
         barrier();
     }
 
-    if (tid == 0u && col < pc.n && row < pc.m_total) {
-        store_y(row * pc.n + col, red[0]);
+    if (row < pc.m_total && col0 < pc.n) {
+        uint base = row * pc.n + col0;
+        // The tile owns both lanes of every word it writes when it is an even number of columns,
+        // starts on an even element, and no column of it fell off the end of `N`. Then and only
+        // then is the read-modify-write unnecessary. This is checked, not assumed, and every term
+        // is workgroup-uniform, so the branch is uniform.
+        bool paired = (QB_COLS >= 2u) && ((QB_COLS & 1u) == 0u)
+                      && ((base & 1u) == 0u) && ((col0 + QB_COLS) <= pc.n);
+        if (paired) {
+            if (tid < (QB_COLS >> 1u)) {
+                store_y_pair(base + tid * 2u, red[(tid * 2u) * wg], red[(tid * 2u + 1u) * wg]);
+            }
+        } else if (tid < QB_COLS && (col0 + tid) < pc.n) {
+            store_y(base + tid, red[tid * wg]);
+        }
     }
 }

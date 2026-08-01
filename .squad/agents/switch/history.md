@@ -1427,3 +1427,122 @@ evidence on disk without ever entering git. Nothing written to the repo root.
 Decisions: switch-sec65-closed.md, switch-phase-containment-niobe.md,
 switch-validation-control-trinity.md. clippy clean, cargo test --lib green, committed on
 squad/switch, not pushed.
+
+## Session 37 — 2026-08-01 — the GEMV column tile, and the Intel gap separated from the hardware
+
+Merged origin/main (efbf18c) into squad/switch — clean, 33 files, brought in Niobe's
+gpu_steady_tail, bench/exec_census.py, Mouse's ops/indexing.rs, the new gather and
+simplified_layer_norm shaders. First committed the interrupted prior session's index-space WIP as
+24aeb9d so the merge had a clean base.
+
+TASK 1 — q_gemv_matmul_nbits_f16.
+
+Built my own instrument first: bench/results/probe_gemv.py runs the traced phi35 worker,
+reconstructs per-inference GPU busy from the gpu_ns device timestamps, feeds Niobe's
+phases.gpu_steady_tail, and prints per-kernel totals. Three terminal states. I did NOT score
+against Niobe's number — Mouse re-scored one of his own predictions yesterday and found he had
+scored against a figure Morpheus gave him rather than one he measured. Measured my own baseline at
+my own commit: 40.202 ms/inference, kernel 254.77 us. Niobe had 40.201 / 253.4. Independent
+agreement is the only reason I trust either.
+
+PREDICTION, stated before building: kernel 254.8 -> ~105 us; total GPU busy -> ~18 ms, range 14-25.
+
+Rewrote the kernel around a QB_COLS column tile (spec constant id 4, max 8): one workgroup computes
+8 adjacent output columns with the column loop INSIDE the activation load, so A[m][0..K) is fetched
+once and reused. Four supporting changes: workgroup size now DIVIDES blocks_per_col instead of
+covering it (at K=3072 the old rule took 128 invocations and idled 32 of them at all seven
+barriers); scale hoisted out of the element loop; load_a2() returns both fp16 lanes from one
+unpackHalf2x16; paired non-atomic store replacing atomicAnd+atomicOr. No subgroup intrinsic added,
+no subgroup size baked — lavapipe reports 8 where both local GPUs report 32.
+
+MEASURED, matched instrument (24 iters, both STEADY, both verdict MATCH):
+  RTX 4060 baseline  40.390 ms/inf  STEADY n=23 RSD 0.294%  q_gemv 244.09 us
+  RTX 4060 tiled     12.294 ms/inf  STEADY n=13 RSD 0.099%  q_gemv  65.36 us
+  = 3.29x total GPU busy, 3.73x on the kernel.
+  Iris Xe baseline   q_gemv 3804.85 us  NO_STEADY_TAIL
+  Iris Xe tiled      q_gemv  468.32 us  NO_STEADY_TAIL   = 8.1x on the kernel.
+
+I beat my own prediction (18 ms predicted, 12.294 measured). Scoring honestly: I underestimated the
+tile's reuse benefit, and I had not anticipated that removing the idle-invocation barrier stalls was
+worth a separate ~1.5x on its own.
+
+Two instrument lessons, both of which changed a number I would otherwise have reported wrong.
+First, at 14 iterations the tiled build reported a median of 13.610 ms; at 24 iterations the same
+build reported a STEADY tail of 12.294. The faster the build the longer the ramp takes in
+INFERENCES, so a fixed iteration budget under-reports fast builds. Second, I therefore re-ran the
+BASELINE at 24 iterations too rather than compare across instrument settings — it was flat (40.390
+vs 40.202), but the ratio I would have quoted was wrong until I checked.
+
+TASK 2 — the 13.5x Intel gap.
+
+Raw Intel ratios are not admissible: my two runs of the SAME build differed 2.65x (468.32 us quiet,
+1240.43 us contended). But in the contended run gqa_f16 moved 217.55 -> 563.78 us and
+skip_simplified_layer_norm_f16 moved 58.14 -> 117.51 us — neither is mine and neither changed.
+Contention is common-mode across the frame; a design change is not. So I normalised our kernel by
+an untouched control kernel measured IN THE SAME RUN. Check that it works: the contended and quiet
+runs agree to ~10% on both control ratios while their raw q_gemv figures differ 2.65x.
+
+q_gemv/gqa_f16, same run:
+                                    NVIDIA   Intel   Intel excess
+  baseline                            6.97   19.89      2.85x
+  arithmetic + wg sizing (COLS=1)     3.71   10.64      2.87x
+  + column tile (COLS=8)              1.62    2.20      1.36x
+
+So 2.85x of the gap was OUR DESIGN, hardware absorbed by the control. The arithmetic changes were
+device-neutral (2.85 -> 2.87 unchanged); the TILE is the entire portability fix. Mechanism: the
+baseline re-read the whole activation row per output column and ran one full barrier + shared-memory
+reduction per output column — both paid where Xe-LP is weakest relative to its ALU (68 GB/s of
+shared LPDDR4x, and barrier throughput). NVIDIA had the bandwidth to hide it. That is the shape of a
+kernel tuned on the machine it was written on.
+
+Hardware bracket: 8.8x ALU, 4x bandwidth -> a memory-bound kernel belongs in [4x, 8.8x]. Baseline
+raw ratio 15.6x sat OUTSIDE it; tiled ~7.2x sits INSIDE. Contention explains the Intel variance; it
+cannot explain the level, because the level moved 8.1x from a pure kernel change on an equally busy
+box.
+
+NEGATIVE RESULT, and it was my leading hypothesis: forcing the global-atomic store back on Intel
+moved the kernel 468.32 -> 465.18 us. Within noise. The atomics were not a bottleneck on either
+device. Kept the paired store because it is free, not because it was measured to pay.
+
+Incidental: the Intel COLS=1 ablation reported STEADY (388.943 ms, n=15, RSD 1.38%). Intel CAN
+settle. The runs that would not settle were the FAST ones — host jitter is large relative to a short
+frame — which points at the per-inference span reconstruction rather than the iGPU clock. Passed to
+Niobe.
+
+TASK 3.
+
+(1) Index spaces. Selector 1 was still SPLIT-DEVICE. I first tried making ORT's binding
+authoritative — and caught my own regression: it silently relocated --device 1 onto NVIDIA while
+still reporting MATCH and 161 claimed nodes. ONLY THE TIMING EXPOSED IT (12.457 ms and NVIDIA-shaped
+per-kernel means from a run labelled Intel). An unattributed result wearing a MATCH is worse than a
+reported split frame, and Intel is the spec-conformance oracle. Reverted. The fix that works is
+devices_to_advertise(): when the env var is set it is a PIN and only that device is advertised, so
+ORT cannot bind another and the two spaces become ONE rather than being translated between. It can
+only key off the env var because ep.device_index is read in CreateEp, after GetSupportedDevices.
+Precedence shipped: explicit selector > ORT binding > best score, divergence logged naming both
+spaces, SPLIT-DEVICE left able to fire. Verified (R10, content varies with input): selector 0 ->
+SHARED / "NVIDIA GeForce RTX 4060 Laptop GPU", selector 1 -> SHARED / "Intel(R) Iris(R) Xe
+Graphics", authoritative spans now the integer 0 on both where selector 1 was UNOBSERVABLE.
+Note for the team: phi35.py sets the ep.device_index SESSION OPTION, not the env var, so the harness
+does not get the pin.
+
+(2) Leaked-device validation gate written up: the production VkDevice is never destroyed, so the
+validation layer's teardown report never runs, so "0 validation errors at shutdown" cannot observe a
+leak AND passes. R12 says UNOBSERVABLE, never 0; R13 says ERROR(instrument), never a detection.
+Criterion 3 must not be certified by it. ep_messenger_fires_for_planted_fence_leak is unaffected —
+it builds and destroys its own Instance+Device, which is the correct model.
+
+(3) Reconciled the 70% spread with Niobe rather than re-deriving. Not a disagreement: my baseline
+series shows gpu_steady_tail discarding 5 leading samples at ~49.58 ms before a step to a flat
+~40.2. That ~49.6 regime is the ramp; her 0.033% describes the post-ramp regime only and the
+instrument says so. My 49.4 and 58.5 were means across regimes; my 83.8 and 71.0 were the contention
+window Morpheus has since shown inflated the whole suite. I withdraw the 70% spread as a statement
+about kernel variability — it was ERROR(instrument) on my side, a missing regime gate, not a
+detection of GPU instability. My series independently reproduces both her step and her level.
+
+Validation: cargo fmt clean, clippy clean, cargo test --release --lib 416 passed 0 failed 2 ignored.
+All probe output to bench/results/, nothing in the repo root.
+
+Decisions: switch-gemv-column-tile.md, switch-intel-gap-separated.md,
+switch-leaked-device-validation-unobservable.md, switch-kernel-spread-reconciliation-niobe.md,
+switch-index-space-unified-by-single-offer.md. Committed on squad/switch, not pushed.

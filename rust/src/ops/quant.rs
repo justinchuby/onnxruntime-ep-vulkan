@@ -251,10 +251,28 @@ fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::
     Ok(rows)
 }
 
-/// Workgroup size for one output element, derived from the reduction extent and the **floor**.
+/// Floats the GEMV shader reserves for its reduction tree. Mirrors `QB_RED_WORDS` in
+/// `q_gemv.comp`; the product `local_size_x * QB_COLS` may not exceed it.
+const GEMV_RED_WORDS: u32 = 1024;
+
+/// Largest column tile the GEMV shader can hold in registers. Mirrors `QB_MAX_COLS`.
+const GEMV_MAX_COLS: u32 = 8;
+
+/// Fewest workgroups a dispatch should keep, so tiling never starves the machine of parallelism.
+/// Deliberately a small absolute number rather than a multiple of anything the device reports:
+/// reading `maxComputeWorkGroupCount` or an SM count here would make the dispatch geometry
+/// device-dependent, and a shape that behaves differently per vendor is not a shape we can test.
+const GEMV_MIN_WORKGROUPS: u64 = 64;
+
+/// Fewest quantisation blocks each invocation should reduce. Below this the `log2(wg)` barriers of
+/// the tree cost more than the arithmetic they synchronise.
+const GEMV_MIN_BLOCKS_PER_INVOCATION: u64 = 2;
+
+/// Workgroup size for the reduction, derived from the reduction extent and the **floor**.
 ///
-/// The smallest power of two that covers `blocks_per_col`, clamped to `[32, 256]`. Three
-/// deliberate properties:
+/// The largest power of two in `[32, 256]` that **divides** `blocks_per_col` and still leaves each
+/// invocation at least [`GEMV_MIN_BLOCKS_PER_INVOCATION`] blocks; when nothing divides it, the
+/// smallest power of two that covers it, as before. Four deliberate properties:
 ///
 /// * The upper clamp is 256 because that is the `maxComputeWorkGroupInvocations` value the
 ///   baseline capability set guarantees (`OP_COVERAGE.md` §7.2). It is *not* the larger figure
@@ -264,14 +282,56 @@ fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::
 /// * The lower clamp is 32 rather than 1 so a short reduction still fills at least one subgroup on
 ///   every vendor. That is a *performance* floor expressed without ever reading `subgroupSize`,
 ///   which is not guaranteed to be any particular value.
+/// * **Divides, rather than covers.** The old rule picked the smallest power of two ≥
+///   `blocks_per_col`, so `K = 3072` (96 blocks) ran 128 invocations of which 32 had no block at
+///   all — they contributed nothing and still had to arrive at all seven barriers. Dividing gives
+///   96 = 32 × 3, every invocation with the same amount of work.
 ///
-/// Shared memory is fixed at 256 floats = 1 KiB regardless, well inside the 16 KiB floor.
+/// Shared memory is fixed at [`GEMV_RED_WORDS`] floats = 4 KiB regardless, well inside the 16 KiB
+/// floor.
 pub fn gemv_workgroup(blocks_per_col: u64) -> u32 {
+    let mut best: Option<u32> = None;
+    let mut wg: u32 = 32;
+    while wg <= 256 {
+        let w = u64::from(wg);
+        if blocks_per_col % w == 0 && blocks_per_col / w >= GEMV_MIN_BLOCKS_PER_INVOCATION {
+            best = Some(wg);
+        }
+        wg *= 2;
+    }
+    if let Some(wg) = best {
+        return wg;
+    }
     let mut wg: u32 = 32;
     while (wg as u64) < blocks_per_col && wg < 256 {
         wg *= 2;
     }
     wg
+}
+
+/// Output columns one workgroup computes (`QB_COLS`), the tile that amortises the activation row.
+///
+/// Every workgroup streams the whole of `A[m][0..K)`. With one column per workgroup that row is
+/// re-read `N` times — as *load instructions*, whatever the cache does with the bytes — and the
+/// reduction tree with its `log2(wg)` barriers is paid once per output element. Both costs divide
+/// by the tile width, so this wants to be as large as the constraints allow:
+///
+/// * `wg * cols <= GEMV_RED_WORDS`, because the tile reduces inside one shared array;
+/// * `cols <= GEMV_MAX_COLS`, the shader's register budget;
+/// * `cols` divides `N`, so the paired non-atomic store path is always taken and there is no tail
+///   tile — a tail tile is correct (the shader redirects out-of-range columns and re-checks `N` at
+///   the store) but it is a second code path executed once per dispatch, and one that only the
+///   awkward shapes would ever exercise;
+/// * at least [`GEMV_MIN_WORKGROUPS`] workgroups survive, so a narrow output does not trade
+///   parallelism for reuse.
+///
+/// Halving preserves the power of two, and therefore the evenness the paired store needs.
+pub fn gemv_cols(n: u64, wg: u32) -> u32 {
+    let mut cols = GEMV_MAX_COLS.min((GEMV_RED_WORDS / wg).max(1));
+    while cols > 1 && (n % u64::from(cols) != 0 || n / u64::from(cols) < GEMV_MIN_WORKGROUPS) {
+        cols /= 2;
+    }
+    cols
 }
 
 /// Translate `MatMulNBits` into one block-dequantising GEMV dispatch.
@@ -353,6 +413,7 @@ fn matmul_nbits_gemv(
     let y = ctx.bind_output(out, TensorDesc::new(out_dtype, out_shape))?;
 
     let wg = gemv_workgroup(blocks_per_col as u64);
+    let cols = gemv_cols(n as u64, wg);
     let mut push = Vec::with_capacity(16);
     for v in [m_total, k, n, blocks_per_col] {
         push.extend_from_slice(&(v as u32).to_le_bytes());
@@ -360,10 +421,10 @@ fn matmul_nbits_gemv(
 
     ctx.dispatch(KernelRequest {
         shader,
-        spec_constants: vec![wg, bits as u32, block_size as u32, u32::from(has_zp)],
+        spec_constants: vec![wg, bits as u32, block_size as u32, u32::from(has_zp), cols],
         push_constants: push,
         bindings: vec![a, b, scales, zp, y],
-        workgroups: [n as u32, m_total as u32, 1],
+        workgroups: [(n as u32).div_ceil(cols), m_total as u32, 1],
     })
 }
 
@@ -730,23 +791,75 @@ mod tests {
     /// The workgroup size is derived from the guaranteed floor, never from a local device.
     #[test]
     fn gemv_workgroup_respects_the_floor() {
-        // K=3072 at block 32 -> 96 blocks -> 128 threads, the smallest power of two that covers it.
-        assert_eq!(gemv_workgroup(96), 128);
-        // K=8192 at block 32 -> 256 blocks -> the 256-invocation floor of §7.2, not the 1024 both
-        // development GPUs actually report.
-        assert_eq!(gemv_workgroup(256), 256);
+        // K=3072 at block 32 -> 96 blocks. 96 = 32 x 3, so 32 invocations each reduce three
+        // blocks. The old rule picked 128 — the smallest power of two that COVERS 96 — and left
+        // 32 invocations with no block at all, arriving at all seven barriers to contribute zero.
+        assert_eq!(gemv_workgroup(96), 128 / 4);
+        assert_eq!(96 % gemv_workgroup(96) as u64, 0, "divides, never covers");
+        // K=8192 at block 32 -> 256 blocks -> 128, the largest divisor that still leaves two
+        // blocks per invocation. Never 256: that is one block each, all barrier and no work.
+        assert_eq!(gemv_workgroup(256), 128);
         assert_eq!(
             gemv_workgroup(4096),
             256,
-            "never exceeds the guaranteed floor"
+            "never exceeds the guaranteed floor of §7.2, not the 1024 both dev GPUs report"
         );
         // A short reduction still fills a subgroup on every vendor without reading `subgroupSize`.
         assert_eq!(gemv_workgroup(1), 32);
+        // Nothing divides 7 usefully, so the covering rule is the fallback, not the default.
+        assert_eq!(gemv_workgroup(7), 32);
         for blocks in [1u64, 7, 96, 128, 255, 256, 10_000] {
             let wg = gemv_workgroup(blocks);
             assert!((32..=256).contains(&wg));
             assert!(wg.is_power_of_two(), "the tree reduction halves the stride");
         }
+    }
+
+    /// The column tile is what amortises the activation row; the shared array is what bounds it.
+    #[test]
+    fn gemv_cols_never_outruns_the_shared_array_or_starves_the_machine() {
+        // The four Phi-3.5 shapes. Every one takes the widest tile the shader can hold.
+        for (n, k) in [
+            (9216u64, 3072u64),
+            (3072, 3072),
+            (16384, 3072),
+            (3072, 8192),
+        ] {
+            let wg = gemv_workgroup(k / 32);
+            let cols = gemv_cols(n, wg);
+            assert_eq!(cols, 8, "N={n} K={k} should take the full tile");
+            assert!(
+                wg * cols <= GEMV_RED_WORDS,
+                "N={n} K={k}: {wg} x {cols} would overrun the {GEMV_RED_WORDS}-float `red` array"
+            );
+            assert_eq!(n % u64::from(cols), 0, "no tail tile for a Phi-3.5 shape");
+        }
+        // The invariant, over a grid that includes the awkward shapes.
+        for n in [1u64, 2, 3, 7, 64, 100, 512, 3072, 32_064] {
+            for bpc in [1u64, 7, 96, 256, 4096] {
+                let wg = gemv_workgroup(bpc);
+                let cols = gemv_cols(n, wg);
+                assert!(cols >= 1 && cols <= GEMV_MAX_COLS);
+                assert!(
+                    cols.is_power_of_two(),
+                    "the paired store needs an even tile"
+                );
+                assert!(
+                    wg * cols <= GEMV_RED_WORDS,
+                    "n={n} bpc={bpc}: {wg} x {cols} overruns `red`"
+                );
+                assert!(
+                    cols == 1 || n / u64::from(cols) >= GEMV_MIN_WORKGROUPS,
+                    "n={n}: tiling to {cols} left too few workgroups"
+                );
+            }
+        }
+        // A narrow output keeps its parallelism rather than trading it for reuse.
+        assert_eq!(
+            gemv_cols(64, 32),
+            1,
+            "64 columns cannot afford an 8-wide tile"
+        );
     }
 
     /// The pack transform is pure and total; assert the shape of what it produces rather than
