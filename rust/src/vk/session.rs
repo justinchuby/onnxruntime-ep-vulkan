@@ -1685,22 +1685,30 @@ impl VulkanSession {
             shader_names.push(eff_shader);
             desc_pools.push(desc_pool);
 
-            // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier on all
-            // intermediate buffers after each dispatch (except the last). This ensures that
-            // a later kernel in the same island sees the writes from this kernel.
+            // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each
+            // dispatch (except the last), so a later kernel in the same island sees this one's
+            // writes.
+            //
+            // This is **one global memory barrier**, not one per intermediate buffer. Measured on
+            // phi-3.5: the island carries 355 kernels and 417 intermediate buffers, so the
+            // per-buffer form emitted 147,618 `VkBufferMemoryBarrier`s per inference — each one
+            // constructed, heap-allocated into a fresh `Vec`, and walked by the driver, on the
+            // host, while the GPU sat idle. That accounted for essentially all of the unnamed
+            // time inside `vulkan.record`, which was costing more host time than the entire GPU
+            // execution it was describing.
+            //
+            // The global barrier is strictly more conservative — it makes every shader write
+            // visible to every shader read, a superset of the 417 named buffers — so it cannot
+            // permit an overlap the per-buffer form forbade and cannot introduce a race. And it
+            // gives up no real parallelism here: every kernel in the island reads what an earlier
+            // one wrote, so the dependency set was effectively total already.
             if !gpu_intermediates.is_empty() && ki + 1 < kernels.len() {
-                let inter_deps: Vec<BufferDep> = gpu_intermediates
-                    .iter()
-                    .map(|b| BufferDep {
-                        buffer: b.buffer,
-                        offset: 0,
-                        size: vk::WHOLE_SIZE,
-                        src: Access::ShaderWrite,
-                        dst: Access::ShaderRead,
-                    })
-                    .collect();
-                // SAFETY: cmd is recording; all intermediate buffers are live.
-                unsafe { self.device.barriers().buffer_deps(cmd, &inter_deps) };
+                // SAFETY: cmd is recording.
+                unsafe {
+                    self.device
+                        .barriers()
+                        .memory_dep(cmd, Access::ShaderWrite, Access::ShaderRead)
+                };
             }
         }
 
