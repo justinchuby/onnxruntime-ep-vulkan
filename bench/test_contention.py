@@ -647,6 +647,14 @@ def _good_record(**over):
         "providers": ["VulkanExecutionProvider", "CPUExecutionProvider"],
         "claimed_nodes": 412,
         "model_output_equivalence": "MATCH",
+        # Since S10.0's third metric amendment a bare MATCH token is not admissible: the verdict
+        # must carry the executed_by frame parsed out of ORT's own profile. One
+        # VulkanExecutionProvider Node event is one *fused* island covering many graph nodes.
+        "model_output_equivalence_record": {
+            "verdict": "MATCH",
+            "executed_by": {"VulkanExecutionProvider": 1, "CPUExecutionProvider": 30},
+            "counts_what": "ORT profile Node events per provider (fused islands, not graph nodes)",
+        },
         "device_identity": {"verdict": "MATCH"},
         "machine_quiescence": {"verdict": "QUIET"},
         "measurement_validity": {"ok": True},
@@ -690,6 +698,72 @@ def test_absence_of_a_check_is_not_a_pass():
 def test_unmeasured_equivalence_blocks_the_number():
     ok, why = admissible._gate_equivalence(_good_record(model_output_equivalence="UNMEASURED"))
     assert ok is False and "UNMEASURED is the default" in why
+
+
+# ---------------------------------------------------------------------------------------------
+# S10.0 THIRD METRIC AMENDMENT -- the gate must NAME the token, not collapse it to "not MATCH".
+#
+# The vocabulary is set by tests/ops/_verdict.py; this file is a consumer. The rule Morpheus
+# wrote is a disclosure obligation: the wall-clock ratio must PUBLISH `UNATTRIBUTED` when that
+# is the state, because "non-MATCH" tells a reader the kernels might be wrong while
+# `UNATTRIBUTED` tells them the kernels did not run and the number is a CPU number.
+# ---------------------------------------------------------------------------------------------
+
+def test_unattributed_is_refused_and_is_not_reported_as_divergent():
+    ok, why = admissible._gate_equivalence(
+        _good_record(model_output_equivalence="UNATTRIBUTED",
+                     model_output_equivalence_record={
+                         "verdict": "UNATTRIBUTED",
+                         "executed_by": {"CPUExecutionProvider": 30},
+                     }))
+    assert ok is False
+    assert "UNATTRIBUTED" in why, "the token must be published, not paraphrased"
+    assert "NOT DIVERGENT" in why, (
+        "a run we could not attribute is not a run that disagreed; if this gate reports it as a "
+        "correctness failure the kernel authors get paged for a fallback bug")
+    assert "NOT UNMEASURED" in why, (
+        "UNMEASURED means the comparison never ran; UNATTRIBUTED means it ran, agreed, and was "
+        "about the wrong world -- which is the more dangerous of the two")
+
+
+def test_divergent_and_unattributed_do_not_produce_the_same_reason():
+    """Mutation control for the test above: a gate that returned one generic string would
+    satisfy any single-token assertion. The two reasons must be distinguishable texts."""
+    _, unattr = admissible._gate_equivalence(
+        _good_record(model_output_equivalence="UNATTRIBUTED"))
+    _, diverg = admissible._gate_equivalence(
+        _good_record(model_output_equivalence="DIVERGENT"))
+    _, unmeas = admissible._gate_equivalence(
+        _good_record(model_output_equivalence="UNMEASURED"))
+    assert len({unattr, diverg, unmeas}) == 3, "three states, three reasons"
+    assert "wrong answer" in diverg and "executed zero nodes" in unattr
+
+
+def test_split_frame_is_refused_as_an_instrument_disagreement():
+    ok, why = admissible._gate_equivalence(
+        _good_record(model_output_equivalence="SPLIT-FRAME"))
+    assert ok is False and "SPLIT-FRAME" in why and "disagree" in why
+
+
+def test_a_match_with_no_executed_by_frame_is_refused():
+    """The shape every verdict in this project had before 2026-07-31 -- and one of them was a
+    CPU-vs-CPU comparison that read MATCH."""
+    rec = _good_record()
+    rec.pop("model_output_equivalence_record")
+    ok, why = admissible._gate_equivalence(rec)
+    assert ok is False and "executed_by" in why
+
+
+def test_a_match_at_zero_own_provider_count_is_refused():
+    """MATCH is unrepresentable at a zero own-provider count. The gate is the last of three
+    lines of defence -- the first two are in tests/ops/_verdict.py, where MATCH cannot even be
+    constructed -- but a stored artifact is re-read long after that process exited."""
+    ok, why = admissible._gate_equivalence(
+        _good_record(model_output_equivalence_record={
+            "verdict": "MATCH",
+            "executed_by": {"CPUExecutionProvider": 30},
+        }))
+    assert ok is False and "zero nodes attributed" in why and "UNATTRIBUTED" in why
 
 
 def test_contended_machine_blocks_the_number():

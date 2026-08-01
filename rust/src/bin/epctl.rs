@@ -286,6 +286,20 @@ enum CounterVerdict {
     /// on the correctness question: one because the process crashed, the other because the
     /// comparison step was never run. Neither may be read as "the EP is correct."
     EquivalenceUnmeasured { dispatches: u64 },
+    /// A comparison was performed and **this EP executed zero nodes**. Exit 1.
+    ///
+    /// Added 2026-07-31 (§10.0 third metric amendment). Deliberately a *different variant*
+    /// from [`CounterVerdict::EquivalenceDivergent`] and a *different message*, because
+    /// merging them loses the whole finding: `DIVERGENT` says our kernels computed the
+    /// wrong answer, `UNATTRIBUTED` says our kernels did not run and the comparison was
+    /// CPU-vs-CPU. Exit 1 rather than 3 because this is not "no answer" — the run answered,
+    /// and the answer was about something else.
+    EquivalenceUnattributed { dispatches: u64 },
+    /// The two attribution witnesses disagree about whether this EP ran. Exit 1.
+    ///
+    /// One of the profile and our own dispatch counter is lying and we do not know which,
+    /// so nothing may be reported (§10.0 third amendment, clause 2).
+    EquivalenceSplitFrame { dispatches: u64 },
 }
 
 /// Pull one unsigned integer field out of the counters JSON.
@@ -425,9 +439,24 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
     // R9: a named instrument that does not exist is exactly the thing R9 warns about. UNMEASURED
     // exit 3 is the instrument that would go red if the comparison step were removed.
     match json_str(&doc, counters::EQUIVALENCE_KEY) {
-        Some(s) if s == counters::EQUIVALENCE_MATCH => CounterVerdict::Pass { dispatches },
+        Some(s) if s == counters::EQUIVALENCE_MATCH => {
+            // §10.0 third amendment: MATCH must carry its executor. A MATCH token with no
+            // `executed_by` frame is the 2026-07-30 specimen — arithmetically correct and
+            // about a different world — so the gate refuses to pass it.
+            if doc.contains(counters::EQUIVALENCE_RECORD_KEY) && doc.contains("\"executed_by\"") {
+                CounterVerdict::Pass { dispatches }
+            } else {
+                CounterVerdict::EquivalenceUnattributed { dispatches }
+            }
+        }
         Some(s) if s == counters::EQUIVALENCE_DIVERGENT => {
             CounterVerdict::EquivalenceDivergent { dispatches }
+        }
+        Some(s) if s == counters::EQUIVALENCE_UNATTRIBUTED => {
+            CounterVerdict::EquivalenceUnattributed { dispatches }
+        }
+        Some(s) if s == counters::EQUIVALENCE_SPLIT_FRAME => {
+            CounterVerdict::EquivalenceSplitFrame { dispatches }
         }
         // Absent or unknown value both map to UNMEASURED per R7: absence of an instrument must
         // not read as a negative result. `None` here means the comparison never ran; an unknown
@@ -698,6 +727,41 @@ fn check_counters_with(
                  env var is not set, no verdict can be written."
             );
             std::process::ExitCode::from(3)
+        }
+        CounterVerdict::EquivalenceUnattributed { dispatches } => {
+            eprintln!(
+                "epctl: FAIL — model_output_equivalence = UNATTRIBUTED ({dispatches} dispatch(es) \
+                 recorded by our own counter).\n\
+                 \x20 A CPU-vs-CPU comparison was performed and this EP executed ZERO nodes in \
+                 the run that produced the outputs. The arithmetic is correct and it is about a \
+                 different world (§10.0.1 R12).\n\
+                 \x20 THIS IS NOT `DIVERGENT`. DIVERGENT says our kernels computed the wrong \
+                 answer; UNATTRIBUTED says our kernels did not run, so the answer is not about \
+                 them. Different owners, different fixes, different next questions — route this \
+                 to whoever owns the run-time fallback, never to the kernel authors.\n\
+                 \x20 Typical cause: ORT printed 'EP_FAIL ... Falling back to \
+                 CPUExecutionProvider' inside run() and re-ran the whole graph on CPU without \
+                 raising. get_providers() still lists VulkanExecutionProvider because the provider \
+                 list is fixed at session-create time.\n\
+                 \x20 Also reported here: a `MATCH` token carrying no `executed_by` frame. Every \
+                 MATCH recorded before 2026-07-31 had that shape, and it is exactly the specimen \
+                 the third metric amendment was written about. The triple, the wall-clock ratio \
+                 and any correctness claim are void."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::EquivalenceSplitFrame { dispatches } => {
+            eprintln!(
+                "epctl: FAIL — model_output_equivalence = SPLIT-FRAME ({dispatches} dispatch(es) \
+                 by our own counter).\n\
+                 \x20 The two attribution witnesses disagree about whether this EP ran: ORT's \
+                 profile (an instrument we do not own) and `dispatches_executed` (ours) cannot \
+                 both be right. One of the two is lying and we do not yet know which.\n\
+                 \x20 §10.0 third amendment, clause 2: two witnesses that can only ever agree are \
+                 one witness — so their disagreement is a hard red, not a warning. Nothing may be \
+                 reported from this run: not the triple, not the ratio, not a correctness claim."
+            );
+            std::process::ExitCode::from(1)
         }
     }
 }
@@ -1080,7 +1144,28 @@ mod tests {
 
     /// A snapshot carrying `model_output_equivalence = MATCH`, as a correctly-run comparison gate
     /// would write it. This is the only state that produces `CounterVerdict::Pass`.
+    ///
+    /// Since §10.0's third metric amendment (2026-07-31) a bare `MATCH` token is **not**
+    /// sufficient: it must carry the `model_output_equivalence_record` object with the
+    /// `executed_by` frame the Python harness parses out of ORT's own profile. A `MATCH`
+    /// with no frame is the 2026-07-30 specimen — correct arithmetic about a different
+    /// world — so this helper writes the frame that a real attributed run writes.
     fn snapshot_match(dispatches: u64) -> String {
+        let mut doc = snapshot_match_without_frame(dispatches);
+        let cut = doc.rfind('}').expect("json");
+        doc.truncate(cut);
+        doc = doc.trim_end().trim_end_matches('\n').to_string();
+        format!(
+            "{doc},\n  \"{}\": {{\n    \"verdict\": \"MATCH\",\n    \"executed_by\": {{ \
+             \"VulkanExecutionProvider\": 1, \"CPUExecutionProvider\": 10 }},\n    \
+             \"attribution_source\": \"ort_profile\"\n  }}\n}}\n",
+            counters::EQUIVALENCE_RECORD_KEY
+        )
+    }
+
+    /// A `MATCH` token with no attribution record — the shape every verdict this project
+    /// recorded before 2026-07-31 had. The gate must refuse it.
+    fn snapshot_match_without_frame(dispatches: u64) -> String {
         onnxruntime_vulkan_ep::counters::VulkanEpCounters {
             struct_size: 0,
             abi_version: counters::COUNTERS_ABI_VERSION,
@@ -1485,6 +1570,113 @@ mod tests {
         // This is the current state of the project: Phi-3.5 with 161 MatMulNBits dispatched,
         // compute_failures:0, vk_range=[0,0] vs cpu_range=[-13, 13]. The test that names this
         // state is test_phi35_vulkan_matches_cpu_logits (xfail strict=True).
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §10.0 THIRD METRIC AMENDMENT — UNATTRIBUTED is its own state and is not DIVERGENT.
+    ///
+    /// The specimen: on 2026-07-30 ORT fell back to CPU inside `run()`, the comparison gate
+    /// compared a CPU run against a CPU run, and every gate in the lane passed. The verdict
+    /// was wired, invoked, correctly named and arithmetically correct — about a run in which
+    /// this EP contributed zero nodes.
+    #[test]
+    fn unattributed_is_a_distinct_red_from_divergent() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-unattributed-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let f = dir.join("unattributed.json");
+        let doc = onnxruntime_vulkan_ep::counters::VulkanEpCounters {
+            struct_size: 0,
+            abi_version: counters::COUNTERS_ABI_VERSION,
+            compile_calls: 1,
+            subgraphs_live: 1,
+            subgraphs_stub: 0,
+            compute_calls: 30,
+            compute_failures: 0,
+            dispatches_executed: 30,
+            viable_islands_retained: 0,
+        }
+        .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
+        std::fs::write(&f, doc).expect("write");
+
+        let verdict = read_counters(f.to_str().unwrap(), 1);
+        assert_eq!(
+            verdict,
+            CounterVerdict::EquivalenceUnattributed { dispatches: 30 },
+            "a comparison performed at zero own-provider count is UNATTRIBUTED"
+        );
+        assert_ne!(
+            verdict,
+            CounterVerdict::EquivalenceDivergent { dispatches: 30 },
+            "merging UNATTRIBUTED into DIVERGENT loses the whole finding: one says our \
+             kernels are wrong, the other says our kernels did not run"
+        );
+        assert_ne!(
+            verdict,
+            CounterVerdict::EquivalenceUnmeasured { dispatches: 30 },
+            "UNATTRIBUTED is not UNMEASURED either: the comparison DID run"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §10.0 third amendment clause 3, at the gate: a `MATCH` with no `executed_by` frame is
+    /// the shape every verdict this project recorded before 2026-07-31, and it does not pass.
+    #[test]
+    fn match_without_an_executor_frame_does_not_pass() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-match-frame-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let bare = dir.join("bare_match.json");
+        std::fs::write(&bare, snapshot_match_without_frame(30)).expect("write");
+        assert_eq!(
+            read_counters(bare.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceUnattributed { dispatches: 30 },
+            "a verdict without its executor is a value from a world it has not identified"
+        );
+
+        // Paired control: the same snapshot WITH the frame passes. Without this, the check
+        // above would also hold for a gate that never passes anything.
+        let framed = dir.join("framed_match.json");
+        std::fs::write(&framed, snapshot_match(30)).expect("write");
+        assert_eq!(
+            read_counters(framed.to_str().unwrap(), 1),
+            CounterVerdict::Pass { dispatches: 30 }
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Clause 2: two witnesses that can only ever agree are one witness, so their
+    /// disagreement must have a token of its own.
+    #[test]
+    fn split_frame_is_its_own_state() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/epctl-split-frame-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let f = dir.join("split.json");
+        let doc = onnxruntime_vulkan_ep::counters::VulkanEpCounters {
+            struct_size: 0,
+            abi_version: counters::COUNTERS_ABI_VERSION,
+            compile_calls: 1,
+            subgraphs_live: 1,
+            subgraphs_stub: 0,
+            compute_calls: 354,
+            compute_failures: 0,
+            dispatches_executed: 354,
+            viable_islands_retained: 0,
+        }
+        .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
+        std::fs::write(&f, doc).expect("write");
+
+        assert_eq!(
+            read_counters(f.to_str().unwrap(), 1),
+            CounterVerdict::EquivalenceSplitFrame { dispatches: 354 }
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

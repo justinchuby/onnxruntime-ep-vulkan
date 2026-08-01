@@ -108,6 +108,8 @@ import numpy as np
 import onnx_ir as ir
 import onnxruntime as ort
 
+import _verdict
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -868,16 +870,7 @@ def count_vulkan_executions_from_profile(events: list[dict]) -> int:
     checks at session-create time (which is fixed before ``run()``), this function checks
     what actually executed during ``run()``.
     """
-    count = 0
-    for ev in events:
-        if ev.get("cat") != "Node":
-            continue
-        args = ev.get("args")
-        if not isinstance(args, dict):
-            continue
-        if args.get("provider") == EP_NAME:
-            count += 1
-    return count
+    return _verdict.tally_providers(events).get(EP_NAME, 0)
 
 
 def describe_vulkan_execution_count(count: int) -> str:
@@ -947,152 +940,88 @@ def assert_vulkan_executed_runtime(profile_path: "str | os.PathLike[str]") -> in
     AssertionError
         Fallback detected — the EP ran zero fused islands at run time.
     RuntimeError
-        Guard instrument broken — trace file unreadable or unparseable.
+        Guard instrument broken — trace file unreadable or unparseable.  Concretely a
+        :class:`_verdict.InstrumentError`, which subclasses ``RuntimeError`` so that
+        callers written against the old signature keep working.
     """
-    path = Path(profile_path)
-    events: list
-    try:
-        with open(path) as fh:
-            events = json.load(fh)
-    except FileNotFoundError:
-        raise RuntimeError(
-            f"[Guard D instrument failure] Profiling trace not found: {path}\n"
-            "sess.end_profiling() should have created this file.  Check that profiling\n"
-            "was enabled on SessionOptions (enable_profiling=True) before session creation."
-        ) from None
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"[Guard D instrument failure] Profiling trace at {path} is not valid JSON: {exc}\n"
-            "The file may be truncated (session closed before end_profiling) or corrupt."
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(
-            f"[Guard D instrument failure] Could not read profiling trace {path}: {exc}"
-        ) from exc
-    finally:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    return attribution_from_profile(profile_path).assert_executed()
 
-    vulkan_count = count_vulkan_executions_from_profile(events)
 
-    # Collect which providers DID execute for the error message.
-    providers_seen = {
-        e["args"]["provider"]
-        for e in events
-        if e.get("cat") == "Node"
-        and isinstance(e.get("args"), dict)
-        and "provider" in e["args"]
-    }
+def attribution_from_profile(
+    profile_path: "str | os.PathLike[str]",
+) -> "_verdict.ExecutionAttribution":
+    """Guard D's *observation*, without its assertion — §10.0 third amendment, clause 5.
 
-    # AssertionError = fallback detected (real finding, not a harness bug).
-    assert vulkan_count > 0, (
-        f"[Guard D: fallback detected] {EP_NAME} executed ZERO fused islands at run time.\n"
-        f"Providers that did execute: {sorted(providers_seen) or 'none'}.\n"
-        "\n"
-        "WHAT WAS COUNTED (R11): fused-island executions, not graph nodes.  A healthy\n"
-        "Phi-3.5 run reports 1 — one island covering 354 of 364 graph nodes.  Zero is the\n"
-        "only value that is conclusive, and this is it.\n"
-        "\n"
-        "ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' during sess.run()\n"
-        "and re-runs the entire graph on CPU without raising an exception.  The comparison\n"
-        "gate then compares CPU output against CPU output and reports MATCH vacuously.\n"
-        "\n"
-        "Known trigger: Allocator::alloc returns None for size==0 inputs (e.g. KV-cache\n"
-        "past_key_values with seq_len=0 on first-token prefill).  Fix: zero-size allocation\n"
-        "must succeed and return a valid zero-length buffer.  Owner: Switch (alloc.rs).\n"
-        "\n"
-        "This is a vacuous-pass — the verdict produced by this run is not about the Vulkan EP."
-    )
-    return vulkan_count
+    This is the function callers should use when they are about to emit a verdict: the
+    observation becomes the verdict's constructor argument, so the guard and the verdict
+    stop being separable.  ``assert_vulkan_executed_runtime`` is the same observation with
+    the convenience assertion applied.
+    """
+    return _verdict.ExecutionAttribution.from_profile(profile_path)
 
 
 # ---------------------------------------------------------------------------
 # model_output_equivalence verdict — §9.1.3 / §10.0 (Morpheus ruling)
+#
+# The verdict is a RECORD, not a string, and it is DERIVED, not chosen.  The whole
+# mechanism lives in ``_verdict.py``; these names are re-exported so existing call sites
+# and test modules keep one import.  See ``_verdict.py``'s module docstring for the five
+# binding clauses and the vocabulary table.
 # ---------------------------------------------------------------------------
-#: The three valid values for the `model_output_equivalence` field in the counters JSON.
-#: Written by :func:`write_equivalence_verdict`; read by ``epctl --check-counters``.
-#: See ``rust/src/counters.rs`` for the mirrored constants on the Rust side.
-EQUIVALENCE_MATCH: str = "MATCH"
-EQUIVALENCE_DIVERGENT: str = "DIVERGENT"
-EQUIVALENCE_UNMEASURED: str = "UNMEASURED"
+
+EQUIVALENCE_MATCH: str = _verdict.VERDICT_MATCH
+EQUIVALENCE_DIVERGENT: str = _verdict.VERDICT_DIVERGENT
+EQUIVALENCE_UNMEASURED: str = _verdict.VERDICT_UNMEASURED
+#: A comparison was performed and this EP executed zero nodes.  NOT ``DIVERGENT``.
+EQUIVALENCE_UNATTRIBUTED: str = _verdict.VERDICT_UNATTRIBUTED
+#: The profile witness and the counters witness disagree about whether this EP ran.
+EQUIVALENCE_SPLIT_FRAME: str = _verdict.VERDICT_SPLIT_FRAME
+#: Every token a reader may meet in `model_output_equivalence`.  One vocabulary, not two:
+#: mirrored in rust/src/counters.rs, rust/src/bin/epctl.rs and bench/admissible.py.
+EQUIVALENCE_VERDICTS: tuple[str, ...] = _verdict.VERDICTS
+#: JSON keys in the counters artifact: the token (string) and the full record (object).
+EQUIVALENCE_KEY: str = _verdict.EQUIVALENCE_KEY
+EQUIVALENCE_RECORD_KEY: str = _verdict.EQUIVALENCE_RECORD_KEY
+
+COMPARISON_AGREE: str = _verdict.COMPARISON_AGREE
+COMPARISON_DISAGREE: str = _verdict.COMPARISON_DISAGREE
+COMPARISON_NOT_PERFORMED: str = _verdict.COMPARISON_NOT_PERFORMED
+
+ExecutionAttribution = _verdict.ExecutionAttribution
+EquivalenceVerdict = _verdict.EquivalenceVerdict
+AttributedRunSeries = _verdict.AttributedRunSeries
+InstrumentError = _verdict.InstrumentError
+write_equivalence_record = _verdict.write_equivalence_record
+read_equivalence_record = _verdict.read_equivalence_record
+read_counters_dispatches = _verdict.read_counters_dispatches
+find_fatal_log_lines = _verdict.find_fatal_log_lines
 
 
-def write_equivalence_verdict(counters_path: "str | os.PathLike[str]", verdict: str) -> None:
-    """Write *verdict* into the `model_output_equivalence` field of the counters JSON at *path*.
+def write_unmeasured_verdict(
+    counters_path: "str | os.PathLike[str] | None",
+    reason: str,
+    *,
+    device_index: str = "",
+    artifact: str = "",
+) -> None:
+    """Best-effort ``UNMEASURED`` write for the paths that bail out before comparing.
 
-    The EP writes ``"model_output_equivalence": "UNMEASURED"`` by default at session teardown
-    (``dump_observations_if_requested``).  The Python comparison gate — which has access to the
-    CPU oracle — calls this function to upgrade the field to MATCH or DIVERGENT before teardown
-    runs (i.e., before the session is garbage-collected).  Teardown reads and preserves the
-    verdict written here; it does not overwrite it.
-
-    TIMING REQUIREMENT
-    ==================
-    Call this function **while the VulkanEP session is still alive** (before it goes out of
-    scope or is explicitly closed).  Teardown is triggered by the session's ``__del__`` method,
-    not by ``sess.run()`` returning.  In practice this means:
-
-      1. ``sess = ort.InferenceSession(...)``
-      2. ``vk_out = sess.run(...)``
-      3. Compute verdict (MATCH / DIVERGENT) from ``vk_out`` vs CPU oracle.
-      4. ``write_equivalence_verdict(counters_path, verdict)``   ← here
-      5. Run assertions (which may raise xfail or pytest.fail).
-      6. ``del sess`` / end of test function / GC.
-
-    Steps 4 and 5 are ordered so that the verdict is always written even when the assertion
-    will fail (e.g., in an xfail test that currently expects DIVERGENT).
-
-    WHAT IT DOES
-    ============
-    Reads the existing JSON from *counters_path*, replaces the value of
-    ``model_output_equivalence``, and writes the result back.  If the field is absent (old
-    snapshot format), it splices it in before the closing ``}``.  If the file does not exist,
-    the function raises ``FileNotFoundError`` — the caller must ensure the EP was configured to
-    write counters (``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE`` set) before calling this.
-
-    R9 NOTE
-    =======
-    This function is the **instrument** that makes the claim "MATCH means outputs agree"
-    falsifiable.  Its correctness is assumed (no automated Rust test covers the JSON write path
-    from Python).  That is the one residual gap declared in the R9 self-check.
-
-    Parameters
-    ----------
-    counters_path:
-        Path to the counters JSON file, as set in ``ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE``.
-    verdict:
-        One of ``EQUIVALENCE_MATCH``, ``EQUIVALENCE_DIVERGENT``, or ``EQUIVALENCE_UNMEASURED``.
+    Swallows write failures deliberately: these call sites are already failing for a
+    different, better-diagnosed reason, and an instrument outage in the *recorder* must
+    not overwrite the finding that is on its way up the stack (R13 — an instrument error
+    never counts as a detection, and it must not erase one either).
     """
-    import json
-    import os
-    import re
-
-    path = str(counters_path)
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"write_equivalence_verdict: counters file not found: {path}\n"
-            "Is ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE set? Did the EP write a snapshot?"
+    if not counters_path:
+        return
+    try:
+        _verdict.write_equivalence_record(
+            counters_path,
+            _verdict.EquivalenceVerdict.unmeasured(
+                reason=reason, artifact=artifact, device_index=device_index
+            ),
         )
-
-    with open(path, encoding="utf-8") as fh:
-        doc = fh.read()
-
-    key = "model_output_equivalence"
-    # Replace existing value (handles UNMEASURED → MATCH/DIVERGENT upgrade).
-    pattern = rf'("{re.escape(key)}")\s*:\s*"[^"]*"'
-    if re.search(pattern, doc):
-        doc = re.sub(pattern, rf'\1: "{verdict}"', doc)
-    else:
-        # Field absent (old snapshot without the field): splice before closing brace.
-        cut = doc.rfind("}")
-        if cut == -1:
-            raise ValueError(f"write_equivalence_verdict: {path} does not look like JSON (no '}}').")
-        doc = doc[:cut].rstrip().rstrip(",") + f',\n  "{key}": "{verdict}"\n}}\n'
-
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(doc)
+    except Exception:  # noqa: BLE001 - see docstring
+        pass
 
 
 # ---------------------------------------------------------------------------

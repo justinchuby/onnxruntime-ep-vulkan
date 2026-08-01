@@ -33,7 +33,8 @@
     "transfer.rs::device_buffer_for"
   ],
   "ambiguous": [
-    "counters.rs::extract_equivalence"
+    "counters.rs::extract_equivalence",
+    "counters.rs::extract_equivalence_record"
   ],
   "harness_uninvoked": [
     "tests/ops/_models.py::assert_qdq_reference_oracle_safe"
@@ -45,7 +46,9 @@
     "tests/ops/_models.py::assert_vulkan_does_not_claim",
     "tests/ops/_models.py::check",
     "tests/ops/_models.py::count_vulkan_executions_from_profile",
-    "tests/ops/_models.py::write_equivalence_verdict"
+    "tests/ops/_models.py::write_unmeasured_verdict",
+    "tests/ops/_verdict.py::classify_plant_run",
+    "tests/ops/_verdict.py::classify_validation_probe"
   ],
   "hand": {
     "harness_notes": [
@@ -73,11 +76,27 @@
         "owner": "trinity"
       },
       {
+        "instrument": "tests/ops/_models.py::write_unmeasured_verdict",
+        "state": "UNFALSIFIED, and it must stay that way \u2014 baselined deliberately, not by neglect",
+        "artifact": "the model_output_equivalence / model_output_equivalence_record pair in the counters JSON, written from the Guard-A and instrument-outage bail-out paths of test_phi35_vulkan_matches_cpu_logits",
+        "excludes": "nothing it claims. It is a WRITER, not a guard, and the census's screening rule (called inside pytest.raises AND outside one) asks a question it cannot answer: it swallows every write failure BY DESIGN. R13 \u2014 an instrument error never counts as a detection, and it must not erase one either. These call sites are already failing for a better-diagnosed reason and a crash in the recorder must not overwrite the finding on its way up the stack.",
+        "disposition": "BASELINED WITH A NOTE, which is the sanctioned alternative to a self-test and is used here rather than manufacturing a pytest.raises the function can never satisfy. Its content and its silence ARE falsified in the always-on lane: test_verdict.py::test_unmeasured_writer_records_unmeasured_and_cannot_record_match (accept polarity + proof no argument produces MATCH), ::test_unmeasured_writer_swallows_a_broken_path_but_the_writer_under_it_does_not (the swallow, WITH the control showing write_equivalence_record genuinely raises on the same input \u2014 without it a no-op would pass), and ::test_unmeasured_writer_declines_a_missing_counters_path.",
+        "replaces": "tests/ops/_models.py::write_equivalence_verdict, deleted 2026-07-31. That function took the verdict token as a string LITERAL from its caller, so `m.write_equivalence_verdict(path, m.EQUIVALENCE_MATCH)` was a legal sentence at a zero own-provider count \u2014 R10's exact shape, and the specimen \u00a710.0's third metric amendment was written about. Its replacement cannot express that sentence: EquivalenceVerdict.from_comparison() takes a comparison OUTCOME and an ExecutionAttribution instance, and MATCH is a derived property, never an input.",
+        "owner": "trinity"
+      },
+      {
         "instrument": "tests/ops/_models.py::count_vulkan_executions_from_profile",
         "state": "UNFALSIFIED as a guard, and an R11 hazard as a name",
         "artifact": "the integer Guard D returns and every line that prints it",
         "excludes": "nothing arithmetically - it counts exactly what it says. The hazard is the READING: ORT emits one Node event per FUSED ISLAND, and on Phi-3.5 354 of 364 graph nodes execute inside ONE island. A healthy run therefore reports 1, and a reader who takes 'executions' to mean nodes reads the best result this project has produced as a catastrophe.",
         "disposition": "NOT renamed (compatibility outranks elegance, per Tank on Phase::Record). Tagged instead: describe_vulkan_execution_count() is now the single wording, every print site goes through it, and the failure message states what was counted. R11's remedy is available to the writer, and this is it.",
+        "owner": "trinity"
+      },
+      {
+        "instrument": "tests/ops/_verdict.py::classify_validation_probe, ::classify_plant_run",
+        "state": "UNFALSIFIED by this screen, and the screen is wrong about them - a stated limit, not a pass",
+        "artifact": "tests/ops/test_r13_lane.py: 6 parametrised cases for classify_validation_probe (including exit 0 with no ARMED line, which must NOT be armed) and 7 for classify_plant_run, plus test_plant_classification_reaches_all_three_states, which fails unless the SAME function returns three DIFFERENT tokens.",
+        "why_the_screen_cannot_see_it": "The polarity model here is raise-based: an instrument is screened iff some non-gated test calls it inside pytest.raises AND another calls it outside one. These two are TOTAL functions - they never raise; they return the token. A total classifier therefore reads UNFALSIFIED however thoroughly it is falsified. The honest generalisation, mechanically decidable and not implemented in this pass: value-polarity - screened iff a non-gated test asserts two DIFFERENT return values for two different inputs. Recorded rather than silently excluded, because a screen that quietly drops the instruments it cannot model reports a number about a world it has not surveyed.",
         "owner": "trinity"
       }
     ],
