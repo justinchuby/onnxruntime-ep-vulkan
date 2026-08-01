@@ -234,6 +234,8 @@ Vulkan 1.3 as a baseline is **acceptable** if the project explicitly targets des
 > - **untested** — no execution has occurred on this path, in CI or otherwise. All physical mobile hardware is in this category. Do not read rows added on 2026-07-29 as improving OQ-12 coverage — they do not.
 >
 > **Other column notes:** Vulkan version reported = what `apiVersion` the driver surfaces; minimum driver = first known version to pass the §7.2 device gate; required features = what the §7.2 gate checks plus what ops need for fp16/int8 paths.
+>
+> **A fourth claim, added 2026-08-01 and deliberately not a column here: can this platform produce a device-state record?** Passing the §7.2 gate says the EP can *run* on a device; it says nothing about whether a *timing figure* taken there is quotable. Under DESIGN.md §10.0 obligation 8 that needs a tenancy verdict and clock min/median/max against the board maximum, over the statistic's own suffix — and **exactly one row of this table has a producer for it today** (NVIDIA, via `nvidia-smi`). Everywhere else a device-clock figure is `STEADY_UNCERTIFIED`, which is not a penalty and not a waiver but a true statement about what we can currently know there. The per-platform breakdown is **§7.11.1**; it is kept out of this table because a device-state producer is an instrument we own, not a driver capability we detect.
 
 | OS | GPU Vendor / Driver | Min Driver / Version | Vulkan Reported | **Memory** | Gate criteria (R1–R6) | fp16/int8 capability | CI Coverage |
 |---|---|---|---|---|---|---|---|
@@ -499,7 +501,7 @@ Morpheus's ruling is the one I am implementing: a lane that does not carry crite
 | `format` (rustfmt) | ubuntu-latest | No — no build, no Vulkan | Not applicable | Not applicable | **`operational`, and correctly so** | It is a formatting check. It makes no claim about execution and none is expected of it. `UNOBSERVABLE`, not zero (R12). |
 | `lane-checks` | ubuntu-latest | No — no Vulkan by design | It **is** the gate's falsifier | Yes — 21 tests, two polarities each, synthesised inputs | **`green` for the claim it makes**, which is *"the lane checks work"* and nothing about the EP | Deliberately GPU-less: an instrument test that needed the subject healthy could say nothing on the day the subject is sick. |
 | `build-test-linux` (Ubuntu 22.04, lavapipe) | GitHub-hosted | Yes | **Yes** — vocabulary preflight → `gate_chain_fp32` → `ci/check_verdict.py` → `epctl --check-counters` → fatal-log grep | **Yes, two of them** — ICD-removal, *and* the loader-independent decline probe | **`operational` today; `green` on the first run in which all steps pass** | Not yet observed on a runner. I will not classify a lane `green` from reading its YAML — that is precisely R10, and I would be doing to my own work what R10 forbids. |
-| `build-test-windows` (Server 2025, lavapipe via mesa-dist-win) | GitHub-hosted | Yes | **Yes** — same steps | **Yes — and only one of the two actually fires here.** The ICD-removal control cannot be relied on: the LunarG loader silently ignores `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` in elevated processes (§7.4.1) and GitHub's Windows runners are elevated. It now *checks whether the suppression took* and reports `ERROR(instrument=icd_suppression_ineffective)` instead of blaming the gate. The decline probe is the falsifier this lane relies on. | **`operational` today; `green` on the first passing run** | Same reason — plus, until today, this lane's only negative control was one that may never have fired. |
+| `build-test-windows` (Server 2025, lavapipe via mesa-dist-win) | GitHub-hosted | Yes | **Yes** — same steps | **Yes — and only one of the two actually fires here, and until 2026-08-01 *neither* did.** The ICD-removal control cannot be relied on: the LunarG loader silently ignores `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` in elevated processes (§7.4.1) and GitHub's Windows runners are elevated. Worse, the guard that was supposed to *notice* that was a constant — it matched a phrase the loader probe prints on every run (§7.11.3) — so the whole step short-circuited on every run in both directions. Now `ci/check_icd_suppression.py` parses the device count and reports `ERROR(instrument=icd_suppression_ineffective)` with a record. The decline probe is the falsifier this lane relies on. | **`operational` today; `green` on the first passing run** | Same reason — plus, until today, this lane's only negative control was one that provably never fired. |
 | `conformance` (onnx-tests, `workflow_dispatch`) | ubuntu-22.04 | Yes | Gate steps + preflight; the conformance step itself remains `continue-on-error` | **Yes, as of today** — the decline-probe control was added; it had none of its own before | **`operational` — and its conformance table is *not evidence*** | The census step is a diagnostic by design. It carries no verdict per row, so under §10.0 it says nothing about this EP. Labelled as such in the step summary. |
 | WSL Ubuntu 24.04 / lavapipe (local dev, §7.7) | My desk | Yes — 196 tests, `subgroup_size = 8`, barrier parity 58/0 as a third independent implementation | No | No | **`operational`. Not `green`.** | This is the one I most want to promote and will not. It was a real result and it is not evidence for criterion 10: it is not a CI lane, it ran once, it had no verdict, and it had no falsifier. Its value is the capability diff (§7.5) and the third barrier-parity implementation, which are claims it *can* support. |
 | Local Windows / RTX 4060 (selector 0) | My desk | Yes | Gate runs here (that is where it was developed) | Yes — **three** polarities verified on this hardware today: PASS, `FAIL` with no ICD, `FAIL` on a declined artifact with the loader healthy | **`operational`** | Not a lane. A development desk is not a lane no matter what it proves, because nothing re-runs it. |
@@ -515,7 +517,7 @@ its limits are what decide the classifications above rather than its size:
 - **Three consecutive runs, both local devices, from ORT profiling: 3 `VulkanExecutionProvider` node events (one fused node covering ~355 graph nodes) + 24 `CPUExecutionProvider`.** All 65 outputs bit-identical across runs; argmax 30751, matching CPU. Mouse's census: **355 claimed / 1 island / 8 permanent declines with recorded reasons.**
 - **What that establishes:** the EP executes, at scale, on real hardware, and its outputs are attributable and reproducible. Every `UNATTRIBUTED` finding on this project is now a finding about a *specific* run, not about whether the EP works at all.
 - **What it does not establish, and no amount of it will:** that any *lane* is `green`. Those runs happened on my desk. A lane is `green` when **the lane** carries a verdict and **the lane** has shown it can fail, and neither of those is a property of how well the EP runs anywhere else. Execution evidence and lane evidence are different claims with different falsifiers; folding the first into the second is exactly the move §7.4.4 exists to refuse.
-- Nor does it license a timing figure. Only Niobe's device-clock number (NVIDIA 40.201 ms/inference GPU busy, 0.033% RSD; Intel withheld as `NO_STEADY_TAIL`) is quotable, and only because it comes from an attributed run.
+- Nor does it license a timing figure. **Re-qualified 2026-08-01T13:19-07:00 and this replaces what this bullet said this morning.** Niobe's NVIDIA figure is now **"≤ 40.201 ms/inference GPU busy, device state unrecorded"** — not withdrawn, re-qualified, and those are different outcomes. Morpheus rejected the regime-separation rescue: there are **not two clock regimes**, the board moved 210 → 2490 MHz *within one run*, a governor is continuous, and *"the two states I sampled don't overlap"* had been promoted into a claim about the device. The real margin is **6.1×, not 21×**. RSD 0.033% keeps its descriptive role and loses its certifying one — a run held at a low clock is *more* steady, not less (§10.0.1 R9 amendment 5). Intel remains withheld as `NO_STEADY_TAIL`. Attribution was necessary and is no longer sufficient: §10.0 obligation 8 additionally requires a device-state record over the statistic's own suffix.
 
 ##### What still is not `green`, plainly
 
@@ -524,8 +526,9 @@ its limits are what decide the classifications above rather than its size:
 3. **`green` is per artifact.** When these lanes go green they are green for `gate_chain_fp32` — a 2-node fp32 `Add → Relu` on 256 elements. Not for Phi-3.5, not for `MatMulNBits`, not for fp16 (no `storageBuffer16BitAccess` confirmation on lavapipe; those claims remain `UNMEASURED`).
 4. **The Phi-3.5 execution evidence does not make any lane `green`.** 355 claimed nodes in one island, three reproducible runs and 65 bit-identical outputs are a claim about the EP, on my desk. They are not a claim about a lane, and no quantity of them becomes one.
 5. **Single-run blindness is not fixed by the gate** (§7.4.2). The gate artifact also runs once.
-6. **No timing figure is quotable from a run whose verdict is not an attributed `MATCH`.** Every earlier wall-clock ratio on this project, including 3.1× and 3.7×, is **withdrawn**. The only admissible number today is Niobe's device-clock one, and Intel's is withheld as `NO_STEADY_TAIL`.
-7. **The Windows lane's ICD-removal control has never been shown to fire.** It may have been suppressing nothing on every elevated runner it ever ran on. It now says so instead of blaming the gate — and the decline probe, which does not depend on the loader, is what that lane's falsifier claim actually rests on.
+6. **No timing figure is quotable from a run whose verdict is not an attributed `MATCH` — and as of today that is necessary but no longer sufficient.** Every earlier wall-clock ratio on this project, including 3.1× and 3.7×, is **withdrawn**. §10.0 obligation 8 adds a second interlock: a device-clock figure also needs a **device-state record covering the statistic's own suffix**, carrying a tenancy verdict and clock min/median/max against the board maximum. Without it the figure is `STEADY_UNCERTIFIED`. Niobe's NVIDIA number is re-qualified to **≤ 40.201 ms, device state unrecorded**; Intel is still withheld as `NO_STEADY_TAIL`. **No CI lane can supply that record**, for the structural reason in §7.11.
+7. **The Windows lane's ICD-removal control has never been shown to fire — and as of today I know why, and it is worse than "elevated runner".** The control's guard tested `-match 'passed the §7.2 capability gate'`, and `engine::loader_probe_report()` emits `"{n} device(s) passed the §7.2 capability gate."` on **every** run, with `n = 0` when the suppression *did* take. The match therefore succeeded unconditionally and the step short-circuited to `exit 0` on **every run in both directions**. A detector that fires on every input is not a detector, it is a constant. Replaced by `ci/check_icd_suppression.py`, which parses the count, has two-polarity tests, and writes a record whose content varies with its input (§7.11.3). The decline probe, which does not depend on the loader, remains what that lane's falsifier claim actually rests on.
+8. **No lane may publish a duration.** Not a convention — a step (§7.11.2). The first lane step that writes a millisecond into an artifact or into the job summary turns `check_device_state` red on the same run.
 
 ##### The measurement, both polarities, both devices — 2026-08-01, on merged `main` (5eda83b)
 
@@ -1040,6 +1043,248 @@ this section is wrong until a test is added.
 
 **Status: closed.** Re-open on any of the four break conditions listed above, or on a new
 reducing shader template reaching `Ready` without lavapipe coverage. Not on general unease.
+
+---
+
+## 7.11 Device-State Records Across the Platform Matrix (§10.0 obligation 8) — added 2026-08-01T14:20-07:00
+
+**The finding, and why it lands in my file rather than Niobe's.** Switch showed that
+`gpu_steady_tail()` is a **variance test over a suffix and therefore cannot see a bias**:
+
+```
+soloA      [SOLE_TENANT]              STEADY   11.525 ms   RSD 0.8098%
+contended3 truncated to 20 inferences STEADY  126.647 ms   RSD 0.9103%   ← 10.99× wrong
+contended3 truncated to 28 inferences STEADY  126.647 ms   RSD 0.8035%
+```
+
+**The wrong number carried the better RSD.** The RTX 4060 idles at 210 MHz against a
+3105 MHz boost, and a run held at idle clock is *perfectly steady*, so it earns the gate's
+most confident verdict. A low clock does not raise RSD; it lowers it. Morpheus ruled it
+**R9 amendment 5 — the anti-correlated falsifier**: *ask which way a check moves when its
+subject is wrong; if it moves with the reader's confidence it cannot be repaired by
+tightening,* and it is demoted from gate to precondition.
+
+§10.0 obligation 8 is the replacement, and **amendment 1 is what makes it mine**: the
+obligation is stated as a *record, never as a tool*. `nvidia-smi` is one vendor's
+implementation; this project is cross-platform by mandate (§1.1). The obligation names the
+**content** — a tenancy verdict, clock min/median/max against the board's own advertised
+maximum, over the statistic's own suffix — and any platform that can produce that content
+satisfies it. Which platforms those are is a support-matrix question.
+
+### 7.11.1 Producer coverage by platform — and the row that matters is the empty one
+
+Registry lives in code (`ci/device_state.py :: PRODUCERS`) so it is testable; this table is
+its documentation, not a second copy of it.
+
+| Platform | Telemetry that could produce the content | Producer written? | A device-clock figure taken here is… |
+|---|---|---|---|
+| **NVIDIA** (Windows/Linux, discrete + laptop) | `nvidia-smi` — `clocks.sm`, `clocks.max.sm`, compute-app table | **Yes** — `bench/results/probe_gpustate.py` (Niobe) | **quotable**, given the record covers the statistic's own suffix |
+| **AMD** | `rocm-smi` — `sclk`, process table | No | `STEADY_UNCERTIFIED` |
+| **Intel iGPU** | `intel_gpu_top` (Linux) / Level Zero sysman (Windows) | No | `STEADY_UNCERTIFIED` |
+| **Apple / MoltenVK** | `powermetrics` GPU frequency + residency (**needs root**) | No | `STEADY_UNCERTIFIED` |
+| **Adreno** | `/sys/class/kgsl/kgsl-3d0/{gpuclk,max_gpuclk,gpubusy}` | No — no hardware (OQ-12) | `STEADY_UNCERTIFIED` |
+| **Mali** | `/sys/class/devfreq/*.mali/{cur_freq,max_freq}` | No — no hardware (OQ-12) | `STEADY_UNCERTIFIED` |
+| **lavapipe / llvmpipe / SwiftShader** | **none — there is no device clock** | Structurally impossible | `STEADY_UNCERTIFIED`, **permanently** — see §7.11.4 |
+
+**Absence is never a waiver, and the direction it cuts is the point.** Obligation 8
+amendment 2: the cheapest way to satisfy the obligation as first worded is to take the
+measurement on a platform with no clock telemetry, where the requirement is vacuous and
+the figure comes out unqualified. Morpheus named the **Intel Iris Xe** as that loophole's
+biggest beneficiary, and he is right in a way that bites this file specifically: §5.2 makes
+Intel our *spec-conformance oracle*, so it is the device we deliberately run things on —
+and it shares its power budget with loaded CPU cores, so it is **more** exposed to clock
+bias than the discrete board, not less. It is not exempt. It is unmeasured, and the entry
+above says so in plain text, which is the same standard §5 applies to `untested` hardware.
+
+**A CI runner with no GPU telemetry is that same loophole at scale.** Every GitHub-hosted
+runner this project uses is exactly that, which is why the guard in §7.11.2 treats "no
+producer on this host" as *louder* than "no record", not quieter.
+
+### 7.11.2 The lane is now unable to publish a duration — by construction, not by luck
+
+I grepped `ci/*.py` for `tenancy`, `SOLE_TENANT`, `sm_clock`, `STEADY_UNCERTIFIED` and
+`gpu_steady`. **Zero matches.** The gate proves the EP *executed* and that the verdict is
+attributed; it said nothing about the device state that produced any timing. That was
+survivable only because no lane quoted a timing figure — a property no mechanism was
+holding in place.
+
+`ci/check_device_state.py` now runs in **all three lanes** (`build-test-linux`,
+`build-test-windows`, `conformance`) on `always()`, because a figure published by a run
+that already failed is the one most likely to be quoted later. Its terminal states are
+R13's, and which is which is decided by obligation 8's amendments:
+
+| Outcome | When | Exit |
+|---|---|---|
+| `PASS` | the lane published no lane-authored timing figure, **or** every one carries a certified companion | 0 |
+| `FAIL(condition=STEADY_UNCERTIFIED)` | a figure was published and its record is missing or incomplete, on a host that could have produced one | 1 |
+| `ERROR(instrument=device_state_producer_absent)` | a figure was published on a host with **no producer at all** | 4 |
+| `ERROR(instrument=device_state_probe_failed)` | the record says the probe failed. **Never** `SOLE_TENANT` (amendment 3) | 4 |
+| `ERROR(instrument=lane_evidence_absent)` | nothing to scan. R12: `UNOBSERVABLE`, never a clean lane | 4 |
+
+Two witnesses with different failure modes (R13 obligation 3): a walk over the lane's JSON
+artifacts, **and** a scan of `$GITHUB_STEP_SUMMARY` for a duration in prose — a JSON parser
+cannot see `11.525 ms` in a sentence, and a figure written into a job summary is published
+exactly as much as one written into an artifact.
+
+**The record format is Niobe's, not a second one.** `ci/device_state.py` reads the shape
+`bench/results/probe_gpustate.py :: summarise()` already writes (`verdict`, `sm_mhz`,
+`sm_max_mhz`, …). This is the same refusal that kept the CI side on Trinity's verdict
+vocabulary: a second format would be R11 in its purest form — two names for one
+measurement, appearing to close. **One key is required that no producer emits yet:**
+`window`, declaring the suffix the statistic was computed over, because obligation 8 says
+the window is *"the suffix the statistic was computed over, not the run"* and a record
+covering the whole run does not establish that. Its absence is reported by name
+(`STEADY_UNCERTIFIED(reason=incomplete_record, missing=[window])`) rather than assumed
+away. Raised with Niobe as a decision record rather than added unilaterally.
+
+**Obligation 8b is implemented too** (`certifies_comparison`): two figures compare only if
+their records agree — same tenancy verdict, overlapping clock during each statistic's own
+window. Not satisfied by both being `STEADY`; that both are steady is the whole content of
+the finding.
+
+**What the guard found on its first real run, which is why it is not decorative.** The
+lane's uploaded evidence *already* contained durations: the EP's counters snapshot carries
+`session_staging_upload_us` and `session_staging_readback_us`, and ORT's profile carries a
+`dur` per node event. Neither is authored by the lane, and requiring an instrument's raw
+output to carry a device-state companion would fire on every healthy run — the fastest way
+to teach a reader to ignore a check. So `ci/device_state.py :: INSTRUMENT_DUMPS` excuses
+them, and the excuse is closed three ways:
+
+1. It is a **code-level list with a reason per entry**, not a `--exclude` flag. There is no
+   runtime switch, and a test asserts there is none. An entry costs a code change and a
+   test review, which is the difference between an exemption and a waiver.
+2. Excused figures are **still printed**, on every run, as
+   `STEADY_UNCERTIFIED (carried, not claimed)` with their values. The scope of the excuse
+   is auditable from the lane's own output rather than from my source file.
+3. The moment one of them is *quoted*, the quote lands in a lane artifact or the job
+   summary, where the guard sees it.
+
+Asked as the drafting rule requires — *what is the cheapest thing that satisfies these
+words without their intent?* — the answer is "call your figure an instrument dump", and
+those three are what close it.
+
+### 7.11.3 The Windows ICD-suppression probe: wired, and it was a constant
+
+§7.4.1 documents that the LunarG loader silently ignores `VK_DRIVER_FILES` in elevated
+processes and that GitHub's Windows runners are elevated, so that lane's ICD-removal
+negative control may never have fired. I added a guard that was supposed to *say so*
+instead of blaming the gate. **It was written, it was wired, and it was a constant.** It
+tested:
+
+```powershell
+if ($probe -match 'passed the §7\.2 capability gate') { ...ineffective...; exit 0 }
+```
+
+`engine::loader_probe_report()` emits `"{n} device(s) passed the §7.2 capability gate."` on
+**every** run, and `n` is `0` when the suppression *did* take. The match succeeded
+unconditionally: the step short-circuited to `exit 0` on every run, in both directions.
+**A detector that fires on every input is not a detector, it is a constant** — the same
+sentence `probe_gpustate.py` uses about its own ancestry check, and the same defect one
+layer up.
+
+Replaced by `ci/check_icd_suppression.py`: it parses the **count**, has three terminal
+states, six two-polarity tests, and writes a JSON record whose content varies with its
+input — which is R10's falsifier for "this probe is wired" and is precisely what a
+`::warning` annotation is not. It is wired into the **Linux lane as well**, where the
+suppression is expected to work: expected is not observed, and the Windows lane believed
+"expected" for weeks.
+
+**A second bug, found only by running it.** My first draft read the capability-gate line
+and nothing else. Measured on real hardware, both polarities, with the real binary:
+
+```
+loader healthy    "2 device(s) passed the §7.2 capability gate."                 epctl exit 0
+ICD suppressed    "FAIL: vkCreateInstance returned ERROR_INCOMPATIBLE_DRIVER."   epctl exit 3
+                  ...and the capability-gate line is never printed at all
+```
+
+A real suppression **never reaches** the line the first draft was parsing, so it would have
+classified every successful suppression as `probe_report_unreadable` and short-circuited
+the control on every run — reproducing the exact bug it was written to fix, one draft
+later. Both shapes are now recognised, the epctl exit code is carried as a second witness
+with a different failure mode, and a disagreement between the two witnesses is itself an
+instrument state rather than resolved in the convenient direction. The lesson is more
+durable than the regex: **run the instrument in both polarities before believing a
+parser.**
+
+### 7.11.4 What a device-state record means on lavapipe — the ruling, written down now
+
+This is the case where *"no telemetry, therefore no requirement"* is most tempting and most
+wrong, so it gets an answer in prose rather than a silence in a table. Two readings are
+available and only one is honest.
+
+**The tempting reading.** *"A software rasteriser has no device clock to be biased, so
+obligation 8 does not apply and the figure is unqualified."* This is the waiver amendment 2
+forbids, and it is worse here than anywhere else in the matrix: lavapipe runs on the **host
+CPU**, which is the single most contended resource on a shared CI runner. A figure taken on
+lavapipe is not immune to contention bias; it is *maximally* exposed to it, and the
+exposure is invisible because the usual instrument is pointed at a GPU that is not there.
+
+**The honest reading, and this project's ruling.** The obligation's content is *the state
+of the device that produced the timing*. On a CPU renderer that device is the host, so the
+corresponding record carries host quiescence, CPU frequency min/median/max against the
+package maximum, and a host-tenancy verdict — which is `bench/`'s **machine-quiescence
+verdict**, an instrument that already exists for wall clock, and not a GPU probe.
+
+> **Ruling: lavapipe can never certify a *device-clock* figure, and this is permanent
+> rather than pending.** There is no device clock on a CPU renderer — the quantity does not
+> exist, so no instrument can be built to record it. What *is* pending is a weaker and
+> different claim: a host-state record for a *wall-clock* figure. If that producer is ever
+> written it certifies wall clock and still never certifies device clock. **The two must
+> not be allowed to trade names.**
+
+This is consistent with the M1 interlock amendment's own closing sentence — *wall clock
+carries the quiescence verdict, device clock carries the device-state record, and there is
+no third surface to retreat to.* On lavapipe the second surface is simply not present.
+
+**The consequence for the lane matrix, stated so nobody has to derive it.** All three CI
+lanes run lavapipe. **Therefore no CI lane can ever publish a certified device-clock
+figure.** That is not a gap a better probe closes; it is closed by a GPU runner or not at
+all, and it belongs in the matrix in plain text next to `untested`. It also means the
+`PASS` this guard prints on those lanes is always the first kind — *"published nothing
+timed"* — and the check says so in its own output rather than letting a reader infer the
+stronger one.
+
+### 7.11.5 Criterion 5's denominator attack — is my gate artifact exposed?
+
+Morpheus named the attack: **run at idle clock, inflate the total, watch the share
+collapse.** M1 criterion 5 is *steady-state recording share below 5%*, and a share can be
+satisfied by inflating its denominator: device time inflates ~21×, host recording time does
+not, the share collapses far below 5%, the series is perfectly steady, and every gate
+reports its most confident verdict. Not hypothetical — it is `246.720 ms at RSD 0.1163%`
+with the arithmetic run backwards.
+
+**Answer for my lanes: the gate artifact is not exposed, and the reason is structural
+rather than lucky.** `gate_chain_fp32`'s verdict is a function of **counts and an exact
+comparison only** — `own_provider_execution_count`, `counters_dispatches_executed`,
+`profile_node_events`, `max_abs_diff` — with no duration, no total and therefore no
+denominator anywhere in it. There is no share to collapse. A runner pinned at its idle
+clock produces the same `MATCH`, the same `executed_by` frame and the same
+`max_abs_diff=0`; it produces them more slowly, and the verdict does not have a slot for
+that. Both negative controls are equally clock-invariant: an idle clock cannot turn
+`FAIL(condition=UNATTRIBUTED)` into `MATCH`, because what they detect is *nothing executed*,
+which no clock rate reaches.
+
+That is §10.0.4's invariance preference paying out on the CI side, in the same shape it
+paid out for Niobe: **counts survived what clocks could not** (147,618 → 354 barriers;
+1997.6 → 0.756 MiB upload). The gate was written on counts for a different reason — a
+timing threshold in CI is flaky on shared runners — and it is immune to this attack as a
+consequence rather than as a design goal. I record that distinction rather than claim
+foresight I did not have.
+
+**Where the lanes *would* be exposed, which is the part worth guarding.** The attack does
+not need my gate; it needs a lane that publishes a share or a duration at all. A future
+`bench` lane reporting criterion 5's recording share, or a regression lane reporting
+ms/inference, lands the attack squarely here — and on a GitHub runner it lands with the
+worst possible combination: a software rasteriser whose "device clock" cannot be recorded,
+on a host whose CPU contention is invisible to us and moves the denominator directly.
+§7.11.2 is what makes that lane impossible to add quietly, and §7.11.4 is why the answer
+for such a lane is *"not on this runner"* rather than *"with a better probe"*.
+
+**And §10.0.4's named abuse applies to this section itself:** *do not hand the reader a
+count and let them supply the clock.* The gate's counts say the EP executed and the outputs
+agreed. They say nothing whatever about how long it took, and no reader should be able to
+leave §7.11 believing otherwise.
 
 ---
 

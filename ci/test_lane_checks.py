@@ -346,3 +346,325 @@ def test_decline_probe_is_a_distinct_artifact_built_from_an_unclaimed_op():
     # Non-singular by construction, so a CPU-vs-CPU comparison cannot agree on zeros.
     dets = np.linalg.det(decline_feeds["A"].astype(np.float64))
     assert np.all(np.abs(dets) > 1e-3)
+
+
+# ---------------------------------------------------------------------------
+# check_icd_suppression.py — the control that could not fire, and could not say so
+#
+# The Windows lane's ICD-removal negative control tested
+# ``$probe -match 'passed the §7.2 capability gate'``.  The report line reads
+# ``"{n} device(s) passed the §7.2 capability gate."`` and n is 0 when the
+# suppression DID take, so the match succeeded on every input and the control
+# short-circuited on every run.  A detector that fires on every input is a
+# constant, not a detector.  These are the tests that would have caught it.
+# ---------------------------------------------------------------------------
+
+PROBE_SUPPRESSED = "0 device(s) passed the \u00a77.2 capability gate.\n  \u2192 No physical devices found."
+#: The shape a REAL suppression takes, measured with the real binary: the loader has no
+#: usable ICD, vkCreateInstance fails, and the capability-gate line is never printed.
+PROBE_SUPPRESSED_NO_INSTANCE = (
+    "=== Vulkan Loader Probe ===\nVulkan library loaded.\n"
+    "  VK_DRIVER_FILES = C:\\nonexistent\\lvp_icd.json\n"
+    "FAIL: vkCreateInstance returned ERROR_INCOMPATIBLE_DRIVER.\n"
+)
+PROBE_PRESENT = (
+    "Vulkan 1.3.296 loader\n  llvmpipe (LLVM 15.0.7)\n"
+    "1 device(s) passed the \u00a77.2 capability gate."
+)
+
+
+def test_icd_suppression_separates_a_suppressed_icd_from_a_present_one(tmp_path):
+    """Two polarities, one string apart, and the tokens must differ."""
+    ok = write(tmp_path, "p0.txt", PROBE_SUPPRESSED)
+    bad = write(tmp_path, "p1.txt", PROBE_PRESENT)
+
+    good = run_check("check_icd_suppression.py", str(ok))
+    assert good.returncode == EXIT_PASS
+    assert "ICD-SUPPRESSION: PASS" in good.stdout
+
+    fired_not = run_check("check_icd_suppression.py", str(bad))
+    assert fired_not.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=icd_suppression_ineffective)" in fired_not.stdout
+    # Never a FAIL: this check has no condition of its own to detect. It decides
+    # whether a *different* check can run, so every non-PASS is an instrument state.
+    assert "FAIL(condition=" not in fired_not.stdout
+
+
+def test_the_old_substring_test_would_have_passed_both_polarities(tmp_path):
+    """The regression, asserted directly, so it cannot come back as a 'simplification'.
+
+    Both reports contain the phrase the old check matched. That is the whole bug.
+    """
+    marker = "passed the \u00a77.2 capability gate"
+    assert marker in PROBE_SUPPRESSED and marker in PROBE_PRESENT
+
+    import check_icd_suppression as icd  # type: ignore
+
+    assert icd.classify(PROBE_SUPPRESSED)["state"] == icd.STATE_SUPPRESSED
+    assert icd.classify(PROBE_PRESENT)["state"] == icd.STATE_INEFFECTIVE
+
+
+def test_icd_suppression_reworded_report_is_unreadable_not_suppressed(tmp_path):
+    """R13: 'I could not read the report' is not 'the ICD is gone'."""
+    p = write(tmp_path, "px.txt", "Vulkan looks fine on this machine.\n")
+    r = run_check("check_icd_suppression.py", str(p))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=probe_report_unreadable)" in r.stdout
+
+
+def test_icd_suppression_missing_report_is_an_instrument_state(tmp_path):
+    r = run_check("check_icd_suppression.py", str(tmp_path / "nope.txt"))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=probe_report_unreadable)" in r.stdout
+
+
+def test_icd_suppression_writes_a_record_whose_content_varies_with_its_input(tmp_path):
+    """R10's falsifier for 'this probe is wired' — an artifact, not an annotation.
+
+    The step this replaced emitted a ``::warning`` and nothing else. A warning leaves
+    no artifact, so 'did the control fire on run 4132?' had no answer.
+    """
+    a_out = tmp_path / "a.json"
+    b_out = tmp_path / "b.json"
+    run_check(
+        "check_icd_suppression.py",
+        str(write(tmp_path, "p0.txt", PROBE_SUPPRESSED)),
+        "--record-out",
+        str(a_out),
+    )
+    run_check(
+        "check_icd_suppression.py",
+        str(write(tmp_path, "p1.txt", PROBE_PRESENT)),
+        "--record-out",
+        str(b_out),
+    )
+    a, b = json.loads(a_out.read_text()), json.loads(b_out.read_text())
+    assert a["devices_passing_gate"] == 0 and b["devices_passing_gate"] == 1
+    assert a["state"] != b["state"]
+
+
+def test_icd_suppression_witnesses_that_disagree_are_an_instrument_state(tmp_path):
+    """Two readers of one report, and picking the convenient one is how a lane lies."""
+    p = write(tmp_path, "p0.txt", PROBE_SUPPRESSED)
+    r = run_check("check_icd_suppression.py", str(p), "--exit-code", "0")
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=probe_report_unreadable)" in r.stdout
+    agree = run_check("check_icd_suppression.py", str(p), "--exit-code", "1")
+    assert agree.returncode == EXIT_PASS
+
+
+def test_a_real_suppression_never_reaches_the_capability_gate_line(tmp_path):
+    """The bug this file was one draft away from repeating.
+
+    Measured on real hardware, both polarities: when the ICD really is gone,
+    ``vkCreateInstance`` returns ``ERROR_INCOMPATIBLE_DRIVER`` and the "N device(s)
+    passed" line is **never printed**. Reading only that line would have classified every
+    successful suppression as ``probe_report_unreadable`` — short-circuiting the negative
+    control on every run, which is precisely the defect this check replaced. The lesson,
+    and the reason this test exists: run the instrument in both polarities before
+    believing a parser.
+    """
+    p = write(tmp_path, "p.txt", PROBE_SUPPRESSED_NO_INSTANCE)
+    r = run_check("check_icd_suppression.py", str(p), "--exit-code", "3")
+    assert r.returncode == EXIT_PASS
+    assert "ICD-SUPPRESSION: PASS" in r.stdout
+
+
+def test_icd_suppression_reports_the_three_states_apart(tmp_path):
+    """Three inputs, three tokens. A check with one reachable outcome is a constant."""
+    import check_icd_suppression as icd  # type: ignore
+
+    states = {
+        icd.classify(PROBE_SUPPRESSED)["state"],
+        icd.classify(PROBE_SUPPRESSED_NO_INSTANCE)["state"],
+        icd.classify(PROBE_PRESENT)["state"],
+        icd.classify("Vulkan looks fine.")["state"],
+    }
+    assert states == {icd.STATE_SUPPRESSED, icd.STATE_INEFFECTIVE, icd.STATE_UNREADABLE}
+
+
+# ---------------------------------------------------------------------------
+# check_device_state.py — §10.0 obligation 8 at the lane level
+#
+# `gpu_steady_tail()` is a variance test over a suffix and cannot see a bias:
+# a board held at its 210 MHz idle clock is perfectly steady about a wrong mean,
+# and the wrong figure carried the BETTER RSD.  R9 amendment 5 demotes that check
+# from gate to precondition; obligation 8 puts a device-state record in its place.
+# These tests are what stop a future lane from publishing a duration without one.
+# ---------------------------------------------------------------------------
+
+NO_PRODUCERS = {"ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS": "none"}
+
+
+def _certified_record():
+    """Niobe's record shape (bench/results/probe_gpustate.py :: summarise), not a new one."""
+    return {
+        "verdict": "SOLE_TENANT",
+        "sm_mhz": {"n": 50, "min": 2010.0, "median": 2400.0, "max": 2490.0},
+        "sm_max_mhz": 3105.0,
+        "window": {"kind": "suffix", "index_from": 11, "index_to": 43, "n": 33},
+    }
+
+
+def run_ds(*args, env_extra=None):
+    import os
+
+    env = dict(os.environ)
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, str(CI_DIR / "check_device_state.py"), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_device_state_passes_when_the_lane_publishes_no_duration(tmp_path):
+    write(tmp_path, "verdict.json", record())
+    r = run_ds("--scan", str(tmp_path))
+    assert r.returncode == EXIT_PASS
+    assert "DEVICE-STATE: PASS" in r.stdout
+
+
+def test_device_state_fails_a_duration_with_no_record(tmp_path):
+    """The polarity that matters: adding a millisecond to a lane artifact reds the lane."""
+    write(tmp_path, "timing.json", {"mean_ms": 11.525, "rsd_pct": 0.8098})
+    r = run_ds("--scan", str(tmp_path))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=STEADY_UNCERTIFIED)" in r.stdout
+    assert "mean_ms=11.525" in r.stdout
+
+
+def test_device_state_passes_a_duration_that_carries_a_certified_record(tmp_path):
+    write(
+        tmp_path,
+        "timing.json",
+        {"mean_ms": 11.525, "device_state": _certified_record()},
+    )
+    r = run_ds("--scan", str(tmp_path))
+    assert r.returncode == EXIT_PASS
+    assert "SOLE_TENANT" in r.stdout
+
+
+def test_absent_telemetry_is_an_instrument_error_and_never_a_pass(tmp_path):
+    """Obligation 8 amendment 2, which is the whole reason this lives in ci/.
+
+    The cheapest way to satisfy obligation 8 as first worded is to measure where the
+    requirement is vacuous. A CI runner with no GPU telemetry is that loophole at scale,
+    so 'no producer' must be louder than 'no record', not quieter.
+    """
+    write(tmp_path, "timing.json", {"mean_ms": 11.525})
+    r = run_ds("--scan", str(tmp_path), env_extra=NO_PRODUCERS)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=device_state_producer_absent)" in r.stdout
+    assert "tenancy=SOLE_TENANT" not in r.stdout
+    assert "DEVICE-STATE: PASS" not in r.stdout
+
+
+def test_a_failed_probe_is_never_reported_as_sole_tenant(tmp_path):
+    """Obligation 8 amendment 3. Absence of evidence and evidence of absence come out
+    of one code path in a probe, so they must be named apart here."""
+    write(
+        tmp_path,
+        "timing.json",
+        {"mean_ms": 11.525, "device_state": {"error": "nvidia-smi exited 9"}},
+    )
+    r = run_ds("--scan", str(tmp_path))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=device_state_probe_failed)" in r.stdout
+
+
+def test_an_incomplete_record_does_not_certify(tmp_path):
+    """A record without its board maximum is a clock number without its ceiling — an
+    index without its ordering (R11)."""
+    import copy
+
+    for drop in ("sm_max_mhz", "window", "verdict", "sm_mhz"):
+        rec = copy.deepcopy(_certified_record())
+        rec.pop(drop)
+        d = tmp_path / drop
+        d.mkdir()
+        write(d, "timing.json", {"mean_ms": 11.525, "device_state": rec})
+        r = run_ds("--scan", str(d))
+        assert r.returncode == EXIT_FAIL_CONDITION, drop
+        assert "STEADY_UNCERTIFIED" in r.stdout, drop
+
+
+def test_a_duration_in_prose_is_published_too(tmp_path):
+    """A JSON parser cannot see a figure written into the job summary. Second witness,
+    different failure mode (R13 obligation 3)."""
+    write(tmp_path, "verdict.json", record())
+    summary = write(tmp_path, "summary.md", "Steady-state GPU busy 11.525 ms/inference\n")
+    r = run_ds("--scan", str(tmp_path), "--summary", str(summary))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "11.525 ms" in r.stdout
+
+
+def test_missing_lane_evidence_is_unobservable_not_clean(tmp_path):
+    """R12: a check whose subject cannot occur in its frame reports UNOBSERVABLE, never 0.
+    'The lane published no duration' and 'the lane produced nothing' are different."""
+    r = run_ds("--scan", str(tmp_path / "does-not-exist"))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=lane_evidence_absent)" in r.stdout
+
+
+def test_instrument_dumps_are_reported_rather_than_silently_skipped(tmp_path):
+    """The exemption that would otherwise be the loophole.
+
+    ORT's profile and the EP's counters snapshot carry microsecond fields the lane
+    reads but does not author. They are excused from needing a companion — and they are
+    still PRINTED, as STEADY_UNCERTIFIED carried-not-claimed, so the scope of the
+    excuse is auditable from the lane's own output rather than from this file.
+    """
+    write(tmp_path, "counters-linux.json", {"session_staging_upload_us": 68})
+    r = run_ds("--scan", str(tmp_path))
+    assert r.returncode == EXIT_PASS
+    assert "carried, not claimed" in r.stdout
+    assert "session_staging_upload_us=68" in r.stdout
+
+
+def test_the_instrument_dump_list_is_closed_and_has_a_reason_per_entry():
+    """There is no runtime flag that adds to this list. An entry costs a code change and
+    a test, which is the difference between an exemption and a waiver."""
+    sys.path.insert(0, str(CI_DIR))
+    import device_state as ds  # type: ignore
+
+    assert "--exclude" not in (Path(CI_DIR / "check_device_state.py").read_text("utf-8"))
+    for pattern, reason in ds.INSTRUMENT_DUMPS:
+        assert reason and len(reason) > 40, pattern
+    assert ds.is_instrument_dump(Path("bench/results/ci-lane/verdict-linux.json")) is None
+    assert ds.is_instrument_dump(Path("bench/results/ci-lane/counters-linux.json"))
+
+
+def test_obligation_8b_two_figures_compare_only_if_their_records_agree():
+    """8b is not satisfied by both figures being STEADY — that is the whole finding."""
+    sys.path.insert(0, str(CI_DIR))
+    import copy
+
+    import device_state as ds  # type: ignore
+
+    a = _certified_record()
+    assert ds.certifies_comparison(a, copy.deepcopy(a))["comparable"] is True
+    # A 'before' that predates the companion requirement is not half of a pair.
+    assert ds.certifies_comparison(None, a)["reason"] == "before_not_certified"
+    contended = copy.deepcopy(a)
+    contended["verdict"] = "FOREIGN_GPU_WORK"
+    assert ds.certifies_comparison(a, contended)["reason"] == "tenancy_disagrees"
+    idle = copy.deepcopy(a)
+    idle["sm_mhz"] = {"n": 50, "min": 210.0, "median": 210.0, "max": 300.0}
+    assert ds.certifies_comparison(a, idle)["reason"] == "clock_ranges_disjoint"
+
+
+def test_lavapipe_ruling_is_written_down_not_discovered_later():
+    """A CPU renderer has no device clock, so it can never certify a device-clock figure.
+    That answer has to exist in prose, because 'no telemetry therefore no requirement' is
+    most tempting exactly here and it is the waiver amendment 2 forbids."""
+    sys.path.insert(0, str(CI_DIR))
+    import device_state as ds  # type: ignore
+
+    note = ds.lavapipe_note()
+    assert "never certify" in note
+    assert ds.PRODUCERS["cpu_renderer"]["status"] == ds.STATUS_NONE_STRUCTURAL
+    # Not a tool registry with one row: the obligation is cross-platform by mandate.
+    assert {"nvidia", "amd", "intel", "apple", "adreno", "mali"} <= set(ds.PRODUCERS)
+    assert ds.PRODUCERS["intel"]["status"] != ds.STATUS_AVAILABLE

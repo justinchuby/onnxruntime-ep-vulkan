@@ -170,6 +170,20 @@ jobs:
             tests/conformance/conformance.out \
             bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
 
+      - name: No duration without a device-state record (§10.0 obligation 8)
+        # See .github/workflows/ci.yml for the full rationale. Short form: a variance
+        # test over a suffix cannot see a bias, so `STEADY` does not make a device-clock
+        # figure quotable — a device-state record over the statistic's own suffix does.
+        # This lane quotes no timing figure, and this step is what keeps that true by
+        # construction. lavapipe has no device clock at all, so a certified device-clock
+        # figure is not merely absent here but unavailable in principle
+        # (ci/device_state.py :: lavapipe_note).
+        if: always()
+        run: |
+          python3 ci/check_device_state.py \
+            --scan bench/results/ci-lane \
+            --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Upload conformance results
         if: always()
         uses: actions/upload-artifact@v4
