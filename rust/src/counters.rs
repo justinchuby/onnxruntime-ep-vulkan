@@ -489,6 +489,21 @@ static ISLANDS_OFFERED: AtomicU64 = AtomicU64::new(0);
 /// is in the call graph. Owner: Mouse (`partition.rs`, `ep.rs`).
 static VIABLE_ISLANDS_RETAINED: AtomicU64 = AtomicU64::new(0);
 
+/// Clusters that reached the net-benefit decision point at all, whether the gate ran or was
+/// bypassed. Unconditional half of [`record_net_benefit_decision`] — RAI-011.
+static NET_BENEFIT_CLUSTERS_SEEN: AtomicU64 = AtomicU64::new(0);
+/// Clusters actually put through `partition::evaluate`.
+static NET_BENEFIT_GATE_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+/// Clusters that went around the gate via the single-cluster bypass (§7, line ~1114).
+static NET_BENEFIT_GATE_BYPASSES: AtomicU64 = AtomicU64::new(0);
+
+/// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
+static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
+static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
+/// Compute failures produced by the fault-injection control rather than suffered.
+static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
+
 /// `Relaxed` is correct here and the reasoning is worth stating rather than assuming.
 ///
 /// These counters are diagnostics: nothing in the EP branches on them, so no other memory access
@@ -542,6 +557,123 @@ pub fn record_capability(claimed: u64, islands: u64) {
 pub fn record_viable_islands_retained(n: u64) {
     VIABLE_ISLANDS_RETAINED.fetch_add(n, ORD);
 }
+
+/// Record one cluster's passage past — or around — the net-benefit gate. **RAI-011.**
+///
+/// One call site, two counters, and only one of them is conditional: an author who wants
+/// `net_benefit_gate_evaluations` to be non-zero has to go through the path that also records the
+/// bypass, so the pair cannot be forged from either end. Same shape as
+/// `allocator::on_residency_evaluated`.
+///
+/// The finding this exists for: `viable_islands_retained == 0` was *structurally ambiguous*
+/// between "the gate ran on every cluster and rejected all of them" and "the gate was never
+/// consulted because there was exactly one cluster". Those are opposite facts about the system
+/// and they printed the same digit. Phi-3.5 now converges to a single fused island, so the
+/// ambiguous reading is the one our only real model produces.
+pub fn record_net_benefit_decision(evaluated: bool) {
+    NET_BENEFIT_CLUSTERS_SEEN.fetch_add(1, ORD);
+    if evaluated {
+        NET_BENEFIT_GATE_EVALUATIONS.fetch_add(1, ORD);
+    } else {
+        NET_BENEFIT_GATE_BYPASSES.fetch_add(1, ORD);
+    }
+}
+
+/// The three-state reading of `viable_islands_retained`, as a JSON fragment.
+///
+/// * `"UNWIRED"` — no cluster has reached the decision point at all (R10: uninvoked is not empty).
+/// * `"UNOBSERVABLE"` — clusters were seen and **every one of them bypassed** the gate, so the
+///   event `viable_islands_retained` counts could not occur in this run's frame (R12).
+/// * an integer — the gate ran on at least one cluster, so `0` is a *result*: all rejected.
+///
+/// A type change, not a value change: an increment can forge a number and cannot forge a type.
+fn viable_islands_retained_json() -> String {
+    let seen = NET_BENEFIT_CLUSTERS_SEEN.load(ORD);
+    let evaluated = NET_BENEFIT_GATE_EVALUATIONS.load(ORD);
+    if seen == 0 {
+        "\"UNWIRED\"".to_string()
+    } else if evaluated == 0 {
+        "\"UNOBSERVABLE\"".to_string()
+    } else {
+        VIABLE_ISLANDS_RETAINED.load(ORD).to_string()
+    }
+}
+
+/// Token naming what happened to the net-benefit gate on this run, for a reader who is grepping a
+/// word rather than doing arithmetic.
+fn net_benefit_gate_state() -> &'static str {
+    let seen = NET_BENEFIT_CLUSTERS_SEEN.load(ORD);
+    let evaluated = NET_BENEFIT_GATE_EVALUATIONS.load(ORD);
+    let bypassed = NET_BENEFIT_GATE_BYPASSES.load(ORD);
+    match (seen, evaluated, bypassed) {
+        (0, _, _) => "UNWIRED",
+        (_, 0, _) => "BYPASSED",
+        (_, _, 0) => "EVALUATED",
+        _ => "MIXED",
+    }
+}
+
+/// Record a broken commitment: a node this EP **claimed** whose `Compute()` returned non-OK.
+///
+/// `delivered_to_ort_sink` is whether the mandatory WARN actually reached ORT's own logger, not
+/// whether we tried. Two counters, one call site, one of them unconditional — the delivered count
+/// cannot be raised without also raising the count of events it is a subset of.
+///
+/// **This writes the counters artifact immediately.** The R12 hazard that bit `alloc_*` at
+/// shutdown applies with full force here: a broken commitment is followed by ORT's silent fallback
+/// and, in the incidents this instrument exists for, by a session that never reaches an orderly
+/// teardown on the path a reader is watching. An observable that can only be read at a moment that
+/// no longer occurs is out-of-frame by construction, so this one is read at the *instant of the
+/// event* rather than at a shutdown that is not guaranteed to arrive.
+pub fn record_broken_commitment(delivered_to_ort_sink: bool) {
+    BROKEN_COMMITMENTS.fetch_add(1, ORD);
+    if delivered_to_ort_sink {
+        BROKEN_COMMITMENT_WARNS_TO_ORT.fetch_add(1, ORD);
+    }
+    dump_if_requested();
+}
+
+/// Record that a Compute failure was **planted** by the fault-injection control rather than
+/// suffered. Counted separately and published separately so that an injected failure can never be
+/// read as a real one, in either direction.
+pub fn record_injected_compute_failure() {
+    COMPUTE_FAILURES_INJECTED.fetch_add(1, ORD);
+}
+
+/// The three-state reading of `broken_commitments`.
+///
+/// `0` is only printable when at least one `Compute` ran: with `compute_calls == 0` this EP never
+/// executed a claim, so a claim it made cannot have been broken, and the event is out of frame
+/// (R12) rather than absent. This is the same forgery `_verdict.py` refuses for `MATCH` — a
+/// CPU-only run must not be able to produce the clean-run token.
+fn broken_commitments_json() -> String {
+    if COMPUTE_CALLS.load(ORD) == 0 {
+        "\"UNOBSERVABLE\"".to_string()
+    } else {
+        BROKEN_COMMITMENTS.load(ORD).to_string()
+    }
+}
+
+/// Which channel carried the broken-commitment WARNs, as a token.
+///
+/// * `"UNOBSERVABLE"` — no broken commitment occurred, so the channel has not been exercised and
+///   nothing about it is known from this run. Not `"ORT_SINK"`; a channel is not proven by the
+///   absence of traffic.
+/// * `"ORT_SINK"` — every WARN reached `Logger_LogMessage`.
+/// * `"PRIVATE_LOG_ONLY"` — at least one WARN could not reach ORT's logger (none attached) and
+///   exists only on our stderr, i.e. invisible to exactly the audience Ruling 2 names.
+fn broken_commitment_channel() -> &'static str {
+    let events = BROKEN_COMMITMENTS.load(ORD);
+    let delivered = BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD);
+    if events == 0 {
+        "UNOBSERVABLE"
+    } else if delivered == events {
+        "ORT_SINK"
+    } else {
+        "PRIVATE_LOG_ONLY"
+    }
+}
+
 ///
 /// Writing on every successful dispatch means: a crash *after* real work still leaves evidence of
 /// that work, and successive reads of the file always reflect the latest accumulated state rather
@@ -584,6 +716,12 @@ pub fn reset() {
     staging::reset();
     weights::reset();
     VIABLE_ISLANDS_RETAINED.store(0, ORD);
+    NET_BENEFIT_CLUSTERS_SEEN.store(0, ORD);
+    NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
+    NET_BENEFIT_GATE_BYPASSES.store(0, ORD);
+    BROKEN_COMMITMENTS.store(0, ORD);
+    BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
+    COMPUTE_FAILURES_INJECTED.store(0, ORD);
 }
 
 impl VulkanEpCounters {
@@ -606,12 +744,21 @@ impl VulkanEpCounters {
     pub fn to_json_with_equiv(&self, equiv: &str) -> String {
         let claimed = CLAIMED_NODES.load(ORD);
         let islands = ISLANDS_OFFERED.load(ORD);
-        let viable = VIABLE_ISLANDS_RETAINED.load(ORD);
+        let viable = viable_islands_retained_json();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
              \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
              \"viable_islands_retained\": {},\n  \
+             \"net_benefit_gate\": \"{}\",\n  \
+             \"net_benefit_gate_clusters_seen\": {},\n  \
+             \"net_benefit_gate_evaluations\": {},\n  \
+             \"net_benefit_gate_bypasses\": {},\n  \
+             \"broken_commitments\": {},\n  \
+             \"broken_commitment_warns_to_ort_sink\": {},\n  \
+             \"broken_commitment_warn_channel\": \"{}\",\n  \
+             \"compute_failures_injected\": {},\n  \
+             \"fault_injection\": \"{}\",\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -623,6 +770,19 @@ impl VulkanEpCounters {
             claimed,
             islands,
             viable,
+            net_benefit_gate_state(),
+            NET_BENEFIT_CLUSTERS_SEEN.load(ORD),
+            NET_BENEFIT_GATE_EVALUATIONS.load(ORD),
+            NET_BENEFIT_GATE_BYPASSES.load(ORD),
+            broken_commitments_json(),
+            BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD),
+            broken_commitment_channel(),
+            COMPUTE_FAILURES_INJECTED.load(ORD),
+            if crate::ep::fault_injection_active() {
+                "ACTIVE"
+            } else {
+                "NONE"
+            },
             equiv,
         )
     }
@@ -814,7 +974,9 @@ pub fn dump_observations_if_requested() {
             authoritative,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
-            alloc_device_index.replace('\\', "\\\\").replace('"', "\\\""),
+            alloc_device_index
+                .replace('\\', "\\\\")
+                .replace('"', "\\\""),
             session_devices.replace('\\', "\\\\").replace('"', "\\\""),
             frame_sides.replace('\\', "\\\\").replace('"', "\\\""),
             st.0,
@@ -1121,6 +1283,12 @@ mod tests {
     /// with each other. One test, sequenced by hand, is simpler than a mutex and cannot deadlock.
     #[test]
     fn counters_record_what_they_claim_to_record() {
+        // Process-global statics, hand-sequenced below. Other tests in this binary drive the real
+        // `Compute` entry point and legitimately record broken commitments while this one runs;
+        // without the shared lock this test reads their events as its own and fails intermittently
+        // — a flake that is really a frame error, since the counters are process-wide and the
+        // assertions here are about *this* sequence.
+        let _g = crate::allocator::ledger::test_lock();
         reset();
         assert_eq!(snapshot().dispatches_executed, 0);
 
@@ -1177,8 +1345,166 @@ mod tests {
         // SAFETY: null is explicitly permitted and returns 0.
         assert_eq!(unsafe { fill(std::ptr::null_mut(), 64) }, 0);
 
+        // ---------------------------------------------------------------------------------
+        // RAI Ruling 2 / RAI-011: the two states that must never print the same digit.
+        // ---------------------------------------------------------------------------------
+        reset();
+
+        // No Compute has run, so no claim this EP made can have been broken: the event is out of
+        // frame, and R12 says that reads UNOBSERVABLE and never 0. This is what stops a CPU-only
+        // fallback run — the 2026-07-30 specimen — from producing the clean-run token.
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"broken_commitments\": \"UNOBSERVABLE\""),
+            "a run with zero Compute calls cannot have broken a commitment; got:\n{json}"
+        );
+        assert!(
+            json.contains("\"broken_commitment_warn_channel\": \"UNOBSERVABLE\""),
+            "an unexercised channel is not a working channel; got:\n{json}"
+        );
+
+        // One Compute later, the zero is a result: the negative polarity's assertion.
+        record_compute_call();
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"broken_commitments\": 0"),
+            "once a claim has been executed, 0 broken commitments is a measurement; got:\n{json}"
+        );
+
+        // The WARN fired and reached ORT's sink.
+        record_broken_commitment(true);
+        let json = snapshot().to_json();
+        assert!(json.contains("\"broken_commitments\": 1"), "{json}");
+        assert!(
+            json.contains("\"broken_commitment_warns_to_ort_sink\": 1"),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"broken_commitment_warn_channel\": \"ORT_SINK\""),
+            "{json}"
+        );
+
+        // A WARN that reached nobody must not be reported as a delivered disclosure.
+        record_broken_commitment(false);
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"broken_commitment_warn_channel\": \"PRIVATE_LOG_ONLY\""),
+            "a WARN that never reached ORT's logger must say so; got:\n{json}"
+        );
+
+        // RAI-011: bypassed and all-rejected are opposite facts and printed the same digit.
+        reset();
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"viable_islands_retained\": \"UNWIRED\""),
+            "no cluster has reached the decision point; got:\n{json}"
+        );
+
+        record_net_benefit_decision(false); // single-cluster bypass — Phi-3.5's fused island
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"viable_islands_retained\": \"UNOBSERVABLE\""),
+            "a bypassed gate cannot retain an island, so its 0 is out of frame; got:\n{json}"
+        );
+        assert!(
+            json.contains("\"net_benefit_gate\": \"BYPASSED\""),
+            "{json}"
+        );
+
+        record_net_benefit_decision(true); // the gate actually ran on a cluster and rejected it
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"viable_islands_retained\": 0"),
+            "once the gate has run, 0 retained is a rejection and must be a number; got:\n{json}"
+        );
+        assert!(json.contains("\"net_benefit_gate\": \"MIXED\""), "{json}");
+        assert!(
+            json.contains("\"net_benefit_gate_evaluations\": 1"),
+            "{json}"
+        );
+        assert!(json.contains("\"net_benefit_gate_bypasses\": 1"), "{json}");
+
+        record_viable_islands_retained(2);
+        let json = snapshot().to_json();
+        assert!(json.contains("\"viable_islands_retained\": 2"), "{json}");
+
         reset();
         assert_eq!(snapshot().compute_calls, 0);
+    }
+
+    /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies
+    /// drift, and a drifted one fails *quietly*: `extract_equivalence` maps any token it does not
+    /// recognise to `UNMEASURED`, so a token the Python side renamed would arrive here as "no
+    /// comparison was performed" — a red turned into a shrug, which is precisely the two-token
+    /// disease R13 names. This test reads the Python file and asserts the two sets are equal.
+    ///
+    /// A missing or unparsable file is an **instrument error**, never a pass: it panics with a
+    /// message saying so. A cross-language check that silently skips when it cannot find its
+    /// subject is not a check.
+    #[test]
+    fn verdict_vocabulary_cannot_drift_from_the_python_harness() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("tests")
+            .join("ops")
+            .join("_verdict.py");
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "ERROR(instrument=verdict_vocabulary_unreadable): {} — {e}. This test cannot \
+                 report a vocabulary as undrifted when it never read the other half of it.",
+                path.display()
+            )
+        });
+
+        // `VERDICT_MATCH: str = "MATCH"` -> "MATCH". Deliberately literal: an alias or a computed
+        // name would not be picked up, and that is correct — the Rust side can only compare
+        // against literals it can see.
+        let mut python: Vec<String> = src
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("VERDICT_")?;
+                let (_, value) = rest.split_once("= \"")?;
+                Some(value.trim_end_matches(['"', ' ']).to_string())
+            })
+            .collect();
+        python.sort();
+        assert!(
+            !python.is_empty(),
+            "ERROR(instrument=verdict_vocabulary_unparsable): found no `VERDICT_* : str = \"...\"` \
+             definitions in {}. The file's shape changed and this test is now reading nothing, \
+             which would let every future drift pass.",
+            path.display()
+        );
+
+        let mut rust = vec![
+            EQUIVALENCE_MATCH.to_string(),
+            EQUIVALENCE_DIVERGENT.to_string(),
+            EQUIVALENCE_UNMEASURED.to_string(),
+            EQUIVALENCE_UNATTRIBUTED.to_string(),
+            EQUIVALENCE_SPLIT_FRAME.to_string(),
+        ];
+        rust.sort();
+
+        assert_eq!(
+            python, rust,
+            "the verdict vocabulary drifted between tests/ops/_verdict.py and counters.rs. \
+             Every token the harness can write must be a token this crate can read back, or the \
+             unreadable one silently becomes UNMEASURED."
+        );
+
+        // The keys the token and the record travel under must match too: a correct token written
+        // under a key nobody reads is the same silence with an extra step.
+        for (rust_key, python_name) in [
+            (EQUIVALENCE_KEY, "EQUIVALENCE_KEY"),
+            (EQUIVALENCE_RECORD_KEY, "EQUIVALENCE_RECORD_KEY"),
+        ] {
+            let needle = format!("{python_name}: str = \"{rust_key}\"");
+            assert!(
+                src.contains(&needle),
+                "tests/ops/_verdict.py does not define {python_name} as {rust_key:?}; the JSON \
+                 key carrying the verdict drifted between the writer and the reader"
+            );
+        }
     }
 
     #[test]

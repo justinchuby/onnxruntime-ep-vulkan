@@ -80,7 +80,7 @@ impl Log for EpLogger {
         };
         let message = record.args().to_string();
         eprintln!("[vulkan-ep] {tag}: {message}");
-        forward_to_ort(
+        let _ = forward_to_ort(
             record.level(),
             record.target(),
             &message,
@@ -117,18 +117,24 @@ fn ort_severity(level: Level) -> ort::OrtLoggingLevel {
 /// equally undefined.) We passed null here and it killed the first ORT process that ever loaded
 /// this plugin. So `file_path` is always a real, NUL-terminated, platform-width string; when a
 /// record carries no source location we substitute [`UNKNOWN_FILE`] rather than null.
-fn forward_to_ort(level: Level, target: &str, message: &str, file: Option<&str>, line: u32) {
+fn forward_to_ort(
+    level: Level,
+    target: &str,
+    message: &str,
+    file: Option<&str>,
+    line: u32,
+) -> bool {
     let logger = ORT_LOGGER.load(Ordering::Acquire);
     let api = ORT_API.load(Ordering::Acquire);
     if logger.is_null() || api.is_null() {
-        return;
+        return false;
     }
     // ORT copies the message; interior nuls would truncate it, so replace them.
     let Ok(c_message) = CString::new(message.replace('\0', "?")) else {
-        return;
+        return false;
     };
     let Ok(c_target) = CString::new(target.replace('\0', "?")) else {
-        return;
+        return false;
     };
     let c_file = ort_path(file.unwrap_or(UNKNOWN_FILE));
 
@@ -141,7 +147,7 @@ fn forward_to_ort(level: Level, target: &str, message: &str, file: Option<&str>,
     // immediately.
     unsafe {
         let Some(log_message) = (*api).Logger_LogMessage else {
-            return;
+            return false;
         };
         let status = log_message(
             logger,
@@ -152,7 +158,29 @@ fn forward_to_ort(level: Level, target: &str, message: &str, file: Option<&str>,
             c_target.as_ptr(),
         );
         crate::sys::release_status(api, status);
+        true
     }
+}
+
+/// Emit one WARNING into **ORT's own logging sink**, bypassing this crate's `log` facade
+/// entirely. Returns `true` when the message actually reached `Logger_LogMessage`.
+///
+/// # Why this exists when `log::warn!` already forwards to ORT
+///
+/// `log::warn!` reaches ORT's sink only when *our* `LevelFilter` lets the record through, and that
+/// filter is environment-controlled ([`resolve_level`], `RUST_LOG`). A disclosure that a user can
+/// switch off with an environment variable is not a disclosure; RAI Ruling 2 requires the
+/// broken-commitment WARN to fire **every time, with no opt-out**, so it must not travel down a
+/// path with a filter on it.
+///
+/// The stderr line is emitted too, but it is deliberately the *second* witness: a WARN in this
+/// project's private log is invisible to exactly the audience that matters — a host with ORT
+/// logging configured, watching the channel that already carries ORT's own `Falling back` line.
+/// The boolean return is what lets the counters artifact say which channel actually carried it,
+/// so `PRIVATE_LOG_ONLY` can never be read as a delivered disclosure.
+pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
+    eprintln!("[vulkan-ep] WARN: {message}");
+    forward_to_ort(Level::Warn, target, message, Some(UNKNOWN_FILE), 0)
 }
 
 /// Stand-in `file_path` for a record with no source location. Never empty, never null.
