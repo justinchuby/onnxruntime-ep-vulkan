@@ -115,6 +115,10 @@ layout(constant_id = 1) const uint QB_BITS = 4u;
 layout(constant_id = 2) const uint QB_BLOCK = 32u;
 layout(constant_id = 3) const uint QB_HAS_ZP = 0u;
 layout(constant_id = 4) const uint QB_COLS = 1u;
+// 1 when `blob_bytes()` is a multiple of 16, i.e. when the packed weights of one (column, block)
+// can be fetched as whole `uvec4`s. Supplied by the host rather than derived here so the branch
+// below is a specialization constant and the unused path is eliminated at pipeline creation.
+layout(constant_id = 5) const uint QB_PACKED = 0u;
 
 // Largest column tile this module can hold in registers. Every per-column array below is sized by
 // this literal, never by the specialisation constant, so the register budget is a static property
@@ -178,8 +182,17 @@ void store_y_pair(uint i, float v0, float v1) {
 }
 #endif
 
-layout(set = 0, binding = 1) readonly buffer InB { uint data[]; } inb;
+layout(set = 0, binding = 1) readonly buffer InB { uvec4 data[]; } inb;
 layout(set = 0, binding = 3) readonly buffer InZ { uint data[]; } inz;
+
+/// One 32-bit word of the packed weight stream, addressed by word index.
+///
+/// `InB` is declared as `uvec4` so the packed path below can issue a single 128-bit load per
+/// (column, block) instead of four dependent 32-bit ones; this accessor is how the general path
+/// still reads it a word at a time. Dynamic component indexing of a vector is well-defined, and
+/// `Allocator::alloc` rounds every buffer to a multiple of 16 bytes so the trailing element is
+/// always fully backed.
+uint load_b_word(uint wi) { return inb.data[wi >> 2u][wi & 3u]; }
 
 // -- helpers ----------------------------------------------------------------------------------
 
@@ -208,7 +221,39 @@ int load_zp(uint col, uint blk) {
     return int((b >> shift) & ((1u << QB_BITS) - 1u));
 }
 
-// -- reduction --------------------------------------------------------------------------------
+// -- multiply-accumulate ------------------------------------------------------------------------
+
+/// Eight 4-bit weights packed in one word, against the eight activations they multiply.
+///
+/// Factored out of the inner loop so the packed and general paths share one arithmetic definition:
+/// if they diverged, a bug could appear on one shape and not the other, and `blob_bytes()` decides
+/// which path runs.
+float mac8_4b(uint word, vec2 a0, vec2 a1, vec2 a2, vec2 a3, float z) {
+    uint b0 = word & 0xFFu;
+    uint b1 = (word >> 8u) & 0xFFu;
+    uint b2 = (word >> 16u) & 0xFFu;
+    uint b3 = word >> 24u;
+    float t = a0.x * (float(b0 & 0xFu) - z);
+    t += a0.y * (float(b0 >> 4u) - z);
+    t += a1.x * (float(b1 & 0xFu) - z);
+    t += a1.y * (float(b1 >> 4u) - z);
+    t += a2.x * (float(b2 & 0xFu) - z);
+    t += a2.y * (float(b2 >> 4u) - z);
+    t += a3.x * (float(b3 & 0xFu) - z);
+    t += a3.y * (float(b3 >> 4u) - z);
+    return t;
+}
+
+/// Four 8-bit weights packed in one word, against the four activations they multiply.
+float mac4_8b(uint word, vec2 a0, vec2 a1, float z) {
+    float t = a0.x * (float(word & 0xFFu) - z);
+    t += a0.y * (float((word >> 8u) & 0xFFu) - z);
+    t += a1.x * (float((word >> 16u) & 0xFFu) - z);
+    t += a1.y * (float(word >> 24u) - z);
+    return t;
+}
+
+// -- reduction ----------------------------------------------------------------------------------
 
 // Shared floats reserved for the reduction: 1024 = 4 KiB, comfortably inside the 16 KiB
 // shared-memory floor of §7.2 and inside the 32 KiB an Intel Xe subslice offers without
@@ -255,7 +300,57 @@ void main() {
                 bacc[c] = 0.0;
             }
 
-            for (uint w = 0u; w < nwords; ++w) {
+            if (QB_PACKED == 1u) {
+                // The packed path: one 128-bit load per (column, 16-byte chunk) in place of four
+                // dependent 32-bit ones. Batch-1 GEMV is memory-bandwidth-bound, so load width is
+                // the dominant term, and the four components of the `uvec4` feed four INDEPENDENT
+                // accumulators — the serial `t += ...` chain of the general path is a latency
+                // dependency that pins memory-level parallelism near one outstanding load.
+                //
+                // A 16-byte chunk covers 32 elements of k at 4 bits, 16 at 8 bits. Those
+                // activations are loaded once per chunk and reused by every column of the tile.
+                // The two widths are written as separate blocks with LITERAL loop bounds so the
+                // activation array is guaranteed to unroll into registers: a bound derived from a
+                // specialization constant is not always enough for a driver to promote the array,
+                // and an `av[]` that lands in scratch memory would cost far more than the wide
+                // load saves.
+                uint nchunk = bb >> 4u;
+                if (QB_BITS == 4u) {
+                    for (uint ch = 0u; ch < nchunk; ++ch) {
+                        uint ke = a_base + k0 + ch * 32u;
+                        vec2 av[16];
+                        for (uint i = 0u; i < 16u; ++i) {
+                            av[i] = load_a2(ke + i * 2u);
+                        }
+                        for (uint c = 0u; c < QB_COLS; ++c) {
+                            uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
+                            float z = zpf[c];
+                            float t0 = mac8_4b(v.x, av[0], av[1], av[2], av[3], z);
+                            float t1 = mac8_4b(v.y, av[4], av[5], av[6], av[7], z);
+                            float t2 = mac8_4b(v.z, av[8], av[9], av[10], av[11], z);
+                            float t3 = mac8_4b(v.w, av[12], av[13], av[14], av[15], z);
+                            bacc[c] += (t0 + t1) + (t2 + t3);
+                        }
+                    }
+                } else {
+                    for (uint ch = 0u; ch < nchunk; ++ch) {
+                        uint ke = a_base + k0 + ch * 16u;
+                        vec2 av[8];
+                        for (uint i = 0u; i < 8u; ++i) {
+                            av[i] = load_a2(ke + i * 2u);
+                        }
+                        for (uint c = 0u; c < QB_COLS; ++c) {
+                            uvec4 v = inb.data[(((ucol[c] * bpc + blk) * bb) >> 4u) + ch];
+                            float z = zpf[c];
+                            float t0 = mac4_8b(v.x, av[0], av[1], z);
+                            float t1 = mac4_8b(v.y, av[2], av[3], z);
+                            float t2 = mac4_8b(v.z, av[4], av[5], z);
+                            float t3 = mac4_8b(v.w, av[6], av[7], z);
+                            bacc[c] += (t0 + t1) + (t2 + t3);
+                        }
+                    }
+                }
+            } else for (uint w = 0u; w < nwords; ++w) {
                 // `A` is loaded ONCE per word of `B` and reused by every column of the tile. This
                 // is the whole point of the tile: the column loop is inside the `A` load, not
                 // outside it.
@@ -266,34 +361,16 @@ void main() {
                     vec2 a45 = load_a2(ke + 4u);
                     vec2 a67 = load_a2(ke + 6u);
                     for (uint c = 0u; c < QB_COLS; ++c) {
-                        uint packed = inb.data[(((ucol[c] * bpc + blk) * bb) >> 2u) + w];
-                        float z = zpf[c];
-                        uint b0 = packed & 0xFFu;
-                        uint b1 = (packed >> 8u) & 0xFFu;
-                        uint b2 = (packed >> 16u) & 0xFFu;
-                        uint b3 = packed >> 24u;
-                        float t = a01.x * (float(b0 & 0xFu) - z);
-                        t += a01.y * (float(b0 >> 4u) - z);
-                        t += a23.x * (float(b1 & 0xFu) - z);
-                        t += a23.y * (float(b1 >> 4u) - z);
-                        t += a45.x * (float(b2 & 0xFu) - z);
-                        t += a45.y * (float(b2 >> 4u) - z);
-                        t += a67.x * (float(b3 & 0xFu) - z);
-                        t += a67.y * (float(b3 >> 4u) - z);
-                        bacc[c] += t;
+                        uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
+                        bacc[c] += mac8_4b(packed, a01, a23, a45, a67, zpf[c]);
                     }
                 } else {
                     uint ke = a_base + k0 + w * 4u;
                     vec2 a01 = load_a2(ke);
                     vec2 a23 = load_a2(ke + 2u);
                     for (uint c = 0u; c < QB_COLS; ++c) {
-                        uint packed = inb.data[(((ucol[c] * bpc + blk) * bb) >> 2u) + w];
-                        float z = zpf[c];
-                        float t = a01.x * (float(packed & 0xFFu) - z);
-                        t += a01.y * (float((packed >> 8u) & 0xFFu) - z);
-                        t += a23.x * (float((packed >> 16u) & 0xFFu) - z);
-                        t += a23.y * (float(packed >> 24u) - z);
-                        bacc[c] += t;
+                        uint packed = load_b_word((((ucol[c] * bpc + blk) * bb) >> 2u) + w);
+                        bacc[c] += mac4_8b(packed, a01, a23, zpf[c]);
                     }
                 }
             }

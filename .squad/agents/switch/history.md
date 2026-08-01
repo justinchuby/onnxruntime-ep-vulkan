@@ -1546,3 +1546,88 @@ All probe output to bench/results/, nothing in the repo root.
 Decisions: switch-gemv-column-tile.md, switch-intel-gap-separated.md,
 switch-leaked-device-validation-unobservable.md, switch-kernel-spread-reconciliation-niobe.md,
 switch-index-space-unified-by-single-offer.md. Committed on squad/switch, not pushed.
+
+## Session 38 — 2026-08-01 — packed 128-bit loads, and the Intel residual closes
+
+Merged origin/main (5eda83b — Fact Checker's docs/PERF.md and his hardware-clock decision record).
+
+Coordinator relayed three Fact Checker findings: bandwidth predicts only 3.08x of the 13.52x Intel
+gap leaving a 4.39x residual that is ours; Intel's 52.0833 ns/tick counter is reference-clock based
+and trustworthy so NO_STEADY_TAIL means busy-box not broken-clock; and packed loads plus multiple
+accumulators are a stronger gap than the no-subgroups constraint. He asked for a controlled A/B
+rather than an assumption.
+
+Note: the relay was timestamped 08:22 and re-listed the three "still owed" items, but all three had
+been closed at 09:08-09:14 in session 37 (index spaces verified SHARED on both selectors with the
+device NAME varying by selector; leaked-device UNOBSERVABLE record; Niobe reconciliation). Confirmed
+rather than redone.
+
+PREDICTION, stated before building: NVIDIA 12.294 -> 11.3 ms total (range 10.5-12.3), kernel 65.36
+-> 58 us; Intel kernel 468.32 -> 310 us (range 250-420). Reasoning given in advance: NVIDIA was
+already ~70% of peak bandwidth so little to get, Intel is where narrow scattered loads cost most.
+
+CHANGE. InB is now declared uvec4[]. When the (column, block) blob is a whole number of 16-byte
+units — spec constant QB_PACKED id 5, from gemv_packed(bits, block_size) — the kernel takes ONE
+128-bit load per blob instead of four dependent 32-bit ones, and feeds the four components into four
+INDEPENDENT accumulators instead of one serial chain. Two non-optional details: Allocator::alloc now
+rounds every buffer to a multiple of 16 bytes, because a runtime-sized uvec4[] only covers
+floor(size/16) elements and an unpadded buffer leaves a trailing partial element the shader must
+never touch; and the activation array is filled by loops with LITERAL bounds written out per
+bit-width, because my first version derived the bound from a spec constant, the driver did not
+promote the array to registers, and the kernel got SLOWER. I caught that from a normalised ratio
+going the wrong way (1.95 vs 1.62), not from a crash.
+
+THE A/B. The box would not go quiet — I polled 25 minutes and never got six consecutive samples
+under 20%, the same wall Niobe hit. Two runs taken under load disagreed with each other (normalised
+1.95 then 1.29) with gqa_f16 inflated 4.2x, beyond the range where I had validated common-mode
+cancellation; per R13 that is ERROR(instrument) and I refused to score it. Instead I added a runtime
+override, ONNXRUNTIME_EP_VULKAN_GEMV_PACKED, purely so the two arms can be INTERLEAVED without a
+rebuild, and ran paired reps with the untouched gqa_f16 reported per arm.
+
+  NVIDIA, 3 pairs, controls stable 40.3-41.7 us, all MATCH:
+    packed 66.44 / 64.39 / 66.09   scalar 69.19 / 72.35 / 69.22   = 1.07x
+  Intel, 2 pairs:
+    packed 292.34 / 298.74         scalar 404.94 / 458.91         = 1.385x / 1.327x
+
+The gains are real and disproportionately Intel's, which is what a bandwidth-bound kernel on a
+narrow memory pipe predicts. Fact Checker's hypothesis confirmed rather than merely consistent.
+
+MEASURED, both STEADY, both MATCH, device timestamp counter:
+  RTX 4060   11.567 ms/inf   STEADY n=7 RSD 0.224%   kernel 64.91 us
+  Iris Xe    56.881 ms/inf   STEADY n=5 RSD 1.529%   kernel 297.15 us
+
+First STEADY Intel figure for a fast build on this project. Predicted 11.3 (met, in range) and 310
+us on Intel (met — 292-299 in the A/B, 297.15 final). On NVIDIA I predicted 58 us and got ~65: I
+OVER-PREDICTED the NVIDIA gain, in exactly the direction my own roofline argument had warned. I
+should have trusted the argument over the round number.
+
+THE FINDING. Fact Checker's falsifier was "close the gap and Intel lands near 3x". It does not — it
+lands at 4.58x (297.15/64.91). But in those same two runs gqa_f16, which I have never touched, lands
+at 4.46x (172.86/38.80). So the bandwidth-only model has a ~1.49x blind spot that is COMMON TO ALL
+KERNELS on this machine pair — hardware/driver, not our design. Our kernel is now within 3% of what
+an independently written kernel achieves on the same two parts.
+
+Design-attributable excess, q_gemv/gqa within the same run, across three commits:
+                    NVIDIA   Intel   excess
+  baseline            6.97   19.89    2.85x
+  + column tile       1.62    2.43    1.50x
+  + packed loads      1.67    1.72    1.03x
+Closed, not reduced — 1.03x is inside the control's own run-to-run spread. Proposed back to Fact
+Checker as a refinement: bandwidth is the right predictor, but the right FALSIFIER is a control
+kernel on the same two parts, not the ratio of datasheet bandwidths, because holding a kernel to
+3.08x demands 1.49x that no kernel on this machine achieves.
+
+Cumulative over sessions 37-38: NVIDIA 40.390 -> 11.567 ms GPU busy (3.49x), kernel 244.09 -> 64.91
+us (3.76x); Intel kernel 3804.85 -> 297.15 us (12.8x).
+
+SHARED MEMORY, asked directly so answered with the number: q_gemv requests shared float red[1024] =
+4096 bytes, FIXED. Sized by a literal rather than by local_size_x*QB_COLS precisely so the
+requirement is a static property of the module; gemv_cols clamps wg*cols <= 1024 to keep that true.
+4 KiB against Intel's 32 KiB is not an occupancy constraint and there is no 48 KiB assumption
+anywhere to lose. Eliminated as a suspect.
+
+No subgroup intrinsic added — Fact Checker's finding that packed loads are the stronger gap is why
+none was needed.
+
+Validation: fmt clean, clippy clean, cargo test --release --lib 418 passed 0 failed 2 ignored.
+Decision: switch-packed-loads-residual-closed.md. Committed on squad/switch, not pushed.

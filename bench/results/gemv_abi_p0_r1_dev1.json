@@ -1,0 +1,118 @@
+{
+  "trace": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\trace_gemv_abi_p0_r1_dev1.json",
+  "verdict_of_run": "MATCH",
+  "gpu_span_accounting": {
+    "red": false,
+    "asserts": "sum(subgraph.nodes)(4970) == gpu spans(4970)",
+    "expected_from_nodes": 4970,
+    "observed_gpu_spans": 4970,
+    "dispatches_executed": null,
+    "detail": "ok: 4970 == 4970 \u2014 every dispatch produced exactly one timestamped span, so ordinal attribution is exact"
+  },
+  "ordinal_left_over": 0,
+  "inferences": 14,
+  "islands_per_inference": 1,
+  "gpu_busy_series_ms": [
+    69.693,
+    78.92,
+    74.032,
+    72.664,
+    75.069,
+    75.052,
+    75.892,
+    76.307,
+    75.096,
+    75.064,
+    75.89,
+    75.568,
+    72.38,
+    71.796
+  ],
+  "gpu_steady_tail": {
+    "n_inferences": 14,
+    "series_ms": [
+      69.693,
+      78.92,
+      74.032,
+      72.664,
+      75.069,
+      75.052,
+      75.892,
+      76.307,
+      75.096,
+      75.064,
+      75.89,
+      75.568,
+      72.38,
+      71.796
+    ],
+    "verdict": "STEADY",
+    "discarded_inferences": 2,
+    "n": 12,
+    "median_ms": 75.0666,
+    "mean_ms": 74.5676,
+    "min_ms": 71.7961,
+    "max_ms": 76.3069,
+    "rsd": 0.019323,
+    "detail": "GPU busy settles after 2 inference(s) and holds 75.067 ms across 12 of them at 1.9323% RSD. Device-clock only: this is the summed duration of the dispatches, not the wall time of an inference, and it is NOT a substitute for the end-to-end figure."
+  },
+  "kernels_all_inferences": [
+    {
+      "kernel": "q_gemv_matmul_nbits_f16",
+      "total_ms": 912.746,
+      "share": 0.8748,
+      "dispatches": 2254,
+      "dispatches_per_inference": 161.0,
+      "mean_us": 404.94
+    },
+    {
+      "kernel": "gqa_f16",
+      "total_ms": 72.499,
+      "share": 0.0695,
+      "dispatches": 448,
+      "dispatches_per_inference": 32.0,
+      "mean_us": 161.83
+    },
+    {
+      "kernel": "skip_simplified_layer_norm_f16",
+      "total_ms": 39.656,
+      "share": 0.038,
+      "dispatches": 896,
+      "dispatches_per_inference": 64.0,
+      "mean_us": 44.26
+    },
+    {
+      "kernel": "ew_binary_mul_f16",
+      "total_ms": 11.84,
+      "share": 0.0113,
+      "dispatches": 896,
+      "dispatches_per_inference": 64.0,
+      "mean_us": 13.21
+    },
+    {
+      "kernel": "ew_unary_sigmoid_f16",
+      "total_ms": 6.166,
+      "share": 0.0059,
+      "dispatches": 448,
+      "dispatches_per_inference": 32.0,
+      "mean_us": 13.76
+    },
+    {
+      "kernel": "simplified_layer_norm_f16",
+      "total_ms": 0.389,
+      "share": 0.0004,
+      "dispatches": 14,
+      "dispatches_per_inference": 1.0,
+      "mean_us": 27.8
+    },
+    {
+      "kernel": "gather_f16",
+      "total_ms": 0.128,
+      "share": 0.0001,
+      "dispatches": 14,
+      "dispatches_per_inference": 1.0,
+      "mean_us": 9.17
+    }
+  ],
+  "kept_inferences_for_kernels": 12
+}

@@ -326,6 +326,24 @@ pub fn gemv_workgroup(blocks_per_col: u64) -> u32 {
 ///   parallelism for reuse.
 ///
 /// Halving preserves the power of two, and therefore the evenness the paired store needs.
+/// Whether one (column, block) blob of packed weights is a whole number of 16-byte units.
+///
+/// When it is, `q_gemv.comp` fetches it with 128-bit loads instead of four dependent 32-bit ones,
+/// and the load is in bounds by construction: the blob starts at a multiple of `blob_bytes` and is
+/// itself at least 16 bytes, so every `uvec4` it touches is fully backed. Batch-1 GEMV is
+/// bandwidth-bound, so this is the dominant term rather than a micro-optimisation.
+pub fn gemv_packed(bits: u32, block_size: u32) -> bool {
+    // A controlled A/B needs the two arms to be interleavable on a contended machine, which a
+    // rebuild between arms makes impossible. This override exists so the packed path can be
+    // switched off in-place and the two builds measured alternately; it is a measurement control,
+    // not a tuning knob, and the default is whatever the shape supports.
+    if let Ok(v) = std::env::var("ONNXRUNTIME_EP_VULKAN_GEMV_PACKED") {
+        return v != "0" && !v.is_empty();
+    }
+    let blob_bytes = (block_size * bits) / 8;
+    blob_bytes % 16 == 0
+}
+
 pub fn gemv_cols(n: u64, wg: u32) -> u32 {
     let mut cols = GEMV_MAX_COLS.min((GEMV_RED_WORDS / wg).max(1));
     while cols > 1 && (n % u64::from(cols) != 0 || n / u64::from(cols) < GEMV_MIN_WORKGROUPS) {
@@ -421,7 +439,14 @@ fn matmul_nbits_gemv(
 
     ctx.dispatch(KernelRequest {
         shader,
-        spec_constants: vec![wg, bits as u32, block_size as u32, u32::from(has_zp), cols],
+        spec_constants: vec![
+            wg,
+            bits as u32,
+            block_size as u32,
+            u32::from(has_zp),
+            cols,
+            u32::from(gemv_packed(bits as u32, block_size as u32)),
+        ],
         push_constants: push,
         bindings: vec![a, b, scales, zp, y],
         workgroups: [(n as u32).div_ceil(cols), m_total as u32, 1],
@@ -816,6 +841,28 @@ mod tests {
     }
 
     /// The column tile is what amortises the activation row; the shared array is what bounds it.
+    #[test]
+    #[test]
+    fn gemv_packed_tracks_the_blob_and_not_the_block() {
+        // The Phi-3.5 shape: 32 weights of 4 bits is a 16-byte blob, so the 128-bit path is live.
+        assert!(gemv_packed(4, 32), "block 32 at 4 bits is a 16-byte blob");
+        assert!(
+            gemv_packed(8, 16),
+            "block 16 at 8 bits is also a 16-byte blob"
+        );
+        assert!(
+            gemv_packed(4, 64),
+            "block 64 at 4 bits is 32 bytes, two whole uvec4"
+        );
+        // Block 16 at 4 bits is an 8-byte blob: half a uvec4, so the vectorised load would
+        // straddle two blobs and the scalar path must be selected instead. This is the case that
+        // makes the spec constant necessary rather than decorative.
+        assert!(
+            !gemv_packed(4, 16),
+            "block 16 at 4 bits is 8 bytes, not a whole uvec4"
+        );
+    }
+
     #[test]
     fn gemv_cols_never_outruns_the_shared_array_or_starves_the_machine() {
         // The four Phi-3.5 shapes. Every one takes the widest tile the shader can hold.
