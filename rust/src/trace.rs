@@ -219,11 +219,16 @@ impl Phase {
                  NESTED INSIDE `record` — already counted there, do not add to the sibling total"
             }
             Phase::Record => {
-                "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket, which CONTAINS \
-                 the `upload` staging memcpy and the `readback` copy. Measured on Phi-3.5, upload \
-                 is 96% of this phase and actual command recording is 1-3% of wall — so this \
-                 number is NOT command-buffer recording cost. Subtract `upload`+`readback` before \
-                 attributing anything here to recording"
+                "host: the whole vkBeginCommandBuffer..vkEndCommandBuffer bracket. It CONTAINS \
+                 `upload`/`cmd_upload` (the staging memcpy), `readback`, `desc_alloc` and \
+                 `pipeline_lookup`, so it is an INCLUSIVE interval and its name describes its \
+                 bracket, not its content (R11). The split is regime-dependent and must be read \
+                 from the child rows of THIS run, never from a remembered ratio: with a cold \
+                 weight cache `cmd_upload` dominates it (measured 1148 of 1185 ms on Phi-3.5's \
+                 first Compute), and with a warm cache the children collapse to ~1-2 ms and the \
+                 UNNAMED RESIDUAL — the vkCmd* calls themselves — is ~90% of it. The summary \
+                 prints that residual as its own row, but CUMULATIVELY over all calls, so it \
+                 mixes the two regimes; the per-call split is only in the trace spans"
             }
             Phase::DescAlloc => {
                 "host/sub-record: vkCreateDescriptorPool + vkAllocateDescriptorSets + \
@@ -542,6 +547,19 @@ pub struct GpuTimestampReport {
 // -------------------------------------------------------------------------------------------
 // Summary
 // -------------------------------------------------------------------------------------------
+
+/// The part of `record` that no child span accounts for — the `vkCmd*` calls themselves.
+///
+/// `record` is an inclusive bracket (R11): every named child is already inside it, so the only
+/// honest statement about "command-buffer recording cost" is the residual. It is a subtraction and
+/// not a measurement, and it is printed as such.
+///
+/// `xfer_us` must be the LARGER of the two transfer accountings (`upload`+`readback` from
+/// `record_transfer`, and the `cmd_upload` sub-span), never their sum: the two can bracket the
+/// same memcpy, and adding them would under-report the residual by inventing child time.
+fn record_residual_us(record_us: u64, xfer_us: u64, desc_alloc_us: u64, pipeline_us: u64) -> u64 {
+    record_us.saturating_sub(xfer_us + desc_alloc_us + pipeline_us)
+}
 
 /// Cumulative, human-readable digest emitted on teardown. Cheap to update; only touched when
 /// tracing or the verbose flag is on.
@@ -1266,6 +1284,38 @@ impl VulkanTracer {
                      other; each is only comparable to its parent `record`.\n",
                 );
             }
+            // THE UNNAMED PART OF `record` GETS A ROW (R11).
+            //
+            // Every child of `record` is named and printed above, which makes the decomposition
+            // *look* closed. It is not: on a warm weight cache the named children fall to ~1-2 ms
+            // of an ~18-23 ms `record`, so ~90% of the phase has no span of its own. That
+            // residual is the vkCmd* recording itself — the thing the phase is named after — and
+            // it was invisible precisely because nothing printed it. A residual that is not
+            // printed is a residual nobody computes.
+            //
+            // `upload`/`readback` (record_transfer totals) and `cmd_upload` (the per-Compute
+            // sub-span) can bracket the same memcpy, so the child set summed here takes the
+            // larger of the two transfer accountings rather than their sum.
+            let record_us = get(Phase::Record).0;
+            if record_us > 0 {
+                let residual = record_residual_us(
+                    record_us,
+                    child_us.max(get(Phase::CmdUpload).0),
+                    get(Phase::DescAlloc).0,
+                    get(Phase::PipelineLookup).0,
+                );
+                out.push_str(&format!(
+                    "              {:<15} {:>10} us  ({:.1}% of `record`) — `record` minus every \
+                     named child: the vkCmd* calls themselves, the ONLY part of `record` that is \
+                     command-buffer recording. CUMULATIVE over every Compute call, so a session \
+                     with one cold call and many warm ones reports a MIXTURE of the two regimes \
+                     and this share belongs to no single call; for the per-call split read the \
+                     `record` spans and their children in the trace JSON\n",
+                    "record RESIDUAL",
+                    residual,
+                    100.0 * residual as f64 / record_us as f64,
+                ));
+            }
         }
 
         if s.gpu_measured {
@@ -1512,6 +1562,44 @@ impl Drop for PhaseGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The residual is a subtraction, so the test that matters is that its VALUE VARIES WITH ITS
+    // INPUT in both regimes (R10) — a residual that is always ~90% would be a constant wearing a
+    // measurement's clothes, and one that is always 0 would hide the phase's whole cost.
+    #[test]
+    fn record_residual_varies_with_regime_and_never_double_counts_transfers() {
+        // Warm regime: named children are ~2 ms of a 20 ms record; the vkCmd* calls are the rest.
+        let warm = record_residual_us(20_000, 100, 1_500, 400);
+        assert_eq!(warm, 18_000, "warm residual must be `record` minus named children");
+        assert!(
+            warm * 100 / 20_000 >= 85,
+            "warm residual must dominate `record` — that is the finding the row exists to expose"
+        );
+
+        // Cold regime: the same arithmetic must collapse to a SMALL residual when upload owns the
+        // phase. If this ever equals the warm answer the row is not reading its input.
+        let cold = record_residual_us(1_185_000, 1_148_000, 2_000, 30_000);
+        assert_eq!(cold, 5_000);
+        assert!(
+            cold * 100 / 1_185_000 < 5,
+            "cold residual must be a small slice — otherwise `record` is not upload-dominated"
+        );
+        assert_ne!(warm, cold, "residual must vary with its input, not with its name");
+
+        // `upload`/`readback` totals and the `cmd_upload` sub-span can bracket the same memcpy.
+        // The caller passes the LARGER, never the sum; summing would invent child time and
+        // under-report the residual. Guard the contract at the boundary.
+        let (transfer_total, cmd_upload) = (9_000u64, 4_000u64);
+        assert_eq!(record_residual_us(10_000, cmd_upload, 0, 0), 6_000);
+        assert_eq!(
+            record_residual_us(10_000, transfer_total.max(cmd_upload), 0, 0),
+            1_000,
+            "max(), not sum: 9000+4000 would saturate to 0 and erase the residual"
+        );
+
+        // Children may exceed the parent when a phase is re-entered; saturate rather than wrap.
+        assert_eq!(record_residual_us(1_000, 5_000, 0, 0), 0);
+    }
 
     fn cal(period: f32, bits: u32) -> GpuTimestampCalibration {
         GpuTimestampCalibration {
