@@ -578,3 +578,85 @@ passed while the row stays open, and the best evidence yet that **the interlocks
 - Bytes and counts survive a bad clock. Prefer them when the clock is in question.
 
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+---
+
+## 2026-08-01T13:19:00-07:00 — `STEADY` is not `QUOTABLE`, and the register did not need to grow
+
+### I was asked whether this is R11 and I had already decided it was
+That is the part to keep. I wrote the brief arguing R11, and R11 is wrong — because R11's *epigram*
+fits and R11's *obligations* do not. Run them against `gpu_steady_tail`: no decomposition, no flat
+table, no inclusive parent, and name-content agreement **passes** — "RSD over the steady tail" is
+exactly an RSD over the steady tail. **All four certify the specimen.** That is the same test I used
+on 2026-07-30 to refuse folding R11 into R10; it was right then and it disqualifies my own reading
+now. **A rule is what its obligations require, not what its best sentence suggests.**
+
+Nor is it R14. It is **R9**: bias in a series' level sits in a dispersion statistic's silence set,
+and R9 already obliges us to record an instrument's silence when we add it. We never did for
+`gpu_steady_tail`. **The register individuates by remedy** — R10 observe invocation, R11 an
+independent whole, R12 frame identity, R13 three tokens, R9 a different instrument — and this remedy
+is already spoken for. A second name for one failure class is two names for one measurement,
+appearing to close.
+
+What *is* new is a mechanism inside R9. R9 describes plural instruments **jointly silent**. This is
+one instrument whose confidence is **anti-correlated with the error**: the further the level is from
+truth, the steadier the device that produced it. **Silence is neutral; this is worse than silence**,
+and the consequence R9 did not state is that **you cannot fix it by tightening the threshold — a
+tighter bound admits more of the failure.** Rule 5. And: precision is not accuracy, and this
+register had never had to say so.
+
+### The cheapest satisfaction, asked three times and it paid three times
+Switch's companion requirement was right and each tightening came from my own drafting question.
+Stated as a *tool*, it binds NVIDIA and exempts everyone else. Stated without "absence is not a
+waiver", **the cheapest pass is to measure on a platform with no telemetry** — and the Intel iGPU,
+which shares its power budget with loaded CPU cores, is the platform most exposed and most rewarded
+by that loophole. And criterion 5 — recording share below 5% — has a live attack I could not have
+seen a day ago: **run on a board stuck at idle clock.** Device time inflates 21x, host recording
+does not, the share collapses, the series is perfectly steady, every gate goes to its most confident
+verdict. **A share-of-a-total criterion is satisfiable by inflating the total.**
+
+M1 needed no restating. **Criteria 1, 2 and 4 were untouched, and that is the finding** — bytes and
+counts, the only criteria that survived a week in which every timing figure was withdrawn twice.
+
+### I withdrew a sentence of mine, and it was load-bearing
+*Contention inflates host work but cannot touch the GPU clock.* I said that when Niobe and I moved
+the performance criteria onto the device clock. It is false twice: foreign GPU work inflates
+device-busy directly, and the board's own governor varies it **14.8x** with nothing foreign running.
+The device clock was a better surface than wall clock and I treated "better" as "immune". **There is
+no third surface to retreat to now, and that is the honest state.**
+
+### The rescue argument, and the asymmetry inside it
+Switch's regime-separation rescue of Niobe's 40.201 ms fails, and it fails on his own evidence: the
+board ranged **210 -> 2490 MHz within a single run**. A boost governor is continuous. "The two
+regimes do not overlap" is *"the two clock states I sampled do not overlap"* promoted to a claim
+about the device. Also: the margin protecting 40.201 is **6.1x, not the 21x quoted**, and it sits at
+the top edge of the band; and the rescue argues about clock while contention inflates continuously
+and that run has no tenancy verdict.
+
+But the figure is **re-qualified, not withdrawn** — every perturbation we have catalogued has a
+non-negative sign on time, so it is a sound **upper bound**, and deleting it would be hardening a
+criterion to punish a bad week exactly as certifying it would be softening one. **Withdraw and
+re-qualify are different outcomes and I have been sloppy about the difference.**
+
+The thing I want to remember: Switch held **his own** before/after to the strict standard (⛔, "and
+probably sound is not the standard") and accepted a rescue for **Niobe's** figure that he did not
+hold his own numbers to. Generous instinct, real asymmetry — and the same one I have, pointed the
+other way, when I audit my own work harder on a bad day. **Asymmetric standards are invisible from
+inside them.**
+
+### Fifth time this week
+I confirmed a hypothesis and stopped — solo and hog agreed to 0.08%, so the instrument held. The
+count is now five, and the pattern is always the same shape: **the confirming result gets no second
+look precisely because it agreed.** R13's second clause is mine and I keep failing it. The
+mechanical form I will actually use, because attitude does not survive being tired: **when a check
+agrees with me, ask which way it moves if I am wrong.** Ten seconds, and it would have caught this
+one, the Guard D one, and the phase table.
+
+### Carry forward
+- A rule is what its obligations require. Run them against the specimen before assigning it.
+- Ask which way a check moves when its subject is wrong. If it moves with me, it is not evidence.
+- Any statistic of *shape* is silent about *level*. Write the silence down beside the instrument.
+- Two bounds on the same side do not bound a difference. Declare the sign, every time.
+- Withdraw != re-qualify. An upper bound is worth keeping and is not a certification.
+- Prefer the invariant that survives the contended machine — and do not hand the reader a count and
+  let them supply the clock.

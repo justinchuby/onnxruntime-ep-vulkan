@@ -1,15 +1,29 @@
-"""Where the host span goes, and a lower bound on each phase that contention cannot inflate.
+"""Where the host span goes, and the tightest bound on each phase that contention allows.
 
 After the column tile and packed loads, NVIDIA GPU busy is ~12.2 ms/inference while the
 `vulkan.subgraph` host span is 28-50 ms. The next order of magnitude is host-side, but this
-machine cannot be quiet (the coordinator's orchestration is the load), so an ordinary mean over
-host phases is not quotable.
+machine cannot be quiet — it is shared with another project running CPU and GPU tests — so an
+ordinary mean over host phases is not quotable.
 
-**The estimator that survives contention: the minimum over inferences.** Contention can only ADD
-host time to a phase — it delays the thread, it does not make work disappear. So `min` over a
-series of identical repetitions is a *lower bound* on that phase's uncontended cost, and the sum
-of the minima is a lower bound on the uncontended host span. Bounds are quotable where means are
-not. The median is printed alongside, clearly labelled as contended.
+**The estimator that survives contention: the minimum over inferences — and it bounds from
+ABOVE, not below.** This is a correction to what an earlier version of this docstring and of
+`switch-record-is-host-bound.md` said, and the direction is the whole point of the estimator.
+
+Contention can only ADD host time to a phase: it delays the thread, it does not make work
+disappear. Write ``observed_i = true + delay_i`` with ``delay_i >= 0``. Then
+``min_i(observed_i) = true + min_i(delay_i) >= true``. So the minimum is an **upper bound on the
+uncontended cost**, and the tightest one the data can give. It is not a lower bound. I had the
+inequality backwards.
+
+**The consequence, which is not cosmetic.** Two upper bounds do not bound a difference from
+below. "record was <= 14.414 ms before" and "record is <= 2.704 ms after" does not, by itself,
+prove the change was an improvement at all, let alone by 5.33x. What establishes the direction
+here is not timing: it is a **count** — 147,618 `VkBufferMemoryBarrier` structs per inference
+before against 354 after, which is exact, contention-independent, and read off the code and the
+island shape rather than a clock. The direction is certain; the 5.33x is an estimate under
+contention and must be quoted as such, never as a bound.
+
+The median is printed alongside, clearly labelled as contended.
 
 **R11 discipline.** Naming every child of a parent makes a decomposition look closed. This prints
 the UNACCOUNTED remainder of every `vulkan.subgraph` span as its own column, so a decomposition
@@ -73,14 +87,14 @@ def decompose(trace: Path) -> dict:
         }
         for k in keys
     }
-    lower_bound = sum(stat[k]["min_ms"] for k in TOP + ["unaccounted"])
+    upper_bound = sum(stat[k]["min_ms"] for k in TOP + ["unaccounted"])
     return {
         "trace": trace.name,
         "state": "OK",
         "inferences": len(rows),
         "cold": {k: round(rows[0][k] / 1000, 3) for k in keys},
         "warm": stat,
-        "host_lower_bound_ms": round(lower_bound, 3),
+        "host_upper_bound_ms": round(upper_bound, 3),
         "accounted_share_of_median": round(
             sum(stat[k]["median_ms"] for k in TOP) / stat["subgraph"]["median_ms"], 4),
     }
@@ -117,8 +131,8 @@ def main() -> int:
             s = r["warm"][k]
             print(f"{k:<26} {s['min_ms']:>9.3f} {s['median_ms']:>10.3f} {s['max_ms']:>9.3f}   "
                   f"{r['cold'][k]:>10.3f}")
-        print(f"\n  host span LOWER BOUND (sum of per-phase minima): "
-              f"{r['host_lower_bound_ms']:.3f} ms   "
+        print(f"\n  host span UPPER BOUND (sum of per-phase minima; contention only adds): "
+              f"{r['host_upper_bound_ms']:.3f} ms   "
               f"vs GPU busy min {r['warm']['gpu']['min_ms']:.3f} ms")
         print(f"  named children cover {r['accounted_share_of_median']:.1%} of the median span "
               f"— the rest is the 'unaccounted' row, not zero")
