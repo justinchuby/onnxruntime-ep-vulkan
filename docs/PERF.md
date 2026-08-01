@@ -1966,3 +1966,320 @@ at any point today.
   caveat ships inside every trace we produce.** His file, not mine.
 - **`largest_island_flops`** (§10.0's third slot) remains unemitted; my harness consumes it the day
   a `PartitionStats` event carries it.
+
+---
+
+## 13. The gate was wrong, the EP was not — and the first end-to-end decomposition (2026-07-31)
+
+**Status of this section:** the `phase_containment` diagnosis, the structural findings and the
+re-ranked levers below are final. **The end-to-end wall-clock numbers are still withheld** — see
+§13.5, which explains why, with three independent instruments agreeing.
+
+### 13.0 `phase_containment` — the phases over-reported, and the over-reporting was mine
+
+For three days, on both devices, every phase share in this project was withheld on:
+
+```
+[ RED ] phase_containment: 0 phase spans outside any subgraph,
+        1 subgraphs whose phases exceed their own duration.
+        The attribution of phases to islands is not sound and no phase share
+        below may be read.
+```
+
+**Which side is wrong: the phases over-report. The defect is in `bench/phases.py`, not in
+`rust/src/trace.rs`.** `analyse()` computed `siblings = attribute(subs, sibling_phases(...))`
+correctly for every total and every share — and then passed the *unfiltered* `attributed` list to
+`phase_containment`. So the check added `record` to the `cmd_upload` that lives **inside**
+`record`, and asked the subgraph to contain the same microseconds twice.
+
+On the one-island Phi-3.5 graph the arithmetic is not subtle:
+
+| span | µs (NVIDIA, first inference) |
+|---|---|
+| `vulkan.subgraph` (the parent) | 13 668 719 |
+| `record` | 8 317 740 |
+| `cmd_upload` (**inside** `record`) | 7 969 026 |
+| `desc_alloc` + `pipeline_lookup` (**inside** `record`) | 92 331 |
+| `fence_wait` + `submit` | 284 714 |
+| **naive sum of all of them** | **16 663 811** ← 122% of the parent |
+| **sibling-only sum** | **8 602 454** ← 63% of the parent, comfortable |
+
+**Why it only appeared now.** It needed two things to coincide: sub-record spans becoming real
+`ph:"X"` events (Switch, `692e7d0`), and `cmd_upload` becoming ~97% of `record` — which is what
+the one-time 1997.977 MiB weight upload does on the first inference of a *single-island* graph.
+Before the graph fused, `record` was spread over 257 islands and no single subgraph's children
+were large enough to push the naive sum past its parent. **The partitioner succeeding is what
+made my checker fail.**
+
+### 13.0.1 Switch's spans are sound, and I checked before saying so
+
+R13 says a result that confirms a prediction deserves more scrutiny than one that contradicts it.
+I predicted double-counting and found double-counting, so:
+
+| checked, on the live trace | result |
+|---|---|
+| every sub-record span timestamp-contained by a `vulkan.record` span | **2828 / 2828** |
+| any `record` whose children sum past it | **0** (worst ratio 0.969) |
+| any two sibling phases overlapping | **0 of 11 adjacent pairs** |
+| `nested_in` span arg present and correct | on **all 2840** spans (`cmd_upload`/`desc_alloc`/`pipeline_lookup` → `record`; `record`/`submit`/`fence_wait` → `none`) |
+| sibling-only sum inside its subgraph | worst ratio **0.911** |
+
+Not one of those is a statement about `record`'s *name*. All five are timestamp geometry. **The
+instrument that was wrong was the one deriving a rule from the geometry, not the one recording
+it.**
+
+### 13.0.2 What replaced it, and the third terminal state
+
+`phase_containment` now checks **two tiers against their own parents** — siblings against their
+subgraph, sub-record children against their own `record` span — and returns one of R13's three
+states:
+
+- **PASS** — both tiers close.
+- **FAIL(condition)** — a real containment violation. Still fires: the stored 2026-07-30 Intel
+  trace has a `record` span outside every subgraph and is `FAIL` under the new rule too, so this
+  was a repair and not a mute button.
+- **ERROR(instrument)** — a span declaring itself nested was handed in as a sibling. The check
+  **issues no verdict**: `red` is `False`, the counts are `None`, and `red_flags` prefixes it
+  `ERROR(instrument) — NOT a detection`. This arm exists because it is precisely the mistake that
+  just happened, and a guard that can name its own misuse is worth more than one that reports it
+  as a discovery.
+
+Parenthood now has three sources unioned — the static table, the `host/sub-record:` caveat, and
+the machine-readable `nested_in` arg whose Rust `match` is exhaustive with no `_` arm. Union and
+not vote: **being wrongly excluded from a sum costs a line in a report; being wrongly included
+double-counts the largest cost in the run.**
+
+Not one synthetic trace in `bench/test_phases.py` contained a sub-record span. That is the whole
+reason 163 tests passed over a checker that was wrong on every real trace we owned. There are now
+nine that do.
+
+### 13.1 Weight residency changed what the word "inference" means
+
+Per-inference upload, measured from the trace's own transfer counters:
+
+```
+inference 1 : 1997.977 MiB      <- the weights, once
+inference 2+: 0.387 MiB each    <- the feeds
+                                   5162x step, same span name
+```
+
+Residency landed and it is not a small win. But it means **the first `Compute` call and every
+later one are now different workloads**, and averaging them reports a fixed one-time transfer as
+if it were a per-inference cost. Over a four-inference trace the single cold upload is 91% of the
+whole `record` total. That is the *record-is-68%* mistake for the third time on this project,
+wearing residency as its new disguise — the mean of two populations, published under the name of
+one of them.
+
+`phases.steady_state_split()` now separates them, deriving which invocations are cold from the
+trace's own cycle structure rather than from a warmup flag, and **reports the cold inference
+rather than discarding it** — a user pays it once and it is the right place to read model-load
+cost. Fewer than three cycles returns `INSUFFICIENT`: two warm samples cannot show that they
+agree with each other.
+
+### 13.2 The in-band contention control had switched itself off — because we succeeded
+
+`contention_signature` is the falsifier that answers "was the machine busy?" *from the trace
+alone*, by comparing each island slot's host spread against its own GPU spread. It refused any
+trace whose cycle period was 1 — and **the cycle period is the island count.** The moment the
+partitioner started fusing Phi-3.5 into a single island, the in-band control reported
+`UNTESTABLE` forever, on exactly the configuration this project is trying to reach.
+
+Nothing in the statistic needs two slots: slot 0 still yields one host series and one GPU series
+over the same repeated work, which is the entire method. What is genuinely lost at period 1 is
+the ability to see a stall hit some islands and not others, so `stalled_slot_fraction` degenerates
+to 0.0 or 1.0 and is now annotated `single_slot: true`.
+
+Its refusal text also named the wrong condition — it printed `cycles=15; need >= 4` when 15 ≥ 4
+and the failing clause was `period < 2`. **Quote the failure text, never the failure count** (R13)
+cuts both ways: text that names a condition which did not fail is worse than a count.
+
+### 13.3 One claim must not carry two constants
+
+`phi35.baseline_disagreement` used `factor = 2.0`. `admissible.baseline_comparability` used
+`tol = 0.25`. The same claim — *the CPU-EP control did not move* — had two answers eight-fold
+apart, and the looser one is the one that runs during a measurement.
+
+The 2026-07-31 run walked straight into the gap: its CPU baseline read **291.8 ms** during the
+NVIDIA pass and **228.7 ms** during the Intel pass three minutes later. **1.276×** — silently fine
+by the harness, `BASELINE_MOVED` by the audit. Both files now import one constant,
+`admissible.BASELINE_TOL`.
+
+That 27.6% movement is itself evidence, and it is the third independent instrument in §13.5.
+
+### 13.4 Where the time actually goes — the first decomposition of a graph that executes
+
+`model_output_equivalence = MATCH` with a real execution frame behind it; one fused island of
+**353 of 363 nodes**; `dispatch accounting ok` (5295 == 5295 == 5295); `phase_containment` **PASS**
+on both devices. Warm inferences only, cold excluded.
+
+**Shares are printed. The milliseconds they are shares *of* are not** — see §13.5.
+
+| share of time inside `Compute`, warm | NVIDIA RTX 4060 | Intel Iris Xe |
+|---|---|---|
+| `fence_wait` | 68.7% | 97.9% |
+| ├ **GPU actually busy** | **67.7%** | **97.7%** |
+| └ fence-wait GPU **idle** | **0.99%** | **0.18%** |
+| `record` (incl. children) | 25.1% | 1.2% |
+| ├ `record` leaf — real `vkCmd*` construction | 23.5% | 1.0% |
+| ├ `desc_alloc` | 1.27% | 0.16% |
+| ├ `pipeline_lookup` | 0.18% | 0.01% |
+| └ `cmd_upload` (the feeds) | 0.14% | 0.03% |
+| `submit` | 0.27% | 0.01% |
+| unattributed inside `Compute` | 5.97% | 0.90% |
+
+`gpu_busy` is **not** a sibling of the host phases — it overlaps `submit` + `fence_wait`. It is
+printed against the same denominator so the two can be compared, never so they can be added.
+
+**Why these proportions survive a contended machine when the milliseconds do not.** Contention
+inflates *host* work; it does not touch the device timestamp counter. So contention can only push
+the `record` share **up** and the `gpu_busy` share **down**. Every conclusion below is of the form
+"the GPU share is large", and contention is the wrong sign to manufacture it. A quiet machine can
+only make this picture *more* GPU-dominated, not less.
+
+### 13.4.1 The lever ranking has changed, and one item is now dead
+
+The previous ranking — residency, net-benefit declines, fence-wait GPU idle, kernels — was
+derived from a phase decomposition taken while the model was running on **CPU fallback**. It
+described a run in which this EP did not execute. Re-ranked against a run in which it does:
+
+| # | lever | evidence | owner | was |
+|---|---|---|---|---|
+| **1** | **`q_gemv_matmul_nbits_f16` — one kernel, see §13.4.2** | GPU is busy **67.7%** (NVIDIA) and **97.7%** (Intel) of time inside `Compute`, and **95.11% / 98.28%** of that GPU time is a single kernel. Everything else in the EP sums to 4.9% / 1.7%. | Switch / Mouse | rank 4 |
+| **2** | **Command-buffer reuse — stop re-recording every inference** | `record` is paid on **every** `Compute` call (15 spans, 15 inferences, 353 `desc_alloc` + 353 `pipeline_lookup` each time). 23.5% of NVIDIA in-`Compute` time is host `vkCmd*` construction the GPU waits through. **NVIDIA-only: 1.0% on Intel.** | Switch | not ranked |
+| **3** | **The 5.97% unattributed inside `Compute` (NVIDIA)** | Time inside `vulkan.subgraph` that **no phase span covers** — input pointer reads, buffer/descriptor work before recording, output tensor writes after the fence. It is larger than every sub-record phase combined and it is currently *invisible*. Needs spans before it can be ranked properly. | Switch (spans), me (analysis) | not ranked |
+| **4** | **Device-backed allocation** | `memory configuration: staging-bound`; `alloc_device_authoritative_spans` is `UNOBSERVABLE` (R12) until `offer_shared_device` is called — still `UNINVOKED`, red in Tank's census. Cannot be measured, so cannot be ranked higher than a hypothesis. | Tank / Switch | rank 1 (as residency) |
+| ~~5~~ | ~~fence-wait GPU idle~~ | **Effectively dead: 0.99% NVIDIA, 0.18% Intel.** The fence wait is almost entirely the GPU working. Submission is not the problem. | — | **was rank 3** |
+| ✅ | persistent weight residency | **LANDED.** 1997.977 → 0.387 MiB per inference. | Tank / Switch | was rank 1 |
+| ↓ | net-benefit declines / island boundary | One island of 353 of 363 nodes. `retain_viable` is wired and there is very little boundary left to price. | Mouse | was rank 2 |
+
+**The one-line version for the team: we are now GPU-bound, and on the Intel part we are*
+***only*** *GPU-bound. Kernel work is the top lever for the first time in this project's history.**
+
+Two caveats I will not let travel without the ranking. First, `record` at 23.5% of NVIDIA in-`Compute`
+time is a *host* cost measured on a contended machine, so its true share is at or below 23.5% —
+which only strengthens the case for putting kernels first. Second, the Intel figure is not a
+compliment: 97.7% GPU-busy with a per-inference time far above the CPU EP's means the kernels are
+slow, not that the pipeline is efficient.
+
+### 13.4.2 Lever 1 is not "kernels" — it is one kernel
+
+"Kernel efficiency" is too coarse to hand to Switch or Mouse. The per-dispatch GPU spans name the
+kernel, so the ranking can be sharpened to a single work item. Summed device time across the whole
+15-inference run:
+
+| kernel | NVIDIA share | Intel share | dispatches/run | mean NVIDIA | mean Intel |
+|---|---|---|---|---|---|
+| `q_gemv_matmul_nbits_f16` | **95.11%** | **98.28%** | 2415 (161/inference) | 253.4 us | 3425.9 us |
+| `gqa_f16` | 2.67% | 0.91% | 480 | 35.8 us | 159.2 us |
+| `skip_simplified_layer_norm_f16` | 1.63% | 0.56% | 960 | 10.9 us | 48.9 us |
+| `ew_binary_mul_f16` | 0.40% | 0.15% | 960 | 2.7 us | 13.6 us |
+| `ew_unary_sigmoid_f16` | 0.19% | 0.09% | 480 | 2.6 us | 16.6 us |
+
+Everything that is not `q_gemv_matmul_nbits_f16` sums to **4.9%** of GPU time on NVIDIA and **1.7%**
+on Intel. By Amdahl, perfecting every other kernel in the EP to zero cost buys at most 4.9% and 1.7%
+respectively. **Lever 1 is `q_gemv_matmul_nbits_f16`, and no other kernel is worth an hour of anyone's
+time until it moves.**
+
+The same table prices the two devices against each other on identical work: the same 161 dispatches
+per inference cost 13.5x more on the Iris Xe. That ratio is a property of the kernel meeting a very
+different memory subsystem, and it is the reason the Intel part is the more informative optimisation
+target even though it is the slower one — it is the device on which this kernel's inefficiency is
+least hidden.
+
+I am deliberately *not* proposing a fix here. Naming the hot kernel is a measurement result and it is
+mine; choosing between subgroup reductions, a different tiling, cooperative-matrix paths or a
+dequant-to-f16 staging pass is Switch's and Mouse's call, and I will price whichever they pick.
+
+### 13.4.3 The device-clock GPU-busy figure — and the device that refused to produce one
+
+Host wall-clock is unusable on this machine (S13.5). The device timestamp counter is not: contention
+inflates *host* work and cannot touch the GPU's own clock. So there is one figure this run can
+legitimately produce. `phases.gpu_steady_tail()` computes it, and it is a falsifier before it is a
+statistic — it demands a suffix of at least 5 inferences holding within 2% RSD, and reports
+`NO_STEADY_TAIL` rather than a median if no such suffix exists.
+
+| device | verdict | per-inference GPU busy | RSD | discarded | tail n |
+|---|---|---|---|---|---|
+| NVIDIA RTX 4060 | **STEADY** | **40.201 ms** | **0.033%** | 5 | 10 |
+| Intel Iris Xe | **NO_STEADY_TAIL** | *withheld* | 4.6% over the whole run | - | - |
+
+The NVIDIA series is `48.85, 48.91, 48.87, 48.88, 47.82, | 40.19, 40.22, ...` — a step down at
+inference 6 that persists, and then ten inferences that agree to three parts in ten thousand. **An
+0.033% RSD measured on a machine my own survey calls CONTENDED is itself the evidence that this clock
+is the right instrument**: no host-side quantity in this run is anywhere near that stable.
+
+The Intel column is the more important one. The Iris Xe never settled — it wandered between 542 and
+629 ms for all fifteen inferences. This is exactly what an integrated GPU sharing a power and thermal
+budget with five loaded foreign CPU cores should look like, and it means the device clock is **not**
+contention-immune on an iGPU the way it is on a discrete part. So the check refuses, and Intel has no
+quotable per-inference GPU figure from this run. The two devices differ in kind here, not in degree,
+and reporting one number for both would have concealed that.
+
+**This is not an end-to-end number and it is not a substitute for one.** It is the summed duration of
+one inference's dispatches. It excludes host recording, submission, readback and all of ORT's own
+work, and it cannot be compared to a CPU EP latency. It is quotable for exactly one purpose: ranking
+where GPU time goes.
+
+## 13.5 What remains non-quotable, and why I am not overriding my own gate
+
+**The end-to-end wall-clock figure and the Vulkan/CPU ratio are WITHHELD on both devices.** Under
+Morpheus's S10.0 disclosure obligation I state plainly that they are *withheld, not omitted*: the
+samples exist, 20 per device per arm, they are in `bench/results/phi35-2026-07-31.json`, and they are
+marked non-quotable there. I can see them. They may not be published, including inside this team.
+
+Three instruments refuse them, and they are independent of one another:
+
+1. **The out-of-band load survey** — CONTENDED on both passes: 5.98 and 5.32 foreign cores of load
+   (VS Code, other agents' `copilot.exe`, `msedgewebview2.exe`, `GlobalSecureAccessClient.exe`).
+   This instrument does not read the trace.
+2. **The in-band trace signature** — `contention_signature` reports `HOST_SIDE_EXCURSIONS` on both
+   devices, derived purely from the shape of the per-inference host spans. This instrument does not
+   read the process table. It corroborates (1) from an entirely separate source, which is the only
+   reason either is worth anything under R9.
+3. **The CPU-baseline control** — the CPU EP baseline moved **291.8 ms to 228.7 ms, a factor of
+   1.276**, between the NVIDIA pass and the Intel pass of the same afternoon, on the same model, same
+   machine, same harness. The only thing that changed was the machine's load. A 1.28x drift in the
+   *reference* arm is fatal to a ratio: it is 28% of a speedup claim available for free.
+
+I polled for a quiet window for roughly two and a half hours (`bench/_scratch/hunt_quiet.ps1`) and
+never got one; this box carries a persistent ~5-6 core foreign load. I ran the benchmark anyway to
+collect everything that *is* robust, which is what S13.4.2 and S13.4.3 are made of.
+
+**Per R13, every previously published wall-clock figure for this EP is withdrawn** — including the
+3.1x and 3.7x quoted earlier today, which were taken during CPU fallback and therefore measured the
+CPU EP against itself with extra bookkeeping. They were never measurements of this EP. Nothing in
+this document may be read as superseding them with a better number; they are withdrawn, and their
+replacement does not exist yet.
+
+### 13.5.1 The number I most wanted to publish is the one I am most suspicious of
+
+The withheld NVIDIA sample is faster than the CPU EP. Morpheus predicted, and I predicted, that this
+EP would be *slower* than CPU at this stage — staging-bound memory, no device-backed allocation,
+command buffers rebuilt every inference. A result that contradicts a prediction is cheap to believe
+and I still do not believe this one, because R13 cuts the other way too: the reason it is not
+admissible has nothing to do with which direction it points. The Intel sample, which *confirms* the
+slow prediction, gets **more** scrutiny under R13, not less — and it fails the same three checks.
+
+Both are refused by the same instruments for the same reason. If I let the NVIDIA one through because
+it is exciting and held the Intel one because it is disappointing, the gate would be a publicity
+department. It refused a 5.44x "speedup" last week that was really an 18x baseline shift; it refuses
+this too.
+
+### 13.5.2 What it would take to lift the withholding
+
+Nothing in the EP has to change. This is purely an instrument-conditions problem:
+
+- A machine with no foreign load for the ~6 minutes both passes take, or
+- a dedicated benchmark host, or
+- a scheduling window where the other agents and the editor are down.
+
+The run is otherwise fully interlocked and has been for a day: `model_output_equivalence = MATCH`
+with a real execution frame behind it, `dispatch accounting ok` (31 == 1 island x 31 inferences),
+`gpu_span_accounting` 5295 == 5295 == 5295, `phase_containment` **PASS** on both devices since the
+fix in S13.0, 20+20 samples per device. **The moment this box is quiet, the first admissible
+end-to-end number in this project's history falls out of a single command with no further work:**
+
+```powershell
+cd bench; python phi35.py --device 0 --require-quiet
+cd bench; python phi35.py --device 1 --require-quiet
+```

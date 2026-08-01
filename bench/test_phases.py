@@ -723,3 +723,72 @@ def test_untestable_reason_names_the_condition_that_actually_failed():
     cs = phases.analyse(ev)["contention_signature"]
     assert cs["verdict"] == "UNTESTABLE"
     assert "fewer than 12" in cs["reason"]
+
+# ---------------------------------------------------------------------------
+# One claim, one constant (2026-07-31)
+#
+# `phi35.baseline_disagreement` carried factor=2.0 while `admissible.baseline_comparability`
+# used tol=0.25. The 2026-07-31 run's CPU baseline moved 291.8 -> 228.7 ms (1.276x) between its
+# two device passes: inadmissible by one rule, silent by the other.
+# ---------------------------------------------------------------------------
+
+def test_the_two_baseline_checks_share_one_threshold():
+    import admissible
+    import phi35
+    assert phi35.baseline_disagreement([]) is None
+    moved = [{"device_index": 0, "cpu": {"median_ms": 291.7576}},
+             {"device_index": 1, "cpu": {"median_ms": 228.7379}}]
+    warn = phi35.baseline_disagreement(moved)
+    assert warn is not None, "1.276x must not be silent when the gate refuses at 1.25x"
+    assert "1.276" in warn
+    cross = admissible.baseline_comparability(moved[0], moved[1], "a", "b")
+    assert cross["ok"] is False and cross["verdict"] == "BASELINE_MOVED"
+    # the same pair must not be admissible in one file and unremarkable in the other
+    assert (warn is not None) == (cross["ok"] is False)
+
+
+def test_a_steady_baseline_is_not_flagged_by_either_check():
+    import admissible
+    import phi35
+    steady = [{"device_index": 0, "cpu": {"median_ms": 230.0}},
+              {"device_index": 1, "cpu": {"median_ms": 240.0}}]
+    assert phi35.baseline_disagreement(steady) is None
+    assert admissible.baseline_comparability(steady[0], steady[1], "a", "b")["ok"] is True
+
+# ---------------------------------------------------------------------------
+# The GPU ramp that dropping one cold cycle does not remove (2026-07-31)
+# ---------------------------------------------------------------------------
+
+def test_gpu_steady_tail_finds_the_step_and_quotes_only_the_tail():
+    """RTX 4060 shape: five inferences near 48.9 ms, then a step to 40.2 and rock stable."""
+    series = [48.85, 48.91, 48.87, 48.88, 47.82] + [40.19, 40.22, 40.22, 40.17, 40.19,
+                                                    40.21, 40.20, 40.21, 40.20, 40.19]
+    t = phases.gpu_steady_tail([v * 1000 for v in series])
+    assert t["verdict"] == "STEADY"
+    assert t["discarded_inferences"] == 5
+    assert t["n"] == 10
+    assert t["median_ms"] == pytest.approx(40.20, abs=0.02)
+    assert t["rsd"] < 0.001
+
+
+def test_gpu_steady_tail_refuses_a_device_that_never_settles():
+    """Intel Iris Xe shape: wanders 542-629 ms for the whole run. No figure may be quoted."""
+    series = [577.34, 590.79, 555.24, 545.43, 547.24, 542.70, 553.56, 543.83,
+              545.79, 545.36, 584.84, 542.39, 559.39, 557.87, 628.75]
+    t = phases.gpu_steady_tail([v * 1000 for v in series])
+    assert t["verdict"] == "NO_STEADY_TAIL"
+    assert "never settled" in t["detail"]
+
+
+def test_gpu_steady_tail_refuses_a_short_series_rather_than_guessing():
+    t = phases.gpu_steady_tail([40_000] * 4)
+    assert t["verdict"] == "INSUFFICIENT"
+
+
+def test_gpu_steady_tail_reaches_the_steady_state_block():
+    n = 16
+    ev = _single_island_run([12.0] * n, [400_000] * 5 + [300_000] * (n - 5))
+    t = phases.analyse(ev)["steady_state"]["gpu_steady_tail"]
+    assert t["verdict"] == "STEADY"
+    assert t["discarded_inferences"] == 5
+    assert t["median_ms"] == pytest.approx(0.3, abs=0.001)

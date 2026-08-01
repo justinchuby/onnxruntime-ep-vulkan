@@ -89,6 +89,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import devices as device_mod  # noqa: E402
+import admissible  # noqa: E402
 import contention  # noqa: E402
 import environment  # noqa: E402
 import phases as phases_mod  # noqa: E402
@@ -917,7 +918,8 @@ def _derive(rec: dict) -> None:
     }
 
 
-def baseline_disagreement(results: "list[dict]", factor: float = 2.0) -> "str | None":
+def baseline_disagreement(results: "list[dict]",
+                          factor: "float | None" = None) -> "str | None":
     """Warn when the CPU baseline moved between workers.
 
     Each worker times its Vulkan session and a CPU-only session back to back in one process, so
@@ -927,7 +929,16 @@ def baseline_disagreement(results: "list[dict]", factor: float = 2.0) -> "str | 
     remain valid; what is not valid is reading anything into how they compare — which the
     cross-device refusal already forbids, and this says out loud rather than leaving to be
     inferred.
+
+    The threshold is :data:`admissible.BASELINE_TOL`, **imported and not restated**. This function
+    used to carry its own ``factor=2.0`` while ``admissible.baseline_comparability`` used
+    ``tol=0.25``: one claim, two constants, eight-fold apart. The 2026-07-31 run's CPU baseline
+    moved 291.8 → 228.7 ms (1.276×) between its two device passes and this printed nothing, while
+    the same movement is ``BASELINE_MOVED`` by the other file's rule. The looser constant wins
+    wherever it happens to be the one that runs, which makes the strict one decorative.
     """
+    if factor is None:
+        factor = 1.0 + admissible.BASELINE_TOL
     medians = [(r.get("device_index"), (r.get("cpu") or {}).get("median_ms"))
                for r in results if r.get("cpu")]
     medians = [(i, m) for i, m in medians if m]
@@ -938,10 +949,12 @@ def baseline_disagreement(results: "list[dict]", factor: float = 2.0) -> "str | 
         return None
     detail = ", ".join(f"device {i}: {m:.1f} ms" for i, m in medians)
     return (
-        f"the CPU-only baseline differs by {hi / lo:.1f}x between workers ({detail}). Same CPU, "
-        f"same artifact, same feeds — so the machine's state changed between the runs. Each "
-        f"device's own vulkan-vs-cpu delta was measured back to back in one process and stands; "
-        f"nothing may be read across the two runs."
+        f"the CPU-only baseline differs by {hi / lo:.3f}x between workers ({detail}), beyond the "
+        f"{factor:.2f}x this project allows a control to move. Same CPU, same artifact, same "
+        f"feeds — so the machine's state changed between the runs, and it changed by more than "
+        f"most of the effects we are trying to measure. Each device's own vulkan-vs-cpu delta was "
+        f"measured back to back in one process and stands; nothing may be read across the two "
+        f"runs."
     )
 
 

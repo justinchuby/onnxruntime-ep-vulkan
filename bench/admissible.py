@@ -189,8 +189,23 @@ def phase_share_admissibility(rec: dict) -> dict:
 # Cross-artifact check: the defect that lives *between* two admissible-looking files
 # ---------------------------------------------------------------------------------------------
 
+#: How far two CPU-EP baselines may differ before they may not be differenced or compared.
+#:
+#: **One number, used everywhere.** `phi35.baseline_disagreement` carried its own threshold of
+#: 2.0x while this module used 1.25x, so the same claim — "the control did not move" — had two
+#: answers eight-fold apart, and a run whose CPU baseline moved 1.276x between its two device
+#: passes printed no warning at all while being inadmissible by this file's own rule. Two
+#: instruments for one claim must not carry two constants; the looser one silently wins wherever
+#: it happens to be the one that runs.
+#:
+#: 25% and not tighter: the CPU EP baseline is a control, re-measured minutes apart on a machine
+#: that has just paged a 2.2 GB model, so some movement is honest. 25% and not looser: 27.6% is
+#: larger than most of the effects anyone here is trying to measure.
+BASELINE_TOL = 0.25
+
+
 def baseline_comparability(a: dict, b: dict, name_a: str, name_b: str,
-                           tol: float = 0.25) -> dict:
+                           tol: float = BASELINE_TOL) -> dict:
     """Falsifier: two runs may only be differenced if their **CPU baselines** agree.
 
     A speedup claim is a ratio of ratios, and the denominator is the CPU EP -- which no change to

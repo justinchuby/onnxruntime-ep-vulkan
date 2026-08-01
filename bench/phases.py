@@ -1752,6 +1752,80 @@ def _cycle_period(seq: "list") -> "int | None":
 # Steady state — the first inference is now a different workload from the rest
 # ---------------------------------------------------------------------------
 
+#: Relative standard deviation a GPU-busy suffix must be under to be called steady.
+#: The device clock does not see host load, so on a discrete part a genuinely steady tail comes
+#: in around 0.03% — three orders of magnitude inside this. 2% is loose enough not to reject the
+#: integrated part, where the GPU shares a power budget with the loaded CPU cores.
+GPU_TAIL_RSD_MAX = 0.02
+
+#: Fewest samples a steady tail may be declared from.
+GPU_TAIL_MIN_N = 5
+
+
+def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
+    """The longest stable suffix of the per-inference GPU-busy series, found from the device clock.
+
+    # Why one cold inference is not enough warmup
+
+    :func:`steady_state_split` drops the first *cycle*, which removes the one-time weight upload.
+    It does not remove a **multi-inference ramp**, and there is one: on the RTX 4060 the GPU-busy
+    series runs 48.85, 48.91, 48.87, 48.88, 47.82 and then steps to 40.19 and stays there to
+    within 0.03% for ten inferences. Averaging across the step reports 42.6 ms for a machine that
+    settles at 40.20 ms — an 6% overstatement produced entirely by counting the ramp.
+
+    # Why the criterion is the GPU clock and not the host clock
+
+    A warmup detector run on host wall time cannot tell a ramp from a contended machine; both look
+    like "early samples are slower". The device timestamp counter does not see host load at all,
+    so a step in *this* series is a property of the device or the driver, and finding the tail
+    this way stays valid on a box that is not quiet. That is the only reason this figure is
+    reportable today.
+
+    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``NO_STEADY_TAIL`` when no
+    sufficiently long suffix settles, or ``INSUFFICIENT``.
+    """
+    vals = [v / 1000.0 for v in busy_us if v]
+    out = {"n_inferences": len(vals),
+           "series_ms": [round(v, 3) for v in vals][:64]}
+    if len(vals) < GPU_TAIL_MIN_N + 1:
+        out.update(verdict="INSUFFICIENT",
+                   detail=f"{len(vals)} usable inferences; need at least {GPU_TAIL_MIN_N + 1}.")
+        return out
+    best = None
+    for start in range(0, len(vals) - GPU_TAIL_MIN_N + 1):
+        suffix = vals[start:]
+        mean = statistics.fmean(suffix)
+        if mean <= 0:
+            continue
+        rsd = statistics.pstdev(suffix) / mean
+        if rsd <= GPU_TAIL_RSD_MAX:
+            best = (start, suffix, rsd)
+            break
+    if best is None:
+        out.update(verdict="NO_STEADY_TAIL",
+                   detail=(f"no suffix of >= {GPU_TAIL_MIN_N} inferences holds GPU busy time "
+                           f"within {GPU_TAIL_RSD_MAX:.0%} RSD. The device never settled, so "
+                           f"there is no steady-state GPU figure to quote from this run."))
+        return out
+    start, suffix, rsd = best
+    out.update(
+        verdict="STEADY",
+        discarded_inferences=start,
+        n=len(suffix),
+        median_ms=round(statistics.median(suffix), 4),
+        mean_ms=round(statistics.fmean(suffix), 4),
+        min_ms=round(min(suffix), 4),
+        max_ms=round(max(suffix), 4),
+        rsd=round(rsd, 6),
+        detail=(f"GPU busy settles after {start} inference(s) and holds "
+                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them at "
+                f"{rsd:.4%} RSD. Device-clock only: this is the summed duration of the "
+                f"dispatches, not the wall time of an inference, and it is NOT a substitute "
+                f"for the end-to-end figure."),
+    )
+    return out
+
+
 def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
                        nested: "list[dict]", busy_us: "dict[int, float] | None" = None,
                        transfers: "list[dict] | None" = None) -> dict:
@@ -1823,6 +1897,7 @@ def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
             up_warm = round(statistics.fmean(rest) / 1024 ** 2, 4) if rest else None
 
     n = cycles - 1
+    tail = gpu_steady_tail([(busy_us or {}).get(s["index"]) for s in subgraphs])
     return {
         "verdict": "OK",
         "island_count": period,
@@ -1846,6 +1921,7 @@ def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
             "unattributed": round((warm_ms - accounted) / warm_ms, 5),
         } if warm_ms else {}),
         "warm_gpu_busy_ms": round(warm_gpu, 3),
+        "gpu_steady_tail": tail,
         "upload_mib_cold": up_cold,
         "upload_mib_warm_mean": up_warm,
         "gpu_busy_note": (
