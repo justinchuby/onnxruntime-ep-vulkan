@@ -1044,8 +1044,10 @@ unsafe fn get_capability_impl(
         // is bypassed (see above). For multi-cluster graphs, each cluster is evaluated; a cluster
         // that fails produces a [partition] decline code in the CLAIM_LOG.
         let verdict = if only_one_cluster {
+            counters::record_net_benefit_decision(false);
             partition::Verdict::Claim
         } else {
+            counters::record_net_benefit_decision(true);
             partition::evaluate(&island, &transfer_model, &policy)
         };
         if verdict.is_claim() {
@@ -1915,6 +1917,132 @@ unsafe extern "C" fn create_state(
 
 unsafe extern "C" fn release_state(_this: *mut ort::OrtNodeComputeInfo, _state: *mut c_void) {}
 
+// -----------------------------------------------------------------------------------------------
+// Broken-commitment disclosure — RAI Ruling 2 / RAI-010
+// -----------------------------------------------------------------------------------------------
+
+/// Env var: plant a synthetic `Compute()` failure. **The control, not a feature.**
+///
+/// A WARN that cannot be shown *not* to fire on a good run is not a detector, it is a printed
+/// opinion — and one that can only be shown not to fire has never been shown to fire at all. Both
+/// polarities need the same mechanism driven from the same call site, so the positive one needs a
+/// failure that can be produced on demand on hardware that is working correctly.
+///
+/// Every run under this variable is marked `"fault_injection": "ACTIVE"` in the counters artifact
+/// and counted in `compute_failures_injected`, so an injected failure can never be read as a
+/// suffered one, and no run made under it can be quoted as a clean run.
+pub const ENV_FORCE_COMPUTE_FAILURE: &str = "ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE";
+
+/// Whether the planted Compute-failure control is armed for this process.
+pub fn fault_injection_active() -> bool {
+    static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        std::env::var_os(ENV_FORCE_COMPUTE_FAILURE).is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// Classify the failure into a token a maintainer can grep, without losing the text.
+///
+/// R13's second clause is why the text travels too: the token is a summary and a summary is where
+/// a caveat goes to die. The token exists so two incidents can be compared; the text is what says
+/// what happened.
+fn failure_condition_token(error_text: &str) -> &'static str {
+    let t = error_text.to_ascii_lowercase();
+    if t.contains("panic") {
+        "panic"
+    } else if t.contains("planted") || t.contains("fault-injection") {
+        "planted-control"
+    } else if t.contains("alloc") || t.contains("out of memory") || t.contains("oom") {
+        "allocator"
+    } else if t.contains("shape")
+        || t.contains("size")
+        || t.contains("dimension")
+        || t.contains("rank")
+        || t.contains("bound input")
+        || t.contains("bytes")
+        || t.contains("disagree")
+        || t.contains("binds")
+    {
+        "shape"
+    } else if t.contains("null") {
+        "null-argument"
+    } else if t.contains("no dispatchable kernels") {
+        "empty-plan"
+    } else {
+        "unclassified"
+    }
+}
+
+/// The exact sentence the host is told. Pure, so both polarities of the control can assert on it
+/// without a GPU, an ORT session, or a device.
+fn broken_commitment_message(
+    subgraph_id: u64,
+    nodes: &[crate::engine::NodeDesc],
+    error_text: &str,
+) -> String {
+    const NAMED: usize = 4;
+    let named: Vec<String> = nodes
+        .iter()
+        .take(NAMED)
+        .map(|n| format!("{}({})", n.name, n.qualified_name()))
+        .collect();
+    let more = nodes.len().saturating_sub(named.len());
+    let node_list = if named.is_empty() {
+        "<the fused node carried no node descriptions>".to_string()
+    } else if more == 0 {
+        named.join(", ")
+    } else {
+        format!("{}, +{more} more", named.join(", "))
+    };
+    format!(
+        "VulkanExecutionProvider: BROKEN COMMITMENT — this EP claimed fused subgraph #{subgraph_id} \
+         ({n} node(s): {node_list}) and its Compute() then returned a non-OK status. \
+         condition={condition}; error text: {error_text}. ONNX Runtime will now re-execute these \
+         node(s) on the CPU EP, so the answer this run produces is not this EP's — and \
+         get_providers() will still list VulkanExecutionProvider, because the provider list is \
+         fixed at session-create time. This is a claim the EP made and did not keep; it is not the \
+         planned fallback of a node this EP never claimed.",
+        n = nodes.len(),
+        condition = failure_condition_token(error_text),
+    )
+}
+
+/// Emit the mandatory WARN when a **claimed** node's `Compute()` returns non-OK. Returns whether a
+/// WARN was emitted, so the negative polarity has something to assert on.
+///
+/// # Why every non-OK return here is a broken commitment, mechanically
+///
+/// Nothing reaches this function that was not claimed: a node the EP declined at partition time
+/// never becomes part of a fused node and never gets a `Compute`. So the narrow case Ruling 2
+/// carves out — *never-claimed ops falling back to CPU is the plan, and must not produce per-node
+/// noise* — is excluded by the position of this call site rather than by a predicate someone has
+/// to maintain. There are 258 dynamic-shape declines on Phi-3.5 and not one of them can arrive
+/// here.
+///
+/// # Safety
+/// `api` must be null or a live `OrtApi`. `status` must be null, or a status this process owns for
+/// the duration of the call; it is read and not released here — the caller returns it to ORT.
+pub(crate) unsafe fn disclose_broken_commitment(
+    api: *const ort::OrtApi,
+    subgraph_id: u64,
+    nodes: &[crate::engine::NodeDesc],
+    status: ort::OrtStatusPtr,
+) -> bool {
+    if status.is_null() {
+        // The good run's polarity travels through this same call site and this same branch. An
+        // assertion that the WARN did not fire is therefore an assertion about the mechanism, not
+        // about a different code path that happens to be quiet.
+        return false;
+    }
+    // SAFETY: caller's contract — `api` is null or live and `status` is a live status we do not
+    // take ownership of. `status_message` handles the null-api case itself.
+    let error_text = unsafe { sys::status_message(api, status) };
+    let message = broken_commitment_message(subgraph_id, nodes, &error_text);
+    let delivered = logging::warn_through_ort_sink("onnxruntime_ep_vulkan::compute", &message);
+    counters::record_broken_commitment(delivered);
+    true
+}
+
 unsafe extern "C" fn compute(
     p: *mut ort::OrtNodeComputeInfo,
     state: *mut c_void,
@@ -1931,7 +2059,19 @@ unsafe extern "C" fn compute(
     let info = unsafe { this_info(p) };
     let api = info.ort_api;
     // SAFETY: `api` is the process-wide table, live for the process's lifetime.
-    unsafe { crate::guard_ffi_status(api, "Compute", || compute_impl(info, state, kernel_context)) }
+    let status = unsafe {
+        crate::guard_ffi_status(api, "Compute", || compute_impl(info, state, kernel_context))
+    };
+
+    // RAI Ruling 2: the guard that already converts a panic into `ORT_EP_FAIL` is also where a
+    // broken commitment becomes knowable. It is deliberately *outside* `compute_impl`, so that a
+    // panic converted to a status by the guard discloses on exactly the same path as a status
+    // returned normally — the 2026-07-30→08-01 incidents arrived by both routes.
+    //
+    // SAFETY: `api` is live; `status` is either null or a status we still own at this point and
+    // hand to ORT unchanged on the next line.
+    unsafe { disclose_broken_commitment(api, info.subgraph_id, &info.plan.nodes, status) };
+    status
 }
 
 /// # Safety
@@ -1946,6 +2086,21 @@ unsafe fn compute_impl(
     let fail = |code, msg: String| unsafe { sys::make_status(api, code, &msg) };
 
     counters::record_compute_call();
+
+    // The planted control (see [`ENV_FORCE_COMPUTE_FAILURE`]). Placed after `record_compute_call`
+    // and before every real check, so the injected failure is a claimed node's Compute returning
+    // non-OK and nothing else — the exact shape of the condition under test.
+    if fault_injection_active() {
+        counters::record_compute_failure();
+        counters::record_injected_compute_failure();
+        return fail(
+            ort::OrtErrorCode_ORT_EP_FAIL,
+            "planted control (ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE): synthetic Compute \
+             failure standing in for a mid-session allocator failure. No device work was \
+             attempted."
+                .to_string(),
+        );
+    }
 
     if kernel_context.is_null() {
         counters::record_compute_failure();
@@ -2250,6 +2405,228 @@ unsafe fn check_bound_counts(
 mod tests {
     use super::*;
 
+    // ------------------------------------------------------------------------------------------
+    // Broken-commitment disclosure — the two-polarity control (RAI Ruling 2)
+    // ------------------------------------------------------------------------------------------
+
+    mod broken_commitment {
+        use super::*;
+        use std::sync::{Mutex, MutexGuard};
+
+        /// Everything the fake sink has been handed, as `(severity, message)`.
+        static CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+
+        /// The ORT logger pointers **and** the counters are process-global, so a polarity must not
+        /// run at the same time as anything else that logs or records. This is the same lock the
+        /// allocator ledger and the counters tests take: a private lock here would serialise these
+        /// two tests against each other and leave them racing `counters_record_what_they_claim_to_
+        /// record`, which asserts on the very statics a disclosure moves.
+        fn serialize() -> MutexGuard<'static, ()> {
+            crate::allocator::ledger::test_lock()
+        }
+
+        /// Stands in for ORT's `Logger_LogMessage`. This is the *host's* channel: a message that
+        /// arrives here is one a user with ORT logging configured would see, and a message that
+        /// does not arrive here is invisible to them however loudly we printed it elsewhere.
+        unsafe extern "C" fn fake_log_message(
+            _logger: *const ort::OrtLogger,
+            severity: ort::OrtLoggingLevel,
+            message: *const c_char,
+            _file: *const ort::wchar_t,
+            _line: std::os::raw::c_int,
+            _func: *const c_char,
+        ) -> ort::OrtStatusPtr {
+            // SAFETY: `forward_to_ort` always passes a non-null, NUL-terminated message.
+            let text = unsafe { CStr::from_ptr(message) }
+                .to_string_lossy()
+                .into_owned();
+            CAPTURED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((severity, text));
+            ptr::null_mut()
+        }
+
+        /// Stands in for `GetErrorMessage`: the failing condition's own text, which the WARN has
+        /// to carry verbatim (R13 — quote the failure text).
+        const PLANTED_ERROR: &CStr =
+            c"VulkanExecutionProvider: gpu-allocator failed to allocate 14155776 bytes";
+
+        unsafe extern "C" fn fake_get_error_message(
+            _status: *const ort::OrtStatus,
+        ) -> *const c_char {
+            PLANTED_ERROR.as_ptr()
+        }
+
+        /// A minimal `OrtApi` carrying only the two entry points this path uses.
+        fn fake_api() -> Box<ort::OrtApi> {
+            // SAFETY: `OrtApi` is a `#[repr(C)]` table of `Option<fn>` slots; all-zero is the
+            // valid `None` niche for every one of them, so a zeroed table is a table where
+            // nothing is available — which every caller in this crate already handles.
+            let mut api: ort::OrtApi = unsafe { std::mem::zeroed() };
+            api.Logger_LogMessage = Some(fake_log_message);
+            api.GetErrorMessage = Some(fake_get_error_message);
+            Box::new(api)
+        }
+
+        fn nodes() -> Vec<crate::engine::NodeDesc> {
+            ["MatMulNBits", "Add"]
+                .iter()
+                .enumerate()
+                .map(|(i, op)| crate::engine::NodeDesc {
+                    op_type: (*op).to_string(),
+                    domain: if i == 0 { "com.microsoft" } else { "" }.to_string(),
+                    since_version: 1,
+                    name: format!("/model/layers.0/n{i}"),
+                    attributes: Default::default(),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                })
+                .collect()
+        }
+
+        /// Drive `disclose_broken_commitment` with a fake ORT sink attached and report what
+        /// reached the sink. `status` is opaque to us — it is only ever passed back to the fake
+        /// `GetErrorMessage` — so a dangling-looking non-null value is never dereferenced.
+        fn run_polarity(status: ort::OrtStatusPtr) -> (bool, Vec<(i32, String)>) {
+            let _guard = serialize();
+            let api = fake_api();
+            CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            // SAFETY: `api` outlives the attachment — it is detached below, before the box drops.
+            unsafe { logging::attach_ort_logger(&*api, ptr::dangling::<ort::OrtLogger>()) };
+            // SAFETY: `api` is the live fake table; `status` is null or an opaque token the fake
+            // `GetErrorMessage` ignores.
+            let warned = unsafe { disclose_broken_commitment(&*api, 7, &nodes(), status) };
+            logging::detach_ort_logger();
+            // Filter to *this* polarity's subgraph id. The other `compute` tests in this binary
+            // drive the real entry point concurrently and their WARNs land in this sink too —
+            // which is itself the R10 falsifier for this mechanism and not a nuisance: the
+            // messages that arrive carry *their* node names and *their* error text, so the
+            // artifact's content varies with its input rather than with its author.
+            let seen = CAPTURED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|(_, m)| m.contains("BROKEN COMMITMENT") && m.contains("subgraph #7"))
+                .cloned()
+                .collect();
+            (warned, seen)
+        }
+
+        /// **Positive polarity.** A claimed node's `Compute()` returned non-OK; the WARN must
+        /// reach ORT's own sink, name the nodes, quote the failure text, and say that CPU
+        /// re-execution follows.
+        #[test]
+        fn a_planted_compute_failure_warns_through_orts_sink() {
+            let (warned, seen) = run_polarity(ptr::dangling_mut::<ort::OrtStatus>());
+            assert!(
+                warned,
+                "the guard did not treat a non-OK status as a broken commitment"
+            );
+            assert_eq!(
+                seen.len(),
+                1,
+                "expected exactly one WARN through ORT's sink, saw: {seen:?}"
+            );
+            let m = &seen[0].1;
+            assert_eq!(
+                seen[0].0,
+                ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING,
+                "the disclosure must arrive at WARNING severity, not below the host's filter"
+            );
+            for needle in [
+                "/model/layers.0/n0",
+                "com.microsoft::MatMulNBits",
+                "gpu-allocator failed to allocate 14155776 bytes",
+                "condition=allocator",
+                "re-execute these node(s) on the CPU EP",
+                "#7",
+            ] {
+                assert!(m.contains(needle), "WARN is missing {needle:?}: {m}");
+            }
+        }
+
+        /// **Negative polarity.** The same call site, the same mechanism, a successful Compute.
+        /// Nothing may reach ORT's sink. This is the half that makes the other half evidence: a
+        /// WARN that cannot be shown not to fire on a good run is a printed opinion.
+        #[test]
+        fn a_successful_compute_emits_nothing_to_orts_sink() {
+            let (warned, seen) = run_polarity(ptr::null_mut());
+            assert!(
+                !warned,
+                "the guard reported a broken commitment on an OK status"
+            );
+            assert!(
+                seen.is_empty(),
+                "a successful Compute put {} message(s) into ORT's sink: {seen:?}",
+                seen.len()
+            );
+        }
+
+        /// The disclosure must survive having no ORT logger attached — and must say so, rather
+        /// than letting a WARN that reached nobody be counted as delivered.
+        #[test]
+        fn with_no_ort_logger_the_event_is_still_recorded_and_the_channel_is_not_claimed() {
+            let _guard = serialize();
+            logging::detach_ort_logger();
+            let api = fake_api();
+            // SAFETY: `api` is live for the call; no logger is attached, so nothing is forwarded.
+            let warned = unsafe {
+                disclose_broken_commitment(
+                    &*api,
+                    1,
+                    &nodes(),
+                    ptr::dangling_mut::<ort::OrtStatus>(),
+                )
+            };
+            assert!(
+                warned,
+                "the event must be recorded even when the channel is absent"
+            );
+        }
+
+        #[test]
+        fn the_condition_token_names_the_mechanism_not_the_op() {
+            assert_eq!(
+                failure_condition_token("gpu-allocator failed to allocate"),
+                "allocator"
+            );
+            assert_eq!(
+                failure_condition_token("bound input 3 is 0 bytes, plan expected 4096"),
+                "shape"
+            );
+            assert_eq!(
+                failure_condition_token("recovered from a panic in Compute"),
+                "panic"
+            );
+            assert_eq!(
+                failure_condition_token("planted control (…): synthetic Compute failure"),
+                "planted-control"
+            );
+        }
+
+        /// A fused island of 355 nodes must not print 355 node names into a host's log: the WARN
+        /// has to stay readable to remain a signal.
+        #[test]
+        fn a_large_island_is_named_boundedly_and_says_how_many_it_left_out() {
+            let many: Vec<_> = (0..355)
+                .map(|i| crate::engine::NodeDesc {
+                    op_type: "Add".to_string(),
+                    domain: String::new(),
+                    since_version: 14,
+                    name: format!("n{i}"),
+                    attributes: Default::default(),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                })
+                .collect();
+            let m = broken_commitment_message(3, &many, "oom");
+            assert!(m.contains("355 node(s)"), "{m}");
+            assert!(m.contains("+351 more"), "{m}");
+            assert!(!m.contains("n300"), "the whole island was printed: {m}");
+        }
+    }
+
     #[test]
     fn bool_parsing_accepts_the_usual_spellings() {
         for s in ["1", "true", "TRUE", "yes", "on"] {
@@ -2426,6 +2803,10 @@ mod tests {
     /// it is what M0 builds today for every subgraph.
     #[test]
     fn a_compute_that_cannot_dispatch_returns_a_status_not_a_silent_success() {
+        // Driving the real `Compute` entry point records into the process-wide counters,
+        // including a broken commitment for the failure this test plants. Share the lock so
+        // those events land inside the frame of whoever is asserting on them.
+        let _g = crate::allocator::ledger::test_lock();
         let api = fake_api();
         let mut info = SubgraphComputeInfo::new_stub(two_in_one_out_plan(), 24, &raw const *api);
         let ctx = FakeCtx {
@@ -2460,6 +2841,10 @@ mod tests {
     /// error — so this must fail loudly before anything is dispatched.
     #[test]
     fn a_kernel_context_that_disagrees_with_the_compiled_counts_is_rejected() {
+        // Driving the real `Compute` entry point records into the process-wide counters,
+        // including a broken commitment for the failure this test plants. Share the lock so
+        // those events land inside the frame of whoever is asserting on them.
+        let _g = crate::allocator::ledger::test_lock();
         let api = fake_api();
         // A live compute-info needs a non-null session and at least one kernel. The session
         // pointer here is deliberately dangling: the count check must run *before* anything
@@ -2504,6 +2889,10 @@ mod tests {
 
     #[test]
     fn a_null_kernel_context_fails_instead_of_dereferencing() {
+        // Driving the real `Compute` entry point records into the process-wide counters,
+        // including a broken commitment for the failure this test plants. Share the lock so
+        // those events land inside the frame of whoever is asserting on them.
+        let _g = crate::allocator::ledger::test_lock();
         let api = fake_api();
         let mut info = SubgraphComputeInfo::new_stub(two_in_one_out_plan(), 24, &raw const *api);
         // SAFETY: passing null is the case under test; `compute` must reject it before any deref.

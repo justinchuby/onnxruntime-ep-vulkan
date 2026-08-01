@@ -2498,6 +2498,12 @@ mod tests {
 
     #[test]
     fn quarantine_retirement_is_counted_so_the_window_is_never_silently_exhausted() {
+        // `ENV_QUARANTINE_SPANS` is process-wide and is set, read by `registry()`, and removed
+        // again. `quarantine_exhaustion_reaches_the_process_wide_counters` does the same dance
+        // under `ledger::test_lock()`; without the same lock here the two overlap and one test's
+        // `remove_var` lands before the other's registry has read it, which shows up as
+        // "peak depth must be the bound" — a real race in the test's own frame, not a bound bug.
+        let _g = ledger::test_lock();
         // SAFETY: this test sets the quarantine bound before building its own registry. Cargo runs
         // tests in threads, so read the value into the registry at construction (which
         // `HandleRegistry::new` does) rather than relying on it later.
