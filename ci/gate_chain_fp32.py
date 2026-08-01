@@ -153,7 +153,17 @@ def capture_native_stderr(sink_path: Path):
 # ---------------------------------------------------------------------------
 
 ARTIFACT_NAME = "gate_chain_fp32"
+DECLINE_ARTIFACT_NAME = "gate_decline_probe_fp32"
 ELEMENTS = 256
+
+# The op the decline probe is built from.  It is deliberately one this EP does not
+# implement and has no plan to: `Det` is a batched 3x3 determinant, it is not in any op
+# family in `rust/src/ops/`, and ORT's CPU provider implements it, so the graph runs and
+# a comparison is still performed.  If this ever becomes claimable the probe stops being
+# a negative control — see `--artifact decline_probe` below for how that is caught rather
+# than absorbed.
+DECLINE_OP = "Det"
+DECLINE_BATCH = 8
 
 
 def build_gate_chain_fp32(onnx, np):
@@ -194,6 +204,69 @@ def build_gate_chain_fp32(onnx, np):
     return model.SerializeToString(), feeds
 
 
+def build_decline_probe_fp32(onnx, np):
+    """Return ``(model_bytes, feeds)`` for the **negative control** artifact.
+
+    WHY A SECOND ARTIFACT EXISTS
+    ============================
+    The original negative control removed the Vulkan ICD (``VK_DRIVER_FILES`` /
+    ``VK_ICD_FILENAMES``) and required the gate to go red.  That control is **not
+    available on every lane it is wired into**: PLATFORMS.md §7.4.1 records that the
+    LunarG loader *silently ignores* both variables when the process is elevated, and
+    GitHub Actions Windows runners are elevated — which is exactly why the Windows lane
+    registers lavapipe in the registry in the first place.  On that lane the "no ICD"
+    step does not remove the ICD; the gate then executes normally and passes, and the
+    step reports ``NEGATIVE CONTROL FAILED``.  That red says "the gate cannot fail" when
+    what actually happened is "the suppression did not take" — an instrument outage
+    wearing a detection's costume, which is R13 with the polarity reversed and is the
+    same defect the splice-ordering bug had.
+
+    This artifact makes the EP do nothing **without touching the loader at all**: it is
+    a single ``Det`` node, an op this EP does not implement.  The EP is loaded, the
+    driver is present, the device is real, capability detection succeeds — and the EP
+    still claims zero nodes, so the whole graph runs on CPU and the attribution comes
+    back with a zero own-provider count.  The lane must report
+    ``FAIL(condition=UNATTRIBUTED)``.
+
+    It is also the *stronger* negative: "the EP was never able to start" and "the EP
+    started and executed nothing" are different failures, and only the second one is the
+    one that was live on 2026-07-30.
+
+    Feeds are pinned and non-singular (a diagonal plus a fixed off-diagonal ramp) so the
+    determinants are far from zero and a CPU-vs-CPU comparison cannot agree by rounding
+    to zero on both sides.
+    """
+    from onnx import TensorProto, helper
+
+    a = helper.make_tensor_value_info("A", TensorProto.FLOAT, [DECLINE_BATCH, 3, 3])
+    d = helper.make_tensor_value_info("D", TensorProto.FLOAT, [DECLINE_BATCH])
+    graph = helper.make_graph(
+        [helper.make_node(DECLINE_OP, ["A"], ["D"], name="decline_probe_det")],
+        DECLINE_ARTIFACT_NAME,
+        [a],
+        [d],
+    )
+    model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 17)],
+        producer_name="onnxruntime-ep-vulkan-ci-gate",
+    )
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+
+    base = np.eye(3, dtype=np.float32) * 2.0
+    ramp = np.linspace(0.05, 0.4, DECLINE_BATCH, dtype=np.float32)
+    mats = np.stack([base + r * np.float32(0.5) for r in ramp]).astype(np.float32)
+    return model.SerializeToString(), {"A": mats}
+
+
+# The lane selects an artifact by name; a lane step never constructs one by literal.
+ARTIFACTS = {
+    "chain_fp32": (ARTIFACT_NAME, build_gate_chain_fp32),
+    "decline_probe": (DECLINE_ARTIFACT_NAME, build_decline_probe_fp32),
+}
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -202,6 +275,18 @@ def build_gate_chain_fp32(onnx, np):
 def parse_args(argv):
     p = argparse.ArgumentParser(description="criterion-10 gate artifact for a CI lane")
     p.add_argument("--verdict-out", required=True)
+    p.add_argument(
+        "--artifact",
+        choices=sorted(ARTIFACTS),
+        default="chain_fp32",
+        help=(
+            "chain_fp32 (default) is the §7.8.1 gate artifact. decline_probe is the "
+            "loader-independent negative control: a single Det node this EP does not "
+            "implement, so a healthy EP still executes nothing and the lane must report "
+            "FAIL(condition=UNATTRIBUTED). This script reports what it observed either "
+            "way — the polarity assertion lives in the lane step, not here."
+        ),
+    )
     p.add_argument(
         "--counters", default=os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE", "")
     )
@@ -228,6 +313,7 @@ def main(argv=None) -> int:
     verdict_out.parent.mkdir(parents=True, exist_ok=True)
     workdir = Path(args.workdir).resolve() if args.workdir else verdict_out.parent
     workdir.mkdir(parents=True, exist_ok=True)
+    artifact_name, artifact_builder = ARTIFACTS[args.artifact]
 
     # -- import the one vocabulary -------------------------------------------------
     # tests/ops/_verdict.py is Trinity's.  Importing it rather than restating it is the
@@ -255,7 +341,7 @@ def main(argv=None) -> int:
                 "gate_chain_fp32 initialised the verdict before opening any session. "
                 "If this value survives, the comparison never completed."
             ),
-            artifact=ARTIFACT_NAME,
+            artifact=artifact_name,
             device_index=str(args.device),
         )
         verdict_out.write_text(
@@ -294,15 +380,15 @@ def main(argv=None) -> int:
         )
 
     try:
-        model_bytes, feeds = build_gate_chain_fp32(onnx, np)
+        model_bytes, feeds = artifact_builder(onnx, np)
     except Exception as exc:  # noqa: BLE001
         return report_instrument_error(
             "artifact_build_failed",
-            f"{ARTIFACT_NAME} could not be constructed: {exc!r}\n{traceback.format_exc()}",
+            f"{artifact_name} could not be constructed: {exc!r}\n{traceback.format_exc()}",
         )
 
     digest = hashlib.sha256(model_bytes).hexdigest()[:16]
-    artifact_id = f"{ARTIFACT_NAME}@ci-gate-v1 sha256:{digest}"
+    artifact_id = f"{artifact_name}@ci-gate-v1 sha256:{digest}"
     print(f"GATE: artifact = {artifact_id} ({ELEMENTS} elements, Add -> Relu)", flush=True)
 
     try:
@@ -314,8 +400,8 @@ def main(argv=None) -> int:
             f"raised: {exc!r}",
         )
 
-    profile_prefix = workdir / "gate_chain_fp32_profile"
-    stderr_sink = workdir / "gate_chain_fp32_ort_stderr.log"
+    profile_prefix = workdir / f"{artifact_name}_profile"
+    stderr_sink = workdir / f"{artifact_name}_ort_stderr.log"
     profile_path = None
     listed: list = []
     vk_out = None
@@ -489,7 +575,7 @@ def main(argv=None) -> int:
 
     if verdict.verdict == _verdict.VERDICT_MATCH:
         return report_pass(
-            f"{ARTIFACT_NAME} verdict={verdict.verdict}; "
+            f"{artifact_name} verdict={verdict.verdict}; "
             f"executed_by={verdict.executed_by}; max_abs_diff={max_abs:.6g}.\n"
             "  What this claims: the outputs of a run in which this EP executed at "
             "least one fused island agree with a CPU-only run of the same artifact.\n"
