@@ -125,6 +125,89 @@ explicit agreement or disagreement with Morpheus.
 
 ---
 
+---
+
+## Session — 2026-08-01T09:53:14-07:00 (Recall — re-verdict against a materially changed system)
+
+### Task
+Justin recalled me to re-examine RAI-008/009 against my own stated falsifier, now that the EP
+genuinely executes correctly on Phi-3.5 (attributed `MATCH`, ORT profiling as an instrument we do
+not own) but has also produced two more silent-fallback events since my last ruling. Also asked:
+should the EP WARN through ORT's logging sink on Compute failure; is there an RAI dimension to
+Justin's standing performance directive; and a llama.cpp licence boundary paragraph for Switch.
+
+### Key Facts Established
+
+- **RAI-008 stands, unsoftened.** My 2026-07-30 falsifier required (a) criterion 11 MET and (b) a
+  session-creation WARN, both instrument-verified. Neither holds: criterion 11 is confirmed
+  "scaffolding only" (no ledger, no planted controls), and §8.9.7's disclosure design has no
+  artifact I have observed it produce (R10 applies to my own review, not only to others' code).
+  **Correct output today is not evidence about disclosure — those are different claims**, and
+  conflating them would be the exact substitution R9 forbids.
+
+- **My own falsifier had a gap, and I am recording it as a self-correction rather than pretending
+  it was always complete.** RAI-008's (a)+(b) test covered claim-time disclosure. It did not
+  anticipate *mid-session runtime* `Compute()` failure on an already-proven, already-claimed form
+  — which is exactly what caused both new incidents (weight-cache OOM; `alloc(size=0)` on
+  zero-length KV tensors). A form can pass every claim-time gate and still fail silently at
+  runtime under a condition the proof never exercised. Extended the falsifier to a three-part
+  test: ledger (a), claim-time disclosure (b), and a new runtime WARN on claimed-node Compute
+  failure (c), each requiring an instrument with a planted, two-polarity control — none by prose.
+
+- **Fallback disclosure ruling: WARN through ORT's own sink, but only on broken commitments, not
+  on ordinary declines.** The mechanical line: a node never claimed falling back to CPU is the
+  plan, already disclosed once in aggregate at session creation — no per-node signal needed. A
+  node that *was* claimed and then fails its `Compute()` call is the EP reneging on a commitment
+  it already made to ORT, and that must WARN every time, through ORT's logging sink specifically
+  (the channel already carrying "Falling back", not our private log), verified by a two-polarity
+  planted control — same discipline Guard D now uses for the fallback line itself.
+
+- **The performance directive has a latent RAI dimension, not yet an active one, and I named the
+  trigger rather than declaring "not yet" without one.** Morpheus's ruling already forecloses the
+  coverage-side cheat (do less GPU work to win a ratio). It says nothing about the accuracy side:
+  tolerance widening under performance pressure, or device-conditional precision selection, are
+  the accuracy-lever equivalent of that same cheat and are currently gated only by Trinity's
+  engineering sign-off — an "is this justified" gate, not a "does the user know" one. Two named
+  triggers: undisclosed tolerance widening (engineering sign-off lands, user-facing accuracy
+  section doesn't), or precision keyed on device speed rather than fixed per producer-at-version.
+  Either firing converts this from advisory-latent to an active finding.
+
+- **llama.cpp licence boundary restated for Switch in one paragraph**: MIT permits reading and
+  even copying with attribution; the "study, don't copy" instruction is an engineering-quality
+  choice, not a legal one. The idea/expression line still governs: technique reproduced in
+  Switch's own idiom is independent work, no notice; substantial expression adapted is a
+  derivative work, MIT-permitted, costs one `THIRD_PARTY_NOTICES.md` entry, never a legal risk.
+
+### Learnings
+
+1. **A falsifier can be wrong by being incomplete rather than by being false.** My 2026-07-30
+   falsifier was never falsified in the sense of being shown untrue — it was shown *insufficient*
+   by an incident it didn't cover. R9 applies recursively: naming what would falsify a verdict
+   includes staying alert to whether the named test actually spans the space of ways the
+   underlying hazard can recur. It didn't, and the fix is to extend the test, not to defend it.
+
+2. **Good news and a disclosure gate answer different questions, and the discipline is refusing to
+   let one stand in for the other.** "The output is correct on three runs" and "a user would learn
+   if it weren't" are independent claims. Softening a disclosure verdict because the correctness
+   news improved is exactly the failure mode RAI-008's falsifier was written to prevent, and
+   Justin's recall prompt tested precisely whether I would hold that line under good news.
+
+3. **A latent RAI concern deserves a named trigger, not a permanent "not applicable."** Declining
+   to raise a verdict is only defensible if paired with the specific observation that would raise
+   it — otherwise "not yet" quietly becomes "never," which is the same failure as an unfalsifiable
+   green.
+
+4. **Mechanism-not-prose applies to my own rulings, not only to the ones I review.** Both the
+   fallback-disclosure ruling and the extended falsifier specify a planted, two-polarity control
+   as part of the ruling itself, not as a follow-up someone else designs later.
+
+### Deliverables
+- Appended to `.squad/rai/audit-trail.md` (RAI-008 re-verdict, RAI-010, RAI-011, four rulings)
+- Appended to `.squad/agents/Rai/history.md` (this entry)
+- Created `.squad/decisions/inbox/rai-recall-reverdict.md`
+
+---
+
 📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
 
 Two findings apply to every agent on the team:
