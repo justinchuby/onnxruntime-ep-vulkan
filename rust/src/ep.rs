@@ -37,8 +37,19 @@ use crate::sys::{self, ort};
 /// Session options this EP understands, all prefixed `ep.` (`DESIGN.md` §2.4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EpOptions {
-    /// `ep.device_index` — which advertised Vulkan device to bind. `None` = auto (best score).
+    /// `ep.device_index` — which capable Vulkan device to bind, as an index into the **best-first
+    /// sorted** list (the same space `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes). `None` = auto.
+    ///
+    /// It is NOT the `vkEnumeratePhysicalDevices` index, and it is NOT authoritative: the device
+    /// ORT bound for the session wins (see [`EpOptions::bound_physical_index`]).
     pub device_index: Option<usize>,
+    /// The `vkEnumeratePhysicalDevices` index of the `OrtEpDevice` **ORT bound for this session**,
+    /// read from the EP metadata `CreateEp` hands back. `None` when ORT gave us nothing to read.
+    ///
+    /// Authoritative over `device_index`, because ORT keys the allocator it asks us for by the
+    /// device it bound; opening any other device stands up a second `VkDevice` and violates §6.5.
+    /// Not a session option — ORT sets it, users cannot.
+    pub bound_physical_index: Option<usize>,
     /// `ep.enable_validation` — enable `VK_LAYER_KHRONOS_validation`.
     pub enable_validation: bool,
     /// `ep.pipeline_cache_path` — on-disk `VkPipelineCache` blob location.
@@ -233,10 +244,13 @@ impl VulkanEp {
         abi_version: u32,
         name: &CStr,
         session_options: *const ort::OrtSessionOptions,
+        bound_physical_index: Option<usize>,
     ) -> Box<VulkanEp> {
         // SAFETY: `ort_api` is live per the caller's contract; `session_options` may be null,
         // which `from_session_options` handles.
-        let options = unsafe { EpOptions::from_session_options(ort_api, session_options) };
+        let mut options = unsafe { EpOptions::from_session_options(ort_api, session_options) };
+        // Not a session option: this is the device ORT bound, and it outranks every selector.
+        options.bound_physical_index = bound_physical_index;
 
         // SAFETY: `OrtEp` is a `#[repr(C)]` plain-old-data vtable of a `u32` and function
         // pointers, all of which bindgen models as `Option<fn>`. All-zero is the valid `None`

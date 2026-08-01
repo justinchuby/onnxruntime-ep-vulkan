@@ -34,7 +34,7 @@ use ash::vk;
 use super::{
     barrier::Barriers,
     caps::{Capabilities, DeviceFeatureChain},
-    instance::{CapableDevice, Instance, select_device},
+    instance::{CapableDevice, Instance, position_of_physical, select_device},
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -158,15 +158,30 @@ static EP_INSTANCE: OnceLock<Option<&'static Instance>> = OnceLock::new();
 /// One owner per *physical* device index (`CapableDevice::info::index`).
 static EP_DEVICES: OnceLock<std::sync::Mutex<Vec<&'static EpDeviceOwner>>> = OnceLock::new();
 
-/// Acquire the process-global EP device for the physical device `options` selects (§6.5).
+/// Acquire the process-global EP device for the physical device this session must open (§6.5).
 ///
 /// Creates the instance and device on first call for a given physical device and returns the
 /// same handles on every later call. Returns `None` when no device passes the §7.2 gate.
+///
+/// # Which device, and why the argument order is not negotiable
+///
+/// `bound_physical` is the `vkEnumeratePhysicalDevices` index of the `OrtEpDevice` **ORT actually
+/// bound for this session** (`CreateEp`'s device list). It wins over every other selector, and it
+/// has to: ORT keys the allocator it will ask us for by that same device, so opening a different
+/// one does not produce a different-but-valid configuration — it produces two `VkDevice`s, which
+/// is precisely what §6.5 forbids. A selector that disagrees with ORT is not a preference we can
+/// honour; it is a request we cannot satisfy in-session, and the remedy (pin
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE` before the library is registered, so only that device is
+/// advertised and ORT cannot bind another) is logged when it happens.
+///
+/// The fallbacks, in order, are `ep.device_index` and then the environment selector — both of
+/// which index the **best-first sorted** list, not the enumeration order.
 ///
 /// # Safety
 /// The Vulkan loader must remain loaded for the process lifetime. It does: the returned owner is
 /// leaked, so `ash::Entry` (which holds the loaded library) is never dropped.
 pub(crate) unsafe fn acquire_ep_device(
+    bound_physical: Option<usize>,
     device_index: Option<usize>,
     enable_validation: bool,
     force_legacy: bool,
@@ -203,6 +218,41 @@ pub(crate) unsafe fn acquire_ep_device(
         }
     } else {
         select_device(&capables).unwrap_or(0)
+    };
+
+    // ORT's binding wins, and says so when it overrides. See the doc comment above: a selector
+    // that disagrees with ORT cannot be honoured without standing up a second VkDevice.
+    let idx = match bound_physical {
+        None => idx,
+        Some(physical) => match position_of_physical(&capables, physical) {
+            Some(pos) => {
+                if pos != idx {
+                    log::warn!(
+                        "§6.5 index spaces: ORT bound '{}' (physical enumerate index {physical}, \
+                         best-first selector index {pos}) for this session, but the selector asked \
+                         for '{}' (selector index {idx}). Following ORT — its allocator is keyed \
+                         by the device it bound, so opening the other one would create a SECOND \
+                         VkDevice and report SPLIT-DEVICE. To run on '{}', set \
+                         ONNXRUNTIME_EP_VULKAN_DEVICE before the EP library is registered: the \
+                         factory then advertises only that device and ORT cannot bind another.",
+                        capables[pos].info.name,
+                        capables[idx].info.name,
+                        capables[idx].info.name,
+                    );
+                }
+                pos
+            }
+            None => {
+                log::warn!(
+                    "§6.5 index spaces: ORT bound physical enumerate index {physical}, which no \
+                     device in the §7.2-capable list carries ({} device(s) enumerated). Falling \
+                     back to selector index {idx}; expect SPLIT-DEVICE if ORT asks for an \
+                     allocator.",
+                    capables.len(),
+                );
+                idx
+            }
+        },
     };
 
     let capable = capables.swap_remove(idx);
