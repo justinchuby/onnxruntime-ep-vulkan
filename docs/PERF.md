@@ -2637,6 +2637,12 @@ Five terminal verdicts, and only one releases a number:
 | `UNCERTIFIED` | no companion record, or the tail produced no number | no — and **not** a detection |
 | `UNOBSERVABLE` | the instrument's frame does not contain this device (R12) | no — and **not** a detection |
 | `ERROR` | the companion itself failed (R13) | no — and **never** a finding about contention |
+| `UNCERTIFIED(partial_companion)` | **added §16** — tenancy observed, clock axis has no producer (`TENANCY_ONLY`) | no — and **not** a detection |
+
+*(§16 splits the record into a tenancy axis and a clock axis. The four verdicts above are what a
+record with **both** axes earns; the fifth is what a record with only tenancy earns, and it never
+releases a number. A detection on the tenancy axis alone still stands: `FOREIGN_GPU_WORK` without
+a clock record is `WITHHELD`, because no clock reading would unobserve foreign work.)*
 
 **Why the peak clock and not the median.** The median SM clock does not discriminate: the
 correctly-clocked `after_coldboard` run (11.5243 ms, right) and the pathological
@@ -2655,7 +2661,10 @@ caveat that lives in a document does not travel with the number):
   it is a real gap and it is named rather than covered.
 - It reads the driver's own account. A clock the driver misreports is invisible to it.
 - `nvidia-smi` is NVIDIA-only. On any other vendor this is `UNOBSERVABLE`, which is **not**
-  `SOLE_TENANT` and **not** a pass.
+  `SOLE_TENANT` and **not** a pass. *(§16: on Windows the WDDM counters now fill the **tenancy**
+  axis on any adapter, including Intel. They fill no part of the clock axis, so an Intel figure
+  moves from `UNOBSERVABLE` to `UNCERTIFIED(partial_companion)` — better evidence, same
+  non-quotability. §16.3 rules that this is permanent on this hardware.)*
 - It says nothing about host contention. That is `bench/contention.py`'s subject and it gates a
   different quantity.
 
@@ -2668,7 +2677,7 @@ Four runs. **One is quotable.** That ratio is the point of the exercise, not a d
 | dev0 #1 | SOLE_TENANT | 2010/3105 (65%) | STEADY | **12.1847 ms** | 41 | 82% | 1.496% | **QUOTABLE** |
 | dev0 #2 | SOLE_TENANT | 2010/3105 (65%) | MARGINAL_TAIL | *(12.187 withheld)* | 13 | 26% | **0.086%** | UNCERTIFIED |
 | dev0 #3 | SOLE_TENANT | 2010/3105 (65%) | NO_STEADY_TAIL | — | — | — | — | UNCERTIFIED |
-| dev1 (Intel Iris Xe) | **UNOBSERVABLE** | — | NO_STEADY_TAIL | — | — | — | — | UNCERTIFIED |
+| dev1 (Intel Iris Xe) | **UNOBSERVABLE** → **TENANCY_ONLY** (§16) | — *(no producer)* | NO_STEADY_TAIL | — | — | — | — | UNCERTIFIED *(partial_companion from §16)* |
 
 **The one number: 12.1847 ms of GPU-busy time per inference on the RTX 4060 Laptop GPU**, driver
 NVIDIA 591.55, Vulkan 1.4.325, `timestampPeriod` 1 ns, `validBits` 64, 355 of 363 nodes claimed in
@@ -2756,3 +2765,218 @@ statement about a quantity that did *not* move: on the matched A/B pair the devi
 prediction had a falsifier and did not trip it. A null result across two builds measured minutes
 apart on one machine is far more robust to an uncertified clock than a ratio is — if the board had
 been in the wrong regime, it was in the wrong regime for both halves.
+
+## 16. Intel has no clock producer, and a tenancy-only record is not a companion (2026-08-01, later)
+
+The companion of §15.2 made a device-clock figure quotable only with a **tenancy verdict and a
+clock record** over the statistic's own window. Its only producer is `nvidia-smi`, so on the Iris
+Xe the record is `UNOBSERVABLE` and **no Intel device-clock figure has ever been quotable** — which
+is where the open question lives, because the 4.39× of the 13.52× Intel/NVIDIA kernel gap that
+memory bandwidth does not explain (§13.4.5) is a claim about Intel.
+
+Windows exposes two counters that are not locked to a GPU vendor:
+`\GPU Engine(*)\Utilization Percentage` and `\GPU Engine(*)\Running Time`, produced by the **WDDM
+scheduler**. This section says what they can and cannot witness, what verdict a record from them
+earns, and whether an Intel device-clock figure can ever be certified on this hardware.
+
+### 16.1 What the Windows counters witness on Intel — stated as a capability
+
+`bench/win_gpu_counters.py`, measured by `bench/results/probe_wingpu.py` on the Iris Xe with a real
+Phi-3.5 pass (8 inferences, `MATCH`, 71.7 s window, 46 enumerations, worst blind gap 7.1 s):
+
+| question | answer | evidence |
+|---|---|---|
+| Does it see **our own** submissions on the Intel adapter? | **yes** | 1.4292 s of engine time on `engtype_3d`, LUID `0x00010aa0`, attributed to our worker PID |
+| Does it see **other processes** on that adapter, per PID? | **yes** | `Code.exe` (pid 30232) held it 0.1296 s, 0.18% of the window |
+| Does our work leak onto the **other** adapter's record? | **no** | 0 s on the NVIDIA LUID, and 0 s on each of the three other live LUIDs |
+| Does it report a **clock**? | **no** | no `GPU *` counter set carries MHz; no `root\wmi` class here does either |
+| Does it corroborate `nvidia-smi` where both exist? | **yes** | same window on the RTX 4060: `SOLE_TENANT` from both instruments, `agree: true` |
+
+**The negative control is the part that makes the first row mean anything.** Our worker holds
+`\GPU Engine` *instances* on **both** adapters — a process that opens a device on each gets an
+instance on each — so "our PID appears in the counters" is worth nothing. What was measured is that
+**engine time accrues only on the adapter we ran on**: 1.4292 s on Intel and 0 s on NVIDIA when the
+EP ran on the Iris Xe; 2.6165 s on NVIDIA and 0 s on Intel when it ran on the 4060. The LUID join
+goes through a registry description string, which is exactly the kind of join that is silently
+wrong, and this is what checks it.
+
+So the capability, stated so it can be falsified rather than believed:
+
+> **On this box the WDDM counters witness per-process GPU engine occupancy on the Intel adapter,
+> including ours, and they witness no clock at all. That is a tenancy instrument for any WDDM
+> adapter, and it is not half of the clock instrument — it is none of it.**
+
+Three second-order facts the record carries because they change what the number means:
+
+- **Compute is scheduled on the `3D` engine node.** Neither adapter exposes an `engtype_Compute`
+  instance; all of our GPU time appears under `3d`. An `engtype`-based filter looking for compute
+  would have found nothing on either device.
+- **PID 4 (`System`) accrues Copy-engine time** — 2.03 s on the NVIDIA arm — doing paging on behalf
+  of whoever faulted. It is neither ours nor a stranger's, and counting it foreign would make the
+  detector fire on every run. It is reported in its own class.
+- **On a hybrid laptop the panel hangs off the iGPU**, so the compositor is on the Intel adapter
+  permanently. That gets its own verdict, `FOREIGN_GPU_WORK(display)`, because a condition that can
+  never be cleared should say so rather than look like bad luck.
+
+### 16.2 The verdict a tenancy-without-clock record gets, and why it is not a pass
+
+A record with tenancy and no clock is **half of obligation 8**, and the temptation it creates is
+the one amendment 2 was written against: *absence is never a waiver*, and a partial record that
+certified would be a worse loophole than an empty one **because it looks like diligence**.
+
+Tank's five-state discipline applies — *bypassed*, *all-rejected* and *unobservable* were three
+different things sharing one `0` — so this gets its own name at both levels:
+
+| level | state | meaning |
+|---|---|---|
+| companion record | **`TENANCY_ONLY`** | tenancy observed over the window; clock axis has no producer |
+| certification | **`UNCERTIFIED(partial_companion)`** | not `QUOTABLE`, not `UNCERTIFIED`, not `WITHHELD` |
+
+**Why it can never be a pass, in one line: the failure the clock record exists to catch is a
+sole-tenant failure.** `base_b` was **verified sole tenant** and **21.4× wrong** — 246.735 ms —
+with the project's second-best RSD, because the board never left 210 MHz. A tenancy-only companion
+attached to that run says `SOLE_TENANT` and is *correct*, and the figure is still wrong by 21.4×.
+There is a test that says so: `test_the_21_4x_wrong_run_would_pass_a_tenancy_only_companion_and_must_not`.
+
+**And engine `Running Time` cannot be pressed into the clock role either.** It is a *duration*: at
+a lower clock the same kernel occupies the engine **longer**, so it moves the same way as the
+GPU-busy figure it would be certifying. It is a second copy of the quantity under certification
+taken through a different API — **not a second quantity from outside the series**, which is what
+§10.0.1 R9 amendment 5 requires. Feeding it in would reproduce the same-source falsifier one level
+up, which is how 246.735 ms got into the record in the first place.
+
+#### 16.2.1 The asymmetry that makes a half companion safe to have at all
+
+R9 amendment 5's question is not *is the check sound* but **which way does it move when its subject
+is wrong**. A tenancy-only record moves one way only:
+
+> **`FOREIGN_GPU_WORK` without a clock record is still a detection** — no clock reading would
+> unobserve the foreign work, so the figure is `WITHHELD`. **`SOLE_TENANT` without a clock record
+> is not a pass.** This instrument may subtract confidence and may never add it.
+
+That asymmetry is implemented, not merely stated: `device_state.compose` routes an observed
+condition to `FOREIGN_GPU_WORK` regardless of the clock axis, and routes a clean tenancy axis with
+no clock to `TENANCY_ONLY`. So the Windows producer *is* usable on Intel today — for refusing
+figures, which is the half of the job that was never being done there at all.
+
+#### 16.2.2 Three bugs, one shape: when this instrument is wrong, it reads clean
+
+Every failure met while building it produced a **cleaner** record, not a noisier one. This is the
+anti-correlated shape R9 amendment 5 names, and it is why none of the three was fixed by tightening
+a threshold:
+
+1. **The LUID join went through the wrong device ordering.** `ONNXRUNTIME_EP_VULKAN_DEVICE` indexes
+   the EP's best-first order (0 = NVIDIA, 1 = Intel); `vulkaninfo` enumerates the other way
+   (0 = Intel, 1 = NVIDIA) — a trap `bench/devices.py` documents and I walked into anyway. The
+   sampler watched an adapter the workload never touched and reported a clean `SOLE_TENANT`.
+2. **Ancestry resolution cost 21.2 s per round**, walking `psutil` parents for all 204 instances on
+   the adapter. A 62 s window got **three** samples, and reported clean about a run it had not
+   watched.
+3. **PDH caches its instance list per process.** A sampler that opened its query before a job
+   started never saw that job — including our own worker, invisible for a whole 60 s run. Clean
+   again.
+
+Fixed at the source (EP-order join, cached ancestry for PIDs that actually did work, forced
+`PdhEnumObjects` refresh), and backstopped by two interlocks that make the clean reading
+*unavailable* rather than merely unlikely:
+
+- **`UNOBSERVABLE(self_not_witnessed)`** — a window with a declared owner in which **our own work
+  never appeared on the sampled adapter** is not a tenancy record about our run. Not a detection,
+  not a pass. A record must carry positive evidence that it watched the right device.
+- **A blind-gap limit** — a sampler that went dark for more than 10× its interval inside the window
+  is `ERROR(instrument)`. It fired for real on the first NVIDIA corroboration run (12.6 s gap, four
+  samplers each re-enumerating independently) and refused the record; the fix was one shared
+  enumeration, not a looser limit.
+
+### 16.3 RULING — an Intel device-clock figure cannot be certified on this hardware, and that is permanent
+
+Following Link's ruling that lavapipe's device-state record is `none_structural` — *permanent
+rather than pending, because there is no subject to measure* — the Intel case needs its own
+classification, and it is a different one:
+
+> **Intel clock axis: `none_available` — permanent on this machine, and not for want of looking.
+> There is no subject-side problem (the Iris Xe has a real clock that really varies); there is no
+> producer for it, and the producers that exist are structurally the wrong kind of quantity.**
+
+The search, so the ruling can be reopened by anyone who finds what I did not:
+
+| candidate | outcome |
+|---|---|
+| `\GPU Engine`, `\GPU Adapter Memory`, `\GPU Local/Non Local Adapter Memory`, `\GPU Process Memory` | enumerated; **no MHz counter in any of them** |
+| `root\wmi` GPU/graphics classes | none exist on this host |
+| `Win32_VideoController` | name, driver version, RAM, refresh rate — **no core clock** |
+| `nvidia-smi` | NVIDIA-only; exits 6 on the Intel board (`UNOBSERVABLE`, §15.2) |
+| Vulkan itself | no clock query in core or in any extension we admit |
+| engine `Running Time` as a proxy | **inadmissible** — a duration, same-source, see §16.2 |
+
+**So: no.** On this hardware, an Intel device-clock figure is `UNCERTIFIED(partial_companion)` at
+best, forever, and `phases.gpu_steady_tail` will keep refusing to release one. Reopening it needs a
+*producer*, not a better analysis: a vendor telemetry service, an elevated driver interface, or an
+Intel-supplied tool that reports GT frequency. That is a Link question (platform enablement), not a
+Niobe one, and it is not on M0's path.
+
+**What this tells Switch about the 4.39× residual — which is the actionable half of the ruling.**
+The residual must be attacked with **counts and shapes**, not with clocks: dispatch counts, bytes
+moved, occupancy, instruction mix, barrier counts — the quantities §10.0.4 prefers anyway, because
+they are invariant under load, clock state and tenancy. A clock-based Intel argument cannot be
+certified no matter how carefully it is measured, so it should not be *taken*. This is the same
+conclusion §10.0.4 reached from the other direction: *ask at drafting time whether there is a count
+that answers this.* On Intel there is now no alternative to asking.
+
+**And the direction this cuts is the uncomfortable one.** Morpheus's amendment 2 noted that the
+iGPU shares its power budget with loaded CPU cores, so it is *more* exposed to the clock failure
+than the discrete board — and it is the device where we can never see it. The Iris Xe's
+`NO_STEADY_TAIL` refusals (§13.4.3, §14.1) are consistent with a wandering clock and are **not
+evidence of one**; they are the tail gate refusing, not the clock gate reporting.
+
+### 16.4 The record stays portable where no producer exists
+
+Morpheus's amendment 1 requires the companion be **a record, not a tool**. Windows performance
+counters are as locked to Windows as `nvidia-smi` is to NVIDIA, so adding a second Windows-shaped
+producer risks the artifact becoming Windows-shaped. The corollary he did not have to write is now
+implemented:
+
+> **The record is two independent axes — tenancy and clock — each with its own producer, its own
+> verdict and its own silence set; and it is emitted in full on every platform, with `NO_PRODUCER`
+> in the axes nothing can fill.**
+
+`device_state.compose(tenancy, clock)` builds it, `device_state.from_nvidia_record` recasts the
+NVIDIA-era record into the same shape (both axes, one producer), and a host with neither producer
+emits the same keys with `NO_PRODUCER` and a reason. A missing key is indistinguishable from a key
+nobody thought to write; a `NO_PRODUCER` axis is a statement. `test_the_record_is_emitted_in_full_where_no_producer_exists_at_all`
+holds that line, and the Windows-only tests skip rather than fail off-Windows.
+
+The composite verdict is derived, never borrowed:
+
+| tenancy axis | clock axis | composite |
+|---|---|---|
+| `SOLE_TENANT` | a clock series | `SOLE_TENANT` (full companion) |
+| `SOLE_TENANT` | `UNOBSERVABLE` / `NO_PRODUCER` | **`TENANCY_ONLY`** |
+| `FOREIGN_GPU_WORK` | anything | `FOREIGN_GPU_WORK` (detection survives) |
+| `UNOBSERVABLE(*)` | anything | `UNOBSERVABLE` |
+| `ERROR(instrument)` | anything | `ERROR(instrument)` |
+
+### 16.5 Corroboration, since one was available for once
+
+On the RTX 4060, where both producers exist, they were run over the same window and both said
+`SOLE_TENANT` (`agree: true`, `bench/results/wingpu-nvidia-dev0.json`) while the board peaked at
+2010 of 3105 MHz. That is obligation 7's shape — two independently-authored instruments on one
+question, with the agreement **in the artifact** rather than in someone's memory of both — and it
+is now recorded automatically in the `corroboration` block of every NVIDIA companion record.
+
+Note what it does and does not license. It is evidence about the **tenancy** axis only. Neither
+instrument says anything about the other's clock reading, and the agreement of two tenancy
+instruments does not make a tenancy-only record on Intel any closer to quotable.
+
+### 16.6 Instruments — what goes red if §16 is false
+
+| claim | instrument | red when |
+|---|---|---|
+| the counters witness our work on Intel | `probe_wingpu.py` `capability.our_work_seen_on_target` | our engine time on the target adapter is 0 |
+| the LUID join is real | `capability.negative_control_holds` | our engine time is non-zero on another adapter |
+| a half companion never certifies | `test_a_half_companion_never_certifies` | `UNCERTIFIED(partial_companion)` becomes quotable |
+| the 21.4× run is not rescued by tenancy | `test_the_21_4x_wrong_run_would_pass_a_tenancy_only_companion_and_must_not` | that figure returns |
+| a half companion can still refuse | `test_a_half_companion_may_still_refuse` | a detection is downgraded by a missing clock axis |
+| the record exists without producers | `test_the_record_is_emitted_in_full_where_no_producer_exists_at_all` | an axis key goes missing instead of `NO_PRODUCER` |
+| the sampler watched the window | `win_gpu_counters` blind-gap limit | a >10× interval gap is reported as tenancy |
+| the sampler watched the right device | `UNOBSERVABLE(self_not_witnessed)` | a clean record is emitted for an adapter we were not seen on |
