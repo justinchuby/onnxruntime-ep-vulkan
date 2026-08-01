@@ -1,0 +1,34 @@
+{
+  "device_selector": "1",
+  "providers": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "runs": 3,
+  "node_executions_by_provider": {
+    "CPUExecutionProvider": 27,
+    "VulkanExecutionProvider": 3
+  },
+  "cpu_ops_per_session": {
+    "Cast": 2,
+    "Gather": 2,
+    "Greater": 1,
+    "If": 1,
+    "ReduceSum": 1,
+    "Shape": 1,
+    "Sub": 1
+  },
+  "cpu_nodes": [
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather",
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast",
+    "/model/attn_mask_reformat/attn_mask_subgraph/ReduceSum",
+    "/model/attn_mask_reformat/attn_mask_subgraph/Shape",
+    "/model/attn_mask_reformat/attn_mask_subgraph/Sub",
+    "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast",
+    "/model/embed_tokens/Gather",
+    "/model/rotemb_caches_subgraph/Greater",
+    "/model/rotemb_caches_subgraph/If"
+  ],
+  "cross_run_identical_all_outputs": true,
+  "argmax_run0": 30751
+}

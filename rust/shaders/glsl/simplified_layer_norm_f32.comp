@@ -1,0 +1,85 @@
+// SimplifiedLayerNormalization / RMSNormalization (f32) — RMSNorm, no residual fuse.
+//
+// This is skip_simplified_layer_norm_f32.comp with the skip term removed. It is a separate
+// shader rather than the skip shader bound with a zero buffer, because binding a zeroed
+// hidden-sized scratch buffer would cost a full extra read of activation-sized memory per row
+// on a kernel that is entirely bandwidth-bound — the whole reason §5.6 allows the fused form.
+//
+// One workgroup covers one row (one token's hidden dimension).
+//
+// Algorithm:
+//   sum_sq  = Σ x[i]² / hidden_size          (mean square)
+//   inv_rms = 1 / sqrt(sum_sq + epsilon)
+//   out0[i] = x[i] * inv_rms * gamma[i]
+//
+// Output slot 0 is the only slot this shader writes. The contrib schema declares an optional
+// second output (inv_std_var); the claim predicate declines nodes that request it, so the
+// shader never has to branch on it.
+//
+// Three-pass design within a single dispatch — identical structure to the skip variant:
+//   Pass 1 — each thread strides over its elements, accumulating partial sum-of-squares.
+//   Pass 2 — shared-memory binary tree reduction → shmem[0] = total sum-of-squares.
+//   Pass 3 — each thread re-reads its elements and writes the normalised output.
+//
+// Cross-platform notes (ENGINE.md §3, §6):
+//   - LOCAL_SIZE is spec constant 0; default 256, which is the §7.2 floor guarantee.
+//   - Shared memory: 256 * 4 bytes = 1 KiB.
+//   - The tree reduction requires LOCAL_SIZE to be a power of two.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint batch_count;  // total rows = product of dims 0 .. rank-2
+    uint hidden_size;  // last dimension (elements per row)
+    uint eps_bits;     // reinterpret-cast: uintBitsToFloat(eps_bits) == epsilon
+    uint _pad;         // alignment padding, must be zero
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer Hidden { float data[]; } u_hidden;
+layout(set = 0, binding = 1) readonly  buffer Gamma  { float data[]; } u_gamma;
+layout(set = 0, binding = 2) writeonly buffer Out0   { float data[]; } u_out0;
+
+shared float shmem[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint lsz = gl_WorkGroupSize.x;
+
+    if (row >= pc.batch_count) return;
+
+    uint base = row * pc.hidden_size;
+
+    // Pass 1: accumulate partial sum-of-squares.
+    float partial_sq = 0.0;
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float x = u_hidden.data[base + i];
+        partial_sq += x * x;
+    }
+
+    // Pass 2: binary tree reduction within the workgroup.
+    shmem[tid] = partial_sq;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] += shmem[tid + stride];
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    // Pass 3: normalise.
+    float eps     = uintBitsToFloat(pc.eps_bits);
+    float inv_rms = inversesqrt(shmem[0] / float(pc.hidden_size) + eps);
+
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float x = u_hidden.data[base + i];
+        float g = u_gamma.data[i];
+        u_out0.data[base + i] = x * inv_rms * g;
+    }
+}

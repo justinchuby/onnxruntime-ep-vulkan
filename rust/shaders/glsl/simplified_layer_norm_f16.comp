@@ -1,0 +1,95 @@
+// SimplifiedLayerNormalization / RMSNormalization (f16) — RMSNorm, no residual fuse.
+//
+// Identical algorithm to simplified_layer_norm_f32.comp. Storage is fp16 packed into uint
+// buffers (two elements per word); arithmetic is promoted to fp32 throughout.
+//
+// Why fp16 is packed rather than declared as float16_t:
+//   `float16_t` compiles to `OpCapability StorageBuffer16BitAccess`, which is a device feature
+//   the engine does not enable. `unpackHalf2x16`/`packHalf2x16` are core GLSL 4.2, need no
+//   feature at all. Same trade as skip_simplified_layer_norm_f16.comp and q_gemv.comp.
+//
+// Store race freedom:
+//   Only pass 3 writes, and it writes out0 with the stride loop. The stride is lsz (256), so
+//   threads tid and tid+1 own elements lsz apart in memory — never adjacent, never sharing a
+//   uint word. The only threads that could share a word write elements i and i+lsz, which are
+//   lsz > 1 apart and therefore in different words. Within the pass, no two threads share a
+//   word. Atomics are still used rather than plain stores because the Vulkan specification does
+//   not guarantee a defined result for two concurrent non-atomic writes to the same uint even
+//   when the byte ranges are disjoint; disjoint-lane atomics are the only portable race-free
+//   form. This is the same argument, verbatim, as the skip variant.
+//
+// Arithmetic note:
+//   Sum-of-squares, tree reduction, rsqrt and the gamma multiply are all fp32. Only the final
+//   store narrows to fp16.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint batch_count;  // total rows = product of dims 0 .. rank-2
+    uint hidden_size;  // last dimension (elements per row)
+    uint eps_bits;     // reinterpret-cast: uintBitsToFloat(eps_bits) == epsilon
+    uint _pad;         // alignment padding, must be zero
+} pc;
+
+// fp16 activations packed as two half-float elements per uint.
+layout(set = 0, binding = 0) readonly buffer Hidden { uint data[]; } u_hidden;
+layout(set = 0, binding = 1) readonly buffer Gamma  { uint data[]; } u_gamma;
+layout(set = 0, binding = 2) buffer Out0 { uint data[]; } u_out0;
+
+shared float shmem[256];
+
+// Load one fp16 element at logical index I from a packed-uint buffer BUF.
+#define LOAD_HALF(BUF, I) (unpackHalf2x16(BUF.data[(I) >> 1u])[(I) & 1u])
+
+// Store float V as fp16 at logical index I into a packed-uint buffer BUF.
+#define STORE_HALF(BUF, I, V)                                                  \
+    {                                                                          \
+        uint _word  = (I) >> 1u;                                               \
+        uint _shift = ((I) & 1u) * 16u;                                        \
+        uint _bits  = packHalf2x16(vec2((V), 0.0)) & 0xFFFFu;                  \
+        atomicAnd(BUF.data[_word], ~(0xFFFFu << _shift));                      \
+        atomicOr (BUF.data[_word],   _bits    << _shift);                      \
+    }
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint lsz = gl_WorkGroupSize.x;
+
+    if (row >= pc.batch_count) return;
+
+    uint base = row * pc.hidden_size;
+
+    // Pass 1: accumulate partial sum-of-squares.
+    float partial_sq = 0.0;
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float x = LOAD_HALF(u_hidden, base + i);
+        partial_sq += x * x;
+    }
+
+    // Pass 2: binary tree reduction within the workgroup.
+    shmem[tid] = partial_sq;
+    barrier();
+    memoryBarrierShared();
+
+    for (uint stride = lsz >> 1u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            shmem[tid] += shmem[tid + stride];
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    // Pass 3: normalise.
+    float eps     = uintBitsToFloat(pc.eps_bits);
+    float inv_rms = inversesqrt(shmem[0] / float(pc.hidden_size) + eps);
+
+    for (uint i = tid; i < pc.hidden_size; i += lsz) {
+        float x = LOAD_HALF(u_hidden, base + i);
+        float g = LOAD_HALF(u_gamma, i);
+        STORE_HALF(u_out0, base + i, x * inv_rms * g)
+    }
+}

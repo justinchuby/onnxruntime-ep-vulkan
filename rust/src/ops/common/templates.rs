@@ -346,6 +346,118 @@ pub fn skip_norm(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     })
 }
 
+/// Translate `SimplifiedLayerNormalization` / `RMSNormalization` — RMSNorm, no residual fuse.
+///
+/// # Why this is not `skip_norm` with a zero skip buffer
+///
+/// It would be one fewer shader, and it would cost a full extra activation-sized read per row on
+/// a kernel that is entirely bandwidth-bound. The fusion allowlist in `OP_COVERAGE.md` §5.6
+/// exists because these norms are memory-traffic-limited, so paying an extra pass over hidden
+/// bytes to save a shader file inverts the reason the fused form was allowlisted at all.
+///
+/// # Inputs and outputs
+///
+/// | slot | name | notes |
+/// |------|------|-------|
+/// | in 0 | X | `FLOAT16`/`FLOAT`, rank ≥ 1, normalised over the last axis |
+/// | in 1 | gamma (scale) | same dtype as X, length = last dim |
+/// | out 0 | normalised | always present |
+/// | out 1 | inv_std_var | optional; **declined** by the claim predicate when requested |
+///
+/// The optional second output is declined rather than written to a scratch buffer because,
+/// unlike `SkipSimplifiedLayerNormalization` slot 3, nothing in the target graphs asks for it —
+/// so a scratch write would be pure waste on every row, and a shader variant for a case with no
+/// observed instance is coverage we cannot exercise.
+///
+/// # Shader
+///
+/// `shaders/glsl/simplified_layer_norm_{f32,f16}.comp`, picked up by `build.rs`'s directory
+/// scan. The stem is a literal here for the same reason `skip_norm`'s is; tests below assert
+/// both files exist so a rename surfaces as a unit-test failure, not a build panic.
+pub fn simplified_norm(
+    _spec: &OpSpec,
+    node: &NodeDesc,
+    ctx: &mut dyn DispatchContext,
+) -> EpResult<()> {
+    if node.inputs.len() < 2 {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` needs at least 2 inputs (X, gamma), got {}",
+            node.op_type,
+            node.inputs.len()
+        )));
+    }
+
+    let dtype = common_dtype(node, 0, 2)?;
+
+    let hidden_shape = node.inputs[0]
+        .desc
+        .as_ref()
+        .map(|d| &d.shape)
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no shape at compile time",
+                node.op_type
+            ))
+        })?;
+
+    if hidden_shape.is_empty() {
+        return Err(EpError::Unsupported(format!(
+            "`{}` requires a non-scalar input",
+            node.op_type
+        )));
+    }
+    let rank = hidden_shape.len();
+    let hidden_size = hidden_shape[rank - 1] as u32;
+    let batch_count: u32 = hidden_shape[..rank - 1].iter().map(|&d| d as u32).product();
+
+    let shader: &'static str = match dtype {
+        DType::F32 => "simplified_layer_norm_f32",
+        DType::F16 => "simplified_layer_norm_f16",
+        _ => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` dtype {dtype:?} is not supported by the norm kernel",
+                node.op_type
+            )));
+        }
+    };
+
+    let eps: f32 = match node.attributes.get("epsilon") {
+        Some(AttrValue::Float(v)) => *v,
+        None => NORM_EPSILON_DEFAULT,
+        Some(_) => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` `epsilon` attribute is not a float",
+                node.op_type
+            )));
+        }
+    };
+
+    let hidden_buf = ctx.resolve(&node.inputs[0])?;
+    let gamma_buf = ctx.resolve(&node.inputs[1])?;
+
+    let out_desc = TensorDesc::new(dtype, hidden_shape.clone());
+    let out0 = node
+        .outputs
+        .first()
+        .ok_or_else(|| EpError::InvalidGraph(format!("`{}` has no outputs", node.op_type)))?;
+    let out0_buf = ctx.bind_output(out0, out_desc)?;
+
+    // Push constants: identical layout to `skip_norm`, so both norm shaders share one encoding.
+    let mut push = Vec::with_capacity(16);
+    push.extend_from_slice(&batch_count.to_le_bytes());
+    push.extend_from_slice(&hidden_size.to_le_bytes());
+    push.extend_from_slice(&eps.to_bits().to_le_bytes());
+    push.extend_from_slice(&0u32.to_le_bytes());
+
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![NORM_LOCAL_SIZE],
+        push_constants: push,
+        bindings: vec![hidden_buf, gamma_buf, out0_buf],
+        workgroups: [batch_count.max(1), 1, 1],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,5 +916,173 @@ mod tests {
             "f16 SkipSimplifiedLayerNorm must not return Unsupported after this commit; \
              if it does, the f16 shader path was not wired in",
         );
+    }
+
+    // ── simplified_norm tests ────────────────────────────────────────────────────────────────
+
+    fn rmsnorm_node(dtype: DType, batch: i64, seq: i64, hidden: i64) -> NodeDesc {
+        NodeDesc {
+            op_type: "SimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("X", dtype, &[batch, seq, hidden]),
+                tensor("gamma", dtype, &[hidden]),
+            ],
+            outputs: vec![out("Y", dtype, &[batch, seq, hidden])],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn simplified_norm_f32_produces_one_dispatch_with_correct_shader() {
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let node = rmsnorm_node(DType::F32, 2, 4, 64);
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).expect("translate");
+
+        assert_eq!(ctx.dispatches.len(), 1);
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.shader, "simplified_layer_norm_f32");
+        assert_eq!(k.spec_constants, vec![NORM_LOCAL_SIZE]);
+        assert_eq!(k.workgroups, [8, 1, 1], "batch×seq = 2×4 = 8 rows");
+        assert_eq!(
+            k.bindings.len(),
+            3,
+            "X, gamma, out0 — no skip input, no residual output"
+        );
+        assert_eq!(ctx.outputs.len(), 1, "slot 0 only");
+    }
+
+    #[test]
+    fn simplified_norm_f16_produces_one_dispatch_with_correct_shader() {
+        // The path Phi-3.5's `/model/layers.0/input_layernorm/LayerNorm` exercises.
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let node = rmsnorm_node(DType::F16, 1, 1, 3072);
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).expect("translate f16");
+
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.shader, "simplified_layer_norm_f16");
+        assert_eq!(k.workgroups, [1, 1, 1]);
+        assert_eq!(k.bindings.len(), 3);
+    }
+
+    /// `simplified_norm` must **not** allocate a temp buffer.
+    ///
+    /// This is the structural half of the P6 assertion (`alloc_temp` is the only route from an
+    /// op handler to device memory, so counting calls proves the property for every shape at
+    /// once). `skip_norm` legitimately allocates one when slot 3 is absent; RMSNorm has no
+    /// optional output, so a temp here would be a leak, not a fallback.
+    #[test]
+    fn simplified_norm_allocates_no_scratch() {
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let node = rmsnorm_node(DType::F16, 1, 8, 256);
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).unwrap();
+        assert_eq!(
+            ctx.outputs.len(),
+            1,
+            "exactly one bind_output and zero alloc_temp calls"
+        );
+    }
+
+    #[test]
+    fn simplified_norm_push_constants_encode_shape_and_epsilon() {
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let mut node = rmsnorm_node(DType::F32, 1, 8, 128);
+        node.attributes
+            .insert("epsilon".into(), AttrValue::Float(1e-6));
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).unwrap();
+        let pc = &ctx.dispatches[0].push_constants;
+        assert_eq!(pc.len(), 16);
+        assert_eq!(u32::from_le_bytes(pc[0..4].try_into().unwrap()), 8);
+        assert_eq!(u32::from_le_bytes(pc[4..8].try_into().unwrap()), 128);
+        assert_eq!(
+            f32::from_bits(u32::from_le_bytes(pc[8..12].try_into().unwrap())),
+            1e-6
+        );
+        assert_eq!(u32::from_le_bytes(pc[12..16].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn simplified_norm_default_epsilon_matches_onnx_schema() {
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let node = rmsnorm_node(DType::F32, 1, 1, 16);
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).unwrap();
+        let pc = &ctx.dispatches[0].push_constants;
+        assert_eq!(
+            f32::from_bits(u32::from_le_bytes(pc[8..12].try_into().unwrap())),
+            NORM_EPSILON_DEFAULT
+        );
+    }
+
+    #[test]
+    fn simplified_norm_rank1_input_yields_batch_count_one() {
+        let spec = spec_named("SimplifiedLayerNormalization");
+        let node = NodeDesc {
+            op_type: "SimplifiedLayerNormalization".into(),
+            inputs: vec![
+                tensor("X", DType::F32, &[256]),
+                tensor("gamma", DType::F32, &[256]),
+            ],
+            outputs: vec![out("Y", DType::F32, &[256])],
+            ..Default::default()
+        };
+        let mut ctx = Recorder::default();
+        simplified_norm(spec, &node, &mut ctx).unwrap();
+        assert_eq!(ctx.dispatches[0].workgroups, [1, 1, 1]);
+    }
+
+    #[test]
+    fn simplified_norm_f32_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("simplified_layer_norm_f32.comp");
+        assert!(
+            path.is_file(),
+            "shaders/glsl/simplified_layer_norm_f32.comp is missing; the translate handler \
+             names it directly so it must exist at build time"
+        );
+    }
+
+    #[test]
+    fn simplified_norm_f16_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("simplified_layer_norm_f16.comp");
+        assert!(
+            path.is_file(),
+            "shaders/glsl/simplified_layer_norm_f16.comp is missing; the translate handler \
+             names it directly so it must exist at build time"
+        );
+    }
+
+    /// The two norm shaders must not be confused for one another.
+    ///
+    /// `skip_norm` binds 5 buffers and `simplified_norm` binds 3; if a future refactor points
+    /// one row at the other's handler the binding count is what catches it, because the
+    /// descriptor set would be built with the wrong arity and the shader would read garbage.
+    #[test]
+    fn the_two_norm_handlers_have_different_binding_arity() {
+        let mut a = Recorder::default();
+        simplified_norm(
+            spec_named("SimplifiedLayerNormalization"),
+            &rmsnorm_node(DType::F32, 1, 2, 32),
+            &mut a,
+        )
+        .unwrap();
+        let mut b = Recorder::default();
+        skip_norm(
+            spec_named("SkipSimplifiedLayerNormalization"),
+            &skip_norm_node_f32(1, 2, 32),
+            &mut b,
+        )
+        .unwrap();
+        assert_eq!(a.dispatches[0].bindings.len(), 3);
+        assert_eq!(b.dispatches[0].bindings.len(), 5);
+        assert_ne!(a.dispatches[0].shader, b.dispatches[0].shader);
     }
 }
