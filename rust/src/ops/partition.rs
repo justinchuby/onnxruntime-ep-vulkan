@@ -52,11 +52,21 @@ pub struct TransferModel {
 impl TransferModel {
     /// Integrated GPU with unified memory: no copy, but still submission and barrier cost.
     ///
-    /// Provisional until Niobe's calibration harness (`TransferModel::fit`) supplies real samples.
-    /// Post-residency (Switch 2026-07-30): per-inference boundary is ~0.756 MiB on Phi-3.5
-    /// (activation-only; weights resident). `cost_ns(0.756 MiB / 2)` ≈ 20 µs fixed + ~10 µs
-    /// variable = ~30 µs per direction, ~60 µs total. Gate threshold (3× margin): ~180 µs.
-    /// On UMA the variable cost is near zero so `fixed_ns` dominates.
+    /// The `bytes_per_ns` and `fixed_ns` figures are **still uncalibrated** — see the note on
+    /// [`TransferModel::DISCRETE`]. What has been calibrated is the *byte* input they are
+    /// reasoned from (Mouse 2026-07-31, both devices, byte-identical):
+    ///
+    /// ```text
+    ///   upload   399,376 B/inference   (exactly linear over a 1/2/3-run sweep)
+    ///   readback 457,344 B/inference   (exactly linear)
+    ///   total    856,720 B = 0.817 MiB
+    /// ```
+    ///
+    /// `cost_ns` on those bytes: 20,000 + 399,376/40 = ~29,984 ns up, 20,000 + 457,344/40 =
+    /// ~31,434 ns down, ~61 µs total. Gate threshold (3× margin): ~184 µs.
+    ///
+    /// On UMA the variable cost is near zero, so `fixed_ns` is ~65% of the total and the gate is
+    /// effectively "2 × fixed_ns" for any island whose boundary is small.
     pub const UMA: TransferModel = TransferModel {
         fixed_ns: 20_000.0,
         bytes_per_ns: 40.0,
@@ -67,21 +77,93 @@ impl TransferModel {
     /// Provisional until Niobe's calibration harness (`TransferModel::fit`) supplies real samples.
     /// Nominal PCIe-4 bandwidth ~16 GB/s; 12.0 bytes/ns is conservative.
     ///
-    /// Post-residency (Switch 2026-07-30): per-inference boundary ~0.756 MiB on Phi-3.5
-    /// (activation-only; weights resident). `cost_ns(0.378 MiB)` = 60,000 + (396,288 / 12)
-    /// = 60,000 + 33,024 = ~93,000 ns per direction, ~186,000 ns total (DISCRETE, both directions).
-    /// Gate threshold (3× margin): ~558 µs. GQA at ~4 ms easily passes. A 1-node non-anchor
-    /// island at ~1 µs GPU time is correctly declined.
+    /// # What is calibrated here, and what is not
     ///
-    /// **Pre-residency caveat (now resolved):** the EP was re-uploading ~2 GiB of weights on
-    /// every inference, making `transfer_ns` effectively 2 GiB × (1/12 bytes/ns) ≈ 167 ms per
-    /// direction — far larger than any kernel compute time. That caused the gate to be
-    /// pathologically strict. The re-upload bug is fixed; the provisional constants now model
-    /// the correct activation-boundary regime.
+    /// **Calibrated (bytes).** `rust/tools/probe_staging_bytes.py`, Phi-3.5-mini-int4, 355 nodes
+    /// claimed in 1 island, measured 2026-07-31 on selector 0 (NVIDIA RTX 4060) and selector 1
+    /// (Intel Iris Xe). The two devices returned **byte-identical** counters:
+    ///
+    /// ```text
+    ///   session_staging_upload_bytes    2,292,025,360 (1 run)
+    ///   weight_cache_release_bytes      2,291,625,984
+    ///   difference                            399,376  == the per-run delta, exactly
+    ///
+    ///   upload    399,376 B/inference     readback  457,344 B/inference
+    ///   total     856,720 B  =  0.817 MiB
+    /// ```
+    ///
+    /// The upload counter minus the resident weight set equals the per-inference delta to the
+    /// byte, which is what makes this an *attribution* and not just a number: 99.98% of the
+    /// 2.19 GiB is staged once and stays, and the 0.817 MiB is graph I/O plus the boundary
+    /// tensors of the 8 nodes still on CPU.
+    ///
+    /// Two corrections to the figure this comment previously reasoned from:
+    /// * The boundary is **0.817 MiB, not 0.756 MiB**, and it is **asymmetric** — 46.6% up,
+    ///   53.4% down. The old comment assumed two symmetric 0.378 MiB halves.
+    /// * The 0.756 → 0.38 MiB "halving" was **not** caused by claiming SimplifiedLayerNorm and
+    ///   Gather. A same-instrument control built at `77d5d2a` on the same machine measured
+    ///   405,512 B/inference *before* those claims. The two claims removed **6,136 B** — one
+    ///   fp16 hidden-state row at s=1. Everything else was already gone.
+    ///
+    /// **NOT calibrated (nanoseconds).** `fixed_ns` and `bytes_per_ns` remain guesses.
+    /// `TransferModel::fit` has still never been handed a real sample, and under R13 it cannot
+    /// be: no wall-clock figure is quotable from a run whose verdict is not attributed `MATCH`,
+    /// and `phase_containment` is RED on both devices. The counter *does* carry a
+    /// `session_staging_upload_us` field; it is deliberately not used here. What landed is a
+    /// byte measurement, not a nanosecond measurement.
+    ///
+    /// `cost_ns` on the measured bytes: 60,000 + 399,376/12 = ~93,281 ns up, 60,000 +
+    /// 457,344/12 = ~98,112 ns down, ~191 µs total. Gate threshold (3× margin): ~574 µs.
+    /// `fixed_ns` is ~63% of that, so for any island with a small boundary the gate is
+    /// effectively `2 × fixed_ns` and is insensitive to the byte count.
+    ///
+    /// # Consequence for coverage — the gate is now ~2,800× less strict
+    ///
+    /// **Pre-residency (now resolved):** the EP re-uploaded ~2 GiB of weights every inference,
+    /// making `transfer_ns` ≈ 2 GiB / 12 bytes/ns ≈ 167 ms per direction — larger than any
+    /// kernel's compute time. The economics gate was pathologically strict: essentially nothing
+    /// but an anchor could pass it, and the anchor exemption was carrying the whole partition.
+    ///
+    /// **Post-residency:** ~191 µs total. That is a ~1,750× drop in modelled transfer cost, and
+    /// the 3× threshold falls from ~1 s to ~574 µs. The honest consequence is that
+    /// [`evaluate`] will now **decline far less**, and islands previously judged uneconomic may
+    /// be worth claiming. Coverage going *up* because transfer got cheap is the correct
+    /// direction and is the opposite of what the pre-residency regime implied.
+    ///
+    /// The matching risk, stated so it is not discovered later: the gate's remaining teeth are
+    /// almost entirely `fixed_ns`, which is the one parameter with no measurement behind it. An
+    /// under-declining gate is a *silent* failure — it shows up as slow inference, not as a
+    /// wrong answer. `test_partition_gate.py`'s `[partition]` assertion is the named falsifier;
+    /// see `docs/OP_COVERAGE.md` §7.5 for why Phi-3.5 does not exercise it.
     pub const DISCRETE: TransferModel = TransferModel {
         fixed_ns: 60_000.0,
         bytes_per_ns: 12.0,
     };
+
+    /// Per-inference host→device bytes on Phi-3.5-mini-int4, 355 nodes claimed in 1 island.
+    ///
+    /// Measured 2026-07-31 by `rust/tools/probe_staging_bytes.py` over a 1/2/3-run sweep; the
+    /// delta is exactly linear and **byte-identical on selector 0 (NVIDIA RTX 4060) and
+    /// selector 1 (Intel Iris Xe)**. This is the calibrated input to [`TransferModel::cost_ns`];
+    /// the model's own `fixed_ns`/`bytes_per_ns` remain uncalibrated.
+    pub const MEASURED_PHI35_UPLOAD_BYTES: u64 = 399_376;
+
+    /// Per-inference device→host bytes on Phi-3.5-mini-int4. See
+    /// [`TransferModel::MEASURED_PHI35_UPLOAD_BYTES`].
+    ///
+    /// Note the asymmetry: readback is **larger** than upload (53.4% of the boundary). Any model
+    /// that assumes two symmetric halves is wrong, which the previous doc comment was.
+    pub const MEASURED_PHI35_READBACK_BYTES: u64 = 457_344;
+
+    /// Per-inference upload measured at `77d5d2a`, *before* `SimplifiedLayerNormalization` and
+    /// `Gather` were claimed — the same-instrument, same-machine control.
+    ///
+    /// This constant exists to keep an honest result honest. The difference against
+    /// [`TransferModel::MEASURED_PHI35_UPLOAD_BYTES`] is 6,136 bytes, which is what claiming
+    /// those two ops actually bought. The much larger 0.756 → 0.38 MiB drop that was in flight
+    /// at the time was **already present in the control** and belongs to residency, not to op
+    /// coverage. Without running the control, that 2× would have been misattributed here.
+    pub const CONTROL_PHI35_UPLOAD_BYTES_PRE_CLAIM: u64 = 405_512;
 
     /// Modelled cost of moving `bytes` across the boundary once.
     pub fn cost_ns(&self, bytes: u64) -> f64 {
@@ -487,6 +569,61 @@ mod tests {
             evaluate(&island, &TransferModel::UMA, &Policy::default()),
             Verdict::Reject(RejectReason::TooSmall { .. })
         ));
+    }
+
+    /// The two claims of 2026-07-31 bought 6,136 bytes per inference, not a halving.
+    ///
+    /// Falsifier for the recalibration in [`TransferModel::DISCRETE`]'s doc comment: if someone
+    /// re-measures and edits one constant without the other, or re-attributes the residency win
+    /// to op coverage, this goes red.
+    #[test]
+    fn the_two_claims_bought_six_kilobytes_not_a_halving() {
+        let before = TransferModel::CONTROL_PHI35_UPLOAD_BYTES_PRE_CLAIM;
+        let after = TransferModel::MEASURED_PHI35_UPLOAD_BYTES;
+        assert!(after < before, "claiming ops must not increase upload");
+        assert_eq!(
+            before - after,
+            6_136,
+            "the measured saving from SimplifiedLayerNormalization + Gather"
+        );
+        // The control is the whole point: the pre-claim baseline is already far below the
+        // 0.756 MiB the brief carried, so the halving is residency's, not coverage's.
+        assert!(
+            (before as f64) < 0.756 * 1024.0 * 1024.0 / 2.0 + 100_000.0,
+            "control must show the drop predated these claims"
+        );
+    }
+
+    /// The boundary is asymmetric — readback exceeds upload. Guards against anyone reinstating
+    /// the "two symmetric halves" reasoning the old doc comment used.
+    #[test]
+    fn the_measured_boundary_is_asymmetric_and_readback_dominates() {
+        let up = TransferModel::MEASURED_PHI35_UPLOAD_BYTES;
+        let down = TransferModel::MEASURED_PHI35_READBACK_BYTES;
+        assert!(down > up, "readback is the larger direction");
+        assert_eq!(up + down, 856_720);
+    }
+
+    /// Post-residency, `fixed_ns` is the majority of the modelled cost on DISCRETE. That makes
+    /// the gate insensitive to byte count for small islands and puts all its remaining teeth in
+    /// the one parameter with no measurement behind it.
+    #[test]
+    fn post_residency_the_gate_is_dominated_by_fixed_cost() {
+        let m = TransferModel::DISCRETE;
+        let total = m.cost_ns(TransferModel::MEASURED_PHI35_UPLOAD_BYTES)
+            + m.cost_ns(TransferModel::MEASURED_PHI35_READBACK_BYTES);
+        let fixed_share = (2.0 * m.fixed_ns) / total;
+        assert!(
+            fixed_share > 0.5,
+            "fixed_ns should dominate post-residency, got {fixed_share:.3}"
+        );
+        // And the whole-graph boundary is now far below the pre-residency regime, where a ~2 GiB
+        // re-upload per inference made transfer_ns ~167 ms per direction.
+        let pre_residency_ns = m.cost_ns(2 * 1024 * 1024 * 1024);
+        assert!(
+            pre_residency_ns / total > 500.0,
+            "the gate must be dramatically less strict than pre-residency"
+        );
     }
 
     #[test]

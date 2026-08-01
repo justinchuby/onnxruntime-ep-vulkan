@@ -66,3 +66,4 @@ trace_*.json
 bench/results/ci-lane/
 bench/results/link-gate/
 gate_chain_fp32_profile_*.json
+bench/results/claim_log_attribution.jsonl

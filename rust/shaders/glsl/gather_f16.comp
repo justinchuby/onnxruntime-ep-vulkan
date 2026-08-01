@@ -1,0 +1,72 @@
+// Gather (f16) — same flattening as gather_f32.comp; fp16 storage packed two per uint.
+//
+// Read the header of gather_f32.comp for the index-dtype and axis-flattening argument; only the
+// storage differs here.
+//
+// Why fp16 is packed rather than declared as float16_t:
+//   `float16_t` compiles to `OpCapability StorageBuffer16BitAccess`, a device feature the engine
+//   does not enable. `unpackHalf2x16`/`packHalf2x16` are core GLSL 4.2. Same trade as
+//   skip_simplified_layer_norm_f16.comp and q_gemv.comp.
+//
+// Store race freedom — and this one is NOT the disjoint-lane argument the norm shaders make:
+//   **one thread owns one output uint word**, i.e. output elements 2t and 2t+1. The two source
+//   elements are resolved independently (they may come from different gathered rows when `inner`
+//   is odd), packed together, and written with a single plain store. No two threads ever address
+//   the same word, so no atomics are needed and none are used. The norm shaders need atomics
+//   because their stride loop makes word ownership a property of the loop bounds; here it is a
+//   property of the indexing, which is stronger.
+//
+// The tail: when `total` is odd the last word's upper half lies outside the tensor. It is
+// written as zero rather than read-modify-written, because the output buffer is sized from the
+// tensor descriptor and rounds up to a whole word — the upper half is padding this dispatch owns.
+//
+// Arithmetic: none. This is a pure copy; values pass through unpack/pack unchanged, so it is
+// bit-exact against the CPU EP by construction rather than within a tolerance.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint outer;            // prod(data.shape[:axis])
+    uint gathered;         // data.shape[axis]
+    uint inner;            // prod(data.shape[axis+1:])
+    uint n_idx;            // prod(indices.shape)
+    uint idx_stride_words; // 1 for int32 indices, 2 for int64
+    uint total;            // outer * n_idx * inner  (output element count)
+} pc;
+
+layout(set = 0, binding = 0) readonly  buffer Data    { uint data[]; } u_data;
+layout(set = 0, binding = 1) readonly  buffer Indices { uint data[]; } u_idx;
+layout(set = 0, binding = 2) writeonly buffer Out     { uint data[]; } u_out;
+
+int load_index(uint j) {
+    int v = int(u_idx.data[j * pc.idx_stride_words]);
+    if (v < 0) {
+        v += int(pc.gathered);
+    }
+    return clamp(v, 0, int(pc.gathered) - 1);
+}
+
+// Source element for output element `o`, as an fp32 value.
+float gather_one(uint o) {
+    uint i       = o % pc.inner;
+    uint j       = (o / pc.inner) % pc.n_idx;
+    uint outer_i = o / (pc.inner * pc.n_idx);
+    uint row     = outer_i * pc.gathered + uint(load_index(j));
+    uint src     = row * pc.inner + i;
+    return unpackHalf2x16(u_data.data[src >> 1u])[src & 1u];
+}
+
+void main() {
+    uint words  = (pc.total + 1u) >> 1u;
+    uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    for (uint w = gl_GlobalInvocationID.x; w < words; w += stride) {
+        uint o0 = w << 1u;
+        uint o1 = o0 + 1u;
+        float lo = gather_one(o0);
+        float hi = (o1 < pc.total) ? gather_one(o1) : 0.0;
+        u_out.data[w] = packHalf2x16(vec2(lo, hi));
+    }
+}

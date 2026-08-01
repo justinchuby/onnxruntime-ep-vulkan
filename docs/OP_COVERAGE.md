@@ -1946,6 +1946,12 @@ present even at 0, so the wiring census can distinguish "gate ran, all rejected"
 (key absent)". The census (`test_wiring_census.py`) now reads this counter and marks `retain_viable`
 WIRED. The test `test_retain_viable_wired` has its `xfail(strict=True)` removed — it passes.
 
+> **Amendment 2026-07-31 — read §7.10 before quoting this section.** "WIRED" here means the gate
+> is in the production call graph, and that is all it means. Phi-3.5 partitions into exactly one
+> cluster, takes the single-cluster bypass, and therefore **never runs the economics gate**;
+> `viable_islands_retained == 0` on our only real model means *bypassed*, not *all-rejected*. The
+> gate's only exercise is a synthetic two-branch test, which is one step from unwired (R10).
+
 **PartitionStats populated:** `ep.rs` now emits real values for `island_count`,
 `largest_island_nodes`, `largest_island_flops`, `concentration`, and `boundary_bytes_per_inference`
 from the surviving island set after the economics gate runs. The `boundary_time_fraction` slot
@@ -2576,6 +2582,274 @@ must never gate device admission (§7.2).
 > **Rule.** Generation and admission are different claims. The build pipeline producing a variant
 > says only that GLSL compiled; whether a device can create the module is a separate fact, and the
 > only place the two are reconciled is at the claim.
+
+---
+
+### 7.8 The last ten nodes — two claimed, eight declined on purpose (2026-07-31)
+
+At `77d5d2a` the Phi-3.5-mini-int4 graph partitioned as **353 claimed / 1 island / 10 declined**,
+and the execution census confirmed it from the other side: 30 CPU node-executions over 3 runs =
+exactly the 10 declined nodes × 3.
+
+Island attribution had already closed the interesting question: **0 cut-creating declines remained;
+GQA was the sole cut creator.** So none of these 10 merge islands. What they *were* was the entire
+CPU-side cost of an inference, and each one forces a boundary crossing into and out of a 353-node
+island. That reframes the work: this is not a coverage-percentage exercise, it is a
+boundary-crossing exercise, and the right answer for some of the ten is to leave them where they
+are.
+
+#### 7.8.1 The ten are three structurally different things, not ten gaps
+
+Reading each declined node's producers, consumers, dtypes and shapes out of the graph — rather
+than reading the decline histogram — split them cleanly:
+
+| group | nodes | what it is |
+|---|---|---|
+| **Data path** | 2 | `embed_tokens/Gather` → `layers.0/input_layernorm` (`SimplifiedLayerNormalization`) |
+| **Control plane** | 7 | attn-mask + rotemb-cache scalar arithmetic, **every tensor INT64** |
+| **Control flow** | 1 | `rotemb_caches_subgraph/If` |
+
+Only the first group is on the tensor data path. The `Gather` emits `FLOAT16[batch,seq,3072]`
+consumed by *both* the declined input LayerNorm and the already-claimed layer-0
+`SkipSimplifiedLayerNormalization`; the LayerNorm's output feeds the claimed `qkv_proj/MatMul_Q4`.
+Note also that **only layer 0 has an unfused input norm** — every other layer's is already fused
+into `SkipSimplifiedLayerNormalization`. That is why claiming one norm buys one node, not 32.
+
+#### 7.8.2 Prediction, written before building
+
+Recorded in `history.md` before any code, per the standing requirement that predictions be
+falsifiable in advance:
+
+| # | prediction | falsifier | outcome |
+|---|---|---|---|
+| P1 | islands stay at 1 | islands ≠ 1 on either device | **CONFIRMED** |
+| P2 | 353 → 355 claimed, declines 10 → 8 | any other pair | **CONFIRMED exactly** |
+| P3 | per-inference upload drops 12,280 B at s=1 | drop < 6,144 B | **MISSED — 2× too large** |
+| P4 | first-inference upload grows +187.9 MiB (embedding table becomes a resident weight) | growth < 150 MiB | **CONFIRMED**, measured +188.25 MiB |
+| P5 | 0 cut-instances stays 0 | any cut instance appears | **CONFIRMED** |
+
+P3 is the one worth reading. I predicted two hidden-state tensors' worth of saving; the measured
+saving is **6,136 B**, almost exactly one. The upload counter instruments *uploads only*, and after
+both claims land there is one crossing removed, not two. Four of five predictions confirming is
+not evidence that the model of the graph was good — it is evidence that four easy predictions were
+easy. The one that failed is the one that taught something.
+
+#### 7.8.3 What was claimed
+
+**`SimplifiedLayerNormalization` (RMSNorm).** `simplified_layer_norm_{f32,f16}.comp`, three
+bindings, three-pass tree reduction. Needed **two rows** (`Ms` and `Ai` domains) because the ORT
+GenAI builder emits it with `node.domain == ""`; Phi-3.5 keys against the `Ai` row. The claim
+predicate requires `gamma` and declines any node declaring more than one output (`Arity`) — the
+skip-norm spelling has a slot-3 output this shader does not produce, and silently dropping it
+would be exactly the "correct claim that is a wrong claim" of §7.0.2. Retired the
+`NEEDS_REDUCTION` blocker; moved `RMSNormalization` to `Staged(UNEXERCISED)`.
+Result: **353 → 354, islands 1.**
+
+**`Gather`.** `gather_{f32,f16}.comp`, new module `rust/src/ops/indexing.rs`. One three-extent
+flattening (`outer / gathered / inner`, plus `n_idx`) covers every `axis` and every indices rank
+with a single shader. int64 indices are read via their **low word**, so this does not depend on
+`shaderInt64`. `gather_f16` gives one thread sole ownership of one output `uint` word — a
+stronger race-freedom argument than the disjoint-lane `atomicAnd`/`atomicOr` the norm shaders
+need, and worth preferring wherever the access pattern allows it.
+Result: **354 → 355, islands 1.**
+
+Caps are deliberately `FLOAT` only. Widening them to `ANY` would let this same row claim the
+attn-mask `Gather`, whose output is `seqlens_k` — integer index data that this shader would
+silently corrupt by round-tripping through `float`. The correct observable is that the attn-mask
+`Gather` moved from `[not-registered]` to **`[dtype]`**: still declined, now declined *for the
+right reason*. `gather_claims_float_data_only` is the guard.
+
+#### 7.8.4 What was declined, permanently, and why
+
+A decline with a reason is a result. These eight are not backlog.
+
+**The INT64 control plane (6 nodes)** — `attn_mask_subgraph/{Shape, Gather, Gather/Cast, ReduceSum,
+Sub, Sub/Cast}`. Every tensor in this cluster is an INT64 scalar or near-scalar: `INT64[]`,
+`INT64[2]`, `INT64[batch,1]`. It produces `seqlens_k INT32[batch,1]` and `total_seq_len INT32[]`,
+consumed by all 32 GQA nodes. Claiming it needs **three independent mechanisms** — `shaderInt64`
+(a non-universal device feature that would gate variants, §7.7.1), a Cast dtype-pair matrix, and a
+reduction template — to move a few hundred bytes of scalar integer arithmetic that the host
+computes for free. The cost is three mechanisms and a device-feature dependency; the benefit is
+measured in *bytes*, and the bytes are three digits. **Decline stands.**
+
+**`Shape` (1 node)** — its output derives from a tensor's shape, not its data. The host already
+knows the shape; a device round-trip to compute 16 bytes the host is holding is not an
+optimisation under any transfer model. **Decline stands.**
+
+**`If` (1 node)** — `rotemb_caches_subgraph/If`. Its `then_branch`/`else_branch` are GRAPH-typed
+attributes and the EP has no subgraph-execution machinery. Worse, the predicate is `BOOL[]` and
+would have to be read back host-side to select a branch, forcing a **fence stall in the middle of
+a 355-node island** — the opposite of what claiming is for. Its outputs `cos_cache`/`sin_cache` are
+session-invariant, so there is no per-inference work to win. This op does not belong on the GPU;
+it belongs on the CPU, and control flow generally does. **Decline stands, and is not a coverage
+gap.**
+
+#### 7.8.5 Measured result, both devices
+
+| state | claimed | islands | CPU node-exec / 3 runs | declines |
+|---|---|---|---|---|
+| baseline `77d5d2a` | 353 | 1 | 30 (10 × 3) | 10 |
+| + `SimplifiedLayerNormalization` | 354 | 1 | 27 (9 × 3) | 9 |
+| + `Gather` | **355** | **1** | **24 (8 × 3)** | **8** |
+
+Selector 0 (NVIDIA RTX 4060) and selector 1 (Intel Iris Xe) agree on every figure.
+`cross_run_identical = True`; `argmax = 30751`, matching CPU, on every run of both devices.
+
+Per R13, no wall-clock figure appears in this section. Coverage counts, island counts and byte
+counts are quotable; nanoseconds are not, because `phase_containment` is RED on both devices and
+no run carries a `MATCH`-attributed verdict.
+
+---
+
+### 7.9 Post-residency transfer recalibration — and what is still not calibrated (2026-07-31)
+
+I previously wrote that `transfer_ns` was "conservative in the right direction but 10–100× too
+small vs actual cost", and deferred calibration until residency landed. It has landed. This is the
+recalibration, and it contains a correction to a number that was about to be credited to the wrong
+cause.
+
+#### 7.9.1 The control run, and the 2× I did not earn
+
+The brief carried "per-inference upload went 1997.6 MiB → 0.756 MiB". After claiming the two ops I
+measured **0.38 MiB** and was one step from reporting a halving. Under R9 — evidence scales only
+with falsifying instruments — I built the **pre-change commit `77d5d2a`** and ran the *same*
+instrument on the *same* machine:
+
+| build | per-inference upload |
+|---|---|
+| control, `77d5d2a`, pre-claim | **405,512 B** (0.3867 MiB) |
+| after both claims | **399,376 B** (0.3809 MiB) |
+| **attributable to the two claims** | **6,136 B** |
+
+The halving was **already present in the control**. It belongs to residency, not to op coverage.
+Had I skipped the control I would have published a 2× that was someone else's and mine by
+accident. This is the concrete case for R13's second clause: the confirming measurement was the
+dangerous one, and the number that needed scrutiny was the one I liked.
+
+#### 7.9.2 The attribution is exact, not approximate
+
+From a single 1-run counters snapshot:
+
+```text
+session_staging_upload_bytes   2,292,025,360
+weight_cache_release_bytes     2,291,625,984
+difference                           399,376   == the per-run delta, to the byte
+```
+
+That identity is what makes this an attribution rather than a number. 99.98% of the 2.19 GiB is
+staged once and stays resident; the remainder is per-inference graph I/O plus the boundary tensors
+of the 8 nodes still on CPU. It also closes an open question: `cos_cache`/`sin_cache` (~24 MiB of
+`If` outputs) do **not** cross per inference — they cannot, since the entire per-inference upload
+is 0.38 MiB.
+
+Both directions, exactly linear over a 1/2/3-run sweep, **byte-identical on both devices**:
+
+| direction | bytes / inference | share |
+|---|---|---|
+| upload (H→D) | 399,376 | 46.6% |
+| readback (D→H) | 457,344 | 53.4% |
+| **total boundary** | **856,720 (0.817 MiB)** | |
+
+Two corrections to the previous constants' reasoning: the boundary is **0.817 MiB, not 0.756**,
+and it is **asymmetric with readback larger** — the old doc comment modelled two symmetric
+0.378 MiB halves. Both figures are now pinned as `TransferModel::MEASURED_PHI35_UPLOAD_BYTES` /
+`MEASURED_PHI35_READBACK_BYTES` / `CONTROL_PHI35_UPLOAD_BYTES_PRE_CLAIM` with three unit tests, so
+the prose cannot drift from the measurement.
+
+#### 7.9.3 What is calibrated is bytes. Nanoseconds are not.
+
+This must not be overstated. `TransferModel::fit` has **still never been handed a real sample**,
+and under R13 it cannot be: no wall-clock figure is quotable from a run whose verdict is not
+attributed `MATCH`, and `phase_containment` is RED on both devices. The counters *do* carry
+`session_staging_upload_us`; it is deliberately unused. `fixed_ns` and `bytes_per_ns` remain
+guesses. **What landed is a byte measurement, not a nanosecond measurement**, and the honest
+statement of this recalibration is that it corrects the *input* to the model, not the model.
+
+Evaluating `cost_ns` on the measured bytes:
+
+| model | up | down | total | 3× gate threshold |
+|---|---|---|---|---|
+| `DISCRETE` | ~93,281 ns | ~98,112 ns | **~191 µs** | ~574 µs |
+| `UMA` | ~29,984 ns | ~31,434 ns | **~61 µs** | ~184 µs |
+
+#### 7.9.4 The consequence, stated plainly: the gate will decline far less
+
+Pre-residency the EP re-uploaded ~2 GiB every inference, making `transfer_ns` ≈ 167 ms per
+direction — larger than any kernel's compute time. The economics gate was pathologically strict:
+essentially nothing but an anchor could pass, and **the anchor exemption was carrying the entire
+partition**. Post-residency the modelled cost is ~191 µs, a ~1,750× drop, and the 3× threshold
+falls from ~1 s to ~574 µs.
+
+So: **with transfer nearly free, the net-benefit gate will decline far less, and islands that were
+uneconomic may now be worth claiming.** That is coverage going up for a measured reason. It is also
+the opposite of the direction I was told to expect a day ago, and the reason it reversed is that
+the measurement changed, which is the only acceptable reason.
+
+The matching risk, recorded now rather than discovered later: post-residency, `fixed_ns` is ~63% of
+the modelled `DISCRETE` cost (`post_residency_the_gate_is_dominated_by_fixed_cost` asserts it). The
+gate's remaining teeth are almost entirely in the **one parameter with no measurement behind it**,
+and for any island with a small boundary the gate has degenerated to `2 × fixed_ns` — insensitive
+to the byte count it is nominally reasoning about. An under-declining gate is a *silent* failure:
+it shows up as slow inference, never as a wrong answer.
+
+---
+
+### 7.10 `retain_viable` is wired, and Phi-3.5 does not exercise it (2026-07-31)
+
+§7.3.1 records `retain_viable` as R10-resolved: `viable_islands_retained` is in the counters ABI
+(version 2), the wiring census reports it **WIRED**, and both guard directions have named
+falsifiers — the anchor exemption against over-declination (falsifier: `bench/phi35.py → 0
+claimed`), and `tests/ops/test_partition_gate.py` against under-declination (falsifier: the
+`[partition]` code assertion goes red).
+
+That is all true, and it is not the whole story. **This is a coverage gap in the gate's own
+exercise, distinct from op coverage, and it should be stated where the coverage numbers are.**
+
+#### 7.10.1 The bypass is structural, not incidental
+
+In `ep.rs::GetCapability`:
+
+```rust
+let only_one_cluster = clusters.len() == 1;
+...
+if !only_one_cluster { n_viable_retained += 1; }
+```
+
+Phi-3.5 partitions into **exactly one cluster**. Therefore `only_one_cluster == true`, the
+economics gate never has a decision to make, and `viable_islands_retained` is **structurally pinned
+at 0** on our only real model — confirmed in every counters snapshot taken this session on both
+devices.
+
+The counter is doing its job: it is present-and-0, which the census can distinguish from
+UNWIRED (key absent). But present-and-0 here does not mean "the gate ran and rejected everything".
+It means **the gate did not run.** Those are different states and only the code tells them apart.
+
+#### 7.10.2 Why this matters more now than it did yesterday
+
+Per **R10**, a mechanism whose only exercise is a synthetic test is one step away from unwired.
+`retain_viable`'s only exercise is `test_partition_gate.py`'s two-branch Sigmoid model — a graph
+built specifically to produce two disjoint 1-node clusters so the gate has something to decline.
+Nothing in the real workload touches it.
+
+§7.9.4 raises the stakes: the gate's behaviour just changed by ~1,750× and its remaining teeth sit
+in an uncalibrated constant. A mechanism that (a) has no real-model exercise, (b) just had its
+operating point moved by three orders of magnitude, and (c) fails silently, is the highest-risk
+combination in the partition path. **R11 applies directly: this is a decomposition that appears to
+close.** The counter says WIRED, the test is green, the census is satisfied — and the gate has
+never made a decision about our model.
+
+#### 7.10.3 What would close it
+
+Not a bigger synthetic test — a real one. The gate becomes genuinely exercised the first time a
+production model partitions into ≥ 2 clusters. Today the only known cut creator was GQA, and it is
+claimed, so **the very work that drove island count to 1 is what removed the gate's only real-model
+exercise.** Concretely, closing this needs either a second real model that produces multiple
+clusters, or an accepted counterfactual run with an anchor op force-declined to induce a multi-
+cluster partition and assert the gate's verdicts against it. Until one of those exists, the correct
+status is:
+
+> `retain_viable`: **WIRED, exercised only synthetically.** Never evaluated on a production graph.
+> `viable_islands_retained == 0` on Phi-3.5 means *bypassed*, not *all-rejected*.
 
 ---
 
