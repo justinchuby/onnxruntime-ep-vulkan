@@ -101,20 +101,28 @@ _CARGO_MANIFEST = _REPO_ROOT / "rust" / "Cargo.toml"
 _MECHANISMS = [
     "partitioner",
     "partition_identity_check",
+    "net_benefit_gate",
     "gpu_tracer",
     "model_output_equivalence",
     "retain_viable",
     "ledger_lookup",
     "validation_messenger",
     "layering_lint",
+    "broken_commitment_warn",
+    "device_state_guard",
+    "instrument_census",
 ]
 
 # Mechanisms that MUST be wired for M0 to be complete.  Others are informational.
 _MANDATORY_WIRED = {
     "partitioner",
     "partition_identity_check",
+    "net_benefit_gate",
     "validation_messenger",
     "layering_lint",
+    "broken_commitment_warn",
+    "device_state_guard",
+    "instrument_census",
 }
 
 # Mechanisms known to be UNWIRED at M0 (criterion 11 not yet met).
@@ -257,6 +265,277 @@ def _run_add_session_with_profiling() -> tuple[dict[str, int], dict[str, int]]:
 
 
 # ---------------------------------------------------------------------------
+# THE COUNTERS-FILE CHILD — how today's mechanisms are reached at all
+#
+# The net-benefit gate's three states, the broken-commitment WARN channel, and the
+# three-state reading of `viable_islands_retained` are published in the counters JSON and
+# NOT in the C ABI struct (`counters.rs`: COUNTERS_ABI_VERSION is still 2 and
+# `VulkanEpCounters` ends at `viable_islands_retained` — the additions were deliberately
+# JSON-only, "no abi_version bump: the C struct is unchanged").  So `ctypes` cannot see
+# them, and the env var that names the counters file is read by the DLL at load time,
+# which on Windows means setting it from this process after `import onnxruntime` is
+# invisible (UCRT env cache).
+#
+# Therefore: a fresh child per polarity, env set before the DLL is loaded, and the census
+# reads the file the child left behind.  This is also what makes the lines below
+# *observations* rather than readings of our own configuration.
+# ---------------------------------------------------------------------------
+
+_CHILD_FLAG = "--census-counters-child"
+
+#: Tank's fault-injection switch (rust/tools/probe_broken_commitment.py::ENV_INJECT).
+#: Used here to give the broken-commitment WARN an input to vary with; the census does not
+#: reimplement his judgement, it reads the counters his call site writes.
+_ENV_INJECT = "ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE"
+
+#: Niobe's tracer switch (rust/src/trace.rs::ENV_TRACE).  Named here because the census
+#: previously looked for `ONNXRUNTIME_EP_VULKAN_TRACE_FILE`, which nothing sets.
+_ENV_TRACE = "ONNXRUNTIME_EP_VULKAN_TRACE"
+
+_CENSUS_OUT = Path(__file__).parent.parent.parent / "bench" / "results" / "census"
+_CENSUS_TRACE_PATH = _CENSUS_OUT / (
+    f"census-trace-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
+)
+
+
+def _chain_model(n_nodes: int = 6) -> bytes:
+    """A multi-node chain, so the partitioner and the net-benefit gate have something to do.
+
+    A single `Add` cannot distinguish a partitioner that merges from one that is the
+    identity function — R10 names that exact degeneracy — and it gives the net-benefit gate
+    one trivial cluster.  Six chained elementwise nodes give both mechanisms a decision.
+    """
+    import onnx_ir as ir  # noqa: PLC0415
+
+    a = m.tensor("a", DT.FLOAT, [4, 4])
+    b = m.tensor("b", DT.FLOAT, [4, 4])
+    nodes = []
+    cur = a
+    for i in range(n_nodes):
+        out = m.tensor(f"t{i}", DT.FLOAT, [4, 4])
+        op = "Add" if i % 2 == 0 else "Mul"
+        nodes.append(ir.node(op, [cur, b], outputs=[out]))
+        cur = out
+    cur.name = "out"
+    graph = ir.Graph(
+        [a, b], [cur], nodes=nodes, name="census_chain", opset_imports={"": 21}
+    )
+    return ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+
+
+def _counters_child_main(counters_path: str) -> int:
+    """Child entry point: run one session with the counters file armed, then exit."""
+    lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
+    if not lib:
+        print("[census-child] ONNXRUNTIME_VULKAN_EP_LIB unset", file=sys.stderr)
+        return 3
+    try:
+        ort.register_execution_provider_library(m.EP_NAME, str(Path(lib).resolve()))
+    except Exception as exc:  # noqa: BLE001
+        if "already registered" not in str(exc):
+            print(f"[census-child] registration failed: {exc}", file=sys.stderr)
+            return 3
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 2
+    sess = ort.InferenceSession(_chain_model(), opts, providers=m.EP_PROVIDERS)
+    feeds = {
+        "a": np.ones((4, 4), dtype=np.float32),
+        "b": np.full((4, 4), 2.0, dtype=np.float32),
+    }
+    try:
+        sess.run(None, feeds)
+    except Exception as exc:  # noqa: BLE001
+        # An injected Compute failure is expected to surface here; the artifact the census
+        # reads is the counters file, which `record_broken_commitment` writes at the
+        # instant of the event and not at teardown.
+        print(f"[census-child] run raised: {type(exc).__name__}: {exc}", file=sys.stderr)
+    del sess
+    return 0 if Path(counters_path).is_file() else 3
+
+
+def _run_counters_child(*, inject: bool, tag: str) -> tuple[dict, str]:
+    """Run one polarity in a fresh process; return (counters doc, combined child log)."""
+    out_dir = _REPO_ROOT / "bench" / "results" / "census"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
+    counters = out_dir / f"census-counters-dev{selector}-{tag}.json"
+    counters.unlink(missing_ok=True)
+
+    env = dict(os.environ)
+    env["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(counters)
+    if not inject:
+        # Arm the tracer on the clean polarity only: the injected run's teardown path is
+        # exactly the one Tank's ruling says may not be reached.
+        _CENSUS_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CENSUS_TRACE_PATH.unlink(missing_ok=True)
+        env[_ENV_TRACE] = str(_CENSUS_TRACE_PATH)
+    else:
+        env.pop(_ENV_TRACE, None)
+    env.pop(_ENV_INJECT, None)
+    if inject:
+        env[_ENV_INJECT] = "1"
+
+    result = _verdict.run_subprocess_checked(
+        [sys.executable, str(Path(__file__).resolve()), _CHILD_FLAG, str(counters)],
+        what=f"census counters child ({tag})",
+        quiet_seconds=180,
+        env=env,
+        cwd=str(HERE),
+    )
+    log = (result.stdout or "") + "\n" + (result.stderr or "")
+    if not counters.is_file():
+        raise _verdict.InstrumentError(
+            f"[wiring census instrument failure] ERROR(instrument): the {tag} counters "
+            f"child exited {result.returncode} and wrote no counters file, so the census "
+            "reached no observation of the JSON-published mechanisms.  This is not a "
+            "finding about any of them.\n"
+            f"child log (last 2000 chars):\n{log[-2000:]}"
+        )
+    try:
+        doc = json.loads(counters.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise _verdict.InstrumentError(
+            f"[wiring census instrument failure] ERROR(instrument): the {tag} counters "
+            f"file is unreadable: {exc}"
+        ) from exc
+    return doc, log
+
+
+def _ort_sink_warn_lines(log: str) -> list[str]:
+    """Count broken-commitment WARNs that came out of ORT's own sink, using Tank's screen.
+
+    ORT's sink writes UTF-16LE on this host, so a text-mode pipe hands back a string with
+    an interleaved NUL after every character.  A naive substring test on that reads zero
+    and would report Tank's WARN as never delivered — the same shape of defect as Link's
+    ICD probe: an always-false screen and an always-true screen are equally blind.  The
+    NULs are stripped first, and then his own ``ORT_DECORATION`` / ``WARN_MARKER`` do the
+    deciding, so there is one definition of "a WARN through ORT's sink" in the repo.
+    """
+    scrubbed = log.replace("\x00", "")
+    tools = _REPO_ROOT / "rust" / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    try:
+        import probe_broken_commitment as bc  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return []
+    return bc.ort_sink_warns(scrubbed)
+
+
+def _observe_device_state_guard() -> str:
+    """Run Link's obligation-8 guard over two inputs and report whether the pair differs.
+
+    Imported from ``ci/check_device_state.py`` — one mechanism, not two (§10.0.1 R10
+    sub-rule).  Returns the census line.
+    """
+    import contextlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    ci_dir = _REPO_ROOT / "ci"
+    guard_path = ci_dir / "check_device_state.py"
+    if not guard_path.is_file():
+        return "UNWIRED (ci/check_device_state.py is absent)"
+
+    if str(ci_dir) not in sys.path:
+        sys.path.insert(0, str(ci_dir))
+    try:
+        import check_device_state as guard  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        return f"INSTRUMENT-ERROR (ci/check_device_state.py did not import: {exc})"
+
+    def _run(scan: Path) -> tuple[int, str]:
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                code = guard.main(["--scan", str(scan)])
+        except SystemExit as exc:  # argparse escape hatch
+            code = int(exc.code or 0)
+        except Exception as exc:  # noqa: BLE001
+            raise _verdict.InstrumentError(
+                f"[wiring census instrument failure] ERROR(instrument): Link's "
+                f"device-state guard raised on {scan}: {type(exc).__name__}: {exc}"
+            ) from exc
+        out = buf.getvalue()
+        line = next(
+            (ln for ln in out.splitlines() if ln.startswith(f"{guard.LABEL}:")), ""
+        )
+        return code, line
+
+    with tempfile.TemporaryDirectory(prefix="census_device_state_") as td:
+        planted = Path(td) / "planted_lane_claim.json"
+        # Link's own plant, reproduced: a duration quoted as a lane claim with no
+        # `device_state` companion.  If the guard passes this, it is not reading its input.
+        planted.write_text(
+            json.dumps({"claim": "gpu steady state", "gpu_busy_ms": 11.525}, indent=2),
+            encoding="utf-8",
+        )
+        planted_code, planted_line = _run(Path(td))
+
+    ours = _REPO_ROOT / "bench" / "results" / "census"
+    if not ours.is_dir():
+        return (
+            "UNWIRED (no bench/results/census directory for the guard to read on this "
+            "run — the guard had no subject, which is not a clean lane)"
+        )
+    ours_code, ours_line = _run(ours)
+
+    if planted_code == guard.EXIT_ERROR_INSTRUMENT:
+        return f"INSTRUMENT-ERROR (planted control: {planted_line})"
+    if planted_code != guard.EXIT_FAIL_CONDITION:
+        return (
+            f"UNWIRED (the planted companionless duration returned exit {planted_code} "
+            f"[{planted_line!r}] instead of FAIL(condition) — the negative control did "
+            "not fire, so this guard's green readings are unverified)"
+        )
+    if planted_line == ours_line:
+        return (
+            f"UNWIRED (constant: the guard returned the same line {ours_line!r} for a "
+            "planted violation and for this run's own evidence)"
+        )
+    return (
+        f"FIRED planted_exit={planted_code} planted={planted_line!r} | "
+        f"lane_exit={ours_code} lane={ours_line!r}"
+    )
+
+
+def _observe_instrument_census() -> str:
+    """Report Tank's source-level census verdict token and the counts it computed."""
+    import contextlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    tools = _REPO_ROOT / "rust" / "tools"
+    if not (tools / "audit_instruments.py").is_file():
+        return "UNWIRED (rust/tools/audit_instruments.py is absent)"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    try:
+        import audit_instruments as audit  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        return f"INSTRUMENT-ERROR (audit_instruments.py did not import: {exc})"
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            code = audit.main_guarded(["--check"])
+    except Exception as exc:  # noqa: BLE001
+        return f"INSTRUMENT-ERROR (main_guarded raised {type(exc).__name__}: {exc})"
+    out = buf.getvalue()
+    verdict = next(
+        (ln for ln in out.splitlines() if "CENSUS VERDICT" in ln), "<no verdict line>"
+    )
+    if code == audit.EXIT_ERROR_INSTRUMENT:
+        return f"INSTRUMENT-ERROR ({verdict})"
+    counts = [
+        ln.strip() for ln in out.splitlines() if ln.strip().startswith("OK: ")
+    ] or [
+        ln.strip() for ln in out.splitlines()
+        if ln.strip().startswith(("DRIFT", "MISSING", "NEW "))
+    ]
+    return f"exit={code} {verdict.strip()} | " + "; ".join(counts[:6])
+
+
+# ---------------------------------------------------------------------------
 # The census test
 # ---------------------------------------------------------------------------
 
@@ -280,6 +559,15 @@ def test_wiring_census(require_vulkan) -> None:
       - Partitioner: islands_offered == claimed_nodes with both > 1 is IDENTITY (red).
     """
     observations: dict[str, str] = {}
+
+    # ── The two counters-file polarities, taken once and read by three mechanisms ────
+    #
+    # R10's falsifier is "an artifact X produced whose content varies with X's input", so
+    # every JSON-published mechanism below is read from BOTH polarities and the census
+    # records the pair.  A line that reads the same in both is reported as such and is not
+    # allowed to pass as an observation.
+    clean_doc, clean_log = _run_counters_child(inject=False, tag="clean")
+    inject_doc, inject_log = _run_counters_child(inject=True, tag="inject")
 
     # ── Run session and collect observations ────────────────────────────────
     counters_before, counters_after, profile_info = _run_add_session_with_profiling()
@@ -326,19 +614,45 @@ def test_wiring_census(require_vulkan) -> None:
         )
 
     # ── Mechanism 3: GPU tracer ──────────────────────────────────────────
-    trace_file = os.environ.get("ONNXRUNTIME_EP_VULKAN_TRACE_FILE")
-    if trace_file and Path(trace_file).is_file():
+    #
+    # SCREEN DEFECT, found 2026-08-01 and fixed here.  This line read
+    # `ONNXRUNTIME_EP_VULKAN_TRACE_FILE`.  No such variable exists: `trace.rs::ENV_TRACE`
+    # is `ONNXRUNTIME_EP_VULKAN_TRACE`.  The census therefore reported the tracer as
+    # OPTIONAL-UNWIRED on every run it has ever made, and would have gone on doing so if
+    # Niobe had deleted the tracer.  This is Link's ICD defect with the polarity flipped:
+    # his screen matched something always true, this one matched something never true, and
+    # both report a constant.
+    #
+    # The census now ARMS the tracer in its own counters child rather than waiting for
+    # someone else's environment, so the line carries a span count this run produced.
+    if _CENSUS_TRACE_PATH.is_file():
         try:
-            with open(trace_file) as fh:
-                trace_data = json.load(fh)
-            entry_count = len(trace_data) if isinstance(trace_data, list) else (
-                len(trace_data.get("traceEvents", [])) if isinstance(trace_data, dict) else 0
+            trace_data = json.loads(_CENSUS_TRACE_PATH.read_text(encoding="utf-8"))
+            events = (
+                trace_data if isinstance(trace_data, list)
+                else trace_data.get("traceEvents", []) if isinstance(trace_data, dict)
+                else []
             )
-            observations["gpu_tracer"] = f"{entry_count} trace entries in {trace_file}"
-        except Exception as exc:
-            observations["gpu_tracer"] = f"trace file present but unreadable: {exc}"
+            phases = sorted({e.get("ph") for e in events if isinstance(e, dict)})
+            names = sorted({e.get("name") for e in events if isinstance(e, dict)})
+            if not events:
+                observations["gpu_tracer"] = (
+                    f"UNWIRED (armed via {_ENV_TRACE}={_CENSUS_TRACE_PATH.name} and the "
+                    "file it wrote contains no events)"
+                )
+            else:
+                observations["gpu_tracer"] = (
+                    f"{len(events)} trace event(s), phases={phases}, "
+                    f"distinct_names={len(names)} (armed by this census via {_ENV_TRACE}; "
+                    "no duration from this file is quoted — §10.0 obligation 8)"
+                )
+        except Exception as exc:  # noqa: BLE001
+            observations["gpu_tracer"] = f"INSTRUMENT-ERROR (trace file unreadable: {exc})"
     else:
-        observations["gpu_tracer"] = "OPTIONAL-UNWIRED (ONNXRUNTIME_EP_VULKAN_TRACE_FILE not set)"
+        observations["gpu_tracer"] = (
+            f"UNWIRED ({_ENV_TRACE} was set to {_CENSUS_TRACE_PATH} for the counters "
+            "child and no trace file was written on EP teardown)"
+        )
 
     # ── Mechanism 4: model_output_equivalence ────────────────────────────
     # This session runs Add, not Phi-3.5. The equivalence verdict belongs to test_phi35.py
@@ -388,6 +702,18 @@ def test_wiring_census(require_vulkan) -> None:
                         f"permits_triple={record.get('permits_triple_and_ratio')}"
                     )
     observations["model_output_equivalence"] = equiv
+    if equiv.startswith("UNWIRED") and m.EQUIVALENCE_KEY in clean_doc:
+        # Fall back to the census's own counters child, which does have a counters file.
+        # This is a real Add/Mul chain, not Phi-3.5, so the honest reading is UNMEASURED
+        # with no record — and UNMEASURED is a value this run computed, not an absence.
+        token = clean_doc.get(m.EQUIVALENCE_KEY)
+        record = clean_doc.get(m.EQUIVALENCE_RECORD_KEY)
+        frame = record.get("executed_by") if isinstance(record, dict) else None
+        observations["model_output_equivalence"] = (
+            f"census-child verdict={token!r} executed_by={frame!r} "
+            "(this lane runs an elementwise chain, not the criterion-10 model; the "
+            "attributed MATCH belongs to test_criterion10.py and is not claimed here)"
+        )
 
     # ── Mechanism 5: retain_viable ───────────────────────────────────────
     # Observable: `viable_islands_retained` in the C ABI counters (added ABI version 2).
@@ -397,6 +723,42 @@ def test_wiring_census(require_vulkan) -> None:
         observations["retain_viable"] = str(counters_after["viable_islands_retained"])
     else:
         observations["retain_viable"] = "UNWIRED"
+
+    # ── Mechanism 5b: net_benefit_gate (RAI-011, closed 2026-08-01) ──────
+    #
+    # THREE STATES THAT USED TO SHARE ONE `0`.  Before Mouse's change, a census reading
+    # `viable_islands_retained == 0` could not tell apart:
+    #   (i)   the gate never ran            — nothing reached the decision point;
+    #   (ii)  the gate was bypassed         — clusters were seen, none was evaluated;
+    #   (iii) the gate ran and rejected all — a result, and the only one of the three that
+    #                                          is a statement about the model.
+    # R12 forbids spelling (i) and (ii) as `0`.  They are now separate FIELDS, so the
+    # census prints the fields and never re-derives the distinction from the number.
+    #
+    # `net_benefit_gate` itself is a token (UNWIRED / BYPASSED / EVALUATED / MIXED)
+    # computed by `counters.rs::net_benefit_gate_state()` from three atomics that this run
+    # incremented.  It is not a flag anyone set.
+    gate_token = clean_doc.get("net_benefit_gate")
+    if gate_token is None:
+        observations["net_benefit_gate"] = (
+            "UNWIRED (no net_benefit_gate field in the counters artifact — the gate did "
+            "not publish, which is not the same as the gate rejecting everything)"
+        )
+    elif gate_token == "UNWIRED":
+        observations["net_benefit_gate"] = (
+            f"UNWIRED (clusters_seen={clean_doc.get('net_benefit_gate_clusters_seen')!r} "
+            "— no cluster reached the decision point in this run)"
+        )
+    else:
+        observations["net_benefit_gate"] = (
+            f"{gate_token} clusters_seen={clean_doc.get('net_benefit_gate_clusters_seen')!r} "
+            f"evaluations={clean_doc.get('net_benefit_gate_evaluations')!r} "
+            f"bypasses={clean_doc.get('net_benefit_gate_bypasses')!r} "
+            f"sole_island_overrides={clean_doc.get('net_benefit_sole_island_overrides')!r} "
+            f"viable_islands_retained={clean_doc.get('viable_islands_retained')!r} "
+            f"(retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int — a type cannot be forged "
+            f"by an increment)"
+        )
 
     # ── Mechanism 6: ledger_lookup ───────────────────────────────────────
     # §8.9 criterion 11 not met.  No ledger entries exist.
@@ -468,12 +830,119 @@ def test_wiring_census(require_vulkan) -> None:
     else:
         observations["layering_lint"] = "UNWIRED (Cargo.toml not found)"
 
+    # ── Mechanism 9: broken_commitment_warn (Tank, 2026-08-01) ──────────
+    #
+    # Tank's runtime WARN: a node this EP *claimed* whose Compute() returned non-OK must be
+    # disclosed through ORT's own logging sink, because a WARN in our private log is
+    # invisible to exactly the audience the ruling names.
+    #
+    # The census does NOT re-judge it — `probe_broken_commitment.py` owns that, and it was
+    # mutation-tested in both polarities today.  What the census does is read the counters
+    # his call site writes, on two runs that differ only in whether a Compute failure was
+    # planted, and require the reading to MOVE.
+    #
+    # R12 is load-bearing on the clean side: `broken_commitment_warn_channel` reads
+    # `UNOBSERVABLE` when no commitment broke, never `ORT_SINK`.  A channel is not proven
+    # by the absence of traffic — that is the whole failure this instrument exists for.
+    clean_channel = clean_doc.get("broken_commitment_warn_channel")
+    inject_channel = inject_doc.get("broken_commitment_warn_channel")
+    clean_broken = clean_doc.get("broken_commitments")
+    inject_broken = inject_doc.get("broken_commitments")
+    if clean_channel is None and inject_channel is None:
+        observations["broken_commitment_warn"] = (
+            "UNWIRED (no broken_commitment_warn_channel field in either polarity's "
+            "counters artifact)"
+        )
+    elif inject_broken in (None, 0, "UNOBSERVABLE"):
+        observations["broken_commitment_warn"] = (
+            f"UNWIRED (the planted-failure polarity recorded broken_commitments="
+            f"{inject_broken!r}; {_ENV_INJECT} did not reach a claimed node, so the WARN "
+            "had nothing to disclose and this run says nothing about the channel)"
+        )
+    elif clean_channel == inject_channel:
+        observations["broken_commitment_warn"] = (
+            f"UNWIRED (constant: both polarities read channel={clean_channel!r}; a "
+            "reading that does not move with its input is not an observation, R10)"
+        )
+    else:
+        ort_warn_lines = _ort_sink_warn_lines(inject_log)
+        observations["broken_commitment_warn"] = (
+            f"planted: channel={inject_channel!r} broken_commitments={inject_broken!r} "
+            f"fault_injection={inject_doc.get('fault_injection')!r} "
+            f"ort_sink_warn_lines={len(ort_warn_lines)} | "
+            f"clean: channel={clean_channel!r} broken_commitments={clean_broken!r} "
+            f"fault_injection={clean_doc.get('fault_injection')!r}"
+        )
+
+    # ── Mechanism 10: device_state_guard (Link, 2026-08-01) ─────────────
+    #
+    # Link's obligation-8 publication guard: a duration quoted as a lane claim without a
+    # `device_state` companion is not quotable.  He proved it fires by planting a
+    # companionless `gpu_busy_ms` and getting FAIL(condition=STEADY_UNCERTIFIED), exit 1.
+    #
+    # The census runs HIS module — imported, not reimplemented — over two inputs: this
+    # run's own artifact directory, and a scratch directory carrying a planted
+    # companionless duration.  The pair is the observation.  A guard that returned the same
+    # token for both would be reported UNWIRED here however green it looked.
+    #
+    # Link's own lesson from today is why the planted case is present at all: his ICD probe
+    # was matching a line printed on every run, so the negative control had never once
+    # executed while reporting that the gate could not fail.
+    observations["device_state_guard"] = _observe_device_state_guard()
+
+    # ── Mechanism 11: instrument_census (Tank's source census) ──────────
+    #
+    # Criterion 12 pointed at itself.  `rust/tools/audit_instruments.py` is the ONE census
+    # of instrument wiring in this repo; this line reports its verdict token and the four
+    # counts it computed on this run.  Deliberately not a second census — Tank dropped his
+    # harness-census WIP unmerged for exactly this reason, and his six states
+    # (absent → uninvoked → unfalsified → unreachable → out-of-frame → misnamed, ordered by
+    # how late the failure is discoverable) are the vocabulary used throughout this file.
+    observations["instrument_census"] = _observe_instrument_census()
+
     # ── Emit census ──────────────────────────────────────────────────────
     print("\n[WIRING CENSUS] M0 criterion 12 — per-mechanism observations:", file=sys.stderr)
     for mech in _MECHANISMS:
         obs = observations.get(mech, "UNWIRED")
         print(f"[WIRING CENSUS] {mech}: {obs}", file=sys.stderr)
     print("[WIRING CENSUS] end.", file=sys.stderr)
+
+    # The census is itself an artifact, not just a print.  Criterion 12's own falsifier is
+    # a file whose content varies with the run that produced it.
+    _CENSUS_OUT.mkdir(parents=True, exist_ok=True)
+    census_path = _CENSUS_OUT.parent / (
+        f"wiring_census-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
+    )
+    census_path.write_text(
+        json.dumps(
+            {
+                "criterion": "12",
+                "device_selector": os.environ.get(
+                    "ONNXRUNTIME_EP_VULKAN_DEVICE", "unset"
+                ),
+                "vocabulary": (
+                    "Tank's six states, ordered by how late the failure is discoverable: "
+                    "absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> "
+                    "misnamed; plus R13's three terminal states PASS / FAIL(condition) / "
+                    "ERROR(instrument).  One census (rust/tools/audit_instruments.py), "
+                    "not two."
+                ),
+                "no_duration_quoted": (
+                    "§10.0 obligation 8 — every line above is a count, a token or a "
+                    "byte volume.  The tracer line reports how many events it wrote and "
+                    "quotes none of their durations."
+                ),
+                "observations": {mm: observations.get(mm, "UNWIRED") for mm in _MECHANISMS},
+                "unwired": [
+                    mm for mm in _MECHANISMS
+                    if observations.get(mm, "UNWIRED").startswith("UNWIRED")
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[WIRING CENSUS] wrote {census_path}", file=sys.stderr)
 
     # ── Assertions ───────────────────────────────────────────────────────
     # Mandatory wired — fail if UNWIRED (excluding known-unwired).
@@ -604,3 +1073,16 @@ def test_ledger_lookup_wired(require_vulkan) -> None:
         "§8.9 ledger lookup counter not present — mechanism is UNWIRED (criterion 11 not met). "
         f"Current counter keys: {sorted(counters_after.keys())}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Child entry point.  `python test_wiring_census.py --census-counters-child <path>`
+# runs one session with ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE already in the environment
+# before onnxruntime loads the EP DLL — which is the only way the JSON-published
+# mechanisms are reachable at all on Windows.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == _CHILD_FLAG:
+        raise SystemExit(_counters_child_main(sys.argv[2]))
+    print(__doc__)
+    raise SystemExit(0)

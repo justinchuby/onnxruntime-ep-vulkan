@@ -29,8 +29,7 @@
     "trace.rs::op_timer_start",
     "trace.rs::record_op_meta",
     "trace.rs::record_path",
-    "trace.rs::transfer_totals",
-    "transfer.rs::device_buffer_for"
+    "trace.rs::transfer_totals"
   ],
   "ambiguous": [
     "counters.rs::extract_equivalence",
@@ -48,7 +47,10 @@
     "tests/ops/_models.py::count_vulkan_executions_from_profile",
     "tests/ops/_models.py::write_unmeasured_verdict",
     "tests/ops/_verdict.py::classify_plant_run",
-    "tests/ops/_verdict.py::classify_validation_probe"
+    "tests/ops/_verdict.py::classify_validation_probe",
+    "tests/ops/conftest.py::_assert_oracle_versions",
+    "tests/ops/conftest.py::_classify_failure",
+    "tests/ops/conftest.py::require_vulkan"
   ],
   "hand": {
     "harness_notes": [
@@ -97,6 +99,30 @@
         "state": "UNFALSIFIED by this screen, and the screen is wrong about them - a stated limit, not a pass",
         "artifact": "tests/ops/test_r13_lane.py: 6 parametrised cases for classify_validation_probe (including exit 0 with no ARMED line, which must NOT be armed) and 7 for classify_plant_run, plus test_plant_classification_reaches_all_three_states, which fails unless the SAME function returns three DIFFERENT tokens.",
         "why_the_screen_cannot_see_it": "The polarity model here is raise-based: an instrument is screened iff some non-gated test calls it inside pytest.raises AND another calls it outside one. These two are TOTAL functions - they never raise; they return the token. A total classifier therefore reads UNFALSIFIED however thoroughly it is falsified. The honest generalisation, mechanically decidable and not implemented in this pass: value-polarity - screened iff a non-gated test asserts two DIFFERENT return values for two different inputs. Recorded rather than silently excluded, because a screen that quietly drops the instruments it cannot model reports a number about a world it has not surveyed.",
+        "owner": "trinity"
+      },
+      {
+        "instrument": "tests/ops/conftest.py::_classify_failure",
+        "state": "UNFALSIFIED - and it is the R13 channel itself",
+        "artifact": "the PASS / FAIL(condition) / ERROR(instrument) / XPASS(stale expect) token printed for every test in the suite, plus the quoted failure text under it",
+        "excludes": "nothing about its own inputs - tests/ops/test_r13_lane.py drives it through all four tokens. The screen reads it UNFALSIFIED because it is a TOTAL function: it returns the token instead of raising it, so the raise-based polarity model (called inside pytest.raises AND outside one) cannot see the discrimination that is there. This is the value-polarity gap already recorded below, now with the highest-blast-radius specimen in it.",
+        "disposition": "BASELINED WITH A NOTE. It entered the screen's frame on 2026-08-01 when ops/conftest.py was added to HARNESS_INSTRUMENT_FILES (Tank's open item) and the leading-underscore names were admitted to HARNESS_FN. Before that the file that decides what every red in this suite MEANS was outside the census that reports on the instruments whose verdicts travel down it. Closing the state needs value-polarity, not a self-test: test_r13_lane.py already supplies the evidence and the screen cannot read it.",
+        "owner": "trinity"
+      },
+      {
+        "instrument": "tests/ops/conftest.py::_assert_oracle_versions",
+        "state": "UNFALSIFIED",
+        "artifact": "a pytest_configure-time refusal when ORT < 1.28 or onnx < 1.22.0",
+        "excludes": "its own reject polarity. It is called exactly once, at collection time, and no test has ever watched it refuse - the only machine that could supply the reject polarity is one with a too-old oracle, and this suite refuses to collect on that machine by construction. That is a genuine unscreenable, not a hole somebody forgot to fill.",
+        "disposition": "BASELINED WITH A NOTE. Falsifiable only by factoring the version comparison out of the assertion, which is a real improvement and is not done in this pass.",
+        "owner": "trinity"
+      },
+      {
+        "instrument": "tests/ops/conftest.py::require_vulkan",
+        "state": "UNFALSIFIED - and it read UNINVOKED for one run, which was a screen defect",
+        "artifact": "the skip-or-proceed decision for 37 tests",
+        "excludes": "its own polarity: a fixture that skips leaves no trace a non-gated test can assert on, and a test that could watch it skip would itself be gated.",
+        "disposition": "BASELINED WITH A NOTE. Recorded chiefly for the screen defect it exposed: a pytest fixture is invoked by PARAMETER NAME and never by a call expression, so the call-shaped caller model scored the most-depended-on instrument in the suite as `uninvoked calls=0` on its first run inside the frame. _fixture_instruments() now counts parameter references (calls=37). A false UNINVOKED is worse than a missing row - it is a fabricated detection, which is exactly what R13 exists to keep out of the failure channel.",
         "owner": "trinity"
       }
     ],

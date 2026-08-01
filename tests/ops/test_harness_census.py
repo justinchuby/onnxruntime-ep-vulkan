@@ -170,15 +170,135 @@ def test_guard_d_is_screened_in_the_real_repository() -> None:
     )
 
 
-def test_census_baseline_has_no_drift() -> None:
+def test_census_baseline_has_no_drift(capsys: pytest.CaptureFixture[str]) -> None:
     """``audit_instruments.py --check`` must be green, both domains.
 
     Runs the same entry point CI would run.  A baseline nobody is forced to look at is a
     baseline nobody looks at — Tank's words, and the reason this is a test and not a note.
+
+    **``main_guarded``, not ``main`` (Tank, 2026-08-01).**  ``main`` has three ways out and
+    only two of them are return values: ``0``, ``1``, and *an exception*.  Calling it
+    directly puts the third one in pytest's hands, where a ``CensusInstrumentError`` — the
+    census saying it never reached its observation — arrives as a red in the same channel
+    as a drift.  That is the census reproducing, in its own test, the two-token confusion
+    R13 was written to end.  ``main_guarded`` is the only entry point that emits all three.
+
+    And the **token** is asserted, not just the code.  R13's rule is *quote the failure
+    text, never the failure count*; a test that reads only ``rc == 0`` would pass against a
+    build of this script that had lost its verdict line entirely.
     """
     audit = _load_audit()
-    rc = audit.main(["--check"])
-    assert rc == 0, "instrument census --check reported drift; see output above"
+    rc = audit.main_guarded(["--check"])
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert rc != audit.EXIT_ERROR_INSTRUMENT, (
+        "instrument census reported ERROR(instrument) — it did not reach its observation, "
+        "so it detected NOTHING and this red is not a finding about the census's subject "
+        f"(R13).  Quote this text:\n{combined[-2000:]}"
+    )
+    assert rc == audit.EXIT_PASS, (
+        "instrument census reported FAIL(drift).  Quote the drift, not the exit code:\n"
+        f"{combined[-2000:]}"
+    )
+    assert "CENSUS VERDICT: PASS" in combined, (
+        "the census exited 0 without printing its verdict token.  An exit code with no "
+        "verdict line is one witness, and this gate requires two: a caller that reads only "
+        "the code cannot tell a PASS from a script that lost its reporting.  Output:\n"
+        f"{combined[-2000:]}"
+    )
+
+
+def test_census_reports_error_instrument_when_it_cannot_reach_its_observation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The MISSING POLARITY: ``main_guarded`` must emit ERROR(instrument), not FAIL(drift).
+
+    ``test_census_baseline_has_no_drift`` above watches the census agree.  Nothing watched
+    it produce its third token, so ``ERROR(instrument)`` was a state the census could
+    declare and no test had ever seen — which is the definition of ``unfalsified`` applied
+    to the census's own reporting layer.  Without this, the R13 wrapper is exactly the
+    Guard D shape: present, plausible, unobserved.
+
+    The world is broken at ``survey()``, i.e. *before* the census reaches any observation,
+    so the exception is genuinely an outage and not a disguised finding.  Three things are
+    asserted and each is separately load-bearing:
+
+    * the exit code is ``EXIT_ERROR_INSTRUMENT`` and **not** ``EXIT_FAIL_DRIFT`` — the two
+      must not be the same door;
+    * the verdict line says ``ERROR(instrument)`` — the code and the text agree;
+    * the exception's own text survives to the reader — R13 says quote the failure text,
+      and a wrapper that swallowed it would satisfy the first two assertions.
+    """
+    audit = _load_audit()
+
+    sentinel = "planted survey outage: the census never reached its observation"
+
+    def _explode() -> list:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(audit, "survey", _explode)
+
+    rc = audit.main_guarded(["--check"])
+    out = capsys.readouterr()
+    combined = out.out + out.err
+
+    assert rc == audit.EXIT_ERROR_INSTRUMENT, (
+        f"a census that crashed before observing anything returned {rc}.  "
+        f"EXIT_FAIL_DRIFT is {audit.EXIT_FAIL_DRIFT} and EXIT_ERROR_INSTRUMENT is "
+        f"{audit.EXIT_ERROR_INSTRUMENT}; an outage returning the drift code would be "
+        "reported to the team as a detection.  Output:\n" + combined[-2000:]
+    )
+    assert "CENSUS VERDICT: ERROR(instrument)" in combined, (
+        "the census exited with the instrument code but never said so in words.  "
+        "Output:\n" + combined[-2000:]
+    )
+    assert sentinel in combined, (
+        "the census swallowed the text of the failure that stopped it.  R13: quote the "
+        "failure text, never the failure count — a reader given only 'ERROR(instrument)' "
+        "cannot route it.  Output:\n" + combined[-2000:]
+    )
+
+
+def test_census_error_and_drift_do_not_share_an_exit_code() -> None:
+    """The paired control for the two tests above, and the one that makes them mean something.
+
+    Both tests assert a specific exit code.  If ``EXIT_FAIL_DRIFT`` and
+    ``EXIT_ERROR_INSTRUMENT`` were ever collapsed to the same integer — the state this
+    whole wrapper exists to undo — both would still pass.  This is the assertion that
+    fails the moment the three states become two.
+    """
+    audit = _load_audit()
+    codes = [audit.EXIT_PASS, audit.EXIT_FAIL_DRIFT, audit.EXIT_ERROR_INSTRUMENT]
+    assert len(set(codes)) == 3, (
+        f"the census's three terminal states share an exit code: {codes}.  A caller cannot "
+        "tell a drift from an outage, which is precisely the two-token channel R13 names."
+    )
+
+
+def test_census_timeout_in_a_caller_is_an_instrument_error_not_a_detection() -> None:
+    """``subprocess.TimeoutExpired`` is ERROR(instrument).  Non-negotiable (Tank).
+
+    The census is shelled out to from CI and from ``test_wiring_census``.  A budget
+    overrun there produces a non-zero exit in the caller's frame, and the caller must not
+    classify it as ``FAIL(drift)``.  ``_verdict.run_subprocess_checked`` is the mechanism;
+    this is the always-on falsifier for it, driven by a command that is guaranteed to
+    outlive its budget and needs no census, no GPU and no cargo.
+    """
+    import _verdict
+
+    with pytest.raises(_verdict.InstrumentError) as excinfo:
+        _verdict.run_subprocess_checked(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            what="census timeout falsifier",
+            quiet_seconds=0.05,
+            floor=1.0,
+        )
+    text = str(excinfo.value)
+    assert "ERROR(instrument)" in text, text[:1500]
+    assert "NOT A DETECTION" in text.upper(), (
+        "the timeout was classified without saying it is not a detection.  The whole "
+        "hazard is a reader counting it as one.\n" + text[:1500]
+    )
 
 
 def test_new_harness_instrument_without_a_self_test_goes_red(tmp_path: Path) -> None:
