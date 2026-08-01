@@ -1570,7 +1570,10 @@ mod tests {
     fn record_residual_varies_with_regime_and_never_double_counts_transfers() {
         // Warm regime: named children are ~2 ms of a 20 ms record; the vkCmd* calls are the rest.
         let warm = record_residual_us(20_000, 100, 1_500, 400);
-        assert_eq!(warm, 18_000, "warm residual must be `record` minus named children");
+        assert_eq!(
+            warm, 18_000,
+            "warm residual must be `record` minus named children"
+        );
         assert!(
             warm * 100 / 20_000 >= 85,
             "warm residual must dominate `record` — that is the finding the row exists to expose"
@@ -1584,7 +1587,10 @@ mod tests {
             cold * 100 / 1_185_000 < 5,
             "cold residual must be a small slice — otherwise `record` is not upload-dominated"
         );
-        assert_ne!(warm, cold, "residual must vary with its input, not with its name");
+        assert_ne!(
+            warm, cold,
+            "residual must vary with its input, not with its name"
+        );
 
         // `upload`/`readback` totals and the `cmd_upload` sub-span can bracket the same memcpy.
         // The caller passes the LARGER, never the sum; summing would invent child time and
