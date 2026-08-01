@@ -495,7 +495,18 @@ static NET_BENEFIT_CLUSTERS_SEEN: AtomicU64 = AtomicU64::new(0);
 /// Clusters actually put through `partition::evaluate`.
 static NET_BENEFIT_GATE_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 /// Clusters that went around the gate via the single-cluster bypass (§7, line ~1114).
+///
+/// **Expected to be permanently 0 from `GetCapability` as of 2026-08-01 (RAI-011, Mouse):** the
+/// bypass was removed and replaced by a post-evaluation override. A non-zero value here now means
+/// a second, un-evaluated path into the partitioner has been reintroduced.
 static NET_BENEFIT_GATE_BYPASSES: AtomicU64 = AtomicU64::new(0);
+/// Islands the gate **rejected** whose rejection was overridden because they were the graph's
+/// only island — RAI-011's replacement for the bypass.
+///
+/// Distinct from every other state here on purpose. Before this counter existed the three facts
+/// "the gate retained the island", "the gate rejected every island" and "the gate never ran"
+/// compressed onto one digit. They now occupy three different fields, one of which is a string.
+static NET_BENEFIT_SOLE_ISLAND_OVERRIDES: AtomicU64 = AtomicU64::new(0);
 
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
 static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
@@ -577,6 +588,15 @@ pub fn record_net_benefit_decision(evaluated: bool) {
     } else {
         NET_BENEFIT_GATE_BYPASSES.fetch_add(1, ORD);
     }
+}
+
+/// Record that the sole-island exemption overrode a rejection the gate actually computed.
+///
+/// Must be called *in addition to* [`record_net_benefit_decision`]`(true)`, never instead of it:
+/// the island was evaluated, and then its verdict was overridden. An override that suppressed the
+/// evaluation record would be the bypass again.
+pub fn record_sole_island_override() {
+    NET_BENEFIT_SOLE_ISLAND_OVERRIDES.fetch_add(1, ORD);
 }
 
 /// The three-state reading of `viable_islands_retained`, as a JSON fragment.
@@ -719,6 +739,7 @@ pub fn reset() {
     NET_BENEFIT_CLUSTERS_SEEN.store(0, ORD);
     NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
     NET_BENEFIT_GATE_BYPASSES.store(0, ORD);
+    NET_BENEFIT_SOLE_ISLAND_OVERRIDES.store(0, ORD);
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
@@ -754,6 +775,7 @@ impl VulkanEpCounters {
              \"net_benefit_gate_clusters_seen\": {},\n  \
              \"net_benefit_gate_evaluations\": {},\n  \
              \"net_benefit_gate_bypasses\": {},\n  \
+             \"net_benefit_sole_island_overrides\": {},\n  \
              \"broken_commitments\": {},\n  \
              \"broken_commitment_warns_to_ort_sink\": {},\n  \
              \"broken_commitment_warn_channel\": \"{}\",\n  \
@@ -774,6 +796,7 @@ impl VulkanEpCounters {
             NET_BENEFIT_CLUSTERS_SEEN.load(ORD),
             NET_BENEFIT_GATE_EVALUATIONS.load(ORD),
             NET_BENEFIT_GATE_BYPASSES.load(ORD),
+            NET_BENEFIT_SOLE_ISLAND_OVERRIDES.load(ORD),
             broken_commitments_json(),
             BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD),
             broken_commitment_channel(),

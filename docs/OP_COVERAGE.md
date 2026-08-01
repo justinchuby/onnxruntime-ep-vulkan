@@ -2851,7 +2851,186 @@ status is:
 > `retain_viable`: **WIRED, exercised only synthetically.** Never evaluated on a production graph.
 > `viable_islands_retained == 0` on Phi-3.5 means *bypassed*, not *all-rejected*.
 
+**SUPERSEDED 2026-08-01 by §7.11.** The status line above was accurate when written and is no
+longer the state of the code. The bypass is gone; the gate evaluates Phi-3.5's island in the
+shipping configuration; `viable_islands_retained` on Phi-3.5 now reads `1`, and it reads `1`
+*because the gate retained it*, not because a branch skipped the gate.
+
+### 7.11 RAI-011 closed: one gate, always evaluated, and the override is a state of its own (2026-08-01)
+
+Rai flagged §7.10 as the R10 shape one level up — *a mechanism true of one entry point, silent on
+another* — and was right. It was worse than "unexercised". `GetCapability` read:
+
+```rust
+let verdict = if only_one_cluster { Verdict::Claim } else { partition::evaluate(..) };
+```
+
+The **call site decided whether the gate got to run.** On our only real model the gate was not
+merely unexercised, it was *unreachable*. And per **R12** that made the artifact wrong, not just
+thin: a count whose event cannot occur in its frame is not `0`.
+
+#### 7.11.1 What changed, and why it is not a second check
+
+Tank wired the observable half at the `GetCapability` site he owns — `net_benefit_gate` as a JSON
+**string** (`UNWIRED` / `BYPASSED` / `EVALUATED` / `MIXED`), and `viable_islands_retained` emitted
+as `"UNOBSERVABLE"` rather than `0` when nothing reached the gate. He also named the hazard in my
+half precisely: **a second `partition.rs` path would reproduce RAI-011 inside its own fix.**
+
+So there is no second path. There is one:
+
+```rust
+pub fn gate_islands(islands: &[Island], model: &TransferModel, policy: &Policy) -> Vec<GateOutcome>
+```
+
+* It is the **only** entry point. `retain_viable` is now a projection of it, so "the survivors" and
+  "what the gate decided" cannot drift apart.
+* It **always** calls `evaluate`, once per island, with no branch in front of it.
+* The single-island exemption is a property of the *set*, which is why it lives here and not at a
+  call site — a call site that decides whether to consult the gate **is** a second gate.
+* The exemption is applied **after** evaluation, as `GateOutcome::SoleIslandOverride(RejectReason)`
+  — it *carries the verdict it overrode*. An override that discards that verdict is a bypass
+  wearing a different name.
+
+Behaviour is unchanged: a sole island that the gate rejects is still claimed. What changed is that
+the rejection now exists, is computed from that island's own bytes and FLOPs, and is visible.
+
+#### 7.11.2 Three states, three fields, and one of them is a string
+
+| fact about a run | field | value on Phi-3.5 today |
+|---|---|---|
+| nothing reached the gate | `viable_islands_retained` | `"UNOBSERVABLE"` (string — arithmetic on it fails loudly) |
+| the gate ran and retained the island | `viable_islands_retained` | `1` |
+| the gate ran, rejected, and was overridden | `net_benefit_sole_island_overrides` | `0` in the shipping config |
+| a second un-evaluated path exists | `net_benefit_gate_bypasses` | `0`, and must stay `0` forever |
+
+`viable_islands_retained` and `net_benefit_sole_island_overrides` are **different fields**, so
+"the gate retained it" and "the gate rejected it and we kept it anyway" can never again share a
+digit. In `partition.rs` they are different variants of a sum type, so no arithmetic can conflate
+them either.
+
+#### 7.11.3 The falsifier is an artifact, and it varies with its input
+
+`rust/tools/probe_net_benefit_gate.py` runs Phi-3.5 at one commit under several partition
+configurations and requires the observables to move. Both devices, byte-identical results
+(`bench/results/net_benefit_gate_probe-dev{0,1}.json`):
+
+| config | `net_benefit_gate` | `evaluations` | `bypasses` | `viable_islands_retained` | `sole_island_overrides` |
+|---|---|---|---|---|---|
+| **default (shipping)** | EVALUATED | 1 | 0 | **1** | 0 |
+| anchor exemption off | EVALUATED | 1 | 0 | 0 | **1** |
+| anchor off, `fixed_ns` 1e3 … 1e8 (6 runs) | EVALUATED | 1 | 0 | 0 | **1** |
+| anchor off, bytes free, `fixed_ns` 1e6 | EVALUATED | 1 | 0 | **1** | 0 |
+| anchor off, bytes free, `fixed_ns` 1e7 | EVALUATED | 1 | 0 | 0 | **1** |
+
+`claimed_nodes` is **355 in every row**: the gate's verdict moves, the graph does not. The
+counterfactual rows exist because Phi-3.5's island is anchor-bearing, so with the exemption on the
+economics branch never answers and the artifact would be a constant — and a constant proves
+nothing (R10). Every non-default row logs a WARN naming itself a counterfactual.
+
+The last two rows are the load-bearing pair. **Prediction, written before they ran:** compute is
+23,020,437,504 ÷ 1000 = 23,020,437.5 ns and transfer ≈ 2·`fixed_ns` once the byte term is removed,
+so at margin 3 the flip is at 23,020,437.5 ÷ 6 = **3,836,739.6 ns**; 1e6 must claim and 1e7 must
+override. *Falsifier: either landing on the other side, or neither moving.* **Both confirmed, on
+both devices.** That is the observable changing with *this specific input*, which is what R10 asks
+for and what a `net_benefit_gate: EVALUATED` line on its own does not supply.
+
+The knobs are `ONNXRUNTIME_EP_VULKAN_PARTITION_{MARGIN,MIN_NODES,FLOPS_PER_NS,ANCHOR_EXEMPTION,
+FIXED_NS,BYTES_PER_NS}`. They exist to make the gate falsifiable, not to be tuned.
+
+### 7.12 `fixed_ns` sensitivity — the uncalibrated parameter cannot change any decision we make today
+
+§7.9.4 recorded the risk that `fixed_ns` is ~63% of the modelled DISCRETE cost and has never seen
+a measurement. R13 still forbids calibrating it — the device-clock gate that would have supplied
+the sample is itself blind to bias (`gpu_steady_tail()` is a variance test over a suffix; a run
+held at the 210 MHz idle clock is *perfectly steady* and earns the most confident verdict at 10.99×
+wrong). So this is **a sensitivity statement, not a calibration.** No timing figure is quoted below;
+every number is a count, a byte volume or a modelled ratio.
+
+**Part 1 — fed the estimator's own bytes, the verdict is constant at every `fixed_ns`, including
+zero.** `GetCapability` estimated Phi-3.5's single island at 23,020,437,504 FLOPs and
+**89,199,100,032 boundary bytes** (`PartitionStats`, dev0). The byte term alone is ~968× the margin
+requirement, so the economics check rejects at `fixed_ns = 0` and at `fixed_ns = 1e8` alike.
+Confirmed by six measured runs across five orders of magnitude — all identical. *There is no value
+of `fixed_ns` that changes this decision.*
+
+**Part 2 — fed the measured bytes, the verdict is constant across the whole plausible range.**
+Substituting the instrumented boundary (upload 399,376 B + readback 457,344 B = 856,720 B,
+asymmetric with readback larger), the flip point solves to **~3.80 ms per transfer — 63× above the
+current guess of 60 µs.** Anything from 0 to ~1 ms claims. *There is no plausible value of
+`fixed_ns` that changes this decision either.*
+
+**Conclusion: `fixed_ns` is not the parameter with the teeth, and calibrating it is not on the
+critical path.** Both tests are pinned in `partition.rs`
+(`fixed_ns_cannot_change_the_verdict_on_the_estimated_phi35_island`,
+`with_measured_bytes_the_flip_point_is_far_outside_the_plausible_range`) so the claim goes red if
+the constants move.
+
+#### 7.12.1 What the sweep found instead, and it is worse
+
+The two halves of Part 1 and Part 2 disagree about the same island's boundary by a factor of
+**104,116**: 89,199,100,032 B estimated against 856,720 B measured. That is not measurement noise.
+`GetCapability`'s estimator counts *every* claimed node's outputs as boundary bytes (documented as
+deliberate — "over-counting is safe, it makes islands harder to claim") and substitutes `128` for
+every unknown dimension. On a 355-node fused island with symbolic `sequence_length`, those two
+choices compound into a figure five orders of magnitude off the instrumented one.
+
+**R11 applies to my own model here.** The decomposition looked closed — `TransferModel` calibrated
+in bytes, a gate comparing compute against transfer, a counter proving it ran — and the two sides
+of the comparison came from different sources, one of which is not a measurement. The gate's
+apparent strictness on Phi-3.5 is an artifact of its own byte estimator, and the *only* reason the
+model is claimed at all is the anchor exemption. Remove the exemption and the EP declines the whole
+graph, at every `fixed_ns` I swept.
+
+I am **not** fixing the estimator in this change. It fails safe (towards the CPU), it is
+load-bearing for the anchor exemption's design intent, and changing it would move the partitioner's
+behaviour in the same commit that makes the partitioner observable — which is exactly how you lose
+the ability to attribute a regression. Recorded as the next item, ahead of any nanosecond
+calibration.
+
 ---
+
+### 7.13 The eight declines, re-attributed against the current claim set (2026-08-01)
+
+The histogram in §7.8.4 was written before `SimplifiedLayerNormalization` and `Gather` were
+claimed. The graph shape changed, so the conclusion that closed the island lever — *no decline
+creates a cut* — had to be re-derived rather than re-quoted.
+
+Re-run at this commit, `bench/island_attribution.py`, **both devices, byte-identical**:
+
+| | dev0 (RTX 4060) | dev1 (Iris Xe) |
+|---|---|---|
+| claimed | 355 | 355 |
+| islands | 1 | 1 |
+| declines | 8 | 8 |
+| cut-instances | **0** | **0** |
+
+Cut count alone is no longer sufficient. With one island, a decline can sit *between* two claimed
+nodes and create zero cuts, and that is a different category from a decline at the edge — it is
+what Justin asked me to check for. `bench/island_attribution.py` does not answer it, so
+`rust/tools/probe_decline_position.py` does. It reads the CLAIM_LOG without running the model, so
+it cannot perturb what it measures.
+
+| position | ops | code |
+|---|---|---|
+| `DETACHED` (no claimed neighbour on either side) | `Gather`, `Greater`, `ReduceSum`, `Shape`, `Sub` | dtype / staged / not-registered |
+| `EDGE_ENTRY` (feeds claimed nodes, fed by none) | `Cast` ×2, `If` | staged / not-registered |
+| `INTERIOR` (claimed on **both** sides) | **none** | — |
+
+**All eight are still 0-cut-creating, and none has changed category.** Five are fully detached —
+the INT64 control plane computes `seqlens_k` and `total_seq_len` from graph inputs and never
+touches a claimed tensor. The other three each feed exactly 32 claimed GQA nodes and are fed by
+nothing claimed: they are prologue. Claiming any of them would shorten the prologue; it cannot
+merge islands, because there is only one.
+
+The probe also carries a falsifier that is not about backlog at all: **`INTERIOR` combined with
+`island_count == 1` is a contradiction** — a claimed→declined→claimed path inside a single island
+is a cycle ORT could not have fused. If that row ever appears, the island count is wrong, not the
+op coverage. It is empty on both devices.
+
+**Consequence for the island lever: it is closed, and closed for the second time on evidence
+rather than on the first result being repeated.** 355/363 is not the number to move. The number to
+move is boundary bytes — and §7.12.1 says the estimator's version of that number is off by 10⁵,
+which is now the top of the partition backlog.
 
 ## 8. Quantization
 

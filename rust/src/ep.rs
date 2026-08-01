@@ -834,8 +834,9 @@ unsafe fn get_capability_impl(
         partition::TransferModel::UMA
     } else {
         partition::TransferModel::DISCRETE
-    };
-    let policy = partition::Policy::default();
+    }
+    .with_env_overrides();
+    let policy = partition::Policy::from_env();
 
     // Bytes-per-element for common dtypes (conservative fallback: 4).
     let dtype_bytes = |et: ort::ONNXTensorElementDataType| -> u64 {
@@ -936,35 +937,36 @@ unsafe fn get_capability_impl(
         elems.saturating_mul(dtype_bytes(et))
     };
 
-    // Build Island structs and evaluate each cluster.
+    // Build Island structs, then hand **all** of them to the one gate.
     //
-    // Single-cluster exemption: when all claimed nodes form one connected component, the
-    // economics gate is bypassed. In a single-cluster graph there is no alternative partition
-    // to choose between — the graph is either wholly claimed or wholly rejected — and the
-    // claim predicate has already vetted every node for correctness.
+    // RAI-011 (2026-08-01, Mouse). This used to read:
     //
-    // The gate applies to multi-cluster graphs: when claimed nodes form two or more disjoint
-    // components, each component is evaluated independently. A component that fails the economics
-    // check is handed back to the CPU EP; its [partition] decline code appears in the CLAIM_LOG.
-    // This is the path that `test_partition_gate.py` exercises.
+    // ```rust
+    // let verdict = if only_one_cluster { Verdict::Claim } else { partition::evaluate(..) };
+    // ```
     //
-    // R10 note (Morpheus 2026-07-30): the gate IS called for multi-cluster graphs; its anchor
-    // exemption (anchors > 0 → Claim) and its decline paths (TooSmall, TransferDominated) are
-    // now both observable via CLAIM_LOG. The single-cluster bypass does not hide the gate —
-    // it limits the gate to the cases where it has a decision to make.
-    let only_one_cluster = clusters.len() == 1;
-
+    // — a call site deciding whether the gate got to run at all. Phi-3.5 partitions into exactly
+    // one cluster, so on our only real model the economics gate was not merely unexercised, it was
+    // unreachable, and `viable_islands_retained: 0` meant *bypassed* while reading identically to
+    // *all-rejected*.
+    //
+    // There is now no branch here. `partition::gate_islands` is the single entry point; it
+    // evaluates every island unconditionally and applies the sole-island exemption *afterwards*,
+    // as a `SoleIslandOverride` that carries the verdict it overrode. Adding a second economics
+    // check at this site would have reproduced RAI-011 inside its own fix, which is why the
+    // set-level rule lives in `partition.rs` where the set is the argument.
     let mut surviving: Vec<Vec<*const ort::OrtNode>> = Vec::new();
     let mut n_rejected = 0usize;
-    // `n_viable_retained` counts islands that *passed* `partition::evaluate` (the net-benefit /
-    // `retain_viable` gate) in a multi-cluster graph. Single-cluster bypass does not increment
-    // this counter — that is intentional: the counter is the R10 wiring observable for the gate.
+    // Islands the gate itself retained — i.e. `partition::evaluate` returned `Claim`. A
+    // sole-island override does **not** increment this: the gate rejected, and pretending
+    // otherwise would put the override back in the blind spot the override exists to expose.
     let mut n_viable_retained: u64 = 0;
     // Track island-level aggregate metrics for PartitionStats (§10.0 metric of record).
     let mut largest_island_flops: u64 = 0;
     let mut largest_island_nodes: u64 = 0;
     let mut total_flops: u64 = 0;
     let mut total_boundary_bytes: u64 = 0;
+    let mut cluster_islands: Vec<(&Vec<*const ort::OrtNode>, partition::Island)> = Vec::new();
     for cluster_nodes in clusters.values() {
         let mut island = partition::Island {
             nodes: cluster_nodes.len(),
@@ -1040,18 +1042,38 @@ unsafe fn get_capability_impl(
             }
         }
 
-        // Apply the partition economics gate to each cluster. For single-cluster graphs the gate
-        // is bypassed (see above). For multi-cluster graphs, each cluster is evaluated; a cluster
-        // that fails produces a [partition] decline code in the CLAIM_LOG.
-        let verdict = if only_one_cluster {
-            counters::record_net_benefit_decision(false);
-            partition::Verdict::Claim
-        } else {
-            counters::record_net_benefit_decision(true);
-            partition::evaluate(&island, &transfer_model, &policy)
-        };
+        // The island is built; the verdict is not this loop's business. Deciding here is what
+        // produced RAI-011.
+        cluster_islands.push((cluster_nodes, island));
+    }
+
+    // --- the one gate, called once, for every island ---
+    let islands_only: Vec<partition::Island> =
+        cluster_islands.iter().map(|(_, i)| i.clone()).collect();
+    let outcomes = partition::gate_islands(&islands_only, &transfer_model, &policy);
+
+    for ((cluster_nodes, island), outcome) in cluster_islands.iter().zip(outcomes.iter()) {
+        // Every island reaches `partition::evaluate` now, so every island is an evaluation.
+        // `net_benefit_gate_bypasses` is expected to be 0 from this call site forever; if it is
+        // ever non-zero again, a second bypass has been reintroduced somewhere.
+        counters::record_net_benefit_decision(true);
+        if outcome.is_override() {
+            counters::record_sole_island_override();
+            log::warn!(
+                "GetCapability: sole-island override — the net-benefit gate REJECTED the graph's \
+                 only island ({} nodes, {} anchors, {} boundary bytes, {} est. FLOPs) and the \
+                 rejection was overridden because there is no alternative partition. Gate's own \
+                 verdict: {:?}",
+                island.nodes,
+                island.anchors,
+                island.boundary_bytes(),
+                island.flops,
+                outcome.evaluated(),
+            );
+        }
+        let verdict = outcome.effective();
         if verdict.is_claim() {
-            surviving.push(cluster_nodes.clone());
+            surviving.push((*cluster_nodes).clone());
             // §10.0 metric tracking: update aggregate stats for the surviving island.
             largest_island_flops = largest_island_flops.max(island.flops);
             largest_island_nodes = largest_island_nodes.max(island.nodes as u64);
@@ -1059,17 +1081,17 @@ unsafe fn get_capability_impl(
             total_boundary_bytes = total_boundary_bytes
                 .saturating_add(island.input_bytes)
                 .saturating_add(island.output_bytes);
-            // Increment the net-benefit wiring observable only for islands that went through
-            // partition::evaluate (multi-cluster path). Single-cluster bypass is intentionally
-            // excluded: the counter must vary with the gate's input, not with graph size.
-            if !only_one_cluster {
+            // The R10 observable: islands the gate *itself* retained. An island that survives
+            // only because of the sole-island override is counted by
+            // `net_benefit_sole_island_overrides` instead, so the two states never share a digit.
+            if !outcome.is_override() {
                 n_viable_retained += 1;
             }
         } else {
             n_rejected += cluster_nodes.len();
             if let partition::Verdict::Reject(reason) = verdict {
                 let decline_reason = partition::decline_for(&reason);
-                for &node in cluster_nodes {
+                for &node in cluster_nodes.iter() {
                     // SAFETY: node is live.
                     let view = unsafe { NodeView::new(api, node) };
                     let entry = declined
