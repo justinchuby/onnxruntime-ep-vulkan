@@ -239,3 +239,145 @@ Fixes (commit 5b3518b):
 Needed from Switch:
 1. alloc.rs: zero-size alloc must return valid zero-length buffer, not None
 2. Remove #[ignore] from ep_messenger_fires_for_planted_fence_leak
+
+---
+
+## Round 21 (2026-07-31T07:20:03-07:00) — Guard D proven to fire; harness joins the census
+
+**Trigger:** Guard D (`assert_vulkan_executed_runtime`) had raised `NameError: name 'pathlib'
+is not defined` at its first statement since the day it landed and had **never read a single
+profiling event**. Coordinator fixed the call site on main (`3ea42fd`, `Path(profile_path)` —
+`from pathlib import Path` was already present, so not adding a redundant import was the
+right call and I would have done the same). Coordinator also merged it, saw the suite go
+`8 passed` -> `5 failed`, and told the team "Guard D works". It had crashed.
+
+**The lesson I am writing down for myself, not for them:** the red matched the prediction,
+and that is exactly why it should have been read harder. A guard that raises `NameError` and
+a guard that correctly detects a fallback are indistinguishable to every reader we have.
+
+### 1. Two-polarity proof that Guard D fires — `tests/ops/test_guard_d.py`, 12 tests, 0.3 s
+
+No GPU, no model, no EP. Synthesised ORT profiling JSON, so it is immune to the 9.5×
+contention swing and always in the lane.
+
+| Polarity | Input | Outcome |
+|---|---|---|
+| NEGATIVE | 0 VulkanEP `Node` events | `AssertionError`, names providers that did run |
+| POSITIVE | 1 event | returns `1` |
+| POSITIVE | 5 events | returns `5` |
+| INSTRUMENT | missing file | `RuntimeError` |
+| INSTRUMENT | corrupt JSON | `RuntimeError` |
+
+**The part that is evidence rather than agreement (R9):** the protocol is factored into one
+function and pointed at four deliberately broken guards, each of which must FAIL it —
+`_mutant_nameerror` (byte-accurate reconstruction of the shipped defect), `_mutant_always_passes`,
+`_mutant_inverted`, `_mutant_wrong_provider_key` (reads `args['ep']`; passes the negative
+polarity for the WRONG reason, which is why both polarities are mandatory). Paired control:
+the real guard must PASS the same protocol, or a protocol that rejected everything would also
+score green.
+
+**Generalisable:** the falsifier for an instrument does not need the world the instrument
+observes; it needs a document the instrument reads. Synthesise the input.
+
+### 2. Broken guard vs detected fallback — now different exception types
+
+`AssertionError` = fallback detected, a finding about the EP, route to Switch/Mouse.
+`RuntimeError` = `[Guard D instrument failure]`, a finding about the guard, route to me.
+Anything else = an unanticipated harness break. Call sites in `test_phi35.py` catch the two
+separately so the distinction survives to the reader of pytest output.
+Recorded limit: two sites use `pytest.fail()`, which flattens the type; there the distinction
+lives in the message. Weaker, and stated rather than glossed.
+Companion rule: on `RuntimeError` **nothing** is written to `model_output_equivalence` — not
+even `UNMEASURED`, which is a statement about a run that happened.
+
+### 3. R11 caught before it bit — the count is fused islands, not graph nodes
+
+One VulkanEP `Node` event = one **fused island**. Phi-3.5 runs 354 of 364 graph nodes in ONE
+island, so a healthy run reports `1`, and `1 node event(s)` reads as a catastrophe.
+Not renamed (Tank's `Phase::Record` precedent — compatibility outranks elegance); tagged.
+`describe_vulkan_execution_count()` is the single wording, all three print sites go through
+it, and the failure message states what was counted.
+Presence signal, never volume: `0` conclusive, `>=1` participation, coverage from the
+counters JSON. A partition change that merges islands makes this number FALL while the EP
+does more work.
+
+### 4. Harness domain added to Tank's census — schema 2, one census, two domains
+
+`rust/tools/audit_instruments.py` extended (additively; Rust path untouched) +
+`instrument_census.json` -> schema 2. Told Tank I edited his file and offered to move the
+collector if he prefers — but the baseline does not split.
+
+**Why `uninvoked` would not have caught Guard D:** it had four production callers from day
+one. Tank's question ("has it got a caller?") answers WIRED and is correct. New state, third
+mechanically decidable one, after `uninvoked` in his ordering:
+
+> **unfalsified** — called, but no always-on test has watched it in BOTH polarities. Decided
+> from the test AST: screened iff a non-GPU-gated test calls it inside `pytest.raises(...)`
+> AND another non-gated test calls it outside one.
+
+Ordering is now `absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> misnamed`.
+
+**First run, 9 harness instruments, ONE screened — the one that just cost us a day:**
+- `assert_qdq_reference_oracle_safe` is genuinely **UNINVOKED**. conftest.py:341 prints a
+  banner telling readers to call it; test_matmulnbits.py:121 cites it in a comment. Both are
+  prose. There is no call. **My file, my defect, found by the screen on its first run.**
+- `assert_matches_cpu`: 9 accept-polarity observations, **0 reject**. It is the correctness
+  oracle and the suite cannot distinguish it from `def assert_matches_cpu(*a, **k): return`.
+  Not a claim it is broken — a record that we would not know. First in the queue.
+
+The screen is itself screened: `tests/ops/test_harness_census.py`, 7 always-on tests, two
+synthetic trees differing only in the presence of a `pytest.raises` block must produce
+DIFFERENT verdicts. Includes the case that matters: a paired self-test behind `require_vulkan`
+does NOT earn `screened`, because that was exactly Guard D's situation.
+
+### 5. Full-suite baseline, both devices
+
+Binary verified fresh against `main@2ebd786` first — the first attempt ran against a DLL that
+predated the merge and I threw those counts away rather than quote them.
+
+| | Device 0 — RTX 4060 | Device 1 — Intel Iris Xe |
+|---|---|---|
+| failed | 38 | 34 |
+| passed | 267 | 271 |
+| skipped | 30 | 30 |
+| xfailed | 10 | 10 |
+| wall | 976.05 s | 976.62 s |
+
+Niobe's guard read `[RED] CONTENDED` before and after both runs (3.82 then 1.40 foreign cores
+mean; occupancy probe VACUOUS — no quiet reference for this host, and untested is not passed).
+976 s against a ~5 min quiet reference is **3.2× slow**, so **no timing figure from either run
+is quotable**, and `test_wiring_census` (dev0) died of `subprocess.TimeoutExpired`, which I am
+recording as **UNATTRIBUTABLE** rather than as a defect or a pass.
+
+**Attribution:** `test_op_table.py` and `test_elementwise.py` are byte-identical to
+`origin/main`, there is no `rust/src/` change, and every `_models.py` hunk is at line 844+
+inside the Guard D block. `assert_vulkan_claims` (line 564), which raises 31 of the failures,
+is untouched. This is main's state measured, not a regression from this branch.
+
+**31 failures, one cause:** §8.9 evidence gating declines `Min`/`Max`/`Cast`/comparisons/
+bitwise as `[staged]` — "compiles but has never executed on a device, so claiming it would be
+a bet" — against a suite that still asserts they are claimed. Policy/expectation mismatch,
+decision not patch. **I am not loosening 31 assertions to make a suite green.**
+Open question for Mouse: the same run logs two sessions, the first `claimed 1/1 nodes -> 1
+island`, the second `claimed 0/1`. Two sessions in one process disagreeing about one node
+form is a ledger effect or an R12 frame problem. Answer before anyone edits tests.
+
+**Device delta is 4 and it is a discriminator:** dev0 alone fails `session_determinism`,
+`f16_matmulnbits_logits_nonzero`, `multirun_logits_stable` (plus the timeout). The discrete
+GPU fails three determinism tests the integrated GPU passes; Intel remains the oracle and it
+is the one that agrees with itself. `interior_pointer_safety` fails on BOTH (6e-08 vs 0.0,
+fp16, run 2) — same defect, two vendors, so it is ours.
+
+**Guard D in production:** it executed and PASSED inside `test_phi35_vulkan_cross_run_consistency`
+on device 0, reporting `3 fused-island executions`. Not 0, not 1 — **its output varies with
+its input on real hardware.** That is the R10 falsifier for "Guard D is wired" that no code
+reading can supply.
+
+### Owed to others
+- **Mouse:** the two-session claim disagreement (above). Also still open from Round 18:
+  `accuracy_level` — model declares 0, oracle pinned at 1, asked three times now.
+- **Tank:** I edited `rust/tools/audit_instruments.py`. Additive only. Say the word and I
+  move the collector; the baseline does not split.
+- **Switch:** zero-size alloc must return a valid zero-length buffer, not `None`; and the
+  `#[ignore]` on `ep_messenger_fires_for_planted_fence_leak` (carried from Round 20).
+- **Me, next:** falsify `assert_matches_cpu` first, then wire `assert_qdq_reference_oracle_safe`.
