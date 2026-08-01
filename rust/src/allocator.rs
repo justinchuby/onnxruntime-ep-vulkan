@@ -655,10 +655,31 @@ impl HandleRegistry {
         // holding it for the length of the quarantine window would multiply peak RSS by the
         // quarantine depth. The *address space* stays quarantined, which is what detects the
         // use-after-free; the bytes behind it do not need to.
-        if let Some(st) = inner.staging.remove(&addr) {
+        let had_staging = if let Some(st) = inner.staging.remove(&addr) {
             let n = st.layout.size() as u64;
             drop(st);
             inner.stats.staging_live_bytes = inner.stats.staging_live_bytes.saturating_sub(n);
+            true
+        } else {
+            false
+        };
+        // §10.0.1 R10 — the production caller `allocator::tally::on_device_authoritative` did not
+        // have. Free is the only point at which a span's residency state is *terminal*: it has
+        // whatever device buffer it will ever have and whatever staging block it will ever have,
+        // and neither can appear afterwards. Evaluating earlier would answer a question the span
+        // had not finished answering.
+        //
+        // The predicate is read off the span, not off the design: `buffer.is_some() &&
+        // staging.is_none()`. That is the definition on `on_device_authoritative` verbatim —
+        // device-resident with nothing behind it that `host_backing_for` could return — so the
+        // counter now measures the state rather than an author's belief about the state.
+        //
+        // Every device-backed span is *evaluated*, whatever the answer, and the evaluation is
+        // counted separately. That is what separates a measured zero from an unwired one: an
+        // unwired counter has no evaluations, and no amount of incrementing the authoritative
+        // counter can manufacture them.
+        if device_buffer.is_some() {
+            tally::on_residency_evaluated(!had_staging);
         }
         inner.quarantine.push_back(addr);
         inner.stats.quarantined_spans = inner.quarantine.len() as u64;
@@ -915,6 +936,7 @@ impl HandleRegistry {
 /// quoting the number. A counter is read by `epctl --check-counters`, which is none of those
 /// things and does not need to be. See D-T69.
 pub mod tally {
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1028,6 +1050,38 @@ pub mod tally {
     /// wired at the same time as the feature it measures is wired by someone who already believes
     /// the answer.
     static DEVICE_BUFFER_BINDS: AtomicU64 = AtomicU64::new(0);
+    /// Device-backed spans whose **terminal** residency state was examined in production.
+    ///
+    /// This is the artifact that distinguishes an unwired zero from a measured one, and it is
+    /// deliberately not derivable from any other counter. `device_authoritative_spans == 0` with
+    /// `device_residency_evaluations == 0` means nobody ever asked; the same zero with
+    /// `device_residency_evaluations == 9` means the question was put to nine spans and nine of
+    /// them answered "mirror". **An increment to `DEVICE_AUTHORITATIVE` cannot forge an
+    /// evaluation**, which is the whole point: the two move from the same call site
+    /// ([`on_residency_evaluated`]) and only one of them moves unconditionally.
+    static DEVICE_RESIDENCY_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+
+    /// A device-backed span reached its terminal state and was screened for residency.
+    ///
+    /// The single production entry point. `authoritative` is the *measured* predicate — the span
+    /// has a `VkBuffer` and no host staging block — computed by the caller from the span itself,
+    /// never from what the design intends.
+    pub fn on_residency_evaluated(authoritative: bool) {
+        DEVICE_RESIDENCY_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+        if authoritative {
+            on_device_authoritative();
+        }
+    }
+
+    /// Whether `device_authoritative_spans` has a production caller that has actually run.
+    ///
+    /// R10's third state, applied to this counter: `false` means the zero is `UNWIRED` and says
+    /// nothing about residency; `true` means it is a measurement whose value happens to be what
+    /// it is. The artifact prints those as different JSON *types* so arithmetic on the unwired
+    /// case fails loudly rather than reading a structural absence as a negative result.
+    pub fn device_authoritative_wired() -> bool {
+        DEVICE_RESIDENCY_EVALUATIONS.load(Ordering::Relaxed) > 0
+    }
 
     /// The engine bound one of our device buffers. Called from `transfer::device_buffer_for`.
     pub fn on_device_buffer_bind() {
@@ -1037,9 +1091,11 @@ pub mod tally {
     /// A span became device-authoritative: device-resident with **no** host staging block behind
     /// it, so nothing can read it through `host_backing_for`.
     ///
-    /// The single documented increment point, deliberately narrow. Whoever wires persistent
-    /// residency must satisfy two independent measured guards or [`staging_verdict`] will call the
-    /// number dishonest in the artifact itself:
+    /// The single documented increment point, deliberately narrow, and as of 2026-08-01 it has a
+    /// production caller: [`on_residency_evaluated`], driven from `HandleRegistry::free`, where a
+    /// span's residency state is terminal. Whoever wires persistent residency must still satisfy
+    /// two independent measured guards or [`staging_verdict`] will call the number dishonest in
+    /// the artifact itself:
     ///
     /// 1. `device_authoritative_spans <= device_backed_spans - staged_spans` — a span that still
     ///    has host staging is a mirror, whatever the design intends.
@@ -1077,6 +1133,84 @@ pub mod tally {
     /// state distinct from both frames: the counters are 0 because the feature is off, not because
     /// they were measured in another world.
     static DEVICE_FRAME: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+    /// The factory device index ORT asked *this allocator* for, or `usize::MAX` if never set.
+    static ALLOC_DEVICE_INDEX: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// Every device index an EP **session** offered a `VkDevice` for, and that device's name.
+    ///
+    /// §6.5's third index-space defect (after the inverted device labels and `dispatches_executed`
+    /// vs `compute_calls`) is that the env-var selector indexes the best-first sorted enumeration
+    /// while the offer is keyed by the raw enumeration index. When those disagree, the session runs
+    /// on one device and the allocator stands up another — and `alloc_device_frame = SPLIT-DEVICE`
+    /// is the *detection*, not the description. This map is the description: it names which device
+    /// the session side is on so a selector-1 number can never be read as a selector-0 number.
+    static SESSION_DEVICES: Mutex<BTreeMap<usize, String>> = Mutex::new(BTreeMap::new());
+
+    /// Record that an EP session offered its `VkDevice` for `index`. Diagnostics only — this never
+    /// influences which device anything uses, it only makes the two sides nameable in one artifact.
+    pub fn note_session_device(index: usize, name: &str) {
+        if let Ok(mut m) = SESSION_DEVICES.lock() {
+            m.insert(index, name.to_string());
+        }
+    }
+
+    /// Record the factory device index the allocator's provider was stood up for.
+    pub fn set_allocator_device_index(index: usize) {
+        ALLOC_DEVICE_INDEX.store(index as u64, Ordering::Relaxed);
+    }
+
+    /// `"0=NVIDIA GeForce RTX 4060 Laptop GPU; 1=Intel(R) Iris(R) Xe Graphics"`, or `"none"`.
+    pub fn session_devices() -> String {
+        let Ok(m) = SESSION_DEVICES.lock() else {
+            return "unknown".to_string();
+        };
+        if m.is_empty() {
+            return "none".to_string();
+        }
+        m.iter()
+            .map(|(i, n)| format!("{i}={n}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// The allocator's factory device index as a string, or `"unset"`.
+    pub fn allocator_device_index() -> String {
+        match ALLOC_DEVICE_INDEX.load(Ordering::Relaxed) {
+            u64::MAX => "unset".to_string(),
+            i => i.to_string(),
+        }
+    }
+
+    /// One sentence naming **which device each side is on**, in the frame's own terms.
+    ///
+    /// R12 obligation 2: an artifact presenting numbers from more than one frame labels every row
+    /// with its frame. `SPLIT-DEVICE` alone does not do that — it says the frames differ without
+    /// saying what they are, and a reader who has only that cannot tell a selector-1 run from a
+    /// selector-0 one.
+    pub fn frame_sides_sentence() -> String {
+        let (frame, alloc_device) = device_frame();
+        let idx = allocator_device_index();
+        let sessions = session_devices();
+        match frame.as_str() {
+            FRAME_OFF => format!(
+                "alloc_device_frame=OFF — no device-memory provider exists in this process, so \
+                 the allocator side is on no VkDevice at all. Sessions have offered: {sessions}."
+            ),
+            FRAME_SHARED => format!(
+                "alloc_device_frame=SHARED — BOTH sides are on the same VkDevice: '{alloc_device}' \
+                 (factory device index {idx}). Sessions have offered: {sessions}."
+            ),
+            other => format!(
+                "alloc_device_frame={other} — THE TWO SIDES ARE ON DIFFERENT VkDevices. \
+                 ALLOCATOR side: '{alloc_device}', stood up for factory device index {idx} \
+                 because no session had offered a device for that index. SESSION side: \
+                 {sessions}. Every alloc_device_* number in this run describes the ALLOCATOR \
+                 device; every kernel, dispatch and vulkan.* span describes a SESSION device. \
+                 They may not be summed, compared, or read as agreeing (§10.0.1 R12)."
+            ),
+        }
+    }
 
     /// **§10.0.1 R12 frame provenance.** Record which `VkDevice` the `alloc_device_*` numbers in
     /// this run describe. Called by `vk::host_device_memory::ensure_registered`, which is the only
@@ -1152,6 +1286,12 @@ pub mod tally {
         /// Times the engine bound one of our device buffers via `transfer::device_buffer_for`.
         /// Zero while `device_authoritative_spans > 0` is a contradiction.
         pub device_buffer_binds: u64,
+        /// Device-backed spans whose terminal residency state was screened in production.
+        ///
+        /// The falsifier for "`device_authoritative_spans` is wired". Zero means the counter above
+        /// is an `UNWIRED` zero and carries no information about residency; non-zero means the
+        /// predicate ran on that many spans and its answer is a measurement.
+        pub device_residency_evaluations: u64,
         /// Lookups that failed anywhere in the process. Non-zero always indicates a bug.
         pub failed_lookups: u64,
         /// Deepest the quarantine FIFO ever got, process-wide.
@@ -1186,6 +1326,7 @@ pub mod tally {
                 .load(Ordering::Relaxed)
                 .saturating_sub(STAGED_SPANS.load(Ordering::Relaxed)),
             device_buffer_binds: DEVICE_BUFFER_BINDS.load(Ordering::Relaxed),
+            device_residency_evaluations: DEVICE_RESIDENCY_EVALUATIONS.load(Ordering::Relaxed),
             failed_lookups: FAILED_LOOKUPS.load(Ordering::Relaxed),
             quarantine_peak_spans: QUARANTINE_PEAK.load(Ordering::Relaxed),
             quarantine_retired: QUARANTINE_RETIRED.load(Ordering::Relaxed),
@@ -1324,6 +1465,13 @@ pub mod tally {
     /// elsewhere — the staging tally, and the engine's own bind traffic — and says so in the same
     /// sentence that reports the number, where anyone quoting it must read it.
     fn authoritative_audit_sentence(t: &Tally) -> String {
+        // R12 obligation 2 — every artifact that presents these numbers names WHICH DEVICE EACH
+        // SIDE IS ON, not merely that the sides differ. `SPLIT-DEVICE` is the detection; this is
+        // the description, and without it a selector-1 number reads exactly like a selector-0 one.
+        format!(" FRAME: {}{}", frame_sides_sentence(), authoritative_audit_body(t))
+    }
+
+    fn authoritative_audit_body(t: &Tally) -> String {
         // R12 outranks R10 here. Before asking whether the counter was ever incremented, ask
         // whether the event it counts could occur in the frame this run measured. On a second
         // `VkDevice` (§6.5) no dispatch can bind these buffers at all, so the increment point is
@@ -1359,29 +1507,48 @@ pub mod tally {
                 t.staged_spans
             );
         }
-        if t.device_authoritative_spans == 0 {
+        if t.device_authoritative_spans == 0 && t.device_residency_evaluations == 0 {
             // A zero must say WHICH zero it is. R7: absence of an instrument must not read as a
             // negative result. Without this sentence, "0 authoritative spans" is ambiguous between
-            // "measured, nothing is device-authoritative" and "nobody ever incremented it", and the
-            // second is what is actually true today.
+            // "measured, nothing is device-authoritative" and "nobody ever incremented it".
             return format!(
-                " alloc_device_authoritative_spans is 0, and this is an UNWIRED zero, not a \
-                 measured one: its only increment point (allocator::tally::on_device_authoritative) \
-                 has no production caller yet, and its independent falsifier \
-                 alloc_device_buffer_binds is {} — the engine has {} bound one of our device \
-                 buffers via transfer::device_buffer_for. The frame IS shared (§6.5 satisfied on \
-                 '{}'), so this zero is at least in a position to change; that is the difference \
-                 between this sentence and the UNOBSERVABLE one. The measured ceiling for it on \
-                 this run is {} span(s) (device_backed {} - staged {}). When residency lands, the \
-                 count and the binds must move together; a non-zero count with zero binds is \
-                 reported here as not credible.",
+                " alloc_device_authoritative_spans is UNWIRED, NOT 0: its increment point \
+                 (allocator::tally::on_device_authoritative) has a production caller \
+                 (HandleRegistry::free, via on_residency_evaluated) but that caller has not run on \
+                 a single device-backed span in this process — alloc_device_residency_evaluations \
+                 is 0 — so nothing has been screened and the counter carries no information about \
+                 residency. Its independent falsifier alloc_device_buffer_binds is {}. The frame \
+                 IS shared (§6.5 satisfied on '{}'), so this zero is at least in a position to \
+                 change. The measured ceiling for it on this run is {} span(s) (device_backed {} - \
+                 staged {}).",
+                t.device_buffer_binds,
+                frame_device,
+                t.device_authoritative_ceiling,
+                t.device_backed_spans,
+                t.staged_spans
+            );
+        }
+        if t.device_authoritative_spans == 0 {
+            // The zero that took three sessions to earn: measured, not unwired, not unobservable.
+            return format!(
+                " alloc_device_authoritative_spans is 0 and this is a MEASURED zero — the \
+                 residency predicate ran on {} device-backed span(s) at their terminal state \
+                 (alloc_device_residency_evaluations) and every one of them still had a host \
+                 staging block behind it, so every one is a mirror. That is a result about the \
+                 world, not about the wiring: the frame is shared (§6.5 satisfied on '{}'), the \
+                 increment point has a production caller, and the caller ran. What has not \
+                 happened is the engine side — alloc_device_buffer_binds is {}, so vk::session has \
+                 {} called transfer::device_buffer_for and still allocates and re-uploads its own \
+                 buffers. The measured ceiling is {} span(s) (device_backed {} - staged {}); while \
+                 that ceiling is 0 no honest implementation can report a non-zero count here.",
+                t.device_residency_evaluations,
+                frame_device,
                 t.device_buffer_binds,
                 if t.device_buffer_binds == 0 {
                     "never"
                 } else {
                     "sometimes"
                 },
-                frame_device,
                 t.device_authoritative_ceiling,
                 t.device_backed_spans,
                 t.staged_spans
@@ -1552,8 +1719,13 @@ pub mod tally {
             &FAILED_LOOKUPS,
             &DEVICE_AUTHORITATIVE,
             &DEVICE_BUFFER_BINDS,
+            &DEVICE_RESIDENCY_EVALUATIONS,
         ] {
             c.store(0, Ordering::Relaxed);
+        }
+        ALLOC_DEVICE_INDEX.store(u64::MAX, Ordering::Relaxed);
+        if let Ok(mut m) = SESSION_DEVICES.lock() {
+            m.clear();
         }
         // The verdict now quotes the session staging tally, so a test that does not clear it reads
         // another test's traffic.
@@ -1580,6 +1752,17 @@ pub mod tally {
     pub fn seed_authoritative_for_test(authoritative: u64, binds: u64) {
         DEVICE_AUTHORITATIVE.store(authoritative, Ordering::Relaxed);
         DEVICE_BUFFER_BINDS.store(binds, Ordering::Relaxed);
+        // A seeded non-zero count without evaluations would be a state production cannot reach:
+        // the only increment point runs from the evaluation. Keep the seed self-consistent so a
+        // test can never assert against a world the code cannot produce.
+        DEVICE_RESIDENCY_EVALUATIONS.fetch_max(authoritative, Ordering::Relaxed);
+    }
+
+    /// Drive the residency screen's evaluation count alone, so the `UNWIRED` → measured transition
+    /// can be exercised without a real device.
+    #[doc(hidden)]
+    pub fn seed_residency_evaluations_for_test(evaluations: u64) {
+        DEVICE_RESIDENCY_EVALUATIONS.store(evaluations, Ordering::Relaxed);
     }
 }
 
@@ -2416,12 +2599,82 @@ mod tests {
         tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
         tally::seed_for_test(10, 10, 2, 8192);
         let v = tally::staging_verdict();
-        assert!(v.contains("UNWIRED zero"), "got: {v}");
+        assert!(v.contains("is UNWIRED, NOT 0"), "got: {v}");
         assert!(v.contains("alloc_device_buffer_binds is 0"), "got: {v}");
         assert!(v.contains("ceiling for it on this run is 8"), "got: {v}");
         assert!(
             !v.contains("NOT CREDIBLE"),
             "a zero is not a dishonest count; got: {v}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// **R10, the transition.** The same zero, after the residency screen has actually run on
+    /// spans, must stop saying `UNWIRED` and start saying it is a measurement — and it must quote
+    /// the evaluation count that earns the change. This is the falsifier for "the counter is
+    /// wired": the verdict's wording is produced by the evaluation count, not by an author.
+    #[test]
+    fn the_same_zero_becomes_a_measurement_once_the_residency_screen_has_run() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        tally::seed_for_test(10, 10, 2, 8192);
+        let unwired = tally::staging_verdict();
+        assert!(unwired.contains("is UNWIRED, NOT 0"), "got: {unwired}");
+
+        tally::seed_residency_evaluations_for_test(10);
+        let measured = tally::staging_verdict();
+        assert!(
+            measured.contains("this is a MEASURED zero"),
+            "once the screen has run the zero is evidence; got: {measured}"
+        );
+        assert!(
+            measured.contains("ran on 10 device-backed span(s)"),
+            "the measured zero must quote the evaluations that earn it; got: {measured}"
+        );
+        assert!(
+            !measured.contains("UNWIRED"),
+            "the two states must not both be claimed; got: {measured}"
+        );
+        assert!(
+            !measured.contains("NOT CREDIBLE"),
+            "a measured zero is not a dishonest count; got: {measured}"
+        );
+        tally::reset_for_test();
+    }
+
+    /// **R12 obligation 2.** Every verdict names WHICH DEVICE EACH SIDE IS ON. `SPLIT-DEVICE` is
+    /// the detection; without this the reader has no description, and a selector-1 number reads
+    /// exactly like a selector-0 one.
+    #[test]
+    fn every_verdict_names_which_device_each_side_is_on() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        tally::seed_for_test(10, 10, 2, 8192);
+        tally::set_device_frame(tally::FRAME_SPLIT, "Intel(R) Iris(R) Xe Graphics");
+        tally::set_allocator_device_index(0);
+        tally::note_session_device(1, "NVIDIA GeForce RTX 4060 Laptop GPU");
+        let v = tally::staging_verdict();
+        assert!(
+            v.contains("ALLOCATOR side: 'Intel(R) Iris(R) Xe Graphics'"),
+            "the allocator's device must be named; got: {v}"
+        );
+        assert!(
+            v.contains("SESSION side: 1=NVIDIA GeForce RTX 4060 Laptop GPU"),
+            "the session's device must be named; got: {v}"
+        );
+        assert!(
+            v.contains("factory device index 0"),
+            "the index the allocator was stood up for must be named, because the two index \
+             spaces disagreeing IS the defect; got: {v}"
+        );
+
+        tally::set_device_frame(tally::FRAME_SHARED, "NVIDIA GeForce RTX 4060 Laptop GPU");
+        let v = tally::staging_verdict();
+        assert!(
+            v.contains("BOTH sides are on the same VkDevice: 'NVIDIA GeForce RTX 4060 Laptop GPU'"),
+            "the shared frame must name the device too — a reader must never have to infer it \
+             from the frame word; got: {v}"
         );
         tally::reset_for_test();
     }
@@ -2533,6 +2786,56 @@ mod tests {
             r.attach_buffer(a, BufferView::from_raw(8)),
             Err(LookupError::Freed { .. })
         ));
+    }
+
+    /// **R10 — the production caller, exercised through production code.**
+    ///
+    /// `on_device_authoritative` spent three sessions with no caller at all, and its zero could
+    /// not be told apart from a measurement. This drives the real `HandleRegistry::free` path and
+    /// asserts the screen does two separate things: it *runs* (evaluations move), and it
+    /// *discriminates* (a span with staging is not counted, a span without it is). A screen that
+    /// ran but always answered the same way would pass the first check and fail this one.
+    #[test]
+    fn the_residency_screen_runs_from_free_and_discriminates_between_the_two_answers() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+        let r = registry();
+
+        // A span with no device buffer is not a residency candidate and must not be screened —
+        // otherwise the evaluation count reports allocations rather than candidates.
+        let plain = r.alloc(4096).expect("alloc");
+        r.free(plain);
+        assert_eq!(
+            tally::snapshot().device_residency_evaluations,
+            0,
+            "a span that never had a VkBuffer is not a residency candidate"
+        );
+
+        // Device-backed, and host bytes were handed out for it: a mirror.
+        let mirrored = r.alloc(4096).expect("alloc");
+        r.attach_buffer(mirrored, BufferView::from_raw(1))
+            .expect("attach");
+        r.staging_ptr(mirrored).expect("staging");
+        r.free(mirrored);
+        let t = tally::snapshot();
+        assert_eq!(t.device_residency_evaluations, 1, "the screen must have run");
+        assert_eq!(
+            t.device_authoritative_spans, 0,
+            "a span whose bytes were readable through host staging is a mirror"
+        );
+
+        // Device-backed, and nothing ever asked for host bytes: authoritative by measurement.
+        let only_device = r.alloc(4096).expect("alloc");
+        r.attach_buffer(only_device, BufferView::from_raw(2))
+            .expect("attach");
+        r.free(only_device);
+        let t = tally::snapshot();
+        assert_eq!(t.device_residency_evaluations, 2);
+        assert_eq!(
+            t.device_authoritative_spans, 1,
+            "the screen must be able to answer YES, or it is not a screen"
+        );
+        tally::reset_for_test();
     }
 
     /// The property that makes a mistaken dereference loud. Not executed — the point is that it

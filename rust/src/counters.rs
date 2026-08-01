@@ -621,12 +621,24 @@ pub fn dump_observations_if_requested() {
     // frame the event it counts cannot occur, so the artifact prints the JSON *string*
     // `"UNOBSERVABLE"` rather than the number 0: a reader doing arithmetic on it fails loudly
     // instead of quietly reading a structural pin as a measurement.
+    //
+    // R10 adds the second string. Even in the shared frame, the counter is only a measurement if
+    // the predicate that feeds it has actually run on something; before it does, its zero is
+    // `"UNWIRED"`. So the key has THREE JSON types across its life —
+    // `"UNOBSERVABLE"` → `"UNWIRED"` → an integer — and each transition is a *type* change rather
+    // than a value change. That is deliberate and it is the falsifier: an increment can forge a
+    // number, and no increment can forge a type.
     let (frame, frame_device) = crate::allocator::tally::device_frame();
-    let authoritative = if crate::allocator::tally::device_authoritative_observable() {
-        t.device_authoritative_spans.to_string()
-    } else {
+    let authoritative = if !crate::allocator::tally::device_authoritative_observable() {
         "\"UNOBSERVABLE\"".to_string()
+    } else if !crate::allocator::tally::device_authoritative_wired() {
+        "\"UNWIRED\"".to_string()
+    } else {
+        t.device_authoritative_spans.to_string()
     };
+    let frame_sides = crate::allocator::tally::frame_sides_sentence();
+    let session_devices = crate::allocator::tally::session_devices();
+    let alloc_device_index = crate::allocator::tally::allocator_device_index();
     let snap = snapshot();
     let mut doc = snap.to_json_with_equiv(existing_equiv);
     // Splice the observation keys in before the closing brace rather than appending after it, so
@@ -653,9 +665,13 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_buffer_binds\": {},\n  \
              \"alloc_failed_lookups\": {},\n  \
              \"alloc_device_authoritative_ceiling\": {},\n  \
+             \"alloc_device_residency_evaluations\": {},\n  \
              \"alloc_device_authoritative_spans\": {},\n  \
              \"alloc_device_frame\": \"{}\",\n  \
              \"alloc_device_frame_device\": \"{}\",\n  \
+             \"alloc_device_frame_allocator_index\": \"{}\",\n  \
+             \"alloc_device_frame_session_devices\": \"{}\",\n  \
+             \"alloc_device_frame_sides\": \"{}\",\n  \
              \"session_staging_uploads\": {},\n  \
              \"session_staging_upload_bytes\": {},\n  \
              \"session_staging_upload_us\": {},\n  \
@@ -699,9 +715,13 @@ pub fn dump_observations_if_requested() {
             t.device_buffer_binds,
             t.failed_lookups,
             t.device_authoritative_ceiling,
+            t.device_residency_evaluations,
             authoritative,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
+            alloc_device_index.replace('\\', "\\\\").replace('"', "\\\""),
+            session_devices.replace('\\', "\\\\").replace('"', "\\\""),
+            frame_sides.replace('\\', "\\\\").replace('"', "\\\""),
             st.0,
             st.1,
             st.2,
@@ -927,7 +947,31 @@ mod tests {
             "the split frame must be named in the artifact; got:\n{doc}"
         );
 
-        // Frame 3: §6.5 satisfied. Now — and only now — the zero is a real measurement.
+        // Frame 2b: the split frame must NAME BOTH SIDES, not merely say that they differ.
+        // A reader holding only "SPLIT-DEVICE" cannot tell a selector-1 run from a selector-0 one,
+        // which is the third time two index spaces have produced a correct counter about the
+        // wrong situation on this project.
+        crate::allocator::tally::set_allocator_device_index(0);
+        crate::allocator::tally::note_session_device(1, "The Session's Device");
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_frame_session_devices\": \"1=The Session's Device\""),
+            "the split artifact must name the SESSION side's device; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frame_allocator_index\": \"0\""),
+            "the split artifact must name which index the ALLOCATOR side was stood up for; \
+             got:\n{doc}"
+        );
+        assert!(
+            doc.contains("ALLOCATOR side: 'Some Other Device'"),
+            "the frame-sides sentence must name the allocator's device in prose; got:\n{doc}"
+        );
+
+        // Frame 3: §6.5 satisfied — observable at last, and STILL not a measurement, because the
+        // residency predicate has not run on anything. R10's third state, in the artifact's type
+        // system: `"UNWIRED"` is a JSON string, so arithmetic on it fails loudly.
         crate::allocator::tally::set_device_frame(
             crate::allocator::tally::FRAME_SHARED,
             "The Session's Device",
@@ -935,9 +979,30 @@ mod tests {
         dump_observations_if_requested();
         let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
         assert!(
-            doc.contains("\"alloc_device_authoritative_spans\": 0"),
-            "once the device is shared the counter is observable and its zero is evidence; \
+            doc.contains("\"alloc_device_authoritative_spans\": \"UNWIRED\""),
+            "a shared frame with zero residency evaluations is UNWIRED, not a measured 0; \
              got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_residency_evaluations\": 0"),
+            "the evaluation count is what distinguishes UNWIRED from measured and must be in the \
+             artifact; got:\n{doc}"
+        );
+
+        // Frame 4: the predicate runs on one span and finds it staged. NOW the zero is evidence,
+        // and the key's JSON type changes from string to integer. An increment cannot forge a
+        // type change, which is why this transition is proof rather than assertion.
+        crate::allocator::tally::on_residency_evaluated(false);
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": 0"),
+            "once the predicate has run, its zero is a measurement and must be emitted as a \
+             number; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_residency_evaluations\": 1"),
+            "the measured zero must carry the evaluation count that earns it; got:\n{doc}"
         );
 
         // SAFETY: see above.

@@ -516,6 +516,9 @@ static OFFERED: OnceLock<Mutex<HashMap<usize, Arc<dyn SharedVkDevice>>>> = OnceL
 /// `alloc_device_frame`: `SHARED` means the provider took the offer, `SPLIT-DEVICE` means the
 /// index ORT asked for is not one a session offered (see the log emitted at that branch).
 pub(crate) fn offer_shared_device(device_index: usize, ctx: Arc<dyn SharedVkDevice>) {
+    // R12 obligation 2 (Tank): record WHICH device the session side is on, keyed by the index it
+    // offered under. `SPLIT-DEVICE` says the two sides differ; only this says what they are.
+    crate::allocator::tally::note_session_device(device_index, ctx.device_name());
     let map = OFFERED.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut map) = map.lock() {
         map.insert(device_index, ctx);
@@ -577,6 +580,7 @@ pub(crate) fn ensure_registered(device_index: usize) {
         Some(p) => {
             crate::allocator::tally::set_unified_memory(p.is_unified_memory());
             crate::allocator::tally::set_device_frame(p.frame().as_str(), p.device_name());
+            crate::allocator::tally::set_allocator_device_index(device_index);
             crate::engine::register_device_memory_provider(
                 device_index,
                 Arc::clone(p) as Arc<dyn DeviceMemoryProvider>,
