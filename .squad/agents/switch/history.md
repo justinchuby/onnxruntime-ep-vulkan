@@ -1758,3 +1758,85 @@ session 38 (clippy duplicate_macro_attributes), and its doc comment which had be
 test above it.
 
 Decision: switch-engine-binds-device-buffers.md.
+
+### Session 39c — both clocks from one trace: the discrete GPU ignores contention, the integrated one does not
+
+Coordinator relay: the machine cannot be quiet while agents run — it is his own orchestration, two
+copilot processes at ~11,700 s CPU on a 20-core box — so wall clock is structurally unavailable. The
+one finding that survived Niobe's refusal was HOST_SIDE_EXCURSIONS: host spread >= 2.0x against GPU
+spread <= 1.25x for repetitions of identical work. He asked me to check whether my 70% spread was
+host-side before looking for a GPU-side explanation.
+
+BUILT probe_hostgpu.py. One trace carries BOTH clocks for the same work: vulkan.subgraph dur is the
+host axis, gpu_ns is the device counter attributed ordinally (never by timestamp — the anchor
+reaches 314 ms of uncertainty on Intel). Summing each per inference gives a PAIRED series over
+identical work in one process, so the ratio is contention-invariant in the same sense his signature
+is. Inference 0 reported separately, never averaged in — folding a known regime into a "spread"
+lets one known event stand in for variability. Re-runnable over any existing trace; needs no new run,
+which matters when no run can be quiet.
+
+RESULT 1 — the cold excursion is ENTIRELY host-side. NVIDIA cold host 1619-2192 ms against cold GPU
+12.2-12.8 ms with warm GPU 12.0-13.8. Intel cold host 1443-2456 ms against cold GPU 55-75 with warm
+55.6-83.9. The first inference costs 1.4-2.5 SECONDS of host and essentially nothing extra on the
+device. Pipeline/shader compile is host work. That is the extreme HOST_SIDE_EXCURSION, fully
+accounted for on both parts.
+
+RESULT 2 — warm spreads, host vs GPU, SAME inferences. 15 traces, 3 builds, 2 devices.
+  NVIDIA host/GPU ratio: 1.13 1.10 2.07 0.93 1.52 1.34 1.43 1.23 2.27   median 1.34
+  Intel  host/GPU ratio: 1.05 1.01 1.01 0.98 1.14 1.01                  median 1.01
+On the discrete part the host spread EXCEEDS the GPU spread, up to 2.27x. On the integrated part
+they are equal to within 1-5% in ALL SIX runs. The iGPU's device clock inherits host contention
+essentially 1:1; the discrete part's does not. I independently reproduce his signature — ab_p0_r1
+(host 2.260 / GPU 1.091) and bindseam (host 2.499 / GPU 1.099) both clear >=2.0 against <=1.25.
+The one NVIDIA ratio below 1 is ab_p0_r2, a single isolated inference at 19.705 ms against a body of
+13.83 +- 0.02 — a real one-off device excursion, not spread.
+
+RESULT 3 — between-run reproducibility of the steady tail, same build, separate processes.
+  NVIDIA baseline (2): GPU 1.0047x  host 1.017x
+  NVIDIA p0 arm  (3):  GPU 1.0016x  host 1.170x
+  NVIDIA p1 arm  (3):  GPU 1.107x   host 1.066x   <- contains a device step 13.33 -> 12.05 whose
+                                                     ONSET INDEX VARIES (14, 10, 13). A power/clock
+                                                     regime change, and exactly why gpu_steady_tail
+                                                     refuses two of the three. Instrument correct.
+  Intel  p0 arm  (2):  GPU 1.117x   host 1.109x
+  Intel  p1+final(3):  GPU 1.027x   host 1.090x
+NVIDIA steady device time reproduces ACROSS PROCESSES to 0.16-0.47% while the host number for the
+same runs moves up to 17%.
+
+CONSEQUENCE. NVIDIA device-clock numbers do not need a quiet machine; Intel ones do; wall clock
+needs it on both. This is why Niobe gets 0.033% RSD on NVIDIA and NO_STEADY_TAIL on Intel from one
+instrument — neither is a defect and neither needs a workaround. Fact Checker is right that the tick
+is trustworthy and the work-per-tick is not; this quantifies the second half at 1.01 coupling.
+
+THE RECONCILIATION, THIRD ASKING, NOW WITH DATA. His hypothesis is FALSIFIED for my number: 49.4/
+83.8/71.0/58.5 were gpu_ns figures, not host. Worth checking anyway, because the phenomenon it names
+is real and is 100% of the cold excursion. What the data does say:
+ (1) 49.4 IS THE RAMP LEVEL, not a run. Two independent baseline traces both show 49.58/49.59 before
+     a step to 40.2. I reproduce 49.4 to within 0.4%.
+ (2) The ramp LENGTH is not reproducible: 5 inferences in one process, 3 in the other, same build,
+     same box. So any whole-run mean lands somewhere on [40.2, 49.6] by where the ramp ended. That
+     is an estimator property and it is what gpu_steady_tail exists to refuse.
+ (3) The steady level reproduces to 0.47%. Her 0.033% within-run and my 1.0047x between-run are the
+     same claim about the same regime. There was never a disagreement to settle.
+ (4) 83.8 and 71.0 exceed EVERYTHING in a 15-trace corpus across three builds, two devices and two
+     orders of contention. I cannot reproduce them and I will not explain them by argument. That run
+     had MATCH and claimed_nodes 353 but NO executed_by key — UNATTRIBUTED under Trinity's
+     _verdict.py, which now refuses that shape at construction. Terminal state INADMISSIBLE, not
+     explained, and it always was.
+I withdraw "70% spread" permanently. Its device-side content is a 1.233x ramp step with varying
+onset; the rest is an inadmissible run and a mean taken across two regimes.
+
+WHERE THE NEXT WIN IS, AS A BOUND. NVIDIA GPU busy is 12.18 ms/inference after tile+packed. In the
+same runs the LEAST CONTENDED single inference had a host span of 28.3 ms. Host is inflated by
+contention and GPU is not, so this is a bound in one direction only and I state it as one: the host
+span exceeds GPU busy by AT LEAST 2.3x even in the quietest inference measured. After a 3.49x kernel
+win the EP is host-bound on this machine by at least that factor, and the next order of magnitude is
+not in q_gemv. This is the point at which his offer to idle the team is worth taking — not to
+re-measure the kernel, which provably does not need it, but to find out whether that >=2.3x is
+contention or ours.
+
+Checked the Scribe deletion: all five of my earlier records are present in decisions.md (Switch
+attributions at lines 42, 55/62, 121, 194 — including switch-leaked-device-validation-unobservable,
+which is relay item 4 and is already merged, not owed). Nothing of mine was lost; nothing resubmitted.
+
+Decision: switch-host-gpu-decoupling-measured.md.
