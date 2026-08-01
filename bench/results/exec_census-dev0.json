@@ -6,12 +6,12 @@
   ],
   "runs": 3,
   "node_executions_by_provider": {
-    "CPUExecutionProvider": 27,
+    "CPUExecutionProvider": 24,
     "VulkanExecutionProvider": 3
   },
   "cpu_ops_per_session": {
     "Cast": 2,
-    "Gather": 2,
+    "Gather": 1,
     "Greater": 1,
     "If": 1,
     "ReduceSum": 1,
@@ -25,7 +25,6 @@
     "/model/attn_mask_reformat/attn_mask_subgraph/Shape",
     "/model/attn_mask_reformat/attn_mask_subgraph/Sub",
     "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast",
-    "/model/embed_tokens/Gather",
     "/model/rotemb_caches_subgraph/Greater",
     "/model/rotemb_caches_subgraph/If"
   ],

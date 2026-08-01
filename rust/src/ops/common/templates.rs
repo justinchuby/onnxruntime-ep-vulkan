@@ -458,6 +458,167 @@ pub fn simplified_norm(
     })
 }
 
+// ── Indexing family ──────────────────────────────────────────────────────────────────────────
+
+/// Workgroup size the gather kernel is compiled with.
+pub const GATHER_LOCAL_SIZE: u32 = 256;
+
+/// Cap on the workgroup count in X.
+///
+/// The gather shaders use a grid-stride loop, so this is a scheduling choice rather than a
+/// correctness one. It is set well below the Vulkan `maxComputeWorkGroupCount[0]` floor (65535)
+/// so no device can reject the dispatch, and high enough to saturate both local GPUs.
+pub const GATHER_MAX_WORKGROUPS: u32 = 4096;
+
+/// Translate `Gather` — ONNX gather along one axis, any indices rank.
+///
+/// # The flattening
+///
+/// Every `Gather` is the same three-extent loop once the data tensor is folded around its axis:
+///
+/// ```text
+/// outer    = prod(data.shape[:axis])
+/// gathered = data.shape[axis]
+/// inner    = prod(data.shape[axis+1:])
+/// n_idx    = prod(indices.shape)
+/// out[o, j, i] = data[o, indices[j], i]
+/// ```
+///
+/// so one shader covers every axis and every indices rank, and the only per-node work here is
+/// arithmetic. The output shape is `data.shape[:axis] ++ indices.shape ++ data.shape[axis+1:]`.
+///
+/// # Index dtype
+///
+/// `indices` is int32 or int64. Both are read through a uint buffer with a word stride of 1 or
+/// 2 — see the shader header for why reading the low word of an int64 is exact for every index
+/// the ONNX schema defines, and why that avoids depending on the `shaderInt64` device feature.
+pub fn gather(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
+    if node.inputs.len() < 2 {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` needs 2 inputs (data, indices), got {}",
+            node.op_type,
+            node.inputs.len()
+        )));
+    }
+
+    let data_desc = node.inputs[0].desc.as_ref().ok_or_else(|| {
+        EpError::Unsupported(format!(
+            "`{}` input 0 has no shape at compile time",
+            node.op_type
+        ))
+    })?;
+    let idx_desc = node.inputs[1].desc.as_ref().ok_or_else(|| {
+        EpError::Unsupported(format!(
+            "`{}` input 1 has no shape at compile time",
+            node.op_type
+        ))
+    })?;
+
+    let dtype = data_desc.dtype;
+    let data_shape = &data_desc.shape;
+    let rank = data_shape.len();
+    if rank == 0 {
+        return Err(EpError::Unsupported(format!(
+            "`{}` cannot gather from a scalar",
+            node.op_type
+        )));
+    }
+
+    let raw_axis = match node.attributes.get("axis") {
+        Some(AttrValue::Int(v)) => *v,
+        None => 0,
+        Some(_) => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` `axis` attribute is not an int",
+                node.op_type
+            )));
+        }
+    };
+    let axis = if raw_axis < 0 {
+        raw_axis + rank as i64
+    } else {
+        raw_axis
+    };
+    if axis < 0 || axis >= rank as i64 {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` axis {raw_axis} is out of range for a rank-{rank} input",
+            node.op_type
+        )));
+    }
+    let axis = axis as usize;
+
+    let outer: u32 = data_shape[..axis].iter().map(|&d| d as u32).product();
+    let gathered = data_shape[axis] as u32;
+    let inner: u32 = data_shape[axis + 1..].iter().map(|&d| d as u32).product();
+    let n_idx: u32 = idx_desc.shape.iter().map(|&d| d as u32).product();
+
+    let shader: &'static str = match dtype {
+        DType::F32 => "gather_f32",
+        DType::F16 => "gather_f16",
+        _ => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` data dtype {dtype:?} is not supported by the gather kernel",
+                node.op_type
+            )));
+        }
+    };
+
+    let idx_stride_words: u32 = match idx_desc.dtype {
+        DType::I64 => 2,
+        DType::I32 => 1,
+        other => {
+            return Err(EpError::Unsupported(format!(
+                "`{}` indices dtype {other:?} is not int32 or int64",
+                node.op_type
+            )));
+        }
+    };
+
+    // Output shape: data.shape[:axis] ++ indices.shape ++ data.shape[axis+1:].
+    let mut out_shape: Vec<i64> = Vec::with_capacity(rank - 1 + idx_desc.shape.len());
+    out_shape.extend_from_slice(&data_shape[..axis]);
+    out_shape.extend_from_slice(&idx_desc.shape);
+    out_shape.extend_from_slice(&data_shape[axis + 1..]);
+
+    let total = outer
+        .checked_mul(n_idx)
+        .and_then(|v| v.checked_mul(inner))
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` output element count overflows u32",
+                node.op_type
+            ))
+        })?;
+
+    let data_buf = ctx.resolve(&node.inputs[0])?;
+    let idx_buf = ctx.resolve(&node.inputs[1])?;
+    let out = single_output(node)?;
+    let out_buf = ctx.bind_output(out, TensorDesc::new(dtype, out_shape))?;
+
+    let mut push = Vec::with_capacity(24);
+    for v in [outer, gathered, inner, n_idx, idx_stride_words, total] {
+        push.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // f16 packs two elements per word, so the thread count is halved.
+    let work_items = if dtype == DType::F16 {
+        total.div_ceil(2)
+    } else {
+        total
+    };
+    let groups = work_items
+        .div_ceil(GATHER_LOCAL_SIZE)
+        .clamp(1, GATHER_MAX_WORKGROUPS);
+
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![GATHER_LOCAL_SIZE],
+        push_constants: push,
+        bindings: vec![data_buf, idx_buf, out_buf],
+        workgroups: [groups, 1, 1],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,5 +1245,161 @@ mod tests {
         assert_eq!(a.dispatches[0].bindings.len(), 3);
         assert_eq!(b.dispatches[0].bindings.len(), 5);
         assert_ne!(a.dispatches[0].shader, b.dispatches[0].shader);
+    }
+
+    // ── gather tests ─────────────────────────────────────────────────────────────────────────
+
+    fn gather_node(
+        data_dtype: DType,
+        data_shape: &[i64],
+        idx_dtype: DType,
+        idx_shape: &[i64],
+        axis: Option<i64>,
+    ) -> NodeDesc {
+        let mut n = NodeDesc {
+            op_type: "Gather".into(),
+            inputs: vec![
+                tensor("data", data_dtype, data_shape),
+                tensor("indices", idx_dtype, idx_shape),
+            ],
+            outputs: vec![out("Y", data_dtype, &[])],
+            ..Default::default()
+        };
+        if let Some(a) = axis {
+            n.attributes.insert("axis".into(), AttrValue::Int(a));
+        }
+        n
+    }
+
+    fn push_u32(k: &KernelRequest, i: usize) -> u32 {
+        u32::from_le_bytes(k.push_constants[i * 4..i * 4 + 4].try_into().unwrap())
+    }
+
+    /// The Phi-3.5 embedding lookup, which is the node this op exists for.
+    #[test]
+    fn gather_embedding_lookup_flattens_to_the_right_extents() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F16, &[32064, 3072], DType::I64, &[1, 1], Some(0));
+        let mut ctx = Recorder::default();
+        gather(spec, &node, &mut ctx).expect("translate");
+
+        let k = &ctx.dispatches[0];
+        assert_eq!(k.shader, "gather_f16");
+        assert_eq!(push_u32(k, 0), 1, "outer = prod(shape[:0]) = 1");
+        assert_eq!(push_u32(k, 1), 32064, "gathered = vocab");
+        assert_eq!(push_u32(k, 2), 3072, "inner = hidden");
+        assert_eq!(push_u32(k, 3), 1, "n_idx = 1x1");
+        assert_eq!(push_u32(k, 4), 2, "int64 indices step two words");
+        assert_eq!(push_u32(k, 5), 3072, "total output elements");
+        assert_eq!(ctx.outputs[0].shape, vec![1, 1, 3072]);
+        assert_eq!(ctx.outputs.len(), 1, "no scratch allocation");
+    }
+
+    /// Output shape is `data[:axis] ++ indices ++ data[axis+1:]`, which is the part of the ONNX
+    /// schema most easily got wrong when the indices are not rank 1.
+    #[test]
+    fn gather_output_shape_interleaves_indices_at_the_axis() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F32, &[4, 5, 6], DType::I32, &[2, 3], Some(1));
+        let mut ctx = Recorder::default();
+        gather(spec, &node, &mut ctx).unwrap();
+
+        assert_eq!(ctx.outputs[0].shape, vec![4, 2, 3, 6]);
+        let k = &ctx.dispatches[0];
+        assert_eq!(push_u32(k, 0), 4, "outer");
+        assert_eq!(push_u32(k, 1), 5, "gathered");
+        assert_eq!(push_u32(k, 2), 6, "inner");
+        assert_eq!(push_u32(k, 3), 6, "n_idx = 2x3");
+        assert_eq!(push_u32(k, 4), 1, "int32 indices step one word");
+        assert_eq!(push_u32(k, 5), 4 * 6 * 6);
+    }
+
+    #[test]
+    fn gather_negative_axis_is_normalized_before_dispatch() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F32, &[4, 5, 6], DType::I32, &[2], Some(-2));
+        let mut ctx = Recorder::default();
+        gather(spec, &node, &mut ctx).unwrap();
+        let k = &ctx.dispatches[0];
+        assert_eq!(push_u32(k, 0), 4);
+        assert_eq!(push_u32(k, 1), 5, "-2 on rank 3 is axis 1");
+        assert_eq!(push_u32(k, 2), 6);
+    }
+
+    #[test]
+    fn gather_default_axis_is_zero() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F32, &[7, 3], DType::I64, &[2], None);
+        let mut ctx = Recorder::default();
+        gather(spec, &node, &mut ctx).unwrap();
+        assert_eq!(push_u32(&ctx.dispatches[0], 1), 7);
+    }
+
+    /// The f16 path packs two elements per word, so it must dispatch half the threads.
+    ///
+    /// Getting this wrong in the *other* direction is invisible — the grid-stride loop simply
+    /// leaves the tail unwritten, which is the never-written-output defect class again.
+    #[test]
+    fn gather_f16_dispatches_half_as_many_threads_as_f32() {
+        let spec = spec_named("Gather");
+        let mut a = Recorder::default();
+        gather(
+            spec,
+            &gather_node(DType::F16, &[100, 1024], DType::I64, &[8], Some(0)),
+            &mut a,
+        )
+        .unwrap();
+        let mut b = Recorder::default();
+        gather(
+            spec,
+            &gather_node(DType::F32, &[100, 1024], DType::I64, &[8], Some(0)),
+            &mut b,
+        )
+        .unwrap();
+        // 8 * 1024 = 8192 elements → 4096 words → 16 groups (f16); 8192 elements → 32 (f32).
+        assert_eq!(a.dispatches[0].workgroups, [16, 1, 1]);
+        assert_eq!(b.dispatches[0].workgroups, [32, 1, 1]);
+    }
+
+    /// The grid-stride loop exists so the workgroup count is bounded; assert the bound holds.
+    #[test]
+    fn gather_workgroup_count_is_capped_below_the_vulkan_floor() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F32, &[32064, 3072], DType::I64, &[1, 4096], Some(0));
+        let mut ctx = Recorder::default();
+        gather(spec, &node, &mut ctx).unwrap();
+        let g = ctx.dispatches[0].workgroups[0];
+        assert_eq!(g, GATHER_MAX_WORKGROUPS);
+        assert!(
+            g <= 65535,
+            "maxComputeWorkGroupCount[0] is guaranteed to be at least 65535 and no more"
+        );
+    }
+
+    #[test]
+    fn gather_declines_an_index_dtype_the_schema_does_not_allow() {
+        let spec = spec_named("Gather");
+        let node = gather_node(DType::F32, &[4, 4], DType::F32, &[2], Some(0));
+        let mut ctx = Recorder::default();
+        let err = gather(spec, &node, &mut ctx).expect_err("f32 indices are not a legal Gather");
+        assert!(format!("{err:?}").contains("indices"), "{err:?}");
+    }
+
+    #[test]
+    fn gather_f32_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("gather_f32.comp");
+        assert!(path.is_file(), "shaders/glsl/gather_f32.comp is missing");
+    }
+
+    #[test]
+    fn gather_f16_shader_exists_on_disk() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("shaders")
+            .join("glsl")
+            .join("gather_f16.comp");
+        assert!(path.is_file(), "shaders/glsl/gather_f16.comp is missing");
     }
 }
