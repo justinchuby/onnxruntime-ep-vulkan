@@ -100,6 +100,34 @@ A clean validation run is part of "done" for any engine change.
 
 ## 2. Device & Context
 
+### 2.0 Why device indices keep going wrong here
+
+Four separate defects on this project have been the same shape: **two index spaces that both look
+like "the device index"**, silently disagreeing. The inverted device labels; `dispatches_executed`
+versus `compute_calls`; the `OrtEpDevice` offer key versus the selector; and the allocator's
+factory index versus the session's physical index. Each time the counter was right and the
+situation was wrong, so nothing looked broken.
+
+The cause is structural rather than careless: a physical device is named by at least four
+independent authorities — `vkEnumeratePhysicalDevices` order, our best-first sorted capable list
+(what `ONNXRUNTIME_EP_VULKAN_DEVICE` and `ep.device_index` mean), the position in the list we
+advertise to ORT, and the memory-info id of whichever `OrtEpDevice` ORT binds — and **all four are
+a bare `usize`**, so the compiler cannot tell them apart and any two of them can be compared
+without complaint. On a machine where the orders happen to coincide, code that confuses them is
+indistinguishable from code that does not.
+
+Two consequences worth keeping:
+
+- **A frame that agrees is not a frame that is correct.** `alloc_device_frame = SHARED` was true on
+  selector 0 for months only because ORT's choice and ours happened to match on that desk; swapping
+  the two GPUs would have broken selector 0 and fixed selector 1. The test for any such fix is
+  therefore *symmetry under swapping the devices*, not "the failing selector now passes"
+  (`vk/host_device_memory.rs::a_missed_index_resolves_by_identity_in_both_directions`).
+- **Prefer resolving by identity over reconciling by arithmetic.** There is no mapping between
+  these spaces that is correct in general. Where §6.5 guarantees exactly one `VkDevice` per
+  (physical device, EP instance), the device itself is the unambiguous key and the index is
+  metadata — see `resolve_offer`.
+
 ### 2.1 Instance Creation
 
 The engine creates exactly one `VkInstance` per plugin load. Extensions requested at instance

@@ -1632,3 +1632,61 @@ none was needed.
 Validation: fmt clean, clippy clean, cargo test --release --lib 418 passed 0 failed 2 ignored.
 Decision: switch-packed-loads-residual-closed.md. Committed on squad/switch, not pushed.
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+## Session 39 — 2026-08-01 — the allocator adopts by identity; Tank was right that selector 0 was luck
+
+Merged origin/main (20cb57b). Relay again arrived stale (09:53) re-listing items closed at 09:08-09:14
+and the packed-load work delivered at ~11:05 as 538db70; confirmed rather than redone.
+
+TANK'S FINDING, AND MY ERROR. He showed the allocator asks for factory index 1 on BOTH selectors —
+it never follows the selector at all. On selector 0 the session also offers index 1, they coincide,
+frame reads SHARED. On selector 1 the session offers 0, they diverge, SPLIT-DEVICE. So my §6.5
+closure on selector 0 was correct about the TYPE transition (UNOBSERVABLE -> integer 0) and wrong
+about its meaning: two independent index choices agreed on this desk. Swap the GPUs and selector 0
+breaks instead.
+
+Worse, my session-37 "both selectors SHARED" verification was not the disproof it looked like. I ran
+it with ONNXRUNTIME_EP_VULKAN_DEVICE set, and that pin advertises exactly one device, which FORCES
+the agreement. It hid the defect on the one path the harness actually uses (ep.device_index session
+option). A verification that only exercises the configuration in which the bug cannot appear is not
+a verification — that is the same mistake as R11's "every child of record was named, so it looked
+closed".
+
+MECHANISM. The allocator's index is the memory-info id of whichever OrtEpDevice ORT bound — constant
+across our selector. The session's is the physical index our selector opened — varies with it. No
+arithmetic relates them. ensure_registered looked the offer up by the allocator's index and on a
+miss STOOD UP ITS OWN SECOND VkDevice. That fallback is the defect, not the report.
+
+FIX, by construction and not by index-swapping. §6.5 gives the EP exactly one VkDevice per (physical
+device, EP instance) and acquire_ep_device makes it process-global — so when exactly one device is
+on offer, a missed index is a naming disagreement between two spaces, not evidence of a second
+device. New pure rule resolve_offer: Exact / SoleDevice (adopt, SHARED) / NoOffer / Ambiguous.
+SPLIT-DEVICE stays reachable for the last two — a detector that can no longer fire is worth less
+than the defect it reported. I deliberately did NOT chase selector 1: per Tank, "a fix that only
+makes selector 1 pass on this box is the same coincidence with a different index."
+
+FALSIFIERS. (1) a_missed_index_resolves_by_identity_in_both_directions asserts resolve_offer(1,[0])
+and resolve_offer(0,[1]) resolve IDENTICALLY — his construction test written down. Any fix that
+special-cases a direction passes one and fails the other. (2) The runtime artifact taken on the path
+that was actually broken — env pin OFF, device chosen by session option, exactly his configuration:
+  allocator_index = 1, session_devices = 0=Intel, frame = SHARED, device = Intel Iris Xe
+The indices DISAGREE and the frame is SHARED anyway. That is the point: shared because identity
+settled it, not because two choices agreed. Same configuration produced SPLIT-DEVICE before.
+
+Flagged to Tank rather than edited (counters.rs is his): alloc_device_frame_sides now says "BOTH
+sides are on the same VkDevice: 'Intel Iris Xe' (factory device index 1)" while the session offered
+that device under index 0. Device right, parenthetical names the other space — suggest it name both,
+since the whole finding is that one number cannot stand for both.
+
+Wrote docs/ENGINE.md §2.0 "Why device indices keep going wrong here" as asked: four defects of one
+shape, the structural cause — a physical device is named by four independent authorities
+(vkEnumeratePhysicalDevices order, our best-first sorted list, position in the advertised list, and
+ORT's bound memory-info id) and ALL FOUR are a bare usize, so the compiler cannot tell them apart
+and any two compare without complaint — plus the two rules: a frame that agrees is not a frame that
+is correct, and prefer resolving by identity over reconciling by arithmetic.
+
+Validation: fmt clean, clippy clean, cargo test --release --lib 425 passed 0 failed 2 ignored.
+Decision: switch-allocator-adopts-by-identity.md. Committed on squad/switch, not pushed.
+
+Still open and mine: transfer.rs::device_buffer_for binding, so alloc_device_authoritative_spans and
+alloc_device_buffer_binds can leave 0. Tank delivered the transition, not the feature, and said so.
