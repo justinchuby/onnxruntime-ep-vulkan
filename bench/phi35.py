@@ -1155,7 +1155,15 @@ def _describe_structure(rec: dict) -> "list[str]":
         f = fs.get(name) or {}
         if not f:
             continue
-        mark = "RED" if f.get("red") else ("ok" if f.get("decisive", True) else "VACUOUS")
+        state = f.get("state")
+        if state == "ERROR":
+            mark = "ERROR"
+        elif f.get("red"):
+            mark = "RED"
+        elif not f.get("decisive", True):
+            mark = "VACUOUS"
+        else:
+            mark = "ok"
         out.append(f"    [{mark:^7}] {name}: "
                    f"{f.get('detail') or f.get('reason') or f.get('verdict')}")
     ps = an.get("partition_stats") or {}

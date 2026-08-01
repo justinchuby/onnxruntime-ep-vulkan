@@ -107,6 +107,123 @@ def test_phases_summing_past_their_own_subgraph_goes_red():
     assert r["falsifiers"]["phase_containment"]["over_subscribed_subgraphs"] == 1
 
 
+# ---------------------------------------------------------------------------
+# The field defect: a parent summed together with its own children (2026-07-31)
+#
+# `phase_containment` was handed the *unfiltered* phase list while every total and share was
+# computed over `sibling_phases()`. On the one-island Phi-3.5 graph `record` is 8.32 s and the
+# `cmd_upload` inside it is 7.97 s, so the sum came to 16.66 s against a 13.67 s subgraph and
+# reported RED for three days with nothing wrong in the EP. Not one test below the line existed,
+# because not one synthetic trace in this file contained a sub-record span.
+# ---------------------------------------------------------------------------
+
+def _nested_phase(name, ts, dur, parent="record", declare_caveat=True, declare_arg=True):
+    """A sub-record span as `trace.rs` emits it: inside `record`, self-declaring its parent."""
+    e = _phase(name, ts, dur)
+    if declare_caveat:
+        e["args"]["caveat"] = f"{phases.SUB_PHASE_CAVEAT_PREFIX} synthetic"
+    if declare_arg:
+        e["args"]["nested_in"] = parent
+    return e
+
+
+def test_a_parent_summed_with_its_own_children_is_not_a_containment_violation():
+    """The exact shape that withheld every phase share in this project for three days."""
+    ev = [_sub(1000, 1000, 353),
+          _phase("record", 1010, 800),
+          _nested_phase("cmd_upload", 1015, 780)]
+    naive = 800 + 780
+    assert naive > 1000, "the synthetic trace must reproduce the over-subscription arithmetic"
+    f = phases.analyse(ev)["falsifiers"]["phase_containment"]
+    assert f["state"] == "PASS", f["detail"]
+    assert f["red"] is False
+    assert f["nested_spans_checked"] == 1
+    assert f["sibling_spans_checked"] == 1
+
+
+def test_nested_spans_in_the_sibling_set_are_an_instrument_error_not_a_detection():
+    """R13: ERROR(instrument) is a third state. It is neither a pass nor a detection."""
+    subs = [{"ts": 1000, "dur": 1000, "end": 2000, "nodes": 1, "index": 0}]
+    bad = phases.attribute(subs, phases.phase_spans(
+        [_phase("record", 1010, 800), _nested_phase("cmd_upload", 1015, 780)]))
+    f = phases.phase_containment(subs, bad)
+    assert f["state"] == "ERROR"
+    assert f["red"] is False, "an instrument error must never be counted as a detection"
+    assert f["over_subscribed_subgraphs"] is None, "no verdict may be issued"
+    assert "cmd_upload" in f["instrument_error"]
+
+
+def test_the_instrument_error_reaches_red_flags_labelled_as_such():
+    """Unquotable, but never reported as a defect that was found."""
+    subs = [{"ts": 1000, "dur": 1000, "end": 2000, "nodes": 1, "index": 0}]
+    bad = phases.attribute(subs, phases.phase_spans(
+        [_phase("record", 1010, 800), _nested_phase("cmd_upload", 1015, 780)]))
+    flags = phases.red_flags({"falsifiers": {"phase_containment":
+                                             phases.phase_containment(subs, bad)}})
+    assert any("ERROR(instrument)" in f and "NOT a detection" in f for f in flags)
+
+
+def test_tier_two_fires_when_children_exceed_their_own_record_span():
+    """Excluding children from tier 1 must not stop them being checked at all.
+
+    The children each fit inside `record` individually — that is the only interesting case, since
+    a child that runs past its parent's end is not contained by it and is caught as a stray
+    instead.
+    """
+    ev = [_sub(1000, 5000, 1),
+          _phase("record", 1010, 100),
+          _nested_phase("cmd_upload", 1015, 60),
+          _nested_phase("desc_alloc", 1020, 60)]
+    f = phases.analyse(ev)["falsifiers"]["phase_containment"]
+    assert f["state"] == "FAIL"
+    assert f["over_subscribed_record_spans"] == 1
+    assert f["stray_sub_record_spans"] == 0
+
+
+def test_a_child_running_past_its_parents_end_is_caught_as_a_stray():
+    ev = [_sub(1000, 5000, 1),
+          _phase("record", 1010, 100),
+          _nested_phase("cmd_upload", 1015, 400)]
+    f = phases.analyse(ev)["falsifiers"]["phase_containment"]
+    assert f["state"] == "FAIL"
+    assert f["stray_sub_record_spans"] == 1
+
+
+def test_tier_two_fires_when_a_sub_record_span_lies_outside_every_record_span():
+    ev = [_sub(1000, 5000, 1),
+          _phase("record", 1010, 100),
+          _nested_phase("cmd_upload", 3000, 50)]  # inside the subgraph, outside `record`
+    f = phases.analyse(ev)["falsifiers"]["phase_containment"]
+    assert f["state"] == "FAIL"
+    assert f["stray_sub_record_spans"] == 1
+
+
+def test_a_child_declared_only_by_the_nested_in_arg_is_still_excluded():
+    """Three sources, unioned. A caveat rewrite alone cannot re-promote a child to a sibling."""
+    spans = phases.phase_spans([_phase("record", 1010, 800),
+                                _nested_phase("readback", 1015, 780,
+                                              declare_caveat=False)])
+    assert "readback" in phases.nested_phase_names(spans)
+    assert {p["phase"] for p in phases.sibling_phases(spans)} == {"record"}
+
+
+def test_a_child_declared_only_by_its_caveat_is_still_excluded():
+    spans = phases.phase_spans([_phase("record", 1010, 800),
+                                _nested_phase("readback", 1015, 780, declare_arg=False)])
+    assert "readback" in phases.nested_phase_names(spans)
+
+
+def test_containment_still_fires_on_siblings_that_really_do_over_subscribe():
+    """The fix must not be a mute button: siblings alone exceeding the subgraph is still FAIL."""
+    ev = [_sub(1000, 1000, 1),
+          _phase("record", 1010, 800),
+          _phase("submit", 1810, 400),
+          _nested_phase("cmd_upload", 1015, 700)]
+    f = phases.analyse(ev)["falsifiers"]["phase_containment"]
+    assert f["state"] == "FAIL"
+    assert f["over_subscribed_subgraphs"] == 1
+
+
 def test_unattributed_time_inside_compute_is_reported_not_folded_away():
     """A phase split whose parts do not sum to the whole must say so."""
     ev = _run(1, [1])
@@ -493,3 +610,116 @@ def test_lavapipe_and_nvidia_share_a_fingerprint_so_identity_is_refused_not_gues
     assert got is None and "ambiguous" in why
 
 
+
+# ---------------------------------------------------------------------------
+# Steady state — the cold inference is a different workload after residency
+# ---------------------------------------------------------------------------
+
+def test_steady_state_excludes_the_cold_inference_and_reports_it_separately():
+    """A 1997 MiB one-time upload averaged into three 0.4 MiB ones is not a per-inference cost."""
+    ev = []
+    t = 1_000_000
+    for i, rec in enumerate([8000, 150, 150, 150]):
+        ev += [_sub(t, rec + 400, 353), _phase("record", t + 5, rec),
+               _nested_phase("cmd_upload", t + 6, rec - 20),
+               _phase("fence_wait", t + 10 + rec, 300)]
+        ev += _transfer(t + 7, "upload", (2_000_000_000 if i == 0 else 400_000), rec - 20)
+        t += rec + 5000
+    ss = phases.analyse(ev)["steady_state"]
+    assert ss["verdict"] == "OK"
+    assert ss["cycles"] == 4 and ss["warm_inferences"] == 3
+    assert ss["upload_mib_cold"] > 1000 and ss["upload_mib_warm_mean"] < 1
+    # The cold record must not appear in the warm total at all.
+    assert ss["warm_phases_ms"]["record"] == pytest.approx(0.45, abs=0.01)
+    assert ss["cold_phases_ms"]["record"] == pytest.approx(8.0, abs=0.01)
+    assert ss["cold_over_warm_ratio"] > 10
+
+
+def test_steady_state_refuses_with_fewer_than_three_cycles():
+    """Two warm samples cannot show that they agree with each other."""
+    ev = _run(2, [1])
+    ss = phases.analyse(ev)["steady_state"]
+    assert ss["verdict"] == "INSUFFICIENT"
+    assert "at least 3" in ss["detail"]
+
+
+def test_steady_state_gpu_idle_is_fence_minus_gpu_never_the_whole_fence():
+    """`fence_wait` is an upper bound on GPU time; the idle part is what is left after it."""
+    ev = []
+    t = 1_000_000
+    for _ in range(4):
+        ev += [_sub(t, 1400, 1), _phase("record", t + 5, 100),
+               _phase("submit", t + 105, 5), _phase("fence_wait", t + 110, 1000),
+               _gpu(t + 200, 800_000)]
+        t += 6000
+    ss = phases.analyse(ev)["steady_state"]
+    assert ss["warm_shares"]["fence_wait"] > ss["warm_shares"]["fence_wait_gpu_idle"]
+    assert ss["warm_shares"]["fence_wait_gpu_idle"] == pytest.approx(
+        (1000 - 800) * 3 / 1000.0 / ss["warm_in_compute_ms"], rel=0.02)
+
+
+def test_multi_island_steady_state_drops_one_whole_cycle_not_one_span():
+    ev = _run(4, [1, 4])
+    ss = phases.analyse(ev)["steady_state"]
+    assert ss["island_count"] == 2
+    assert ss["cycles"] == 4 and ss["warm_inferences"] == 3
+
+# ---------------------------------------------------------------------------
+# The in-band control must survive the partitioner succeeding (2026-07-31)
+#
+# `contention_signature` refused any trace whose cycle period was 1. The period is the island
+# count, so the check switched itself off permanently the moment the partitioner started
+# producing a single fused island — the configuration the project is trying to reach. Nothing in
+# the statistic needs two slots.
+# ---------------------------------------------------------------------------
+
+def _single_island_run(host_ms, gpu_ns_each):
+    """One island, one dispatch each, so ordinal GPU attribution has the spans it needs."""
+    ev = []
+    t = 1_000_000
+    for h, g in zip(host_ms, gpu_ns_each):
+        dur = int(h * 1000)
+        ev += [_sub(t, dur + 2000, 1), _phase("record", t + 5, dur),
+               _phase("fence_wait", t + 10 + dur, 1500), _gpu(t + 20 + dur, g)]
+        t += dur + 20_000
+    return ev
+
+
+def test_a_single_island_trace_is_still_testable_for_contention():
+    """period == 1 is the goal state, not a reason to stop checking."""
+    n = 16
+    ev = _single_island_run([12.0] * n, [400_000] * n)
+    cs = phases.analyse(ev)["contention_signature"]
+    assert cs["verdict"] != "UNTESTABLE", cs.get("reason")
+    assert cs["single_slot"] is True
+    assert cs["slots_testable"] == 1
+
+
+def test_single_island_host_excursions_are_detected_against_a_steady_gpu():
+    n = 16
+    host = [12.0] * n
+    host[4] = 60.0          # a stall the device did not see
+    ev = _single_island_run(host, [400_000] * n)
+    cs = phases.analyse(ev)["contention_signature"]
+    assert cs["verdict"] == "HOST_SIDE_EXCURSIONS"
+    assert cs["stalled_slot_fraction"] == 1.0
+
+
+def test_single_island_steady_run_is_not_called_contended():
+    """The fix must not turn the check into one that always fires."""
+    n = 16
+    ev = _single_island_run([12.0 + (i % 3) * 0.2 for i in range(n)], [400_000] * n)
+    cs = phases.analyse(ev)["contention_signature"]
+    assert cs["verdict"] not in ("HOST_SIDE_EXCURSIONS", "UNTESTABLE"), cs
+
+
+def test_untestable_reason_names_the_condition_that_actually_failed():
+    """R13: quote the failure text. The old text said 'cycles=15; need >= 4' when 15 >= 4."""
+    ev = _single_island_run([12.0] * 13, [400_000] * 13)  # 13 spans, only 13 cycles
+    cs = phases.analyse(ev)["contention_signature"]
+    if cs["verdict"] == "UNTESTABLE":
+        assert "need >= 4" not in cs["reason"] or "13" not in cs["reason"]
+    ev = _single_island_run([12.0] * 11, [400_000] * 11)  # under the 12-span floor
+    cs = phases.analyse(ev)["contention_signature"]
+    assert cs["verdict"] == "UNTESTABLE"
+    assert "fewer than 12" in cs["reason"]
