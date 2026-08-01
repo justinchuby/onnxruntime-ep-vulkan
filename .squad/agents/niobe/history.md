@@ -398,3 +398,64 @@ Not a regression — the numbers were always this weak, the reporting has caught
 re-measurement, and the warmup-decline discriminator.
 
 163 tests in `bench/` pass (was 141).
+
+---
+
+## 2026-07-31 (evening) — the falsifier was mine, and the only admissible number is a device-clock one
+
+Merged `origin/main` (77d5d2a), rebuilt, and went after the RED `phase_containment` Morpheus's run hit.
+
+**Diagnosis: the phases over-report, and the over-reporting was mine.** `analyse()` computed a correct
+`siblings` list for every share it published, then handed the *unfiltered* `attributed` list to the
+falsifier — so `vulkan.record` (8.32 s) was summed alongside the `cmd_upload` (7.97 s) nested inside
+it. 122% of the parent. Sibling-only: 63%. Switch's spans are sound; I verified that with five
+geometry checks (2828/2828 sub-record spans timestamp-contained, no record's children over-subscribe
+it, 0/11 sibling overlaps, `nested_in` correct on all 2840) *before* saying so, because R13 says a
+confirming result deserves more scrutiny and "the bug is in my file" was the convenient answer.
+
+**It only fired today because we succeeded twice**: Switch made the sub-record phases real `ph:"X"`
+spans, and Mouse's partitioner fused the model into *one* island so a single subgraph's children got
+large enough to break the naive sum. `contention_signature` had the mirror-image failure — a
+`period < 2` guard that switched the instrument off the moment we stopped producing multiple islands.
+**A guard written against the shape of a broken system stops guarding when the system is fixed.**
+That is the lesson I want to keep from today.
+
+Rewrote the check two-tier with R13's three states (PASS / FAIL / ERROR-is-not-a-detection), added
+`nested_phase_names()` unioning three parenthood sources so a new nested span in `trace.rs` can't
+silently reopen the hole, and wrote 13 tests. `test_phases.py` had contained **no** synthetic trace
+with a sub-record span — which is precisely why 163 tests passed over a broken checker.
+
+Also fixed `steady_state_split` (residency made inference #1 a different workload — 1997.977 vs 0.387
+MiB, a 5162x step, so the old cold/warm split was averaging two unlike things) and unified
+`baseline_disagreement` on `admissible.BASELINE_TOL` after the run's baseline drift landed in the gap
+between `factor=2.0` and `tol=0.25`. One claim, one constant.
+
+**Then I could not get the number.** Polled 2.5 hours for a quiet machine, never got one, ran anyway
+to harvest what is robust. End-to-end wall-clock **withheld on both devices**, refused by three
+independent instruments: the out-of-band survey (CONTENDED, 5.98/5.32 foreign cores), the in-band
+`HOST_SIDE_EXCURSIONS` signature which reads no process table, and the CPU-baseline control moving
+1.276x between the two passes. I did not override my own gate. Morpheus explicitly endorsed that.
+
+The withheld NVIDIA sample is *faster* than CPU, which is the opposite of what we predicted, and I am
+not letting it out. Releasing the exciting number while holding the disappointing one would make the
+gate a publicity department.
+
+**What I could publish**: contention inflates host work and cannot touch the GPU's timestamp counter.
+So `gpu_steady_tail()` — a falsifier before it is a statistic, demanding a >=5-inference suffix within
+2% RSD — gives **NVIDIA 40.201 ms/inference GPU busy at 0.033% RSD**. That RSD, measured on a machine
+my own survey calls CONTENDED, is itself the argument that this is the right clock. **Intel:
+`NO_STEADY_TAIL`, withheld** — the Iris Xe wandered 542-629 ms all run, because an iGPU shares its
+power budget with the loaded CPU cores, so the device clock is *not* contention-immune there. Two
+devices differing in kind, not degree; one number for both would have hidden that.
+
+**Lever re-rank, and it is a big one.** Kernels went 4 → 1 and fence-wait GPU idle went 3 → **dead**
+(0.99% / 0.18%). And "kernels" is too coarse: **`q_gemv_matmul_nbits_f16` is 95.11% / 98.28% of all
+GPU time**, 161 dispatches/inference. Everything else in the EP sums to 4.9% / 1.7%, so by Amdahl no
+other kernel is worth an hour until that one moves. Lever 2 is command-buffer reuse (23.5% of NVIDIA
+in-`Compute`, ~0 on Intel); lever 3 is the 5.97% unattributed, which I cannot rank until Switch gives
+me spans for it.
+
+Commits `e551ca7` and `9a8a42c` on `squad/niobe`, not pushed. 186 tests. Three decision notes filed.
+I am one quiet six-minute window away from the end-to-end figure and no code has to change to get it.
+
+📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
