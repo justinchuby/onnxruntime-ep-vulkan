@@ -434,6 +434,29 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p bench/results/ci-lane
+          # Did the suppression take? Linux runners are not elevated so it should, but
+          # "should" is what the Windows lane also believed for weeks (PLATFORMS.md
+          # §7.4.1). Observed beats assumed, and the record this writes is the artifact
+          # that says which of the two this run was (R10).
+          set +e
+          rust/target/release/epctl --probe-loader > bench/results/ci-lane/icd-probe-report.txt 2>&1
+          probe_exit=$?
+          set -e
+          cat bench/results/ci-lane/icd-probe-report.txt
+          set +e
+          python ci/check_icd_suppression.py bench/results/ci-lane/icd-probe-report.txt \
+            --record-out bench/results/ci-lane/icd-suppression.json \
+            --exit-code "$probe_exit"
+          icd_state=$?
+          set -e
+          if [ "$icd_state" -ne 0 ]; then
+            # R13: an instrument error is not a detection. The control did not reach its
+            # observation, so it asserts nothing either way and must not be reported as a
+            # lane failure. The decline-probe control below is loader-independent, is
+            # mandatory in this lane too, and cannot be skipped.
+            echo "::warning title=ICD-removal negative control did not fire::ERROR(instrument) — see bench/results/ci-lane/icd-suppression.json. This step asserts NOTHING about the gate."
+            exit 0
+          fi
           set +e
           out=$(python ci/gate_chain_fp32.py \
             --verdict-out bench/results/ci-lane/negative-control.json \
@@ -497,6 +520,33 @@ jobs:
             exit 1
           fi
           echo "NEGATIVE CONTROL PASSED (loader untouched): with a healthy EP that claimed nothing, the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
+
+      # -------------------------------------------------------
+      # OBLIGATION 8 — NO LANE MAY PUBLISH A DURATION WITHOUT A
+      # DEVICE-STATE RECORD (DESIGN.md §10.0 obligation 8, R9 amdt 5).
+      #
+      # `gpu_steady_tail()` is a variance test over a suffix, so it
+      # cannot see a bias: a board pinned at its 210 MHz idle clock
+      # against a 3105 MHz boost is *perfectly steady about a wrong
+      # mean*, and the wrong figure carried the BETTER RSD (0.8035% at
+      # 10.99x wrong vs 0.8098% correct). A low clock does not raise
+      # RSD; it lowers it.
+      #
+      # No lane quotes a timing figure today. This step is what makes
+      # that true by construction rather than by luck: the first lane
+      # step that writes a millisecond into an artifact or into the job
+      # summary turns this red on the same run.
+      #
+      # It runs on always() because the state it reports is most
+      # interesting on a lane that already failed — a figure published
+      # by a broken run is the one most likely to be quoted later.
+      # -------------------------------------------------------
+      - name: No duration without a device-state record (§10.0 obligation 8)
+        if: env.BUILD_SKIPPED != '1' && always()
+        run: |
+          python ci/check_device_state.py \
+            --scan bench/results/ci-lane \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload lane evidence
         if: always()
@@ -814,10 +864,26 @@ jobs:
           # would blame the gate for a control that never fired. That is a
           # real detection's costume on an instrument outage, and it routes
           # the finding to the wrong owner (R13).
+          #
+          # This used to be an inline `-match 'passed the §7.2 capability
+          # gate'`, and that test was ALWAYS TRUE: the report line reads
+          # "{n} device(s) passed the §7.2 capability gate." and n is 0 when
+          # the suppression DID take. So the short-circuit fired on every
+          # run and this control has never once been exercised. A detector
+          # that fires on every input is a constant, not a detector. The
+          # count is the discriminator, so ci/check_icd_suppression.py
+          # parses the count, has two-polarity tests, and writes a record
+          # whose content varies with its input (R10) instead of an
+          # annotation that leaves no artifact.
           # ---------------------------------------------------------------
-          $probe = rust\target\release\epctl.exe --probe-loader 2>&1 | Out-String
-          if ($probe -match 'passed the §7\.2 capability gate') {
-            Write-Host "::warning title=ICD-removal negative control did not fire::ERROR(instrument=icd_suppression_ineffective) — VK_DRIVER_FILES/VK_ICD_FILENAMES did not remove the ICD (elevated runner; PLATFORMS.md §7.4.1). This step asserts NOTHING about the gate: it did not reach its observation. The gate's falsifier on this lane is the loader-independent decline-probe control in the next step, which is mandatory and cannot be skipped."
+          rust\target\release\epctl.exe --probe-loader *> bench\results\ci-lane\icd-probe-report.txt
+          $probeExit = $LASTEXITCODE
+          Get-Content bench\results\ci-lane\icd-probe-report.txt
+          python ci\check_icd_suppression.py bench\results\ci-lane\icd-probe-report.txt `
+            --record-out bench\results\ci-lane\icd-suppression.json `
+            --exit-code $probeExit
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning title=ICD-removal negative control did not fire::ERROR(instrument) — see bench/results/ci-lane/icd-suppression.json. This step asserts NOTHING about the gate: it did not reach its observation. The gate's falsifier on this lane is the loader-independent decline-probe control in the next step, which is mandatory and cannot be skipped."
             exit 0
           }
           $out = python ci\gate_chain_fp32.py `
@@ -878,6 +944,22 @@ jobs:
             exit 1
           }
           Write-Host "NEGATIVE CONTROL PASSED (loader untouched): with a healthy EP that claimed nothing, the gate reported FAIL(condition=UNATTRIBUTED) and exited $code."
+
+      # -------------------------------------------------------
+      # OBLIGATION 8 — see the Linux lane for the full rationale.
+      # A duration published without a device-state record covering the
+      # statistic's own suffix is STEADY_UNCERTIFIED; on a host with no
+      # producer at all it is ERROR(instrument), never a pass, because
+      # "no telemetry therefore no requirement" makes the cheapest pass
+      # a platform that cannot be audited — and a CI runner with no GPU
+      # telemetry is that loophole at scale.
+      # -------------------------------------------------------
+      - name: No duration without a device-state record (§10.0 obligation 8)
+        if: env.BUILD_SKIPPED != '1' && always()
+        run: |
+          python ci\check_device_state.py `
+            --scan bench\results\ci-lane `
+            --summary "$env:GITHUB_STEP_SUMMARY"
 
       - name: Upload lane evidence
         if: always()
