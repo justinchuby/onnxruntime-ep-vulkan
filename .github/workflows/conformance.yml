@@ -76,6 +76,13 @@ jobs:
           echo "ONNX_TESTS_DIR=$PWD/../onnx-tests" >> "$GITHUB_ENV"
 
       - name: Run bounded conformance subset (pytest-driven)
+        # `continue-on-error` and `|| true` are deliberate HERE and only here: this is a
+        # census of what onnx-tests says about claimed ops, not a gate. Its output is a
+        # diagnostic and may not be quoted as evidence — it carries no
+        # model_output_equivalence verdict and therefore no attribution, which under
+        # DESIGN.md §10.0 means it reports nothing about this EP. The gate steps below
+        # are what make the lane's own health readable, and they are NOT
+        # continue-on-error.
         continue-on-error: true
         env:
           VULKAN_EP_LIB: ${{ env.VULKAN_EP_LIB }}
@@ -93,12 +100,44 @@ jobs:
             2>&1 | tee tests/conformance/conformance.out || true
           {
             echo "### onnx-tests conformance (Vulkan EP, lavapipe)"
+            echo "_Diagnostic only. No verdict, no attribution — not evidence (DESIGN.md §10.0)._"
             echo '```'
             tail -n 40 tests/conformance/conformance.out
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # -------------------------------------------------------
+      # CRITERION 10 — the same gate the CI lanes carry, so that a
+      # conformance run is at least attributable. Without it, a
+      # conformance table is a report about whichever executor
+      # happened to run the graph, and on 2026-07-30 that was CPU
+      # for a whole day without anything saying so.
+      # -------------------------------------------------------
+      - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
+        env:
+          ONNXRUNTIME_VULKAN_EP_LIB: ${{ env.VULKAN_EP_LIB }}
+          ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ${{ github.workspace }}/bench/results/ci-lane/counters-conformance.json
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          python3 -m pip install --quiet numpy onnx
+          mkdir -p bench/results/ci-lane
+          python3 ci/gate_chain_fp32.py \
+            --verdict-out bench/results/ci-lane/verdict-conformance.json \
+            --workdir bench/results/ci-lane
+
+      - name: Criterion 10 verdict gate (independent reader)
+        run: python3 ci/check_verdict.py bench/results/ci-lane/verdict-conformance.json
+
+      - name: Known-fatal log line is a lane failure (R13 second witness)
+        if: always()
+        run: |
+          python3 ci/check_fatal_log.py \
+            tests/conformance/conformance.out \
+            bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
+
       - name: Upload conformance results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-results
@@ -107,4 +146,5 @@ jobs:
             tests/conformance/conformance.out
             tests/conformance/results.csv
             tests/conformance/logs/
+            bench/results/ci-lane/
           if-no-files-found: warn
