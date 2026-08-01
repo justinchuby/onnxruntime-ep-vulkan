@@ -19,7 +19,7 @@ use super::{
     barrier::{Access, BufferDep},
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::{Device, register_ep_device},
-    instance::{CapableDevice, Instance, select_device},
+    instance::{CapableDevice, Instance},
     pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
     timestamp::GpuQueryPool,
 };
@@ -588,20 +588,21 @@ unsafe fn read_tensor_desc_from_ort(
 /// contract requires child objects to be destroyed before the device, and the device before the
 /// instance. The field order here encodes that contract explicitly.
 pub(crate) struct VulkanSession {
-    /// Per-device capabilities and metadata. No Vulkan Drop; declared first for symmetry with
-    /// create() but dropped before device handles — it holds only host data.
-    pub(crate) capable: CapableDevice,
+    /// Per-device capabilities and metadata. Borrowed from the process-global §6.5 device owner.
+    pub(crate) capable: &'static CapableDevice,
     /// Compiled pipelines. Must drop before `device` (uses device handles).
     pub(crate) pipeline_cache: PipelineCache,
     /// Command pool. Must drop before `device`.
     pub(crate) cmd_pool: CommandPool,
     /// Allocator (gpu-allocator). Must drop before `device`.
     pub(crate) alloc: Allocator,
-    /// Logical device + compute queue. Must drop before `instance` (vkDestroyDevice before
-    /// vkDestroyInstance is required by the Vulkan spec).
-    pub(crate) device: Device,
-    /// Vulkan instance. Must drop **last** — all child objects must be destroyed first.
-    pub(crate) instance: Instance,
+    /// Logical device + compute queue. **Borrowed, not owned** (§6.5): one `VkDevice` per physical
+    /// device per process, created by `vk::device::acquire_ep_device` and never destroyed. The
+    /// session's own Vulkan children above are still destroyed first, which is what the Vulkan
+    /// teardown contract requires; the device outliving them is always safe.
+    pub(crate) device: &'static Device,
+    /// Vulkan instance. Borrowed from the same owner; outlives the device by construction.
+    pub(crate) instance: &'static Instance,
     /// Per-subgraph weight caches.  Key: subgraph ID → HashMap<(cpu_ptr, byte_size), GpuBuffer>.
     /// Populated lazily on the second inference through a subgraph; freed when the subgraph's
     /// `SubgraphComputeInfo` is released (via `release_weight_cache`).
@@ -624,44 +625,19 @@ impl VulkanSession {
     /// # Safety
     /// The Vulkan SDK dynamic library must remain loaded for the session's entire lifetime.
     pub(crate) unsafe fn create(options: &EpOptions) -> Option<Self> {
-        let instance = Instance::create(options.enable_validation)?;
-        let mut capables = instance.enumerate_capable_devices();
-        if capables.is_empty() {
-            log::warn!("VulkanSession::create: no devices passed the §7.2 capability gate");
-            return None;
-        }
-
-        let idx = if let Some(dev_idx) = options.device_index {
-            if dev_idx < capables.len() {
-                dev_idx
-            } else {
-                log::warn!(
-                    "ep.device_index={dev_idx} is out of range ({} device(s) available); \
-                     using device 0",
-                    capables.len()
-                );
-                0
-            }
-        } else {
-            select_device(&capables).unwrap_or(0)
-        };
-
-        let capable = capables.swap_remove(idx);
-        log::info!(
-            "VulkanSession: selected '{}' (kind={:?} api={} uma={} subgroup_sz={} \
-             ts_period={:.4}ns ts_bits={})",
-            capable.info.name,
-            capable.info.kind,
-            capable.info.api_version,
-            capable.caps.is_uma,
-            capable.caps.subgroup_size,
-            capable.caps.timestamp_period_ns,
-            capable.caps.timestamp_valid_bits,
-        );
-
-        // SAFETY: instance is live; capable was produced by instance.enumerate_capable_devices().
-        let device =
-            unsafe { Device::create(instance.ash(), &capable, options.force_legacy_barriers) }?;
+        // §6.5: the (instance, device) pair is process-global and never destroyed. The session
+        // borrows it; it does not create or own it. See `vk::device::acquire_ep_device`.
+        // SAFETY: the loader stays loaded for the process lifetime (the owner is leaked).
+        let owner = unsafe {
+            crate::vk::device::acquire_ep_device(
+                options.device_index,
+                options.enable_validation,
+                options.force_legacy_barriers,
+            )
+        }?;
+        let instance: &'static Instance = owner.instance;
+        let device: &'static Device = &owner.device;
+        let capable: &'static CapableDevice = &owner.capable;
 
         // SAFETY: instance and device are live; physical_device belongs to instance.
         let mut alloc =
@@ -674,16 +650,16 @@ impl VulkanSession {
         let pipeline_cache = unsafe { PipelineCache::new(device.ash(), &[]) }?;
 
         // §6.5: register the EP device so other components (e.g., host_device_memory) can share
-        // it without creating their own VkDevice. Must be called after Device::create succeeds.
-        // SAFETY: `device` will be stored in the returned VulkanSession, which is EP-scoped per
-        // §2.3. ORT always frees tensors before destroying the EP, so no caller can observe the
-        // device after VulkanSession::drop.
-        register_ep_device(&device);
+        // it without creating their own VkDevice.
+        // SAFETY: `device` is the process-global owner's device (`acquire_ep_device`), which is
+        // leaked and therefore outlives every consumer, including the process-global
+        // `HandleRegistry` / device-memory providers.
+        register_ep_device(device);
 
         // §6.5 seam: offer the EP device context to host_device_memory so that ORT-tensor
-        // allocations land on the SAME VkDevice the compute kernels use.  Must be called BEFORE
-        // any ORT tensor is allocated — `ensure_registered` is lazy and consults OFFERED at first
-        // use.
+        // allocations land on the SAME VkDevice the compute kernels use.  Called BEFORE any ORT
+        // tensor is allocated — `ensure_registered` is lazy and consults OFFERED at first use, and
+        // `VulkanSession::create` runs inside `CreateEp`, which precedes every ORT allocation.
         //
         // KEY (index-space, R12): `ensure_registered` is called by the allocator with the
         // *factory's advertised* device index (`HandleRegistry::set_device_index`, factory.rs) —
@@ -694,40 +670,36 @@ impl VulkanSession {
         // provider silently built a SECOND VkDevice (`alloc_device_frame = SPLIT-DEVICE`). Offer
         // under `capable.info.index` so the registry lookup finds it and the frame becomes SHARED.
         //
-        // LIFETIME (why this is opt-in, not on by default): the offered context holds *borrowed*,
-        // bitwise-cloned ash handles (see `EpDeviceShare` / `SessionSharedCtx` — no refcount, no
-        // Drop). The device-memory provider that consumes them is process-global and built once,
-        // then cached (`host_device_memory::PROVIDERS`). But every `VulkanSession::create` builds a
-        // *fresh* VkDevice — §6.5's "exactly one VkDevice per physical device per EP instance"
-        // invariant is not yet enforced across sessions. Consequences of offering unconditionally:
-        //   1. Single session: correct — `alloc_device_frame` flips SPLIT-DEVICE → SHARED and
-        //      `alloc_device_authoritative_spans` transitions UNOBSERVABLE → 0 (a measurement).
-        //   2. Multiple sessions in one process: the cached provider outlives session 0's device,
-        //      which `VulkanSession::drop` destroys (vkDestroyDevice) → use-after-free. Measured:
-        //      STATUS_ACCESS_VIOLATION (0xC0000005) on the 2nd session's inference. Even if the
-        //      device were leaked to keep the handle valid, session N>0's kernels run on a
-        //      *different* device than the provider's, so its ORT tensors would be bound on the
-        //      wrong device.
-        // Closing this for real requires sessions to *reuse* the process-global EP device
-        // (`register_ep_device`) rather than create their own — an architectural change on the
-        // §6.5 seam, not a call-site fix. Until then the offer is gated: default OFF (safe for any
-        // session count, SPLIT-DEVICE), opt-in ON via `ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE=1`
-        // for single-session runs that want to exercise/verify the SHARED frame.
-        if std::env::var_os("ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE").is_some_and(|v| v == "1") {
-            let ctx = crate::vk::device::SessionSharedCtx {
-                instance: instance.ash().clone(),
-                ash_device: device.ash().clone(),
-                physical_device: device.physical_device(),
-                compute_queue: device.compute_queue(),
-                compute_queue_family: device.compute_queue_family(),
-                is_uma: capable.caps.is_uma,
-                name: capable.info.name.clone(),
-            };
-            crate::vk::host_device_memory::offer_shared_device(
-                capable.info.index,
-                std::sync::Arc::new(ctx),
-            );
-        }
+        // LIFETIME (the reason this is now unconditional): the offered context holds *borrowed*,
+        // bitwise-cloned ash handles, and the consumer (`host_device_memory::PROVIDERS`) is
+        // process-global. That was a use-after-free while each session created and destroyed its
+        // own VkDevice — measured as STATUS_ACCESS_VIOLATION (0xC0000005) on a second session's
+        // inference. It is not one now: `acquire_ep_device` makes the (instance, device) pair
+        // process-global and leaks it, so (a) no `vkDestroyDevice` can run under the provider, and
+        // (b) session N>0 on the same physical device runs its kernels on the *same* VkDevice the
+        // provider bound its buffers on. Both halves of the old hazard are gone, so the seam is
+        // closed for any session count and needs no env gate.
+        let ctx = crate::vk::device::SessionSharedCtx {
+            instance: instance.ash().clone(),
+            ash_device: device.ash().clone(),
+            physical_device: device.physical_device(),
+            compute_queue: device.compute_queue(),
+            compute_queue_family: device.compute_queue_family(),
+            is_uma: capable.caps.is_uma,
+            name: capable.info.name.clone(),
+        };
+        crate::vk::host_device_memory::offer_shared_device(
+            capable.info.index,
+            std::sync::Arc::new(ctx),
+        );
+        log::info!(
+            "§6.5: offered the EP VkDevice for '{}' under device index {} (physical enumerate \
+             index). The device-memory provider adopts it only if ORT asks for an allocator on \
+             that same index; a different index means ORT selected a different EP device than \
+             this session opened, and the run correctly reports SPLIT-DEVICE.",
+            capable.info.name,
+            capable.info.index,
+        );
 
         // Allocate the 4-byte zero-element placeholder buffer.  A zero-element tensor maps
         // to this buffer in descriptor writes — Vulkan requires a non-null buffer handle and

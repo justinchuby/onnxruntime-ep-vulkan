@@ -509,10 +509,12 @@ static OFFERED: OnceLock<Mutex<HashMap<usize, Arc<dyn SharedVkDevice>>>> = OnceL
 /// serves is process-global and outlives every session — and it is the only obligation this seam
 /// places on the caller.
 ///
-/// **This function is `UNWIRED` until Switch calls it** (R10). It has no production caller in this
-/// tree today; `rust/tools/instrument_census.json` lists it, and the counters artifact says
-/// `alloc_device_frame: "SPLIT-DEVICE"` on every run until the call exists. Do not read a passing
-/// build as evidence that the seam is closed — read `alloc_device_frame`.
+/// **This function is WIRED as of §6.5's closure** (R10). Its production caller is
+/// `VulkanSession::create` (`vk/session.rs`), which runs inside `CreateEp` — before ORT can
+/// allocate anything — and offers the process-global EP device under `capable.info.index`. Do not
+/// read a passing build as evidence that the seam is closed for a given run — read
+/// `alloc_device_frame`: `SHARED` means the provider took the offer, `SPLIT-DEVICE` means the
+/// index ORT asked for is not one a session offered (see the log emitted at that branch).
 pub(crate) fn offer_shared_device(device_index: usize, ctx: Arc<dyn SharedVkDevice>) {
     let map = OFFERED.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut map) = map.lock() {
@@ -522,6 +524,19 @@ pub(crate) fn offer_shared_device(device_index: usize, ctx: Arc<dyn SharedVkDevi
 
 fn offered_device(device_index: usize) -> Option<Arc<dyn SharedVkDevice>> {
     OFFERED.get()?.lock().ok()?.get(&device_index).cloned()
+}
+
+/// The device indices an EP session has offered a context for, for diagnostics only.
+fn offered_indices() -> Vec<usize> {
+    let Some(map) = OFFERED.get() else {
+        return Vec::new();
+    };
+    let Ok(map) = map.lock() else {
+        return Vec::new();
+    };
+    let mut v: Vec<usize> = map.keys().copied().collect();
+    v.sort_unstable();
+    v
 }
 
 pub(crate) fn ensure_registered(device_index: usize) {
@@ -536,6 +551,14 @@ pub(crate) fn ensure_registered(device_index: usize) {
     let ctx: Option<(Arc<dyn SharedVkDevice>, DeviceFrame)> = match offered_device(device_index) {
         Some(c) => Some((c, DeviceFrame::Shared)),
         None => {
+            log::info!(
+                "§6.5: no EP device is on offer for factory device index {device_index} (offered \
+                 indices: {:?}). Either no session has been created yet, or ORT asked for an \
+                 allocator on a different EP device than the session opened — which is what \
+                 happens when ONNXRUNTIME_EP_VULKAN_DEVICE forces a physical device ORT did not \
+                 select. Standing up a second VkDevice; the run reports SPLIT-DEVICE.",
+                offered_indices(),
+            );
             // SAFETY: the value is stored in a `static` and never dropped, so the loader outlives
             // it.
             unsafe { OwnedDevice::create(device_index) }.map(|d| {

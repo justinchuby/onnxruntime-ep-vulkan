@@ -27,12 +27,10 @@
     "trace.rs::record_op_meta",
     "trace.rs::record_path",
     "trace.rs::transfer_totals",
-    "transfer.rs::device_buffer_for",
-    "vk/host_device_memory.rs::offer_shared_device"
+    "transfer.rs::device_buffer_for"
   ],
   "ambiguous": [
-    "counters.rs::extract_equivalence",
-    "ops/claim_log.rs::record"
+    "counters.rs::extract_equivalence"
   ],
   "harness_uninvoked": [
     "tests/ops/_models.py::assert_qdq_reference_oracle_safe"

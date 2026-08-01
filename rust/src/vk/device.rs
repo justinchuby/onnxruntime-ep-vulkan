@@ -34,7 +34,7 @@ use ash::vk;
 use super::{
     barrier::Barriers,
     caps::{Capabilities, DeviceFeatureChain},
-    instance::CapableDevice,
+    instance::{CapableDevice, Instance, select_device},
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -108,6 +108,144 @@ pub(crate) fn register_ep_device(device: &Device) {
 #[inline]
 pub(crate) fn ep_device() -> Option<&'static EpDeviceShare> {
     EP_DEVICE.get()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// §6.5 — the owning side: one `VkInstance` and one `VkDevice` per physical device, per process
+//
+// Why the owner is process-global and not session-scoped, stated as the lifetime argument the
+// seam actually needs:
+//
+// `host_device_memory::OFFERED` / `PROVIDERS` and `HandleRegistry` are process-global by
+// construction — ORT's allocator handles outlive any one `OrtEp`. A device context handed across
+// that seam therefore has to be valid for the process, not for a session. Before this, every
+// `VulkanSession::create` built its own `VkDevice` and `VulkanSession::drop` destroyed it; a
+// second session in the same process then ran its kernels on a *different* device than the one
+// the cached provider had bound buffers on, and the first `vkDestroyDevice` turned every handle
+// the provider held into a dangling one (measured: STATUS_ACCESS_VIOLATION 0xC0000005 on the
+// second session's inference).
+//
+// The fix is not to stop offering the device — it is to stop destroying it. The (instance,
+// device) pair is created at most once per physical device and **deliberately leaked**
+// (`Box::leak`), so:
+//   * the §6.5 invariant holds *across* sessions, not just within one — a second `VulkanEp` on
+//     the same physical device receives the same `VkDevice`;
+//   * no `vkDestroyDevice` / `vkDestroyInstance` can run while a process-global consumer still
+//     holds a handle, so the offer is safe unconditionally and needs no env gate;
+//   * per-session children (allocator, command pool, pipeline cache, weight caches) keep their
+//     session lifetime and are still destroyed in `VulkanSession::drop`, which is the ordering
+//     Vulkan requires (children before device) and is now trivially satisfied.
+//
+// The cost is one device and one instance held until process exit. That is the same lifetime
+// `host_device_memory::OwnedDevice` already takes for the fallback path, and the OS reclaims
+// both at exit.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The process-global owner of one `VkDevice` (§6.5). Never dropped — see the module note above.
+pub(crate) struct EpDeviceOwner {
+    /// The process-global Vulkan instance the device was created from.
+    pub(crate) instance: &'static Instance,
+    /// The logical device. Owns the `VkDevice`; its `Drop` never runs (the owner is leaked).
+    pub(crate) device: Device,
+    /// The capability record for the physical device `device` was created from.
+    pub(crate) capable: CapableDevice,
+}
+
+/// The one instance, created on the first `acquire_ep_device` and leaked.
+/// `None` means Vulkan could not be initialised at all (no loader / no ICD).
+static EP_INSTANCE: OnceLock<Option<&'static Instance>> = OnceLock::new();
+
+/// One owner per *physical* device index (`CapableDevice::info::index`).
+static EP_DEVICES: OnceLock<std::sync::Mutex<Vec<&'static EpDeviceOwner>>> = OnceLock::new();
+
+/// Acquire the process-global EP device for the physical device `options` selects (§6.5).
+///
+/// Creates the instance and device on first call for a given physical device and returns the
+/// same handles on every later call. Returns `None` when no device passes the §7.2 gate.
+///
+/// # Safety
+/// The Vulkan loader must remain loaded for the process lifetime. It does: the returned owner is
+/// leaked, so `ash::Entry` (which holds the loaded library) is never dropped.
+pub(crate) unsafe fn acquire_ep_device(
+    device_index: Option<usize>,
+    enable_validation: bool,
+    force_legacy: bool,
+) -> Option<&'static EpDeviceOwner> {
+    let instance = (*EP_INSTANCE.get_or_init(|| {
+        Instance::create(enable_validation).map(|i| &*Box::leak(Box::new(i)) as &'static Instance)
+    }))?;
+
+    if enable_validation && !instance.validation_armed() {
+        log::warn!(
+            "VulkanSession: validation was requested for this session, but the process-global \
+             VkInstance (§6.5) was created without a debug messenger by an earlier session. \
+             Validation is an instance-level property and cannot be turned on retroactively; set \
+             ONNXRUNTIME_EP_VULKAN_VALIDATE=1 before the first session instead."
+        );
+    }
+
+    let mut capables = instance.enumerate_capable_devices();
+    if capables.is_empty() {
+        log::warn!("VulkanSession::create: no devices passed the §7.2 capability gate");
+        return None;
+    }
+
+    let idx = if let Some(dev_idx) = device_index {
+        if dev_idx < capables.len() {
+            dev_idx
+        } else {
+            log::warn!(
+                "ep.device_index={dev_idx} is out of range ({} device(s) available); using \
+                 device 0",
+                capables.len()
+            );
+            0
+        }
+    } else {
+        select_device(&capables).unwrap_or(0)
+    };
+
+    let capable = capables.swap_remove(idx);
+    let physical_index = capable.info.index;
+
+    let owners = EP_DEVICES.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut owners = owners.lock().ok()?;
+
+    if let Some(existing) = owners
+        .iter()
+        .find(|o| o.capable.info.index == physical_index)
+    {
+        log::info!(
+            "VulkanSession: reusing the process-global VkDevice for '{}' (physical index {}) — \
+             §6.5, exactly one VkDevice per physical device per process.",
+            existing.capable.info.name,
+            physical_index,
+        );
+        return Some(*existing);
+    }
+
+    log::info!(
+        "VulkanSession: selected '{}' (kind={:?} api={} uma={} subgroup_sz={} \
+         ts_period={:.4}ns ts_bits={})",
+        capable.info.name,
+        capable.info.kind,
+        capable.info.api_version,
+        capable.caps.is_uma,
+        capable.caps.subgroup_size,
+        capable.caps.timestamp_period_ns,
+        capable.caps.timestamp_valid_bits,
+    );
+
+    // SAFETY: `instance` is process-lived; `capable` came from `instance.enumerate_capable_devices()`.
+    let device = unsafe { Device::create(instance.ash(), &capable, force_legacy) }?;
+
+    let owner: &'static EpDeviceOwner = Box::leak(Box::new(EpDeviceOwner {
+        instance,
+        device,
+        capable,
+    }));
+    owners.push(owner);
+    Some(owner)
 }
 
 /// The engine's logical device.

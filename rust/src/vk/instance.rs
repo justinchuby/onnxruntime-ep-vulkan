@@ -443,6 +443,14 @@ impl Instance {
         &self.handle
     }
 
+    /// Whether this instance carries a debug messenger — i.e. whether validation output can be
+    /// observed through it. Used by the §6.5 device registry to report when a later session asks
+    /// for validation on an instance that was created without it.
+    #[inline]
+    pub(crate) fn validation_armed(&self) -> bool {
+        self.debug_messenger.is_some()
+    }
+
     /// Enumerate all physical devices that pass the §7.2 capability gate (R1–R6), sorted
     /// best-first by [`DeviceKind::score`].
     ///
