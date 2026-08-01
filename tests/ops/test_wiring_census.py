@@ -37,11 +37,14 @@ THE CENSUS MECHANISMS (per DESIGN.md §10 criterion 12 ruling):
      Census reports OPTIONAL-UNWIRED — not a hard failure (the tracer is opt-in by design).
 
   3. ``model_output_equivalence``
-     Observable: ``model_output_equivalence`` field in counters JSON.
-     Wired when: field is MATCH or DIVERGENT (not UNMEASURED).
-     Current state: set by Trinity's Python harness in test_phi35.py when Phi-3.5 is
-     available.  Reports UNMEASURED when the model cache is absent (non-dev machine).
-     Census reports per the current counters file.
+     Observable: the ``model_output_equivalence`` token **and** the
+     ``model_output_equivalence_record`` object in the counters JSON.
+     Wired when: a record exists carrying both a verdict and its ``executed_by`` frame
+     (criterion 12 (g), §10.0 third amendment — a verdict without its executor is a value
+     from a world the census has not identified).
+     Three states (criterion 12 (h), R13): OBSERVED / UNWIRED / INSTRUMENT-ERROR.
+     Current state: written by ``test_phi35.py`` and ``test_criterion10.py`` when Phi-3.5
+     is available; UNWIRED when the model cache is absent (non-dev machine).
 
   4. ``retain_viable`` (net-benefit gate, §7.0.2)
      Observable: ``viable_islands_retained`` in the C ABI counters (ABI version 2).
@@ -85,6 +88,7 @@ import pytest
 from onnx_ir import DataType as DT
 
 import _models as m
+import _verdict
 
 HERE = Path(__file__).parent
 _REPO_ROOT = HERE.parent.parent
@@ -337,24 +341,52 @@ def test_wiring_census(require_vulkan) -> None:
         observations["gpu_tracer"] = "OPTIONAL-UNWIRED (ONNXRUNTIME_EP_VULKAN_TRACE_FILE not set)"
 
     # ── Mechanism 4: model_output_equivalence ────────────────────────────
-    # This session runs Add, not Phi-3.5. The equivalence verdict belongs to test_phi35.py.
-    # Read from ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE if set (may have been written by phi35).
+    # This session runs Add, not Phi-3.5. The equivalence verdict belongs to test_phi35.py
+    # and test_criterion10.py. Read from ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE if set.
     #
-    # VALIDITY CONDITION (Guard D): MATCH is a valid verdict only when the run that wrote it
-    # had Guard D active — i.e., assert_vulkan_executed_runtime() confirmed Vulkan ran nodes
-    # AFTER sess.run(). Without Guard D, a runtime fallback (ORT silently retrying on CPU)
-    # produces CPU-vs-CPU output that reports MATCH. Guard D is now in
-    # test_phi35_vulkan_matches_cpu_logits; verdicts written before 2026-07-31 should be
-    # treated as UNMEASURED (the guard was absent).
-    equiv = "UNMEASURED"
+    # CRITERION 12 (g) — THE CENSUS LINE CARRIES THE FRAME IT OBSERVED IN.
+    # Amended 2026-07-31T07:45:10-07:00: "a census that reports a verdict without its
+    # executor reports a value from a world it has not identified."  For this mechanism
+    # the frame is `executed_by`, so the census line prints it and reports the mechanism
+    # as unobserved when it is absent — a MATCH with no attribution is precisely the
+    # specimen that motivated the amendment.
+    #
+    # CRITERION 12 (h) — THREE STATES, NOT TWO (R13).
+    #   OBSERVED         — a record exists, carrying a verdict AND its executor.
+    #   UNWIRED          — no record: the mechanism produced nothing in this run.
+    #   INSTRUMENT-ERROR — the counters file exists but could not be read or parsed.
+    # A census whose vocabulary is *observed or not observed* records a crashed mechanism
+    # as an absence and an absence as a crash.
+    equiv = "UNWIRED (no counters file)"
     counters_file_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
-    if counters_file_path and Path(counters_file_path).is_file():
-        try:
-            with open(counters_file_path) as fh:
-                file_counters = json.load(fh)
-            equiv = file_counters.get("model_output_equivalence", "UNMEASURED")
-        except Exception:
-            pass
+    if counters_file_path:
+        path = Path(counters_file_path)
+        if not path.is_file():
+            equiv = "UNWIRED (counters file not written)"
+        else:
+            try:
+                with open(path) as fh:
+                    file_counters = json.load(fh)
+            except Exception as exc:  # noqa: BLE001
+                equiv = f"INSTRUMENT-ERROR (counters JSON unreadable: {exc})"
+            else:
+                token = file_counters.get(m.EQUIVALENCE_KEY)
+                record = file_counters.get(m.EQUIVALENCE_RECORD_KEY)
+                if token is None:
+                    equiv = "UNWIRED (no model_output_equivalence field)"
+                elif not isinstance(record, dict) or not record.get("executed_by"):
+                    # (g): a verdict with no frame is not an observation.
+                    equiv = (
+                        f"UNWIRED (verdict {token} carries no executed_by — a verdict "
+                        "without its executor is a value from an unidentified world; "
+                        "§10.0 third amendment)"
+                    )
+                else:
+                    equiv = (
+                        f"OBSERVED verdict={token} executed_by={record['executed_by']} "
+                        f"source={record.get('attribution_source')} "
+                        f"permits_triple={record.get('permits_triple_and_ratio')}"
+                    )
     observations["model_output_equivalence"] = equiv
 
     # ── Mechanism 5: retain_viable ───────────────────────────────────────
@@ -371,40 +403,68 @@ def test_wiring_census(require_vulkan) -> None:
     observations["ledger_lookup"] = "UNWIRED"
 
     # ── Mechanism 7: validation_messenger ───────────────────────────────
+    # R13: this mechanism shells out.  A subprocess that hangs is an ERROR(instrument) —
+    # the census reached no observation — and must never be scored as "UNWIRED", which is
+    # a finding.  `run_subprocess_checked` raises InstrumentError on a timeout, so it is
+    # caught here and recorded as the third state rather than collapsed into the second.
+    # The budget is contention-inflated: this suite has been measured at 4.4x under four
+    # concurrent agents, and this test had to be `--ignore`d for exactly this reason.
     epctl = _epctl_path()
     if epctl is None:
         observations["validation_messenger"] = "UNWIRED (epctl not found)"
     else:
-        result = subprocess.run(
-            [str(epctl), "--probe-validation"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0:
-            observations["validation_messenger"] = "ARMED"
-        elif result.returncode == 3:
-            observations["validation_messenger"] = "OPTIONAL-UNWIRED (layer absent)"
+        try:
+            result = _verdict.run_subprocess_checked(
+                [str(epctl), "--probe-validation"],
+                what="census validation probe",
+                quiet_seconds=20,
+            )
+        except _verdict.InstrumentError as exc:
+            observations["validation_messenger"] = (
+                f"INSTRUMENT-ERROR ({str(exc).splitlines()[0]})"
+            )
         else:
-            observations["validation_messenger"] = f"UNWIRED (epctl exit {result.returncode})"
+            state, reason = _verdict.classify_validation_probe(
+                result.returncode, (result.stdout or "") + (result.stderr or "")
+            )
+            if state == _verdict.VALIDATION_ARMED:
+                observations["validation_messenger"] = "ARMED"
+            elif state == _verdict.VALIDATION_PROBE_ERROR:
+                observations["validation_messenger"] = f"INSTRUMENT-ERROR ({reason})"
+            else:
+                observations["validation_messenger"] = f"OPTIONAL-UNWIRED ({reason})"
 
     # ── Mechanism 8: layering_lint ───────────────────────────────────────
     # The layering lint runs as a cargo integration test (rust/tests/layering.rs).
     # We run it in DEBUG mode (not --release) to avoid relinking the production DLL,
     # which may be loaded by the current process and locked on Windows.
+    #
+    # THIS IS THE CALL THAT KILLED THE CENSUS.  `cargo test` here may compile the whole
+    # crate; 120 s was a quiet-machine number and `subprocess.TimeoutExpired` propagated
+    # out of the test as an uncaught exception, which pytest scored as a red.  It is
+    # neither a pass nor a detection: it is ERROR(instrument), and under R13 it must not
+    # be counted as one of the suite's failures.
     if _CARGO_MANIFEST.is_file():
-        lr = subprocess.run(
-            [
-                "cargo", "test", "--test", "layering",
-                "--manifest-path", str(_CARGO_MANIFEST),
-                # No --release: debug build avoids relinking the loaded DLL.
-            ],
-            capture_output=True, text=True,
-            env=_cargo_env(),
-            timeout=120,
-        )
-        if lr.returncode == 0:
-            observations["layering_lint"] = "PASS"
+        try:
+            lr = _verdict.run_subprocess_checked(
+                [
+                    "cargo", "test", "--test", "layering",
+                    "--manifest-path", str(_CARGO_MANIFEST),
+                    # No --release: debug build avoids relinking the loaded DLL.
+                ],
+                what="census layering lint",
+                quiet_seconds=240,
+                env=_cargo_env(),
+            )
+        except _verdict.InstrumentError as exc:
+            observations["layering_lint"] = f"INSTRUMENT-ERROR ({str(exc).splitlines()[0]})"
         else:
-            observations["layering_lint"] = f"FAIL (exit {lr.returncode}): {lr.stderr[-200:]}"
+            if lr.returncode == 0:
+                observations["layering_lint"] = "PASS"
+            else:
+                observations["layering_lint"] = (
+                    f"FAIL (exit {lr.returncode}): {(lr.stderr or '')[-200:]}"
+                )
     else:
         observations["layering_lint"] = "UNWIRED (Cargo.toml not found)"
 
@@ -428,13 +488,24 @@ def test_wiring_census(require_vulkan) -> None:
     if pi.startswith("IDENTITY"):
         failures.append(f"  partition_identity_check: {pi}")
 
-    # model_output_equivalence — warn but do not fail (test_phi35.py owns the assertion;
-    # UNMEASURED here just means Phi-3.5 is not in the cache on this machine).
-    if observations.get("model_output_equivalence") == "UNMEASURED":
+    # model_output_equivalence — warn but do not fail (test_phi35.py and test_criterion10.py
+    # own the assertion; an absent record here just means the model cache is absent on this
+    # machine).  The three states are printed distinctly (criterion 12 (h), R13): an
+    # INSTRUMENT-ERROR is a harness outage and is never read as "the verdict was bad".
+    equiv_obs = observations.get("model_output_equivalence", "")
+    if equiv_obs.startswith("INSTRUMENT-ERROR"):
         print(
-            "[WIRING CENSUS] WARNING: model_output_equivalence=UNMEASURED. "
-            "This is expected when the Phi-3.5 model cache is absent. "
-            "The canonical MATCH reading is in test_phi35.py::test_phi35_vulkan_matches_cpu_logits.",
+            f"[WIRING CENSUS] INSTRUMENT-ERROR on model_output_equivalence: {equiv_obs}. "
+            "This is a harness outage, NOT a finding about the EP (R13). An instrument "
+            "error never counts as a detection.",
+            file=sys.stderr,
+        )
+    elif equiv_obs.startswith("UNWIRED"):
+        print(
+            f"[WIRING CENSUS] WARNING: model_output_equivalence {equiv_obs}. "
+            "Expected when the Phi-3.5 model cache is absent. The canonical attributed "
+            "reading is test_criterion10.py::"
+            "test_criterion_10_three_consecutive_attributed_match.",
             file=sys.stderr,
         )
 
@@ -444,6 +515,36 @@ def test_wiring_census(require_vulkan) -> None:
         + "\n\nAll census observations:\n"
         + "\n".join(f"  {m}: {observations.get(m, 'UNWIRED')}" for m in _MECHANISMS)
     )
+
+    # R13, LAST — and deliberately after the condition assertion above.
+    #
+    # An instrument outage is a lane failure of a DIFFERENT KIND, so it gets a different
+    # exception type (`InstrumentError`, which conftest classifies as ERROR(instrument))
+    # and it never lands in `failures`, which is the census's detection channel.  A census
+    # that timed out on one mechanism has not observed that mechanism; reporting it as
+    # UNWIRED would be a fabricated detection, and reporting the census as green would be
+    # a fabricated observation.  Both have happened here.
+    #
+    # Ordering: a real UNWIRED finding outranks an outage elsewhere, because the finding
+    # was actually observed.
+    instrument_errors = [
+        f"  {mech}: {obs}"
+        for mech in _MECHANISMS
+        if (obs := observations.get(mech, "")).startswith("INSTRUMENT-ERROR")
+    ]
+    if instrument_errors:
+        raise _verdict.InstrumentError(
+            "[wiring census instrument failure] ERROR(instrument): the census could not "
+            "observe the following mechanisms, so it has said nothing about them:\n"
+            + "\n".join(instrument_errors)
+            + "\n\nAn instrument error NEVER counts as a detection (R13). None of the "
+            "lines above is evidence that a mechanism is unwired. The usual cause on this "
+            "host is machine contention (measured 4.4x with four concurrent agents); the "
+            "budgets here are already inflated for it, and "
+            "$ONNXRUNTIME_EP_VULKAN_TIMEOUT_SCALE raises them further.\n\n"
+            "All census observations:\n"
+            + "\n".join(f"  {mech}: {observations.get(mech, 'UNWIRED')}" for mech in _MECHANISMS)
+        )
 
 
 # ---------------------------------------------------------------------------

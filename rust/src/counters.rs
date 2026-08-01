@@ -90,6 +90,27 @@ pub const EQUIVALENCE_MATCH: &str = "MATCH";
 pub const EQUIVALENCE_DIVERGENT: &str = "DIVERGENT";
 /// Verdict value (default): no CPU comparison was performed in this run.
 pub const EQUIVALENCE_UNMEASURED: &str = "UNMEASURED";
+/// Verdict value: the comparison was performed and **this EP executed zero nodes**.
+///
+/// Added 2026-07-31 by §10.0's third metric amendment. This is **not** `DIVERGENT`:
+/// `DIVERGENT` says our kernels computed the wrong answer, `UNATTRIBUTED` says our kernels
+/// did not run and the comparison was CPU-vs-CPU. Different owners, different fixes,
+/// different next questions — "a lane that prints one red for both is a lane with R13's
+/// defect". Written by the Python harness (`tests/ops/_verdict.py`), which derives it and
+/// cannot be made to emit `MATCH` at a zero own-provider count.
+pub const EQUIVALENCE_UNATTRIBUTED: &str = "UNATTRIBUTED";
+/// Verdict value: the two attribution witnesses disagree about whether this EP ran.
+///
+/// The ORT profile (an instrument we do not own) and `dispatches_executed` (ours) must
+/// agree about *presence*, not magnitude. One saying "ran" while the other says "did not"
+/// means one of the two instruments is lying and we do not know which; nothing may be
+/// reported until we do (§10.0 third amendment, clause 2).
+pub const EQUIVALENCE_SPLIT_FRAME: &str = "SPLIT-FRAME";
+/// The JSON key for the full verdict record: `executed_by`, `attribution_source`,
+/// `attribution_witnesses`, `artifact`, device identity. Written beside the token by
+/// `tests/ops/_verdict.py::write_equivalence_record`, because *a caveat that lives in a
+/// different artifact from the number it qualifies is not attached to it*.
+pub const EQUIVALENCE_RECORD_KEY: &str = "model_output_equivalence_record";
 
 /// Extract the `model_output_equivalence` value from an existing JSON snapshot string.
 ///
@@ -117,7 +138,71 @@ pub fn extract_equivalence(doc: &str) -> &'static str {
     if rest.starts_with(EQUIVALENCE_DIVERGENT) {
         return EQUIVALENCE_DIVERGENT;
     }
+    if rest.starts_with(EQUIVALENCE_UNATTRIBUTED) {
+        return EQUIVALENCE_UNATTRIBUTED;
+    }
+    if rest.starts_with(EQUIVALENCE_SPLIT_FRAME) {
+        return EQUIVALENCE_SPLIT_FRAME;
+    }
     EQUIVALENCE_UNMEASURED
+}
+
+/// Extract the raw `model_output_equivalence_record` **object** from an existing snapshot.
+///
+/// Returns the object text including its braces, or `None` if the key is absent or the value
+/// is not a brace-delimited object.
+///
+/// # Why this exists
+///
+/// `dump_observations_if_requested` rebuilds the counters file from scratch at teardown and
+/// carried the verdict *token* across but not the *record*. The observable consequence was a
+/// file on disk reading `"model_output_equivalence": "MATCH"` with no `executed_by` frame
+/// anywhere in it — which is precisely the shape §10.0's third metric amendment forbids, and
+/// precisely the shape `epctl` now refuses. The verdict was correct in the process that wrote
+/// it and lost its attribution on the way to the artifact a human reads.
+///
+/// This is the same defect as Defect C (two writers, one artifact, different schemas), and it
+/// is a *caveat detached from the number it qualifies*: the token survived, the sentence
+/// saying which world it was about did not.
+///
+/// Nesting-aware because the record contains nested objects (`executed_by`,
+/// `attribution_witnesses`); string-aware because a value could contain a brace.
+pub fn extract_equivalence_record(doc: &str) -> Option<&str> {
+    let needle = format!("\"{EQUIVALENCE_RECORD_KEY}\"");
+    let start = doc.find(&needle)?;
+    let rest = &doc[start + needle.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Host↔device staging traffic, counted **unconditionally**, outside the tracer.
@@ -606,11 +691,21 @@ pub fn dump_observations_if_requested() {
 
     // Preserve any verdict that Trinity wrote during the comparison run.
     // Default to UNMEASURED if the file is absent or the field is missing.
-    let existing_equiv = std::fs::read_to_string(&path)
-        .ok()
+    //
+    // The RECORD travels with the token (§10.0 third metric amendment). Carrying the token
+    // alone was a real defect: the artifact on disk read `"model_output_equivalence": "MATCH"`
+    // with no `executed_by` anywhere in it, which is exactly the unattributed shape the
+    // amendment forbids and `epctl` now refuses. A verdict that loses its attribution between
+    // the process that derived it and the file a human reads is not a verdict about this EP.
+    let existing_raw = std::fs::read_to_string(&path).ok();
+    let existing_equiv = existing_raw
         .as_deref()
         .map(extract_equivalence)
         .unwrap_or(EQUIVALENCE_UNMEASURED);
+    let existing_record = existing_raw
+        .as_deref()
+        .and_then(extract_equivalence_record)
+        .map(str::to_string);
 
     let o = crate::allocator::ledger::snapshot();
     let t = crate::allocator::tally::snapshot();
@@ -717,6 +812,17 @@ pub fn dump_observations_if_requested() {
             wc.6,
             wc.7,
         ));
+    }
+    // Splice the preserved record back in, same technique, so the token and the frame that
+    // says which world it is about stay in one artifact.
+    if let Some(record) = existing_record.as_deref() {
+        if let Some(cut) = doc.rfind('}') {
+            doc.truncate(cut);
+            doc = doc.trim_end().trim_end_matches('\n').to_string();
+            doc.push_str(&format!(
+                ",\n  \"{EQUIVALENCE_RECORD_KEY}\": {record}\n}}\n"
+            ));
+        }
     }
     if let Err(e) = std::fs::write(&path, doc) {
         log::warn!(
@@ -1011,10 +1117,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_equivalence_parses_the_three_states() {
+    fn extract_equivalence_parses_the_five_states() {
         let match_doc = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
         let div_doc = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
         let unm_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);
+        let unattr_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNATTRIBUTED);
+        let split_doc = snapshot().to_json_with_equiv(EQUIVALENCE_SPLIT_FRAME);
         // Build a document that physically lacks the field (old snapshot format).
         // to_json() writes `"model_output_equivalence": "UNMEASURED"` — strip both key and value.
         let without_field = {
@@ -1033,6 +1141,34 @@ mod tests {
         assert_eq!(extract_equivalence(&match_doc), EQUIVALENCE_MATCH);
         assert_eq!(extract_equivalence(&div_doc), EQUIVALENCE_DIVERGENT);
         assert_eq!(extract_equivalence(&unm_doc), EQUIVALENCE_UNMEASURED);
+
+        // §10.0 third metric amendment (2026-07-31): two states more. UNATTRIBUTED must not
+        // fold into DIVERGENT — a run we could not attribute is not a run that disagreed —
+        // and SPLIT-FRAME must not fold into either, because it is a statement about the
+        // instruments and not about the arithmetic.
+        assert_eq!(extract_equivalence(&unattr_doc), EQUIVALENCE_UNATTRIBUTED);
+        assert_ne!(extract_equivalence(&unattr_doc), EQUIVALENCE_DIVERGENT);
+        assert_ne!(extract_equivalence(&unattr_doc), EQUIVALENCE_UNMEASURED);
+        assert_eq!(extract_equivalence(&split_doc), EQUIVALENCE_SPLIT_FRAME);
+        assert_ne!(extract_equivalence(&split_doc), EQUIVALENCE_UNATTRIBUTED);
+
+        // Mutation control: a parser that returned a constant would satisfy every equality
+        // above if that constant were UNMEASURED, so prove the five tokens are five values.
+        let seen = [
+            extract_equivalence(&match_doc),
+            extract_equivalence(&div_doc),
+            extract_equivalence(&unm_doc),
+            extract_equivalence(&unattr_doc),
+            extract_equivalence(&split_doc),
+        ];
+        let mut uniq = seen.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            5,
+            "five tokens must parse to five distinct values"
+        );
         // Absence must be treated the same as UNMEASURED (R7: absence ≠ negative).
         assert_eq!(
             extract_equivalence(&without_field),
@@ -1040,5 +1176,46 @@ mod tests {
             "a snapshot without the field predates the verdict; absence = UNMEASURED"
         );
         assert_eq!(extract_equivalence("{}"), EQUIVALENCE_UNMEASURED);
+    }
+
+    /// §10.0 third metric amendment: the RECORD must survive the teardown rebuild, not just
+    /// the token.
+    ///
+    /// The specimen this test was written from: a real device-0 Phi-3.5 run on 2026-07-31
+    /// left `bench/results/counters-phi35-dev0.json` reading
+    /// `"model_output_equivalence": "MATCH"` with `model_output_equivalence_record: null` —
+    /// the Python harness wrote both keys, `dump_observations_if_requested` rebuilt the file
+    /// and carried only the token. An unattributed MATCH on disk, produced by a correctly
+    /// attributed run. Defect C's shape (two writers, one artifact) applied to a caveat.
+    #[test]
+    fn the_verdict_record_survives_a_rebuild_and_is_not_confused_by_nesting() {
+        let record = "{ \"verdict\": \"MATCH\", \"executed_by\": { \
+                      \"VulkanExecutionProvider\": 3, \"CPUExecutionProvider\": 30 }, \
+                      \"detail\": \"a } brace inside a string must not end the object\" }";
+        let doc = format!(
+            "{{\n  \"{EQUIVALENCE_KEY}\": \"MATCH\",\n  \
+             \"{EQUIVALENCE_RECORD_KEY}\": {record},\n  \"dispatches_executed\": 3883\n}}\n"
+        );
+
+        let got = extract_equivalence_record(&doc).expect("the record must be found");
+        assert_eq!(
+            got, record,
+            "nested objects and braces-in-strings must not truncate it"
+        );
+        assert!(got.contains("VulkanExecutionProvider"));
+
+        // Absence is None, not an empty object and not a panic: a snapshot predating the
+        // amendment simply has no record, and that is the UNATTRIBUTED case, not a crash.
+        let bare = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
+        assert!(
+            extract_equivalence_record(&bare).is_none(),
+            "a MATCH with no record must read as absent so the gate can refuse it"
+        );
+        assert!(extract_equivalence_record("{}").is_none());
+        assert!(
+            extract_equivalence_record(&format!("{{\"{EQUIVALENCE_RECORD_KEY}\": null}}"))
+                .is_none(),
+            "a null record is not an object and must not be spliced back as one"
+        );
     }
 }

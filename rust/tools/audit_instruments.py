@@ -225,12 +225,25 @@ def uninvoked(rows: list[dict]) -> list[str]:
 # listed by hand under `hand.harness_notes` with the reason they are unscreenable.
 
 # Files whose module-level functions are the harness instruments under audit.
-HARNESS_INSTRUMENT_FILES = ["ops/_models.py"]
+#
+# `ops/_verdict.py` added 2026-08-01 (Trinity).  It was written after this screen and the
+# screen did not know about it, so the census read "9 harness instruments" while fifteen
+# more — including every guard the §10.0 third amendment and R13 rest on — sat outside its
+# frame.  A census whose frame excludes the newest instruments reports a number about a
+# world it has not surveyed, which is the shape this whole file exists to catch (R12).
+HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py"]
 
 # A harness instrument is a function that renders a verdict: it either raises on a bad
 # world or returns a number a gate reads.  Helpers that only build models or run sessions
 # are not instruments and are excluded by name.
-HARNESS_FN = re.compile(r"^(assert_|count_|check$|check_|require_|verify_|expect_)|_verdict$")
+#
+# `classify_` added with `ops/_verdict.py`: an R13 classifier that maps (exit code, text)
+# onto PASS/FAIL/ERROR renders a verdict as surely as an `assert_` does — it just returns
+# the token instead of raising it.  See `hand.harness_notes`: the raise-based polarity
+# model below cannot screen a total function, and saying so is the point.
+HARNESS_FN = re.compile(
+    r"^(assert_|count_|check$|check_|require_|verify_|expect_|classify_)|_verdict$"
+)
 
 # Decorators / fixtures that mean "this test does not run in the always-on lane".
 HARNESS_GATE = re.compile(r"require_vulkan|skipif|\bskip\b|xfail|slow|gpu|require_model")

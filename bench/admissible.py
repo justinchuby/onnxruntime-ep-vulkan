@@ -102,14 +102,97 @@ def _gate_ep_loaded(rec: dict) -> "tuple[bool, str]":
 
 
 def _gate_equivalence(rec: dict) -> "tuple[bool, str]":
-    """S10.0: no performance number may be quoted beside a non-MATCH verdict."""
-    v = _get(rec, "model_output_equivalence") or _get(rec, "equivalence") or "UNMEASURED"
+    """S10.0: no performance number may be quoted beside a non-MATCH verdict.
+
+    **Vocabulary is set by ``tests/ops/_verdict.py`` -- that module is canonical and this is a
+    mirror.** Five tokens, and this gate must name the one it saw rather than collapsing them
+    into "not MATCH", because Morpheus's disclosure obligation says the wall-clock ratio has to
+    *publish* ``UNATTRIBUTED`` when that is the state. A ratio reported beside "non-MATCH" tells
+    the reader the kernels might be wrong; a ratio reported beside ``UNATTRIBUTED`` tells them
+    the kernels did not run and the number is a CPU number. Those are different retractions.
+
+    The two distinctions that must survive this function:
+
+    * ``UNATTRIBUTED`` is **not** ``DIVERGENT``. DIVERGENT = our kernels computed a wrong answer.
+      UNATTRIBUTED = our kernels executed zero nodes, so the answer -- correct or not -- is not
+      about them. Different owner, different fix.
+    * ``UNATTRIBUTED`` is **not** ``UNMEASURED``. UNMEASURED = the comparison never ran.
+      UNATTRIBUTED = the comparison ran, agreed, and was about the wrong world. The second is
+      far more dangerous precisely because it looks like a pass.
+
+    Since the third metric amendment the verdict is recorded twice: the bare token at
+    ``model_output_equivalence`` (which ``counters.rs::extract_equivalence`` parses) and the
+    full record at ``model_output_equivalence_record``. When the record is present its
+    ``executed_by`` frame is the attribution, and a ``MATCH`` with no frame is refused here for
+    the same reason ``epctl`` refuses it: a verdict that does not carry what executed the model
+    is not a verdict about this EP.
+    """
+    # Mirrors tests/ops/_verdict.py. Canonical definitions live there.
+    EQ_MATCH = "MATCH"
+    EQ_DIVERGENT = "DIVERGENT"
+    EQ_UNMEASURED = "UNMEASURED"
+    EQ_UNATTRIBUTED = "UNATTRIBUTED"
+    EQ_SPLIT_FRAME = "SPLIT-FRAME"
+
+    record = _get(rec, "model_output_equivalence_record")
+    v = _get(rec, "model_output_equivalence") or _get(rec, "equivalence") or EQ_UNMEASURED
     if isinstance(v, dict):
-        v = v.get("verdict", "UNMEASURED")
-    if str(v).upper() != "MATCH":
-        return False, (f"model_output_equivalence is {v}. S10.0 gates the triple on MATCH; "
-                       f"UNMEASURED is the default and is not a pass.")
-    return True, "model_output_equivalence MATCH"
+        record = record if isinstance(record, dict) else v
+        v = v.get("verdict", EQ_UNMEASURED)
+    token = str(v).upper()
+
+    frame = record.get("executed_by") if isinstance(record, dict) else None
+
+    if token == EQ_UNATTRIBUTED:
+        return False, (
+            "model_output_equivalence is UNATTRIBUTED: the comparison ran and agreed, but this "
+            "EP executed zero nodes in the run that produced the outputs. This is NOT DIVERGENT "
+            "-- nothing disagreed -- and it is NOT UNMEASURED -- the instrument did run. Any "
+            "wall-clock ratio from this run is a CPU-vs-CPU ratio and must publish the token "
+            f"UNATTRIBUTED beside it (S10.0 disclosure obligation). executed_by={frame!r}."
+        )
+    if token == EQ_SPLIT_FRAME:
+        return False, (
+            "model_output_equivalence is SPLIT-FRAME: ORT's profile and our own "
+            "dispatches_executed counter disagree about whether this EP ran. One of the two "
+            "witnesses is lying and we do not know which, so nothing may be reported from this "
+            f"run -- not the triple, not the ratio. executed_by={frame!r}."
+        )
+    if token == EQ_DIVERGENT:
+        return False, (
+            "model_output_equivalence is DIVERGENT: the EP ran and produced a wrong answer. "
+            "This is a confirmed correctness failure, not an attribution problem."
+        )
+    if token != EQ_MATCH:
+        return False, (
+            f"model_output_equivalence is {v}. S10.0 gates the triple on MATCH; "
+            f"UNMEASURED is the default and is not a pass."
+        )
+
+    # MATCH from here. A MATCH is only admissible if it carries the frame that says what
+    # executed the model -- the whole point of the third metric amendment.
+    if record is None:
+        return False, (
+            "model_output_equivalence is MATCH but there is no "
+            "model_output_equivalence_record, so the verdict carries no executed_by frame. "
+            "Every MATCH recorded before 2026-07-31 had this shape and one of them was a "
+            "CPU-vs-CPU comparison. An unattributed MATCH is treated as UNATTRIBUTED."
+        )
+    if not frame:
+        return False, (
+            f"model_output_equivalence is MATCH but executed_by is {frame!r} -- an empty frame "
+            "cannot show this EP executed anything. Treated as UNATTRIBUTED."
+        )
+    own = 0
+    if isinstance(frame, dict):
+        own = sum(int(n) for p, n in frame.items() if "Vulkan" in str(p))
+    if own <= 0:
+        return False, (
+            f"model_output_equivalence is MATCH with executed_by={frame!r}: zero nodes attributed "
+            "to this EP. MATCH is unrepresentable at a zero own-provider count (S10.0 third "
+            "metric amendment); treated as UNATTRIBUTED, which is NOT DIVERGENT."
+        )
+    return True, f"model_output_equivalence MATCH, executed_by={frame!r}"
 
 
 def _gate_device_identity(rec: dict) -> "tuple[bool, str]":

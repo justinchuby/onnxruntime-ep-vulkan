@@ -53,6 +53,8 @@ import onnx_ir as ir
 import onnxruntime as ort
 import pytest
 
+import _verdict
+
 EP_NAME = "VulkanExecutionProvider"
 
 
@@ -139,7 +141,193 @@ def pytest_configure(config: pytest.Config) -> None:
         "slow: marks tests that take >10 s (e.g., real model integration tests). "
         "Run with: pytest -m slow. Excluded from the default fast-feedback loop in CI.",
     )
+    config.addinivalue_line(
+        "markers",
+        "expects_ort_fallback: this test deliberately provokes ORT's run-time fallback, so "
+        "the lane's 'Falling back' log scan (R13 obligation 3) must not fail it. Every other "
+        "test that prints that line is a lane failure regardless of its own assertions.",
+    )
     _assert_oracle_versions()
+
+
+# ---------------------------------------------------------------------------
+# R13 — three terminal states, printed as three distinct tokens (§10.0.1)
+# ---------------------------------------------------------------------------
+# > A check has at least three terminal states and must report them as three distinct
+# > tokens: PASS, FAIL(condition) — the condition it exists to detect — and
+# > ERROR(instrument), in which the check did not reach its observation. A red that could
+# > mean either is not a signal. An instrument error is a lane failure of a different kind
+# > and never counts as a detection.
+#
+# The specimen is this project's own: Guard D contained a NameError and raised before it
+# read a single profiling event.  `8 passed` became `5 failed`, the red matched the
+# prediction, and the crash was reported to the team as the guard working.  pytest's
+# summary line has a two-state alphabet — `passed` and `failed` — and no reading of it,
+# however careful, separates a detection from an outage.  So the lane grows a third token.
+#
+# Classification is by EXCEPTION TYPE, which makes it structural rather than a matter of
+# care:
+#   AssertionError / pytest.fail  -> FAIL(condition).  The check reached its observation.
+#   InstrumentError + everything else -> ERROR(instrument).  It did not.
+# Guards in _verdict.py raise InstrumentError strictly before they have a value and
+# AssertionError strictly after, so the type carries the distinction by construction.
+#
+# Obligation 3 — a second witness with a DIFFERENT failure mode, not a better first
+# witness: the lane greps captured ORT output for the known-fatal `Falling back` line and
+# fails on it.  That line has appeared five times on this project while every gate passed.
+# A grep cannot NameError; a guard cannot be silenced by a log-format change; each covers
+# the other's outage.
+
+_LANE_STATE_KEY = "_trinity_r13_state"
+
+#: Accumulated per-test outcomes for the terminal summary.
+#: Lists of (nodeid, first line of the failure text).  R13 second clause: the summary
+#: quotes the failure TEXT, never only the count.
+_lane_condition_failures: list[tuple[str, str]] = []
+_lane_instrument_errors: list[tuple[str, str]] = []
+_lane_fallback_logs: list[tuple[str, str]] = []
+_lane_stale_expectations: list[tuple[str, str]] = []
+_lane_passes: list[str] = []
+
+
+def _fallback_lane_failure(captured: str) -> str | None:
+    """Return a lane-failure message if *captured* announces a run-time fallback, else None.
+
+    Pure and total, so it can be falsified without a GPU and cannot itself become the
+    silent instrument it exists to cover for (R13 obligation 3).
+    """
+    hits = _verdict.find_fatal_log_lines(captured)
+    if not hits:
+        return None
+    return (
+        "[LANE FAILURE — known-fatal log line, R13 obligation 3]\n"
+        f"AssertionError: ORT announced a run-time fallback during this test:\n    {hits[0]}\n"
+        "A known-fatal log line is a lane failure, not a log line.  This line has appeared "
+        "five times on this project while every gate passed — which is exactly the shape of "
+        "the UNATTRIBUTED specimen (§10.0 third amendment).\n"
+        "If this test provokes the fallback deliberately, mark it "
+        "@pytest.mark.expects_ort_fallback."
+    )
+
+
+def _classify_failure(report) -> tuple[str, str]:
+    """Return ``(state, quoted text)`` for a non-passing *report*.
+
+    ``state`` is ``FAIL`` (the condition the check exists to detect) or ``ERROR`` (the
+    check did not reach its observation).  The text is quoted, not counted.
+
+    Duck-typed on purpose: it needs ``when`` and ``longrepr`` only, so it can be falsified
+    directly against synthesised reports in ``test_r13_lane.py``.  A classifier that has
+    never been shown to separate a ``NameError`` from an ``AssertionError`` is exactly the
+    instrument R13 was written about.
+    """
+    text = ""
+    excinfo = getattr(getattr(report, "longrepr", None), "reprcrash", None)
+    if excinfo is not None:
+        text = str(excinfo.message)
+    elif getattr(report, "longrepr", None) is not None:
+        text = str(report.longrepr)
+    first = next((ln for ln in text.splitlines() if ln.strip()), "").strip()
+
+    # An xfail(strict) that PASSED is not an outage and not a detection: the check reached
+    # its observation and the observation contradicts a recorded *expectation*.  It is news,
+    # usually good news, and it is the state most likely to be thrown away — nobody
+    # investigates a red that is somebody else's fix.  R13's third corollary bites here: a
+    # result that contradicts a prediction recruits attention for free, so it gets its own
+    # token rather than being filed under the bucket nobody reads.
+    if first.startswith("[XPASS(strict)]") or first.startswith("[XPASS"):
+        return "XPASS", first
+
+    # Setup/teardown failures never reached the test body: no observation exists.
+    if getattr(report, "when", "call") in ("setup", "teardown"):
+        return "ERROR", first or f"{getattr(report, 'when', '?')} error"
+
+    lowered = first.lower()
+    if first.startswith("AssertionError") or first.startswith("Failed"):
+        return "FAIL", first
+    if "instrument failure" in lowered or first.startswith("InstrumentError"):
+        return "ERROR", first
+    # Any other exception type is an outage by construction: a check that raises something
+    # it did not name is a check that did not reach its observation.
+    if ":" in first and not first.startswith("assert"):
+        return "ERROR", first
+    return "FAIL", first or "no failure text captured"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    """Classify each phase into R13's three states and apply the fallback-log witness."""
+    outcome = yield
+    report: pytest.TestReport = outcome.get_result()
+
+    # --- second witness: the known-fatal ORT log line ------------------------
+    # Runs on PASSING tests too — that is the entire point.  The line has appeared five
+    # times while every gate passed.
+    if report.when == "call" and not item.get_closest_marker("expects_ort_fallback"):
+        captured = (report.capstderr or "") + "\n" + (report.capstdout or "")
+        message = _fallback_lane_failure(captured)
+        if message is not None:
+            _lane_fallback_logs.append((report.nodeid, message.splitlines()[2].strip()))
+            if report.passed:
+                report.outcome = "failed"
+                report.longrepr = message
+
+    if report.when == "call" and report.passed:
+        _lane_passes.append(report.nodeid)
+    elif report.failed:
+        state, text = _classify_failure(report)
+        setattr(report, _LANE_STATE_KEY, state)
+        if state == "ERROR":
+            _lane_instrument_errors.append((report.nodeid, text))
+        elif state == "XPASS":
+            _lane_stale_expectations.append((report.nodeid, text))
+        else:
+            _lane_condition_failures.append((report.nodeid, text))
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """Print the lane's three counts separately, and quote the failure text.
+
+    R13: *a harness whose only failure vocabulary is its framework's FAILED line has a
+    two-state alphabet and cannot carry three states.*  And the second clause: *quote the
+    failure text, never the failure count* — because a confirmation of a prediction
+    spends the reader's attention while a contradiction recruits it for free.
+    """
+    write = terminalreporter.write_line
+    write("")
+    write("=== R13 LANE SUMMARY — one token per terminal state ===")
+    write(f"PASS               : {len(_lane_passes)}")
+    write(f"FAIL(condition)    : {len(_lane_condition_failures)}")
+    write(f"ERROR(instrument)  : {len(_lane_instrument_errors)}")
+    write(f"XPASS(stale expect): {len(_lane_stale_expectations)}")
+    for nodeid, text in _lane_condition_failures:
+        write(f"  FAIL(condition)   {nodeid}")
+        write(f"                    {text[:200]}")
+    for nodeid, text in _lane_instrument_errors:
+        write(f"  ERROR(instrument) {nodeid}")
+        write(f"                    {text[:200]}")
+    for nodeid, text in _lane_stale_expectations:
+        write(f"  XPASS(stale)      {nodeid}")
+        write(f"                    {text[:200]}")
+    if _lane_stale_expectations:
+        write(
+            "An xfail(strict) that PASSED is neither a detection nor an outage: the "
+            "recorded expectation is now wrong, usually because somebody fixed it. It is "
+            "the state most likely to be discarded, because nobody investigates a red that "
+            "is somebody else's good news — so it is named rather than counted."
+        )
+    if _lane_fallback_logs:
+        write(f"LANE FAILURE (fallback log): {len(_lane_fallback_logs)}")
+        for nodeid, line in _lane_fallback_logs:
+            write(f"  {nodeid}")
+            write(f"    {line[:200]}")
+    if _lane_instrument_errors:
+        write(
+            "A lane with any instrument error is not a lane that ran, whatever else it "
+            "reports.  An instrument error NEVER counts as a detection: none of the "
+            "ERROR(instrument) lines above is evidence about the EP."
+        )
+    write("=== end R13 lane summary ===")
 
 
 # ---------------------------------------------------------------------------

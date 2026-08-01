@@ -535,12 +535,12 @@ def test_phi35_vulkan_matches_cpu_logits(
     # Guard A: EP must actually be in use.
     used_providers = vk_sess.get_providers()
     if m.EP_NAME not in used_providers:
-        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
-        if counters_path:
-            try:
-                m.write_equivalence_verdict(counters_path, m.EQUIVALENCE_UNMEASURED)
-            except Exception:  # noqa: BLE001
-                pass
+        m.write_unmeasured_verdict(
+            os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"),
+            f"{m.EP_NAME} absent from get_providers() at session create; no comparison run.",
+            device_index=device_index,
+            artifact=str(phi35_onnx_path),
+        )
         pytest.fail(
             f"[Device {device_index}] {m.EP_NAME} not in session.get_providers(): "
             f"{used_providers}. ORT fell back to CPU silently — comparison would be "
@@ -552,35 +552,51 @@ def test_phi35_vulkan_matches_cpu_logits(
     all_vk_runs = m.run_session_n_times(vk_sess, feeds, 3)
     vk_run1, vk_run2, vk_run3 = all_vk_runs
 
-    # Guard D: runtime-fallback check. ORT may print "EP_FAIL ... Falling back" during
-    # run() and silently retry on CPU — get_providers() (Guard A) cannot see this because
-    # the provider list is fixed at session-create time. Guard D reads the profiling trace,
-    # which records what actually executed, to confirm Vulkan ran at least one node.
-    # If it didn't, the 3 runs above produced CPU output, and the comparison below is
-    # CPU-vs-CPU (MATCH is vacuously true). Write UNMEASURED and fail.
+    # Guard D — now the verdict's CONSTRUCTOR ARGUMENT, not a neighbouring assertion
+    # (§10.0 third amendment, clause 5).  ORT may print "EP_FAIL ... Falling back" during
+    # run() and silently retry on CPU; get_providers() (Guard A) cannot see this because
+    # the provider list is fixed at session-create time.  The profile — an instrument we
+    # do not own — records what actually executed.
+    #
+    # The observation is taken FIRST and unconditionally, so that the verdict below cannot
+    # be constructed without it.  Its assertion still runs, for a fast legible failure,
+    # but it is no longer what makes MATCH impossible at zero: `EquivalenceVerdict` is.
+    counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
     profile_path = vk_sess.end_profiling()
     try:
-        vulkan_executed_count = m.assert_vulkan_executed_runtime(profile_path)
-    except AssertionError as _guard_d_err:
-        # Fallback detected: the trace was read but Vulkan ran nothing. Real EP finding.
-        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+        attribution = m.attribution_from_profile(profile_path)
+    except m.InstrumentError as _guard_d_err:
+        # ERROR(instrument), R13: the guard did not reach its observation.  Do NOT write
+        # any verdict — we have no evidence either way, and an instrument error never
+        # counts as a detection.
+        raise m.InstrumentError(
+            f"[Device {device_index}] Guard D instrument failure — fix the harness, "
+            f"not the EP: {_guard_d_err}"
+        ) from _guard_d_err
+    # Second witness (clause 2): our own dispatch counter.  It may not be the primary
+    # witness; recording it is what makes SPLIT-FRAME detectable.
+    attribution = attribution.with_counters_witness(m.read_counters_dispatches(counters_path))
+
+    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
+    print(f"  Guard D observation: {attribution.describe()}")
+
+    if not attribution.attributed:
+        # FAIL(condition): a real finding.  The verdict written here is UNATTRIBUTED —
+        # not UNMEASURED (we did compare) and not DIVERGENT (the model was not wrong).
+        unattributed = m.EquivalenceVerdict.from_comparison(
+            comparison=m.COMPARISON_NOT_PERFORMED,
+            attribution=attribution,
+            artifact=str(phi35_onnx_path),
+            device_index=device_index,
+            detail="run-time fallback: this EP executed zero islands",
+        )
         if counters_path:
             try:
-                m.write_equivalence_verdict(counters_path, m.EQUIVALENCE_UNMEASURED)
-            except Exception:  # noqa: BLE001
-                pass
-        raise AssertionError(
-            f"[Device {device_index}] Guard D (fallback detected): {_guard_d_err}"
-        ) from _guard_d_err
-    except RuntimeError as _guard_d_err:
-        # Instrument failure: the guard itself is broken — trace file missing/corrupt.
-        # Do NOT write UNMEASURED; we have no evidence either way.
-        raise RuntimeError(
-            f"[Device {device_index}] Guard D (instrument failure — fix the harness, "
-            f"not the EP): {_guard_d_err}"
-        ) from _guard_d_err
-    print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
-    print(f"  Guard D: VulkanEP executed {m.describe_vulkan_execution_count(vulkan_executed_count)} ✓")
+                m.write_equivalence_record(counters_path, unattributed)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  WARNING: could not write equivalence record: {exc}")
+        attribution.assert_executed()  # raises AssertionError with the observation quoted
+    vulkan_executed_count = attribution.own_count
 
     # --- CPU-only session ---
     cpu_opts = ort.SessionOptions()
@@ -640,25 +656,45 @@ def test_phi35_vulkan_matches_cpu_logits(
     print(f"  top-10 overlap: {top10_overlap}/10")
     print(f"  max|vk2-cpu| logit diff: {float(np.abs(logits_vk - logits_cpu).max()):.4f}")
 
-    # Verdict computation (§9.1.3 / §10.0):
-    # MATCH requires ALL of: cross-run consistent, non-zero on run2, argmax+top10 agree.
-    # A single-run gate cannot report MATCH because it cannot see the unwritten-buffer class.
-    # Guard C failure → DIVERGENT (unwritten buffer is a bug, not UNMEASURED — we have
-    # evidence of misbehaviour, just of a different kind than computed-wrong).
+    # Verdict computation (§9.1.3 / §10.0 third amendment):
+    # We compute a COMPARISON OUTCOME — a statement about tensors, which is all a
+    # comparison can honestly produce — and the constructor derives the verdict from it
+    # plus the attribution.  MATCH is not an input here and cannot be: passing "MATCH"
+    # to from_comparison() is a ValueError, and the attribution argument is a parsed
+    # profile.  At own_count == 0 the same call yields UNATTRIBUTED, which is a different
+    # red from DIVERGENT and is never folded into it.
     if not cross_run_ok:
-        verdict = m.EQUIVALENCE_DIVERGENT  # unwritten buffer; cross-run inconsistency proven
+        comparison = m.COMPARISON_DISAGREE  # unwritten buffer; cross-run inconsistency proven
+        detail = f"cross-run inconsistency on outputs {differing_outputs[:10]}"
     elif vk_max_abs <= 0.1 or top10_overlap < 5 or argmax_vk != argmax_cpu:
-        verdict = m.EQUIVALENCE_DIVERGENT  # computed wrong (zeros or wrong tokens)
+        comparison = m.COMPARISON_DISAGREE  # computed wrong (zeros or wrong tokens)
+        detail = (
+            f"argmax vk={argmax_vk} cpu={argmax_cpu}, top10 overlap {top10_overlap}/10, "
+            f"max|logit|={vk_max_abs:.6f}"
+        )
     else:
-        verdict = m.EQUIVALENCE_MATCH
+        comparison = m.COMPARISON_AGREE
+        detail = (
+            f"argmax {argmax_vk} == CPU, top10 overlap {top10_overlap}/10, "
+            f"max|vk2-cpu|={float(np.abs(logits_vk - logits_cpu).max()):.6f}"
+        )
 
-    counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+    equivalence = m.EquivalenceVerdict.from_comparison(
+        comparison=comparison,
+        attribution=attribution,
+        artifact=str(phi35_onnx_path),
+        device_index=device_index,
+        detail=detail,
+    )
+    verdict = equivalence.verdict
+    print(f"  {equivalence.explain()}")
+
     if counters_path:
         try:
-            m.write_equivalence_verdict(counters_path, verdict)
+            m.write_equivalence_record(counters_path, equivalence)
             print(f"  model_output_equivalence: {verdict} → written to {counters_path}")
         except Exception as exc:  # noqa: BLE001
-            print(f"  WARNING: could not write equivalence verdict: {exc}")
+            print(f"  WARNING: could not write equivalence record: {exc}")
 
     # Assertions run AFTER verdict write so the verdict is recorded even on xfail.
     assert cross_run_ok, (
