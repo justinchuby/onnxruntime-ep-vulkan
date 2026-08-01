@@ -265,7 +265,13 @@ def uninvoked(rows: list[dict]) -> list[str]:
 # more — including every guard the §10.0 third amendment and R13 rest on — sat outside its
 # frame.  A census whose frame excludes the newest instruments reports a number about a
 # world it has not surveyed, which is the shape this whole file exists to catch (R12).
-HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py"]
+#
+# `ops/conftest.py` added 2026-08-01 (Trinity, on Tank's open item).  It is the file that
+# decides, for EVERY test in the suite, whether a red is `PASS` / `FAIL(condition)` /
+# `ERROR(instrument)` — the R13 channel itself — and it sat outside the frame while the
+# census reported on the instruments whose verdicts travel down it.  A screen that surveys
+# the speakers and not the microphone is `out-of-frame` in its own vocabulary.
+HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py", "ops/conftest.py"]
 
 # A harness instrument is a function that renders a verdict: it either raises on a bad
 # world or returns a number a gate reads.  Helpers that only build models or run sessions
@@ -275,8 +281,16 @@ HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py"]
 # onto PASS/FAIL/ERROR renders a verdict as surely as an `assert_` does — it just returns
 # the token instead of raising it.  See `hand.harness_notes`: the raise-based polarity
 # model below cannot screen a total function, and saying so is the point.
+#
+# The optional leading `_` added 2026-08-01 (Trinity) with `ops/conftest.py`.  Without it
+# the screen could see `require_vulkan` in that file and nothing else — not
+# `_classify_failure`, which decides the R13 token for every test in the suite, and not
+# `_assert_oracle_versions`, which decides whether the oracle is admissible at all.  A
+# module-private name is private to Python, not to the call graph; hiding the two most
+# load-bearing instruments in the harness behind an underscore convention is exactly the
+# "reports a number about a world it has not surveyed" failure one line up.
 HARNESS_FN = re.compile(
-    r"^(assert_|count_|check$|check_|require_|verify_|expect_|classify_)|_verdict$"
+    r"^_?(assert_|count_|check$|check_|require_|verify_|expect_|classify_)|_verdict$"
 )
 
 # Decorators / fixtures that mean "this test does not run in the always-on lane".
@@ -297,6 +311,41 @@ def _harness_instruments(tests_root=None, files=None) -> dict[str, str]:
             if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                 if HARNESS_FN.search(node.name):
                     out[node.name] = f"tests/{rel}::{node.name}"
+    return out
+
+
+def _fixture_instruments(tests_root=None, files=None) -> set[str]:
+    """Return the subset of harness instruments that are pytest fixtures.
+
+    A fixture is invoked by **parameter name**, never by a call expression, so the
+    call-shaped caller model that screens every other instrument scores one as
+    ``uninvoked`` no matter how many tests depend on it.  ``require_vulkan`` is depended on
+    by most of this suite and read ``UNINVOKED calls=0`` the first time ``ops/conftest.py``
+    entered the screen's frame — a false positive of exactly the kind this file warns about
+    under "Known limits", and one that would have been mistaken for a finding.
+
+    Decided from the decorator list, so it needs no import of pytest and works on a
+    synthetic tree.
+    """
+    import ast as _ast
+
+    tests_root = TESTS if tests_root is None else Path(tests_root)
+    files = HARNESS_INSTRUMENT_FILES if files is None else files
+    out: set[str] = set()
+    for rel in files:
+        path = tests_root / rel
+        if not path.is_file():
+            continue
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if not HARNESS_FN.search(node.name):
+                continue
+            for dec in node.decorator_list:
+                if "fixture" in _ast.dump(dec):
+                    out.add(node.name)
+                    break
     return out
 
 
@@ -327,6 +376,7 @@ def harness_survey(tests_root=None, files=None) -> list[dict]:
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
     names = _harness_instruments(tests_root, files)
+    fixtures = _fixture_instruments(tests_root, files)
     stats = {n: {"calls": 0, "reject": 0, "accept": 0} for n in names}
 
     owner_files = {tests_root / rel for rel in files}
@@ -358,6 +408,13 @@ def harness_survey(tests_root=None, files=None) -> list[dict]:
             continue
         for fn in [n for n in _ast.walk(tree) if isinstance(n, _ast.FunctionDef)]:
             gated = _is_gated(fn)
+            # A fixture is depended on by naming it as a parameter.  This is the only
+            # invocation it ever gets, so it is counted here and nowhere else.  It never
+            # supplies a polarity: nothing in the parameter list says which answer the
+            # fixture gave.
+            for arg in fn.args.args:
+                if arg.arg in fixtures:
+                    stats[arg.arg]["calls"] += 1
             # Map every node in this function to whether it sits inside `pytest.raises`.
             raising: set[int] = set()
             for node in _ast.walk(fn):

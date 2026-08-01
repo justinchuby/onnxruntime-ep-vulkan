@@ -1,0 +1,64 @@
+{
+  "allow_missing_glslc_route": "UNREACHABLE on this host: build.rs::installed_sdk_glslc() scans C:\\VulkanSDK unconditionally (build.rs:175-198) and honours no environment variable, so ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC=1 (build.rs:247) is never consulted where the SDK is installed. The shader-less artifact here is built from an empty shader source set, which reaches build.rs's other write_shader_modules(out_dir, &[]) return. OWED TO TANK: make the env var a hard override checked BEFORE the search, so this lane can be entered deliberately.",
+  "criterion": 5,
+  "criterion_text": "A shader-less build advertises zero devices and claims nothing, with a 'built without shaders' reason (\u00a77.8 condition 3).",
+  "device_selector": "0",
+  "negative_control_fired": true,
+  "no_duration_quoted": "\u00a710.0 obligation 8: no device-clock or wall-clock figure appears in this artifact.",
+  "rows": {
+    "shaderless": {
+      "child_exit_code": 0,
+      "child_stderr": "[vulkan-ep] WARN: probe_devices: built without shaders (ALLOW_MISSING_GLSLC build) \u2014 advertising zero devices so ORT falls back to CPU. This artifact cannot dispatch compute and must not be shipped.\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00001\u0000 \u00001\u00006\u0000:\u00002\u00008\u0000:\u00001\u00007\u0000.\u00008\u00000\u00006\u00001\u00000\u00001\u00009\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000e\u0000n\u0000g\u0000i\u0000n\u0000e\u0000.\u0000r\u0000s\u0000:\u00006\u00008\u00001\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000e\u0000n\u0000g\u0000i\u0000n\u0000e\u0000]\u0000 \u0000p\u0000r\u0000o\u0000b\u0000e\u0000_\u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000s\u0000:\u0000 \u0000b\u0000u\u0000i\u0000l\u0000t\u0000 \u0000w\u0000i\u0000t\u0000h\u0000o\u0000u\u0000t\u0000 \u0000s\u0000h\u0000a\u0000d\u0000e\u0000r\u0000s\u0000 \u0000(\u0000A\u0000L\u0000L\u0000O\u0000W\u0000_\u0000M\u0000I\u0000S\u0000S\u0000I\u0000N\u0000G\u0000_\u0000G\u0000L\u0000S\u0000L\u0000C\u0000 \u0000b\u0000u\u0000i\u0000l\u0000d\u0000)\u0000 \u0000\u0014  \u0000a\u0000d\u0000v\u0000e\u0000r\u0000t\u0000i\u0000s\u0000i\u0000n\u0000g\u0000 \u0000z\u0000e\u0000r\u0000o\u0000 \u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000s\u0000 \u0000s\u0000o\u0000 \u0000O\u0000R\u0000T\u0000 \u0000f\u0000a\u0000l\u0000l\u0000s\u0000 \u0000b\u0000a\u0000c\u0000k\u0000 \u0000t\u0000o\u0000 \u0000C\u0000P\u0000U\u0000.\u0000 \u0000T\u0000h\u0000i\u0000s\u0000 \u0000a\u0000r\u0000t\u0000i\u0000f\u0000a\u0000c\u0000t\u0000 \u0000c\u0000a\u0000n\u0000n\u0000o\u0000t\u0000 \u0000d\u0000i\u0000s\u0000p\u0000a\u0000t\u0000c\u0000h\u0000 \u0000c\u0000o\u0000m\u0000p\u0000u\u0000t\u0000e\u0000 \u0000a\u0000n\u0000d\u0000 \u0000m\u0000u\u0000s\u0000t\u0000 \u0000n\u0000o\u0000t\u0000 \u0000b\u0000e\u0000 \u0000s\u0000h\u0000i\u0000p\u0000p\u0000e\u0000d\u0000.\u0000\u001b\u0000[\u0000m\u0000\n\u0000[vulkan-ep] WARN: VulkanExecutionProvider: no Vulkan device satisfies the capability gate on this machine; advertising zero devices. Models will run on the CPU EP.\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00001\u0000 \u00001\u00006\u0000:\u00002\u00008\u0000:\u00001\u00007\u0000.\u00008\u00000\u00009\u00008\u00002\u00001\u00001\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000f\u0000a\u0000c\u0000t\u0000o\u0000r\u0000y\u0000.\u0000r\u0000s\u0000:\u00002\u00005\u00008\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000f\u0000a\u0000c\u0000t\u0000o\u0000r\u0000y\u0000]\u0000 \u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000E\u0000x\u0000e\u0000c\u0000u\u0000t\u0000i\u0000o\u0000n\u0000P\u0000r\u0000o\u0000v\u0000i\u0000d\u0000e\u0000r\u0000:\u0000 \u0000n\u0000o\u0000 \u0000V\u0000u\u0000l\u0000k\u0000a\u0000n\u0000 \u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000 \u0000s\u0000a\u0000t\u0000i\u0000s\u0000f\u0000i\u0000e\u0000s\u0000 \u0000t\u0000h\u0000e\u0000 \u0000c\u0000a\u0000p\u0000a\u0000b\u0000i\u0000l\u0000i\u0000t\u0000y\u0000 \u0000g\u0000a\u0000t\u0000e\u0000 \u0000o\u0000n\u0000 \u0000t\u0000h\u0000i\u0000s\u0000 \u0000m\u0000a\u0000c\u0000h\u0000i\u0000n\u0000e\u0000;\u0000 \u0000a\u0000d\u0000v\u0000e\u0000r\u0000t\u0000i\u0000s\u0000i\u0000n\u0000g\u0000 \u0000z\u0000e\u0000r\u0000o\u0000 \u0000d\u0000e\u0000v\u0000i\u0000c\u0000e\u0000s\u0000.\u0000 \u0000M\u0000o\u0000d\u0000e\u0000l\u0000s\u0000 \u0000w\u0000i\u0000l\u0000l\u0000 \u0000r\u0000u\u0000n\u0000 \u0000o\u0000n\u0000 \u0000t\u0000h\u0000e\u0000 \u0000C\u0000P\u0000U\u0000 \u0000E\u0000P\u0000.\u0000\u001b\u0000[\u0000m\u0000\n\u0000",
+      "child_stdout": "*************** EP Error ***************\nEP Error Unknown Provider Type: VulkanExecutionProvider when using ['VulkanExecutionProvider', 'CPUExecutionProvider']\nFalling back to ['CPUExecutionProvider'] and retrying.\n****************************************",
+      "env_vk_driver_files": "",
+      "env_vk_icd_filenames": "",
+      "ep_devices_advertised": 0,
+      "ep_log": "C:\\Users\\justinchu\\AppData\\Local\\anaconda3\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime_inference_collection.py:153: UserWarning: Specified provider 'VulkanExecutionProvider' is not in available provider names.Available providers: 'AzureExecutionProvider, CPUExecutionProvider'\n  warnings.warn(\n",
+      "epctl_exit_code": 0,
+      "expected": [
+        4.0,
+        6.0
+      ],
+      "library": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity-shaderless\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "loader_probe_report": "CLOSEST_HIT_KHR | MISS_KHR | INTERSECTION_KHR | CALLABLE_KHR | TASK_EXT | MESH_EXT\n  subgroup_basic_in_compute: true\n  subgroup_ops          : BASIC | VOTE | ARITHMETIC | BALLOT | SHUFFLE | SHUFFLE_RELATIVE | CLUSTERED | QUAD | PARTITIONED_NV | ROTATE_KHR | ROTATE_CLUSTERED_KHR\n  is_uma                : false\n  timestamp_period_ns   : 1.0000 ns/tick\n  timestamp_valid_bits  : 64\n2 device(s) passed the \u00a77.2 capability gate.\n\nONNXRUNTIME_EP_VULKAN_DEVICE = 0\n\nONNXRUNTIME_EP_VULKAN_DEVICE selector index map (best-first sorted; use these indices for ONNXRUNTIME_EP_VULKAN_DEVICE):\n  [0] 'NVIDIA GeForce RTX 4060 Laptop GPU'  (Vulkan enum index 1)\n  [1] 'Intel(R) Iris(R) Xe Graphics'  (Vulkan enum index 0)\nWould select: selector index 0 \u2192 'NVIDIA GeForce RTX 4060 Laptop GPU' (Vulkan enum index 1)\n",
+      "output": [
+        4.0,
+        6.0
+      ],
+      "output_exact_match": true,
+      "row": "shaderless",
+      "row_state": "OBSERVED",
+      "shaderless_reason_emitted": true,
+      "vulkan_node_events": 0
+    },
+    "shaders_compiled": {
+      "child_exit_code": 0,
+      "child_stderr": "[vulkan-ep] WARN: GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 24 boundary bytes, 4 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })\n\u001b\u0000[\u00000\u0000;\u00009\u00003\u0000m\u00002\u00000\u00002\u00006\u0000-\u00000\u00008\u0000-\u00000\u00001\u0000 \u00001\u00006\u0000:\u00002\u00008\u0000:\u00000\u00005\u0000.\u00000\u00006\u00002\u00002\u00006\u00002\u00006\u0000 \u0000[\u0000W\u0000:\u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000:\u0000D\u0000e\u0000f\u0000a\u0000u\u0000l\u0000t\u0000,\u0000 \u0000e\u0000p\u0000.\u0000r\u0000s\u0000:\u00001\u00000\u00006\u00002\u0000 \u0000o\u0000n\u0000n\u0000x\u0000r\u0000u\u0000n\u0000t\u0000i\u0000m\u0000e\u0000_\u0000v\u0000u\u0000l\u0000k\u0000a\u0000n\u0000_\u0000e\u0000p\u0000:\u0000:\u0000e\u0000p\u0000]\u0000 \u0000G\u0000e\u0000t\u0000C\u0000a\u0000p\u0000a\u0000b\u0000i\u0000l\u0000i\u0000t\u0000y\u0000:\u0000 \u0000s\u0000o\u0000l\u0000e\u0000-\u0000i\u0000s\u0000l\u0000a\u0000n\u0000d\u0000 \u0000o\u0000v\u0000e\u0000r\u0000r\u0000i\u0000d\u0000e\u0000 \u0000\u0014  \u0000t\u0000h\u0000e\u0000 \u0000n\u0000e\u0000t\u0000-\u0000b\u0000e\u0000n\u0000e\u0000f\u0000i\u0000t\u0000 \u0000g\u0000a\u0000t\u0000e\u0000 \u0000R\u0000E\u0000J\u0000E\u0000C\u0000T\u0000E\u0000D\u0000 \u0000t\u0000h\u0000e\u0000 \u0000g\u0000r\u0000a\u0000p\u0000h\u0000'\u0000s\u0000 \u0000o\u0000n\u0000l\u0000y\u0000 \u0000i\u0000s\u0000l\u0000a\u0000n\u0000d\u0000 \u0000(\u00001\u0000 \u0000n\u0000o\u0000d\u0000e\u0000s\u0000,\u0000 \u00000\u0000 \u0000a\u0000n\u0000c\u0000h\u0000o\u0000r\u0000s\u0000,\u0000 \u00002\u00004\u0000 \u0000b\u0000o\u0000u\u0000n\u0000d\u0000a\u0000r\u0000y\u0000 \u0000b\u0000y\u0000t\u0000e\u0000s\u0000,\u0000 \u00004\u0000 \u0000e\u0000s\u0000t\u0000.\u0000 \u0000F\u0000L\u0000O\u0000P\u0000s\u0000)\u0000 \u0000a\u0000n\u0000d\u0000 \u0000t\u0000h\u0000e\u0000 \u0000r\u0000e\u0000j\u0000e\u0000c\u0000t\u0000i\u0000o\u0000n\u0000 \u0000w\u0000a\u0000s\u0000 \u0000o\u0000v\u0000e\u0000r\u0000r\u0000i\u0000d\u0000d\u0000e\u0000n\u0000 \u0000b\u0000e\u0000c\u0000a\u0000u\u0000s\u0000e\u0000 \u0000t\u0000h\u0000e\u0000r\u0000e\u0000 \u0000i\u0000s\u0000 \u0000n\u0000o\u0000 \u0000a\u0000l\u0000t\u0000e\u0000r\u0000n\u0000a\u0000t\u0000i\u0000v\u0000e\u0000 \u0000p\u0000a\u0000r\u0000t\u0000i\u0000t\u0000i\u0000o\u0000n\u0000.\u0000 \u0000G\u0000a\u0000t\u0000e\u0000'\u0000s\u0000 \u0000o\u0000w\u0000n\u0000 \u0000v\u0000e\u0000r\u0000d\u0000i\u0000c\u0000t\u0000:\u0000 \u0000R\u0000e\u0000j\u0000e\u0000c\u0000t\u0000(\u0000T\u0000o\u0000o\u0000S\u0000m\u0000a\u0000l\u0000l\u0000 \u0000{\u0000 \u0000n\u0000o\u0000d\u0000e\u0000s\u0000:\u0000 \u00001\u0000,\u0000 \u0000m\u0000i\u0000n\u0000_\u0000n\u0000o\u0000d\u0000e\u0000s\u0000:\u0000 \u00004\u0000 \u0000}\u0000)\u0000\u001b\u0000[\u0000m\u0000\n\u0000",
+      "child_stdout": "",
+      "env_vk_driver_files": "",
+      "env_vk_icd_filenames": "",
+      "ep_devices_advertised": 1,
+      "ep_log": "",
+      "epctl_exit_code": 0,
+      "expected": [
+        4.0,
+        6.0
+      ],
+      "library": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+      "loader_probe_report": "CLOSEST_HIT_KHR | MISS_KHR | INTERSECTION_KHR | CALLABLE_KHR | TASK_EXT | MESH_EXT\n  subgroup_basic_in_compute: true\n  subgroup_ops          : BASIC | VOTE | ARITHMETIC | BALLOT | SHUFFLE | SHUFFLE_RELATIVE | CLUSTERED | QUAD | PARTITIONED_NV | ROTATE_KHR | ROTATE_CLUSTERED_KHR\n  is_uma                : false\n  timestamp_period_ns   : 1.0000 ns/tick\n  timestamp_valid_bits  : 64\n2 device(s) passed the \u00a77.2 capability gate.\n\nONNXRUNTIME_EP_VULKAN_DEVICE = 0\n\nONNXRUNTIME_EP_VULKAN_DEVICE selector index map (best-first sorted; use these indices for ONNXRUNTIME_EP_VULKAN_DEVICE):\n  [0] 'NVIDIA GeForce RTX 4060 Laptop GPU'  (Vulkan enum index 1)\n  [1] 'Intel(R) Iris(R) Xe Graphics'  (Vulkan enum index 0)\nWould select: selector index 0 \u2192 'NVIDIA GeForce RTX 4060 Laptop GPU' (Vulkan enum index 1)\n",
+      "output": [
+        4.0,
+        6.0
+      ],
+      "output_exact_match": true,
+      "row": "shaders_compiled",
+      "row_state": "OBSERVED",
+      "shaderless_reason_emitted": false,
+      "vulkan_node_events": 1
+    }
+  },
+  "shader_full_library": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "shader_full_sha_prefix": "a768c92a9d530d88",
+  "shaderless_library": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity-shaderless\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "shaderless_sha_prefix": "9b6e949da763c1d8"
+}
