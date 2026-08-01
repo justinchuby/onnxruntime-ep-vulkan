@@ -2395,3 +2395,177 @@ end-to-end number in this project's history falls out of a single command with n
 cd bench; python phi35.py --device 0 --require-quiet
 cd bench; python phi35.py --device 1 --require-quiet
 ```
+
+
+## 14. The barrier fix, measured as an A/B — and a floor on what a settled tail may claim (2026-08-01)
+
+Three things happened on `main` before this section: Mouse's partitioner fused Phi-3.5 into **one**
+island of 355 claimed nodes, Switch replaced **147,618 per-buffer `VkBufferMemoryBarrier` structs
+per inference** with a single global `VkMemoryBarrier`, and Tank landed a runtime WARN that speaks
+through ORT's own logging sink. All three are visible in what follows, and the third one broke my
+harness before it could measure the first two.
+
+### 14.0 What the machine was, and what is therefore withheld
+
+`CONTENDED` on every run below — 4.7 to 11.4 foreign busy cores, sourced (by name, from the survey's
+own `top_foreign`) to the other agents' `copilot.exe`, `Code.exe` and Defender, not to Justin's
+project, which had indeed finished. **The gate refused, I did not override it, and the end-to-end
+wall clock and the Vulkan/CPU ratio remain withheld on both devices** for the third session running.
+The samples exist in the JSON records under `vulkan`/`cpu` and are marked non-quotable there.
+
+What follows is entirely **device-clock and paired-difference** work, which is the class of result
+this project has established survives a loud machine:
+
+- the device timestamp counter cannot see host load at all (§13);
+- Switch's own hog experiment put `gpu_steady_tail` under foreign GPU load and it either landed
+  within **0.08%** of solo or refused outright;
+- and an A/B whose two arms are alternated inside one sitting cancels a load level that neither arm
+  chose.
+
+### 14.1 NVIDIA RTX 4060, device clock, current `main`
+
+| quantity | value | basis |
+|---|---|---|
+| GPU busy per inference | **13.3432 ms** | `gpu_steady_tail` STEADY, n=43, coverage 100%, RSD 1.72% |
+| corroborating run | 13.3468 ms | n=40, coverage 87%, RSD 1.88% |
+| `model_output_equivalence` | **MATCH** | same run, same process, 355 of 363 nodes claimed, 1 island |
+| dispatch spans | 16,330 == 16,330 == 16,330 | `gpu_span_accounting`, so ordinal attribution is exact |
+| driver | NVIDIA 591.55, Vulkan 1.4.325, timestampPeriod 1 ns, validBits 64 | |
+
+**What this is comparable to, and what it is not.** It is comparable to the same figure taken on the
+same box, with the same harness and the same artifact, minutes apart — which is exactly what §14.2
+does, and that is why §14.2 exists. It is **not** comparable to my published **40.201 ms/inference**
+of 2026-07-31. Between those two numbers lie Switch's GEMV kernel rewrite, Mouse's partitioner
+fusion (161 islands to 1), persistent weight residency and the barrier fix. Dividing them yields
+"3.0x" and attributes four people's work plus an unknown to whichever one is being discussed. **The
+40.201 ms figure is retired as a baseline, not beaten by one.**
+
+Intel Iris Xe on the same `main`: **withheld, `NO_STEADY_TAIL`** — "no suffix of >= 5 inferences
+holds GPU busy time within 2% RSD. The device never settled." The per-inference series wanders
+53.4-91.3 ms across 46 inferences with no flat region. Same refusal as 2026-07-31 and for the same
+structural reason: an iGPU shares its power budget with the loaded CPU cores, so on *this* device
+the device clock is not contention-immune and the loud machine reaches it. Two devices differing in
+kind, not degree. **They are not compared** — `bench/compare.py`'s cross-device refusal stands.
+
+### 14.2 The barrier fix, A/B, interleaved — `bench/results/probe_barrier_ab.py`
+
+Switch's prediction had a falsifier attached, which is why it was worth testing: `vulkan.record`
+cost **14.414 ms of host time against 12.156 ms of device-clock busy**, 96.4% of it in no named
+span, so removing 147,618 barrier structs built on the host should move **host** time sharply and
+**device** time barely. If device time moved a lot, something else changed.
+
+The naive test — run the old DLL, run the new one, subtract — has a confound this project has been
+burned by: host time is precisely what machine load moves, this box is not quiet, and the load is
+not constant across two runs minutes apart. So the two DLLs are **alternated A B A B in one
+sitting**, each run carrying its own load survey. Same harness, same machine, same artifact; the
+DLL is the only difference (`git diff 42deaba..1cd0b55 -- rust/` touches `vk/barrier.rs`,
+`vk/session.rs` and Tank's host-side logging — **no shader changes**, so a device-side movement
+would have to be the barrier).
+
+| run | foreign cores | `record` host median | GPU busy tail | n | coverage |
+|---|---|---|---|---|---|
+| post (fix) | 7.64 | **3.780 ms** | 12.1833 ms | 38 | 88% |
+| pre | 5.06 | **16.412 ms** | 13.3463 ms | 43 | 100% |
+| post (fix) | 8.12 | **3.687 ms** | 13.3432 ms | 43 | 100% |
+| pre | 8.31 | **20.344 ms** | *refused* | 5 | 12% |
+
+**Host: confirmed, and not by load.** `record` host median falls **4.3x to 5.5x** (leaf-only, with
+`desc_alloc`/`pipeline_lookup`/`cmd_upload` subtracted: 810.0 ms to 139.0 ms over 43 recordings,
+**5.8x**). The load ordering is scrambled across the arms — the second post run was measured under
+*more* foreign load (8.12 cores) than the first pre run (5.06) and was still 4.3x cheaper. Load
+cannot produce that ordering.
+
+**Device: unchanged, which is the half of the prediction that could have failed.** The matched pair
+— both n=43, both 100% coverage, taken back to back — reads **13.3463 ms pre vs 13.3432 ms post, a
+difference of 0.02%.** The remaining post run reads 12.1833 ms, so the run-to-run spread within the
+post arm alone (±9%) is larger than anything between the arms. **The fix moved host time and did not
+move device time.** Nothing else changed, and we do not have to go looking for what did.
+
+**An arithmetic corroboration I did not expect to get.** Switch derived **~94 ns per barrier struct**
+(13.9 ms unnamed / 147,618). The host `record` delta measured here is 16.412 - 3.780 = 12.63 ms
+median, and leaf-only 18.84 - 3.23 = 15.6 ms, over the same 147,618 structs: **86 ns to 106 ns per
+struct**, straddling his figure. Two decompositions from different instruments agreeing to within
+13% on a per-struct cost is the strongest form this project has for "the named mechanism is the one
+that was paying."
+
+And the part of his work worth repeating more than the fix: he was confident the cost was
+`env::var_os` in the per-dispatch loop, **benchmarked it first — 0.232 µs/call, 0.083 ms/inference,
+wrong by 170x** — and left it alone.
+
+### 14.3 RULING — a settled tail is not automatically a quotable one
+
+Morpheus asked whether `gpu_steady_tail` needs a minimum-n floor, on the observation that his
+`contended` row **passed at n=8 while sitting 2.1% above solo**. **It does, and the floor is on
+coverage more than on n.** Implemented in `phases.gpu_steady_tail`; the new verdict is
+`MARGINAL_TAIL`.
+
+The defect is precise: **the 2% RSD bar constrains the tail's internal spread, not its agreement
+with the device's true steady rate.** Five samples from a locally flat stretch of a wandering series
+clear it exactly as easily as a settled device does. Specimens, all real, all from one day:
+
+| tail | n | discarded | coverage | median | its own run's warm mean | error |
+|---|---|---|---|---|---|---|
+| pre-fix A/B run 2 | 5 | 38 | 12% | 37.562 ms | 26.412 ms | **+42%** |
+| pre-fix long run | 7 | 39 | 15% | 20.055 ms | 15.03 ms | **+33%** |
+| Switch `contended` | 8 | 38 | 17% | 11.7697 ms | (solo 11.526) | +2.1% |
+| every good tail | 38-43 | 0-6 | 87-100% | 13.343-13.347 ms | 13.35-13.42 ms | **<0.6%** |
+
+The separation is clean and it is not on `n`: it is on **how much of the series the tail keeps**. A
+genuine warmup ramp is a short *prefix* (5-6 of 46 here); a device that never settled produces a
+short flat *suffix* (38-39 of 46 discarded). So the floors are `n >= 8` **and** `coverage >= 50%`,
+and a suffix that clears the RSD bar but fails either is `MARGINAL_TAIL` — **not a slower number, no
+number**. Its median is kept under `withheld_median_ms` so that no later reader and no aggregation
+can pick it up as one. Consumers gate on `verdict == "STEADY"` and were already correct for this.
+
+This deliberately makes the instrument refuse more often, and its first act was to refuse two of my
+own runs from this session — including the one that appeared to show the barrier fix improving GPU
+time by 33%, which was the exciting reading and was false. Re-analysed under the floor, the
+pre/post GPU figures agree to 0.02%, which is the finding.
+
+### 14.4 The harness died on Tank's WARN, and that is an `ERROR(instrument)` (R12/R13)
+
+`bench/phi35.py` ran `subprocess.run(..., text=True)` on the worker. **ORT's default logging sink on
+Windows writes UTF-16LE, our own narrow lines share the same handle, and Tank's new WARN goes
+through ORT's sink** — so `subprocess`'s reader thread raised
+
+```
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa7 in position 1006
+```
+
+and then the error path raised on top of it: `proc.stderr.strip()` with `proc.stderr` at `None`.
+**A harness that dies on its own error path cannot report the error it found.**
+
+This is R12, textbook: two instruments each correct about a different world — Tank's channel is
+UTF-16LE, mine assumed UTF-8 — and the collision surfaced as a crash rather than a wrong number,
+which is the good version of this failure. The repair therefore borrows **Tank's `decode_both`**
+(`rust/tools/probe_broken_commitment.py`), which reads the same bytes four ways and carries his
+written record of what each naive version got wrong. A second decoder in `bench/` would be a second
+dialect for one channel, which is what Link refused to create for the verdict vocabulary; if his
+module is not importable the tail is `ERROR(instrument=stream_decoder)` rather than a private
+fallback decode. Under R13 the capture failure is recorded in `instrument_errors`, never in
+`refusals`: an instrument error is the harness not having looked, a refusal is a condition the
+harness found, and no aggregation may count one as the other.
+
+### 14.5 Named gap, not fixed today: the `MATCH` in `bench/` carries no execution frame
+
+`bench/admissible.py` refuses every artifact in §14 for two reasons, and the second is the
+interesting one:
+
+```
+x machine_quiescence: machine_quiescence is CONTENDED.
+x model_output_equivalence: MATCH but there is no model_output_equivalence_record, so the
+  verdict carries no executed_by frame.
+```
+
+`bench/phi35.py` does its own in-process CPU comparison and records `MATCH` as a bare string. The EP
+side (`rust/src/counters.rs::EQUIVALENCE_RECORD_KEY`) and Trinity's `tests/ops/_verdict.py` both
+carry the full record with its `executed_by` frame; the bench harness does not yet consume that
+vocabulary, so its verdict is `UNATTRIBUTED` by my own gate's reckoning. **That is correct
+behaviour and it is my gap to close**, in `bench/`, next session. It is named here rather than
+half-wired now, because a mechanism that is present and not reaching the call graph is the R10
+specimen and I would rather have the hole visible than covered.
+
+**Scope note added to `admissible.py`'s report at the same time:** that gate governs the
+**wall-clock** record — `vulkan`/`cpu` medians, their delta and their ratio. It does not reach the
+device-clock figures in the same file. Everything published in §14 is device-clock or a paired
+host-phase difference, and every wall-clock number in those files remains withheld.

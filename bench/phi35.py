@@ -127,6 +127,103 @@ class ArtifactUnavailable(RuntimeError):
     """The pinned Phi-3.5 artifact or its definition is not available on this machine."""
 
 
+#: Tank's `rust/tools/probe_broken_commitment.py`. Imported, never re-implemented — see
+#: :func:`_decode_child_stream`.
+_RUST_TOOLS = _HERE.parent / "rust" / "tools"
+
+
+def _tank_decoder():
+    """Return Tank's ``decode_both``, or ``None`` if his module is not importable.
+
+    **Why an import and not four lines of my own.** The worker's stderr is a single OS handle
+    that two writers share: our own narrow Python lines, and ORT's default logging sink, which
+    on Windows writes **UTF-16LE**. Reading it as UTF-8 raises ``UnicodeDecodeError`` in
+    ``subprocess``'s reader thread — which is how this harness died on 2026-08-01, at
+    ``0xa7`` in position 1006 — and reading it as UTF-16LE alone loses our own lines and any
+    wide line whose alignment our odd-length line shifted by a byte.
+
+    Tank already solved this channel and wrote down what each naive version got wrong: his
+    ``decode_both`` reads the same bytes four ways. R12 is the reason to borrow rather than
+    rewrite: his instrument and mine are each correct about a different world (his channel is
+    UTF-16LE, mine assumed UTF-8), and the repair for that is *one* description of the channel,
+    not two. A second decoder here would be a second dialect for the same stream — the thing
+    Link refused to create for the verdict vocabulary — and the two would drift.
+
+    Returning ``None`` rather than falling back to a private decode is deliberate: with no
+    decoder the tail is unreadable, and an unreadable tail is ``ERROR(instrument)`` under R13,
+    not a quietly mangled string that later reads as evidence.
+    """
+    if str(_RUST_TOOLS) not in sys.path:
+        sys.path.insert(0, str(_RUST_TOOLS))
+    try:
+        from probe_broken_commitment import decode_both  # type: ignore
+    except Exception:  # pragma: no cover - environment dependent
+        return None
+    return decode_both
+
+
+def _decode_child_stream(raw: "bytes | str | None") -> str:
+    """Decode one captured child stream. Never raises, never returns ``None``.
+
+    ``None`` is a real value here — a stream that was not captured, or a ``subprocess.run`` that
+    never got far enough to fill one in — and the ``AttributeError`` at the old line 722 was this
+    function's absence: ``proc.stderr.strip()`` on ``None``. A harness that dies on its own error
+    path cannot report the error it found, so every caller below goes through here.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    decode_both = _tank_decoder()
+    if decode_both is None:
+        return (f"ERROR(instrument=stream_decoder): {len(raw)} bytes were captured and not "
+                f"decoded. rust/tools/probe_broken_commitment.py::decode_both is not importable "
+                f"from {_RUST_TOOLS}, and this harness deliberately has no second decoder for a "
+                f"channel that is already described there.")
+    try:
+        return decode_both(raw)
+    except Exception as exc:  # pragma: no cover - defensive; decode_both uses errors="replace"
+        return f"ERROR(instrument=stream_decoder): decode_both raised {exc!r} on {len(raw)} bytes"
+
+
+def _stream_tail(raw: "bytes | str | None", limit: int) -> str:
+    """The last ``limit`` characters of a decoded stream, or ``""``. Never raises."""
+    return _decode_child_stream(raw).strip()[-limit:]
+
+
+def _run_worker(cmd: "list[str]", env: dict) -> "tuple[subprocess.CompletedProcess | None, str]":
+    """Run a worker with **bytes** capture. Returns ``(proc, instrument_error)``.
+
+    ``text=True`` is the defect: it hands the decode to ``subprocess``'s reader thread, where a
+    failure surfaces as a traceback out of ``buffer.append(fh.read())`` — a crash in the
+    measuring apparatus wearing the costume of a measurement failure (R13). Bytes cannot fail to
+    be read. Whatever the child wrote is decoded later, by an instrument that is allowed to say
+    it could not read it.
+    """
+    try:
+        return subprocess.run(cmd, env=env, capture_output=True), ""
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return None, (f"ERROR(instrument=worker_capture): the worker subprocess could not be run "
+                      f"or captured: {exc!r}. This is the harness failing, not a property of the "
+                      f"EP: no verdict about the run may be drawn from it.")
+
+
+def _note_instrument_error(rec: dict, message: str) -> None:
+    """Record an ``ERROR(instrument=...)`` on a result record. **Never** a refusal.
+
+    R13: a refusal is a detection — a condition the harness found and named. An instrument error
+    is the harness not having looked. They are stored in different fields so that no reader, and
+    no later aggregation, can count one as the other.
+    """
+    if not message:
+        return
+    rec.setdefault("instrument_errors", []).append(message)
+    rec["instrument_error_note"] = (
+        "R13: these are failures of this harness, not detections about the EP. They are not "
+        "refusals and must never be counted as findings; a run carrying one has an unmeasured "
+        "property, not a failing one.")
+
+
 def _trinity_module():
     """Import `tests/ops/test_phi35.py` for the artifact path and the canonical feeds."""
     if str(_TESTS_OPS) not in sys.path:
@@ -701,14 +798,17 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
     mon = contention.Monitor().start()
-    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    proc, capture_error = _run_worker(cmd, env)
     window = mon.stop()
     if out.exists():
         rec = json.loads(out.read_text("utf-8"))
     else:
+        returncode = proc.returncode if proc is not None else "unknown"
+        tail = _stream_tail(proc.stderr if proc is not None else None, 800)
         rec = {"device_index": device_index, "model_output_equivalence": UNMEASURED,
-               "refusals": [f"worker produced no result (exit {proc.returncode}): "
-                            f"{proc.stderr.strip()[-800:]}"]}
+               "refusals": [f"worker produced no result (exit {returncode}): "
+                            f"{tail or '<no stderr captured>'}"]}
+    _note_instrument_error(rec, capture_error)
     # The load survey covers the worker's whole lifetime, and the worker is a child of this
     # process, so its own CPU is subtracted rather than counted as competition.
     rec["machine_quiescence"] = contention.quiescence(window, contention.occupancy_check())
@@ -719,7 +819,7 @@ def _run_device(device_index: int, iters: int, warmup: int, scratch: Path) -> di
             rec["counters"] = None
     rec["memory_configuration"] = staging_label(rec.get("counters"))
     _derive(rec)
-    rec["worker_stderr_tail"] = proc.stderr.strip()[-2000:] or None
+    rec["worker_stderr_tail"] = _stream_tail(proc.stderr if proc is not None else None, 2000) or None
     return rec
 
 
@@ -760,7 +860,7 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
            str(device_index), "--iters", str(iters), "--warmup", str(warmup),
            "--out", str(out), "--scratch", str(scratch)]
     mon = contention.Monitor().start()
-    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    proc, capture_error = _run_worker(cmd, env)
     window = mon.stop()
     rep: dict = {
         "iters": iters,
@@ -771,9 +871,12 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
                  "totals here are inflated by the tracer and the query pool and are not the "
                  "benchmark's numbers."),
     }
+    _note_instrument_error(rep, capture_error)
     if not trace.exists():
-        rep["refusal"] = (f"no trace file was written (worker exit {proc.returncode}). No phase "
-                          f"split is reported: {proc.stderr.strip()[-400:]}")
+        returncode = proc.returncode if proc is not None else "unknown"
+        tail = _stream_tail(proc.stderr if proc is not None else None, 400)
+        rep["refusal"] = (f"no trace file was written (worker exit {returncode}). No phase "
+                          f"split is reported: {tail or '<no stderr captured>'}")
         return rep
     traced_rec = json.loads(out.read_text("utf-8")) if out.exists() else {}
     cnt = None

@@ -423,6 +423,13 @@ def report(a: dict) -> "list[str]":
         out.append(f"  {len(a['inadmissible'])} artifact(s) inadmissible: "
                    f"{', '.join(a['inadmissible'])}")
         out.append("  No performance claim may cite them. Re-measure or mark them withdrawn.")
+        out.append("  SCOPE: this gate governs the *wall-clock* record — `vulkan`/`cpu` medians, "
+                   "their delta and their ratio. It does not reach the device-clock figures in the "
+                   "same file (`phases.gpu_steady_tail`, the phase shares), which are gated "
+                   "separately and by their own falsifiers, because the device timestamp counter "
+                   "does not see host load. Saying otherwise would make this report claim an "
+                   "authority it does not have, which costs a falsifier its authority as surely "
+                   "as a false green does.")
     else:
         out.append("  every stored artifact can demonstrate its own provenance.")
     return out

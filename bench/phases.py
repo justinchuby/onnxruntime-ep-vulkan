@@ -1761,6 +1761,12 @@ GPU_TAIL_RSD_MAX = 0.02
 #: Fewest samples a steady tail may be declared from.
 GPU_TAIL_MIN_N = 5
 
+#: Absolute floor on the tail's length, and the floor on what fraction of the usable series it
+#: must cover, before the tail's median may be *quoted*. See :func:`gpu_steady_tail` — a suffix
+#: that clears the RSD bar without clearing these is ``MARGINAL_TAIL``, which is not a number.
+GPU_TAIL_QUOTABLE_MIN_N = 8
+GPU_TAIL_MIN_COVERAGE = 0.5
+
 
 def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
     """The longest stable suffix of the per-inference GPU-busy series, found from the device clock.
@@ -1781,8 +1787,39 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
     this way stays valid on a box that is not quiet. That is the only reason this figure is
     reportable today.
 
-    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``NO_STEADY_TAIL`` when no
-    sufficiently long suffix settles, or ``INSUFFICIENT``.
+    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``MARGINAL_TAIL`` when a suffix
+    settles but is too short or too small a share of the run to be quoted, ``NO_STEADY_TAIL``
+    when no sufficiently long suffix settles, or ``INSUFFICIENT``.
+
+    # Why a settled suffix is not automatically a quotable one — the minimum-n floor
+
+    *Ruling of 2026-08-01, mine, on Morpheus's question.* **The 2% RSD bar is a constraint on the
+    tail's internal spread, not on its agreement with the device's true steady rate.** A suffix of
+    five samples taken from a local flat stretch of a wandering series clears it exactly as easily
+    as a settled device does, and reports a median that is simply wrong. Two independent
+    specimens, from two different people's runs, on the same day:
+
+    * Switch's ``contended`` row **passed** at ``n=8`` after discarding 38 — and sat **2.1% above**
+      his solo figure, which the RSD said nothing about.
+    * My own pre-barrier-fix A/B runs produced tails at ``n=7`` (39 discarded, median 20.06 ms)
+      and ``n=5`` (38 discarded, median 37.56 ms) on a device whose two clean runs, from the same
+      DLL on the same afternoon, both read **13.346 ms** to four figures. Each bad tail
+      disagreed with its own run's warm-mean GPU busy by 33% and 42% respectively. Every tail with
+      ``n >= 38`` in that set agreed with its run's warm mean to within 0.2%.
+
+    The separation is clean and it is not on ``n`` alone: it is on **how much of the series the
+    tail keeps**. A genuine warmup ramp is a short prefix (5-6 of 46 here); a device that never
+    settled produces a short flat *suffix* (38-39 of 46 discarded). Coverage is therefore the
+    floor that does the discriminating — every bad specimen above sits at 12-17% coverage, every
+    good one at 83-100% — and the absolute ``n`` floor exists only to reject a series too short
+    to have shown anything. Both apply, and a suffix that clears the RSD bar but fails either is
+    ``MARGINAL_TAIL``: not a slower number, **no number**, with the suffix's median kept under
+    ``withheld_median_ms`` so that it cannot be read as one by a later reader or an aggregation.
+
+    This deliberately makes the instrument refuse more often. It refuses the two runs above, and
+    it would have refused Switch's ``contended`` row. That is the point: those are the runs whose
+    numbers were wrong, and a refusal that costs a real measurement is cheaper than a pass that
+    ships a fabricated one.
     """
     vals = [v / 1000.0 for v in busy_us if v]
     out = {"n_inferences": len(vals),
@@ -1808,17 +1845,43 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
                            f"there is no steady-state GPU figure to quote from this run."))
         return out
     start, suffix, rsd = best
+    coverage = len(suffix) / len(vals)
+    stats_block = {
+        "discarded_inferences": start,
+        "n": len(suffix),
+        "coverage": round(coverage, 4),
+        "median_ms": round(statistics.median(suffix), 4),
+        "mean_ms": round(statistics.fmean(suffix), 4),
+        "min_ms": round(min(suffix), 4),
+        "max_ms": round(max(suffix), 4),
+        "rsd": round(rsd, 6),
+    }
+    if len(suffix) < GPU_TAIL_QUOTABLE_MIN_N or coverage < GPU_TAIL_MIN_COVERAGE:
+        # Not a number. The suffix is flat, and a flat suffix that is a small piece of the series
+        # is as easily a local excursion as a settled device -- see the docstring's specimens,
+        # where every such tail disagreed with its own run's warm mean by 33-42%.
+        out.update(stats_block)
+        out.update(
+            verdict="MARGINAL_TAIL",
+            median_ms=None,
+            withheld_median_ms=stats_block["median_ms"],
+            detail=(f"a suffix of {len(suffix)} inference(s) holds within {rsd:.4%} RSD, but it "
+                    f"is {coverage:.0%} of the {len(vals)} usable inferences and "
+                    f"{start} were discarded to find it. Floors: n >= "
+                    f"{GPU_TAIL_QUOTABLE_MIN_N} and coverage >= "
+                    f"{GPU_TAIL_MIN_COVERAGE:.0%}. The RSD bar constrains the tail's internal "
+                    f"spread, not its agreement with the device's true steady rate, so a short "
+                    f"flat suffix passes it just as well as a settled one. No GPU figure is "
+                    f"quotable from this run; the suffix's median is kept under "
+                    f"`withheld_median_ms` so it cannot be read as one."),
+        )
+        return out
+    out.update(stats_block)
     out.update(
         verdict="STEADY",
-        discarded_inferences=start,
-        n=len(suffix),
-        median_ms=round(statistics.median(suffix), 4),
-        mean_ms=round(statistics.fmean(suffix), 4),
-        min_ms=round(min(suffix), 4),
-        max_ms=round(max(suffix), 4),
-        rsd=round(rsd, 6),
         detail=(f"GPU busy settles after {start} inference(s) and holds "
-                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them at "
+                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them "
+                f"({coverage:.0%} of the series) at "
                 f"{rsd:.4%} RSD. Device-clock only: this is the summed duration of the "
                 f"dispatches, not the wall time of an inference, and it is NOT a substitute "
                 f"for the end-to-end figure."),
