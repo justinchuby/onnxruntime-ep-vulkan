@@ -436,6 +436,60 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
     }
 }
 
+/// Which `VkDevice` **each side** is on, and how to read the three-state authoritative counter.
+///
+/// Printed before any verdict and on every path, not only on PASS: the reader who most needs to
+/// know which device produced a number is the one diagnosing why it is wrong.
+///
+/// `alloc_device_frame = SPLIT-DEVICE` is a *detection* and not a *description*. It says the two
+/// sides differ without saying what they are, and a reader holding only that cannot tell a
+/// selector-1 run from a selector-0 one. That has now been the shape of three separate defects on
+/// this project — the inverted device labels, `dispatches_executed` vs `compute_calls`, and the
+/// §6.5 offer keyed by the raw enumeration index while the selector indexes the sorted list — and
+/// in every one of them the counter was right while the situation was wrong.
+fn print_frame_identity(path: &str) {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    match json_str(&raw, "alloc_device_frame_sides") {
+        Some(s) => println!("epctl: DEVICE IDENTITY, BOTH SIDES: {s}"),
+        None => println!(
+            "epctl: DEVICE IDENTITY: this snapshot predates `alloc_device_frame_sides`, so which \
+             device the ALLOCATOR side and the SESSION side are on cannot be recovered from it. \
+             Do not compare its alloc_device_* numbers with any vulkan.* number."
+        ),
+    }
+    // `"UNOBSERVABLE"` and `"UNWIRED"` are JSON strings on purpose: arithmetic on them fails
+    // loudly, and an increment can forge a number but never a type.
+    match json_str(&raw, "alloc_device_authoritative_spans") {
+        Some("UNOBSERVABLE") => println!(
+            "epctl: alloc_device_authoritative_spans = UNOBSERVABLE (R12) — the event it counts \
+             cannot occur in this run's frame. Not a negative result, and not fixable by adding a \
+             call site."
+        ),
+        Some("UNWIRED") => println!(
+            "epctl: alloc_device_authoritative_spans = UNWIRED (R10) — the frame allows it, but \
+             the residency screen has not run on a single device-backed span \
+             (`alloc_device_residency_evaluations` = 0). Not a negative result either."
+        ),
+        Some(other) => println!(
+            "epctl: alloc_device_authoritative_spans = {other} — an unrecognised state. Read the \
+             code before quoting it."
+        ),
+        None => match json_u64(&raw, "alloc_device_residency_evaluations") {
+            Some(n) => println!(
+                "epctl: alloc_device_authoritative_spans is a MEASUREMENT — the residency screen \
+                 ran on {n} device-backed span(s) at their terminal state. Read it together with \
+                 `alloc_device_buffer_binds`: a non-zero count with zero binds means the engine \
+                 never asked for one of our buffers and cannot have computed from it."
+            ),
+            None => println!(
+                "epctl: alloc_device_authoritative_spans is absent, or is a number in a snapshot \
+                 with no `alloc_device_residency_evaluations` — in which case it cannot be told \
+                 apart from an unwired zero. Predates the wiring falsifier; do not quote it."
+            ),
+        },
+    }
+}
+
 fn check_counters_with(
     path: &str,
     required: u64,
@@ -449,6 +503,7 @@ fn check_counters_with(
             println!("  {line}");
         }
     }
+    print_frame_identity(path);
     match read_counters_with(path, required, require_device_memory) {
         CounterVerdict::Pass { dispatches } => {
             println!(
@@ -502,6 +557,10 @@ fn check_counters_with(
                          infer SHARED from its absence."
                     ),
                 }
+                // Which device EACH SIDE is on, and how to read the authoritative counter, are
+                // printed unconditionally by `print_frame_identity` before any verdict — a
+                // disclosure that only appears on the PASS path is a disclosure the person
+                // diagnosing a failure never sees.
             }
             std::process::ExitCode::SUCCESS
         }

@@ -660,3 +660,104 @@ light.
   pass.
 * The `edit` tool bit me again — no, actually clippy did: `// SAFETY (Tank):` does not satisfy
   `undocumented_unsafe_blocks`. It wants the literal `SAFETY:`. Three round trips.
+
+---
+
+## Session 19 — a zero that finally means something, and a classification I declined to accept
+
+### The whole job was one call site, and it took three sessions to find the right one
+
+`on_device_authoritative` had no production caller. I knew that; I wrote the sentence in the
+verdict that said so. What I had not worked out was **where** the caller belongs, and I spent two
+sessions assuming it belonged wherever residency lands — i.e. that the counter could not be wired
+until the feature it measures exists. That is backwards, and it is the same mistake as wiring a
+counter at the same time as the feature: **the increment point does not need the feature, it needs
+a moment when the answer is knowable.**
+
+`HandleRegistry::free` is that moment. A span there has whatever `VkBuffer` it will ever have and
+whatever staging block it will ever have; neither can appear afterwards. So the predicate is read
+off the span — `buffer.is_some() && staging.is_none()` — and every device-backed span is evaluated
+whatever the answer comes out. The measured answer is 0 on real hardware, exactly as it was
+before. **The value did not change. What changed is that it is now a result.**
+
+### The falsifier had to be uncounterfeitable, and one call site does that
+
+    pub fn on_residency_evaluated(authoritative: bool) {
+        DEVICE_RESIDENCY_EVALUATIONS.fetch_add(1, Ordering::Relaxed);   // unconditional
+        if authoritative { on_device_authoritative(); }                 // conditional
+    }
+
+Two counters, one call site, one of them unconditional. An author who increments the authoritative
+count cannot manufacture evaluations, because he would have to go through the function that
+increments both. I had reached for a separate `set_wired(true)` flag first and threw it away:
+**a flag an author sets is an assertion; a counter the mechanism increments is an artifact.**
+
+Measured, and the control is the part that makes it evidence:
+
+    selector 0   authoritative = 0              type=int   evaluations = 3   MEASUREMENT
+    selector 1   authoritative = 'UNOBSERVABLE' type=str   evaluations = 3   R12 outranks R10
+    control      authoritative = 'UNOBSERVABLE' type=str   evaluations = 0   device memory OFF
+
+Selector 1 is the one I would have got wrong a week ago. The screen **ran** there — three
+evaluations — and the reported state is still `UNOBSERVABLE`, because a wired instrument in the
+wrong frame is not a measurement. Frame outranks wiring. I had to write that ordering down before
+I trusted my own code to have it right.
+
+### The census caught my change before I told it to
+
+`audit_instruments.py --check` went red on its own: `- allocator.rs::on_device_authoritative`,
+*"got wired — good news, update the baseline"*. A screen I wrote, applied to a change I made, told
+me something about my change that I had not asserted. That is what the whole exercise is for, and
+it is the first time on this project my own instrument has reported *on me* rather than for me.
+`transfer.rs::device_buffer_for` stayed in the uninvoked list, which is the honest half of the
+same report: the engine-side bind is still owed, `alloc_device_buffer_binds` is still 0, and the
+ceiling is still 0. **I delivered the transition and not the feature, and the artifact says which
+one it is.**
+
+### The thing the frame reporting found that I was not looking for
+
+I added both-sides device identity to satisfy R12 obligation 2 — `SPLIT-DEVICE` is a detection
+and not a description. It immediately produced a finding:
+
+    selector 0:  session offers index 1 (NVIDIA)  |  allocator asks for index 1  ->  MATCH
+    selector 1:  session offers index 0 (Intel)   |  allocator asks for index 1  ->  NO MATCH
+
+**The selector-0 match is a coincidence.** It holds only because the discrete card's raw
+enumeration index happens to be 1 on this box. Everything green on selector 0 for the last week
+has been green by accident of enumeration order. I did not go looking for that; I went looking for
+a way to *print* which device each side was on, and the printing found it. Third time on this
+project that adding provenance to a number has found a defect the number itself could not express.
+
+### I rejected the classification I was handed, and the reason generalises
+
+Asked whether R13 adds a sixth census state. It does not. The test I ended up using is one I want
+to keep: **ask what the state is a property of.** All six census states are properties of an
+instrument's *position in the system*. R13 is a property of the *channel the verdict travels down*
+— pytest's summary line had a two-token alphabet and was carrying three states — and that applies
+to `out-of-frame` and `misnamed` exactly as much as to `unreachable`. **A state that applies to
+all states is not a state; it is an axis.** Guard D's own position was already covered:
+`unreachable` means "ran, produced nothing observable", which is precisely a guard that raised
+before reading its input.
+
+Declining it was easy. What was not easy was noticing that the *consequence* is still binding even
+though the classification is not: the census tooling had the two-token disease itself. A drift and
+a traceback both left through "non-zero exit". So `audit_instruments.py` now emits PASS /
+FAIL(drift) / ERROR(instrument) as three tokens and three exit codes, and the two paths that used
+to `return 1` for an instrument failure now raise. **The census is what everyone else's evidence
+rests on; it would have been the worst place on the project for that bug to live, and it lived
+there.**
+
+### On the stash I threw away
+
+I had a harness-census screen of my own, uncommitted, that detected the specific `NameError`
+shape. Trinity had landed an AST-based screen for `unfalsified` in the same file while I was away.
+Hers is strictly better — mine caught the crash Guard D actually had, hers catches the *state*
+Guard D was in, which is the class rather than the instance. I dropped mine without merging any of
+it. **Two screens answering the same question is the exact failure the census exists to prevent**,
+and the temptation to keep "just my extra check" is how a second census gets born.
+
+### Kept honest
+
+No wall clock anywhere in this session's evidence. Every number above is a byte count, a span
+count or a string, so it reads the same under four-agent contention as it does on a quiet box.
+That was not restraint, it was design: I picked the instrument before I picked the claim.
