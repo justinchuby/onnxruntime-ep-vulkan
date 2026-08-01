@@ -1,0 +1,7 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+.......ssssssssssssssssss.......................ssss.................... [ 20%]
+.........ssss.ss...............FF..........................F.......xxxFx [ 41%]
+xx.................F..x....................................FFFFFFFFFFFFF [ 62%]
+FFFFF.......................FFFF...............................FFF.F.FF. [ 83%]
+..........s.......x..............s..................
