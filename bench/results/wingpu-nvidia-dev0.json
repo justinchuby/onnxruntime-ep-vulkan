@@ -1,0 +1,273 @@
+{
+  "tag": "nvidia",
+  "seconds": 97.49,
+  "device_index": 0,
+  "adapter": {
+    "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "name_source": "bench/devices.py ep_selection_order[0] (enumeration index 1)",
+    "luid": "0x00000000_0x00010ee0"
+  },
+  "all_adapters": [
+    {
+      "key": "{AED22757-1476-11F1-8182-806E6F6E6963}",
+      "description": "Intel(R) Iris(R) Xe Graphics",
+      "luid_int": 0,
+      "luid": "0x00000000_0x00000000"
+    },
+    {
+      "key": "{B6C615F8-8D86-11F1-81BF-806E6F6E6963}",
+      "description": "Microsoft Basic Render Driver",
+      "luid_int": 69219,
+      "luid": "0x00000000_0x00010e63"
+    },
+    {
+      "key": "{B6C6170A-8D86-11F1-81BF-010101010000}",
+      "description": "Intel(R) Iris(R) Xe Graphics",
+      "luid_int": 68256,
+      "luid": "0x00000000_0x00010aa0"
+    },
+    {
+      "key": "{B6C6174F-8D86-11F1-81BF-010101010000}",
+      "description": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "luid_int": 69344,
+      "luid": "0x00000000_0x00010ee0"
+    },
+    {
+      "key": "{DCB78028-1476-11F1-8183-00155DFE6B34}",
+      "description": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "luid_int": 0,
+      "luid": "0x00000000_0x00000000"
+    }
+  ],
+  "target": {
+    "producer": "windows/pdh \\GPU Engine \u2014 bench/win_gpu_counters.py",
+    "luid": "0x00000000_0x00010ee0",
+    "silence_set": [
+      "Produces NO clock record. Windows exposes no GPU frequency counter (all five `GPU *` counter sets enumerated; none carries MHz) and no root\\wmi class here does either. Engine Running Time is a duration and moves the same way as the figure it would certify, so it is not a second quantity from outside the series (R9 amendment 5) and is never used as one.",
+      "Attributes work to a PID, not to a queue or a kernel. It cannot say whether foreign work overlapped our dispatches or merely shared the window.",
+      "Engine time is scheduler bookkeeping, not occupancy: a process holding the engine with a small dispatch and a process saturating it are both `busy`.",
+      "Sees only WDDM adapters on Windows. On Linux, Android, or macOS this producer does not exist and the tenancy axis is NO_PRODUCER \u2014 which is not SOLE_TENANT and not a pass (R12).",
+      "Re-enumerates instances periodically; a foreign process that starts and exits entirely between two enumerations is invisible to it. PDH caches the instance list per process, so the enumeration is forced (PdhEnumObjects refresh) \u2014 without that, nothing that started after the sampler is ever seen, and the record reads clean.",
+      "Sampling costs ~0.1-0.5 s of host CPU per enumeration, so the instrument is itself a small source of the host contention that `bench/contention.py` gates on.",
+      "Joins Vulkan device name to adapter LUID through a registry description string. A wrong join yields a *clean* record, so the join is checked by requiring our own work to appear on the adapter (UNOBSERVABLE(self_not_witnessed)) rather than trusted."
+    ],
+    "verdict": "SOLE_TENANT",
+    "reason": null,
+    "seconds": 97.22,
+    "rounds": 72,
+    "own_root": 28456,
+    "own_gpu_seconds": {
+      "28456": 2.6165
+    },
+    "foreign_gpu_seconds": {},
+    "kernel_gpu_seconds": {
+      "4": 2.0289
+    },
+    "process_names": {
+      "28456": "<gone>"
+    },
+    "engine_types": {
+      "3d": 2.6153,
+      "copy": 2.0301
+    },
+    "foreign_busy_fraction": 0.0,
+    "we_were_seen_on_this_adapter": true,
+    "sampling": {
+      "rounds": 72,
+      "interval_s": 1.0,
+      "worst_gap_s": 5.14,
+      "round_ms_max": 4145.6
+    },
+    "clock": {
+      "verdict": "UNOBSERVABLE",
+      "reason": "Windows exposes no GPU clock counter. Engine `Running Time` is a duration and rises when the clock falls, so it is a second copy of the quantity under certification and is not admissible as the clock half of DESIGN.md \u00a710.0 obligation 8 (R9 amendment 5)."
+    }
+  },
+  "controls": {
+    "0x00000000_0x00010aa0": {
+      "producer": "windows/pdh \\GPU Engine \u2014 bench/win_gpu_counters.py",
+      "luid": "0x00000000_0x00010aa0",
+      "silence_set": [
+        "Produces NO clock record. Windows exposes no GPU frequency counter (all five `GPU *` counter sets enumerated; none carries MHz) and no root\\wmi class here does either. Engine Running Time is a duration and moves the same way as the figure it would certify, so it is not a second quantity from outside the series (R9 amendment 5) and is never used as one.",
+        "Attributes work to a PID, not to a queue or a kernel. It cannot say whether foreign work overlapped our dispatches or merely shared the window.",
+        "Engine time is scheduler bookkeeping, not occupancy: a process holding the engine with a small dispatch and a process saturating it are both `busy`.",
+        "Sees only WDDM adapters on Windows. On Linux, Android, or macOS this producer does not exist and the tenancy axis is NO_PRODUCER \u2014 which is not SOLE_TENANT and not a pass (R12).",
+        "Re-enumerates instances periodically; a foreign process that starts and exits entirely between two enumerations is invisible to it. PDH caches the instance list per process, so the enumeration is forced (PdhEnumObjects refresh) \u2014 without that, nothing that started after the sampler is ever seen, and the record reads clean.",
+        "Sampling costs ~0.1-0.5 s of host CPU per enumeration, so the instrument is itself a small source of the host contention that `bench/contention.py` gates on.",
+        "Joins Vulkan device name to adapter LUID through a registry description string. A wrong join yields a *clean* record, so the join is checked by requiring our own work to appear on the adapter (UNOBSERVABLE(self_not_witnessed)) rather than trusted."
+      ],
+      "verdict": "UNOBSERVABLE(self_not_witnessed)",
+      "reason": "a window owner was declared (pid 28456) but no engine time on LUID 0x00000000_0x00010aa0 was attributed to it or its descendants. Either the work ran on a different adapter than the one sampled, or it never reached the GPU. A tenancy verdict from an adapter our work was not seen on is not evidence about our run \u2014 and it reads clean, which is why it is refused here.",
+      "seconds": 97.23,
+      "rounds": 72,
+      "own_root": 28456,
+      "own_gpu_seconds": {},
+      "foreign_gpu_seconds": {
+        "14112": 0.0009,
+        "16256": 0.001,
+        "30232": 0.1449
+      },
+      "kernel_gpu_seconds": {
+        "4": 0.0321
+      },
+      "process_names": {
+        "14112": "explorer.exe",
+        "16256": "GlobalSecureAccessClient.exe",
+        "30232": "Code.exe"
+      },
+      "engine_types": {
+        "3d": 0.1788
+      },
+      "foreign_busy_fraction": 0.0015,
+      "we_were_seen_on_this_adapter": false,
+      "sampling": {
+        "rounds": 72,
+        "interval_s": 1.0,
+        "worst_gap_s": 4.98,
+        "round_ms_max": 3989.7
+      },
+      "clock": {
+        "verdict": "UNOBSERVABLE",
+        "reason": "Windows exposes no GPU clock counter. Engine `Running Time` is a duration and rises when the clock falls, so it is a second copy of the quantity under certification and is not admissible as the clock half of DESIGN.md \u00a710.0 obligation 8 (R9 amendment 5)."
+      }
+    },
+    "0x00000000_0x00010e63": {
+      "producer": "windows/pdh \\GPU Engine \u2014 bench/win_gpu_counters.py",
+      "luid": "0x00000000_0x00010e63",
+      "silence_set": [
+        "Produces NO clock record. Windows exposes no GPU frequency counter (all five `GPU *` counter sets enumerated; none carries MHz) and no root\\wmi class here does either. Engine Running Time is a duration and moves the same way as the figure it would certify, so it is not a second quantity from outside the series (R9 amendment 5) and is never used as one.",
+        "Attributes work to a PID, not to a queue or a kernel. It cannot say whether foreign work overlapped our dispatches or merely shared the window.",
+        "Engine time is scheduler bookkeeping, not occupancy: a process holding the engine with a small dispatch and a process saturating it are both `busy`.",
+        "Sees only WDDM adapters on Windows. On Linux, Android, or macOS this producer does not exist and the tenancy axis is NO_PRODUCER \u2014 which is not SOLE_TENANT and not a pass (R12).",
+        "Re-enumerates instances periodically; a foreign process that starts and exits entirely between two enumerations is invisible to it. PDH caches the instance list per process, so the enumeration is forced (PdhEnumObjects refresh) \u2014 without that, nothing that started after the sampler is ever seen, and the record reads clean.",
+        "Sampling costs ~0.1-0.5 s of host CPU per enumeration, so the instrument is itself a small source of the host contention that `bench/contention.py` gates on.",
+        "Joins Vulkan device name to adapter LUID through a registry description string. A wrong join yields a *clean* record, so the join is checked by requiring our own work to appear on the adapter (UNOBSERVABLE(self_not_witnessed)) rather than trusted."
+      ],
+      "verdict": "UNOBSERVABLE(self_not_witnessed)",
+      "reason": "a window owner was declared (pid 28456) but no engine time on LUID 0x00000000_0x00010e63 was attributed to it or its descendants. Either the work ran on a different adapter than the one sampled, or it never reached the GPU. A tenancy verdict from an adapter our work was not seen on is not evidence about our run \u2014 and it reads clean, which is why it is refused here.",
+      "seconds": 97.24,
+      "rounds": 72,
+      "own_root": 28456,
+      "own_gpu_seconds": {},
+      "foreign_gpu_seconds": {},
+      "kernel_gpu_seconds": {},
+      "process_names": {},
+      "engine_types": {},
+      "foreign_busy_fraction": 0.0,
+      "we_were_seen_on_this_adapter": false,
+      "sampling": {
+        "rounds": 72,
+        "interval_s": 1.0,
+        "worst_gap_s": 5.01,
+        "round_ms_max": 4018.4
+      },
+      "clock": {
+        "verdict": "UNOBSERVABLE",
+        "reason": "Windows exposes no GPU clock counter. Engine `Running Time` is a duration and rises when the clock falls, so it is a second copy of the quantity under certification and is not admissible as the clock half of DESIGN.md \u00a710.0 obligation 8 (R9 amendment 5)."
+      }
+    },
+    "0x00000000_0x00011de3": {
+      "producer": "windows/pdh \\GPU Engine \u2014 bench/win_gpu_counters.py",
+      "luid": "0x00000000_0x00011de3",
+      "silence_set": [
+        "Produces NO clock record. Windows exposes no GPU frequency counter (all five `GPU *` counter sets enumerated; none carries MHz) and no root\\wmi class here does either. Engine Running Time is a duration and moves the same way as the figure it would certify, so it is not a second quantity from outside the series (R9 amendment 5) and is never used as one.",
+        "Attributes work to a PID, not to a queue or a kernel. It cannot say whether foreign work overlapped our dispatches or merely shared the window.",
+        "Engine time is scheduler bookkeeping, not occupancy: a process holding the engine with a small dispatch and a process saturating it are both `busy`.",
+        "Sees only WDDM adapters on Windows. On Linux, Android, or macOS this producer does not exist and the tenancy axis is NO_PRODUCER \u2014 which is not SOLE_TENANT and not a pass (R12).",
+        "Re-enumerates instances periodically; a foreign process that starts and exits entirely between two enumerations is invisible to it. PDH caches the instance list per process, so the enumeration is forced (PdhEnumObjects refresh) \u2014 without that, nothing that started after the sampler is ever seen, and the record reads clean.",
+        "Sampling costs ~0.1-0.5 s of host CPU per enumeration, so the instrument is itself a small source of the host contention that `bench/contention.py` gates on.",
+        "Joins Vulkan device name to adapter LUID through a registry description string. A wrong join yields a *clean* record, so the join is checked by requiring our own work to appear on the adapter (UNOBSERVABLE(self_not_witnessed)) rather than trusted."
+      ],
+      "verdict": "UNOBSERVABLE(self_not_witnessed)",
+      "reason": "a window owner was declared (pid 28456) but no engine time on LUID 0x00000000_0x00011de3 was attributed to it or its descendants. Either the work ran on a different adapter than the one sampled, or it never reached the GPU. A tenancy verdict from an adapter our work was not seen on is not evidence about our run \u2014 and it reads clean, which is why it is refused here.",
+      "seconds": 97.18,
+      "rounds": 72,
+      "own_root": 28456,
+      "own_gpu_seconds": {},
+      "foreign_gpu_seconds": {},
+      "kernel_gpu_seconds": {},
+      "process_names": {},
+      "engine_types": {},
+      "foreign_busy_fraction": 0.0,
+      "we_were_seen_on_this_adapter": false,
+      "sampling": {
+        "rounds": 72,
+        "interval_s": 1.0,
+        "worst_gap_s": 5.16,
+        "round_ms_max": 4124.5
+      },
+      "clock": {
+        "verdict": "UNOBSERVABLE",
+        "reason": "Windows exposes no GPU clock counter. Engine `Running Time` is a duration and rises when the clock falls, so it is a second copy of the quantity under certification and is not admissible as the clock half of DESIGN.md \u00a710.0 obligation 8 (R9 amendment 5)."
+      }
+    }
+  },
+  "worker": {
+    "exit": 0,
+    "instrument_error": null,
+    "verdict": "MATCH"
+  },
+  "capability": {
+    "our_work_seen_on_target": true,
+    "our_engine_seconds_on_target": 2.6165,
+    "our_engine_seconds_on_other_adapters": {
+      "0x00000000_0x00010aa0": 0,
+      "0x00000000_0x00010e63": 0,
+      "0x00000000_0x00011de3": 0
+    },
+    "negative_control_holds": true,
+    "tenancy_axis": "SOLE_TENANT",
+    "clock_axis": "UNOBSERVABLE",
+    "statement": "the WDDM counters witness our own submissions on this adapter and no clock"
+  },
+  "nvidia_companion": {
+    "n": 59,
+    "seconds": 94.7,
+    "sm_mhz": {
+      "n": 59,
+      "min": 210.0,
+      "median": 210.0,
+      "mean": 749.7,
+      "max": 2010.0
+    },
+    "sm_max_mhz": 3105.0,
+    "util_pct": {
+      "n": 59,
+      "min": 0.0,
+      "median": 0.0,
+      "mean": 1.8,
+      "max": 36.0
+    },
+    "power_w": {
+      "n": 59,
+      "min": 2.4,
+      "median": 6.0,
+      "mean": 7.9,
+      "max": 17.9
+    },
+    "foreign_sample_fraction": 0.0,
+    "foreign_pids": {},
+    "own_pids_on_gpu": [
+      28456
+    ],
+    "clock_ramp_x": 9.5714,
+    "clock_at_max_pct": 24.1,
+    "verdict": "SOLE_TENANT",
+    "silence_set": [
+      "Samples the board at 4 Hz over the whole command, so it characterises the *regime* a run sat in and cannot resolve a single inference. A boost that happened while our kernel was not submitting would satisfy the peak-clock floor.",
+      "Reads the driver's own account. A clock the driver misreports is invisible to it.",
+      "`nvidia-smi` is NVIDIA-only. On any other vendor the tenancy and clock record is UNOBSERVABLE \u2014 which is not SOLE_TENANT and not a pass (R12).",
+      "Says nothing about host contention. That is `bench/contention.py`'s subject and it gates a different quantity.",
+      "The clock axis has exactly one producer on this project and it is NVIDIA-only. No producer for it exists on Intel here at all (`docs/PERF.md` \u00a77.3), so an Intel device-clock figure is structurally uncertifiable on this hardware \u2014 a permanent classification, not a pending one."
+    ],
+    "sampler": "bench/results/probe_gpustate.py (Switch)"
+  },
+  "corroboration": {
+    "instrument_a": "nvidia-smi (bench/results/probe_gpustate.py, Switch)",
+    "instrument_b": "WDDM \\GPU Engine (bench/win_gpu_counters.py, Niobe)",
+    "tenancy_a": "SOLE_TENANT",
+    "tenancy_b": "SOLE_TENANT",
+    "agree": true,
+    "note": "Two independently-authored instruments on the same question over the same window. Agreement is evidence about the tenancy axis only; neither says anything about the other's clock reading."
+  }
+}
