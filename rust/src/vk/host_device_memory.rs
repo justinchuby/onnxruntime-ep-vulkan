@@ -691,6 +691,55 @@ pub(crate) fn ensure_registered(device_index: usize) {
     map.insert(device_index, provider);
 }
 
+/// Look up the provider registered for `device_index`, if one has been stood up.
+fn provider(device_index: usize) -> Option<Arc<HostDeviceMemory>> {
+    PROVIDERS.get()?.lock().ok()?.get(&device_index)?.clone()
+}
+
+/// The `VkBuffer` the engine should bind for `p`, or `None` to fall back to host staging.
+///
+/// **This is the seam that stops the device buffer being a mirror.** Until it existed, ORT could
+/// place a subgraph input in memory this EP allocated and the session would still resolve it to
+/// host bytes, allocate a fresh `DeviceLocal` buffer, and re-upload — so the device allocation was
+/// a cost with no corresponding saving, and `alloc_device_buffer_binds` was 0 and said so.
+///
+/// Three conditions, and each one declines rather than assumes:
+///
+/// 1. **The span must have a device buffer.** `transfer::device_buffer_for` answers that.
+/// 2. **That buffer must be on the device we are about to dispatch on.** A `SPLIT-DEVICE` frame
+///    means it is not, and binding across two `VkDevice`s is undefined — it would even appear to
+///    work on a UMA part, which is the worst way for it to fail.
+/// 3. **The descriptor must be able to express the binding.** `vk::pipeline` writes every
+///    `VkDescriptorBufferInfo` at offset 0, so an interior pointer cannot be bound without a
+///    descriptor change. Declining is correct; binding at 0 for an interior pointer would read a
+///    neighbouring tensor and produce plausible wrong numbers. Also enforced:
+///    `offset + len <= size`, so a short buffer never gets a descriptor that runs past its end.
+///
+/// The bind is counted **here**, at the point the buffer is actually handed over, and not at the
+/// resolve. A resolve that is then declined is not a bind.
+pub(crate) fn bind_target_for(p: *mut u8, len: usize) -> Option<(vk::Buffer, u64)> {
+    if len == 0 {
+        return None;
+    }
+    let binding = crate::transfer::device_buffer_for(p, len)?;
+    if binding.offset != 0 {
+        return None;
+    }
+    let provider = provider(binding.device_index)?;
+    if provider.frame() != DeviceFrame::Shared {
+        return None;
+    }
+    let inner = provider.inner.lock().ok()?;
+    let buf = inner.buffers.get(&binding.view.as_raw())?;
+    if binding.offset as u64 + len as u64 > buf.size {
+        return None;
+    }
+    let handle = buf.buffer;
+    drop(inner);
+    crate::allocator::tally::on_device_buffer_bind();
+    Some((handle, len as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OfferResolution, resolve_offer};

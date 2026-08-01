@@ -1690,3 +1690,71 @@ Decision: switch-allocator-adopts-by-identity.md. Committed on squad/switch, not
 
 Still open and mine: transfer.rs::device_buffer_for binding, so alloc_device_authoritative_spans and
 alloc_device_buffer_binds can leave 0. Tank delivered the transition, not the feature, and said so.
+
+### Session 39b — the engine binds, and pays the mirror what it now owes
+
+Relay item 3: transfer.rs::device_buffer_for had NO production caller, so alloc_device_buffer_binds
+was an honest 0 and device-backed allocation was a cost with no saving. Tank: "I delivered the
+transition, not the feature, and the artifact says which."
+
+WHAT I BUILT. New Step 1a in dispatch_ort, before the host resolution: ask
+vk::host_device_memory::bind_target_for for each input; when it answers, bind that VkBuffer as a
+borrowed ref and skip BOTH the allocation and the upload. Ordering matters — Step 1b overwrites
+input_cpu_ptrs[i] with the staging address, so after it there is no handle left to classify.
+
+bind_target_for declines rather than assumes, three ways: (1) the span must have a VkBuffer; (2) the
+frame must be SHARED — binding across two VkDevices is undefined and would APPEAR TO WORK on a UMA
+part, which is the worst way for it to fail; (3) offset must be 0 and offset+len <= size, because
+vk::pipeline writes every VkDescriptorBufferInfo at offset 0, so an interior pointer cannot be
+expressed and binding at 0 for one would read the neighbouring tensor the planner put at the base
+of the span. Declining costs one upload. Assuming costs correctness, silently.
+
+THE OBLIGATION, IN THE SAME CHANGE. Endpoint's doc justified staging staying authoritative BECAUSE
+the session reads inputs and writes outputs through host_backing_for. Bind the inputs and that
+asymmetry stops being a design note and becomes a staleness bug: a span written as an output through
+staging, then read as an input through its device buffer, is read stale — and stale-but-plausible is
+the failure mode that survives a smoke test. So write_outputs_to_ort now calls the new
+transfer::mirror_to_device. CopyTensors already mirrors every copy into a handle; this is the same
+duty for the one writer that did not go through it.
+
+COUNTING AT THE BIND, NOT THE RESOLVE. device_buffer_for no longer tallies; it returns a
+DeviceBinding that now carries the DEVICE INDEX, because a caller given only the view could bind
+across devices. A resolve that is then declined is not a bind, and a counter that inflates on the
+flattering side is the failure this project keeps repeating.
+
+MEASURED — three configurations, probe_sec65.py, outputs verified per session:
+  dev0 NVIDIA DEVICE_MEMORY=1  frame SHARED  binds 6  uploads 9  session_device_allocs 15  OK x3
+  dev1 Intel  DEVICE_MEMORY=1  frame SHARED  binds 6  uploads 9  session_device_allocs 15  OK x3
+  control     DEVICE_MEMORY off frame OFF    binds 0  uploads 0  authoritative UNOBSERVABLE  OK x3
+
+alloc_device_buffer_binds HAS LEFT 0 — 6 = 2 device-backed inputs x 3 sessions, on BOTH devices.
+Two corroborating movements make this an R10 wiring artifact rather than an incremented counter:
+session_device_allocs fell 21 -> 15, exactly the 6 allocations the session no longer makes, in a
+counter Tank owns and I did not touch; and alloc_device_uploads rose 6 -> 9 (6 MiB -> 9 MiB), the
+three new output mirrors — the obligation is observable, not asserted.
+
+WHAT I AM NOT CLAIMING. alloc_device_authoritative_spans is STILL 0 on both devices with 9 residency
+evaluations, and I am not moving it by argument. A span stops being a mirror when it stops having
+host staging, and staging is still there because every unbound path — outputs, interior pointers,
+SPLIT-DEVICE, the whole default build — reads through it. Binding inputs is necessary, not
+sufficient. Tank's screen is measuring the right thing and reporting 0 because 0 is the answer.
+M1's residency criterion stays open; what closed is the precondition.
+
+Regression check on the real model, NVIDIA, device memory off: verdict MATCH, gpu_steady_tail
+STEADY, 12.183 ms/inference GPU busy (n=20, RSD 0.103%), q_gemv 62.18 us mean, 80.66% share. The
+shipped default is provably inert — both new call sites take their early return when no registry
+exists.
+
+TESTS. an_engine_write_to_staging_is_pushed_to_the_device_mirror asserts the provider received the
+bytes the engine wrote AT THE SPAN OFFSET (256), not at 0. a_host_output_is_not_mirrored_and_is_not
+_an_error pins the shipped default to Ok(false) rather than an error that would fail every
+inference in the configuration actually released. Both go through a new mirror_in taking an explicit
+registry map, because the public entry reads factory::all_registries() which is empty under cargo
+test — my first attempt passed by taking the early return and proved nothing, which is R10 biting me
+in my own test. 426 passed, 0 failed.
+
+Also fixed a duplicate #[test] attribute I left on gemv_packed_tracks_the_blob_and_not_the_block in
+session 38 (clippy duplicate_macro_attributes), and its doc comment which had been copied from the
+test above it.
+
+Decision: switch-engine-binds-device-buffers.md.

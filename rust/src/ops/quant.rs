@@ -840,8 +840,7 @@ mod tests {
         }
     }
 
-    /// The column tile is what amortises the activation row; the shared array is what bounds it.
-    #[test]
+    /// A packed load is legal when the *blob* is 16 bytes, not when the block is 32.
     #[test]
     fn gemv_packed_tracks_the_blob_and_not_the_block() {
         // The Phi-3.5 shape: 32 weights of 4 bits is a 16-byte blob, so the 128-bit path is live.

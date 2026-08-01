@@ -687,10 +687,16 @@ pub fn host_backing_for(p: *mut u8, len: usize) -> Option<Result<*mut u8, String
 
 /// The engine's counterpart to [`host_backing_for`]: the device buffer behind a pointer.
 ///
-/// Returns `Some((view, offset))` when `p` is one of our handles **and** that handle's span has a
-/// real `VkBuffer`. The offset is ORT's pointer arithmetic, already resolved by range lookup, and
-/// must be applied when binding: the planner sub-divides one span across several tensors, so a
-/// buffer bound at offset 0 for an interior pointer would silently read the wrong tensor.
+/// Returns `Some(binding)` when `p` is one of our handles **and** that handle's span has a real
+/// `VkBuffer`. The offset is ORT's pointer arithmetic, already resolved by range lookup, and must
+/// be applied when binding: the planner sub-divides one span across several tensors, so a buffer
+/// bound at offset 0 for an interior pointer would silently read the wrong tensor.
+///
+/// This function **resolves** and does not count. `alloc_device_buffer_binds` is incremented at the
+/// point a buffer is actually bound (`vk::host_device_memory::bind_target_for`), because a resolve
+/// that is then declined — wrong device frame, or an offset the descriptor cannot express — is not
+/// a bind, and a counter that inflates on the flattering side is the failure mode this project
+/// keeps hitting. `authoritative > 0` while binds is 0 remains a contradiction, not a nuance.
 ///
 /// # Why the engine should prefer this to `host_backing_for`
 ///
@@ -705,7 +711,7 @@ pub fn host_backing_for(p: *mut u8, len: usize) -> Option<Result<*mut u8, String
 /// is an opaque token only the minting engine can interpret.
 ///
 /// [`BufferView`]: crate::engine::BufferView
-pub fn device_buffer_for(p: *mut u8, len: usize) -> Option<(crate::engine::BufferView, usize)> {
+pub fn device_buffer_for(p: *mut u8, len: usize) -> Option<DeviceBinding> {
     let registries = crate::factory::all_registries();
     if registries.is_empty() {
         return None;
@@ -713,18 +719,87 @@ pub fn device_buffer_for(p: *mut u8, len: usize) -> Option<(crate::engine::Buffe
     match classify(&registries, p) {
         Side::Host(_) => None,
         side => match resolve_endpoint(&registries, side, len) {
-            Ok(Endpoint::Mirrored { view, offset, .. }) => {
-                // Measured here rather than asserted by the caller. `alloc_device_authoritative_spans`
-                // will be quoted the moment persistent residency lands, and the failure mode for
-                // that counter is an author incrementing it because the design says the span is
-                // device-resident. This is the falsifier: a span cannot be authoritative if the
-                // engine never asked for its buffer, and this is the only function that hands one
-                // out. `authoritative > 0` while this is 0 is a contradiction, not a nuance.
-                crate::allocator::tally::on_device_buffer_bind();
-                Some((view, offset))
-            }
+            Ok(Endpoint::Mirrored {
+                view,
+                offset,
+                device_index,
+                ..
+            }) => Some(DeviceBinding {
+                device_index,
+                view,
+                offset,
+            }),
             _ => None,
         },
+    }
+}
+
+/// What [`device_buffer_for`] resolved: which provider's buffer, and where in it.
+///
+/// The device index is part of the answer because the caller must not bind a buffer that lives on
+/// a different `VkDevice` than the one it is about to dispatch on — the §6.5 `SPLIT-DEVICE` case.
+/// Returning the view alone would let a caller bind across devices and see it work on a UMA part.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceBinding {
+    /// The provider that minted the buffer. Check its frame before binding.
+    pub device_index: usize,
+    /// The opaque token; only the minting engine can interpret it.
+    pub view: crate::engine::BufferView,
+    /// ORT's pointer arithmetic, resolved by range lookup. Must be honoured when binding.
+    pub offset: usize,
+}
+
+/// Push a span's host staging bytes into its device mirror, if it has one.
+///
+/// Returns `Ok(false)` when `p` is not one of our handles or has no device buffer — the ordinary
+/// host build, where there is nothing to keep in sync.
+///
+/// # Why the engine must call this after writing an output
+///
+/// [`Endpoint`] documents that the staging block is authoritative *because* the session writes
+/// outputs through [`host_backing_for`]. The moment the session also **binds** device buffers for
+/// inputs, that asymmetry becomes a correctness bug rather than a design note: a span written as
+/// an output through staging, then read as an input through its device buffer, would be read
+/// stale. `CopyTensors` already mirrors every copy into a handle; this is the same obligation for
+/// the one writer that does not go through `CopyTensors`.
+pub fn mirror_to_device(p: *mut u8, len: usize) -> Result<bool, String> {
+    mirror_in(&crate::factory::all_registries(), p, len)
+}
+
+/// [`mirror_to_device`] over an explicit registry map, so it is reachable from a test.
+///
+/// The public entry point reads `factory::all_registries()`, which in a unit test is empty — so a
+/// test that called it would pass by taking the "no registries" early return and would prove
+/// nothing. Splitting the map out is what makes the assertion falsifiable.
+fn mirror_in(
+    registries: &HashMap<(u32, u32), Arc<HandleRegistry>>,
+    p: *mut u8,
+    len: usize,
+) -> Result<bool, String> {
+    if registries.is_empty() || len == 0 {
+        return Ok(false);
+    }
+    let side = classify(registries, p);
+    if matches!(side, Side::Host(_)) {
+        return Ok(false);
+    }
+    match resolve_endpoint(registries, side, len)? {
+        Endpoint::Host(_) => Ok(false),
+        Endpoint::Mirrored {
+            base,
+            host,
+            view,
+            offset,
+            device_index,
+        } => {
+            let provider = provider_for(device_index, base)?;
+            // SAFETY: `host` addresses at least `len` readable bytes — `resolve_endpoint` rejected
+            // any range extending past the span's requested size. The slice is not retained.
+            let src = unsafe { std::slice::from_raw_parts(host.cast_const(), len) };
+            provider.upload(view, offset, src)?;
+            tally::on_device_copy(len as u64, true);
+            Ok(true)
+        }
     }
 }
 
@@ -1013,5 +1088,71 @@ mod tests {
         );
         drop(writes);
         reg.free(h);
+    }
+
+    /// `mirror_to_device` must push the *engine's* write down to the device, at the right offset.
+    ///
+    /// This is the falsifier for the staleness hazard that binding device buffers creates. Before
+    /// the session bound input buffers, a span written as an output through host staging could
+    /// stay stale in device memory forever and nothing read it. Now it can be read, so the write
+    /// must land. If this function ever stops reaching the provider, a bound input reads whatever
+    /// the *previous* inference left there — numerically plausible, and therefore the failure mode
+    /// that survives a smoke test.
+    #[test]
+    fn an_engine_write_to_staging_is_pushed_to_the_device_mirror() {
+        use crate::engine::DeviceMemoryProvider as _;
+        let provider = Arc::new(RecordingProvider::default());
+        crate::engine::register_device_memory_provider(4243, provider.clone());
+
+        let regs = registries();
+        let reg = regs.values().next().expect("one registry").clone();
+        reg.set_device_index(4243);
+        let h = reg.alloc(4096).expect("alloc");
+        reg.attach_buffer(h, crate::engine::BufferView::from_raw(0xfeed))
+            .expect("attach");
+
+        // Write through the host backing, exactly as `write_outputs_to_ort` does.
+        let payload: Vec<u8> = (0..32u8).map(|b| b ^ 0x5a).collect();
+        let side = classify(&regs, (h + 256) as *mut u8);
+        let ep = resolve_endpoint(&regs, side, payload.len()).expect("resolve");
+        let host = ep.host_ptr();
+        // SAFETY: `host` addresses at least `payload.len()` writable staging bytes — bounds
+        // checked by `resolve_endpoint` — and `payload` is a distinct allocation.
+        unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), host, payload.len()) };
+
+        // The provider only has the handle; that is all the session has too.
+        let pushed = mirror_in(&regs, (h + 256) as *mut u8, payload.len()).expect("mirror");
+        assert!(pushed, "a device-backed span must report that it mirrored");
+
+        let writes = provider.writes.lock().expect("lock");
+        assert_eq!(writes.len(), 1, "exactly one mirror write");
+        assert_eq!(writes[0].0, 0xfeed, "this span's buffer");
+        assert_eq!(
+            writes[0].1, 256,
+            "the engine's write must mirror at the span offset, not at 0"
+        );
+        assert_eq!(
+            writes[0].2, payload,
+            "the bytes the engine wrote, not a zeroed buffer"
+        );
+        drop(writes);
+        reg.free(h);
+    }
+
+    /// Ordinary host memory must not be mirrored, and must not error.
+    ///
+    /// The default build has no device memory at all. `write_outputs_to_ort` calls
+    /// `mirror_to_device` unconditionally, so a stack pointer arriving here has to be a cheap
+    /// `Ok(false)` — not an error that would fail every inference in the configuration that is
+    /// actually shipped.
+    #[test]
+    fn a_host_output_is_not_mirrored_and_is_not_an_error() {
+        let mut buf = [7u8; 64];
+        let r = mirror_in(&registries(), buf.as_mut_ptr(), buf.len());
+        assert_eq!(
+            r,
+            Ok(false),
+            "a host pointer has no device mirror, and that is not a failure"
+        );
     }
 }
