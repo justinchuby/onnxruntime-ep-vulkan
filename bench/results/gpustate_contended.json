@@ -1,0 +1,53 @@
+{
+  "n": 148,
+  "seconds": 109.1,
+  "sm_mhz": {
+    "n": 148,
+    "min": 210.0,
+    "median": 210.0,
+    "mean": 513.8,
+    "max": 2280.0
+  },
+  "sm_max_mhz": 3105.0,
+  "util_pct": {
+    "n": 148,
+    "min": 0.0,
+    "median": 0.0,
+    "mean": 2.1,
+    "max": 79.0
+  },
+  "power_w": {
+    "n": 148,
+    "min": 2.7,
+    "median": 3.0,
+    "mean": 6.0,
+    "max": 28.1
+  },
+  "foreign_sample_fraction": 1.0,
+  "foreign_pids": {
+    "18252": 0.0,
+    "21924": 0.0
+  },
+  "own_pids_on_gpu": [
+    3204
+  ],
+  "clock_ramp_x": 10.8571,
+  "clock_at_max_pct": 16.5,
+  "verdict": "FOREIGN_GPU_WORK",
+  "tag": "contended",
+  "command": [
+    "python",
+    "bench\\results\\probe_gemv.py",
+    "--device",
+    "0",
+    "--iters",
+    "44",
+    "--warmup",
+    "1",
+    "--tag",
+    "contended"
+  ],
+  "command_exit": 0,
+  "own_root_pid": 780,
+  "wall_s": 109.1
+}
