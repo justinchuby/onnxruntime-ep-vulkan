@@ -17,6 +17,47 @@ Initial setup complete.
 
 ---
 
+## Audit: GEMV hardware gap, iGPU timestamps, subgroup-free Vulkan — 2026-08-01
+
+**Task:** Verify whether the 13.5x RTX 4060 Laptop / Iris Xe int4 GEMV gap is hardware-predicted,
+whether Intel device timestamps remain trustworthy under CPU load, and whether the subgroup-free
+MatMulNBits structure is current.
+
+**Key learnings:**
+
+1. The local Intel system is i7-13800H with LPDDR5 configured at 5200 MT/s. Its theoretical system
+   memory ceiling is 83.2 GB/s versus the RTX 4060 Laptop's 256 GB/s: 3.08x, not 13.5x.
+2. The measured 3425.9 / 253.4 us ratio is 13.52x, leaving a 4.39x residual over the bus ratio.
+   A 3–5x well-tuned expectation is plausible but remains unverified without DRAM counters or a
+   matched known-good kernel.
+3. Current shared-memory and workgroup limits are noise: q_gemv declares 1 KiB, while devices report
+   32/48 KiB; it uses 128/256 invocations while both devices report 1024.
+4. Intel UMA/package contention is real and can vary achieved GT frequency and DRAM service, but no
+   source supports assigning it a stable 2–3x multiplier. That number needs a controlled load sweep.
+5. The Intel timestamp tick remains valid. 52.0833 ns is a 19.2 MHz reference timer; CPU load changes
+   work per tick, not the tick. `NO_STEADY_TAIL` means valid-but-variable durations, not bad scaling.
+6. llama.cpp does not require subgroups. It builds shared-tree, hybrid, and subgroup-only reductions
+   and selects the shared fallback when subgroup arithmetic is absent.
+7. llama.cpp's subgroup-independent advantages are packed/vector loads, register dequantisation,
+   manual unrolling, and multiple register accumulators per thread/workgroup. Our kernel has only the
+   first half of that structure: register dequantisation plus a shared tree, but scalar activation
+   loads and one output accumulator.
+8. A lavapipe-safe fast path must retain baseline SPIR-V and use subgroup capability queries,
+   `gl_NumSubgroups`, and subgroup IDs—never a literal width 32.
+
+**Methodology notes:**
+- Did not benchmark or issue device work. Used existing trace/device metadata, CIM hardware identity,
+  public specifications, Vulkan sources, Linux i915 clock source, and current llama.cpp source.
+- Corrected PERF.md's claim that Intel's device clock itself is not contention-immune.
+- Per R9, every number in the report names a falsifying observation; unmeasured expected speedups are
+  explicitly ⚠️ rather than carried as constants.
+
+**Output files:**
+- `docs/PERF.md` §§13.4.4–13.4.6
+- `.squad/decisions/inbox/fact-checker-gemv-hardware-clock.md`
+
+---
+
 ## Audit: OQ-12 figure currency, legacy-path justification, opset-26 reality, ORT 1.28 ceiling, no-bump class — 2026-07-30T07:05:09-07:00
 
 **Task:** Verify two load-bearing claims: (1) the 31.43% Android figure behind the OQ-12 legacy barrier path decision; (2) the ONNX opset-26 claim and associated no-bump errata.
@@ -184,4 +225,3 @@ case the code was correct; the wiring was absent; the absence was invisible to r
 idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
-

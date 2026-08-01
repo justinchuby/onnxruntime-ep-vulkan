@@ -2209,16 +2209,128 @@ inference 6 that persists, and then ten inferences that agree to three parts in 
 is the right instrument**: no host-side quantity in this run is anywhere near that stable.
 
 The Intel column is the more important one. The Iris Xe never settled — it wandered between 542 and
-629 ms for all fifteen inferences. This is exactly what an integrated GPU sharing a power and thermal
-budget with five loaded foreign CPU cores should look like, and it means the device clock is **not**
-contention-immune on an iGPU the way it is on a discrete part. So the check refuses, and Intel has no
-quotable per-inference GPU figure from this run. The two devices differ in kind here, not in degree,
-and reporting one number for both would have concealed that.
+629 ms for all fifteen inferences. An integrated GPU shares package power, cooling, and DRAM with the
+loaded CPU cores, so the **amount of work completed per timestamp tick** is not contention-immune.
+The timestamp tick itself is a different instrument: on this Gen12 part the reported 52.0833 ns is a
+19.2 MHz reference timer, not the variable GT execution clock. The durations are therefore valid but
+noisy observations of changing GPU performance, not incorrectly-scaled time. So the steady-tail
+check still refuses, and Intel has no quotable per-inference point estimate from this run. See
+§13.4.4 for the source check and falsifier.
 
 **This is not an end-to-end number and it is not a substitute for one.** It is the summed duration of
 one inference's dispatches. It excludes host recording, submission, readback and all of ORT's own
 work, and it cannot be compared to a CPU EP latency. It is quotable for exactly one purpose: ranking
 where GPU time goes.
+
+### 13.4.4 Fact-check: the Intel timestamp is valid; the workload rate is unstable
+
+Checked 2026-08-01. Ratings use the Fact Checker states, and every figure names the observation that
+would falsify it.
+
+| item | rating | finding | falsifier |
+|---|---|---|---|
+| Intel CPU and iGPU share a constrained package | ✅ **Verified** | This machine is an i7-13800H package. Integrated CPU/GPU power-management literature measures coupled CPU/GPU DVFS and thermal allocation; Intel's iGPU also shares system DRAM. Heavy CPU load can therefore lower achieved GPU frequency and consume memory bandwidth. Sources: Dev et al., *Implications of Integrated CPU-GPU Processors on Thermal and Power Management Techniques* (2018); Linux i915 documentation, “Unified Memory Access” (accessed 2026-08-01). | A controlled CPU-load sweep holding GPU work fixed where GT frequency, package power allocation, DRAM counters, and kernel duration remain invariant within instrument error. We do not yet have this observation. |
+| `timestampPeriod = 52.0833 ns/tick`, 36 valid bits | ✅ **Verified for this device/driver** | Recorded by `vulkaninfo` in the 2026-07-29 device facts. `52.0833 ns` is `1 / 19.2 MHz`, matching Intel's Gen11+ timestamp path derived from the platform crystal/reference clock rather than the variable render clock. Source: Linux `intel_gt_clock_utils.c` (source revision checked 2026-08-01). | Re-querying the same physical device after a power-state transition returns a materially different period or a calibrated host/device interval shows the tick rate changing with GT frequency. |
+| `timestampPeriod = 1.0 ns`, 64 valid bits on NVIDIA and lavapipe | ✅ **Verified for the recorded devices** | These are device-query observations, not family-wide constants. | A fresh device query for the same device/driver reports another value. No literature claim can override that direct query. |
+| CPU load makes Intel timestamp durations “wrong” | ❌ **Contradicted** | Vulkan defines `timestampPeriod` as nanoseconds per timestamp increment. `VK_EXT_calibrated_timestamps` requires device timestamps to remain monotonic across power-management events; Intel's implementation derives the timer from a reference crystal. CPU load changes execution rate, not the unit conversion. The 542–629 ms spread is real performance variation. Sources: Vulkan Queries chapter and `VK_EXT_calibrated_timestamps` proposal (Khronos source checked 2026-08-01); Intel i915 clock source above. | A simultaneous calibrated-timestamp experiment shows the device counter's slope against QPC changing with CPU/GT power state beyond `maxDeviation`. That would be `ERROR(instrument)`, not a slow inference. |
+| `NO_STEADY_TAIL` is the correct report | ✅ **Verified** | No suffix of at least five samples met the 2% RSD gate. Per R13 the terminal state is failure of the stability condition, not a fabricated point estimate. | Recomputing the recorded series finds a qualifying suffix, or a new controlled run produces one. Quote `NO_STEADY_TAIL`; do not convert the number of rejected samples into a detection. |
+
+Primary timestamp sources:
+
+- [Khronos Vulkan-Docs, `chapters/queries.adoc`](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/chapters/queries.adoc):
+  timestamps monotonically track command execution and are converted by `timestampPeriod`; accessed
+  2026-08-01.
+- [Khronos, `VK_EXT_calibrated_timestamps` proposal](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/proposals/VK_EXT_calibrated_timestamps.adoc),
+  revision
+  `8e076076` (2026-04-29): power-management events must not reset the extension's device timer;
+  applications may recalibrate for cross-domain oscillator drift.
+- [Linux i915, `intel_gt_clock_utils.c`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gt/intel_gt_clock_utils.c),
+  revision checked 2026-08-01:
+  Gen11+ reads the timestamp reference from `RPM_CONFIG0`/`TIMESTAMP_OVERRIDE`; the source options
+  include 19.2 MHz, and the driver separately tracks the GT execution clock.
+- [Linux i915 documentation](https://docs.kernel.org/gpu/i915.html), accessed 2026-08-01:
+  Intel integrated GPUs use Unified Memory Access.
+- [Dev et al., integrated CPU-GPU thermal/power management](https://arxiv.org/pdf/1808.09651),
+  2018, accessed 2026-08-01.
+
+### 13.4.5 Fact-check: 13.5x is not predicted by these memory systems
+
+The local Intel assumption is not a generic “Iris Xe” entry. The host reports an Intel i7-13800H
+(96 EU Iris Xe, up to 1.5 GHz) and eight SK Hynix `H58G78BK7BX114` LPDDR5 packages configured at
+5200 MT/s. A 128-bit LPDDR5-5200 interface has a theoretical peak of
+`5200e6 transfers/s × 16 bytes = 83.2 GB/s`. This is the appropriate ceiling for this machine;
+DDR4-3200 Iris Xe systems would instead have only 51.2 GB/s.
+
+| item | rating | figure (sources checked 2026-08-01) | falsifier |
+|---|---|---|---|
+| RTX 4060 Laptop memory bandwidth | ✅ **Verified** | **256 GB/s**: 8 GB GDDR6, 128-bit, 16 Gb/s. Public RTX 4060 Laptop specifications: NVIDIA product family plus TechPowerUp/Notebookcheck device specification databases. | The laptop's VBIOS/memory telemetry reports a memory data rate other than 16 Gb/s or a non-128-bit bus. |
+| Local Iris Xe memory bandwidth ceiling | ✅ **Verified as a configured-system calculation** | **83.2 GB/s** for the observed LPDDR5-5200, 128-bit configuration. The memory part is SK Hynix LPDDR5; the configured rate came from `Win32_PhysicalMemory`, not a benchmark. Intel lists LPDDR5 support for the i7-13800H. | Firmware telemetry shows fewer than 128 active data bits or a configured rate other than 5200 MT/s. A bandwidth benchmark cannot falsify the *theoretical* bus ceiling; it can only measure efficiency below it. |
+| Bandwidth ratio, NVIDIA / local Iris Xe | ✅ **Verified arithmetic** | **3.08x** (`256 / 83.2`). For a DDR4-3200 Iris Xe the corresponding ceiling ratio would be **5.00x**, which is why an undifferentiated “Iris Xe bandwidth” number is invalid. | Either input specification is falsified as above. |
+| FP16 peak, RTX 4060 Laptop | ⚠️ **Unverified as an OEM operating point** | Public databases give **11.61 TFLOP/s** at the reference boost; laptop TGP and boost vary by OEM. This kernel accumulates fp32, so the number is not its roofline. | Sustained clock telemetry plus the Ada CUDA-core issue rate yields a different peak for this laptop. We have no uncontended clock capture. |
+| FP16 peak, local Iris Xe | ⚠️ **Unverified as a sustained figure** | Architectural peak is approximately **4.61 TFLOP/s** for 96 EU at 1.5 GHz; fp32 peak is approximately 2.30 TFLOP/s. Both assume max dynamic frequency and are not sustained guarantees. | GT frequency telemetry or an instruction-throughput counter shows the device cannot reach the assumed clock/issue rate. |
+| Measured kernel ratio | ✅ **Verified from Niobe's timestamp trace** | **13.52x** (`3425.9 / 253.4`), rounded to 13.5x, for identical 161-dispatch inference work. | Re-summing the 2,415 per-device `q_gemv_matmul_nbits_f16` spans from the raw trace produces different means, or timestamp calibration fails. |
+| Ratio expected from a well-tuned int4 GEMV | ⚠️ **Unverified range: about 3–5x** | Batch-1 GEMV streams the weight matrix, so the 3.08x local theoretical bandwidth ratio is the first-order prediction. Allowing unequal attainable bandwidth and UMA interference can widen it, but public specifications do **not** predict 12–15x. | The same known-good kernel, with DRAM byte counters, sustains a 12–15x device ratio while both devices are at comparable fractions of their own bandwidth ceilings. We currently lack those counters, so 3–5x must remain a design expectation, not a measured constant. |
+
+Specification sources, all accessed 2026-08-01:
+
+- [NVIDIA GeForce laptop comparison](https://www.nvidia.com/en-us/geforce/laptops/compare/)
+  for the product family; [TechPowerUp RTX 4060 Mobile](https://www.techpowerup.com/gpu-specs/geforce-rtx-4060-mobile.c3946)
+  and [Notebookcheck RTX 4060 Laptop](https://www.notebookcheck.net/NVIDIA-GeForce-RTX-4060-Laptop-GPU-Benchmarks-and-Specs.675692.0.html)
+  for the 128-bit, 16 Gb/s, 256 GB/s configuration and reference-clock FLOP calculation.
+- [Intel 13th-generation Core i7 product family](https://www.intel.com/content/www/us/en/ark/products/series/230486/13th-generation-intel-core-i7-processors.html)
+  for the i7-13800H's 96 EU graphics, 1.5 GHz maximum graphics frequency, and memory support.
+- [SK Hynix LPDDR5 product family](https://product.skhynix.com/products/dram/lpddr/lpddr5.go)
+  for the observed `H58G78BK7BX114` memory technology. The 5200 MT/s configured rate and eight
+  16-bit devices are local CIM observations; their product gives the 128-bit bus used in the
+  83.2 GB/s calculation.
+
+**Decision:** measured 13.52x divided by the 3.08x bus ratio leaves a **4.39x residual**.
+The residual combines kernel portability loss with Intel's shared-power/shared-DRAM conditions; it is
+not proof that exactly 4.39x is recoverable. It is enough to reject “hardware fact, do nothing.”
+Switch should spend the day on the portability path, but use counters or a matched reference kernel
+to separate shader design from CPU/DRAM contention.
+
+Relevant alleged Intel pathologies:
+
+| mechanism | rating | relevance to this kernel | falsifier |
+|---|---|---|---|
+| 32 KiB Intel vs 48 KiB NVIDIA workgroup shared-memory limit | ✅ **Verified limit; ❌ contradicted as this kernel's cause** | `q_gemv.comp` declares only 256 fp32 values = **1 KiB**. A shader declaring 48 KiB would fail pipeline creation on this Intel device rather than silently become this 13.5x result. | SPIR-V reflection shows more than 1 KiB Workgroup storage in the executed variant, or a 1/16/32 KiB sweep changes duration sharply. |
+| `maxComputeWorkGroupInvocations` | ✅ **Verified; noise here** | Both recorded local devices report **1024**; this kernel uses 128 threads for K=3072 and 256 for K=8192. No device limit clips it. | The raw run metadata names a different limit or specialization constant. |
+| hard-coded subgroup width | ✅ **Verified hazard generally; ❌ absent here** | Intel compilers may select SIMD8/16/32, and lavapipe reports subgroup size 8. The current shader uses no subgroup operation and sizes its tree from `gl_WorkGroupSize.x`, so it does not bake 32. | SPIR-V disassembly contains subgroup instructions or a literal-32 lane mapping that affects reduction correctness. |
+| UMA/device-local system RAM | ✅ **Verified and plausibly material** | Intel's DEVICE_LOCAL heap is system memory. GPU weight reads compete with CPU traffic, and CPU package load can reduce GT headroom. This is the listed mechanism most capable of adding a multi-x penalty under the observed foreign CPU load, but **2–3x is not yet measured**. | A quiet CPU/load sweep with DRAM and GT counters leaves kernel time unchanged, or device-local bandwidth remains a fixed fraction of 83.2 GB/s under load. |
+
+### 13.4.6 Fact-check: current subgroup-free int4 GEMV structure
+
+llama.cpp source was checked at `master` on 2026-08-01; the relevant shader-base revision is
+[`d0061be8`](https://github.com/ggml-org/llama.cpp/commit/d0061be838809230db7a4edf62bc9a098025ba98)
+(2026-02-18). Primary files:
+[`mul_mat_vec.comp`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec.comp),
+[`mul_mat_vec_base.glsl`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_base.glsl),
+[`vulkan-shaders-gen.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp),
+and
+[`ggml-vulkan.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-vulkan/ggml-vulkan.cpp).
+
+| item | rating | finding | falsifier |
+|---|---|---|---|
+| llama.cpp requires subgroup operations for `mul_mat_vec` | ❌ **Contradicted** | It builds three reduction variants: full shared-memory tree, subgroup+shared hybrid, and subgroup-only/no-shared. Runtime selection uses `device->subgroup_arithmetic`; without it, `SHADER_REDUCTION_MODE_SHMEM` is selected. | Current source or generated SPIR-V lacks the shared-memory variant, or runtime pipeline creation selects subgroup SPIR-V when `subgroup_arithmetic` is false. |
+| llama.cpp does more than change the reduction | ✅ **Verified** | Its quant path dequantises in registers, uses packed/vector loads and `vec4` dot products, manually unrolls the K loop, and keeps `NUM_ROWS × NUM_COLS` accumulators per thread so one workgroup can reuse work across multiple outputs. | Source inspection of the selected quant variant shows scalar element-at-a-time loads and only one accumulator, or capture identifies another shader path. |
+| A known-good subgroup-free structure exists | ✅ **Verified structurally** | llama.cpp's fallback is precisely that structure: packed/vector loads, register dequantisation, several register accumulators, then a shared-memory tree. Our kernel already has register dequantisation and a correct shared tree, but only one output accumulator and scalar activation loads. | The fallback fails correctness on a no-subgroup implementation, or an A/B build shows it was never selected. Performance remains a separate claim. |
+| The no-subgroup constraint explains most of 13.5x | ⚠️ **Unverified; unlikely by itself** | Our 128/256-thread tree pays 7/8 barriers. A subgroup hybrid removes most of them, so a fast path should help, especially on Intel, but the kernel still streams/dequantises thousands of weights. Literature/source inspection does not justify assigning a 2–3x gain to reduction alone. | A capability-gated subgroup variant, with identical loads and arithmetic, reduces Intel time by 2–3x while leaving NVIDIA near unchanged. |
+
+A lavapipe-safe fast path does **not** bake subgroup size 32:
+
+1. Keep the current shared-tree SPIR-V as the mandatory baseline.
+2. Query subgroup arithmetic support for compute; optionally query subgroup-size control.
+3. Build a hybrid variant using `subgroupAdd`, have lane 0 of each subgroup write one partial, then
+   reduce `gl_NumSubgroups` partials. Use `gl_SubgroupInvocationID`, never `lane & 31`.
+4. Select subgroup-only reduction only when the workgroup is one subgroup; otherwise select hybrid.
+5. Select the baseline when arithmetic support is absent or the driver/CPU implementation is not
+   on the validated capability list. Lavapipe's subgroup size 8 then remains correct in either path.
+
+The higher-priority structural experiment is independent of subgroups: vectorise packed loads and
+compute multiple output columns per workgroup/thread with multiple register accumulators, while
+retaining the existing shared-tree fallback. That is the closest source-backed explanation for why
+our scalar one-output kernel leaves much more than the 3.08x hardware bandwidth ratio on Intel.
 
 ## 13.5 What remains non-quotable, and why I am not overriding my own gate
 
