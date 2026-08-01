@@ -142,3 +142,121 @@ idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
 command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
 accordingly.
 
+
+---
+
+## Session 9 (2026-07-31T21:46—22:40-07:00) — Criterion 10's gate wired into the lanes; UNATTRIBUTED; lane re-classification
+
+**Assignment:** wire criterion 10's gate into the CI lanes; handle the new fourth verdict
+state `UNATTRIBUTED`; classify every lane `operational` vs `green`; re-state the
+subgroup-32 falsifier chain end to end. Worktree `squad/link`, merged `origin/main` (77d5d2a).
+
+### The finding I was sent to fix, confirmed
+
+Grepped `.github/workflows/ci.yml` for `check-verdict|gate_chain|model_output_equivalence|
+MATCH|UNMEASURED|UNATTRIBUTED|guard_d|assert_vulkan_executed`: **zero matches**. Both build
+lanes ran the suite and read an exit code. A green lane proved the process exited zero. It
+did not prove the EP did anything — and on 2026-07-30 the EP did nothing (ORT printed
+`EP_FAIL ... Falling back to CPUExecutionProvider` inside `run()`, re-ran on CPU, and raised
+nothing; `get_providers()` still listed VulkanEP because the provider list is fixed at
+session-create). The whole suite was green while zero nodes executed on Vulkan. Fifth
+appearance of that log line on this project.
+
+### What I built (`ci/`, new directory, mine as lane owner)
+
+- `ci/gate_chain_fp32.py` — the criterion-10 gate artifact runner. §7.8.1 2-node
+  `Add(fp32,[256]) -> Relu` island. Writes `UNMEASURED` to the verdict file **before** any
+  session is opened, so only a completed comparison can promote it. Captures ORT's native
+  stderr at **fd level** (`os.dup2`) — the `Falling back` line comes from C++ on fd 2, so a
+  Python `redirect_stderr` captures nothing. Runs Vulkan under profiling + a CPU reference,
+  greps for fatal log lines, attributes via `ExecutionAttribution.from_profile()`, adds the
+  counters witness, builds the verdict with `EquivalenceVerdict.from_comparison()`, writes
+  the record and splices it into the counters JSON. This is the R10 falsifier: **an artifact
+  whose content varies with its input**, not a flag.
+- `ci/check_verdict.py` — independent second reader, separate process. Rejects a `MATCH`
+  that carries an empty `executed_by`, a zero own-provider count, or an `attribution_source`
+  that is not `ort_profile`; all three report `UNATTRIBUTED`. A missing record is
+  `FAIL(condition=UNMEASURED)`, never a skip.
+- `ci/check_fatal_log.py` — R13 obligation-3 second witness with a different failure mode
+  (a grep cannot `NameError`). Missing log is `ERROR(instrument=log_not_captured)`, never
+  zero hits (R12).
+- `ci/test_lane_checks.py` — 16 two-polarity tests asserting **printed tokens**, not exit
+  codes alone. No GPU, no Vulkan, no ORT. 16/16 pass.
+
+### Wiring
+
+`ci.yml`: new GPU-less `lane-checks` job; five gate steps appended to both
+`build-test-linux` and `build-test-windows` (gate artifact -> independent reader ->
+`epctl --check-counters` -> fatal-log witness (`always()`) -> **negative control** that
+removes the Vulkan ICD and requires the gate to go red with the text
+`FAIL(condition=UNATTRIBUTED)`); pytest now tees to a log so the grep has a subject.
+`conformance.yml`: same gate steps; the census step relabelled a diagnostic that is *not
+evidence* (it is the only `continue-on-error` left).
+
+### Two bugs worth carrying forward
+
+1. **Splice-ordering — R13 with the polarity reversed.** First negative run terminated as
+   `ERROR(instrument=counters_snapshot_unwritable)` instead of `FAIL(condition=UNATTRIBUTED)`.
+   Cause: an EP that executes nothing never dispatches, so never writes a counters snapshot,
+   so the splice fails *because of the very condition being detected*. A real detection
+   wearing an outage's costume routes a finding to the wrong owner. Fixed: the verdict is
+   decided first; a splice failure may only be terminal when the verdict is `MATCH`.
+2. **`importorskip` is a trap here.** A skipped test reports the same green as a passing one.
+   Absence of the vocabulary module must fail collection (verified: exit 2).
+
+Also: writing `--allow-unmeasured` inside a comment saying "this flag appears nowhere" makes
+a grep audit report it present. Reworded.
+
+### `UNATTRIBUTED` — vocabulary is Trinity's, imported, not restated
+
+All four states, the comparison enum, the constructors and the record I/O come from
+`tests/ops/_verdict.py` (Trinity). I import it; I define no token of my own. `MATCH` is
+unrepresentable at a zero own-provider count; `UNATTRIBUTED` is **not** `DIVERGENT` — the
+Windows negative control explicitly rejects `FAIL(condition=DIVERGENT)` as the wrong answer,
+because a run we could not attribute is not a run that disagreed.
+
+**Supersession:** my Session 8 brief named `epctl --check-verdict`. That flag does not exist.
+The canonical gate is `epctl --check-counters <file> --require-dispatches 1` (Tank), extended
+by Trinity/Tank to fail on `UNATTRIBUTED`, `SPLIT-FRAME` and a missing `executed_by`. I took
+the existing name rather than adding a second one (R11).
+
+### Measured, both polarities, local hardware
+
+- Positive (RTX 4060, selector 0): `GATE: PASS`, `verdict=MATCH`,
+  `executed_by={'VulkanExecutionProvider': 1}`, `counters_dispatches_executed=2`,
+  `max_abs_diff=0`. Reader and `epctl` agree. Selector 1 also PASS (no claim a different
+  physical device was selected — `ep.device_index` is still commented out in conftest).
+- Negative (`VK_DRIVER_FILES` -> nonexistent ICD): `GATE: FAIL(condition=UNATTRIBUTED)`,
+  exit 1, `executed_by={'CPUExecutionProvider': 2}`, `permits_triple_and_ratio: false`.
+
+### Lane classification (PLATFORMS.md §7.4.4)
+
+No lane is upgraded to `green` on the strength of my reading the YAML — that would be R10
+applied to my own work. The CI lanes now *carry* the gate but have not been observed on a
+runner, so they are `operational (gate wired, unobserved)`. Only the two local GPU lanes and
+`lane-checks` have shown both polarities. WSL/lavapipe remains `operational`: 196 tests and
+barrier parity 58/0, but that run predates the gate and cannot fail when the EP does nothing.
+
+### Subgroup-32 chain (PLATFORMS.md §7.10.1)
+
+Restated as six links. Links 1–4 and 6 held all along. **Link 5 — "those tests actually
+execute on the GPU" — was the unsecured one**, and it is exactly what the missing gate did
+not guarantee; a baked-32 shader on lavapipe's `subgroup_size = 8` would have produced wrong
+reductions, ORT would have fallen back, and the suite would have gone green. The chain holds
+end to end *now*, conditional on (a) the gate running in the lavapipe lane, and (b) the
+fatal-log grep having a teed log to read.
+
+### Merge-order dependency
+
+Trinity's `tests/ops/_verdict.py` is still **uncommitted in her worktree**. Until it merges,
+`lane-checks` on my branch fails with `ERROR(instrument=verdict_vocabulary_unavailable)` —
+honest and non-green by design, but a real ordering dependency. I did not commit her file.
+
+### Learnings added
+
+- A lane that cannot fail when the EP does nothing is not evidence, whatever it prints.
+- Quote the failure **text**, never the failure count (R13). A CI lane that reports only an
+  exit code is that failure at scale.
+- When a detection and an instrument outage share a symptom, decide the verdict *before*
+  letting the outage be terminal.
+- Probe output goes to `bench/results/` or a temp path, never the repo root (gitignored).
