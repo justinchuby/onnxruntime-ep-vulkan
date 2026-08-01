@@ -1336,3 +1336,94 @@ ep_messenger_fires_for_planted_fence_leak justification accepted, closed. Niobe 
 ~1-3% wall, upload was 98% of that phase; R11).
 
 cargo ci green (fmt+clippy+tests). Release DLL builds. Committed on squad/switch, not pushed.
+
+## Session 36 - §6.5 CLOSED (process-global VkDevice); containment RED is Niobe's gate; record residual (2026-07-31T20:28:45-07:00)
+
+Merged origin/main 77d5d2a into squad/switch (clean, 23 files).
+
+TASK 1 - §6.5 closed. Root of last session's UAF: PROVIDERS/OFFERED and HandleRegistry are
+process-global, the offered device was session-scoped and vkDestroyDevice'd at teardown. Fix is
+"stop destroying the device", not "stop offering it". New vk::device::acquire_ep_device() returns
+&'static EpDeviceOwner, one per physical device index, built once and Box::leak'd (EP_INSTANCE /
+EP_DEVICES OnceLocks). VulkanSession now BORROWS &'static Device/Instance/CapableDevice; per-session
+children (allocator, cmd pool, pipeline cache, weight caches) keep session lifetime and are still
+destroyed first. ONNXRUNTIME_EP_VULKAN_OFFER_SHARED_DEVICE gate REMOVED - offer is unconditional,
+once, from CreateEp, Arc retained for process lifetime (Tank's three obligations met).
+
+The artifact (R10), not an assertion: bench/results/probe_sec65.py, 3 sequential sessions, device
+memory ON. Selector 0 (NVIDIA): alloc_device_frame SHARED, alloc_device_authoritative_spans went
+"UNOBSERVABLE" (JSON string) -> 0 (integer). That is UNOBSERVABLE -> UNWIRED; the TYPE changed,
+which is the falsifier. Selector 1 (Intel): still SPLIT-DEVICE / "UNOBSERVABLE" - and that is
+correct, not a bug: ONNXRUNTIME_EP_VULKAN_DEVICE indexes enumerate_capable_devices() (best-first)
+while the offer is keyed by capable.info.index (raw vkEnumeratePhysicalDevices), so DEVICE=1 forces
+the session onto Intel (info.index 0) while ORT asks for factory index 1 (NVIDIA). Added INFO logs
+on both ensure_registered branches + offered_indices(). The two runs differing with their input is
+itself the R10 evidence. UNWIRED -> measurement is Tank's: transfer::device_buffer_for must acquire
+a production caller for allocator::tally::on_device_authoritative.
+
+Census: audit_instruments.py --check said verbatim "FAIL: 1 instrument(s) got wired - good news,
+update the baseline: - vk/host_device_memory.rs::offer_shared_device". Baseline regenerated; tool
+also dropped ops/claim_log.rs::record from ambiguous (Mouse should confirm). Trinity's
+test_census_baseline_has_no_drift green. test_phi35.py 8 passed / 1 skipped on BOTH devices.
+Committed b262292.
+
+Two defects found, both outside my files: (1) OwnedDevice::create(device_index) IGNORES its argument
+and resolves via select_device, so the Intel run built an Intel device for the NVIDIA-keyed registry
+- alloc_device_frame_device can disagree with its own frame key (Tank). (2) Pre-existing flake, text
+not count per R13: "assertion `left == right` failed: peak depth must be the bound / left: 8 /
+right: 4" at src\allocator.rs:2516 - quarantine_peak_spans is a process-wide tally shared with
+parallel tests. ERROR(instrument), not a detection. Passes in isolation; 388 passed on re-run.
+
+TASK 2 - phase_containment RED is in HER gate, not my spans. bench/phases.py::analyse computes
+`siblings` then passes `attributed` (ALL spans, incl. nested cmd_upload/desc_alloc/pipeline_lookup)
+into phase_containment at line 1720 - children double-counted with parent `record`. Ratios with
+attributed: 1.355 / 0.946 / 0.950 / 0.963; with siblings: 0.703 / 0.928 / 0.929 / 0.930 -> red:
+false. Only subgraph 0 exceeds 1.0 because the cold call emits 1412 pipeline_lookup spans, which is
+exactly why the gate says "1 subgraphs". ZERO orphan spans, so the one-island/353-node structural
+worry does NOT occur - the failure is arithmetic. My spans self-describe: nested_in=record on the
+sub-record phases, none on record/submit/fence_wait; phase_nesting CONSISTENT; gpu_span_accounting
+1412==1412; gpu_containment 0 violations. Reported, did not edit bench/.
+
+R11 exposure in my OWN instrument: every child of `record` was named and printed, so the
+decomposition LOOKED closed. Per call: cold record 1719.6ms (cmd_upload 1572.0, desc 4.8, pipe 19.4,
+residual 123.4ms = 7.2%); warm 19.9/24.0/22.8ms with residual 92.6/94.0/92.5%. ~93% of warm `record`
+had no span of its own. Added record_residual_us() + a "record RESIDUAL" summary row + a unit test
+that asserts the residual VARIES between cold and warm regimes rather than asserting a number. Trap
+I introduced and closed: the summary row is CUMULATIVE over all Compute calls (prints 10.4% here, a
+mixture belonging to no single call) - row text and caveat now say so. Rewrote the Phase::Record
+caveat to be regime-dependent; the old "upload is 96%, recording 1-3% of wall" is now false in the
+OPPOSITE direction.
+
+Fence-wait (rank 3): two estimators disagree by 2.4x, so nothing is quotable yet - ERROR(instrument)
+per R13. overlap (intersect GPU spans with the fence_wait window on the host axis, depends on the
+calibration anchor): 50.2/50.2/43.3/50.2% idle. cluster (group GPU spans into submissions by the
+large gaps, alignment-free, durations only): fence_wait 69.6/93.9/94.0/71.8ms vs gpu_busy
+49.4/83.8/71.0/58.5ms (n=353 each) -> 29.0/10.8/24.5/18.5% idle. I withdraw the overlap figure; the
+difference measures my anchor, not the GPU. Two things surviving both: (a) between-kernel bubbles
+are ~0.4ms of a 50-84ms cluster, so the idle is at the SUBMISSION EDGES (submit->first kernel,
+last kernel->host wake), not between dispatches - vkQueueSubmit is still 0.2ms; (b) kernel time
+itself swings 49.4->83.8->71.0->58.5ms for the SAME 353 dispatches, a 70% spread, so no idle share
+from a single run is publishable regardless of estimator. Worker record had
+model_output_equivalence MATCH and claimed_nodes 353 but NO executed_by key, so the run is
+unattributed and I quoted no wall-clock from it. The old 53.6% and the withdrawn 3.1x/3.7x stay
+withdrawn.
+
+TASK 3 - Trinity closed. Correction for the record: ep_messenger_fires_for_planted_fence_leak is NOT
+in tests/validation_control.rs; it is a --lib test at rust/src/vk/dispatch_integration.rs:482 (my
+file). validation_control.rs needs nothing from me. #[ignore] stays: instance-scoped messenger +
+process-wide EP_VALIDATION_ERROR_COUNT means the assertion is only sound when the test owns the
+process; it is a lane declaration, not a suppression, and her subprocess wrapper enforces isolation
+via the OS. Verified today post-§6.5: "[EP-PLANT] EP_VALIDATION_ERROR_COUNT after planted fence leak
+= 1 ... ok". Asked her to gate the wrapper on Instance::validation_armed() (instance.rs:450) so an
+unarmed machine reports ERROR(instrument) instead of green. Flagged the §6.5 consequence: the
+production EP device is never destroyed now, so any "validation errors == 0 at shutdown" gate on the
+production path would be UNOBSERVABLE (R12), not passing - the positive control is unaffected
+because it builds its own Instance+Device.
+
+Housekeeping: probe output goes to bench/results/ (added probe_record_residual.py, reproduces both
+findings from a trace); raw traces renamed to the gitignored trace_*.json pattern so they stay as
+evidence on disk without ever entering git. Nothing written to the repo root.
+
+Decisions: switch-sec65-closed.md, switch-phase-containment-niobe.md,
+switch-validation-control-trinity.md. clippy clean, cargo test --lib green, committed on
+squad/switch, not pushed.
