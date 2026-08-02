@@ -1840,3 +1840,77 @@ attributions at lines 42, 55/62, 121, 194 — including switch-leaked-device-val
 which is relay item 4 and is already merged, not owed). Nothing of mine was lost; nothing resubmitted.
 
 Decision: switch-host-gpu-decoupling-measured.md.
+
+## Session 42 — 2026-08-01 — counts over clocks; the index space closes; the A/B does not
+
+Merged `origin/main` (`16f40ef`), which brought Niobe's `bench/device_state.py` certification gate.
+
+**Relay #7's four asks, and where each landed.**
+
+**1. Packed loads restated in counts — DONE (`7a1d12f`).** `bench/results/probe_gemv_counts.py`
+compiles `q_gemv.comp`, freezes the spec constants per arm, optimizes, and walks the SPIR-V
+def-use graph from the `inb` variable to every load reaching it. The load *type* is the claim:
+`%uint` (4 B) unpacked, `%v4uint` (16 B) packed, so **4 loads per 16-byte blob become 1**. From
+the ONNX graph: **161 MatMulNBits nodes** (matching the trace's 161 dispatches — two instruments
+sharing no code agreeing on one integer), **116,324,352 blobs/inference**, so **465,297,408 ->
+116,324,352 InB load instructions**. Byte model: weights 1775.0 MiB + scales 221.9 MiB
+(irreducible) + **activations 887.5 MiB, 30.8%, ours** — total 2884.3 MiB against 9096.7 at
+`QB_COLS=1`, a **3.15x** count-derived reduction where the tile measured 3.73x on the clock.
+Shared memory struck off the Intel candidate list by count: 4 KiB requested, 12% of Intel's 32 KiB,
+sized by a literal so it cannot move with the tile.
+
+**I demoted half of my own `538db70` claim.** The four 32-bit loads do NOT depend on each other
+and can all be in flight; only the four `bacc[c] +=` updates are serialized. Accumulator RMW per
+blob 4 -> 1, serial FP adds on the critical path 4 -> 3. Real, countable, nowhere near 4x. The
+byte model also predicts packed loads move **zero bytes**, so their ceiling on a bandwidth-bound
+kernel is small — consistent with the 1.06x measured, and it should be shown to anyone claiming
+more.
+
+**Instrument self-defect, caught before publishing.** First version reported the same census for
+both arms: glslc emits `if (QB_PACKED == 1u)` as an `OpSpecConstantOp`, which `--freeze-spec-const`
+does not fold and dead-branch elimination will not look inside, so both arms compiled identically.
+A perfectly stable, perfectly wrong answer — the same shape as `STEADY` at 21.4x. Fixed with
+`--fold-spec-const-op-composite`; `arms_must_differ` now refuses a census whose arms agree.
+
+**2. Certified NVIDIA A/B — ATTEMPTED THREE TIMES, NOT OBTAINED.** All three committed with
+companions (`06c1242`): `ab_p0_r1` FOREIGN_GPU_WORK -> **WITHHELD**; `ab_p1_r1` and `ab_p1_long`
+**SOLE_TENANT** (0% of 134 and of 327 samples) but `MARGINAL_TAIL` -> **UNCERTIFIED**. **The last
+two are the finding: the box WAS quiet and the figure is still uncertifiable**, so tenancy and
+certifiability are different properties and idling the squad would not have bought a number.
+What refuses them is the board's clock — median SM 210 MHz, median util 0%, median power 2.9 W,
+brief 2010 MHz excursions against 3105 max. Our EP is host-bound, so the board never holds boost
+and the series drifts (74 -> 19.6 ms over one run), failing the coverage floor. **The duty-cycle
+mechanism again, now blocking certification instead of inflating an archive.** No median quoted.
+
+**3. What 1.03x established — my read is in the reply and in the records.** Short version: the raw
+medians are UNCERTIFIED; the control-kernel ratio (`q_gemv/gqa_f16`, 1.716 NVIDIA vs 1.727 Intel)
+is a *within-run* quantity that a clock change scales on both sides, so it survives without a
+device-state companion. The coordinator's two Intel `NO_STEADY_TAIL` arms neither confirm nor
+refute it — they are an absence.
+
+**4. Index space by artifact on BOTH selectors — CLOSED (`06c1242`).**
+`bench/results/probe_indexspace.py`. Criterion a coincidence cannot satisfy: the allocator index
+must **differ** between selectors and match the session's offered index in each. Result:
+selector 0 `allocator_index='1'` offered `1=NVIDIA`; selector 1 `allocator_index='0'` offered
+`0=Intel`; **both SHARED; verdict ONE_INDEX_SPACE.** Pre-fix it was `'1'` on both.
+**`alloc_device_buffer_binds = 6` on both selectors** — Tank's counter has left 0 and
+`device_buffer_for` is invoked. `alloc_device_authoritative_spans` stays 0 by design (all 9 spans
+still mirrored). Added the two-armed-artifact rule to `ENGINE.md` §2.0.
+
+**Inadmissible today, labelled:** every GPU-busy figure I touched this session. Nothing from
+`ab_p0_r1`, `ab_p1_r1` or `ab_p1_long` is quoted. Note my uncertified archive is now positively
+suspect: today's flat suffix sits near 19.6 ms where the archive says 11.5, at a lower peak clock.
+That distrusts the archive; it does not license quoting 19.6.
+
+**Next step, for a reader with no memory of this session.**
+1. **Do not chase a certified NVIDIA figure by waiting for a quiet box.** It is already quiet and
+   still refuses. Either get `nvidia-smi --lock-gpu-clocks` + an elevated shell (blocked on
+   Justin), or change the harness so the GPU holds boost — the latter is in our hands and is the
+   better first move. The gate is correct in all three runs; do not touch it.
+2. **The next kernel change should be chosen by the byte model, not by a clock.** Weights and
+   scales are irreducible; **activations are 30.8% of traffic and ours**. Raising `QB_COLS` past 8
+   needs a bigger register budget or a shared-memory activation tile — and shared memory is at
+   4 KiB of a 32 KiB Intel budget, so there is room. Predict the byte reduction from
+   `probe_gemv_counts.py` first; it was accurate to 18% for the column tile.
+3. Decision records filed: `switch-packed-loads-in-counts.md`,
+   `switch-sole-tenant-is-not-certifiable.md`, `switch-index-space-one-space.md`.
