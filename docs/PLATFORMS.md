@@ -722,7 +722,81 @@ the variable at load time, so it cannot be armed from inside a test that has alr
 imported `onnxruntime` — the arming is a property of how the process was started, and
 nothing in the old record said so.
 
-##### How a lane fails when the EP executes nothing — the actual mechanism
+##### The union defect — a required parameter, and a caller that was not on my branch (2026-08-01, round 27)
+
+`squad/trinity` added a required keyword-only `guard` to `_run_counters_child()`.
+`squad/mouse` added `test_ledger_lookup_wired`, which calls that helper, to the same file.
+Both branches were green. Their union was not:
+
+```
+TypeError: _run_counters_child() missing 1 required keyword-only argument: 'guard'
+tests/ops/test_wiring_census.py::test_ledger_lookup_wired  — both devices
+```
+
+This is the third instance of the shape in one day (Tank's residency screen moving a
+process-global counter; Niobe's `sys.path.insert` in `bench/` rebinding imports for Link's
+`ci/` checks; this). In none of them did an author do anything wrong locally, and **no
+command either author could have run on their own branch would have shown it**. Our test
+discipline verifies branches; these defects live in unions.
+
+**The parameter now defaults to `None`, and `None` means *build one*, not *run unguarded*.**
+That distinction is the whole decision. `guard=None → unguarded` would satisfy "callable
+without a guard" while silently undoing round 25: every future caller would opt out of
+stall detection with nothing to notice. An ambient guard loses only **bookkeeping** — its
+costs and max-silences do not land in the census-wide guard's ledger, so they are absent
+from `observed_units` in the census artifact — never protection. There must be no unguarded
+path through the module. Both halves carry falsifiers, because either alone is satisfiable
+by the wrong fix: *callable without a guard* is satisfied by deleting the guard, and *the
+call is guarded* is satisfied by keeping the argument required. Only the pair pins it
+(`tests/ops/test_stall_guard.py`, 16 always-on deterministic tests).
+
+The same shape sat one line down: `_BUDGET_UNITS[label]` raised `KeyError` for any tag
+added elsewhere. It is now `_budget_for(label)` with a generous default. A loose default is
+safe here in a way it would **not** be for a wall clock, because the unit is *work*: a loose
+work budget detects a hang later in work, never not at all, and contention cannot stretch it.
+
+**The union check — `tests/union_check.py`.** Three tiers, and only one of them is a gate:
+
+| tier | question | verdict class |
+|---|---|---|
+| 1 | which files were edited on **both** sides (`base...head` ∩ `head...base`) | precondition |
+| 2 | was a `sys.path.insert(0, …)` added **in a directory that collides** | precondition |
+| 2b | which module basenames are importable from more than one directory | precondition |
+| 3 | trial-merge into a scratch worktree and **run** the union | **gate** |
+
+Tiers 1, 2 and 2b are preconditions, never gates (R9 amendment 5): a union can be broken
+with no intersecting file and no scanned side effect, so their silence is a statement about
+the tool rather than about the union. The script therefore never prints a bare `PASS` for
+them — it prints `PRECONDITION(tiers=1,2; tier 3 not run)`. It is named `union_check.py`
+and not `check_union.py` because the `check_*` names in `ci/` are gates. Exit codes follow
+R13: `0` PASS, `1` FAIL(condition), `4` ERROR(instrument).
+
+Tier 2 was 21 findings on its first run and useless; `sys.path.insert(0, …)` is an ordinary
+idiom here. What made Niobe's insert dangerous was not the insert but the **population of
+colliding module basenames** — so tier 2b computes that population from the working tree
+(an existing collision is as dangerous as a new one and more likely forgotten), and tier 2
+names only inserts made in a directory that participates in one. Run against the pre-fix
+history it reports `COLLISION device_state.py <- bench, ci` and names `bench/device_state.py`
+and `ci/check_lane_inventory.py` — i.e. it retrodicts the Niobe×Link incident, which is the
+R10 falsifier for the tool itself: its output varies with its input.
+
+Tier 3 was demonstrated with **both arms**, on real history, same target, same device:
+
+| arm | `--base` / `--head` | verdict | exit |
+|---|---|---|---|
+| broken union | `2fee5ef` / `c55a389` | `FAIL(condition=union_red)` — quoting the `TypeError` above | 1 |
+| repaired union | current `main` / `squad/trinity` | `PASS` | 0 |
+
+A conflict that is confined to regenerated artefacts under `bench/results/` is resolved to
+HEAD's copy under `--resolve-artifacts`; a conflict anywhere else stays
+`ERROR(instrument=merge_conflict)`, because an instrument that cannot construct its subject
+has not observed it.
+
+**Recommended standing obligation:** before reporting a branch done, merge `main` into it
+and run the lanes named by tiers 1–2 in the merged tree. `python tests/union_check.py --run`
+does exactly that and picks the targets itself. The full suite is the stronger form; the
+targeted form is the one people will actually run, and it caught this defect.
+
 Seven steps per lane, five processes, five different failure modes, no `continue-on-error`
 on any of them:
 

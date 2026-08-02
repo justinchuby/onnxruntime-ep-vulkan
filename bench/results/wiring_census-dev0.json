@@ -9,25 +9,26 @@
     "budget_units": {
       "counters_child_clean": 6000,
       "counters_child_inject": 6000,
+      "counters_child_ledger": 6000,
       "add_session_profiling": 4000,
       "validation_probe": 2000,
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 827,
-      "counters_child_inject": 828,
-      "add_session_profiling": 24,
-      "validation_probe": 126,
-      "layering_lint": 7068
+      "counters_child_clean": 861,
+      "counters_child_inject": 836,
+      "add_session_profiling": 13,
+      "validation_probe": 147,
+      "layering_lint": 177
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 103,
-      "counters_child_inject": 92,
-      "add_session_profiling": 24,
-      "validation_probe": 79,
-      "layering_lint": 5425
+      "counters_child_clean": 79,
+      "counters_child_inject": 100,
+      "add_session_profiling": 13,
+      "validation_probe": 128,
+      "layering_lint": 111
     },
-    "clock_units_total": 9245,
+    "clock_units_total": 2226,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
@@ -42,7 +43,7 @@
     "validation_messenger": "ARMED",
     "layering_lint": "PASS",
     "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
-    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\onnxruntime-ep-vulkan\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
+    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
     "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
   },
   "unwired": [],

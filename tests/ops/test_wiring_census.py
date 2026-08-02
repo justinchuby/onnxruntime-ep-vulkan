@@ -76,6 +76,7 @@ COORDINATION:
 from __future__ import annotations
 
 import ctypes
+import contextlib
 import json
 import os
 import subprocess
@@ -140,10 +141,23 @@ _CARGO_MANIFEST = _REPO_ROOT / "rust" / "Cargo.toml"
 _BUDGET_UNITS = {
     "counters_child_clean": 6_000,
     "counters_child_inject": 6_000,
+    "counters_child_ledger": 6_000,
     "add_session_profiling": 4_000,
     "validation_probe": 2_000,
     "layering_lint": 12_000,
 }
+
+#: Budget for a step nobody put in the table.  A caller that this file has never heard of
+#: — a test added on another branch, which is exactly how `_run_counters_child` acquired a
+#: caller it could not see — must still be guarded, so an unknown label gets the largest
+#: counters-child budget rather than a `KeyError`.  Generous is safe here in a way it is
+#: NOT safe for a wall-clock timeout: the unit is work, so a loose budget detects a hang
+#: later in *work*, not never.  Contention cannot stretch it.
+_DEFAULT_BUDGET_UNITS = 12_000
+
+
+def _budget_for(label: str) -> int:
+    return _BUDGET_UNITS.get(label, _DEFAULT_BUDGET_UNITS)
 
 # ---------------------------------------------------------------------------
 # Mechanism registry — what we census and what "wired" means for each.
@@ -478,8 +492,43 @@ def _counters_child_main(counters_path: str) -> int:
     return 0 if Path(counters_path).is_file() else 3
 
 
-def _run_counters_child(*, inject: bool, tag: str, guard) -> tuple[dict, str]:
-    """Run one polarity in a fresh process; return (counters doc, combined child log)."""
+@contextlib.contextmanager
+def _ambient_guard(what: str):
+    """A short-lived clock+guard for a caller that did not bring one.
+
+    Round 26 postmortem.  `guard` was a **required** keyword-only argument, and
+    `test_ledger_lookup_wired` — which landed in this file from `squad/mouse` while the
+    guard landed from `squad/trinity` — called the helper without it.  Both branches were
+    green alone; the union raised
+    ``TypeError: _run_counters_child() missing 1 required keyword-only argument: 'guard'``.
+
+    The fix is a default, but note carefully *which* default.  ``guard=None`` meaning
+    "run unguarded" would have been the wrong one: every future caller would silently opt
+    out of stall detection and the subprocess steps would drift back to exactly the
+    unguarded state round 25 removed, with nothing to notice. ``guard=None`` means
+    **"build one for this call"** instead, so there is no unguarded path through this
+    module at all. What an ambient guard loses is only bookkeeping — its costs and max
+    silences do not land in the census-wide guard's ledger, so they are not in
+    `observed_units` — never protection.
+    """
+    clock = WorkClock().start()
+    try:
+        yield StallGuard(clock=clock, what=what)
+    finally:
+        clock.stop()
+
+
+def _run_counters_child(*, inject: bool, tag: str, guard: "StallGuard | None" = None) -> tuple[dict, str]:
+    """Run one polarity in a fresh process; return (counters doc, combined child log).
+
+    *guard* is optional: a caller that does not have one gets a private clock and guard
+    for the duration of the call (see :func:`_ambient_guard`).  It is optional so that a
+    caller added on another branch cannot fail to construct, and it is never absent so
+    that such a caller cannot fail to be watched.
+    """
+    if guard is None:
+        with _ambient_guard(f"census counters child ({tag})") as own:
+            return _run_counters_child(inject=inject, tag=tag, guard=own)
     out_dir = _REPO_ROOT / "bench" / "results" / "census"
     out_dir.mkdir(parents=True, exist_ok=True)
     selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
@@ -516,7 +565,7 @@ def _run_counters_child(*, inject: bool, tag: str, guard) -> tuple[dict, str]:
         guard=guard,
         what=f"census counters child ({tag})",
         label=f"counters_child_{tag}",
-        budget_units=_BUDGET_UNITS[f"counters_child_{tag}"],
+        budget_units=_budget_for(f"counters_child_{tag}"),
         # This child exists to exercise the EP.  If it goes silent, the mechanisms it
         # publishes have not been observed to run, which is criterion 12's subject.
         kind=KIND_MECHANISM,
@@ -820,7 +869,7 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
             census_guard,
             "add_session_profiling",
             _run_add_session_with_profiling,
-            budget_units=_BUDGET_UNITS["add_session_profiling"],
+            budget_units=_budget_for("add_session_profiling"),
             kind=KIND_MECHANISM,
         )
     except Stalled as exc:
@@ -1077,7 +1126,7 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
                 guard=census_guard,
                 what="census validation probe",
                 label="validation_probe",
-                budget_units=_BUDGET_UNITS["validation_probe"],
+                budget_units=_budget_for("validation_probe"),
                 kind=KIND_MECHANISM,
             )
         except Stalled as exc:
@@ -1124,7 +1173,7 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
                 guard=census_guard,
                 what="census layering lint",
                 label="layering_lint",
-                budget_units=_BUDGET_UNITS["layering_lint"],
+                budget_units=_budget_for("layering_lint"),
                 # A cargo compile is scaffolding the census needs but does not judge, so a
                 # stall here is ERROR(instrument) and not a finding about the lint.  Note
                 # cargo emits a line per crate, so a build that is merely crawling under
