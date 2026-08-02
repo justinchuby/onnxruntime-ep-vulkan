@@ -1,0 +1,275 @@
+{
+  "check": "run_disturbance",
+  "threshold": 0.2,
+  "assessed": 12,
+  "instrument_errors": [],
+  "failed": [
+    "trace_gemv_tiled_atomic_store_dev1.json"
+  ],
+  "results": [
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 4.63% is within 20%: across 14 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.0462624730865858,
+      "threshold": 0.2,
+      "margin_x": 0.231312365432929,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.0462624730865858,
+        "same_ordinal_rsd_p90": 0.3409200711649688,
+        "same_ordinal_rsd_max": 3.153689428058393,
+        "dispatches_per_inference": 355,
+        "repetitions": 14,
+        "inferences_seen": 14,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_abi_p0_r1_dev1.json",
+      "path": "bench\\results\\trace_gemv_abi_p0_r1_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 8.44% is within 20%: across 14 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.08436798743268858,
+      "threshold": 0.2,
+      "margin_x": 0.4218399371634429,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.08436798743268858,
+        "same_ordinal_rsd_p90": 0.40961837889372527,
+        "same_ordinal_rsd_max": 3.467590668044584,
+        "dispatches_per_inference": 355,
+        "repetitions": 14,
+        "inferences_seen": 14,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_abi_p0_r2_dev1.json",
+      "path": "bench\\results\\trace_gemv_abi_p0_r2_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 11.34% is within 20%: across 14 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.11342548891724569,
+      "threshold": 0.2,
+      "margin_x": 0.5671274445862284,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.11342548891724569,
+        "same_ordinal_rsd_p90": 0.18591052012751919,
+        "same_ordinal_rsd_max": 2.26415342338307,
+        "dispatches_per_inference": 355,
+        "repetitions": 14,
+        "inferences_seen": 14,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_abi_p1_r1_dev1.json",
+      "path": "bench\\results\\trace_gemv_abi_p1_r1_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 9.85% is within 20%: across 14 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.09847985938055454,
+      "threshold": 0.2,
+      "margin_x": 0.4923992969027727,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.09847985938055454,
+        "same_ordinal_rsd_p90": 0.15635269134092575,
+        "same_ordinal_rsd_max": 2.2372901833728664,
+        "dispatches_per_inference": 355,
+        "repetitions": 14,
+        "inferences_seen": 14,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_abi_p1_r2_dev1.json",
+      "path": "bench\\results\\trace_gemv_abi_p1_r2_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 10.36% is within 20%: across 16 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.10357969675649499,
+      "threshold": 0.2,
+      "margin_x": 0.5178984837824749,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.10357969675649499,
+        "same_ordinal_rsd_p90": 0.24480055005568077,
+        "same_ordinal_rsd_max": 3.8670763967912025,
+        "dispatches_per_inference": 355,
+        "repetitions": 16,
+        "inferences_seen": 16,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_baseline_dev1.json",
+      "path": "bench\\results\\trace_gemv_baseline_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 16.92% is within 20%: across 26 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.16919267334904767,
+      "threshold": 0.2,
+      "margin_x": 0.8459633667452383,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.16919267334904767,
+        "same_ordinal_rsd_p90": 1.498885251516499,
+        "same_ordinal_rsd_max": 4.129836759546298,
+        "dispatches_per_inference": 355,
+        "repetitions": 26,
+        "inferences_seen": 26,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_final_dev1.json",
+      "path": "bench\\results\\trace_gemv_final_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 10.67% is within 20%: across 26 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.1066647848103038,
+      "threshold": 0.2,
+      "margin_x": 0.533323924051519,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.1066647848103038,
+        "same_ordinal_rsd_p90": 0.47357233442022667,
+        "same_ordinal_rsd_max": 3.7383946568143425,
+        "dispatches_per_inference": 355,
+        "repetitions": 26,
+        "inferences_seen": 26,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_gb_intel_dev1.json",
+      "path": "bench\\results\\trace_gemv_gb_intel_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 15.41% is within 20%: across 3 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.15413813400503715,
+      "threshold": 0.2,
+      "margin_x": 0.7706906700251857,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.15413813400503715,
+        "same_ordinal_rsd_p90": 0.4338629726464707,
+        "same_ordinal_rsd_max": 1.6265961990943711,
+        "dispatches_per_inference": 355,
+        "repetitions": 3,
+        "inferences_seen": 3,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_idxnopin_dev1.json",
+      "path": "bench\\results\\trace_gemv_idxnopin_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 7.10% is within 20%: across 16 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.07101376170735364,
+      "threshold": 0.2,
+      "margin_x": 0.3550688085367682,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.07101376170735364,
+        "same_ordinal_rsd_p90": 0.23318836663454845,
+        "same_ordinal_rsd_max": 3.2583961621049715,
+        "dispatches_per_inference": 355,
+        "repetitions": 16,
+        "inferences_seen": 16,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_notile_dev1.json",
+      "path": "bench\\results\\trace_gemv_notile_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 15.91% is within 20%: across 18 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.15905392753757816,
+      "threshold": 0.2,
+      "margin_x": 0.7952696376878907,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.15905392753757816,
+        "same_ordinal_rsd_p90": 0.5809689596061932,
+        "same_ordinal_rsd_max": 3.843467323104611,
+        "dispatches_per_inference": 355,
+        "repetitions": 18,
+        "inferences_seen": 18,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_packed_final_dev1.json",
+      "path": "bench\\results\\trace_gemv_packed_final_dev1.json"
+    },
+    {
+      "verdict": "FAIL",
+      "condition": "RUN_DISTURBED",
+      "detail": "same-ordinal RSD 21.36% exceeds 20%: repetitions of identical work disagree by 1.07x the bar. The run was not stationary, so any suffix cut from it is a quiet window inside a disturbed run rather than a steady state. No timing figure from this run is publishable.",
+      "same_ordinal_rsd_median": 0.21360129527832195,
+      "threshold": 0.2,
+      "margin_x": 1.0680064763916097,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.21360129527832195,
+        "same_ordinal_rsd_p90": 0.4168252552129251,
+        "same_ordinal_rsd_max": 3.311262551828586,
+        "dispatches_per_inference": 355,
+        "repetitions": 16,
+        "inferences_seen": 16,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_tiled_atomic_store_dev1.json",
+      "path": "bench\\results\\trace_gemv_tiled_atomic_store_dev1.json"
+    },
+    {
+      "verdict": "PASS",
+      "condition": null,
+      "detail": "same-ordinal RSD 9.42% is within 20%: across 16 repetitions, each of the 355 dispatches agreed with itself. The run was stationary. This says nothing about whether it was fast, correct, or alone on the device.",
+      "same_ordinal_rsd_median": 0.09421389420376616,
+      "threshold": 0.2,
+      "margin_x": 0.4710694710188308,
+      "detects": "non-stationarity across repetitions of identical work",
+      "does_not_detect": "a uniformly slow run. This statistic is blind to level; a run in which every dispatch is equally inflated passes. PASS means 'repetitions agreed', never 'the machine was quiet'. The device-state record (obligation 8) is the bias-sensitive companion and is still required.",
+      "measurement": {
+        "same_ordinal_rsd_median": 0.09421389420376616,
+        "same_ordinal_rsd_p90": 0.4128086156120374,
+        "same_ordinal_rsd_max": 3.6055577244240173,
+        "dispatches_per_inference": 355,
+        "repetitions": 16,
+        "inferences_seen": 16,
+        "width_agreement": 1.0,
+        "frame": "whole run, all inferences. NOT the tail's published suffix -- the statistic has no discriminating power there (see module docstring)."
+      },
+      "trace": "trace_gemv_tiled_dev1.json",
+      "path": "bench\\results\\trace_gemv_tiled_dev1.json"
+    }
+  ]
+}

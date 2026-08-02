@@ -90,6 +90,22 @@ contains no trace at all:
 ``DISTURBANCE_RSD_MAX = 0.20`` sits in that gap, near its geometric centre (19.3%), 1.90x above the
 highest undisturbed trace and 1.77x below the lowest disturbed one.
 
+**The empty gap is a device-0 property and does not reproduce on device 1.** Over the 12 committed
+Intel traces the distribution is continuous through the boundary: the single flagged trace
+(``tiled_atomic_store``) sits at 21.36%, only **1.07x** over the bar, with the next below it at
+9.85%. So on Intel the threshold is an ordinary cut through a populated region, not a line in an
+empty gap, and a verdict near it there is a judgement rather than a separation. Two reasons this
+is unsurprising and one consequence:
+
+* the iGPU shares its power budget with the loaded CPU cores, so its floor of self-disagreement is
+  higher and the two populations are not expected to be as cleanly split;
+* there are 12 Intel traces against 28 NVIDIA ones, and a gap is the kind of feature a small sample
+  fails to show.
+
+Consequence: **quote the 1.90x/1.77x separation for device 0 only.** On device 1 the check is still
+a real measurement and still fires, but its margin near the threshold is thin and a borderline
+Intel verdict should be treated as such rather than as the clean call the NVIDIA census supports.
+
 **And here is where it does not separate, which matters more than where it does.** The two
 populations above are *not* the STEADY/refused populations. Against the tail's verdict there is
 substantial overlap: publishing traces run 0.624%–10.507% and refused traces run 3.694%–137.352%.
