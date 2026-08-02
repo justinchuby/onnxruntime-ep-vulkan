@@ -3114,6 +3114,16 @@
         "verdict": "MATCH",
         "name_may_be_quoted": true,
         "detail": "trace and ep-order agree: NVIDIA GeForce RTX 4060 Laptop GPU"
+      },
+      "model_output_equivalence_authority": {
+        "of_record": "model_output_equivalence",
+        "of_record_value": "MATCH",
+        "of_record_source": "bench/phi35.py::compare \u2014 the CPU-vs-EP output comparison, whose evidence is the sibling `outputs` list (argmax, top-k overlap, max_rel_diff)",
+        "counters_copy_value": "UNMEASURED",
+        "counters_copy_authority": "UNOBSERVABLE",
+        "counters_copy_reason": "model_output_equivalence='UNMEASURED' stands alone with no model_output_equivalence_record beside it, so it is the emitter's default rather than a comparison's verdict (rust/src/counters.rs::to_json)",
+        "agreement": "UNOBSERVABLE",
+        "note": "Two same-named fields, one verdict. The nested copy is NOT a second measurement disagreeing with the first; it is the EP's default for a field that only the Python comparison harness writes. Read the outer value."
       }
     }
   ]
