@@ -791,3 +791,67 @@ recurrence is why I signed the obligation. Any one of them alone would have been
   default-off by M2 entry; Link's device-state survey for non-NVIDIA platforms.
 - I have now declined to mint a rule twice and amended twice. If the next finding also lands as
   an amendment, check whether I am protecting the register's shape rather than reading it.
+
+## 2026-08-01T22:02:39-07:00 — The anchor exemption is the deciding term (§5.4.1)
+
+Fourth ruling today. The coordinator brought this as a §7.12 finding and I think it is a §5.4
+finding — which is to say it is mine, not Mouse's.
+
+**What I verified before ruling.** `partition.rs:475`. The exemption is an *early return*, above
+`transfer_ns` and `compute_ns`. So on an anchor-bearing island the economics arithmetic is not
+outvoted, it is not evaluated. Stage 3 is a constant function on our graph: nothing about the
+island can change its answer. That is a sharper statement than "the predicate claimed it via one
+arm" and it is the one the artifact supports.
+
+Then I read `is_anchor` — MatMul, Gemm, Conv, ConvTranspose, Attention, MatMulNBits, GQA, MHA,
+QMoE, LinearAttention — and the diagnosis inverted. Every non-trivial transformer island contains
+an anchor. So "the economics model does not decide our partition" is not an accident of Phi-3.5
+and not a defect. It is the design working. 3c was written to kill anchor-free elementwise
+scatter and our island is not that. The doc comment says so.
+
+I had to resist writing this up as a scandal. It is not one. But three things are genuinely
+wrong and I wrote them without inflation:
+
+1. The exemption's warrant is asserted, not measured, and is now the sole term deciding every
+   production partition. Falsifier is a *future* exposure: a small MatMul inside large boundary
+   traffic. Small models, edge shapes. Generality is the constraint I am told to check
+   continuously and this is where it bites.
+2. The exemption's silence set includes "the byte estimator is broken." The 104,116× is why 3c
+   declines us when allowed to answer. R9's silence-set rule applies to a *policy term*, not only
+   to an instrument. That generalisation is the part of this ruling I expect to reuse.
+3. `Verdict::Claim` is three findings wearing one name. R11 at the value level. Mouse's fix is
+   right and his refusal to re-derive the arm at the call site is righter — that is RAI-011
+   reappearing inside the fix for its own sibling.
+
+**On whether §7.12 misleads.** It does not. It says the thing, in those words. What failed is
+propagation: the sentence sat under a subsection about calibrating a parameter already shown not
+to matter, and never reached §5.4's stage list or the M1 ordering's rank 2. Both were mine. Both
+are fixed. I am getting a taste for findings that turn out to be located in my own document.
+
+Rank 2 was worse than under-qualified — it credited `retain_viable` with the 321 → 33 collapse,
+which §10.0.1's own R10 table attributes correctly to wiring the clustering. Two mis-attributions
+in one row. Position withdrawn, row kept as the record.
+
+**The drafting rule got its second live example and this one bothers me.** RAI-011's criterion is
+"always evaluated, no branch in front of it". The cheapest satisfaction is an unconditional early
+return *inside* the gate — every word true, `bypasses` 0 forever. 3b is not that; it predates
+RAI-011 and lives in the right module. But RAI-011's observables cannot tell them apart. That is
+the whole argument for item 3.
+
+**What I refused.** Removing the exemption to let the model decide. Deferring to a model measured
+wrong by five orders of magnitude is not rigour, it is ceremony, and it loses M0.
+
+The worktree collision is the coordinator's and he recorded it as his; I noted in the decision
+that Mouse caught both consequences himself, including a false ALL-DECLINED he nearly wrote up.
+An agent that catches its own contaminated build is worth more than the hours it cost.
+
+**Carry forward**
+- Mouse owes `Verdict::Claim` carrying its reason, in `partition.rs`, once `mouse-1` clears.
+  Until then "the exemption decided this" stays an inference, and I have written it as one.
+- The byte estimator (104,116×) is a correctness item ahead of any nanosecond calibration, and
+  ahead of the optimisation rank 2 used to hold.
+- Named falsifier to keep live: an anchor-bearing island that should be declined. First small
+  model or edge-shape graph we touch, look for it.
+- Fourth ruling in a row where the reported rule was wrong but the finding was real. The pattern
+  is that people diagnose correctly and file incorrectly; that is a cheap error and I should stop
+  treating the filing as the claim.
