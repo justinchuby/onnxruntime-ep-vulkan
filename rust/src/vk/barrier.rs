@@ -361,6 +361,42 @@ impl Barriers {
         }
     }
 
+    /// Emit **one global memory dependency** covering every buffer at once.
+    ///
+    /// One `VkMemoryBarrier` / `VkMemoryBarrier2` rather than N `VkBufferMemoryBarrier`s.
+    ///
+    /// # When this is the right barrier, and when it is not
+    ///
+    /// A global memory barrier is **strictly more conservative** than the per-buffer form: it
+    /// makes *all* `src` writes visible to *all* `dst` reads, so it can never permit an overlap
+    /// the per-buffer version forbids. It cannot introduce a race. What it can do is over-
+    /// synchronise — so prefer [`buffer_deps`] where the dependency set is small and the
+    /// scheduler could usefully overlap the unrelated buffers.
+    ///
+    /// It is the right choice when the dependency set is **large and effectively total**. The
+    /// measured case: a 355-kernel island carries 417 intermediate buffers, and a per-buffer
+    /// barrier after every dispatch emits **147,618 `VkBufferMemoryBarrier`s per inference** —
+    /// each one built, heap-allocated into a `Vec`, and walked by the driver, on the host, while
+    /// the GPU is idle. Every dispatch reads whatever the previous one wrote, so the set is total
+    /// anyway and the per-buffer form buys no overlap for its cost.
+    ///
+    /// [`buffer_deps`]: Barriers::buffer_deps
+    ///
+    /// # Safety
+    /// `cb` must be a primary command buffer in the recording state.
+    pub(crate) unsafe fn memory_dep(&self, cb: vk::CommandBuffer, src: Access, dst: Access) {
+        match self {
+            Barriers::Sync2(b) => {
+                // SAFETY: cb is recording per caller.
+                unsafe { b.memory_dep(cb, src, dst) };
+            }
+            Barriers::Legacy(b) => {
+                // SAFETY: same.
+                unsafe { b.memory_dep(cb, src, dst) };
+            }
+        }
+    }
+
     /// Returns `true` when this backend uses `vkCmdPipelineBarrier2` (sync2 path).
     ///
     /// Exposed for test assertions; recording code must not branch on this.
@@ -444,9 +480,36 @@ impl Sync2Backend {
         }
     }
 
+    unsafe fn memory_dep(&self, cb: vk::CommandBuffer, src: Access, dst: Access) {
+        let (src_stage, src_access) = to_sync2_flags(src);
+        let (dst_stage, dst_access) = to_sync2_flags(dst);
+        let mem_barrier = vk::MemoryBarrier2 {
+            src_stage_mask: src_stage,
+            dst_stage_mask: dst_stage,
+            src_access_mask: src_access,
+            dst_access_mask: dst_access,
+            ..Default::default()
+        };
+        let dep_info = vk::DependencyInfo {
+            memory_barrier_count: 1,
+            p_memory_barriers: &mem_barrier,
+            ..Default::default()
+        };
+        // SAFETY: cb is recording per caller; dep_info and mem_barrier are live on this frame.
+        match self {
+            Sync2Backend::Core(device) => {
+                // SAFETY: Vulkan 1.3 core function; device is live.
+                unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+            Sync2Backend::Khr(fns) => {
+                // SAFETY: KHR extension function pointer is non-null (extension was enabled).
+                unsafe { fns.cmd_pipeline_barrier2(cb, &dep_info) };
+            }
+        }
+    }
+
     unsafe fn execution_only(&self, cb: vk::CommandBuffer, src: Stage, dst: Stage) {
-        // A pure execution barrier in sync2 is expressed as a VkMemoryBarrier2 with
-        // stage masks but zero access masks (no memory visibility, only ordering).
+        // A pure execution barrier in sync2 is expressed as a VkMemoryBarrier2 with        // stage masks but zero access masks (no memory visibility, only ordering).
         let mem_barrier = vk::MemoryBarrier2 {
             src_stage_mask: stage_to_sync2(src),
             dst_stage_mask: stage_to_sync2(dst),
@@ -511,6 +574,28 @@ impl LegacyBackend {
                 vk::DependencyFlags::empty(),
                 &[], // no global memory barriers
                 &barriers,
+                &[], // no image barriers
+            );
+        }
+    }
+
+    unsafe fn memory_dep(&self, cb: vk::CommandBuffer, src: Access, dst: Access) {
+        let (src_stage, src_access) = to_legacy_flags(src);
+        let (dst_stage, dst_access) = to_legacy_flags(dst);
+        let mem_barrier = vk::MemoryBarrier {
+            src_access_mask: src_access,
+            dst_access_mask: dst_access,
+            ..Default::default()
+        };
+        // SAFETY: cb is recording per caller; mem_barrier is live on the stack for this call.
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                cb,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[mem_barrier],
+                &[], // no buffer barriers — the global barrier covers every buffer
                 &[], // no image barriers
             );
         }

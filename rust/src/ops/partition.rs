@@ -201,6 +201,30 @@ impl TransferModel {
             bytes_per_ns: 1.0 / slope,
         })
     }
+
+    /// This model with any diagnostic env overrides applied — see [`Policy::from_env`].
+    ///
+    /// `fixed_ns` is the parameter that has never been calibrated against a measurement (R13
+    /// forbids it while no timing source on this project is trusted), and it is ~63% of the
+    /// modelled DISCRETE cost at the measured Phi-3.5 boundary. Being able to move it from
+    /// outside is what turns "we don't know its value" into "here is the range over which the
+    /// verdict does not change".
+    pub fn with_env_overrides(self) -> TransferModel {
+        let m = TransferModel {
+            fixed_ns: env_f64(ENV_FIXED_NS).filter(|v| *v >= 0.0).unwrap_or(self.fixed_ns),
+            bytes_per_ns: env_f64(ENV_BYTES_PER_NS)
+                .filter(|v| *v > 0.0)
+                .unwrap_or(self.bytes_per_ns),
+        };
+        if m != self {
+            log::warn!(
+                "partition: TRANSFER MODEL OVERRIDDEN FROM ENV — {m:?} (default {self:?}). This \
+                 run's partition artifacts are a counterfactual, not a default-configuration \
+                 result."
+            );
+        }
+        m
+    }
 }
 
 /// One maximal connected subgraph this EP would claim.
@@ -220,6 +244,47 @@ pub struct Island {
 }
 
 impl Island {
+    /// Phi-3.5's single fused island **as `GetCapability` actually estimated it**, dev0,
+    /// 2026-08-01, read out of `PartitionStats` in a trace this session (`bench/results/
+    /// net_benefit_gate-trace-dev0.json`), not assumed.
+    ///
+    /// `nodes` and `anchors` are counts from the CLAIM_LOG of the same run (355 claimed, of which
+    /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
+    /// are the estimator's own numbers.
+    ///
+    /// **Read the byte figure next to [`TransferModel::MEASURED_PHI35_UPLOAD_BYTES`] and be
+    /// alarmed.** The estimator says 89,199,100,032 B cross this island's boundary per inference;
+    /// the instrumented transfer path says 856,720 B. That is a factor of ~104,000, and it is not
+    /// a measurement disagreement — the estimator counts *every* node's outputs as boundary bytes
+    /// (deliberately, "over-counting is safe") and substitutes 128 for every unknown dimension.
+    /// Safe in the direction of declining too much; catastrophic for using this arithmetic to
+    /// reason about the real boundary. R11: the two sides of that comparison come from different
+    /// sources and only one of them is a measurement.
+    ///
+    /// The split between `input_bytes` and `output_bytes` is not recorded by `PartitionStats`;
+    /// the whole total is parked in `output_bytes` here, which makes `transfer_ns` charge one
+    /// fixed cost instead of two. That understates the transfer by exactly one `fixed_ns`, i.e.
+    /// biases every test below *towards* claiming — the direction that makes the conclusions
+    /// harder to reach, not easier.
+    pub const MEASURED_PHI35_DEV0: Island = Island {
+        nodes: 355,
+        anchors: 193,
+        flops: 23_020_437_504,
+        input_bytes: 0,
+        output_bytes: 89_199_100_032,
+    };
+
+    /// The same island with the *measured* boundary substituted for the estimator's.
+    ///
+    /// Upload 399,376 B + readback 457,344 B = 856,720 B, asymmetric with readback larger.
+    pub const MEASURED_PHI35_DEV0_REAL_BYTES: Island = Island {
+        nodes: 355,
+        anchors: 193,
+        flops: 23_020_437_504,
+        input_bytes: TransferModel::MEASURED_PHI35_UPLOAD_BYTES,
+        output_bytes: TransferModel::MEASURED_PHI35_READBACK_BYTES,
+    };
+
     /// Total bytes crossing this island's boundary once per inference.
     pub fn boundary_bytes(&self) -> u64 {
         self.input_bytes.saturating_add(self.output_bytes)
@@ -270,6 +335,13 @@ pub struct Policy {
     pub margin: f64,
     /// Assumed device throughput in FLOPs per nanosecond (i.e. GFLOP/s).
     pub flops_per_ns: f64,
+    /// Whether an island containing at least one [`is_anchor`] op skips the economics check.
+    ///
+    /// `true` in production. Settable to `false` (via [`ENV_ANCHOR_EXEMPTION`]) purely so the
+    /// economics arithmetic can be *observed deciding* on a real model: Phi-3.5's single island
+    /// is anchor-bearing, so with the exemption on, the economics branch is never the branch that
+    /// answers, and an artifact that never varies proves nothing (R10).
+    pub anchor_exemption: bool,
 }
 
 impl Default for Policy {
@@ -278,7 +350,63 @@ impl Default for Policy {
             min_nodes: 4,
             margin: 3.0,
             flops_per_ns: 1_000.0,
+            anchor_exemption: true,
         }
+    }
+}
+
+/// Env var: override [`Policy::margin`].
+pub const ENV_MARGIN: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN";
+/// Env var: override [`Policy::min_nodes`].
+pub const ENV_MIN_NODES: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES";
+/// Env var: override [`Policy::flops_per_ns`].
+pub const ENV_FLOPS_PER_NS: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS";
+/// Env var: set to `0` to disable [`Policy::anchor_exemption`].
+pub const ENV_ANCHOR_EXEMPTION: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION";
+/// Env var: override [`TransferModel::fixed_ns`] — the one uncalibrated parameter.
+pub const ENV_FIXED_NS: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS";
+/// Env var: override [`TransferModel::bytes_per_ns`].
+pub const ENV_BYTES_PER_NS: &str = "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS";
+
+fn env_f64(key: &str) -> Option<f64> {
+    std::env::var(key).ok()?.trim().parse::<f64>().ok()
+}
+
+impl Policy {
+    /// The default policy with any diagnostic env overrides applied.
+    ///
+    /// **These exist to make the gate falsifiable, not to be tuned in production.** R10's
+    /// falsifier for "the gate is wired" is an artifact whose content *varies with the gate's
+    /// input*; on Phi-3.5 the only island contains anchors, so without a way to move the gate's
+    /// inputs the artifact is a constant and proves nothing. With them, the same model at the same
+    /// commit produces `viable_islands_retained: 1` at one setting and
+    /// `net_benefit_sole_island_overrides: 1` at another — a varying artifact, which is the proof.
+    ///
+    /// Any active override is logged at WARN so a run's artifact can never be read as a default
+    /// run.
+    pub fn from_env() -> Policy {
+        let d = Policy::default();
+        let p = Policy {
+            min_nodes: std::env::var(ENV_MIN_NODES)
+                .ok()
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(d.min_nodes),
+            margin: env_f64(ENV_MARGIN).unwrap_or(d.margin),
+            flops_per_ns: env_f64(ENV_FLOPS_PER_NS)
+                .filter(|v| *v > 0.0)
+                .unwrap_or(d.flops_per_ns),
+            anchor_exemption: match std::env::var(ENV_ANCHOR_EXEMPTION).ok().as_deref() {
+                Some("0") | Some("false") | Some("off") => false,
+                _ => d.anchor_exemption,
+            },
+        };
+        if p != d {
+            log::warn!(
+                "partition: POLICY OVERRIDDEN FROM ENV — {p:?} (default {d:?}). This run's \
+                 partition artifacts are a counterfactual, not a default-configuration result."
+            );
+        }
+        p
     }
 }
 
@@ -344,7 +472,7 @@ pub fn evaluate(island: &Island, model: &TransferModel, policy: &Policy) -> Verd
     // Anchor exemption: an island containing at least one anchor is unconditionally worth
     // claiming. The economic check below targets non-anchor scatter (cheap elementwise ops
     // whose boundary traffic exceeds their arithmetic). Anchors are excluded from that check.
-    if island.anchors > 0 {
+    if island.anchors > 0 && policy.anchor_exemption {
         return Verdict::Claim;
     }
 
@@ -388,7 +516,98 @@ pub fn decline_for(reason: &RejectReason) -> DeclineReason {
     }
 }
 
+/// What the gate did to one island: the verdict it computed, and whether that verdict was
+/// overridden afterwards.
+///
+/// # Why this type exists (RAI-011)
+///
+/// The previous shape of this code had `GetCapability` decide *whether to call the gate at all*:
+///
+/// ```text
+/// let verdict = if only_one_cluster { Verdict::Claim } else { partition::evaluate(..) };
+/// ```
+///
+/// That is the R10 shape one level up. The gate was not merely unexercised on Phi-3.5 — it was
+/// **unreachable** on Phi-3.5, and the two facts "the gate ran and retained nothing" and "the gate
+/// never ran" both printed `viable_islands_retained: 0`.
+///
+/// The fix is not a second check. It is that **[`gate_islands`] is the only entry point, it always
+/// evaluates, and the single-island exemption is applied *after* evaluation, as an override that
+/// carries the verdict it overrode.** A sole island now produces a real verdict computed from real
+/// bytes, and if that verdict is a rejection the override is a distinct observable state — not the
+/// same digit as "all rejected".
+#[derive(Clone, Debug, PartialEq)]
+pub enum GateOutcome {
+    /// The gate evaluated this island and its verdict stands.
+    Evaluated(Verdict),
+    /// The gate evaluated this island, rejected it, and the rejection was **overridden** because
+    /// it is the graph's only island: there is no alternative partition to fall back to, so the
+    /// choice is the whole graph on the EP or the whole graph on the CPU, and the claim predicate
+    /// has already vetted every node inside it for correctness.
+    ///
+    /// The reason the gate gave is carried, not discarded. An override that loses the verdict it
+    /// overrode is a bypass wearing a different name.
+    SoleIslandOverride(RejectReason),
+}
+
+impl GateOutcome {
+    /// The verdict the partitioner acts on.
+    pub fn effective(&self) -> Verdict {
+        match self {
+            GateOutcome::Evaluated(v) => v.clone(),
+            GateOutcome::SoleIslandOverride(_) => Verdict::Claim,
+        }
+    }
+
+    /// The verdict the economics gate actually computed, before any override.
+    ///
+    /// This is the value that must vary with the gate's input for R10 to be satisfied.
+    pub fn evaluated(&self) -> Verdict {
+        match self {
+            GateOutcome::Evaluated(v) => v.clone(),
+            GateOutcome::SoleIslandOverride(r) => Verdict::Reject(r.clone()),
+        }
+    }
+
+    /// Whether the island is claimed after any override.
+    pub fn is_claim(&self) -> bool {
+        self.effective().is_claim()
+    }
+
+    /// Whether the sole-island exemption changed this island's fate.
+    pub fn is_override(&self) -> bool {
+        matches!(self, GateOutcome::SoleIslandOverride(_))
+    }
+}
+
+/// **The gate.** One entry point, reached from every caller, and it always evaluates.
+///
+/// Returns one [`GateOutcome`] per input island, in the same order. The sole-island exemption is
+/// a property of the *set* (`islands.len() == 1`), which is precisely why it belongs here and not
+/// at a call site: a call site that decides whether to consult the gate is a second gate.
+///
+/// Contract, stated so it can be broken loudly:
+///
+/// * `evaluate` is called exactly `islands.len()` times, unconditionally.
+/// * The effective verdict differs from the evaluated verdict **only** for
+///   [`GateOutcome::SoleIslandOverride`], which can only occur when `islands.len() == 1`.
+pub fn gate_islands(islands: &[Island], model: &TransferModel, policy: &Policy) -> Vec<GateOutcome> {
+    let sole = islands.len() == 1;
+    islands
+        .iter()
+        .map(|island| match evaluate(island, model, policy) {
+            Verdict::Reject(reason) if sole => GateOutcome::SoleIslandOverride(reason),
+            v => GateOutcome::Evaluated(v),
+        })
+        .collect()
+}
+
 /// Apply the rule to a set of islands, returning the survivors and the rejections.
+///
+/// A thin projection of [`gate_islands`] — deliberately, so that "the survivors" and "what the
+/// gate decided" cannot drift apart. Note that a *sole* island that the gate rejects still
+/// survives here (the exemption), and the rejection is reported in the third slot rather than
+/// vanishing.
 pub fn retain_viable(
     islands: &[Island],
     model: &TransferModel,
@@ -396,13 +615,64 @@ pub fn retain_viable(
 ) -> (Vec<Island>, Vec<(Island, RejectReason)>) {
     let mut kept = Vec::new();
     let mut dropped = Vec::new();
-    for i in islands {
-        match evaluate(i, model, policy) {
-            Verdict::Claim => kept.push(i.clone()),
-            Verdict::Reject(r) => dropped.push((i.clone(), r)),
+    for (island, outcome) in islands.iter().zip(gate_islands(islands, model, policy)) {
+        match outcome {
+            GateOutcome::Evaluated(Verdict::Claim) | GateOutcome::SoleIslandOverride(_) => {
+                kept.push(island.clone())
+            }
+            GateOutcome::Evaluated(Verdict::Reject(r)) => dropped.push((island.clone(), r)),
         }
     }
     (kept, dropped)
+}
+
+/// The economics of one island, in the units the gate compares, for a `fixed_ns` it is handed.
+///
+/// Exists so that the sensitivity of the verdict to the **one uncalibrated parameter** can be
+/// computed rather than asserted. `fixed_ns` is currently ~63% of the modelled DISCRETE cost and
+/// no timing source on this project is trusted to calibrate it (R13), so the honest move is not to
+/// pick a better number — it is to show which decisions would change across the range it could
+/// plausibly take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sensitivity {
+    /// The `fixed_ns` this row was computed at.
+    pub fixed_ns: f64,
+    /// Modelled transfer cost at that `fixed_ns`.
+    pub transfer_ns: f64,
+    /// Modelled compute cost (independent of `fixed_ns`).
+    pub compute_ns: f64,
+    /// The verdict the *economics* check would return — i.e. **ignoring** the anchor exemption,
+    /// which is what makes this interesting: for an anchor-bearing island the exemption returns
+    /// `Claim` before this arithmetic happens, so this column reports what the gate would decide
+    /// if the exemption were removed.
+    pub economics_claims: bool,
+}
+
+/// Sweep `fixed_ns` across a range and report what the economics check would decide at each point.
+///
+/// The output is the sensitivity statement: if `economics_claims` is constant across the sweep,
+/// the uncalibrated parameter does not change any decision for this island and calibrating it is
+/// not on the critical path.
+pub fn fixed_ns_sensitivity(
+    island: &Island,
+    model: &TransferModel,
+    policy: &Policy,
+    fixed_ns_points: &[f64],
+) -> Vec<Sensitivity> {
+    let compute_ns = island.compute_ns(policy.flops_per_ns);
+    fixed_ns_points
+        .iter()
+        .map(|&fixed_ns| {
+            let m = TransferModel { fixed_ns, ..*model };
+            let transfer_ns = island.transfer_ns(&m);
+            Sensitivity {
+                fixed_ns,
+                transfer_ns,
+                compute_ns,
+                economics_claims: compute_ns >= policy.margin * transfer_ns,
+            }
+        })
+        .collect()
 }
 
 /// The four numbers that describe how well partitioning actually went.
@@ -628,12 +898,14 @@ mod tests {
 
     #[test]
     fn rejections_are_machine_readable() {
+        // Two islands, deliberately: with one, the sole-island override would keep it and there
+        // would be no rejection to render. That the test had to change is the change.
         let (_, dropped) = retain_viable(
-            &[lone_add_island()],
+            &[lone_add_island(), lone_add_island()],
             &TransferModel::DISCRETE,
             &Policy::default(),
         );
-        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped.len(), 2);
         let reason = decline_for(&dropped[0].1);
         assert_eq!(
             DeclineCode::of_reason(&reason),
@@ -785,5 +1057,200 @@ mod tests {
         let p = Policy::default();
         assert_eq!(p.min_nodes, 4);
         assert!((p.margin - 3.0).abs() < f64::EPSILON);
+        assert!(p.anchor_exemption, "the exemption ships on");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // RAI-011 — one gate, reachable from everywhere, and bypassed ≠ all-rejected
+    // ---------------------------------------------------------------------------------------
+
+    /// The property that makes RAI-011 impossible to reintroduce here: **every** island is
+    /// evaluated, including the sole one. If someone puts a `if islands.len() == 1 { return }`
+    /// back in front of the gate, the sole island's outcome stops carrying a computed verdict and
+    /// this goes red.
+    #[test]
+    fn the_sole_island_is_evaluated_not_bypassed() {
+        let out = gate_islands(
+            &[lone_add_island()],
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+        );
+        assert_eq!(out.len(), 1);
+        // Effective: claimed, because it is the only island and there is nothing to fall back to.
+        assert!(out[0].is_claim());
+        // Evaluated: rejected, with the reason the gate computed. A bypass could not produce this.
+        assert!(matches!(
+            out[0].evaluated(),
+            Verdict::Reject(RejectReason::TooSmall { nodes: 1, .. })
+        ));
+        assert!(out[0].is_override());
+    }
+
+    /// The two states that used to share the digit `0` must not be reachable from one another.
+    ///
+    /// `Evaluated(Reject)` (multi-island: really rejected, handed back to the CPU) and
+    /// `SoleIslandOverride` (evaluated, rejected, kept anyway) are different values of a sum type,
+    /// so no arithmetic can conflate them — the counters mirror this with
+    /// `viable_islands_retained` and `net_benefit_sole_island_overrides`.
+    #[test]
+    fn all_rejected_and_overridden_are_different_values_not_different_readings() {
+        let one = gate_islands(
+            &[lone_add_island()],
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+        );
+        let two = gate_islands(
+            &[lone_add_island(), lone_add_island()],
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+        );
+        assert!(one[0].is_override() && one[0].is_claim());
+        assert!(!two[0].is_override() && !two[0].is_claim());
+        assert!(!two[1].is_override() && !two[1].is_claim());
+        // Same island, same model, same policy — opposite fates, decided only by set size.
+        assert_ne!(one[0], two[0]);
+    }
+
+    /// An anchor-bearing sole island is claimed by the gate itself, not by the override. This is
+    /// the shipping configuration on Phi-3.5, and it is why `viable_islands_retained` reads `1`
+    /// there rather than `0` with an override.
+    #[test]
+    fn an_anchor_bearing_sole_island_is_claimed_by_the_gate_not_the_override() {
+        let out = gate_islands(
+            &[Island::MEASURED_PHI35_DEV0],
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+        );
+        assert_eq!(out[0], GateOutcome::Evaluated(Verdict::Claim));
+        assert!(!out[0].is_override());
+    }
+
+    /// `retain_viable` and `gate_islands` cannot disagree, because one is defined by the other.
+    #[test]
+    fn retain_viable_is_a_projection_of_the_one_gate() {
+        let islands = [big_matmul_island(), lone_add_island(), lone_add_island()];
+        let (kept, dropped) = retain_viable(&islands, &TransferModel::DISCRETE, &Policy::default());
+        let outcomes = gate_islands(&islands, &TransferModel::DISCRETE, &Policy::default());
+        assert_eq!(kept.len(), outcomes.iter().filter(|o| o.is_claim()).count());
+        assert_eq!(
+            dropped.len(),
+            outcomes.iter().filter(|o| !o.is_claim()).count()
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(dropped.len(), 2);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Task 2 — `fixed_ns` sensitivity. Not a calibration: a statement of what it cannot change.
+    // ---------------------------------------------------------------------------------------
+
+    /// The plausible range for the one uncalibrated parameter, spanning ~1 µs to 100 ms per
+    /// transfer. Wider than any defensible guess, on purpose: the point is what survives it.
+    const PLAUSIBLE_FIXED_NS: [f64; 8] = [
+        0.0,
+        1_000.0,
+        20_000.0,
+        60_000.0,
+        1_000_000.0,
+        5_000_000.0,
+        20_000_000.0,
+        100_000_000.0,
+    ];
+
+    /// **Sensitivity statement, part 1.** Fed the estimator's own boundary figure, the economics
+    /// check rejects Phi-3.5's island at *every* value of `fixed_ns` including zero. The verdict
+    /// is therefore not a function of `fixed_ns` at all, and calibrating it would change nothing.
+    ///
+    /// Matches the measured sweep in `bench/results/net_benefit_gate_probe-dev0.json`:
+    /// `no_anchor_fixed_{1000 … 100000000}` all produce
+    /// `net_benefit_sole_island_overrides: 1, viable_islands_retained: 0`.
+    #[test]
+    fn fixed_ns_cannot_change_the_verdict_on_the_estimated_phi35_island() {
+        let rows = fixed_ns_sensitivity(
+            &Island::MEASURED_PHI35_DEV0,
+            &TransferModel::DISCRETE,
+            &Policy::default(),
+            &PLAUSIBLE_FIXED_NS,
+        );
+        assert!(
+            rows.iter().all(|r| !r.economics_claims),
+            "expected a constant REJECT across the range, got {rows:?}"
+        );
+        // And by how much, at the most generous end: the byte term alone loses by ~10^3.
+        let at_zero = rows[0];
+        let ratio = at_zero.compute_ns / (Policy::default().margin * at_zero.transfer_ns);
+        assert!(
+            ratio < 1e-2,
+            "the byte term should dominate by orders of magnitude, got {ratio}"
+        );
+    }
+
+    /// **Sensitivity statement, part 2.** Fed the *measured* boundary instead, the same island is
+    /// claimed across the whole plausible range up to a flip point of ~3.8 ms per transfer —
+    /// 63× above the current uncalibrated guess of 60 µs. Either way the decision does not turn
+    /// on `fixed_ns`.
+    #[test]
+    fn with_measured_bytes_the_flip_point_is_far_outside_the_plausible_range() {
+        let island = Island::MEASURED_PHI35_DEV0_REAL_BYTES;
+        let policy = Policy::default();
+        let rows = fixed_ns_sensitivity(
+            &island,
+            &TransferModel::DISCRETE,
+            &policy,
+            &PLAUSIBLE_FIXED_NS,
+        );
+        for r in rows.iter().filter(|r| r.fixed_ns <= 1_000_000.0) {
+            assert!(r.economics_claims, "should claim at fixed_ns={}", r.fixed_ns);
+        }
+        // Solve for the flip: compute = margin·(2·fixed + bytes/bps).
+        let bytes_term = (island.boundary_bytes() as f64) / TransferModel::DISCRETE.bytes_per_ns;
+        let flip = (island.compute_ns(policy.flops_per_ns) / policy.margin - bytes_term) / 2.0;
+        assert!(
+            (3.75e6..3.85e6).contains(&flip),
+            "flip point moved: {flip} ns"
+        );
+        assert!(
+            flip / TransferModel::DISCRETE.fixed_ns > 50.0,
+            "the current guess must sit well below the flip"
+        );
+    }
+
+    /// **The number that actually decides the gate is not `fixed_ns`.** `GetCapability`'s island
+    /// estimator reports a boundary ~10^5 larger than the instrumented transfer path measures.
+    /// Until that is fixed, calibrating nanoseconds is polishing the wrong parameter.
+    #[test]
+    fn the_estimator_disagrees_with_the_measured_boundary_by_five_orders_of_magnitude() {
+        let estimated = Island::MEASURED_PHI35_DEV0.boundary_bytes();
+        let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
+        assert_eq!(measured, 856_720);
+        let ratio = estimated as f64 / measured as f64;
+        assert!(
+            (1.0e4..1.0e6).contains(&ratio),
+            "estimator/measured boundary ratio was {ratio}"
+        );
+    }
+
+    /// A sole-island override is not a licence to claim anything: the reason is preserved, so the
+    /// artifact can say *why* the graph was kept despite failing.
+    #[test]
+    fn the_override_carries_the_verdict_it_overrode() {
+        let out = gate_islands(
+            &[Island::MEASURED_PHI35_DEV0],
+            &TransferModel::DISCRETE,
+            &Policy {
+                anchor_exemption: false,
+                ..Policy::default()
+            },
+        );
+        match &out[0] {
+            GateOutcome::SoleIslandOverride(RejectReason::TransferDominated {
+                transfer_ns,
+                compute_ns,
+                margin,
+            }) => {
+                assert!(*compute_ns < *margin * *transfer_ns);
+            }
+            other => panic!("expected a transfer-dominated override, got {other:?}"),
+        }
     }
 }

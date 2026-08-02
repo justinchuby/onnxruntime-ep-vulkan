@@ -221,6 +221,14 @@ impl Allocator {
             return None;
         }
 
+        // Round every buffer up to a multiple of 16 bytes. The GEMV kernel views the packed
+        // weight SSBO as `uvec4[]` so it can issue 128-bit loads, and a runtime-sized array of
+        // uvec4 only covers `floor(size / 16)` elements — a buffer whose length is not a multiple
+        // of 16 therefore has a trailing partial element the shader must never touch. Padding here
+        // costs at most 15 bytes per buffer and makes every vectorised load in-bounds by
+        // construction, which is a cheaper guarantee than proving the tail is unreachable.
+        let size = size.next_multiple_of(16);
+
         let buffer_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)

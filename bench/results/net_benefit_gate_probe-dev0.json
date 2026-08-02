@@ -1,0 +1,193 @@
+{
+  "device": "0",
+  "rows": [
+    {
+      "config": "default",
+      "overrides": {},
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0
+      }
+    },
+    {
+      "config": "no_anchor",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_1000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "1000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_60000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "60000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_1000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "1000000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_5000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "5000000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_20000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "20000000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_fixed_100000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "100000000.0"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    },
+    {
+      "config": "no_anchor_freebytes_fixed_1000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "1000000.0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS": "1e12"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0
+      }
+    },
+    {
+      "config": "no_anchor_freebytes_fixed_10000000",
+      "overrides": {
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION": "0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS": "10000000.0",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS": "1e12"
+      },
+      "device": "0",
+      "verdict": "PASS",
+      "counters": {
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1
+      }
+    }
+  ]
+}

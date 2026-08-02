@@ -697,6 +697,42 @@ pub fn probe_devices() -> Vec<DeviceInfo> {
         .collect()
 }
 
+/// The devices the factory should advertise to ORT (§6.5).
+///
+/// Identical to [`probe_devices`] unless `ONNXRUNTIME_EP_VULKAN_DEVICE` is set, in which case the
+/// selector is a **pin** and exactly one device is returned.
+///
+/// **Why the pin has to bite here and not later.** ORT chooses which advertised `OrtEpDevice` to
+/// bind, and it keys the allocator it later asks us for by that choice. If we advertise a device
+/// the selector did not name, ORT may bind it while the compute session opens the pinned one —
+/// and then the run needs two `VkDevice`s to proceed, which is exactly what §6.5 forbids and what
+/// `alloc_device_frame = SPLIT-DEVICE` was reporting on the Intel lane. Advertising only the
+/// pinned device removes the divergence at its source: with one device on offer, "the device ORT
+/// bound" and "the device the selector names" cannot be two different devices.
+///
+/// Unpinned behaviour is unchanged — every capable device is advertised and ORT's policy chooses;
+/// `CreateEp` then follows whatever it bound.
+pub fn devices_to_advertise() -> Vec<DeviceInfo> {
+    let all = probe_devices();
+    if all.is_empty() || !crate::vk::instance::selector_is_pinned() {
+        return all;
+    }
+    let names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
+    let Some(sel) = crate::vk::instance::select_by_selector(&names) else {
+        return all;
+    };
+    let picked = all[sel].clone();
+    log::info!(
+        "VulkanExecutionProvider: {} is pinned to selector index {sel} → '{}' (physical \
+         enumerate index {}). Advertising ONLY that device, so ORT cannot bind a device other \
+         than the one the compute session will open (§6.5).",
+        crate::vk::instance::ENV_DEVICE_SELECTOR,
+        picked.name,
+        picked.index,
+    );
+    vec![picked]
+}
+
 /// Run the Vulkan loader probe and return a formatted diagnostic report string.
 ///
 /// This is the backend for `epctl --probe-loader`. It bypasses the shader guard in

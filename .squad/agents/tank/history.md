@@ -840,3 +840,236 @@ not proof, and I said so in the record rather than quoting "80/80" as if it sett
 evidence that the leak class is closed is that the class is now text-decidable, the screen finds
 none, and the screen demonstrates on every run that it can find them. **Repetition is what you
 offer when you have no falsifier.**
+## 2026-08-01 — Tank — the broken-commitment WARN, through ORT's own sink, with a control that bites
+
+Ruling 2 specified the mechanism; my job was to build it and then to make it *falsifiable*. The
+mechanism is small. The control is the deliverable, and the control is what took the session.
+
+### What was built
+
+`disclose_broken_commitment` sits in `ep.rs::compute`, immediately after `guard_ffi_status`, so a
+panic converted to `ORT_EP_FAIL` and a normally-returned non-OK status leave through the same
+door. On any non-OK status it names the subgraph, every node and op_type in it, a condition token,
+the error text, and states that CPU re-execution will follow and that `get_providers()` will still
+list us.
+
+**Why every non-OK return here is a broken commitment, mechanically rather than by policy.** A
+node declined at partition time never becomes part of a fused node and therefore never gets a
+`Compute`. Ruling 2's narrow scope — never-claimed ops falling back is the plan and must not
+produce per-node noise — is enforced by the *position of the call site*, not by a predicate that
+someone has to keep correct as the code moves. The 258 dynamic-shape declines on Phi-3.5 cannot
+reach this function. There is nothing to filter, so there is no filter to get wrong.
+
+**Why it does not go through the `log` crate.** `log::warn!` reaches ORT only if our env-controlled
+`LevelFilter` lets it. A disclosure that an environment variable can switch off is not a
+disclosure — it is a default. `warn_through_ort_sink` calls `forward_to_ort` directly, so
+`RUST_LOG` has no vote. Ruling 2 said "no opt-out" and an opt-out that exists but is off by
+default is still an opt-out.
+
+`forward_to_ort` now returns whether `Logger_LogMessage` was actually invoked, so
+`broken_commitment_warn_channel` can distinguish `ORT_SINK` (every WARN delivered) from
+`PRIVATE_LOG_ONLY` (at least one reached nobody). A WARN in our own log is invisible to exactly
+the audience that matters, and until now we had no way to tell the two apart.
+
+### The two-polarity control, and the proof the good-run polarity actually asserts absence
+
+`rust/tools/probe_broken_commitment.py` runs each polarity in a fresh child process, captures the
+raw bytes, and judges. Restored build: **device 0 PASS, device 1 PASS**.
+
+An assertion nobody has seen fail is a hope. So I mutated the mechanism and re-ran:
+
+- **Mutation A** — `if status.is_null() { return false; }` replaced by `if false`, so the WARN
+  fires on OK statuses too. The **negative** polarity failed, on two independent grounds: a
+  `BROKEN COMMITMENT` line through ORT's sink on a successful run, and
+  `broken_commitments=1, expected the integer 0`.
+- **Mutation B** — unconditional `return false` at the top of the disclosure body. The
+  **positive** polarity failed on three grounds: ORT's sink emitted lines and none carried the
+  marker, `broken_commitments=0 compute_calls=1`, and `broken_commitment_warn_channel` read
+  `UNOBSERVABLE` where `ORT_SINK` was required.
+
+Artifact: `bench/results/broken-commitment-mutation-controls.json`, alongside the restored-build
+PASS in `broken-commitment-control.json`. **The good run's silence is now a measured silence: I
+have made it speak, deliberately, and the negative polarity caught it.**
+
+Two further things the negative polarity asserts that a naive one would not. It requires
+`dispatches_executed != 0`, because the silence of an EP that executed nothing is not a result —
+that is yesterday's `UNATTRIBUTED` incident wearing a different hat. And it requires the integer
+`0` for `broken_commitments`, never the token: a CPU-only run cannot forge a clean bill of health,
+because with `compute_calls == 0` the field reads `UNOBSERVABLE` and the assertion fails.
+
+### The instrument error that first printed as a detection — a live R13 specimen
+
+The probe reported **FAIL on both devices** for a WARN that had been delivered correctly the whole
+time. ORT's default sink on Windows writes **wide characters** to stderr; a UTF-8 decode renders
+`[W:onnxruntime:...]` as spaced-out letters and every grep over it misses. My witness could not
+read the channel it was watching, and it reported that as a property of the mechanism.
+
+I then made the same class of error twice more, which is the part worth recording. First I
+concatenated the two captured streams with a one-byte separator, which shifts the second stream's
+UTF-16LE alignment by one byte and turns all of it to mojibake — that version reported
+FAIL for a line a direct run showed plainly. Then, decoding each stream from offset zero, I hit
+the same problem *within* one stream: our own narrow stderr line is written to the same handle and
+has odd length, so every wide line after it is off by one. The decoder now reads the bytes four
+ways — UTF-8, UTF-16LE at both alignments, and NUL-stripped — because a witness that can read only
+one alignment reports absence for something present.
+
+I also burned real time on a dead end that should not be repeated: `CreateEnvWithCustomLogger`
+(vtable entry 4, `ORT_API_VERSION = 28`) called through ctypes before importing onnxruntime
+returns a null status and the callback never fires. ORT Python does not honour a pre-created
+singleton's sink here. Removed.
+
+**R13 consequence, now built in.** If the positive polarity sees *no* line from ORT's sink at all —
+not even ORT's own error for the failure we planted — the verdict is
+`ERROR(instrument=ort_sink_not_observable_in_this_host)` with exit code 4, never `FAIL`. A blind
+witness cannot produce a detection. That branch exists because I lived in it for most of a
+session, believing a correct mechanism was broken.
+
+### Is the new observable in-frame at the moment it must be read?
+
+Yes, and deliberately so, because I made exactly the opposite mistake last round. `record_broken_
+commitment` calls `dump_if_requested()` **at the instant of the event**, not at teardown. A broken
+commitment is followed by ORT's silent fallback and, in both real incidents, by a session that
+never reaches an orderly shutdown. A counter that can only be read at a moment which no longer
+occurs is `UNOBSERVABLE` by construction — the out-of-frame state — and a "0 broken commitments at
+shutdown" gate would have been the R12 hazard I was warned about, reintroduced by me, in my own
+file, one round after I found it in someone else's.
+
+### RAI-011 — what I handed Mouse
+
+`viable_islands_retained == 0` meant *gate bypassed* and *all islands rejected* indistinguishably.
+It is now three-valued: `UNWIRED` (no cluster reached the decision point), `UNOBSERVABLE`
+(clusters seen, but every one bypassed the gate — the event cannot have occurred in this frame),
+or an integer (the gate ran, so `0` means all-rejected and is a real detection). A companion token
+`net_benefit_gate` reads `UNWIRED|BYPASSED|EVALUATED|MIXED`, with the raw
+`clusters_seen`/`evaluations`/`bypasses` triple beside it — an increment can forge a number, but
+it cannot forge a type.
+
+On the probe's own single-fused-island model the artifact reads
+`viable_islands_retained="UNOBSERVABLE", net_benefit_gate="BYPASSED", clusters_seen=1,
+evaluations=0`. **That is RAI-011 reproducing on the bench, not a defect in the probe** — it is
+precisely the Phi-3.5 single-island shape, and it now prints as its own condition instead of as a
+zero. I wired the one call site I own, `ep.rs::GetCapability`; if `partition.rs` has a second
+entry point into the same decision, it needs `counters::record_net_benefit_decision(evaluated)`
+too, and that half is Mouse's.
+
+### Still open, and not mine to close
+
+`transfer.rs::device_buffer_for` remains uninvoked and `alloc_device_buffer_binds` stays 0 until
+Switch's engine binds. I delivered the transition, not the feature, and I am not building his half.
+My reciprocal ask to Trinity — `HARNESS_INSTRUMENT_FILES` omits `ops/conftest.py` — is still open.
+
+### Kept honest
+
+No wall-clock figure anywhere in this session's evidence, and no timing threshold added. Every
+number above is a count of events, lines or bytes. Switch holds the device clock; nothing here
+competes for it, and nothing here changes meaning under contention.
+
+### Two more things this session found, both in my own files
+
+**The verdict vocabulary could drift silently, and now cannot.** `tests/ops/_verdict.py` and
+`counters.rs` each hold their own copy of `MATCH / DIVERGENT / UNMEASURED / UNATTRIBUTED /
+SPLIT-FRAME`, and `extract_equivalence` maps anything it does not recognise to `UNMEASURED`. So a
+token renamed on the Python side would have arrived here as *"no comparison was performed"* — a red
+turned into a shrug, the two-token disease again, with no test able to notice.
+`counters::tests::verdict_vocabulary_cannot_drift_from_the_python_harness` reads the Python file and
+asserts set equality, plus that both JSON keys match. **Mutation control:** changing
+`SPLIT-FRAME` to `SPLIT_FRAME` in `counters.rs` makes it fail and prints both sets. A missing or
+unparsable `_verdict.py` panics as `ERROR(instrument=…)` — a cross-language check that skips when it
+cannot find its subject would let every future drift pass.
+
+**A latent test race that my change exposed rather than caused.** After adding disclosure to the
+real `Compute` path, `counters_record_what_they_claim_to_record` began failing intermittently: the
+three pre-existing `ep` tests that drive `compute` now legitimately record broken commitments while
+it asserts on those very statics. Then, with the timing changed, two `allocator` tests started
+racing on `ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS` — one took `ledger::test_lock()`, the other set
+and removed the same process-wide variable without it, and the loser read the wrong bound. Both are
+now under the one shared lock. A pristine tree passed eight consecutive runs, so the second race was
+mine to expose and mine to fix; the fix is in `allocator.rs`, which is my file. **Eight consecutive
+clean runs after, 424 tests.** I am recording this because "it passed" and "it passes" are different
+claims and only the second one is worth anything from a suite with process-global state.
+
+### 2026-08-01 addendum — the load was misattributed, and my evidence is unaffected by the correction
+
+The coordinator withdrew his attribution of the machine load: it is a second development project of
+Justin's running CPU **and GPU** tests, not squad orchestration. **Nothing in this session's
+evidence moves**, and that is a property of the instruments rather than luck:
+
+- The two-polarity control's verdicts are counts of events and the presence or absence of a string
+  on a channel. `broken_commitments`, `broken_commitment_warn_channel`, `fault_injection`,
+  `dispatches_executed != 0` — none of them has a time term, so there is no reading of them that a
+  foreign process can move.
+- The probe was in fact run under this load, twice, on both devices, and returned PASS both times.
+  That is not a claim that it is contention-proof; it is the weaker and true claim that its inputs
+  do not include the clock.
+- The mutation controls are the same shape: a WARN either appeared on ORT's sink or it did not.
+
+**The part worth keeping.** The coordinator's error was stopping at the first cause consistent with
+the observation — two `copilot` processes were consistent with "mine", so he stopped looking. That
+is the same failure as §6.5 "closing" on selector 0: the observation agreed with the hypothesis for
+a reason the hypothesis did not name. My own version of it this session was the UTF-16 witness — I
+read FAIL, it was consistent with "the WARN is broken", and I spent most of a session inside that
+reading before checking whether the *witness* could see. **A confirming reading and a working
+instrument look identical until you try to make the instrument say the other thing**, which is
+exactly why the negative polarity of a control is the half that has to be mutated.
+
+No wall-clock figure and no timing threshold anywhere in this session's work, so there is nothing
+here for the device-clock question to invalidate. Switch's `gpu_steady_tail()` question and
+Niobe's Intel `NO_STEADY_TAIL` competing explanation are theirs; I hold no measurement that bears
+on either.
+
+### STOP POINT 2026-08-01T11:39 — read this first if you are resuming as Tank with no memory
+
+**Everything is committed.** Worktree `C:\Users\justinchu\dev\ep-vulkan-tank`, branch `squad/tank`,
+commit `bce87cd`, on top of `main` at `17c2fab`. Working tree clean, nothing pushed, nothing
+mid-flight. There is no half-integrated code and no feature flag to finish wiring.
+
+**Done, and verified:**
+- The broken-commitment WARN through ORT's own sink (`ep.rs::disclose_broken_commitment` →
+  `logging::warn_through_ort_sink` → `Logger_LogMessage`), bypassing the `log` crate so no
+  environment variable can suppress it.
+- **Both polarities of the control, including the one that must not be skipped.** The good-run
+  polarity is written *and mutation-tested*: Mutation A makes the WARN fire on successful runs and
+  the negative polarity catches it on two independent grounds. `bench/results/broken-commitment-
+  mutation-controls.json`. It is not a printed opinion; it has been made to fire and to fall
+  silent on demand.
+- `PASS` on device 0 and device 1, twice, the second time after the load correction.
+- RAI-011 tokenisation of `viable_islands_retained`, and the verdict-vocabulary drift test against
+  `tests/ops/_verdict.py`.
+
+**No measurement I took today is inadmissible, because I took none that could be.** Every figure in
+this session's artifacts is a count of events, a token, or a string on a channel. There is no wall
+clock, no device clock, no timing threshold, and nothing to re-take in a quiet window. Nothing of
+mine needs a `machine_quiescence` label because nothing of mine has a time term to contaminate.
+
+**Next step, in priority order, for the fresh session:**
+1. **Mouse's half of RAI-011.** I wired `counters::record_net_benefit_decision(evaluated)` only at
+   the `ep.rs::GetCapability` cluster loop, the one site I own. If `partition.rs` reaches the
+   net-benefit decision by any other path, that path is unwired and RAI-011 reproduces inside its
+   own fix — R10's exact shape. Handed over in
+   `.squad/decisions/inbox/tank-net-benefit-gate-observable.md`. **Ask Mouse; do not audit his file
+   yourself.**
+2. **The real failure conditions are still only unit-covered.** The probe's positive polarity plants
+   a synthetic failure (`condition=planted-control`). `failure_condition_token` classifies allocator
+   and shape conditions and is tested, but no *real* OOM or empty-tensor-shape failure has yet gone
+   through the live path end to end. That is the next falsifier worth building, and it needs no
+   timing either.
+3. **`transfer.rs::device_buffer_for` is still uninvoked** and `alloc_device_buffer_binds` still
+   reads 0 until Switch's engine binds. Not mine to build. Coordinate; do not build his half.
+4. **Open ask to Trinity:** `HARNESS_INSTRUMENT_FILES` omits `ops/conftest.py`.
+
+**One trap that will cost you an hour if you rediscover it:** ORT's default logging sink on Windows
+writes UTF-16LE to stderr, and our own narrow line shares the handle, so wide lines can sit at
+either byte alignment. `probe_broken_commitment.py::decode_both` reads the bytes four ways for that
+reason. If you "simplify" it to a single decode, the probe will report `FAIL` for a WARN that was
+delivered correctly — which is exactly what it did to me. Also: `CreateEnvWithCustomLogger` via
+ctypes before importing onnxruntime returns a null status and never fires its callback. Dead end,
+already walked.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+

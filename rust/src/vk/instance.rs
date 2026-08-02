@@ -132,7 +132,19 @@ pub(crate) const ENV_DEVICE_SELECTOR: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE";
 /// Returns `None` only when `devices` is empty. If the selector names a non-existent index or
 /// an unmatched substring, a warning is logged and index 0 (the default best device) is returned.
 pub(crate) fn select_device(devices: &[CapableDevice]) -> Option<usize> {
-    if devices.is_empty() {
+    let names: Vec<&str> = devices.iter().map(|d| d.info.name.as_str()).collect();
+    select_by_selector(&names)
+}
+
+/// The selector's one implementation, over nothing but the best-first-ordered device names.
+///
+/// Both the compute session (`select_device`, over `CapableDevice`) and the factory's advertise
+/// path (over `DeviceInfo`) resolve `ONNXRUNTIME_EP_VULKAN_DEVICE` through this function, so the
+/// two cannot drift into disagreeing about which device the selector names. `names` must be in
+/// best-first order — the same order `enumerate_capable_devices` returns — because the selector
+/// index is defined against that order and against no other.
+pub(crate) fn select_by_selector(names: &[&str]) -> Option<usize> {
+    if names.is_empty() {
         return None;
     }
     let selector = std::env::var(ENV_DEVICE_SELECTOR).unwrap_or_default();
@@ -141,22 +153,19 @@ pub(crate) fn select_device(devices: &[CapableDevice]) -> Option<usize> {
     }
     // Integer index?
     if let Ok(idx) = selector.parse::<usize>() {
-        if idx < devices.len() {
+        if idx < names.len() {
             return Some(idx);
         }
         log::warn!(
             "{ENV_DEVICE_SELECTOR}={selector}: index out of range \
              ({} device(s) passed the gate). Using device 0.",
-            devices.len(),
+            names.len(),
         );
         return Some(0);
     }
     // Name substring (case-insensitive).
     let lower = selector.to_lowercase();
-    match devices
-        .iter()
-        .position(|d| d.info.name.to_lowercase().contains(&lower))
-    {
+    match names.iter().position(|n| n.to_lowercase().contains(&lower)) {
         Some(idx) => Some(idx),
         None => {
             log::warn!(
@@ -166,6 +175,46 @@ pub(crate) fn select_device(devices: &[CapableDevice]) -> Option<usize> {
             Some(0)
         }
     }
+}
+
+/// Whether `ONNXRUNTIME_EP_VULKAN_DEVICE` is set to anything at all.
+///
+/// A set selector is a **pin**, and the factory treats it as one: it advertises only the pinned
+/// device, so ORT cannot bind a device other than the one the compute session will open. See the
+/// index-space note in `vk/device.rs`.
+pub(crate) fn selector_is_pinned() -> bool {
+    !std::env::var(ENV_DEVICE_SELECTOR)
+        .unwrap_or_default()
+        .is_empty()
+}
+
+/// Translate a *physical* `vkEnumeratePhysicalDevices` index into a position in a best-first
+/// ordered capable-device list.
+///
+/// **This is the only place the two index spaces are allowed to meet.** They are not
+/// interchangeable and their divergence has now been a defect three times on this project:
+///
+/// * `epctl --probe-loader` printed the enumeration index while the selector indexed the sorted
+///   list, so every device label the team used was inverted for a day;
+/// * the §6.5 offer was keyed by the enumeration index while the session was chosen by the
+///   selector index, so on any desk where the two orders differ the provider silently stood up a
+///   second `VkDevice` (`alloc_device_frame = SPLIT-DEVICE`).
+///
+/// Returns `None` when no capable device carries that physical index — which is a real answer
+/// (ORT bound a device that failed our §7.2 gate is impossible, but a device disappearing between
+/// enumerations is not), never a reason to fall back silently.
+pub(crate) fn position_of_physical(devices: &[CapableDevice], physical: usize) -> Option<usize> {
+    position_of_physical_in(devices.iter().map(|d| d.info.index), physical)
+}
+
+/// [`position_of_physical`] over nothing but the physical indices, so the translation can be
+/// tested without a live Vulkan device.
+pub(crate) fn position_of_physical_in(
+    physical_indices: impl Iterator<Item = usize>,
+    physical: usize,
+) -> Option<usize> {
+    let mut it = physical_indices;
+    it.position(|i| i == physical)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1186,6 +1235,53 @@ fn format_driver_version(vendor_id: u32, driver_version: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // THE TWO INDEX SPACES, PINNED DOWN.
+    //
+    // This desk is the case that has cost the project three defects: the discrete GPU is
+    // enumeration index 1 but best-first selector index 0, and the integrated GPU is the reverse.
+    // Any translation that is accidentally the identity passes on a one-GPU machine and inverts
+    // every label here, so the test is written on the INVERTED pairing on purpose.
+    #[test]
+    fn a_physical_index_translates_to_a_selector_position_and_is_not_the_identity() {
+        // best-first order: [NVIDIA (enum 1), Intel (enum 0)]
+        let enum_indices = [1usize, 0];
+
+        assert_eq!(
+            position_of_physical_in(enum_indices.iter().copied(), 1),
+            Some(0),
+            "physical 1 (the discrete GPU) is selector 0 on this pairing"
+        );
+        assert_eq!(
+            position_of_physical_in(enum_indices.iter().copied(), 0),
+            Some(1),
+            "physical 0 (the integrated GPU) is selector 1 on this pairing"
+        );
+
+        // The falsifier: if the translation were the identity, both answers above would equal
+        // their inputs. Assert the inversion explicitly so a refactor to `Some(physical)` fails.
+        for physical in [0usize, 1] {
+            assert_ne!(
+                position_of_physical_in(enum_indices.iter().copied(), physical),
+                Some(physical),
+                "the two spaces are inverted on this pairing; an identity mapping is the bug"
+            );
+        }
+
+        // A device ORT names that we did not gate through is a real answer, not a fallback to 0.
+        assert_eq!(
+            position_of_physical_in(enum_indices.iter().copied(), 7),
+            None,
+            "an unknown physical index must not silently resolve to device 0"
+        );
+        assert_eq!(position_of_physical_in(std::iter::empty(), 0), None);
+
+        // When enumeration order already equals best-first order the mapping IS the identity —
+        // which is exactly why a one-GPU (or already-sorted) machine can never detect the defect.
+        let sorted = [0usize, 1];
+        assert_eq!(position_of_physical_in(sorted.iter().copied(), 0), Some(0));
+        assert_eq!(position_of_physical_in(sorted.iter().copied(), 1), Some(1));
+    }
 
     /// Minimal properties that pass all six gate checks.
     fn good_props() -> vk::PhysicalDeviceProperties {

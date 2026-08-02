@@ -1761,6 +1761,12 @@ GPU_TAIL_RSD_MAX = 0.02
 #: Fewest samples a steady tail may be declared from.
 GPU_TAIL_MIN_N = 5
 
+#: Absolute floor on the tail's length, and the floor on what fraction of the usable series it
+#: must cover, before the tail's median may be *quoted*. See :func:`gpu_steady_tail` — a suffix
+#: that clears the RSD bar without clearing these is ``MARGINAL_TAIL``, which is not a number.
+GPU_TAIL_QUOTABLE_MIN_N = 8
+GPU_TAIL_MIN_COVERAGE = 0.5
+
 
 def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
     """The longest stable suffix of the per-inference GPU-busy series, found from the device clock.
@@ -1781,12 +1787,74 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
     this way stays valid on a box that is not quiet. That is the only reason this figure is
     reportable today.
 
-    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``NO_STEADY_TAIL`` when no
-    sufficiently long suffix settles, or ``INSUFFICIENT``.
+    Returns ``verdict`` ``STEADY`` with the tail's statistics, ``MARGINAL_TAIL`` when a suffix
+    settles but is too short or too small a share of the run to be quoted, ``NO_STEADY_TAIL``
+    when no sufficiently long suffix settles, or ``INSUFFICIENT``.
+
+    # Why a settled suffix is not automatically a quotable one — the minimum-n floor
+
+    *Ruling of 2026-08-01, mine, on Morpheus's question.* **The 2% RSD bar is a constraint on the
+    tail's internal spread, not on its agreement with the device's true steady rate.** A suffix of
+    five samples taken from a local flat stretch of a wandering series clears it exactly as easily
+    as a settled device does, and reports a median that is simply wrong. Two independent
+    specimens, from two different people's runs, on the same day:
+
+    * Switch's ``contended`` row **passed** at ``n=8`` after discarding 38 — and sat **2.1% above**
+      his solo figure, which the RSD said nothing about.
+    * My own pre-barrier-fix A/B runs produced tails at ``n=7`` (39 discarded, median 20.06 ms)
+      and ``n=5`` (38 discarded, median 37.56 ms) on a device whose two clean runs, from the same
+      DLL on the same afternoon, both read **13.346 ms** to four figures. Each bad tail
+      disagreed with its own run's warm-mean GPU busy by 33% and 42% respectively. Every tail with
+      ``n >= 38`` in that set agreed with its run's warm mean to within 0.2%.
+
+    The separation is clean and it is not on ``n`` alone: it is on **how much of the series the
+    tail keeps**. A genuine warmup ramp is a short prefix (5-6 of 46 here); a device that never
+    settled produces a short flat *suffix* (38-39 of 46 discarded). Coverage is therefore the
+    floor that does the discriminating — every bad specimen above sits at 12-17% coverage, every
+    good one at 83-100% — and the absolute ``n`` floor exists only to reject a series too short
+    to have shown anything. Both apply, and a suffix that clears the RSD bar but fails either is
+    ``MARGINAL_TAIL``: not a slower number, **no number**, with the suffix's median kept under
+    ``withheld_median_ms`` so that it cannot be read as one by a later reader or an aggregation.
+
+    This deliberately makes the instrument refuse more often. It refuses the two runs above, and
+    it would have refused Switch's ``contended`` row. That is the point: those are the runs whose
+    numbers were wrong, and a refusal that costs a real measurement is cheaper than a pass that
+    ships a fabricated one.
+
+    # The floor above is necessary and it is nowhere near sufficient -- amendment of 2026-08-01
+
+    **Same day, later: the premise I ruled on was withdrawn, and the floor is not the fix.** I was
+    told this gate "either lands within 0.08% of solo or refuses outright". Switch's
+    ``probe_gputenancy.py`` shows the opposite, from committed artifacts, with no GPU needed:
+    ``contended3`` truncated to 20, 28 and 34 inferences reports **STEADY at 126.647 ms, 10.99x
+    wrong, RSD 0.79-0.91%**; and a board held at its 210 MHz idle clock against a 3105 MHz boost
+    reports **STEADY at 246.735 ms, 21.4x wrong, RSD 0.1163%, nothing discarded**.
+
+    **In both failures the wrong number carried the BETTER RSD than the right one.** That is the
+    whole lesson and it is fatal to any repair from inside this function. This is a variance test
+    over a suffix: **it cannot see a bias.** A uniformly wrong series is a *perfectly steady* one,
+    so the gate answers a run that is entirely wrong with its most confident possible verdict. A
+    low clock does not raise RSD; it lowers it.
+
+    So: **more samples make a biased series more confident, not less.** The ``n`` and coverage
+    floors above do real work -- they catch a *wandering* device, which is a different failure and
+    a real one -- but they must never be presented as closing this. Under DESIGN.md **R9 rule 5**
+    the remedy for an anti-correlated falsifier is **a different instrument**, and this check is
+    demoted from a gate to a **precondition**. Every tail returned here is therefore born
+    ``certification: UNCERTIFIED``, and only :mod:`bench.device_state` -- a tenancy verdict and an
+    SM-clock record taken over the same window, from outside this series -- can lift it.
     """
     vals = [v / 1000.0 for v in busy_us if v]
     out = {"n_inferences": len(vals),
-           "series_ms": [round(v, 3) for v in vals][:64]}
+           "series_ms": [round(v, 3) for v in vals][:64],
+           # R9 rule 5. Set here, unconditionally, so that *every* tail this function returns is
+           # born unquotable. `analyse(device_state=...)` is the only thing that can lift it, and
+           # only on the evidence of a second instrument that watched the same window. A default
+           # of "quotable until someone objects" is the shape that let a 21.4x-wrong figure out.
+           "certification": {"verdict": "UNCERTIFIED", "quotable": False,
+                             "detail": ("no device-state companion was supplied to "
+                                        "phases.analyse(). An RSD over a suffix is silent about "
+                                        "the level of that suffix; see bench/device_state.py.")}}
     if len(vals) < GPU_TAIL_MIN_N + 1:
         out.update(verdict="INSUFFICIENT",
                    detail=f"{len(vals)} usable inferences; need at least {GPU_TAIL_MIN_N + 1}.")
@@ -1808,20 +1876,49 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
                            f"there is no steady-state GPU figure to quote from this run."))
         return out
     start, suffix, rsd = best
+    coverage = len(suffix) / len(vals)
+    stats_block = {
+        "discarded_inferences": start,
+        "n": len(suffix),
+        "coverage": round(coverage, 4),
+        "median_ms": round(statistics.median(suffix), 4),
+        "mean_ms": round(statistics.fmean(suffix), 4),
+        "min_ms": round(min(suffix), 4),
+        "max_ms": round(max(suffix), 4),
+        "rsd": round(rsd, 6),
+    }
+    if len(suffix) < GPU_TAIL_QUOTABLE_MIN_N or coverage < GPU_TAIL_MIN_COVERAGE:
+        # Not a number. The suffix is flat, and a flat suffix that is a small piece of the series
+        # is as easily a local excursion as a settled device -- see the docstring's specimens,
+        # where every such tail disagreed with its own run's warm mean by 33-42%.
+        out.update(stats_block)
+        out.update(
+            verdict="MARGINAL_TAIL",
+            median_ms=None,
+            withheld_median_ms=stats_block["median_ms"],
+            detail=(f"a suffix of {len(suffix)} inference(s) holds within {rsd:.4%} RSD, but it "
+                    f"is {coverage:.0%} of the {len(vals)} usable inferences and "
+                    f"{start} were discarded to find it. Floors: n >= "
+                    f"{GPU_TAIL_QUOTABLE_MIN_N} and coverage >= "
+                    f"{GPU_TAIL_MIN_COVERAGE:.0%}. The RSD bar constrains the tail's internal "
+                    f"spread, not its agreement with the device's true steady rate, so a short "
+                    f"flat suffix passes it just as well as a settled one. No GPU figure is "
+                    f"quotable from this run; the suffix's median is kept under "
+                    f"`withheld_median_ms` so it cannot be read as one."),
+        )
+        return out
+    out.update(stats_block)
     out.update(
         verdict="STEADY",
-        discarded_inferences=start,
-        n=len(suffix),
-        median_ms=round(statistics.median(suffix), 4),
-        mean_ms=round(statistics.fmean(suffix), 4),
-        min_ms=round(min(suffix), 4),
-        max_ms=round(max(suffix), 4),
-        rsd=round(rsd, 6),
         detail=(f"GPU busy settles after {start} inference(s) and holds "
-                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them at "
+                f"{statistics.median(suffix):.3f} ms across {len(suffix)} of them "
+                f"({coverage:.0%} of the series) at "
                 f"{rsd:.4%} RSD. Device-clock only: this is the summed duration of the "
                 f"dispatches, not the wall time of an inference, and it is NOT a substitute "
-                f"for the end-to-end figure."),
+                f"for the end-to-end figure. STEADY is a precondition and not a release: this "
+                f"same verdict was returned at 10.99x and at 21.4x wrong, both times with a "
+                f"better RSD than the correct run. See `certification` -- until a device-state "
+                f"companion certifies it, there is no quotable number here."),
     )
     return out
 
@@ -1945,8 +2042,15 @@ def steady_state_split(subgraphs: "list[dict]", siblings: "list[dict]",
 def analyse(events: "list[dict]", counters: "dict | None" = None,
             integrated_gpu: bool = False,
             independent_whole_ms: "float | None" = None,
-            whole_source: str = "") -> dict:
-    """The whole phase picture for one trace, with its falsifiers attached."""
+            whole_source: str = "",
+            device_state: "dict | None" = None) -> dict:
+    """The whole phase picture for one trace, with its falsifiers attached.
+
+    ``device_state`` is the **required companion** for any device-clock figure: a tenancy verdict
+    and an SM-clock record taken by :mod:`bench.device_state` over the same window as this trace.
+    Omitting it is not a shortcut -- the GPU steady tail stays ``UNCERTIFIED`` and its median is
+    not a quotable number. See :func:`gpu_steady_tail`'s amendment of 2026-08-01.
+    """
     subs = subgraph_spans(events)
     all_phases = phase_spans(events)
     nesting = phase_nesting(all_phases)
@@ -2014,7 +2118,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     ordinal = attribute_gpu_ordinally(subs, gpus)
     contention = contention_signature(attributed, subs, ordinal.get("busy_us"), integrated_gpu)
 
-    return {
+    report = {
         "subgraph_spans": len(subs),
         "time_in_compute_ms": round(in_compute_ms, 3),
         "time_in_compute_note": (
@@ -2063,6 +2167,20 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
             "upload_accounting": upload_agreement,
         },
     }
+    # R9 rule 5. The tail arrives UNCERTIFIED from `gpu_steady_tail`; only a second instrument,
+    # which watched the same window from outside the series, can lift that. Passing no companion
+    # leaves it UNCERTIFIED -- there is no code path here that turns absence of evidence into a
+    # pass, because that is precisely how a 21.4x-wrong figure was published with a 0.12% RSD.
+    from device_state import certify as _certify
+    tail = (report.get("steady_state") or {}).get("gpu_steady_tail")
+    if isinstance(tail, dict):
+        tail["certification"] = _certify(tail, device_state)
+    report["device_state"] = device_state or {
+        "verdict": "ABSENT",
+        "detail": ("no tenancy verdict and no SM-clock record was taken over this trace's window. "
+                   "Device-clock figures in this report are UNCERTIFIED."),
+    }
+    return report
 
 
 def red_flags(report: dict) -> "list[str]":
@@ -2088,6 +2206,12 @@ def red_flags(report: dict) -> "list[str]":
     if cs.get("verdict") in ("HOST_SIDE_EXCURSIONS", "HOST_EXCURSIONS_UNCONTROLLED",
                              "WORKLOAD_VARIATION", "UNDERPOWERED", "UNTESTABLE"):
         out.append(f"contention_signature: {cs['verdict']} — {cs.get('reason')}")
+    cert = ((report.get("steady_state") or {}).get("gpu_steady_tail") or {}).get("certification")
+    if cert and not cert.get("quotable"):
+        kind = cert.get("verdict")
+        prefix = ("gpu_steady_tail: ERROR(instrument=device_state) — NOT a detection: "
+                  if kind == "ERROR" else f"gpu_steady_tail: {kind} — ")
+        out.append(prefix + str(cert.get("detail")))
     la = report.get("phase_leaf_accounting") or {}
     if la and not la.get("ok"):
         out.append(f"phase_leaf_accounting: {la.get('verdict')} — {la.get('detail')}")

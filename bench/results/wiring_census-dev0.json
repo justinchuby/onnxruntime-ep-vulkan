@@ -1,0 +1,23 @@
+{
+  "criterion": "12",
+  "device_selector": "0",
+  "vocabulary": "Tank's six states, ordered by how late the failure is discoverable: absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> misnamed; plus R13's three terminal states PASS / FAIL(condition) / ERROR(instrument).  One census (rust/tools/audit_instruments.py), not two.",
+  "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 every line above is a count, a token or a byte volume.  The tracer line reports how many events it wrote and quotes none of their durations.",
+  "observations": {
+    "partitioner": "dispatches=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1",
+    "partition_identity_check": "VACUOUS (claimed=1, islands=1; single-node graph is expected)",
+    "net_benefit_gate": "EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int \u2014 a type cannot be forged by an increment)",
+    "gpu_tracer": "28 trace event(s), phases=['C', 'M', 'X', 'i'], distinct_names=16 (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; no duration from this file is quoted \u2014 \u00a710.0 obligation 8)",
+    "model_output_equivalence": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)",
+    "retain_viable": "1",
+    "ledger_lookup": "UNWIRED",
+    "validation_messenger": "ARMED",
+    "layering_lint": "PASS",
+    "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
+    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
+    "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
+  },
+  "unwired": [
+    "ledger_lookup"
+  ]
+}

@@ -34,7 +34,7 @@ use ash::vk;
 use super::{
     barrier::Barriers,
     caps::{Capabilities, DeviceFeatureChain},
-    instance::{CapableDevice, Instance, select_device},
+    instance::{CapableDevice, Instance, position_of_physical, select_device, selector_is_pinned},
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -158,15 +158,47 @@ static EP_INSTANCE: OnceLock<Option<&'static Instance>> = OnceLock::new();
 /// One owner per *physical* device index (`CapableDevice::info::index`).
 static EP_DEVICES: OnceLock<std::sync::Mutex<Vec<&'static EpDeviceOwner>>> = OnceLock::new();
 
-/// Acquire the process-global EP device for the physical device `options` selects (§6.5).
+/// Acquire the process-global EP device for the physical device this session must open (§6.5).
 ///
 /// Creates the instance and device on first call for a given physical device and returns the
 /// same handles on every later call. Returns `None` when no device passes the §7.2 gate.
+///
+/// # Which device, and the precedence that decides it
+///
+/// Three things want to name a device and they do not all use the same index space:
+///
+/// | source | space | precedence |
+/// |---|---|---|
+/// | `ep.device_index` (session option) | best-first sorted capables | 1 |
+/// | `ONNXRUNTIME_EP_VULKAN_DEVICE` (env) | best-first sorted capables | 1 |
+/// | `bound_physical` — the `OrtEpDevice` ORT bound for this session | `vkEnumeratePhysicalDevices` | 2 |
+/// | best score | best-first sorted capables | 3 |
+///
+/// **An explicit selector outranks ORT's binding, and that order is deliberate.** The opposite
+/// order is defensible on paper — ORT keys the allocator it asks us for by the device it bound,
+/// so opening a different one produces the second `VkDevice` §6.5 forbids — and it was tried, and
+/// it is worse. Making ORT authoritative meant `ep.device_index = 1` *silently ran on the other
+/// GPU*: the run still reported `MATCH`, still claimed 161 nodes, and was only caught because its
+/// GPU-busy time was the discrete part's and not the integrated part's. A run that answers a
+/// question about a device other than the one it was asked about is not a slower configuration,
+/// it is an unattributed one — and the integrated part is this project's spec-conformance oracle,
+/// so losing the ability to target it costs more than a `SPLIT-DEVICE` frame.
+///
+/// So: when the caller names a device, it gets that device, and a divergence from ORT's binding is
+/// **logged with both index spaces spelled out** and left to report `SPLIT-DEVICE`, which is true.
+/// When the caller names nothing, ORT's binding is followed, which makes the frame `SHARED` in the
+/// default configuration without anyone having to ask.
+///
+/// The divergence has exactly one construction that removes it rather than reporting it: set
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE` **before the library is registered**. `engine::devices_to_-
+/// advertise` then advertises only that device, ORT cannot bind another, and the two spaces have
+/// one member each.
 ///
 /// # Safety
 /// The Vulkan loader must remain loaded for the process lifetime. It does: the returned owner is
 /// leaked, so `ash::Entry` (which holds the loaded library) is never dropped.
 pub(crate) unsafe fn acquire_ep_device(
+    bound_physical: Option<usize>,
     device_index: Option<usize>,
     enable_validation: bool,
     force_legacy: bool,
@@ -190,6 +222,10 @@ pub(crate) unsafe fn acquire_ep_device(
         return None;
     }
 
+    // Did a human name a device, or are we choosing on their behalf? Only the second case may be
+    // overridden by ORT's binding.
+    let explicit = device_index.is_some() || selector_is_pinned();
+
     let idx = if let Some(dev_idx) = device_index {
         if dev_idx < capables.len() {
             dev_idx
@@ -203,6 +239,51 @@ pub(crate) unsafe fn acquire_ep_device(
         }
     } else {
         select_device(&capables).unwrap_or(0)
+    };
+
+    // The one place the two index spaces are allowed to meet. `bound_physical` is an enumeration
+    // index; `idx` is a position in the best-first sorted list. They are not interchangeable.
+    let bound_pos = bound_physical.and_then(|p| position_of_physical(&capables, p));
+    let idx = match (bound_physical, bound_pos) {
+        (None, _) => idx,
+        (Some(physical), None) => {
+            log::warn!(
+                "§6.5 index spaces: ORT bound physical enumerate index {physical}, which no \
+                 device in the §7.2-capable list carries ({} device(s) enumerated). Using \
+                 selector index {idx}; expect SPLIT-DEVICE if ORT asks for an allocator.",
+                capables.len(),
+            );
+            idx
+        }
+        (Some(_), Some(pos)) if pos == idx => idx,
+        (Some(physical), Some(pos)) if explicit => {
+            log::warn!(
+                "§6.5 index spaces: this session was explicitly asked for '{}' (best-first \
+                 selector index {idx}, physical enumerate index {}), but ORT bound '{}' \
+                 (selector index {pos}, physical enumerate index {physical}). Honouring the \
+                 explicit request — a session that silently runs on a device other than the one \
+                 it was asked about produces an UNATTRIBUTED result, which is worse than a split \
+                 frame. Consequence: ORT's allocator is keyed to the device it bound, so if it \
+                 asks for one the run will correctly report alloc_device_frame = SPLIT-DEVICE. \
+                 To remove the divergence instead of reporting it, set \
+                 ONNXRUNTIME_EP_VULKAN_DEVICE before the EP library is registered: the factory \
+                 then advertises only that device and ORT cannot bind another.",
+                capables[idx].info.name,
+                capables[idx].info.index,
+                capables[pos].info.name,
+            );
+            idx
+        }
+        (Some(physical), Some(pos)) => {
+            log::info!(
+                "§6.5 index spaces: no device was named for this session, so it follows ORT's \
+                 binding: '{}' (physical enumerate index {physical}, best-first selector index \
+                 {pos}); the best-score default would have been selector index {idx}. Following \
+                 ORT keeps one VkDevice and reports alloc_device_frame = SHARED.",
+                capables[pos].info.name,
+            );
+            pos
+        }
     };
 
     let capable = capables.swap_remove(idx);

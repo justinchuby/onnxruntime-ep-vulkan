@@ -412,7 +412,7 @@ baked push constants at Compile time.
    DynKernelRecipe { node_desc, spec } is stored on CompiledKernel.
 
 2. dispatch_ort pre-pass (Steps 1.5/1.6): reads GetTensorSizeInBytes for 0-size inputs,
-   then ead_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
+   then read_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
    for each dynamic kernel input slot, re-runs translate via ShapeOnlyRecorder to capture
    push_constants, workgroups, spec_constants, shader, and output TensorDescs.
 
@@ -424,7 +424,8 @@ Command buffer is already re-recorded on every Compute call. Dynamic path adds o
 
 **D-S18-03 — ENGINE_ACCEPTS_RUNTIME_EXTENTS flipped**
 Three tests in ops/common/claim.rs updated to reflect new baseline (	rue not alse).
-Test untime_extent_support_is_a_single_switch updated; symbolic_shape_is_tagged_dynamic_shape
+Test 
+untime_extent_support_is_a_single_switch updated; symbolic_shape_is_tagged_dynamic_shape
 and symbolic_extents_are_accepted_once_extents_are_runtime_parameters both updated.
 
 **Cross-owner edits (flagged to coordinator):**
@@ -1428,4 +1429,590 @@ Decisions: switch-sec65-closed.md, switch-phase-containment-niobe.md,
 switch-validation-control-trinity.md. clippy clean, cargo test --lib green, committed on
 squad/switch, not pushed.
 
+## Session 37 — 2026-08-01 — the GEMV column tile, and the Intel gap separated from the hardware
+
+Merged origin/main (efbf18c) into squad/switch — clean, 33 files, brought in Niobe's
+gpu_steady_tail, bench/exec_census.py, Mouse's ops/indexing.rs, the new gather and
+simplified_layer_norm shaders. First committed the interrupted prior session's index-space WIP as
+24aeb9d so the merge had a clean base.
+
+TASK 1 — q_gemv_matmul_nbits_f16.
+
+Built my own instrument first: bench/results/probe_gemv.py runs the traced phi35 worker,
+reconstructs per-inference GPU busy from the gpu_ns device timestamps, feeds Niobe's
+phases.gpu_steady_tail, and prints per-kernel totals. Three terminal states. I did NOT score
+against Niobe's number — Mouse re-scored one of his own predictions yesterday and found he had
+scored against a figure Morpheus gave him rather than one he measured. Measured my own baseline at
+my own commit: 40.202 ms/inference, kernel 254.77 us. Niobe had 40.201 / 253.4. Independent
+agreement is the only reason I trust either.
+
+PREDICTION, stated before building: kernel 254.8 -> ~105 us; total GPU busy -> ~18 ms, range 14-25.
+
+Rewrote the kernel around a QB_COLS column tile (spec constant id 4, max 8): one workgroup computes
+8 adjacent output columns with the column loop INSIDE the activation load, so A[m][0..K) is fetched
+once and reused. Four supporting changes: workgroup size now DIVIDES blocks_per_col instead of
+covering it (at K=3072 the old rule took 128 invocations and idled 32 of them at all seven
+barriers); scale hoisted out of the element loop; load_a2() returns both fp16 lanes from one
+unpackHalf2x16; paired non-atomic store replacing atomicAnd+atomicOr. No subgroup intrinsic added,
+no subgroup size baked — lavapipe reports 8 where both local GPUs report 32.
+
+MEASURED, matched instrument (24 iters, both STEADY, both verdict MATCH):
+  RTX 4060 baseline  40.390 ms/inf  STEADY n=23 RSD 0.294%  q_gemv 244.09 us
+  RTX 4060 tiled     12.294 ms/inf  STEADY n=13 RSD 0.099%  q_gemv  65.36 us
+  = 3.29x total GPU busy, 3.73x on the kernel.
+  Iris Xe baseline   q_gemv 3804.85 us  NO_STEADY_TAIL
+  Iris Xe tiled      q_gemv  468.32 us  NO_STEADY_TAIL   = 8.1x on the kernel.
+
+I beat my own prediction (18 ms predicted, 12.294 measured). Scoring honestly: I underestimated the
+tile's reuse benefit, and I had not anticipated that removing the idle-invocation barrier stalls was
+worth a separate ~1.5x on its own.
+
+Two instrument lessons, both of which changed a number I would otherwise have reported wrong.
+First, at 14 iterations the tiled build reported a median of 13.610 ms; at 24 iterations the same
+build reported a STEADY tail of 12.294. The faster the build the longer the ramp takes in
+INFERENCES, so a fixed iteration budget under-reports fast builds. Second, I therefore re-ran the
+BASELINE at 24 iterations too rather than compare across instrument settings — it was flat (40.390
+vs 40.202), but the ratio I would have quoted was wrong until I checked.
+
+TASK 2 — the 13.5x Intel gap.
+
+Raw Intel ratios are not admissible: my two runs of the SAME build differed 2.65x (468.32 us quiet,
+1240.43 us contended). But in the contended run gqa_f16 moved 217.55 -> 563.78 us and
+skip_simplified_layer_norm_f16 moved 58.14 -> 117.51 us — neither is mine and neither changed.
+Contention is common-mode across the frame; a design change is not. So I normalised our kernel by
+an untouched control kernel measured IN THE SAME RUN. Check that it works: the contended and quiet
+runs agree to ~10% on both control ratios while their raw q_gemv figures differ 2.65x.
+
+q_gemv/gqa_f16, same run:
+                                    NVIDIA   Intel   Intel excess
+  baseline                            6.97   19.89      2.85x
+  arithmetic + wg sizing (COLS=1)     3.71   10.64      2.87x
+  + column tile (COLS=8)              1.62    2.20      1.36x
+
+So 2.85x of the gap was OUR DESIGN, hardware absorbed by the control. The arithmetic changes were
+device-neutral (2.85 -> 2.87 unchanged); the TILE is the entire portability fix. Mechanism: the
+baseline re-read the whole activation row per output column and ran one full barrier + shared-memory
+reduction per output column — both paid where Xe-LP is weakest relative to its ALU (68 GB/s of
+shared LPDDR4x, and barrier throughput). NVIDIA had the bandwidth to hide it. That is the shape of a
+kernel tuned on the machine it was written on.
+
+Hardware bracket: 8.8x ALU, 4x bandwidth -> a memory-bound kernel belongs in [4x, 8.8x]. Baseline
+raw ratio 15.6x sat OUTSIDE it; tiled ~7.2x sits INSIDE. Contention explains the Intel variance; it
+cannot explain the level, because the level moved 8.1x from a pure kernel change on an equally busy
+box.
+
+NEGATIVE RESULT, and it was my leading hypothesis: forcing the global-atomic store back on Intel
+moved the kernel 468.32 -> 465.18 us. Within noise. The atomics were not a bottleneck on either
+device. Kept the paired store because it is free, not because it was measured to pay.
+
+Incidental: the Intel COLS=1 ablation reported STEADY (388.943 ms, n=15, RSD 1.38%). Intel CAN
+settle. The runs that would not settle were the FAST ones — host jitter is large relative to a short
+frame — which points at the per-inference span reconstruction rather than the iGPU clock. Passed to
+Niobe.
+
+TASK 3.
+
+(1) Index spaces. Selector 1 was still SPLIT-DEVICE. I first tried making ORT's binding
+authoritative — and caught my own regression: it silently relocated --device 1 onto NVIDIA while
+still reporting MATCH and 161 claimed nodes. ONLY THE TIMING EXPOSED IT (12.457 ms and NVIDIA-shaped
+per-kernel means from a run labelled Intel). An unattributed result wearing a MATCH is worse than a
+reported split frame, and Intel is the spec-conformance oracle. Reverted. The fix that works is
+devices_to_advertise(): when the env var is set it is a PIN and only that device is advertised, so
+ORT cannot bind another and the two spaces become ONE rather than being translated between. It can
+only key off the env var because ep.device_index is read in CreateEp, after GetSupportedDevices.
+Precedence shipped: explicit selector > ORT binding > best score, divergence logged naming both
+spaces, SPLIT-DEVICE left able to fire. Verified (R10, content varies with input): selector 0 ->
+SHARED / "NVIDIA GeForce RTX 4060 Laptop GPU", selector 1 -> SHARED / "Intel(R) Iris(R) Xe
+Graphics", authoritative spans now the integer 0 on both where selector 1 was UNOBSERVABLE.
+Note for the team: phi35.py sets the ep.device_index SESSION OPTION, not the env var, so the harness
+does not get the pin.
+
+(2) Leaked-device validation gate written up: the production VkDevice is never destroyed, so the
+validation layer's teardown report never runs, so "0 validation errors at shutdown" cannot observe a
+leak AND passes. R12 says UNOBSERVABLE, never 0; R13 says ERROR(instrument), never a detection.
+Criterion 3 must not be certified by it. ep_messenger_fires_for_planted_fence_leak is unaffected —
+it builds and destroys its own Instance+Device, which is the correct model.
+
+(3) Reconciled the 70% spread with Niobe rather than re-deriving. Not a disagreement: my baseline
+series shows gpu_steady_tail discarding 5 leading samples at ~49.58 ms before a step to a flat
+~40.2. That ~49.6 regime is the ramp; her 0.033% describes the post-ramp regime only and the
+instrument says so. My 49.4 and 58.5 were means across regimes; my 83.8 and 71.0 were the contention
+window Morpheus has since shown inflated the whole suite. I withdraw the 70% spread as a statement
+about kernel variability — it was ERROR(instrument) on my side, a missing regime gate, not a
+detection of GPU instability. My series independently reproduces both her step and her level.
+
+Validation: cargo fmt clean, clippy clean, cargo test --release --lib 416 passed 0 failed 2 ignored.
+All probe output to bench/results/, nothing in the repo root.
+
+Decisions: switch-gemv-column-tile.md, switch-intel-gap-separated.md,
+switch-leaked-device-validation-unobservable.md, switch-kernel-spread-reconciliation-niobe.md,
+switch-index-space-unified-by-single-offer.md. Committed on squad/switch, not pushed.
+
+## Session 38 — 2026-08-01 — packed 128-bit loads, and the Intel residual closes
+
+Merged origin/main (5eda83b — Fact Checker's docs/PERF.md and his hardware-clock decision record).
+
+Coordinator relayed three Fact Checker findings: bandwidth predicts only 3.08x of the 13.52x Intel
+gap leaving a 4.39x residual that is ours; Intel's 52.0833 ns/tick counter is reference-clock based
+and trustworthy so NO_STEADY_TAIL means busy-box not broken-clock; and packed loads plus multiple
+accumulators are a stronger gap than the no-subgroups constraint. He asked for a controlled A/B
+rather than an assumption.
+
+Note: the relay was timestamped 08:22 and re-listed the three "still owed" items, but all three had
+been closed at 09:08-09:14 in session 37 (index spaces verified SHARED on both selectors with the
+device NAME varying by selector; leaked-device UNOBSERVABLE record; Niobe reconciliation). Confirmed
+rather than redone.
+
+PREDICTION, stated before building: NVIDIA 12.294 -> 11.3 ms total (range 10.5-12.3), kernel 65.36
+-> 58 us; Intel kernel 468.32 -> 310 us (range 250-420). Reasoning given in advance: NVIDIA was
+already ~70% of peak bandwidth so little to get, Intel is where narrow scattered loads cost most.
+
+CHANGE. InB is now declared uvec4[]. When the (column, block) blob is a whole number of 16-byte
+units — spec constant QB_PACKED id 5, from gemv_packed(bits, block_size) — the kernel takes ONE
+128-bit load per blob instead of four dependent 32-bit ones, and feeds the four components into four
+INDEPENDENT accumulators instead of one serial chain. Two non-optional details: Allocator::alloc now
+rounds every buffer to a multiple of 16 bytes, because a runtime-sized uvec4[] only covers
+floor(size/16) elements and an unpadded buffer leaves a trailing partial element the shader must
+never touch; and the activation array is filled by loops with LITERAL bounds written out per
+bit-width, because my first version derived the bound from a spec constant, the driver did not
+promote the array to registers, and the kernel got SLOWER. I caught that from a normalised ratio
+going the wrong way (1.95 vs 1.62), not from a crash.
+
+THE A/B. The box would not go quiet — I polled 25 minutes and never got six consecutive samples
+under 20%, the same wall Niobe hit. Two runs taken under load disagreed with each other (normalised
+1.95 then 1.29) with gqa_f16 inflated 4.2x, beyond the range where I had validated common-mode
+cancellation; per R13 that is ERROR(instrument) and I refused to score it. Instead I added a runtime
+override, ONNXRUNTIME_EP_VULKAN_GEMV_PACKED, purely so the two arms can be INTERLEAVED without a
+rebuild, and ran paired reps with the untouched gqa_f16 reported per arm.
+
+  NVIDIA, 3 pairs, controls stable 40.3-41.7 us, all MATCH:
+    packed 66.44 / 64.39 / 66.09   scalar 69.19 / 72.35 / 69.22   = 1.07x
+  Intel, 2 pairs:
+    packed 292.34 / 298.74         scalar 404.94 / 458.91         = 1.385x / 1.327x
+
+The gains are real and disproportionately Intel's, which is what a bandwidth-bound kernel on a
+narrow memory pipe predicts. Fact Checker's hypothesis confirmed rather than merely consistent.
+
+MEASURED, both STEADY, both MATCH, device timestamp counter:
+  RTX 4060   11.567 ms/inf   STEADY n=7 RSD 0.224%   kernel 64.91 us
+  Iris Xe    56.881 ms/inf   STEADY n=5 RSD 1.529%   kernel 297.15 us
+
+First STEADY Intel figure for a fast build on this project. Predicted 11.3 (met, in range) and 310
+us on Intel (met — 292-299 in the A/B, 297.15 final). On NVIDIA I predicted 58 us and got ~65: I
+OVER-PREDICTED the NVIDIA gain, in exactly the direction my own roofline argument had warned. I
+should have trusted the argument over the round number.
+
+THE FINDING. Fact Checker's falsifier was "close the gap and Intel lands near 3x". It does not — it
+lands at 4.58x (297.15/64.91). But in those same two runs gqa_f16, which I have never touched, lands
+at 4.46x (172.86/38.80). So the bandwidth-only model has a ~1.49x blind spot that is COMMON TO ALL
+KERNELS on this machine pair — hardware/driver, not our design. Our kernel is now within 3% of what
+an independently written kernel achieves on the same two parts.
+
+Design-attributable excess, q_gemv/gqa within the same run, across three commits:
+                    NVIDIA   Intel   excess
+  baseline            6.97   19.89    2.85x
+  + column tile       1.62    2.43    1.50x
+  + packed loads      1.67    1.72    1.03x
+Closed, not reduced — 1.03x is inside the control's own run-to-run spread. Proposed back to Fact
+Checker as a refinement: bandwidth is the right predictor, but the right FALSIFIER is a control
+kernel on the same two parts, not the ratio of datasheet bandwidths, because holding a kernel to
+3.08x demands 1.49x that no kernel on this machine achieves.
+
+Cumulative over sessions 37-38: NVIDIA 40.390 -> 11.567 ms GPU busy (3.49x), kernel 244.09 -> 64.91
+us (3.76x); Intel kernel 3804.85 -> 297.15 us (12.8x).
+
+SHARED MEMORY, asked directly so answered with the number: q_gemv requests shared float red[1024] =
+4096 bytes, FIXED. Sized by a literal rather than by local_size_x*QB_COLS precisely so the
+requirement is a static property of the module; gemv_cols clamps wg*cols <= 1024 to keep that true.
+4 KiB against Intel's 32 KiB is not an occupancy constraint and there is no 48 KiB assumption
+anywhere to lose. Eliminated as a suspect.
+
+No subgroup intrinsic added — Fact Checker's finding that packed loads are the stronger gap is why
+none was needed.
+
+Validation: fmt clean, clippy clean, cargo test --release --lib 418 passed 0 failed 2 ignored.
+Decision: switch-packed-loads-residual-closed.md. Committed on squad/switch, not pushed.
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+## Session 39 — 2026-08-01 — the allocator adopts by identity; Tank was right that selector 0 was luck
+
+Merged origin/main (20cb57b). Relay again arrived stale (09:53) re-listing items closed at 09:08-09:14
+and the packed-load work delivered at ~11:05 as 538db70; confirmed rather than redone.
+
+TANK'S FINDING, AND MY ERROR. He showed the allocator asks for factory index 1 on BOTH selectors —
+it never follows the selector at all. On selector 0 the session also offers index 1, they coincide,
+frame reads SHARED. On selector 1 the session offers 0, they diverge, SPLIT-DEVICE. So my §6.5
+closure on selector 0 was correct about the TYPE transition (UNOBSERVABLE -> integer 0) and wrong
+about its meaning: two independent index choices agreed on this desk. Swap the GPUs and selector 0
+breaks instead.
+
+Worse, my session-37 "both selectors SHARED" verification was not the disproof it looked like. I ran
+it with ONNXRUNTIME_EP_VULKAN_DEVICE set, and that pin advertises exactly one device, which FORCES
+the agreement. It hid the defect on the one path the harness actually uses (ep.device_index session
+option). A verification that only exercises the configuration in which the bug cannot appear is not
+a verification — that is the same mistake as R11's "every child of record was named, so it looked
+closed".
+
+MECHANISM. The allocator's index is the memory-info id of whichever OrtEpDevice ORT bound — constant
+across our selector. The session's is the physical index our selector opened — varies with it. No
+arithmetic relates them. ensure_registered looked the offer up by the allocator's index and on a
+miss STOOD UP ITS OWN SECOND VkDevice. That fallback is the defect, not the report.
+
+FIX, by construction and not by index-swapping. §6.5 gives the EP exactly one VkDevice per (physical
+device, EP instance) and acquire_ep_device makes it process-global — so when exactly one device is
+on offer, a missed index is a naming disagreement between two spaces, not evidence of a second
+device. New pure rule resolve_offer: Exact / SoleDevice (adopt, SHARED) / NoOffer / Ambiguous.
+SPLIT-DEVICE stays reachable for the last two — a detector that can no longer fire is worth less
+than the defect it reported. I deliberately did NOT chase selector 1: per Tank, "a fix that only
+makes selector 1 pass on this box is the same coincidence with a different index."
+
+FALSIFIERS. (1) a_missed_index_resolves_by_identity_in_both_directions asserts resolve_offer(1,[0])
+and resolve_offer(0,[1]) resolve IDENTICALLY — his construction test written down. Any fix that
+special-cases a direction passes one and fails the other. (2) The runtime artifact taken on the path
+that was actually broken — env pin OFF, device chosen by session option, exactly his configuration:
+  allocator_index = 1, session_devices = 0=Intel, frame = SHARED, device = Intel Iris Xe
+The indices DISAGREE and the frame is SHARED anyway. That is the point: shared because identity
+settled it, not because two choices agreed. Same configuration produced SPLIT-DEVICE before.
+
+Flagged to Tank rather than edited (counters.rs is his): alloc_device_frame_sides now says "BOTH
+sides are on the same VkDevice: 'Intel Iris Xe' (factory device index 1)" while the session offered
+that device under index 0. Device right, parenthetical names the other space — suggest it name both,
+since the whole finding is that one number cannot stand for both.
+
+Wrote docs/ENGINE.md §2.0 "Why device indices keep going wrong here" as asked: four defects of one
+shape, the structural cause — a physical device is named by four independent authorities
+(vkEnumeratePhysicalDevices order, our best-first sorted list, position in the advertised list, and
+ORT's bound memory-info id) and ALL FOUR are a bare usize, so the compiler cannot tell them apart
+and any two compare without complaint — plus the two rules: a frame that agrees is not a frame that
+is correct, and prefer resolving by identity over reconciling by arithmetic.
+
+Validation: fmt clean, clippy clean, cargo test --release --lib 425 passed 0 failed 2 ignored.
+Decision: switch-allocator-adopts-by-identity.md. Committed on squad/switch, not pushed.
+
+Still open and mine: transfer.rs::device_buffer_for binding, so alloc_device_authoritative_spans and
+alloc_device_buffer_binds can leave 0. Tank delivered the transition, not the feature, and said so.
+
+### Session 39b — the engine binds, and pays the mirror what it now owes
+
+Relay item 3: transfer.rs::device_buffer_for had NO production caller, so alloc_device_buffer_binds
+was an honest 0 and device-backed allocation was a cost with no saving. Tank: "I delivered the
+transition, not the feature, and the artifact says which."
+
+WHAT I BUILT. New Step 1a in dispatch_ort, before the host resolution: ask
+vk::host_device_memory::bind_target_for for each input; when it answers, bind that VkBuffer as a
+borrowed ref and skip BOTH the allocation and the upload. Ordering matters — Step 1b overwrites
+input_cpu_ptrs[i] with the staging address, so after it there is no handle left to classify.
+
+bind_target_for declines rather than assumes, three ways: (1) the span must have a VkBuffer; (2) the
+frame must be SHARED — binding across two VkDevices is undefined and would APPEAR TO WORK on a UMA
+part, which is the worst way for it to fail; (3) offset must be 0 and offset+len <= size, because
+vk::pipeline writes every VkDescriptorBufferInfo at offset 0, so an interior pointer cannot be
+expressed and binding at 0 for one would read the neighbouring tensor the planner put at the base
+of the span. Declining costs one upload. Assuming costs correctness, silently.
+
+THE OBLIGATION, IN THE SAME CHANGE. Endpoint's doc justified staging staying authoritative BECAUSE
+the session reads inputs and writes outputs through host_backing_for. Bind the inputs and that
+asymmetry stops being a design note and becomes a staleness bug: a span written as an output through
+staging, then read as an input through its device buffer, is read stale — and stale-but-plausible is
+the failure mode that survives a smoke test. So write_outputs_to_ort now calls the new
+transfer::mirror_to_device. CopyTensors already mirrors every copy into a handle; this is the same
+duty for the one writer that did not go through it.
+
+COUNTING AT THE BIND, NOT THE RESOLVE. device_buffer_for no longer tallies; it returns a
+DeviceBinding that now carries the DEVICE INDEX, because a caller given only the view could bind
+across devices. A resolve that is then declined is not a bind, and a counter that inflates on the
+flattering side is the failure this project keeps repeating.
+
+MEASURED — three configurations, probe_sec65.py, outputs verified per session:
+  dev0 NVIDIA DEVICE_MEMORY=1  frame SHARED  binds 6  uploads 9  session_device_allocs 15  OK x3
+  dev1 Intel  DEVICE_MEMORY=1  frame SHARED  binds 6  uploads 9  session_device_allocs 15  OK x3
+  control     DEVICE_MEMORY off frame OFF    binds 0  uploads 0  authoritative UNOBSERVABLE  OK x3
+
+alloc_device_buffer_binds HAS LEFT 0 — 6 = 2 device-backed inputs x 3 sessions, on BOTH devices.
+Two corroborating movements make this an R10 wiring artifact rather than an incremented counter:
+session_device_allocs fell 21 -> 15, exactly the 6 allocations the session no longer makes, in a
+counter Tank owns and I did not touch; and alloc_device_uploads rose 6 -> 9 (6 MiB -> 9 MiB), the
+three new output mirrors — the obligation is observable, not asserted.
+
+WHAT I AM NOT CLAIMING. alloc_device_authoritative_spans is STILL 0 on both devices with 9 residency
+evaluations, and I am not moving it by argument. A span stops being a mirror when it stops having
+host staging, and staging is still there because every unbound path — outputs, interior pointers,
+SPLIT-DEVICE, the whole default build — reads through it. Binding inputs is necessary, not
+sufficient. Tank's screen is measuring the right thing and reporting 0 because 0 is the answer.
+M1's residency criterion stays open; what closed is the precondition.
+
+Regression check on the real model, NVIDIA, device memory off: verdict MATCH, gpu_steady_tail
+STEADY, 12.183 ms/inference GPU busy (n=20, RSD 0.103%), q_gemv 62.18 us mean, 80.66% share. The
+shipped default is provably inert — both new call sites take their early return when no registry
+exists.
+
+TESTS. an_engine_write_to_staging_is_pushed_to_the_device_mirror asserts the provider received the
+bytes the engine wrote AT THE SPAN OFFSET (256), not at 0. a_host_output_is_not_mirrored_and_is_not
+_an_error pins the shipped default to Ok(false) rather than an error that would fail every
+inference in the configuration actually released. Both go through a new mirror_in taking an explicit
+registry map, because the public entry reads factory::all_registries() which is empty under cargo
+test — my first attempt passed by taking the early return and proved nothing, which is R10 biting me
+in my own test. 426 passed, 0 failed.
+
+Also fixed a duplicate #[test] attribute I left on gemv_packed_tracks_the_blob_and_not_the_block in
+session 38 (clippy duplicate_macro_attributes), and its doc comment which had been copied from the
+test above it.
+
+Decision: switch-engine-binds-device-buffers.md.
+
+### Session 39c — both clocks from one trace: the discrete GPU ignores contention, the integrated one does not
+
+Coordinator relay: the machine cannot be quiet while agents run — it is his own orchestration, two
+copilot processes at ~11,700 s CPU on a 20-core box — so wall clock is structurally unavailable. The
+one finding that survived Niobe's refusal was HOST_SIDE_EXCURSIONS: host spread >= 2.0x against GPU
+spread <= 1.25x for repetitions of identical work. He asked me to check whether my 70% spread was
+host-side before looking for a GPU-side explanation.
+
+BUILT probe_hostgpu.py. One trace carries BOTH clocks for the same work: vulkan.subgraph dur is the
+host axis, gpu_ns is the device counter attributed ordinally (never by timestamp — the anchor
+reaches 314 ms of uncertainty on Intel). Summing each per inference gives a PAIRED series over
+identical work in one process, so the ratio is contention-invariant in the same sense his signature
+is. Inference 0 reported separately, never averaged in — folding a known regime into a "spread"
+lets one known event stand in for variability. Re-runnable over any existing trace; needs no new run,
+which matters when no run can be quiet.
+
+RESULT 1 — the cold excursion is ENTIRELY host-side. NVIDIA cold host 1619-2192 ms against cold GPU
+12.2-12.8 ms with warm GPU 12.0-13.8. Intel cold host 1443-2456 ms against cold GPU 55-75 with warm
+55.6-83.9. The first inference costs 1.4-2.5 SECONDS of host and essentially nothing extra on the
+device. Pipeline/shader compile is host work. That is the extreme HOST_SIDE_EXCURSION, fully
+accounted for on both parts.
+
+RESULT 2 — warm spreads, host vs GPU, SAME inferences. 15 traces, 3 builds, 2 devices.
+  NVIDIA host/GPU ratio: 1.13 1.10 2.07 0.93 1.52 1.34 1.43 1.23 2.27   median 1.34
+  Intel  host/GPU ratio: 1.05 1.01 1.01 0.98 1.14 1.01                  median 1.01
+On the discrete part the host spread EXCEEDS the GPU spread, up to 2.27x. On the integrated part
+they are equal to within 1-5% in ALL SIX runs. The iGPU's device clock inherits host contention
+essentially 1:1; the discrete part's does not. I independently reproduce his signature — ab_p0_r1
+(host 2.260 / GPU 1.091) and bindseam (host 2.499 / GPU 1.099) both clear >=2.0 against <=1.25.
+The one NVIDIA ratio below 1 is ab_p0_r2, a single isolated inference at 19.705 ms against a body of
+13.83 +- 0.02 — a real one-off device excursion, not spread.
+
+RESULT 3 — between-run reproducibility of the steady tail, same build, separate processes.
+  NVIDIA baseline (2): GPU 1.0047x  host 1.017x
+  NVIDIA p0 arm  (3):  GPU 1.0016x  host 1.170x
+  NVIDIA p1 arm  (3):  GPU 1.107x   host 1.066x   <- contains a device step 13.33 -> 12.05 whose
+                                                     ONSET INDEX VARIES (14, 10, 13). A power/clock
+                                                     regime change, and exactly why gpu_steady_tail
+                                                     refuses two of the three. Instrument correct.
+  Intel  p0 arm  (2):  GPU 1.117x   host 1.109x
+  Intel  p1+final(3):  GPU 1.027x   host 1.090x
+NVIDIA steady device time reproduces ACROSS PROCESSES to 0.16-0.47% while the host number for the
+same runs moves up to 17%.
+
+CONSEQUENCE. NVIDIA device-clock numbers do not need a quiet machine; Intel ones do; wall clock
+needs it on both. This is why Niobe gets 0.033% RSD on NVIDIA and NO_STEADY_TAIL on Intel from one
+instrument — neither is a defect and neither needs a workaround. Fact Checker is right that the tick
+is trustworthy and the work-per-tick is not; this quantifies the second half at 1.01 coupling.
+
+THE RECONCILIATION, THIRD ASKING, NOW WITH DATA. His hypothesis is FALSIFIED for my number: 49.4/
+83.8/71.0/58.5 were gpu_ns figures, not host. Worth checking anyway, because the phenomenon it names
+is real and is 100% of the cold excursion. What the data does say:
+ (1) 49.4 IS THE RAMP LEVEL, not a run. Two independent baseline traces both show 49.58/49.59 before
+     a step to 40.2. I reproduce 49.4 to within 0.4%.
+ (2) The ramp LENGTH is not reproducible: 5 inferences in one process, 3 in the other, same build,
+     same box. So any whole-run mean lands somewhere on [40.2, 49.6] by where the ramp ended. That
+     is an estimator property and it is what gpu_steady_tail exists to refuse.
+ (3) The steady level reproduces to 0.47%. Her 0.033% within-run and my 1.0047x between-run are the
+     same claim about the same regime. There was never a disagreement to settle.
+ (4) 83.8 and 71.0 exceed EVERYTHING in a 15-trace corpus across three builds, two devices and two
+     orders of contention. I cannot reproduce them and I will not explain them by argument. That run
+     had MATCH and claimed_nodes 353 but NO executed_by key — UNATTRIBUTED under Trinity's
+     _verdict.py, which now refuses that shape at construction. Terminal state INADMISSIBLE, not
+     explained, and it always was.
+I withdraw "70% spread" permanently. Its device-side content is a 1.233x ramp step with varying
+onset; the rest is an inadmissible run and a mean taken across two regimes.
+
+WHERE THE NEXT WIN IS, AS A BOUND. NVIDIA GPU busy is 12.18 ms/inference after tile+packed. In the
+same runs the LEAST CONTENDED single inference had a host span of 28.3 ms. Host is inflated by
+contention and GPU is not, so this is a bound in one direction only and I state it as one: the host
+span exceeds GPU busy by AT LEAST 2.3x even in the quietest inference measured. After a 3.49x kernel
+win the EP is host-bound on this machine by at least that factor, and the next order of magnitude is
+not in q_gemv. This is the point at which his offer to idle the team is worth taking — not to
+re-measure the kernel, which provably does not need it, but to find out whether that >=2.3x is
+contention or ours.
+
+Checked the Scribe deletion: all five of my earlier records are present in decisions.md (Switch
+attributions at lines 42, 55/62, 121, 194 — including switch-leaked-device-validation-unobservable,
+which is relay item 4 and is already merged, not owed). Nothing of mine was lost; nothing resubmitted.
+
+Decision: switch-host-gpu-decoupling-measured.md.
+
+## Session 42 — 2026-08-01 — counts over clocks; the index space closes; the A/B does not
+
+Merged `origin/main` (`16f40ef`), which brought Niobe's `bench/device_state.py` certification gate.
+
+**Relay #7's four asks, and where each landed.**
+
+**1. Packed loads restated in counts — DONE (`7a1d12f`).** `bench/results/probe_gemv_counts.py`
+compiles `q_gemv.comp`, freezes the spec constants per arm, optimizes, and walks the SPIR-V
+def-use graph from the `inb` variable to every load reaching it. The load *type* is the claim:
+`%uint` (4 B) unpacked, `%v4uint` (16 B) packed, so **4 loads per 16-byte blob become 1**. From
+the ONNX graph: **161 MatMulNBits nodes** (matching the trace's 161 dispatches — two instruments
+sharing no code agreeing on one integer), **116,324,352 blobs/inference**, so **465,297,408 ->
+116,324,352 InB load instructions**. Byte model: weights 1775.0 MiB + scales 221.9 MiB
+(irreducible) + **activations 887.5 MiB, 30.8%, ours** — total 2884.3 MiB against 9096.7 at
+`QB_COLS=1`, a **3.15x** count-derived reduction where the tile measured 3.73x on the clock.
+Shared memory struck off the Intel candidate list by count: 4 KiB requested, 12% of Intel's 32 KiB,
+sized by a literal so it cannot move with the tile.
+
+**I demoted half of my own `538db70` claim.** The four 32-bit loads do NOT depend on each other
+and can all be in flight; only the four `bacc[c] +=` updates are serialized. Accumulator RMW per
+blob 4 -> 1, serial FP adds on the critical path 4 -> 3. Real, countable, nowhere near 4x. The
+byte model also predicts packed loads move **zero bytes**, so their ceiling on a bandwidth-bound
+kernel is small — consistent with the 1.06x measured, and it should be shown to anyone claiming
+more.
+
+**Instrument self-defect, caught before publishing.** First version reported the same census for
+both arms: glslc emits `if (QB_PACKED == 1u)` as an `OpSpecConstantOp`, which `--freeze-spec-const`
+does not fold and dead-branch elimination will not look inside, so both arms compiled identically.
+A perfectly stable, perfectly wrong answer — the same shape as `STEADY` at 21.4x. Fixed with
+`--fold-spec-const-op-composite`; `arms_must_differ` now refuses a census whose arms agree.
+
+**2. Certified NVIDIA A/B — ATTEMPTED THREE TIMES, NOT OBTAINED.** All three committed with
+companions (`06c1242`): `ab_p0_r1` FOREIGN_GPU_WORK -> **WITHHELD**; `ab_p1_r1` and `ab_p1_long`
+**SOLE_TENANT** (0% of 134 and of 327 samples) but `MARGINAL_TAIL` -> **UNCERTIFIED**. **The last
+two are the finding: the box WAS quiet and the figure is still uncertifiable**, so tenancy and
+certifiability are different properties and idling the squad would not have bought a number.
+What refuses them is the board's clock — median SM 210 MHz, median util 0%, median power 2.9 W,
+brief 2010 MHz excursions against 3105 max. Our EP is host-bound, so the board never holds boost
+and the series drifts (74 -> 19.6 ms over one run), failing the coverage floor. **The duty-cycle
+mechanism again, now blocking certification instead of inflating an archive.** No median quoted.
+
+**3. What 1.03x established — my read is in the reply and in the records.** Short version: the raw
+medians are UNCERTIFIED; the control-kernel ratio (`q_gemv/gqa_f16`, 1.716 NVIDIA vs 1.727 Intel)
+is a *within-run* quantity that a clock change scales on both sides, so it survives without a
+device-state companion. The coordinator's two Intel `NO_STEADY_TAIL` arms neither confirm nor
+refute it — they are an absence.
+
+**4. Index space by artifact on BOTH selectors — CLOSED (`06c1242`).**
+`bench/results/probe_indexspace.py`. Criterion a coincidence cannot satisfy: the allocator index
+must **differ** between selectors and match the session's offered index in each. Result:
+selector 0 `allocator_index='1'` offered `1=NVIDIA`; selector 1 `allocator_index='0'` offered
+`0=Intel`; **both SHARED; verdict ONE_INDEX_SPACE.** Pre-fix it was `'1'` on both.
+**`alloc_device_buffer_binds = 6` on both selectors** — Tank's counter has left 0 and
+`device_buffer_for` is invoked. `alloc_device_authoritative_spans` stays 0 by design (all 9 spans
+still mirrored). Added the two-armed-artifact rule to `ENGINE.md` §2.0.
+
+**Inadmissible today, labelled:** every GPU-busy figure I touched this session. Nothing from
+`ab_p0_r1`, `ab_p1_r1` or `ab_p1_long` is quoted. Note my uncertified archive is now positively
+suspect: today's flat suffix sits near 19.6 ms where the archive says 11.5, at a lower peak clock.
+That distrusts the archive; it does not license quoting 19.6.
+
+**Next step, for a reader with no memory of this session.**
+1. **Do not chase a certified NVIDIA figure by waiting for a quiet box.** It is already quiet and
+   still refuses. Either get `nvidia-smi --lock-gpu-clocks` + an elevated shell (blocked on
+   Justin), or change the harness so the GPU holds boost — the latter is in our hands and is the
+   better first move. The gate is correct in all three runs; do not touch it.
+2. **The next kernel change should be chosen by the byte model, not by a clock.** Weights and
+   scales are irreducible; **activations are 30.8% of traffic and ours**. Raising `QB_COLS` past 8
+   needs a bigger register budget or a shared-memory activation tile — and shared memory is at
+   4 KiB of a 32 KiB Intel budget, so there is room. Predict the byte reduction from
+   `probe_gemv_counts.py` first; it was accurate to 18% for the column tile.
+3. Decision records filed: `switch-packed-loads-in-counts.md`,
+   `switch-sole-tenant-is-not-certifiable.md`, `switch-index-space-one-space.md`.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+
+   `switch-sole-tenant-is-not-certifiable.md`, `switch-index-space-one-space.md`.
+
+---
+
+## Session 43 — 2026-08-01 — the two owed items: the leaked-device cost, and the frame reconciliation
+
+Both delivered. Neither needed the GPU, which was the point (three agents measuring concurrently).
+
+### 1. The 70% spread vs the steady tail — `SAME_FRAME_ORDERED_SELECTION`
+
+Artifact: `bench/results/probe_frames.py` + `bench/results/frames.json`.
+
+The coordinator offered two cases (different frames both right / same frame one wrong). **Neither.**
+
+**Frames, read from source not names (R11):** Niobe's `busy_us[i]` (`phases.py:890-928`) is the sum
+of `gpu_ns` over every kernel span of inference i; her tail is a **suffix** of that series. My 70%
+(history.md:1401-1411) was gap-clustered per-submission sums over all kernels — **the same
+quantity**, taken over the **whole** series. Frames coincide. The difference is *selection*.
+
+**The decisive move was refusing to compare two numbers.** A single whole-RSD-vs-tail-RSD ratio is
+an anecdote. Instead: *does any run publish a tail figure AND carry a large whole-series spread?*
+Census over all 28 committed dev0 traces, calling Niobe's own functions:
+
+- 9 traces with whole-series RSD >= 30% -> **0 publish**. All NO_STEADY_TAIL or MARGINAL_TAIL.
+- 12 publishing traces -> max whole-series RSD **10.36%**.
+- Sets disjoint, gap 10.36% -> 34.39%.
+
+**My own 70% run is `trace_gemv_notile_dev0.json`: whole 73.22%, tail `NO_STEADY_TAIL`.** On the
+exact run that produced the figure, her instrument publishes nothing. There is no number of hers to
+disagree with mine. Falsifier retained: a trace with both properties returns `CONFLICT`.
+
+**Corrected the coordinator's per-kernel hypothesis.** He said "the variance averages out". Right
+direction, wrong mechanism, and the difference is useful. Steadiest trace: within one inference RSD
+**37.90%**, spread 10.1x, **3 discrete duration clusters**; same ordinal across inferences RSD
+**0.36%**. That is population heterogeneity across node shapes, not variance — there is nearly
+none to average. Averaging predicts sum RSD 37.90%/sqrt(161) = 2.99%; observed is far below, which
+is the signature of a *deterministic* spread.
+
+**Control, and it flips:** most-disturbed trace has the same within-inference structure (35.23%, 3
+clusters) but same-ordinal-across-inferences RSD **142.41%**. So **same-ordinal RSD is a per-kernel
+discriminator between a clean and a disturbed run (0.36% vs 142%) that the per-inference sum
+hides**, and it needs no cross-run clock comparison. Worth remembering — it may be the cheapest
+in-band disturbance check we have.
+
+**Bug I shipped and caught:** rev 1 hard-coded "heterogeneity, not variance" into the output string,
+then printed it over a contended trace whose numbers said 173% variance. *A conclusion that survives
+its own refutation is not a measurement.* Now derived (`HETEROGENEITY_DOMINATED` /
+`VARIANCE_DOMINATED`) and run on two deliberately chosen traces rather than whichever came first.
+The control above only exists because that bug forced it.
+
+### 2. The leaked device — cost priced, recommendation: **keep it**
+
+Mechanism was already recorded twice (decisions.md:62, and Trinity's frame split at :446-450). What
+was missing was the price and an explicit decision to pay it.
+
+**Cost is O(1) per physical device per process, not O(sessions)** — bounded in the types:
+`EP_INSTANCE` is one instance, `EP_DEVICES` one owner per physical index (`vk/device.rs:154-159`).
+Corroborated independently: device high-water FLAT ~3.907 GiB across 3 sessions (would be ~3x or
+OOM if it scaled). **The leaked thing is a device handle, not the memory the device allocates.**
+
+**The real cost is one lost observation window**: the layer reports leaks at `vkDestroyDevice`,
+which never runs on production, so any "0 validation errors at shutdown" gate is `UNOBSERVABLE`,
+never `0`. Bought back by the planted-leak positive control (owns and destroys its own device) plus
+Trinity's dispatch-window frame of record. **Accepted residual**, stated rather than papered over:
+a leaked object that never trips a dispatch-time VUID is not caught in-process; the compensating
+instrument is device high-water across sessions, which is weaker than the layer.
+
+**Recommendation: keep the leak.** The alternative is the use-after-free we fixed, not a cleaner
+shutdown. If anyone wants the window back, do it in a subprocess that owns its own device — do not
+un-leak production.
+
+### Records filed (absolute path to main's inbox; gitignored inside worktrees)
+
+- `switch-leaked-device-validation-cost.md`
+- `switch-two-frames-one-series.md`
+
+### Next step, for a fresh session with no memory of this one
+
+Nothing here is blocked. The open work is unchanged and is all GPU-bound, so it waits on a window
+where fewer agents are measuring:
+
+1. **The certified NVIDIA A/B for packed loads.** Attempted 3x in session 42, never obtained —
+   `SOLE_TENANT` twice and still `MARGINAL_TAIL` both times, so **tenancy is necessary but not
+   sufficient for certifiability**. The board sits at 210 MHz median because our EP is host-bound
+   and never holds boost. Do not quote the uncertified archive (11.5673 ms); today's flat suffix
+   read ~19.6 ms at a lower peak clock, which makes the archive *positively suspect*.
+2. **The packed-loads claim stands in counts** (session 42, `7a1d12f`) and does not need a clock:
+   465,297,408 -> 116,324,352 InB load instructions. That is the quotable form.
+3. **`gpu_steady_tail` under foreign GPU work** — still untested, still the right question, still
+   needs a window.
+4. Consider promoting the same-ordinal-across-inferences RSD (finding 1 above) into `phases.py` or
+   a probe as a first-class disturbance check. It is cheap, in-band, and discriminates 400x.

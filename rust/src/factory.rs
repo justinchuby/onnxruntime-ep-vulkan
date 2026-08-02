@@ -253,7 +253,7 @@ unsafe fn get_supported_devices_impl(
     // The capability gate. A machine with no Vulkan loader / no ICD / a broken driver yields an
     // empty list here — a warning and zero advertised devices, never an error status, so session
     // creation still succeeds on the CPU EP.
-    let usable: Vec<DeviceInfo> = engine::probe_devices();
+    let usable: Vec<DeviceInfo> = engine::devices_to_advertise();
     if usable.is_empty() {
         log::warn!(
             "VulkanExecutionProvider: no Vulkan device satisfies the capability gate on this \
@@ -603,6 +603,52 @@ impl Drop for MetadataBuilder {
 // EP lifecycle
 // -------------------------------------------------------------------------------------------
 
+/// The `vkEnumeratePhysicalDevices` index of the device ORT bound for this session.
+///
+/// **Why this is read at all.** Until now the compute session chose its own physical device from
+/// the selector while ORT independently bound whichever `OrtEpDevice` its policy preferred, and the
+/// device-memory provider is keyed by *ORT's* choice. When the two disagreed the provider stood up
+/// a second `VkDevice` and the run reported `alloc_device_frame = SPLIT-DEVICE` — §6.5's invariant
+/// (exactly one `VkDevice` per physical device per EP instance) violated by construction. This is
+/// the value that makes the session follow ORT instead of guessing.
+///
+/// Read from the `vulkan.device_index` key of the EP metadata we ourselves attached in
+/// `GetSupportedDevices`, so it is exact rather than correlated. Returns `None` when ORT passed no
+/// metadata (older hosts) or the key is missing — in which case the caller falls back to the
+/// selector and logs that it did.
+///
+/// # Safety
+/// `api` must be live. `ep_metadata` must be either null or an array of `num_devices` pointers,
+/// each null or a live `OrtKeyValuePairs`.
+unsafe fn bound_physical_index(
+    api: *const ort::OrtApi,
+    ep_metadata: *const *const ort::OrtKeyValuePairs,
+    num_devices: usize,
+) -> Option<usize> {
+    if ep_metadata.is_null() || num_devices == 0 {
+        return None;
+    }
+    // SAFETY: ORT guarantees `num_devices` valid entries; we only read the first because
+    // `create_ep_impl` refuses any other count.
+    let kvps = unsafe { *ep_metadata };
+    if kvps.is_null() {
+        return None;
+    }
+    // SAFETY: `api` is live; `GetKeyValue` returns a borrowed C string owned by `kvps`, valid for
+    // as long as `kvps` is — which is at least this call.
+    let raw = unsafe { (*api).GetKeyValue?(kvps, c"vulkan.device_index".as_ptr()) };
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, NUL-terminated, owned by `kvps` and not freed during this call.
+    unsafe { CStr::from_ptr(raw) }
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
 unsafe extern "C" fn create_ep(
     p: *mut ort::OrtEpFactory,
     devices: *const *const ort::OrtHardwareDevice,
@@ -635,7 +681,7 @@ unsafe extern "C" fn create_ep(
 unsafe fn create_ep_impl(
     p: *mut ort::OrtEpFactory,
     _devices: *const *const ort::OrtHardwareDevice,
-    _ep_metadata: *const *const ort::OrtKeyValuePairs,
+    ep_metadata: *const *const ort::OrtKeyValuePairs,
     num_devices: usize,
     session_options: *const ort::OrtSessionOptions,
     logger: *const ort::OrtLogger,
@@ -677,6 +723,23 @@ unsafe fn create_ep_impl(
     // dropped in `ReleaseEpFactory`, which ORT calls after every session is gone.
     unsafe { crate::logging::attach_ort_logger(api, logger) };
 
+    // §6.5: which physical device did ORT bind for this session? The compute session must open
+    // that one and no other — the device-memory provider is keyed by it.
+    // SAFETY: `api` is live; `ep_metadata` is ORT's array of `num_devices` entries (possibly null).
+    let bound = unsafe { bound_physical_index(api, ep_metadata, num_devices) };
+    match bound {
+        Some(idx) => log::info!(
+            "CreateEp: ORT bound Vulkan physical device index {idx} for this session; the compute \
+             session will open that device (§6.5, one VkDevice per physical device per EP)."
+        ),
+        None => log::warn!(
+            "CreateEp: ORT passed no `vulkan.device_index` metadata, so the device it bound is \
+             unknown here. Falling back to the ONNXRUNTIME_EP_VULKAN_DEVICE / ep.device_index \
+             selector; if it names a device other than the one ORT bound, the device-memory \
+             provider will report SPLIT-DEVICE."
+        ),
+    }
+
     // SAFETY: `api`/`ep_api` are live; `session_options` may be null, which `new` handles.
     let vulkan_ep = unsafe {
         VulkanEp::new(
@@ -685,6 +748,7 @@ unsafe fn create_ep_impl(
             factory.abi_version,
             &factory.name,
             session_options,
+            bound,
         )
     };
     // SAFETY: valid out-param slot; ownership passes to ORT, which returns it via `ReleaseEp`.

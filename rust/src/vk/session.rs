@@ -630,6 +630,7 @@ impl VulkanSession {
         // SAFETY: the loader stays loaded for the process lifetime (the owner is leaked).
         let owner = unsafe {
             crate::vk::device::acquire_ep_device(
+                options.bound_physical_index,
                 options.device_index,
                 options.enable_validation,
                 options.force_legacy_barriers,
@@ -1070,6 +1071,24 @@ impl VulkanSession {
             }
         }
 
+        // ── Step 1a: bind the EP's own device buffers where ORT placed an input in them ──
+        //
+        // §6.5's payoff. When `alloc_device_frame` is `SHARED`, an input ORT placed in this EP's
+        // device memory already lives in a `VkBuffer` on the device we are about to dispatch on.
+        // Binding it directly skips a fresh `DeviceLocal` allocation and a full re-upload per
+        // Compute call. `bind_target_for` declines — returning `None` — for every case it cannot
+        // prove: host memory, a `SPLIT-DEVICE` frame, or an interior offset the descriptor cannot
+        // express. Declining costs one upload; assuming would read a neighbouring tensor.
+        //
+        // Must run BEFORE Step 1b, which overwrites `input_cpu_ptrs[i]` with the *staging* address
+        // and would leave nothing to classify as a handle.
+        let mut bound_inputs: Vec<Option<(vk::Buffer, u64)>> = vec![None; input_cpu_ptrs.len()];
+        for (i, p) in input_cpu_ptrs.iter().enumerate() {
+            let want = actual_input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
+            bound_inputs[i] =
+                crate::vk::host_device_memory::bind_target_for(p.cast_mut().cast::<u8>(), want);
+        }
+
         // ── Step 1b: resolve any input that lives in the EP's own device memory ──
         //
         // Cross-owner note (Tank): when `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` is on, ORT may place
@@ -1149,6 +1168,20 @@ impl VulkanSession {
                 ));
                 // Borrowed sentinel — upload loop skips borrowed staging buffers, barrier
                 // filter skips them too (read-after-read on placeholder is fine).
+                staging_ups.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::DeviceLocal,
+                ));
+                continue;
+            }
+            // Bound to the EP's own device buffer in Step 1a: no allocation, no upload. The bytes
+            // are already on this device — `CopyTensors` mirrors every write into a handle, and
+            // `write_outputs_to_ort` mirrors the one writer that does not go through it — so
+            // there is nothing to stage. `borrowed_ref` keeps `free_all` from freeing memory ORT
+            // owns.
+            if let Some((buf, size)) = bound_inputs[i] {
+                gpu_inputs.push(GpuBuffer::borrowed_ref(buf, size, MemClass::DeviceLocal));
                 staging_ups.push(GpuBuffer::borrowed_ref(
                     vk::Buffer::null(),
                     0,
@@ -1652,22 +1685,30 @@ impl VulkanSession {
             shader_names.push(eff_shader);
             desc_pools.push(desc_pool);
 
-            // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier on all
-            // intermediate buffers after each dispatch (except the last). This ensures that
-            // a later kernel in the same island sees the writes from this kernel.
+            // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each
+            // dispatch (except the last), so a later kernel in the same island sees this one's
+            // writes.
+            //
+            // This is **one global memory barrier**, not one per intermediate buffer. Measured on
+            // phi-3.5: the island carries 355 kernels and 417 intermediate buffers, so the
+            // per-buffer form emitted 147,618 `VkBufferMemoryBarrier`s per inference — each one
+            // constructed, heap-allocated into a fresh `Vec`, and walked by the driver, on the
+            // host, while the GPU sat idle. That accounted for essentially all of the unnamed
+            // time inside `vulkan.record`, which was costing more host time than the entire GPU
+            // execution it was describing.
+            //
+            // The global barrier is strictly more conservative — it makes every shader write
+            // visible to every shader read, a superset of the 417 named buffers — so it cannot
+            // permit an overlap the per-buffer form forbade and cannot introduce a race. And it
+            // gives up no real parallelism here: every kernel in the island reads what an earlier
+            // one wrote, so the dependency set was effectively total already.
             if !gpu_intermediates.is_empty() && ki + 1 < kernels.len() {
-                let inter_deps: Vec<BufferDep> = gpu_intermediates
-                    .iter()
-                    .map(|b| BufferDep {
-                        buffer: b.buffer,
-                        offset: 0,
-                        size: vk::WHOLE_SIZE,
-                        src: Access::ShaderWrite,
-                        dst: Access::ShaderRead,
-                    })
-                    .collect();
-                // SAFETY: cmd is recording; all intermediate buffers are live.
-                unsafe { self.device.barriers().buffer_deps(cmd, &inter_deps) };
+                // SAFETY: cmd is recording.
+                unsafe {
+                    self.device
+                        .barriers()
+                        .memory_dep(cmd, Access::ShaderWrite, Access::ShaderRead)
+                };
             }
         }
 
@@ -2011,6 +2052,7 @@ impl VulkanSession {
             // Cross-owner note (Tank): as for inputs — an output ORT placed in this EP's own
             // device memory is an opaque handle, not writable memory. Resolve it to its backing
             // before copying, or the write below would fault on a reserved page.
+            let out_handle = out_ptr;
             match crate::transfer::host_backing_for(out_ptr.cast::<u8>(), byte_size) {
                 None => {}
                 Some(Ok(backing)) => out_ptr = backing.cast::<std::ffi::c_void>(),
@@ -2045,6 +2087,25 @@ impl VulkanSession {
             // out_ptr was allocated by ORT and is valid for byte_size bytes.
             unsafe {
                 std::ptr::copy_nonoverlapping(src_ptr as *const u8, out_ptr as *mut u8, byte_size);
+            }
+
+            // Keep the device mirror in step with the write above. This is the obligation created
+            // by binding device buffers for inputs: a span written here through staging and later
+            // read as an input through its device buffer would be read stale, and stale-but-
+            // plausible is the failure mode that survives a smoke test. `CopyTensors` already
+            // mirrors every copy into a handle; this is the same duty for the one writer that
+            // does not go through it. A no-op (`Ok(false)`) for ordinary host outputs.
+            if let Err(why) = crate::transfer::mirror_to_device(out_handle.cast::<u8>(), byte_size)
+            {
+                let msg = format!(
+                    "VulkanExecutionProvider: output {i} was written to host staging but its \
+                     device mirror could not be updated, so a later kernel binding that span \
+                     would read stale bytes: {why}"
+                );
+                // SAFETY: `api` is live per the fn contract. Buffer cleanup is the caller's.
+                return unsafe {
+                    crate::sys::make_status(api, ort::OrtErrorCode_ORT_EP_FAIL, &msg)
+                };
             }
         }
         std::ptr::null_mut() // success

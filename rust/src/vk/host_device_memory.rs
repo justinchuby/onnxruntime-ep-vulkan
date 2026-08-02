@@ -529,6 +529,53 @@ fn offered_device(device_index: usize) -> Option<Arc<dyn SharedVkDevice>> {
     OFFERED.get()?.lock().ok()?.get(&device_index).cloned()
 }
 
+/// How an allocator's requested device index resolves against what the sessions have offered.
+///
+/// This exists because the allocator's index and the session's index come from **different index
+/// spaces** and there is no arithmetic that maps one to the other. The allocator's index is the
+/// memory-info id of whichever `OrtEpDevice` ORT bound; the session's is the physical index of
+/// whichever device the selector opened. They coincide only when ORT's choice happens to equal
+/// ours — and a frame that reports `SHARED` because two independent choices agreed on this desk
+/// is a coincidence, not a closure: swap the two GPUs and the *other* selector breaks.
+///
+/// So the rule keys on device **identity** rather than index agreement. §6.5 gives the EP exactly
+/// one `VkDevice` per (physical device, EP instance), and `acquire_ep_device` makes it
+/// process-global, so when exactly one device has been offered there is nothing to disambiguate:
+/// that device *is* the EP's device, whatever index either side calls it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OfferResolution {
+    /// The requested index was offered directly.
+    Exact,
+    /// The index missed, but exactly one device is on offer, so identity settles it.
+    SoleDevice(usize),
+    /// No session has offered anything yet — nothing to adopt.
+    NoOffer,
+    /// More than one distinct device is on offer and the index matched none of them. This is the
+    /// only case that is genuinely ambiguous, and the only one that may stand up a second device.
+    Ambiguous,
+}
+
+/// The resolution rule, separated from the Vulkan state so it can be tested on both pairings.
+pub(crate) fn resolve_offer(requested: usize, offered: &[usize]) -> OfferResolution {
+    if offered.contains(&requested) {
+        return OfferResolution::Exact;
+    }
+    match offered {
+        [] => OfferResolution::NoOffer,
+        [sole] => OfferResolution::SoleDevice(*sole),
+        _ => OfferResolution::Ambiguous,
+    }
+}
+
+/// The sole offered device, when there is exactly one.
+fn sole_offered_device() -> Option<(usize, Arc<dyn SharedVkDevice>)> {
+    let map = OFFERED.get()?.lock().ok()?;
+    if map.len() != 1 {
+        return None;
+    }
+    map.iter().next().map(|(i, c)| (*i, Arc::clone(c)))
+}
+
 /// The device indices an EP session has offered a context for, for diagnostics only.
 fn offered_indices() -> Vec<usize> {
     let Some(map) = OFFERED.get() else {
@@ -551,15 +598,41 @@ pub(crate) fn ensure_registered(device_index: usize) {
         return;
     }
     // §6.5: receive a device if one is on offer; only create one if it is not.
-    let ctx: Option<(Arc<dyn SharedVkDevice>, DeviceFrame)> = match offered_device(device_index) {
-        Some(c) => Some((c, DeviceFrame::Shared)),
-        None => {
+    //
+    // The index is checked first, but it is not what decides. When it misses and exactly one
+    // device is on offer, that device is adopted: the EP owns exactly one `VkDevice`, so a missed
+    // index is a naming disagreement between two index spaces, not evidence of a second device.
+    // Standing up our own here is what produced `SPLIT-DEVICE` on whichever selector ORT's binding
+    // did not happen to match, and it is the defect rather than the report.
+    let ctx: Option<(Arc<dyn SharedVkDevice>, DeviceFrame)> = match resolve_offer(
+        device_index,
+        &offered_indices(),
+    ) {
+        OfferResolution::Exact => offered_device(device_index).map(|c| (c, DeviceFrame::Shared)),
+        OfferResolution::SoleDevice(sole) => {
+            let adopted = sole_offered_device().map(|(_, c)| c);
+            if let Some(c) = &adopted {
+                log::info!(
+                    "§6.5: ORT asked for an allocator on factory device index {device_index}, but \
+                     the session offered its device under index {sole} ('{}'). These are two \
+                     index spaces — the allocator's index is the memory-info id of the \
+                     OrtEpDevice ORT bound, the session's is the physical index the selector \
+                     opened — and no arithmetic maps one to the other. The EP owns exactly one \
+                     VkDevice (§6.5), so identity settles it: adopting the offered device. The \
+                     frame is SHARED because both sides are provably on the same VkDevice, not \
+                     because two independent index choices happened to agree.",
+                    c.device_name(),
+                );
+            }
+            adopted.map(|c| (c, DeviceFrame::Shared))
+        }
+        OfferResolution::NoOffer | OfferResolution::Ambiguous => {
             log::info!(
                 "§6.5: no EP device is on offer for factory device index {device_index} (offered \
-                 indices: {:?}). Either no session has been created yet, or ORT asked for an \
-                 allocator on a different EP device than the session opened — which is what \
-                 happens when ONNXRUNTIME_EP_VULKAN_DEVICE forces a physical device ORT did not \
-                 select. Standing up a second VkDevice; the run reports SPLIT-DEVICE.",
+                 indices: {:?}). Either no session has been created yet, or more than one distinct \
+                 device is on offer and the requested index matched none of them — the only case \
+                 that is genuinely ambiguous. Standing up a second VkDevice; the run reports \
+                 SPLIT-DEVICE.",
                 offered_indices(),
             );
             // SAFETY: the value is stored in a `static` and never dropped, so the loader outlives
@@ -616,4 +689,110 @@ pub(crate) fn ensure_registered(device_index: usize) {
         ),
     }
     map.insert(device_index, provider);
+}
+
+/// Look up the provider registered for `device_index`, if one has been stood up.
+fn provider(device_index: usize) -> Option<Arc<HostDeviceMemory>> {
+    PROVIDERS.get()?.lock().ok()?.get(&device_index)?.clone()
+}
+
+/// The `VkBuffer` the engine should bind for `p`, or `None` to fall back to host staging.
+///
+/// **This is the seam that stops the device buffer being a mirror.** Until it existed, ORT could
+/// place a subgraph input in memory this EP allocated and the session would still resolve it to
+/// host bytes, allocate a fresh `DeviceLocal` buffer, and re-upload — so the device allocation was
+/// a cost with no corresponding saving, and `alloc_device_buffer_binds` was 0 and said so.
+///
+/// Three conditions, and each one declines rather than assumes:
+///
+/// 1. **The span must have a device buffer.** `transfer::device_buffer_for` answers that.
+/// 2. **That buffer must be on the device we are about to dispatch on.** A `SPLIT-DEVICE` frame
+///    means it is not, and binding across two `VkDevice`s is undefined — it would even appear to
+///    work on a UMA part, which is the worst way for it to fail.
+/// 3. **The descriptor must be able to express the binding.** `vk::pipeline` writes every
+///    `VkDescriptorBufferInfo` at offset 0, so an interior pointer cannot be bound without a
+///    descriptor change. Declining is correct; binding at 0 for an interior pointer would read a
+///    neighbouring tensor and produce plausible wrong numbers. Also enforced:
+///    `offset + len <= size`, so a short buffer never gets a descriptor that runs past its end.
+///
+/// The bind is counted **here**, at the point the buffer is actually handed over, and not at the
+/// resolve. A resolve that is then declined is not a bind.
+pub(crate) fn bind_target_for(p: *mut u8, len: usize) -> Option<(vk::Buffer, u64)> {
+    if len == 0 {
+        return None;
+    }
+    let binding = crate::transfer::device_buffer_for(p, len)?;
+    if binding.offset != 0 {
+        return None;
+    }
+    let provider = provider(binding.device_index)?;
+    if provider.frame() != DeviceFrame::Shared {
+        return None;
+    }
+    let inner = provider.inner.lock().ok()?;
+    let buf = inner.buffers.get(&binding.view.as_raw())?;
+    if binding.offset as u64 + len as u64 > buf.size {
+        return None;
+    }
+    let handle = buf.buffer;
+    drop(inner);
+    crate::allocator::tally::on_device_buffer_bind();
+    Some((handle, len as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OfferResolution, resolve_offer};
+
+    /// The rule must be SYMMETRIC under swapping the two devices.
+    ///
+    /// This is Tank's construction test, written as a test. The defect he found was that
+    /// `alloc_device_frame` read `SHARED` on selector 0 only because ORT's bound index and the
+    /// session's physical index happened to coincide on this desk; on selector 1 they diverged and
+    /// the frame read `SPLIT-DEVICE`. His warning was that "a fix that only makes selector 1 pass
+    /// on this box is the same coincidence with a different index".
+    ///
+    /// So both pairings are asserted here with the SAME expectation. A fix that special-cased
+    /// either direction — or that mapped one index space onto the other by arithmetic — passes one
+    /// of these and fails the other.
+    #[test]
+    fn a_missed_index_resolves_by_identity_in_both_directions() {
+        // ORT bound index 1; the session opened the device it offered under index 0.
+        assert_eq!(
+            resolve_offer(1, &[0]),
+            OfferResolution::SoleDevice(0),
+            "asked 1, offered 0: one device exists, so identity settles it"
+        );
+        // The same desk with the two GPUs swapped: ORT bound 0, the session offered 1.
+        assert_eq!(
+            resolve_offer(0, &[1]),
+            OfferResolution::SoleDevice(1),
+            "asked 0, offered 1 must resolve exactly as asked 1, offered 0 does — if these two \
+             disagree, the fix is a coincidence with a different index rather than a construction"
+        );
+    }
+
+    #[test]
+    fn an_index_that_was_offered_is_taken_directly() {
+        assert_eq!(resolve_offer(1, &[1]), OfferResolution::Exact);
+        assert_eq!(resolve_offer(0, &[0]), OfferResolution::Exact);
+        assert_eq!(resolve_offer(0, &[0, 1]), OfferResolution::Exact);
+    }
+
+    /// The two cases that must still be able to stand up a second device, so `SPLIT-DEVICE` stays
+    /// reachable. A detector that can no longer fire is worth less than the defect it reported.
+    #[test]
+    fn split_device_remains_reachable_when_it_is_the_truth() {
+        assert_eq!(
+            resolve_offer(1, &[]),
+            OfferResolution::NoOffer,
+            "no session has run yet: there is nothing to adopt"
+        );
+        assert_eq!(
+            resolve_offer(2, &[0, 1]),
+            OfferResolution::Ambiguous,
+            "two distinct devices are on offer and neither is the one asked for — this is the \
+             only genuinely ambiguous case, and guessing here would be the coincidence again"
+        );
+    }
 }

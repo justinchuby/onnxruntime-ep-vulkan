@@ -48,6 +48,7 @@ on ``ep_messenger_fires_for_planted_fence_leak`` is Switch's call.  Request belo
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,109 @@ import _verdict
 HERE = Path(__file__).parent
 _REPO_ROOT = HERE.parent.parent
 _CARGO_MANIFEST = _REPO_ROOT / "rust" / "Cargo.toml"
+_RESULTS = _REPO_ROOT / "bench" / "results"
+
+
+# ---------------------------------------------------------------------------
+# CRITERION 3(a) — WHICH MOMENT THE CLEAN READ IS TAKEN AT
+# ---------------------------------------------------------------------------
+# Switch, 2026-08-01: *the now-leaked production device makes any "0 validation errors at
+# shutdown" gate UNOBSERVABLE.  If your clean-run evidence depends on a shutdown-time
+# reading, it is out-of-frame by construction — check which moment you are reading.*
+#
+# He is right and the first cut of this file was wrong in exactly that way: it grepped the
+# WHOLE cargo transcript for `VUID-`, which includes whatever the layer says at
+# `vkDestroyInstance` about objects that outlived their device.  That reading has two
+# failure modes and they point opposite ways:
+#
+#   * a leak-time VUID turns a genuinely clean dispatch red, blaming the kernel path for a
+#     teardown defect;
+#   * and a reader who then "fixes" it by loosening the grep loses the dispatch-time
+#     reading too.
+#
+# R12's answer is not a tighter grep.  It is that the shutdown window is a frame in which
+# the event cannot be cleanly observed at all, so its count is `UNOBSERVABLE` — never `0`
+# and never a failure — while the dispatch window is a frame in which it can, and that is
+# where criterion 3(a)'s reading is taken.
+#
+# The split is the last per-device `[PASS] run_add_on_device` line: every dispatch has
+# completed and been verified by then, and nothing after it is dispatch work.
+
+#: The moment criterion 3(a)'s number is read at.  Recorded in the artifact, because a
+#: count without its moment is a count from an unidentified world (criterion 12 (g)).
+CLEAN_READ_FRAME = (
+    "dispatch window — from process start to the last verified per-device dispatch, with "
+    "the instance and every device still alive"
+)
+
+#: R12: never `0`.
+TEARDOWN_UNOBSERVABLE = (
+    "UNOBSERVABLE — the production device is leaked (Switch, 2026-08-01), so validation "
+    "messages emitted at vkDestroyInstance are about object lifetimes and not about the "
+    "dispatch path.  A `0 validation errors at shutdown` gate is out-of-frame by "
+    "construction on this build and is not read here in either direction."
+)
+
+_VUID_RE = re.compile(r"VUID-")
+_DEVICE_PASS_RE = re.compile(
+    r"\[PASS\]\s+run_add_on_device:\s+\d+\s+f32 elements verified on (?P<dev>.+?)\s*$"
+)
+_CAPABLE_RE = re.compile(r"(?P<n>\d+) capable device\(s\)")
+
+
+def classify_clean_read_frame(output: str) -> dict:
+    """Split a dispatch-integration transcript into its two validation frames.
+
+    Pure — it takes a transcript, not a machine — so both polarities are falsifiable in
+    the always-on lane (``test_validation_frame_split.py``).  A frame rule that has only
+    ever run against a clean transcript, where it prints the answer everyone expects, is
+    the shape this project keeps finding.
+
+    Returns ``capable_devices`` (``None`` when the transcript never said),
+    ``dispatched_devices``, ``device_labels``, ``in_frame_vuids`` and ``teardown_vuids``.
+    """
+    lines = output.splitlines()
+
+    capable = None
+    labels: list[str] = []
+    last_pass_index = -1
+    for i, line in enumerate(lines):
+        cap = _CAPABLE_RE.search(line)
+        if cap is not None and capable is None:
+            capable = int(cap.group("n"))
+        dev = _DEVICE_PASS_RE.search(line)
+        if dev is not None:
+            labels.append(dev.group("dev").strip())
+            last_pass_index = i
+
+    # No dispatch ever completed: the whole transcript is out of the dispatch window.
+    # Reporting the VUIDs as "in frame" here would attribute teardown noise to a dispatch
+    # that never happened.
+    boundary = last_pass_index if last_pass_index >= 0 else -1
+    in_frame = [
+        line for i, line in enumerate(lines) if _VUID_RE.search(line) and i <= boundary
+    ]
+    teardown = [
+        line for i, line in enumerate(lines) if _VUID_RE.search(line) and i > boundary
+    ]
+    return {
+        "capable_devices": capable,
+        "dispatched_devices": len(labels),
+        "device_labels": labels,
+        "in_frame_vuids": in_frame,
+        "teardown_vuids": teardown,
+    }
+
+
+def _write_criterion3_artifact(record: dict) -> Path:
+    _RESULTS.mkdir(parents=True, exist_ok=True)
+    selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
+    path = _RESULTS / f"criterion3a_clean_read-dev{selector}.json"
+    import json
+
+    path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"[CRITERION 3a] wrote {path}", file=sys.stderr)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -369,23 +473,69 @@ def test_validation_clean_after_binding_arity_fix() -> None:
         f"Output:\n{output[-2000:]}"
     )
 
-    # Scan for VUID-prefixed validation errors.  The messenger callback prints them as:
-    #   EPCTL-VALIDATION-CAUGHT: VUID-... or
-    #   VulkanValidation: VUID-...
-    import re
-    vuid_lines = [
-        line for line in output.splitlines()
-        if re.search(r"VUID-", line)
-    ]
-    assert not vuid_lines, (
-        f"add_f32_dispatches_end_to_end produced {len(vuid_lines)} VUID validation error(s) "
-        f"after Switch's binding-arity fix.  The criterion-3 clean reading is NOT clean.\n"
-        f"VUID lines:\n" + "\n".join(vuid_lines[:20]) + "\n"
-        f"This requires investigation — route to Switch."
+    frame = classify_clean_read_frame(output)
+
+    # ── The frame could have been dirty.  Without this the read is vacuous. ───────────
+    #
+    # Criterion 3's own ruling: "a silent validation lane and a lane with nothing to
+    # validate are the same reading."  A run that skipped every device emits zero VUID
+    # lines and looks identical to a clean one, so the number of devices that actually
+    # executed a dispatch is checked BEFORE the cleanliness is read.
+    if frame["capable_devices"] is None or frame["dispatched_devices"] == 0:
+        raise _verdict.InstrumentError(
+            "[criterion 3c instrument failure] ERROR(instrument): the run produced no "
+            "per-device dispatch confirmation, so there were no Vulkan calls for the "
+            "layer to object to.  Zero VUID lines from this run is not a clean read, it "
+            "is an empty one.\n"
+            f"frame: {frame}\noutput (last 2000 chars):\n{output[-2000:]}"
+        )
+    assert frame["dispatched_devices"] == frame["capable_devices"], (
+        f"Criterion 3(a) FAILS as a reading: {frame['capable_devices']} capable device(s) "
+        f"were enumerated but only {frame['dispatched_devices']} completed a dispatch "
+        f"({frame['device_labels']}).  A clean validation read that covers one of two "
+        "devices is not a two-device reading, and criterion 3 asks for both.\n"
+        f"output (last 2000 chars):\n{output[-2000:]}"
     )
+
+    # ── The reading, at the moment it is taken. ──────────────────────────────────────
+    assert not frame["in_frame_vuids"], (
+        f"add_f32_dispatches_end_to_end produced {len(frame['in_frame_vuids'])} VUID "
+        "validation error(s) inside the dispatch window, after Switch's binding-arity "
+        "fix.  The criterion-3 clean reading is NOT clean.\n"
+        "VUID lines:\n" + "\n".join(frame["in_frame_vuids"][:20]) + "\n"
+        "This requires investigation — route to Switch."
+    )
+
+    record = {
+        "criterion": "3(a)",
+        "reading": "zero validation errors, messenger ARMED, post binding-arity fix",
+        "frame_read_at": CLEAN_READ_FRAME,
+        "validation_frame": state,
+        "validation_frame_reason": reason,
+        "capable_devices": frame["capable_devices"],
+        "dispatched_devices": frame["dispatched_devices"],
+        "device_labels": frame["device_labels"],
+        "in_frame_vuid_count": 0,
+        "teardown_window_vuids": TEARDOWN_UNOBSERVABLE,
+        "teardown_window_lines_seen": len(frame["teardown_vuids"]),
+        "device_selector_env": os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset"),
+        "selector_note": (
+            "add_f32_dispatches_end_to_end enumerates and runs on EVERY capable device in "
+            "one process; ONNXRUNTIME_EP_VULKAN_DEVICE selects for the ORT path and does "
+            "not partition this run.  Both devices are covered by the device_labels above, "
+            "not by running this test twice."
+        ),
+        "no_duration_quoted": "§10.0 obligation 8 — no clock figure is taken or quoted here.",
+    }
+    _write_criterion3_artifact(record)
+
     print(
-        f"[CRITERION 3c] PASS: zero VUID errors in add_f32_dispatches_end_to_end output "
-        f"(messenger armed, binding-arity fix in place). Criterion 3 clean reading is valid.",
+        "[CRITERION 3a/c] PASS: zero VUID errors in the DISPATCH WINDOW "
+        f"({frame['dispatched_devices']}/{frame['capable_devices']} devices: "
+        f"{frame['device_labels']}), messenger ARMED, binding-arity fix in place.\n"
+        f"[CRITERION 3a/c] frame read at: {CLEAN_READ_FRAME}\n"
+        f"[CRITERION 3a/c] teardown window: {TEARDOWN_UNOBSERVABLE} "
+        f"({len(frame['teardown_vuids'])} line(s) seen there, NOT counted either way)",
         file=sys.stderr,
     )
 
