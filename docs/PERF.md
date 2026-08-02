@@ -3240,3 +3240,136 @@ reading of the output:
    own rule. The reference now names its sources and a test asserts no withheld tail is among them.
 
 Neither is a detection. Locked by `bench/test_tenancy_signature.py` (6 tests).
+
+---
+
+## 19. The first real-node run, and what island fragmentation actually costs
+
+Frame, per R12's fourth generalisation: `main` at `0baf660`, merged into `squad/niobe` and rebuilt.
+DLL `E00C7F8B64B3907A…` before, **`47F668336A7BF6A9…`** after. Every figure in this section was
+produced by that binary. Model artifact and harness unchanged.
+
+### 19.1 The certified figure was refused, and the refusal is the result
+
+The measurement ran (`--device 0 --iters 40 --warmup 10 --repeats 2 --trace-iters 3`, ~17 min) and
+the gate withheld it. Quoting the failure text rather than a count, per R13:
+
+> ⛔ REFUSED: phi-3.5 timing withheld — machine was CONTENDED during measurement. timed pass:
+> out-of-band load survey says CONTENDED — other processes kept **7.73 cores** busy on average
+> (threshold 0.5); **100%** of samples exceeded 1.0 foreign busy cores (threshold 10%).
+> withheld: vulkan median, cpu median, their delta and ratio.
+
+There is no new device-clock figure. **`12.1847 ms` remains the last quotable one**, at its stated
+context length — **zero context, one token** (`present.*` shaped `[1,32,1,96]`). Against Switch's
+clock-free roofline that is 67% of the 8.18 ms zero-context floor, headroom 1.49×. The roofline is
+not a constant (8.22 ms at zero context, 20.80 ms at 8192), so that comparison is only valid at the
+context it was taken at, exactly as a timing is only valid at its device state.
+
+What *is* valid from the refused run, because none of it is a timing: `gpu_span_accounting` ok
+(4522 = 4522 = 4522), `trace_matches_counters` ok (462 = 462), `model_output_equivalence` MATCH,
+dispatch accounting ok (`compute_calls` 1683 = 33 islands × 51 inferences). One RED:
+**`phase_containment` FAIL** — one sub-record span falls outside every `vulkan.record` span, so
+**no phase share may be read from this run**. That is new, unexplained, and open.
+
+### 19.2 The idle-clock specimen, and it is ours
+
+This run is the cleanest demonstration the project has produced of why the device-state companion is
+required rather than diagnostic, and unlike the earlier ones it is self-produced on the current binary.
+
+| what it says | value |
+|---|---|
+| device-clock series, `gpu_steady_tail` | **STEADY**, n=13 |
+| its median | **245.9149 ms** |
+| its RSD | **0.0717%** — tighter than every trace in the 28-trace census |
+| tenancy verdict | **SOLE_TENANT**, `foreign_sample_fraction` **0.0** |
+| SM clock | **210.0 MHz min, median, mean *and max*** of 160 samples, against 3105 MHz boost |
+| `clock_at_max_pct` | **6.8%** |
+| ratio to the last quotable figure | **20.18×** |
+
+**Both of the things that sound like a pass, pass.** The tail is STEADY and the board is a sole
+tenant. The single field that refuses is the clock record, and `certify()` returns `quotable: false`
+on it alone. Every earlier specimen of this pathology involved foreign GPU work, so a tenancy check
+could plausibly have caught them; **this one has none at all.** The clock record is the only
+instrument in the set with a claim on it.
+
+Note also the corroboration: 20.18× sits inside the idle-clock band Switch identified as 21× and
+non-overlapping with the boost regime, so the regime is recoverable from magnitude alone — the same
+property that rescued `12.1847 ms`. Two independent instruments agree on the diagnosis.
+
+The causal chain is worth writing down because it is not the obvious one: **host contention showed
+up on the device axis as an idle clock, not as GPU contention.** 7.73 foreign cores starved
+submission, GPU utilisation sat at 0% median / 3.4% mean, and the board never ramped. A host-side
+problem produced a device-side symptom that the tenancy verdict is structurally unable to see.
+
+Locked by `bench/test_island_boundary_cost.py::TestIdleClockSpecimen`.
+
+### 19.3 Fusion did fragment, and it is the declined GroupQueryAttention
+
+Confirmed mechanically **on one binary**, not inferred across builds. `evidence/proof_attempts.jsonl`
+carries `com.microsoft::GroupQueryAttention/…/past_key+past_value+cos_cache+sin_cache` as
+`DIVERGENT` (worst_rel 16.7264). Handing that key to `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` restores
+**355 of 363 nodes in 1 island** — exactly the historical record — against **323 in 33 islands** as
+shipped. 32 layers × 1 GQA = 32 cuts in a chain = 33 segments. `islands_offered` =
+`viable_islands_retained` = 33 and `net_benefit_gate_bypasses` = 0, so nothing was declined at island
+level; the fragmentation is entirely upstream of the viability gate.
+
+### 19.4 My first answer was wrong, and its shape is R11
+
+I divided `session_staging_upload_bytes` by the inference count in each of two committed records and
+reported that fragmentation had *reduced* staging traffic from 78.43 to 43.59 MiB/inference — a 1.78×
+improvement. **It is an artifact.** That counter is cumulative and is dominated by a one-time
+~2185 MiB weight upload, and the two records had different iteration counts (28 and 51). Dividing one
+fixed cost by two denominators manufactures a ratio of 51/28 = 1.82× out of nothing. I measured 1.78×.
+**The giveaway was that the "improvement" equalled the iteration ratio**, and I nearly published it
+as a finding with a convincing story attached.
+
+The fix is a **slope, not a quotient**: run each configuration at two iteration counts and difference
+them, so the fixed session cost cancels and the recovered constant becomes a *check* rather than an
+output. It agrees between arms to 0.034%, which it must, because the weights are the same weights.
+
+### 19.5 The cost, per inference, both arms on one binary
+
+| currency | 1 island | 33 islands | direction |
+|---|---|---|---|
+| host round-trips | **2** | **66** | **33× WORSE** |
+| staging bytes | 0.8170 MiB | 1.5670 MiB | **1.92× WORSE** |
+| device allocations | 551.0 | 517.0 | 0.94× — *not worse* |
+| dispatches | 355.0 | 323.0 | 0.91× — *not worse* |
+| device high-water | 2190.7 MiB | 2184.9 MiB | 0.997× — *not worse* |
+| fixed weight upload | 2185.46 MiB | 2184.71 MiB | agree, 0.034% |
+
+The marginal traffic decomposes exactly: **+393,208 B out and +393,216 B back**, against
+**393,216 B** of KV tensors (64 × `[1,32,1,96]` f16). Fragmentation's entire byte cost is *one extra
+host round-trip of the KV tensors*. The readback side is exact and the upload side carries an 8-byte
+residual, recorded rather than rounded away.
+
+That this closes is why it is trustworthy rather than suspicious: the 393,216 B comes from the ONNX
+output shapes, not from any counter in the records, and the fused arm's readback slope lands on the
+model's declared outputs (logits 64,128 + KV 393,216 = **457,344 B**) to the byte. An identity whose
+two sides come from the same source cannot fire; these two sides do not.
+
+### 19.6 Ruling
+
+**786,424 B/inference is 0.0376% of the weight read.** In bytes, fragmentation is negligible against
+the roofline, and **Switch's shape holds: a large count of small things is not a large thing.** The
+allocator-round-trip and descriptor-rebinding hypotheses are **falsified**, not unmeasured — those
+counters went slightly *down*.
+
+What remains genuinely unpriced is **32 extra submissions, fence waits and pipeline drains per
+inference**. That is a count, and counts do not care whether the box is busy; its *time* cost is a
+timing and cannot be taken on a contended box. I attempted a host-minus-GPU bound from the trace and
+it came out at 10.48 s/inference — vacuous, and additionally computed under an idle clock that
+inflates the GPU term 20×. It is reported as vacuous rather than quoted. And per Switch's correction,
+min-over-inferences is an **upper** bound, so two of them would not have bounded the difference from
+below in any case.
+
+**The cost that is in neither column, and is probably the large one, is that the 32 declined
+GroupQueryAttention nodes now execute on CPU** (`executed_by` = 120 CPU / 99 Vulkan). That is an
+execution-location cost, not a boundary cost, it is not in this table, and it is the next thing to
+measure. The A/B harness for it now exists and is counts-valid; its timing arm needs a quiet box.
+
+Caveat on that arm: the 1-island configuration runs a form whose proof verdict is `DIVERGENT`, so it
+is valid for counters and **not** for correctness.
+
+Reproduce: `python bench/results/probe_island_boundary_cost.py`. Locked by
+`bench/test_island_boundary_cost.py` (13 tests).

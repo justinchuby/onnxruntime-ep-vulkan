@@ -1,0 +1,130 @@
+{
+ "question": "is 33 islands measurably worse than 1, and in what currency?",
+ "method": "two iteration counts per configuration; the fixed session cost cancels in the slope",
+ "both_arms_same_binary": true,
+ "arms": {
+  "fused_1_island": {
+   "points": [
+    {
+     "file": "islandab_slope_fused_n5.json",
+     "islands": 1,
+     "inferences": 6,
+     "high_water_bytes": 2297082560,
+     "session_staging_upload_bytes": 2294022240,
+     "session_staging_uploads": 6,
+     "session_staging_readback_bytes": 2744064,
+     "session_staging_readbacks": 6,
+     "session_device_allocs": 3632,
+     "dispatches_executed": 2130
+    },
+    {
+     "file": "islandab_slope_fused_n25.json",
+     "islands": 1,
+     "inferences": 26,
+     "high_water_bytes": 2297082560,
+     "session_staging_upload_bytes": 2302009760,
+     "session_staging_uploads": 26,
+     "session_staging_readback_bytes": 11890944,
+     "session_staging_readbacks": 26,
+     "session_device_allocs": 14652,
+     "dispatches_executed": 9230
+    }
+   ],
+   "slope": {
+    "session_staging_upload_bytes": 399376.0,
+    "session_staging_uploads": 1.0,
+    "session_staging_readback_bytes": 457344.0,
+    "session_staging_readbacks": 1.0,
+    "session_device_allocs": 551.0,
+    "dispatches_executed": 355.0
+   },
+   "fixed": {
+    "session_staging_upload_bytes": 2291625984.0,
+    "session_staging_uploads": 0.0,
+    "session_staging_readback_bytes": 0.0,
+    "session_staging_readbacks": 0.0,
+    "session_device_allocs": 326.0,
+    "dispatches_executed": 0.0
+   },
+   "dn": 20
+  },
+  "shipped_33_islands": {
+   "points": [
+    {
+     "file": "islandab_slope_frag_n5.json",
+     "islands": 33,
+     "inferences": 6,
+     "high_water_bytes": 2291047056,
+     "session_staging_upload_bytes": 2295595056,
+     "session_staging_uploads": 198,
+     "session_staging_readback_bytes": 5103360,
+     "session_staging_readbacks": 198,
+     "session_device_allocs": 3426,
+     "dispatches_executed": 1938
+    },
+    {
+     "file": "islandab_slope_frag_n25.json",
+     "islands": 33,
+     "inferences": 26,
+     "high_water_bytes": 2291047056,
+     "session_staging_upload_bytes": 2311446736,
+     "session_staging_uploads": 858,
+     "session_staging_readback_bytes": 22114560,
+     "session_staging_readbacks": 858,
+     "session_device_allocs": 13766,
+     "dispatches_executed": 8398
+    }
+   ],
+   "slope": {
+    "session_staging_upload_bytes": 792584.0,
+    "session_staging_uploads": 33.0,
+    "session_staging_readback_bytes": 850560.0,
+    "session_staging_readbacks": 33.0,
+    "session_device_allocs": 517.0,
+    "dispatches_executed": 323.0
+   },
+   "fixed": {
+    "session_staging_upload_bytes": 2290839552.0,
+    "session_staging_uploads": 0.0,
+    "session_staging_readback_bytes": 0.0,
+    "session_staging_readbacks": 0.0,
+    "session_device_allocs": 324.0,
+    "dispatches_executed": 0.0
+   },
+   "dn": 20
+  }
+ },
+ "fixed_cost_agreement": {
+  "fused_MiB": 2185.46484375,
+  "shipped_MiB": 2184.71484375,
+  "relative_gap": 0.0003431764194902758,
+  "verdict": "AGREE"
+ },
+ "declared_output_closure": {
+  "declared_bytes": 457344,
+  "measured_bytes": 457344.0,
+  "residual_bytes": 0.0,
+  "verdict": "EXACT"
+ },
+ "finding": {
+  "round_trips_per_inference": {
+   "fused": 2.0,
+   "shipped": 66.0
+  },
+  "staging_bytes_per_inference": {
+   "fused": 856720.0,
+   "shipped": 1643144.0,
+   "ratio": 1.9179475207769165
+  },
+  "marginal_upload_bytes": 393208.0,
+  "marginal_readback_bytes": 393216.0,
+  "kv_tensor_bytes": 393216,
+  "marginal_is_one_kv_round_trip": true,
+  "upload_residual_bytes": -8.0,
+  "overhead_vs_weight_read_pct": 0.037559714087140754,
+  "device_allocs_ratio": 0.9382940108892922,
+  "dispatches_ratio": 0.9098591549295775,
+  "high_water_ratio": 0.9973725350124115
+ },
+ "ruling": "Fragmentation is worse in exactly two currencies and neither is the one that was assumed. (1) HOST ROUND-TRIP COUNT: 2 -> 66 per inference, 33x, which is 32 extra submissions, fence waits and pipeline drains. Their TIME COST IS UNMEASURED and cannot be taken on a contended box. (2) STAGING BYTES: 1.92x, but the absolute marginal figure is one extra host round-trip of the 64 KV tensors, 786,424 B, which is 0.0376% of the weight read -- negligible against Switch's roofline, and his shape holds: a large count of small things is not a large thing. Allocations, dispatch count and device high-water are all FLAT OR SLIGHTLY BETTER, so the allocator round-trip and descriptor-rebinding hypotheses are falsified rather than unmeasured. THE COST THAT IS NEITHER OF THESE, AND IS PROBABLY THE LARGE ONE, IS THAT THE 32 DECLINED GroupQueryAttention NODES NOW EXECUTE ON CPU. That is an execution-location cost, not a boundary cost, it is not in this table, and it is the next thing to measure."
+}
