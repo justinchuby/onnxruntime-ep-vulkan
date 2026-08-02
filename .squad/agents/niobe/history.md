@@ -699,3 +699,75 @@ the duty-cycle mechanism on the NVIDIA side. Not designed around, not blocked on
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+
+## 2026-08-01 (evening) — R11 in a *selection*: the probe misled by omission while every field it printed was true
+
+Small fix, and the size of the fix is not the size of the finding. Two `KEYS` lists and a print
+line; the shape is new and worth carrying.
+
+**The question.** Was `alloc_device_authoritative_spans = 0` in `bench/results/indexspace.json` a
+real zero or R12 (a counter reporting `0` for an event that cannot occur in its frame)? Morpheus
+ruled it **a real zero and he was right**: it is an `int`, not the string `"UNOBSERVABLE"`/
+`"UNWIRED"`, so the type discipline had already answered; `alloc_device_residency_evaluations = 9`
+from the same call site says the question was *asked* nine times and answered no; and
+`ceiling = backed 9 − staged 9 = 0`, so zero is the only correct value. `UNOBSERVABLE` would have
+been a **stronger and false** claim.
+
+**The defect is the probe, not the counter.** `probe_indexspace.py`'s `KEYS` took
+`alloc_device_backed_spans` and `alloc_device_authoritative_spans` and did **not** take
+`alloc_staged_spans` or `alloc_device_authoritative_ceiling` — both emitted by `counters.rs`
+(L934, L945) and simply not selected. So the artifact **genuinely did not contain** what a reader
+needs to tell a measured zero from a pinned one. The coordinator's failure to interpret it was not
+ignorance, and anyone who *had* interpreted it confidently would have been guessing.
+
+**The shape, which is the part to keep.** R11 usually appears in a *name* that claims more than
+the value supports. Here it appeared in a **selection**: a probe can mislead through what it omits
+while every field it prints is individually true. Rule adopted in the file:
+
+> a counter whose value is only interpretable against a companion key is not admissible without
+> that companion key on the face of the same output.
+
+### What I changed
+
+- `probe_indexspace.py` `KEYS` gains `alloc_staged_spans`, `alloc_device_authoritative_ceiling`
+  and — from the audit below — `alloc_allocations`. The printed line now shows
+  `ceiling=0 (= backed 9 - staged 9)` and `authoritative_spans=0 over 9 residency evaluation(s)`,
+  so the arithmetic is on the face of the output rather than reconstructable by someone who
+  already knows to look.
+- A `span_accounting()` note that **names which kind of zero it is**:
+  `MEASURED_ZERO_AT_A_ZERO_CEILING` / `MEASURED_ZERO_BELOW_A_NONZERO_CEILING` / `UNWIRED_ZERO` /
+  `NOT_A_NUMBER`. The middle one is the interesting state and it must never hide inside the same
+  `0` as the first — same discipline as Tank's five states sharing one zero.
+- **It reports; it does not judge.** Nothing in it feeds `checks`, so it cannot withhold
+  `ONE_INDEX_SPACE`. An accounting note that could move the verdict would be a different
+  instrument wearing this one's name.
+
+### Re-run: the verdict did not move, and it should not have
+
+`ONE_INDEX_SPACE`, both arms intact, all seven checks ok — allocator index `'1' → '0'` as the
+selector moved `0 → 1`, matching the offered index on each arm, both `SHARED`, binds non-zero on
+both. Identical values to the previous artifact (binds 6, allocations 9, staged 9, backed 9,
+ceiling 0, authoritative 0, evaluations 9). **This changed what is reported, not what is
+measured** — which is exactly what should be true of a reporting fix, and the confirmation is the
+point of re-running rather than reasoning.
+
+Worth noting what the newly-visible arithmetic actually says: **staged 9 of 9 spans, so every
+device-backed span is a mirror and the ceiling is 0.** The §6.5 frame is shared and the residency
+screen runs, but nothing is device-authoritative yet — visible now, invisible before.
+
+### Audit: one instance of a shape is usually not one instance
+
+| consumer | verdict |
+|---|---|
+| `probe_indexspace.py` | **two** instances — the reported `authoritative_spans` (fixed), and `alloc_device_backed_spans = 9` as a **bare numerator** with no `alloc_allocations` denominator: 9 of 9 and 9 of 900 are different findings and the extract could not tell them apart (fixed) |
+| `probe_sec65.py` | **two more.** It printed `alloc_device_spans` — **a key that exists nowhere in the source**, so it printed `'<absent>'` on every run since it was written, and an always-absent key reads like a measurement that came back empty. Real name: `alloc_device_backed_spans`. And it printed `authoritative_spans` with no ceiling and no residency evaluations — the same uninterpretable zero. Both fixed |
+| `probe_residency_screen.py` | clean — its `KEYS` already carries ceiling, evaluations, binds, backed and staged |
+| `bench/phi35.py` `staging_label()` | clean — it reads staged **and** backed as a pair, and treats absent as its own `"unknown"` state that is explicitly *not* the same as device-backed |
+
+`phi35.py` would classify this configuration as `mixed` ("both staged and device-backed spans
+observed; attribution is ambiguous"), which is the correct reading of 9/9 and agrees with the
+ceiling of 0.
+
+242 tests pass in `bench/`. Committed on `squad/niobe`, not pushed. Scoped small on purpose: the
+`MARGINAL_TAIL` census cross-check remains the more important of the two and did not collide with
+this.
