@@ -3134,7 +3134,7 @@ mod tests {
                 .collect();
 
             let (mut seen, mut offenders) = (0usize, Vec::new());
-            for (name, body, is_test) in fns.iter().filter(|(_, _, t)| *t) {
+            for (name, body, _) in fns.iter().filter(|(_, _, t)| *t) {
                 seen += 1;
                 let mut t = touched(body);
                 let mut l = locked(body);

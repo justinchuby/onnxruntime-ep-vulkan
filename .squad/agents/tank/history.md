@@ -1073,3 +1073,18 @@ already walked.
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+
+### Post-merge addendum (same session)
+
+`squad/tank` was 38 commits behind `origin/main`, so I merged and re-verified. The screen
+immediately failed on **two tests that came in with the merge** —
+`transfer.rs::an_engine_write_to_staging_is_pushed_to_the_device_mirror` and
+`::a_host_output_is_not_mirrored_and_is_not_an_error` — neither of which I wrote. That is the
+screen working as intended: the class was closed by a mechanism, not by me auditing a list once,
+and it caught the next two instances at merge time rather than as somebody's 1-in-30 next week.
+Locked both; suite green at 442 lib tests, 40/40 clean binary runs post-merge, census PASS.
+
+The production probe re-run on the merged tree still reports **one** provider for indices 0 and 1
+(`SPLIT-DEVICE on 'NVIDIA GeForce RTX 4060 Laptop GPU'`), so `ensure_registered` still ignores its
+index argument when creating a device. Switch's §6.5 index fix is not in yet, or does not reach
+this path.

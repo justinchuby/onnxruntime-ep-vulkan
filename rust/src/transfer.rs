@@ -1124,6 +1124,9 @@ mod tests {
     /// that survives a smoke test.
     #[test]
     fn an_engine_write_to_staging_is_pushed_to_the_device_mirror() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         use crate::engine::DeviceMemoryProvider as _;
         let provider = Arc::new(RecordingProvider::default());
         crate::engine::register_device_memory_provider(4243, provider.clone());
@@ -1171,6 +1174,9 @@ mod tests {
     /// actually shipped.
     #[test]
     fn a_host_output_is_not_mirrored_and_is_not_an_error() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let mut buf = [7u8; 64];
         let r = mirror_in(&registries(), buf.as_mut_ptr(), buf.len());
         assert_eq!(
