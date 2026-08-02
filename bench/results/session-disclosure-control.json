@@ -1,0 +1,58 @@
+{
+  "control": "session-creation disclosure (DESIGN.md \u00a78.9.7 / RAI-009)",
+  "evidence_class": "PLANTED",
+  "evidence_class_note": "Arm A's UNMEASURED form is one I planted; it is reachable only by naming a key in ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN. No production build has ever produced this condition. What is demonstrated is the warning path.",
+  "verdict": "PASS",
+  "devices": [
+    {
+      "device": 0,
+      "evidence_class": "PLANTED",
+      "learned_proof_key": "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2",
+      "arm_a": {
+        "returncode": 0,
+        "claimed_form_evidence": "UNMEASURED-PRESENT",
+        "session_disclosure_channel": "ORT_SINK",
+        "claimed_forms_unmeasured": 1,
+        "claimed_nodes": 1,
+        "ort_sink_warns": [
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Mul x1 [ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
+        ]
+      },
+      "arm_b": {
+        "returncode": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "claimed_nodes": 1,
+        "claimed_forms_proven": 1,
+        "ort_sink_warns": []
+      },
+      "verdict": "PASS",
+      "failures": []
+    },
+    {
+      "device": 1,
+      "evidence_class": "PLANTED",
+      "learned_proof_key": "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2",
+      "arm_a": {
+        "returncode": 0,
+        "claimed_form_evidence": "UNMEASURED-PRESENT",
+        "session_disclosure_channel": "ORT_SINK",
+        "claimed_forms_unmeasured": 1,
+        "claimed_nodes": 1,
+        "ort_sink_warns": [
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Mul x1 [ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
+        ]
+      },
+      "arm_b": {
+        "returncode": 0,
+        "claimed_form_evidence": "ALL-PROVEN",
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "claimed_nodes": 1,
+        "claimed_forms_proven": 1,
+        "ort_sink_warns": []
+      },
+      "verdict": "PASS",
+      "failures": []
+    }
+  ]
+}

@@ -529,6 +529,10 @@ unsafe fn get_capability_impl(
     // Per-op-type: (count, first decline reason, a few node names to locate them by).
     let mut declined: BTreeMap<String, (usize, String, Vec<String>)> = BTreeMap::new();
     let mut claimed: Vec<*const ort::OrtNode> = Vec::new();
+    // Distinct claimed forms, for the §8.9.7 session-creation disclosure below. Keyed by
+    // (op_type, proof key) so the disclosure is one line per form and not one per node.
+    let mut claimed_forms: BTreeMap<(String, String), (Option<registry::ProofKey>, usize)> =
+        BTreeMap::new();
     let claim_debug = logging::claim_debug_enabled();
 
     for &node in &nodes {
@@ -539,6 +543,7 @@ unsafe fn get_capability_impl(
         // borrows and never outlives this iteration.
         let view = unsafe { NodeView::new(api, node) };
 
+        let mut audit_key: Option<registry::ProofKey> = None;
         let decision = if in_control_flow_body {
             Err(std::borrow::Cow::Borrowed(
                 "inside a control-flow subgraph body — such nodes are claimed as part of the \
@@ -551,11 +556,27 @@ unsafe fn get_capability_impl(
                 "excluded by ep.max_claim_ops (allowlist: {allow:?})"
             )))
         } else {
-            registry::claim_decision(&view)
+            // One audit per node, read twice: once for the claim answer, once for the proof key
+            // the disclosure needs. Calling `claim_audit` again here would double-count
+            // `proven_key_lookups`, which is criterion 11's evidence.
+            let audit = registry::claim_decision_audited(&view);
+            audit_key = audit.proof_key.clone();
+            audit.decision()
         };
 
         match decision {
-            Ok(()) => claimed.push(view.raw()),
+            Ok(()) => {
+                claimed.push(view.raw());
+                let op = view.qualified_name();
+                let key_text = audit_key
+                    .as_ref()
+                    .map(|k| k.0.clone())
+                    .unwrap_or_else(|| "<no-proof-key>".to_string());
+                let e = claimed_forms
+                    .entry((op, key_text))
+                    .or_insert((audit_key.clone(), 0));
+                e.1 += 1;
+            }
             Err(reason) => {
                 let entry = declined
                     .entry(view.qualified_name())
@@ -592,7 +613,27 @@ unsafe fn get_capability_impl(
     );
 
     if claimed.is_empty() {
+        // §8.9.7: disclose the zero-claim outcome on ORT's own channel. Not a warning — ops this
+        // EP never claimed running on the CPU EP is the plan, disclosed once in aggregate.
+        crate::disclosure::disclose_zero_claims(num_nodes, &declined);
         return ptr::null_mut();
+    }
+
+    // --- §8.9.7 / RAI-009 session-creation disclosure ---
+    // Emitted here, before any fusion decision, because this is the last point at which the set
+    // of forms this session will claim is known and the session has not yet produced an answer.
+    // A user must learn that a claimed form's correctness is UNMEASURED or DIVERGENT now, not
+    // from a wrong answer later.
+    {
+        let forms: Vec<crate::disclosure::ClaimedForm> = claimed_forms
+            .iter()
+            .map(|((op, _), (key, n))| crate::disclosure::ClaimedForm {
+                op_type: op.clone(),
+                key: key.clone(),
+                nodes: *n,
+            })
+            .collect();
+        crate::disclosure::disclose_claimed_forms(&forms);
     }
 
     // --- build reachability structures for convexity enforcement ---
@@ -2563,6 +2604,188 @@ mod tests {
     use super::*;
 
     // ------------------------------------------------------------------------------------------
+    // Session-creation disclosure — the two-arm control (DESIGN.md §8.9.7, RAI-009)
+    // ------------------------------------------------------------------------------------------
+    //
+    // **Evidence class: PLANTED.** Both arms are constructed. No production build of this
+    // repository has ever claimed an UNMEASURED form — doing so requires
+    // `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` to name a key — so the red arm's only specimen is one
+    // I wrote. That is the honest classification under Link's PLANTED/OBSERVED axis, and it is
+    // sufficient: what is being falsified is the *warning path*, not the frequency of the fault.
+    //
+    // These live in the lane, not behind `#[ignore]`. A control that only runs when someone
+    // remembers to ask for it has the same evidential value as one that never ran.
+    mod session_disclosure {
+        use super::*;
+        use crate::disclosure::{ClaimedForm, disclose_claimed_forms};
+        use crate::registry::ProofKey;
+
+        /// Run one disclosure with the fake ORT sink attached and return what reached it.
+        fn run_arm(forms: &[ClaimedForm]) -> (crate::disclosure::Disclosure, Vec<(i32, String)>) {
+            let _guard = broken_commitment::serialize();
+            let api = broken_commitment::fake_api();
+            broken_commitment::CAPTURED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            // SAFETY: `api` outlives the attachment — detached below, before the box drops.
+            unsafe { logging::attach_ort_logger(&*api, ptr::dangling::<ort::OrtLogger>()) };
+            let d = disclose_claimed_forms(forms);
+            logging::detach_ort_logger();
+            let seen = broken_commitment::CAPTURED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|(_, m)| m.contains("§8.9.7"))
+                .cloned()
+                .collect();
+            (d, seen)
+        }
+
+        /// A key the shipped ledger actually proves, read from the ledger rather than pasted in.
+        ///
+        /// A hardcoded key that drifts out of the ledger turns the *negative* arm green for the
+        /// wrong reason — it would then be testing an unproven form and asserting silence. Reading
+        /// the mechanism's own data means the arm cannot quietly stop testing what it names.
+        fn a_proven_key() -> ProofKey {
+            let l = crate::registry::ledger();
+            assert!(
+                l.faults.is_empty(),
+                "ERROR(instrument): shipped ledger is faulted, so 'proven' is unrepresentable \
+                 here and neither arm means anything. Faults: {:?}",
+                l.faults
+            );
+            l.entries()
+                .first()
+                .expect("ERROR(instrument): shipped ledger holds no entries")
+                .key
+                .clone()
+        }
+
+        /// **Red arm (PLANTED).** A session claiming a form with no proof must WARN through ORT's
+        /// own sink at session creation, naming the form and what it means.
+        #[test]
+        fn a_claimed_unmeasured_form_warns_through_orts_sink_at_session_creation() {
+            let key = ProofKey::parse(
+                "test.planted::NeverProven/1+/f16>f16/no_such_kernel/static/session-control",
+            );
+            assert_eq!(
+                crate::disclosure::evidence_for(&key),
+                crate::disclosure::FormEvidence::Unmeasured,
+                "ERROR(instrument): the planted key is not UNMEASURED, so this arm is inert"
+            );
+            let (d, seen) = run_arm(&[ClaimedForm {
+                op_type: "test.planted::NeverProven".to_string(),
+                key: Some(key),
+                nodes: 4,
+            }]);
+            assert!(d.warned, "no WARN for an UNMEASURED claimed form: {d:?}");
+            assert!(
+                d.warn_reached_ort_sink,
+                "the WARN exists only on our own stderr — invisible to the audience Ruling 2 \
+                 names: {d:?}"
+            );
+            let warns: Vec<_> = seen
+                .iter()
+                .filter(|(sev, _)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING)
+                .collect();
+            assert_eq!(
+                warns.len(),
+                1,
+                "expected exactly one session-creation WARN, saw: {seen:?}"
+            );
+            let m = &warns[0].1;
+            for needle in [
+                "test.planted::NeverProven",
+                "no_such_kernel",
+                "UNMEASURED",
+                "not backed by any differential proof",
+                "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN",
+            ] {
+                assert!(m.contains(needle), "WARN is missing {needle:?}: {m}");
+            }
+        }
+
+        /// **Green arm.** The same call site, the same mechanism, an all-proven claim set. No
+        /// WARN may reach ORT's sink.
+        ///
+        /// Non-vacuity is asserted **first**: without `proven >= 1` this arm's silence would be
+        /// the silence of a session that claimed nothing, and "it warned" and "it always warns"
+        /// would remain indistinguishable — which is the whole reason the arm exists.
+        #[test]
+        fn an_all_proven_claim_set_emits_no_warning_at_session_creation() {
+            let (d, seen) = run_arm(&[ClaimedForm {
+                op_type: "ai.onnx::Add".to_string(),
+                key: Some(a_proven_key()),
+                nodes: 11,
+            }]);
+            assert!(
+                d.proven >= 1,
+                "ERROR(instrument): nothing was claimed as proven, so the silence below is \
+                 vacuous: {d:?}"
+            );
+            assert_eq!(d.unproven(), 0, "{d:?}");
+            assert!(
+                !d.warned,
+                "the WARN fired on a fully proven claim set: {d:?}"
+            );
+            let warns: Vec<_> = seen
+                .iter()
+                .filter(|(sev, _)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING)
+                .collect();
+            assert!(
+                warns.is_empty(),
+                "a WARN reached ORT's sink on a good run, so this detector cannot be shown NOT \
+                 to fire: {warns:?}"
+            );
+            // The pair must still be readable: the INFO half is what tells the user *what* the
+            // proof was. Its absence would make the WARN's absence ambiguous with no disclosure
+            // having run at all.
+            assert!(
+                seen.iter().any(
+                    |(sev, m)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO
+                        && m.contains("proven form(s)")
+                ),
+                "no INFO half reached ORT's sink, so 'no WARN' is indistinguishable from 'no \
+                 disclosure': {seen:?}"
+            );
+        }
+
+        /// **Mixed arm.** One proven form and one unmeasured form in the same session: the WARN
+        /// must name the unproven one and must not name the proven one. A warning that lists
+        /// every claimed form whenever any is unproven is not a finding, it is a dump.
+        #[test]
+        fn the_warning_names_only_the_unproven_form() {
+            let proven = a_proven_key();
+            let (d, seen) = run_arm(&[
+                ClaimedForm {
+                    op_type: "ai.onnx::Add".to_string(),
+                    key: Some(proven.clone()),
+                    nodes: 2,
+                },
+                ClaimedForm {
+                    op_type: "test.planted::NeverProven".to_string(),
+                    key: Some(ProofKey::parse(
+                        "test.planted::NeverProven/1+/f16>f16/no_such_kernel/static/mixed-arm",
+                    )),
+                    nodes: 1,
+                },
+            ]);
+            assert_eq!((d.proven, d.unmeasured), (1, 1), "{d:?}");
+            let warn = seen
+                .iter()
+                .find(|(sev, _)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING)
+                .map(|(_, m)| m.clone())
+                .expect("mixed claim set did not warn");
+            assert!(warn.contains("no_such_kernel"), "{warn}");
+            assert!(
+                !warn.contains(&proven.0),
+                "the WARN named a form the ledger proves: {warn}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
     // Broken-commitment disclosure — the two-polarity control (RAI Ruling 2)
     // ------------------------------------------------------------------------------------------
 
@@ -2571,14 +2794,14 @@ mod tests {
         use std::sync::{Mutex, MutexGuard};
 
         /// Everything the fake sink has been handed, as `(severity, message)`.
-        static CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+        pub(super) static CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
 
         /// The ORT logger pointers **and** the counters are process-global, so a polarity must not
         /// run at the same time as anything else that logs or records. This is the same lock the
         /// allocator ledger and the counters tests take: a private lock here would serialise these
         /// two tests against each other and leave them racing `counters_record_what_they_claim_to_
         /// record`, which asserts on the very statics a disclosure moves.
-        fn serialize() -> MutexGuard<'static, ()> {
+        pub(super) fn serialize() -> MutexGuard<'static, ()> {
             crate::allocator::ledger::test_lock()
         }
 
@@ -2625,7 +2848,7 @@ mod tests {
         }
 
         /// A minimal `OrtApi` carrying only the two entry points this path uses.
-        fn fake_api() -> Box<ort::OrtApi> {
+        pub(super) fn fake_api() -> Box<ort::OrtApi> {
             // SAFETY: `OrtApi` is a `#[repr(C)]` table of `Option<fn>` slots; all-zero is the
             // valid `None` niche for every one of them, so a zeroed table is a table where
             // nothing is available — which every caller in this crate already handles.

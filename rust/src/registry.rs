@@ -1897,6 +1897,14 @@ pub struct Ledger {
     /// Parse or consistency problems. Non-empty means the ledger is not usable and every form
     /// declines — a broken ledger is the safe state, not the permissive one.
     pub faults: Vec<String>,
+    /// Keys whose entry carried a verdict other than `MATCH`, with that verdict.
+    ///
+    /// A demotion **grants nothing** — the matching fault above already makes the whole ledger
+    /// unusable. It exists so the disclosure layer can tell *measured and disagreed* from *never
+    /// measured*, which RAI-008's falsifier names as two states (`DIVERGENT` and `UNMEASURED`).
+    /// Collapsing them would leave a user of the §8.9.4 escape hatch, who can claim a form the
+    /// ledger refuses, told only that there is "no proof" for a form the evidence says was wrong.
+    pub demoted: Vec<(ProofKey, String)>,
 }
 
 impl Ledger {
@@ -1928,6 +1936,17 @@ impl Ledger {
             return None;
         }
         self.entries.iter().find(|e| &e.key == key)
+    }
+
+    /// The non-`MATCH` verdict recorded for this key, if the file carried one.
+    ///
+    /// Never grants a claim; see [`Ledger::demoted`]. Read by the §8.9.7 session disclosure so a
+    /// form the evidence measured and rejected does not read as a form nothing has measured.
+    pub fn demotion_for(&self, key: &ProofKey) -> Option<&str> {
+        self.demoted
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -2025,6 +2044,7 @@ fn parse_ledger(source: &str) -> Ledger {
     }
 
     let mut entries = Vec::new();
+    let mut demoted: Vec<(ProofKey, String)> = Vec::new();
     let mut digest_input = String::new();
     for line in lines {
         digest_input.push_str(line);
@@ -2044,6 +2064,14 @@ fn parse_ledger(source: &str) -> Ledger {
         if verdict != "MATCH" {
             // §8.9.2 rule 4: only a MATCH proves. Anything else in this file is a generator bug
             // or a hand-edit, and either way the entry does not get to grant a claim.
+            //
+            // The entry is also remembered as a **demotion** (added 2026-08-02, Tank, for
+            // §8.9.7's session WARN). The fault above stops it granting a claim; the demotion
+            // preserves *what it said*. Without this, a form the evidence measured and found
+            // DIVERGENT and a form nothing has ever measured both arrive at the disclosure layer
+            // as "no proof", and RAI-008's falsifier names those as two states, not one. It
+            // grants nothing: `get`/`lookup_key` still refuse while `faults` is non-empty.
+            demoted.push((key, verdict.clone()));
             faults.push(format!(
                 "ledger entry for {raw_key:?} carries verdict {verdict:?}; only MATCH proves"
             ));
@@ -2115,6 +2143,7 @@ fn parse_ledger(source: &str) -> Ledger {
         actual_digest,
         generator,
         faults,
+        demoted,
     }
 }
 
@@ -2244,6 +2273,17 @@ pub fn ledger_contains(key: &ProofKey) -> bool {
 /// `ep.rs` so that the reason survives `ep.rs`'s per-op-type aggregation, which keeps only the
 /// first reason per op type.
 pub fn claim_decision(view: &NodeView<'_>) -> Result<(), DeclineReason> {
+    claim_decision_audited(view).decision()
+}
+
+/// The same decision, returning the whole [`ClaimAudit`] instead of only its verdict.
+///
+/// Added 2026-08-02 (Tank) for §8.9.7's session-creation disclosure, which needs each *claimed*
+/// node's `proof_key` and `ledger_hit`. The alternative — calling [`claim_audit`] a second time
+/// for claimed nodes — would double-count `proven_key_lookups`, and that counter is criterion
+/// 11's evidence: an instrument that moves because a second reader looked at it is not measuring
+/// the thing it names. One audit per node, one lookup per node, two readers.
+pub fn claim_decision_audited(view: &NodeView<'_>) -> ClaimAudit {
     let logging = crate::ops::claim_log::enabled();
     let audit = claim_audit(view, logging);
     if logging {
@@ -2254,7 +2294,7 @@ pub fn claim_decision(view: &NodeView<'_>) -> Result<(), DeclineReason> {
             &audit,
         );
     }
-    audit.decision()
+    audit
 }
 
 /// The decision itself, plus **every** check that failed rather than only the first.
@@ -3142,6 +3182,44 @@ mod tests {
         assert!(
             stringified.get(&key).is_none(),
             "a quoted count is not a count"
+        );
+    }
+
+    /// A `DIVERGENT` ledger line is **remembered as a demotion**, not merely rejected.
+    ///
+    /// The falsifier for §8.9.7: without `Ledger::demoted`, a form the evidence measured and found
+    /// wrong and a form nothing has ever measured both reach the session disclosure as "no proof",
+    /// and RAI-008 names those as two states. The digest is deliberately absent from the header so
+    /// this test measures the demotion path and not the digest path.
+    #[test]
+    fn a_divergent_ledger_line_is_remembered_as_a_demotion() {
+        let key = "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2";
+        let src = format!(
+            "{{\"__ledger__\":1,\"entry_count\":1,\"generator\":\"test\"}}\n\
+             {{\"key\":\"{key}\",\"device\":\"d\",\"ort_build\":\"1.28.0\",\"tolerance\":\"t\",\
+             \"artifact\":\"a\",\"verdict\":\"DIVERGENT\",\"generated_at\":\"now\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}}\n"
+        );
+        let l = parse_ledger(&src);
+        let pk = ProofKey::parse(key);
+        assert_eq!(
+            l.demotion_for(&pk),
+            Some("DIVERGENT"),
+            "a non-MATCH verdict was dropped instead of remembered; demoted={:?}",
+            l.demoted
+        );
+        assert!(
+            !l.faults.is_empty(),
+            "a demotion must still fault the ledger — remembering a verdict must not grant a claim"
+        );
+        assert!(
+            l.get(&pk).is_none(),
+            "a demoted entry granted a claim; demotion must grant nothing"
+        );
+        // The absence case must not read the same way.
+        assert_eq!(
+            l.demotion_for(&ProofKey::parse("ai.onnx::Nothing/1+/f32>f32/k/static/n1")),
+            None
         );
     }
 

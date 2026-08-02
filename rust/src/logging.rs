@@ -183,6 +183,22 @@ pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
     forward_to_ort(Level::Warn, target, message, Some(UNKNOWN_FILE), 0)
 }
 
+/// Emit one INFO into **ORT's own logging sink**, bypassing this crate's `log` facade, for the
+/// same reason [`warn_through_ort_sink`] does.
+///
+/// §8.9.7's session-creation disclosure is a *pair*: the WARN says a claimed form has no proof,
+/// and the INFO says what the proven forms were proven by. They have to travel down the same
+/// channel or the pair is not readable as a pair — a user who sees the WARN and looks for the
+/// context would find it in a different log, or in no log, depending on `RUST_LOG`.
+///
+/// ORT's own severity filter still applies at its end, and that is correct: ORT's INFO tier is
+/// the host's to configure. What must not be switchable is *ours*, because a disclosure that our
+/// own environment can suppress is a disclosure whose absence means nothing.
+pub fn info_through_ort_sink(target: &str, message: &str) -> bool {
+    eprintln!("[vulkan-ep] INFO: {message}");
+    forward_to_ort(Level::Info, target, message, Some(UNKNOWN_FILE), 0)
+}
+
 /// Stand-in `file_path` for a record with no source location. Never empty, never null.
 pub const UNKNOWN_FILE: &str = "<onnxruntime-ep-vulkan>";
 
