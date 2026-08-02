@@ -766,6 +766,80 @@ That was not restraint, it was design: I picked the instrument before I picked t
 
 ---
 
+## Session 20 — the flake was (a), and looking for (b) anyway is what found the shipping defect
+
+### The lazy fix was available and would have been wrong twice over
+
+`--test-threads=1` makes the R12 test pass. It also hides a frame defect in shipping code that has
+the identical symptom and the opposite fix — and the coordinator had already worked that out and
+told me to distinguish before touching anything. I have been on the other side of that instruction
+often enough to notice how rare it is.
+
+Answer: **both, and they are different defects.** (a) explains the flake. (b) was found while
+distinguishing them, was not causing the flake, and is the one that matters.
+
+### (a) — my own change grew the population that needed the lock
+
+Session 19 gave `HandleRegistry::free` a residency screen. `free` is called by tests that had never
+touched the tally before, so a batch of previously tally-neutral tests silently became
+tally-mutating. The lock was correct and unchanged; what changed was *who needed it*. The failure
+text says it exactly:
+
+    "alloc_device_residency_evaluations": 2,   (the test performed exactly one)
+
+**Wiring an instrument changed which tests share state.** I had no rule that could notice that, and
+I would not have predicted it — I would have said the residency screen was purely additive. It was
+additive in behaviour and not in coupling.
+
+### The screen I wrote first was clean, and wrong
+
+I added a source screen so the rule outlives the checklist, ran the suite, got green, and moved on.
+It flaked again. My screen read **test bodies only**; `transfer.rs`'s tests name no global at all —
+they call `registries()`, which builds real `HandleRegistry`s. Seven tests, invisible.
+
+So I published a clean bill of health from an instrument that could not see the thing. That is the
+`unreachable` census state, produced by me, two days after I wrote the ruling about it. The screen
+now resolves one level of helper, and — more to the point — **runs a positive control before its
+verdict**: four synthetic tests it must classify correctly, including one that reaches the globals
+only through a helper. That case is in the control *because* it is the one that beat me. A screen
+whose falsifier I had to be taught by the suite is not a screen I get to trust on assertion.
+
+### (b) — the sentence I wrote to satisfy R12 said something false
+
+Two providers can exist in one process (`PROVIDERS` is keyed by device index), both call
+`set_device_frame`, and it wrote one global. So the artifact carried one frame label over a
+population from several devices, and which label won depended on scheduling. Pre-fix, my
+two-frame falsifier produced:
+
+    "alloc_device_frame_sides": "... ALLOCATOR side: 'Device B' ...
+       Every alloc_device_* number in this run describes the ALLOCATOR device ..."
+
+Half that population is on Device A. **That prose is mine, added last session to satisfy R12
+obligation 2, and here it is stating a falsehood with total confidence.** Adding a description to a
+detection does not make the description true; it just makes the wrongness fluent. I keep finding
+that the remedy for one rule is the raw material for the next defect.
+
+Fix: accumulate the declarations, report `MIXED` when there is more than one, and refuse to emit a
+number for a population with no single frame. `alloc_device_frames_declared` so MIXED is a count
+rather than a claim.
+
+### What the production probe found that I did not go looking for
+
+Driving the real path — two registries, indices 0 and 1, `ensure_registered` underneath — both
+indices produced the **same** device. `OwnedDevice::create(device_index)` resolves through
+`select_device`, which ignores the index. **The provider map's key does not select a device.** That
+is the fourth face of the same index-space defect on this project, and it means a two-*device* mix
+is not reachable on this box today while a two-*frame* mix is. I wrote down that I have not observed
+the latter end-to-end, because I could not force it from outside the EP, and reachable-by-
+construction is a weaker claim than measured. It is still the honest one to make.
+
+### On the 80 runs
+
+80 consecutive clean runs is about 6% likely by luck at the pre-fix rate. That is corroboration and
+not proof, and I said so in the record rather than quoting "80/80" as if it settled anything. The
+evidence that the leak class is closed is that the class is now text-decidable, the screen finds
+none, and the screen demonstrates on every run that it can find them. **Repetition is what you
+offer when you have no falsifier.**
 ## 2026-08-01 — Tank — the broken-commitment WARN, through ORT's own sink, with a control that bites
 
 Ruling 2 specified the mechanism; my job was to build it and then to make it *falsifiable*. The
@@ -999,3 +1073,18 @@ already walked.
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+
+### Post-merge addendum (same session)
+
+`squad/tank` was 38 commits behind `origin/main`, so I merged and re-verified. The screen
+immediately failed on **two tests that came in with the merge** —
+`transfer.rs::an_engine_write_to_staging_is_pushed_to_the_device_mirror` and
+`::a_host_output_is_not_mirrored_and_is_not_an_error` — neither of which I wrote. That is the
+screen working as intended: the class was closed by a mechanism, not by me auditing a list once,
+and it caught the next two instances at merge time rather than as somebody's 1-in-30 next week.
+Locked both; suite green at 442 lib tests, 40/40 clean binary runs post-merge, census PASS.
+
+The production probe re-run on the merged tree still reports **one** provider for indices 0 and 1
+(`SPLIT-DEVICE on 'NVIDIA GeForce RTX 4060 Laptop GPU'`), so `ensure_registered` still ignores its
+index argument when creating a device. Switch's §6.5 index fix is not in yet, or does not reach
+this path.
