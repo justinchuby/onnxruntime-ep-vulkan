@@ -390,3 +390,53 @@ the claim is false, never by one that is true whatever happens.
 - Five rulings today. Four of them relocated a finding from the file it was reported against to
   the file that actually carried the defect, and three of those were mine. That is the pattern to
   watch, not the rule count.
+
+## 2026-08-01T23:36:43-07:00 — Ratifying a merge I did not make, and two generalisations the day earned
+
+The coordinator resolved a conflict in my criteria table and told me exactly what he chose and
+why, which is the correct way to touch someone else's file.
+
+**Row 11.** He kept mine over Mouse's "MET", on the ground I had written into the cell: a row
+closed by the agent who supplied the artifact, in the change that supplied it, is an identity
+whose two sides come from one source. I ratified rather than reversed, and I wrote into the cell
+that Mouse's evidence is neither rejected nor lost — what is withheld is the tally, not the work.
+That distinction is worth being explicit about; I do not want the register to become a way of
+declining people's findings.
+
+**Row 12.** He kept Mouse's, against my stale tail, because he ran the census himself on both
+devices and got `unwired: []`. He was right and my text was wrong. But he flagged that rows 11
+and 12 now read as a contradiction, and he was right about that too, so I wrote the reconciliation
+into row 12: the census answers whether a mechanism ran, a criterion answers whether a claim is
+false-able, and neither can do the other's job. A wired mechanism beside an undischarged criterion
+is the normal state of a row being taken seriously.
+
+**Two generalisations, and I checked both against the no-minting rule before writing them.**
+
+*R9's third generalisation.* The sentence he is now briefing agents with — a criterion is
+discharged by an observable that changes when the claim is false, never by one that is true
+whatever happens — is the red-instrument test with "criterion" substituted for "claim". Same
+remedy, wider scope. So a generalisation, not an amendment, and I said so in the text. Three
+specimens in one day: RAI-011's early return, Link's screen on a variable nothing defines, and
+Switch's assertion comparing 0.0 with 0.0. Two green, one negative — the class does not care about
+polarity, which is our own sentence about the census arriving as a property.
+
+*The dangling reference.* He is right that the phantom key, my stale line number and Link's
+undefined variable are one failure. I named the class under R13 amendment 1. The line number is
+the worst of the three because there is no lookup to fail — the reader performs it by hand and
+receives a plausible statement. I also wrote where the class stops: a broken URL fails loudly and
+is merely broken. The class is references that resolve anyway.
+
+**Trinity's finding.** The §10.0 `attribution_witnesses` example showed two keys where the record
+emits considerably more. She did not edit my document, which is correct. I regenerated the example
+from `criterion10-dev0.json` rather than from memory, and wrote down why: a schema example is a
+claim about the record's extent, and R11's extent obligation binds a document's example exactly as
+it binds a producer's output. Two live keys were missing for a day and the defect was mine.
+
+**Carry forward**
+- Mouse still owes three things in `partition.rs`, all blocked on the shared worktree: the
+  `Verdict::Claim` reason field, the `MEASURED_PHI35_DEV0` rename, the test rename.
+- Row 11 closes when Trinity's tally moves against the four conditions. Not before, and not by me.
+- The prefill falsifier for the bound (real extents above 128) is now a standing item on the
+  coordinator's list, which is where I wanted it.
+- Regenerate document examples from artifacts. I have now been caught by the same class of defect
+  I ruled on twice today, in my own file, in a code fence.
