@@ -1775,6 +1775,10 @@ impl VulkanSession {
             // Keep this pool alive until after the fence signals.  See the `desc_pools`
             // declaration above for the full lifetime reasoning.
             shader_names.push(eff_shader);
+            // §8.9.11 (Mouse, declared): the run's own record of which embedded SPIR-V module it
+            // bound, so a proof-ledger entry can name the code it proved and go stale when that
+            // code is replaced.
+            crate::counters::record_shader_dispatched(eff_shader);
             desc_pools.push(desc_pool);
 
             // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each

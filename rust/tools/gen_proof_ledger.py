@@ -345,8 +345,14 @@ class CpuFallbackRefusal(RuntimeError):
     """
 
 
-def discover_keys(model: str) -> tuple[list[str], dict]:
-    """Pass 1 — which forms would a proof unlock, and what else is wrong with them."""
+def discover_keys(model: str, reprove: bool = False) -> tuple[list[str], dict]:
+    """Pass 1 — which forms would a proof unlock, and what else is wrong with them.
+
+    With `reprove=True`, forms the EP **already claims** are returned as well.  Without it the
+    generator can only ever measure forms that are not yet proven, which means a proven form is
+    never re-measured and its entry silently outlives the kernel it describes (§8.9.11).  The
+    skip is an optimisation; treating it as a policy is how a proof stops being about anything.
+    """
     log = REPO / "bench" / "results" / "_ledger_claimlog.jsonl"
     if log.exists():
         log.unlink()
@@ -362,7 +368,10 @@ def discover_keys(model: str) -> tuple[list[str], dict]:
         )
 
     unlockable: list[str] = []
-    census = {"records": 0, "unproven_only": 0, "other_decline": 0, "claimed": 0, "no_key": 0}
+    census = {
+        "records": 0, "unproven_only": 0, "other_decline": 0, "claimed": 0, "no_key": 0,
+        "claimed_reoffered": 0,
+    }
     for line in log.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -375,6 +384,9 @@ def discover_keys(model: str) -> tuple[list[str], dict]:
             continue
         if rec.get("claimed"):
             census["claimed"] += 1
+            if reprove and key not in unlockable:
+                census["claimed_reoffered"] += 1
+                unlockable.append(key)
             continue
         codes = set(rec.get("codes") or [])
         if codes == {"unproven"}:
@@ -526,6 +538,10 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         "worst_rel": worst,
         "claimed_nodes": claimed,
         "dispatches_executed": dispatches,
+        # §8.9.11 subject witness — which embedded SPIR-V modules this run bound, and their
+        # digest, both taken from the EP's own dispatch record rather than re-derived here.
+        "shaders_dispatched": c.get("shaders_dispatched", []),
+        "shaders_dispatched_digest": c.get("shaders_dispatched_digest", ""),
         # The keys this run actually claimed under. Entries are written for these and no others.
         "admitted": sorted(hatch),
     }
@@ -554,11 +570,24 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     """
     claimed = int(proof_run.get("claimed_nodes", 0))
     dispatches = int(proof_run.get("dispatches_executed", 0))
+    shaders = sorted(proof_run.get("shaders_dispatched") or [])
+    shader_digest = proof_run.get("shaders_dispatched_digest") or ""
     if claimed <= 0 or dispatches <= 0:
         raise SystemExit(
             f"REFUSING to write an entry for {key}: attribution is "
             f"claimed_nodes={claimed} dispatches_executed={dispatches}. An entry with no "
             f"attribution witness did not come from a proof run."
+        )
+    # §8.9.11 — SUBJECT PROVENANCE.  Attribution says a run happened; it says nothing about what
+    # code ran.  An entry that cannot name its shader set cannot be invalidated when that shader
+    # set is replaced, and on 2026-08-02 exactly that happened: the GQA entry survived two shader
+    # rewrites because `--append` skipped re-measuring an already-claimed form.  A proof that
+    # cannot be invalidated by changing its subject is not a proof of that subject.
+    if not shaders or not shader_digest or shader_digest == "NONE-DISPATCHED":
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the run reported shaders={shaders!r} "
+            f"digest={shader_digest!r}. Without a subject witness the entry would outlive the "
+            f"kernel it proves. This is an instrument gap, not a licence to write the entry."
         )
     return json.dumps(
         {
@@ -573,6 +602,9 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             # --- provenance: written by a proof run, never by the claim table ---
             "claimed_nodes": claimed,
             "dispatches_executed": dispatches,
+            # --- subject provenance: what code this proof is about (§8.9.11) ---
+            "shaders": shaders,
+            "shader_digest": shader_digest,
             "worst_rel": float(proof_run.get("worst_rel", 0.0)),
         },
         separators=(",", ":"),
@@ -665,6 +697,22 @@ def check_ledger(path: pathlib.Path) -> int:
                     f"entry {key} has {field}={value}; a run that claimed or dispatched nothing "
                     f"is UNATTRIBUTED and proves nothing"
                 )
+        # §8.9.11: subject provenance. Shape is checked here; *agreement* with the shaders in the
+        # build is checked in `registry.rs::parse_ledger`, which is the only place the compiled
+        # SPIR-V exists. Splitting it that way is deliberate — a Python re-derivation of the
+        # digest would be a second implementation of the thing being checked.
+        shaders = e.get("shaders")
+        digest_field = e.get("shader_digest")
+        if not isinstance(shaders, list) or not shaders:
+            failures.append(
+                f"entry {key} names no shader set; it cannot say what code it proved, so no "
+                f"change to that code can ever invalidate it"
+            )
+        if not isinstance(digest_field, str) or not digest_field or digest_field == "NONE-DISPATCHED":
+            failures.append(
+                f"entry {key} carries no shader digest ({digest_field!r}); the entry would "
+                f"outlive its subject"
+            )
     if failures:
         print(f"FAIL(condition=LEDGER_INVALID): {path}")
         for f in failures:
@@ -682,6 +730,13 @@ def main() -> int:
     ap.add_argument("--model", action="append", default=[])
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--append", action="store_true")
+    ap.add_argument(
+        "--reprove",
+        action="store_true",
+        help="re-measure forms that are ALREADY claimed and replace their entries. Without this "
+             "the generator can only measure unproven forms, so an entry is never re-checked "
+             "against the kernel it names and silently outlives it (§8.9.11).",
+    )
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--rtol", type=float, default=1e-3)
     ap.add_argument("--atol", type=float, default=1e-5)
@@ -718,15 +773,29 @@ def main() -> int:
     ) if planted else "?"
 
     new_lines = list(existing)
+    measured_any = False
+    reproved: list[str] = []
     for model in args.model:
         model_path = pathlib.Path(model).resolve()
-        keys, census = discover_keys(str(model_path))
+        keys, census = discover_keys(str(model_path), reprove=args.reprove)
         print(f"[discover] {model_path.name}: {census}, {len(keys)} unlockable key(s)")
         for k in keys:
             print(f"    would decline without a proof: {k}")
         verdict, detail = prove(str(model_path), keys, (args.rtol, args.atol))
         print(f"[prove]    {model_path.name}: {verdict} {detail}")
         _record_attempt(model_path, keys, verdict, detail, device, ort_build, tolerance, now)
+        if keys:
+            measured_any = True
+        else:
+            # R13, and the same defect Scribe had in her health report: a run that measured
+            # nothing must not contribute to a PASS. `--append` skips already-claimed forms, so
+            # `UNMEASURED ... no unlockable keys` followed by `PASS` is a report whose two halves
+            # describe different things — one of them the ledger's validity, the other a run that
+            # did not happen.
+            print(
+                f"    NOT MEASURED: {model_path.name} offered no key to prove. If the form is "
+                f"already claimed, this run re-checked nothing — use --reprove to re-measure it."
+            )
         if verdict != "MATCH":
             print(f"    no entries written for {model_path.name} — only MATCH proves")
             continue
@@ -756,15 +825,31 @@ def main() -> int:
                     f"rust/tools/ledger_case_models.py."
                 )
             if k in have:
-                continue
+                if not args.reprove:
+                    continue
+                # Replace rather than append: two entries for one key is the fork R7 forbids, and
+                # `parse_ledger` faults a duplicate. The new measurement wins because it is the
+                # one taken against the shaders in this build.
+                new_lines = [ln for ln in new_lines if json.loads(ln)["key"] != k]
+                reproved.append(k)
             have.add(k)
             new_lines.append(
                 entry_line(k, device, ort_build, tolerance, rel, sha, now, detail)
             )
 
+    if reproved:
+        print(f"[reprove]  replaced {len(reproved)} entr(ies) with fresh measurements")
     write_ledger(out, new_lines)
     print(f"[write]    {out}: {len(new_lines)} entr(ies)")
-    return check_ledger(out)
+    rc = check_ledger(out)
+    if rc == 0 and not measured_any:
+        # The ledger is valid AND this run measured nothing. Both are true, and reporting only
+        # the first is how `PASS` came to sit under `UNMEASURED`.
+        print(
+            "NOTE: the ledger is valid, but this run measured no form. That is a statement "
+            "about the file, not about any kernel. Re-run with --reprove to measure."
+        )
+    return rc
 
 
 if __name__ == "__main__":

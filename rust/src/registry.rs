@@ -1880,6 +1880,21 @@ pub struct LedgerEntry {
     /// witnesses are absent or zero, so a table-derived ledger grants **no** claims rather than
     /// granting them quietly.
     pub dispatches_executed: u64,
+    /// **Subject witness — the embedded SPIR-V modules the proof run dispatched.**
+    ///
+    /// §8.9.11. Sorted, deduplicated stems, taken from the run's own dispatch record.
+    pub shaders: Vec<String>,
+    /// **Subject witness — a digest of exactly those modules' SPIR-V bytes.**
+    ///
+    /// Without it, an entry outlives its subject: the key stays equal while the kernel it names
+    /// is replaced, `ledger_hits == proven_key_lookups` stays true forever, and nothing in the
+    /// pipeline can tell. That is the criterion-11 shape one level up — not a ledger derived
+    /// from the claim table, but a ledger whose entries silently stop describing anything.
+    ///
+    /// **A proof that cannot be invalidated by changing its subject is not a proof of that
+    /// subject.** Recomputed at parse time; a disagreement demotes this entry and only this
+    /// entry.
+    pub shader_digest: String,
 }
 
 /// The parsed ledger plus the header facts a checker needs.
@@ -1964,6 +1979,83 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// Digest the embedded SPIR-V of exactly the named shader stems (§8.9.11).
+///
+/// **The frame, stated in full, because a digest whose coverage is vague is a digest that will be
+/// argued with the first time it is inconvenient.**
+///
+/// It COVERS: the compiled SPIR-V bytes of every module the proof run dispatched, keyed by stem.
+/// A change to the GLSL that changes the compiled output — a formula, an index expression, a
+/// workgroup size, a binding order — changes this digest and makes every entry that dispatched
+/// that module stale. Deleting or renaming a module does too.
+///
+/// It DELIBERATELY DOES NOT COVER:
+///
+/// * **Shaders the run did not dispatch.** Staleness is scoped to the code that produced the
+///   proof, so editing an unrelated kernel does not demand 73 re-proof runs. This is the whole
+///   reason the digest is per-entry rather than over the shader set: a blanket digest would make
+///   every routine edit demand a full re-proof, and the pressure to relax it would arrive within
+///   the day.
+/// * **Host-side code** — translate, allocation, descriptor construction, push-constant values.
+///   **This is a named residual, not an oversight.** Its falsifier is exact: a host-only change
+///   that alters numerics (a wrong push constant, a mis-sized dispatch) leaves the entry green
+///   while the form's behaviour changes. `dispatches_executed` is recorded per entry and moves
+///   with dispatch *structure*, so it catches some of that class and is not claimed to catch all
+///   of it. Closing this properly needs a re-proof lane in CI, which is Link's frame, not a digest.
+/// * **Comment-only GLSL edits**, because they do not survive to SPIR-V under our `glslc` flags.
+///   A rename that changes a stem *is* covered, since the stem is part of the digest input.
+///
+/// Returns `None` when no module was dispatched — R12: "nothing to digest" is a different fact
+/// from "the digest of nothing", and an entry whose run dispatched no shader has no subject.
+pub fn shader_digest_for(stems: &[&str]) -> Option<String> {
+    if stems.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<&str> = stems.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut input: Vec<u8> = Vec::new();
+    for stem in &sorted {
+        input.extend_from_slice(stem.as_bytes());
+        input.push(0);
+        match crate::engine::shaders::find(stem) {
+            Some(spirv) => {
+                input.extend_from_slice(&(spirv.len() as u64).to_le_bytes());
+                input.extend_from_slice(spirv);
+            }
+            // A stem the run dispatched that this build no longer embeds. Hashing a distinct
+            // marker rather than skipping it means the digest *moves* — a deleted kernel must
+            // make its proofs stale, not leave them looking current.
+            None => input.extend_from_slice(b"\x01MODULE-ABSENT"),
+        }
+        input.push(0);
+    }
+    Some(format!("{:016x}", fnv1a64(&input)))
+}
+
+/// Pull a `"field": ["a", "b"]` array of strings out of a JSON object line.
+///
+/// Same deliberate smallness as [`json_field`]: our generator emits a fixed shape. Returns `None`
+/// when the field is absent, so absent stays distinguishable from an empty array.
+fn json_str_array_field(line: &str, field: &str) -> Option<Vec<String>> {
+    // The generator emits compact JSON (`"field":[...]`); hand-written fixtures and the counters
+    // artifact use a space. Accept both rather than making the reader depend on a formatter.
+    let start = [format!("\"{field}\":["), format!("\"{field}\": [")]
+        .iter()
+        .find_map(|needle| line.find(needle.as_str()).map(|i| i + needle.len()))?;
+    let end = line[start..].find(']')? + start;
+    let body = &line[start..end];
+    if body.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(
+        body.split(',')
+            .map(|p| p.trim().trim_matches('"').to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+    )
 }
 
 /// Pull one `"field": "value"` string out of a JSON object line.
@@ -2101,6 +2193,49 @@ fn parse_ledger(source: &str) -> Ledger {
             ));
             continue;
         }
+        // §8.9.11 — SUBJECT PROVENANCE. `claimed_nodes`/`dispatches_executed` establish that a
+        // run happened; they say nothing about *what code* it ran. Switch changed the GQA shader
+        // twice on 2026-08-02 and the entry proving that form predated both changes, while
+        // `--append` skipped re-measuring it because the form was already claimed. The ledger
+        // agreed with him — and would have agreed identically had he broken the kernel.
+        //
+        // A stale entry demotes ITSELF and nothing else. Making it a global fault would let one
+        // shader edit disable every claim in the artifact, which is the blunt shape that gets
+        // relaxed the first time someone is in a hurry.
+        let shaders = json_str_array_field(line, "shaders");
+        let recorded_digest = json_field(line, "shader_digest");
+        let (Some(shaders), Some(recorded_digest)) = (shaders, recorded_digest) else {
+            demoted.push((key, "NO-SUBJECT-WITNESS".to_string()));
+            faults.push(format!(
+                "ledger entry for {raw_key:?} names no shader set or digest; it cannot say what \
+                 code it proved, so it cannot be invalidated by that code changing. Re-prove it \
+                 with `gen_proof_ledger.py --reprove`."
+            ));
+            continue;
+        };
+        let stems: Vec<&str> = shaders.iter().map(String::as_str).collect();
+        let current_digest = shader_digest_for(&stems);
+        match &current_digest {
+            Some(now) if *now == recorded_digest => {}
+            Some(now) => {
+                demoted.push((key.clone(), "STALE-SHADER".to_string()));
+                faults.push(format!(
+                    "ledger entry for {raw_key:?} was proven against shader digest \
+                     {recorded_digest} but this build's modules {shaders:?} hash to {now}. The \
+                     entry describes a kernel that has been replaced; re-prove it with \
+                     `gen_proof_ledger.py --reprove`."
+                ));
+                continue;
+            }
+            None => {
+                demoted.push((key.clone(), "NO-SUBJECT-WITNESS".to_string()));
+                faults.push(format!(
+                    "ledger entry for {raw_key:?} names an empty shader set; a run that \
+                     dispatched no module has no subject to have proven"
+                ));
+                continue;
+            }
+        }
         entries.push(LedgerEntry {
             key,
             device: json_field(line, "device").unwrap_or_default(),
@@ -2111,6 +2246,8 @@ fn parse_ledger(source: &str) -> Ledger {
             generated_at: json_field(line, "generated_at").unwrap_or_default(),
             claimed_nodes,
             dispatches_executed,
+            shaders,
+            shader_digest: recorded_digest,
         });
     }
 
@@ -3141,9 +3278,17 @@ mod tests {
         let key = ProofKey::validate(KEY).expect("valid key");
 
         let ledger_with = |extra: &str| {
+            // §8.9.11: every fixture needs a subject witness, or it fails for that reason rather
+            // than the one under test. `ew_binary_add_f32` is a real stem, so the digest is the
+            // one this build would compute.
+            let digest_now =
+                shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
+            let subject = format!(
+                ",\"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\""
+            );
             let entry = format!(
                 "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
-                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\"{extra}}}"
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\"{subject}{extra}}}"
             );
             let digest = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
             let header = format!(
@@ -3223,8 +3368,9 @@ mod tests {
         );
     }
 
-    /// The shipped ledger is attributed, entry by entry. This is the assertion that would go red
-    /// if anyone regenerated it with a tool that stopped recording provenance.
+    /// The shipped ledger is attributed, entry by entry, **and names the code it proves**. This is
+    /// the assertion that would go red if anyone regenerated it with a tool that stopped recording
+    /// provenance.
     #[test]
     fn every_shipped_ledger_entry_carries_its_proof_run() {
         let l = ledger();
@@ -3238,7 +3384,118 @@ mod tests {
                 e.claimed_nodes,
                 e.dispatches_executed
             );
+            assert!(
+                !e.shaders.is_empty() && !e.shader_digest.is_empty(),
+                "shipped entry {} names no subject: shaders={:?} digest={:?}. An entry that \
+                 cannot say what code it proved cannot be invalidated when that code changes.",
+                e.key.0,
+                e.shaders,
+                e.shader_digest
+            );
         }
+    }
+
+    /// **§8.9.11, both polarities.** An entry proven against the shaders in this build claims; the
+    /// *same* entry with one byte of its subject changed does not — and it demotes itself alone
+    /// rather than faulting every other form.
+    ///
+    /// R10: the falsifier varies with the input. Two ledgers differing only in the digest produce
+    /// two outcomes. Without the second arm this would be a check that passes because nothing ever
+    /// disagrees with it, which is the shape that let the GQA entry survive two shader rewrites.
+    #[test]
+    fn an_entry_whose_shader_changed_stops_proving_its_form() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let build = |digest: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest}\",\
+                 \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            );
+            let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}\n{entry}\n"
+            ))
+        };
+
+        let current = shader_digest_for(&["ew_binary_add_f32"]).expect("a stem to digest");
+        let fresh = build(&current);
+        assert!(fresh.faults.is_empty(), "faults: {:?}", fresh.faults);
+        assert!(
+            fresh.get(&key).is_some(),
+            "an entry proven against this build's shaders must claim"
+        );
+
+        let stale = build("0000000000000000");
+        assert!(
+            stale.get(&key).is_none(),
+            "an entry proven against a shader this build no longer contains still claimed. The \
+             key stayed equal while the kernel was replaced, which is the whole defect."
+        );
+        assert_eq!(
+            stale.demotion_for(&key),
+            Some("STALE-SHADER"),
+            "a stale entry must be distinguishable from one that was never measured and from one \
+             measured and found DIVERGENT; demoted={:?}",
+            stale.demoted
+        );
+        assert!(
+            stale.faults.iter().any(|f| f.contains("--reprove")),
+            "the fault must name the remedy, not merely the condition: {:?}",
+            stale.faults
+        );
+
+        // arms_must_differ, stated rather than implied.
+        assert_ne!(
+            fresh.get(&key).is_some(),
+            stale.get(&key).is_some(),
+            "both arms reached the same outcome; the digest is not being read"
+        );
+    }
+
+    /// An entry that carries no subject witness at all is refused, not tolerated.
+    ///
+    /// This is the shape every entry in the artifact had before 2026-08-02, and admitting it
+    /// "for compatibility" would leave the hole open for exactly the entries that predate the
+    /// fix — which are the ones that have had the longest to drift.
+    #[test]
+    fn an_entry_with_no_subject_witness_proves_nothing() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let entry = format!(
+            "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+             \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+        );
+        let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+        let l = parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{entry}\n"
+        ));
+        let key = ProofKey::validate(KEY).expect("valid key");
+        assert!(l.get(&key).is_none(), "an entry with no subject granted a claim");
+        assert_eq!(l.demotion_for(&key), Some("NO-SUBJECT-WITNESS"));
+    }
+
+    /// The digest moves with its input, and only with the part of the input it claims to cover.
+    #[test]
+    fn shader_digest_covers_the_named_modules_and_their_order_does_not_matter() {
+        let a = shader_digest_for(&["ew_binary_add_f32"]).expect("digest");
+        let ab = shader_digest_for(&["ew_binary_add_f32", "ew_binary_mul_f32"]).expect("digest");
+        let ba = shader_digest_for(&["ew_binary_mul_f32", "ew_binary_add_f32"]).expect("digest");
+        assert_eq!(ab, ba, "the digest must not depend on dispatch order");
+        assert_ne!(a, ab, "adding a dispatched module must move the digest");
+        assert_eq!(
+            shader_digest_for(&[]),
+            None,
+            "R12: `nothing was dispatched` is not `the digest of nothing`"
+        );
+        assert_ne!(
+            shader_digest_for(&["a-stem-that-does-not-exist"]),
+            shader_digest_for(&["another-stem-that-does-not-exist"]),
+            "two absent modules must not collapse to one digest"
+        );
     }
 
     /// **The three-token miss path** (R13, discharge condition (d)). A miss is three findings, not

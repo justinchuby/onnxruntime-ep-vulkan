@@ -905,3 +905,80 @@ unrecoverable, growing extent, shared-buffer aliasing).
 
 **Next:** KV bandwidth is now unblocked — 27.7% of the byte floor at past_len 2048, 60.5%
 at 8192, and this model does no grouping at all (32 KV heads for 32 query heads).
+
+## Session 46f — the prefill race, the defect underneath it, and the KV byte model
+
+**Merged `main` (`db8affd`).** DLL `DE076B465404E6E1` either side; `rust/` untouched by the merge.
+
+**Fixed the sibling-key race in `gqa_f16.comp` that I flagged last session** — the attention loop
+read `present` for `t ∈ [past_len, tok_pos)`, positions written by sibling invocations of the same
+dispatch with no ordering guarantee. Both branches now recompute K (with RoPE) and V from
+`packed_qkv`, a read-only input. Bit-identical by construction, not approximate. Deleted
+`f16_presk`/`f16_presv` so no reader of `present` remains.
+
+**Then the falsifier found a defect I had not predicted, and it was the larger one.**
+`probe_gqa_prefill_race.py` read `DIVERGENT` at `worst_rel = 774.8` *after* the race fix, and
+deterministically so. The shader read `past_len = seqlens_k[b]`. ORT defines `seqlens_k[b]` as
+`total_sequence_length - 1`, and `total = past + seq_len`, so `past = seqlens_k[b] + 1 - seq_len`.
+**The two expressions are equal exactly when `seq_len == 1`.** Every case this kernel had ever run
+was decode. Prefill placed the first query token at `past + seq_len - 1` and indexed past_key
+beyond its extent.
+
+`DIVERGENT 774.8 → MATCH 0.000724`, present KV bit-exact. Decode control unmoved to the digit
+(`0.00072939`, `COPY EXACT`).
+
+**Fourth decode-only assumption in this kernel** after `present == past`, `rotary_dim == head_dim`
+and `past_len_max unwrap_or(0)`. They share one shape and it is worth naming: *a quantity with two
+definitions that coincide on the test set is invisible to that test set.* The fix is never to think
+harder about the quantity; it is to run the case where the definitions separate.
+
+**KV byte model (`probe_kv_traffic.py`).** The read is **irreducible in elements, not in bytes** —
+softmax has no zeros so every element is required, but bytes = elements × precision and precision
+is a choice. And **we move 3× the irreducible term**: the present-copy round-trip (+2 units, forced
+by the graph declaring `past` and `present` at different extents) and group amplification (`Nq/Nkv`,
+exactly 1.00 on Phi-3.5 and 4× on a genuinely grouped model).
+
+**This corrects my own published table upward** — KV at `past_len` 8192 is **82.2%** of traffic,
+not 60.5%. Levers: dropping the present-copy is **2.21×** and is not a kernel change at all.
+
+**My detector for the group term first read `False` on a fact that is plainly true** — it matched a
+loop bound absent from the file, and False there *understates our own amplification*, the
+comfortable direction. Fixed to read the actual gid decode, and the probe now refuses rather than
+publishing a byte model whose shader facts it could not confirm.
+
+Commits `b060f47`, `277f670`. Not pushed.
+
+## Session 46g — the 2.21× was not there, and half of it was
+
+**Merged `main` (`112d712`).** DLL `39CAE83A974D4BE7` → `2F5FC71ED0AB158E`.
+
+**Refuted the lever I was asked to land, before building anything.** `bind_aliased_output` returns
+the *input's* buffer for the output, so aliasing `present` onto `past` requires present to fit
+inside past's allocation. The graph declares `past` at `past_sequence_length` and `present` at
+`total_sequence_length` — present is strictly larger for every `seq_len ≥ 1` and every `past_len`
+(3072.4 MiB into 3072.0 MiB at ctx 8192). **There is no regime where they coincide**, so unlike the
+four earlier defects this is not a definition that hides on the test set; it is infeasible
+everywhere in this convention. The runtime does not forbid it — the declared convention does, and
+our `shares_past_buffer` branch fires the moment a graph declares otherwise.
+
+**Landed the half that was real.** Of three units of KV traffic per token, exactly one was
+removable: the copy *read*. The copy leader's own attention loop already reads every past element
+of its `(b, kv_h)` one dispatch step later — the standalone step-3a loop was reading the same bytes
+a second time to relocate them. Fused: the leader writes each element to `present` at the moment it
+loads it for the attention sum.
+
+**Predicted before building, then measured:** predicted 3→2 units, floor at ctx 8192
+45.93 → 33.35 ms, 1.376×. Measured 33.34 ms, **1.377×**. At ctx 0 exactly zero, correctly — that is
+the regime our one quotable figure lives in.
+
+**Not tuned to Phi-3.5's degenerate grouping**: the fusion removes one unit of `(Nq/Nkv + 2)`, so
+it is 1.500× here, 1.200× at 4:1, 1.111× at 8:1 — never a regression, worth most where grouping is
+worst. The reverse trap stands: the `Nq/Nkv` attention term is 1.00 here and 4× on Llama-3.
+
+Correctness from comparison against the CPU EP, not from the ledger agreeing: prefill `MATCH`
+(present exactly 0, on a *genuine* 4:1 grouping), decode `COPY EXACT` and `0.00072939` unmoved,
+criterion 10 identical to the digit at 62/65.
+
+Commit `4b98b63`. Not pushed.
+
+📌 Team update (2026-08-02T14-42-30-07-00): Niobe measured that past context length 2048 we are link-bound, not memory-bound (KV-cache readback exact at 393,216 B per past token, ratio 1.000000). This changes what the present-copy KV-cache fix is worth once contexts grow past that point, and connects to `offer_shared_device`, whose default is `OFF` and whose recorded reason for staying off Morpheus has separately ruled expired. Worth revisiting whether the default should change now that the bottleneck downstream of it has moved. — decided by Niobe

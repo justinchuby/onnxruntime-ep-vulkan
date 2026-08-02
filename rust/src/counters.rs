@@ -497,6 +497,28 @@ static SUBGRAPHS_STUB: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
+/// Successful and failed writes of the JSON snapshot, reported *by the next successful write*.
+///
+/// **Why this exists (Tank, 2026-08-02, measured).** The snapshot is rewritten on the dispatch
+/// path and again at teardown, and the write is best-effort: a failure is logged at `warn` and
+/// ignored, because a diagnostic that can fail the run it was only supposed to observe is a
+/// liability. That is still the right policy — but it has a consequence nobody had written down.
+/// **A failed write leaves the previous snapshot on disk, and the previous snapshot is a
+/// well-formed document that looks complete.** A reader cannot tell it from the final one.
+///
+/// Specimen: a two-lane KV run on a contended box produced `session_staging_uploads = 3,
+/// session_staging_readbacks = 2` for a 5-iteration loop — an inference caught in flight, with
+/// upload counted and readback not. Differencing those byte totals measured *where the observation
+/// stopped*, not what the run did, and the resulting slope looked like a 6.7% KV saving. Re-running
+/// the same point produced the complete document and the byte-exact expected value.
+///
+/// So the pair is emitted into the document: `counters_snapshot_writes` is how many snapshots
+/// preceded this one, and `counters_snapshot_write_failures` is how many of those did not reach
+/// the disk. A stale file is now self-announcing unless *every* subsequent write fails, and a
+/// reader who sees a non-zero failure count knows the file may be a prefix. This is R13 in the
+/// artifact rather than in the harness: an instrument that could not record is not a measurement.
+static SNAPSHOT_WRITES: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_WRITE_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Total nodes that passed the claim predicate across all `GetCapability` calls.
 ///
 /// JSON-only (not in the C ABI struct). Together with `islands_offered`, this is the
@@ -595,6 +617,16 @@ static UNPROVEN_FORMS_CLAIMED: AtomicU64 = AtomicU64::new(0);
 /// `unproven_forms_enabled: [...]` (§8.9.4 item 3). A list rather than a count on purpose: the
 /// CI check has to be able to *name* what a lane claimed without evidence.
 static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Shader stems this process actually dispatched, sorted and deduplicated.
+///
+/// Added 2026-08-02 (Mouse, cross-owner into Tank's file, declared) for §8.9.11. A proof-ledger
+/// entry says a form matched the CPU oracle; it has to be able to say *what code* it matched
+/// with, or the entry silently outlives its subject when that code is replaced. The stems are
+/// `&'static str` from the shader table, so this is the set of embedded SPIR-V modules the run
+/// bound to a pipeline — the run's own account of what it executed, not a re-derivation from the
+/// registry.
+static SHADERS_DISPATCHED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
 static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
@@ -1052,6 +1084,42 @@ pub fn record_dispatches(n: u64) {
     dump_if_requested();
 }
 
+/// Record that this process bound and dispatched the embedded SPIR-V module `stem`.
+///
+/// Idempotent and order-independent: the value of interest is the *set*, because a proof entry's
+/// shader digest must not depend on how many times a kernel ran.
+pub fn record_shader_dispatched(stem: &'static str) {
+    if stem.is_empty() {
+        return;
+    }
+    if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
+        if let Err(pos) = used.binary_search(&stem) {
+            used.insert(pos, stem);
+        }
+    }
+}
+
+/// The stems recorded by [`record_shader_dispatched`], sorted.
+pub fn shaders_dispatched() -> Vec<&'static str> {
+    SHADERS_DISPATCHED.lock().map(|u| u.clone()).unwrap_or_default()
+}
+
+/// `shaders_dispatched` and `shaders_dispatched_digest` as JSON fragments.
+///
+/// The digest is over the SPIR-V **bytes** of exactly those modules, so it changes when the
+/// compiled kernel changes and does not change when an unrelated shader does. Its frame — what it
+/// covers and what it deliberately does not — is stated in `docs/OP_COVERAGE.md` §8.9.11.
+fn shaders_dispatched_json() -> (String, String) {
+    let stems = shaders_dispatched();
+    let list: Vec<String> = stems.iter().map(|s| format!("\"{}\"", json_escape(s))).collect();
+    let digest = match crate::registry::shader_digest_for(&stems) {
+        Some(d) => d,
+        // R12: no module was dispatched is a different fact from "the digest is zero".
+        None => "NONE-DISPATCHED".to_string(),
+    };
+    (format!("[{}]", list.join(", ")), digest)
+}
+
 /// Current values. Not a consistent cross-counter snapshot; see [`ORD`].
 pub fn snapshot() -> VulkanEpCounters {
     VulkanEpCounters {
@@ -1080,6 +1148,9 @@ pub fn reset() {
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
+    if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
+        used.clear();
+    }
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
     // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
@@ -1134,6 +1205,7 @@ impl VulkanEpCounters {
         let claimed = CLAIMED_NODES.load(ORD);
         let islands = ISLANDS_OFFERED.load(ORD);
         let viable = viable_islands_retained_json();
+        let (shaders_list, shaders_digest) = shaders_dispatched_json();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
@@ -1159,6 +1231,8 @@ impl VulkanEpCounters {
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
+             \"shaders_dispatched\": {},\n  \
+             \"shaders_dispatched_digest\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
              \"claimed_forms_unmeasured\": {},\n  \
@@ -1203,6 +1277,8 @@ impl VulkanEpCounters {
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
+            shaders_list,
+            shaders_digest,
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
             CLAIMED_FORMS_UNMEASURED.load(ORD),
@@ -1371,7 +1447,9 @@ pub fn dump_observations_if_requested() {
              \"weight_cache_release_calls\": {},\n  \
              \"weight_cache_release_buffers\": {},\n  \
              \"weight_cache_release_bytes\": {},\n  \
-             \"weight_cache_bytes_resident\": {}\n}}\n",
+             \"weight_cache_bytes_resident\": {},\n  \
+             \"counters_snapshot_writes\": {},\n  \
+             \"counters_snapshot_write_failures\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -1425,6 +1503,8 @@ pub fn dump_observations_if_requested() {
             wc.5,
             wc.6,
             wc.7,
+            SNAPSHOT_WRITES.load(ORD),
+            SNAPSHOT_WRITE_FAILURES.load(ORD),
         ));
     }
     // Splice the preserved record back in, same technique, so the token and the frame that
@@ -1439,10 +1519,15 @@ pub fn dump_observations_if_requested() {
         }
     }
     if let Err(e) = std::fs::write(&path, doc) {
+        SNAPSHOT_WRITE_FAILURES.fetch_add(1, ORD);
         log::warn!(
-            "could not write EP observations to {}: {e}",
+            "could not write EP observations to {}: {e}. The file on disk is now the PREVIOUS \
+             snapshot, which is well-formed and is a prefix of this run; \
+             counters_snapshot_write_failures says so in the next document that reaches the disk.",
             path.to_string_lossy()
         );
+    } else {
+        SNAPSHOT_WRITES.fetch_add(1, ORD);
     }
     // The trace is prose, so it goes beside the JSON rather than into it. It is written for the
     // same reason the JSON is: by the time these lines exist, ORT's logger has usually already

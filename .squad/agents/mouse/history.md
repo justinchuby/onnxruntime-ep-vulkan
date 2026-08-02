@@ -377,3 +377,106 @@ shortcut, arriving at the same moment for the same reason.
 
 **Green:** census + ledger lanes 16/16 on both devices; `cargo test --release --lib` 469/0; clippy
 clean.
+
+## Session 27 — 2026-08-02 — What fraction of the model's work runs on the CPU EP
+
+**Asked:** per-EP FLOPs and boundary bytes as a fraction of a graph-derived whole, as a function of
+context length, with the fabricated-`128` exposure disclosed. Clock-free.
+
+**Built** `rust/tools/roofline_split.py`. Prediction written first to
+`bench/results/roofline_split-prediction.md`; all six predictions held (one under-predicted).
+
+**Answer.** CPU share of bytes: **0.07% at ctx=0, 4.26% at 128, 14.95% at 512, 41.21% at 2048,
+73.77% at 8192.** FLOPs: 0.00% → 30.20%. Identical on both devices. Not 3%, not 30% — a curve, and
+the regime we had been quoting (ctx=0) is the one that hides it.
+
+**Counterfactual on the same instrument:** claiming the 32 GQA nodes (323 → 355 claimed, the island
+we quote) drops CPU bytes to ≤0.29% everywhere. So Switch's GQA fix is worth 41.2 points at ctx=2048
+and 73.5 at 8192, and it collapses **33 islands into 1** — the fragmentation is a consequence of the
+GQA decline, not a separate lever.
+
+**Retired two numbers.** `{CPU: 120, Vulkan: 99}` reproduces nothing in this build (366 = 363 + 3
+folded Constants; 363 = 323 + 40; profile = 33 Vulkan partitions + 40 CPU nodes). And `ep.rs`'s FLOP
+estimator reports **16.58% at every context** — which is `32/193`, the anchor ratio. Its FLOP number
+is a node count wearing a FLOP's clothes; it is blind to the only axis this model's cost varies on.
+
+**Fabricated extents: zero.** Shape inference resolves everything once ctx is stated. The one
+unresolved extent (`cos_cache`/`sin_cache` `[None, 48]`) is *conditional*, not unknown — the `If`
+predicate is `total_sequence_length > 4096` and the branches are `[4096,48]` / `[131072,48]`
+Constants. Read it, don't invent it.
+
+**R13 against myself.** First run said `UNOBSERVABLE(fabricated extents carry 73.69% of the bytes)`.
+That was ERROR(instrument): fabrication flagged per node instead of per tensor, so one 48-wide
+operand condemned a 50 MB node. The tell was that the fabricated fraction equalled the CPU fraction
+to two decimals at every ctx — an identity with no reason to hold. **Fifth time this week that the
+alarming number was the broken instrument.** Check the coincidence before you check the conclusion.
+
+**Left standing:** Switch's 60.5% KV share at 8192 vs my 73.5% GQA share. Different quantities, but
+not obviously 13 points different. Both recorded, neither adjusted.
+
+**Touched:** `rust/tools/roofline_split.py` (new), `docs/OP_COVERAGE.md` §7.17, `bench/results/`.
+**No gate, `partition.rs`, `registry.rs` or `ops/` change** — `mouse-1` is in the same worktree, so
+everything was staged by explicit path.
+
+---
+
+## 2026-08-02 — the ledger had no re-proof path (Switch's find), and the first real reading
+
+**The hole.** `gen_proof_ledger.py --append` printed `UNMEASURED … no unlockable keys` then `PASS`,
+writing nothing: an already-claimed form is skipped as an optimisation and never re-measured. GQA's
+entry therefore outlived *two* shader rewrites made the same day. Morpheus's shape from an unguarded
+direction — not a ledger derived from the claim table, but **an entry that silently outlives its
+subject**. `ledger_hits == proven_key_lookups` stays true forever while the kernel drifts out from
+under it. **Nothing caught it.** Switch proved GQA correct himself; the ledger agreed, and would have
+agreed identically had he broken it.
+
+**Fix (four parts).** `shaders` + `shader_digest` (FNV-1a/64 over the SPIR-V the run *dispatched*)
+in every entry, recomputed at parse against this binary; `--reprove`; no `PASS` over a run that
+measured nothing; and two per-entry demotion tokens `STALE-SHADER` / `NO-SUBJECT-WITNESS`. Demotion
+is per entry — a blanket refusal lets one shader edit disable every claim, and that is the blunt
+shape that gets switched off in a hurry.
+
+**The frame I was asked to state rather than assume.** Covers dispatched SPIR-V bytes only. Does
+*not* cover: shaders the run did not dispatch (a whole-set digest costs 73 re-proofs per unrelated
+edit, and a gate that expensive gets relaxed); **host-side code — named residual, exact falsifier:
+a host-only numeric change leaves the entry green**; comment-only GLSL edits, which do not reach
+SPIR-V. One relaxation, taken because the compiler verifies it rather than me asserting it.
+
+**No grandfathering.** Every shipped entry lacked the witness and faulted. Admitting them "for
+compatibility" would exempt exactly the entries with longest to drift. Re-proved the whole thing:
+**74 entries, digest `d07643b0c4cd2e8f`, key set byte-identical — nothing lost, nothing gained.**
+The claims did not change; they became falsifiable. That is the right outcome to be able to state
+plainly, because I ran it hoping it would invalidate something.
+
+**GQA's margin, recorded not smoothed.** `0.00072939` vs `rtol 0.001` = 1.37×. Next-tightest entry
+in the ledger is **160× further from its bound**. Switch called it out himself rather than letting
+a thin margin read as comfort; he was right to.
+
+**Then the bill.** Phi-3.5: **355/363 claimed**, `ledger_hits 355`, `unproven_forms_claimed 0`,
+`ALL-PROVEN`. Morpheus's own honest-cost number, reached from the other side. The guard held: the
+ledger grew by one entry and the claimed count moved by 32 — not a ledger growing while `0/363`
+stands still.
+
+**Criterion 10's first real reading: DISAGREE.** 65/65 compared, **0 degenerate**, 0 CPU-only, 0
+unobservable, bit-identical across three runs. So the reopened all-zero-KV defect is *not*
+reproducing. Failures are `[0, 63, 64]` — logits, `present.31.key`, `present.31.value`.
+
+**R11 on my own diagnostic.** My first per-output table quoted `max_rel/rtol` and reported `24.6x`
+for outputs that *passed* — the facts divide by `atol+|b|`, the pass criterion by `atol+rtol·|b|`.
+Fixed before quoting anything. **Sixth time the alarming number was my instrument.** With the honest
+ratio the picture inverts: 0.044 at layer 0 rising monotonically to 0.81/0.85 at layer 30 and
+1.66/1.17 at layer 31. **The pass/fail line falls mid-curve, not at a discontinuity** — layer 30
+passing at 0.85 is the same phenomenon as layer 31 failing. So the 62 passes are not 62 clean
+results, and relaxing the tolerance would only move the crossing point. Logits diverge at 46.9× but
+`argmax 30751` and top-10 agree exactly. Changed no tolerance and relaxed no gate; handed it on.
+
+**Attribution before blame.** 43 op-suite reds remain; read the text and they are `[staged]`, not
+`[unproven]` — ops deliberately not enabled in the op table. Nothing to do with the ledger.
+
+**Touched:** `registry.rs`, `gen_proof_ledger.py`, `probe_phi35_oracle_detail.py` (new),
+`evidence/proof_ledger.jsonl`, `docs/OP_COVERAGE.md` §8.9.11–§8.9.12; declared cross-owner edits in
+`counters.rs` (Tank) and one line in `vk/session.rs` (Switch). Rust 476/0, clippy clean, census
+`ALL-PROVEN` on both devices. **Still the actual blocker on the last 8 nodes:** the
+`island-output-consumed-internally` branch in `vk/session.rs`, which is Switch's.
+
+📌 Team update (2026-08-02T14-42-30-07-00): Switch found the proof ledger's `--append` mode skips already-claimed forms — fixing the GQA prefill race required changing a shader the ledger had already marked `PASS` for a different bug, and re-running `--append` afterward printed `PASS` having measured nothing against the new shader. "A proof that cannot be invalidated by changing its subject is not a proof of that subject." You (Mouse) fixed it: `shader_digest`/`shaders` fields, a `--reprove` flag, two new tokens `STALE-SHADER` (digest changed since last proof) and `NO-SUBJECT-WITNESS` (nothing to compare against); all 74 ledger entries re-proved under the new scheme. — decided by Switch, Mouse
