@@ -3245,6 +3245,12 @@ Neither is a detection. Locked by `bench/test_tenancy_signature.py` (6 tests).
 
 ## 19. The first real-node run, and what island fragmentation actually costs
 
+> **Superseded on the current build (2026-08-02, §21).** Switch has since landed GQA: the graph
+> fuses to **1 island, 355 of 363 claimed**. The 33-island configuration this section measures no
+> longer exists on `main`, so §19.5's fragmentation cost is a record of what fragmentation *cost*,
+> not a description of the shipping build. The A/B method — slope, not quotient, both arms on one
+> binary — stands, and §19.4's idle-clock specimen is unaffected and is now load-bearing (§20.2).
+
 Frame, per R12's fourth generalisation: `main` at `0baf660`, merged into `squad/niobe` and rebuilt.
 DLL `E00C7F8B64B3907A…` before, **`47F668336A7BF6A9…`** after. Every figure in this section was
 produced by that binary. Model artifact and harness unchanged.
@@ -3506,3 +3512,160 @@ false finding and a negative control asserting it does not fire on the correct t
 construction. It currently reports no offenders.
 
 Reproduce: `python bench/ceiling.py`. Locked by `bench/test_ceiling.py` (21 tests).
+
+
+## 21. GQA is claimed, so the refusal is discharged — and what was underneath it (2026-08-02)
+
+Frame, per R12's fourth generalisation — for a test result the frame is the binary that ran it.
+`main` at `7c9d1b7`, merged into `squad/niobe` and rebuilt. DLL **`47F668336A7BF6A9…` before,
+`3A9115417CD1A780…` after**; the binary changed this round, unlike §20's. Every figure below was
+produced by that binary. Counters only: nothing in this section is a timing and nothing in it cares
+whether the box was busy — which is just as well, because it was.
+
+### 21.0 The claim status, read off the build rather than off the message
+
+The coordinator reported GQA fixed. Read off my own build instead, from a counters-only run
+(`--iters 4 --warmup 1 --repeats 1 --no-phases`):
+
+| witness | reading |
+|---|---|
+| `subgraphs_live` | **1** |
+| claimed nodes | **355 of 363** |
+| `model_output_equivalence` | **MATCH** |
+| session claim log | `com.microsoft::GroupQueryAttention x32 proven` |
+
+Record: `bench/results/phi35-7c9d1b7-dev0.json`. The timing in that run was withheld — CONTENDED,
+5.63 foreign busy cores — and none is used here.
+
+### 21.1 The instrument was right about a build nobody was running
+
+Before changing anything I ran `bench/ceiling.py` against the rebuilt tree. It reported:
+
+> `dll  3a9115417cd1a780` … `ADMISSIBLE  [0]` … `because  GroupQueryAttention is declined on this
+> build and executes on CPU`
+
+Both halves of that output are in the same paragraph and they contradict each other. The DLL hash
+is the *new* binary; the claim status came from `phi35-0baf660-dev0.json`, a record from the
+previous one. The frame travelled in the report and was never checked against the thing it framed.
+Artifact: `bench/_scratch/ceiling_stale_record_artifact.txt`.
+
+That is the failure the coordinator asked me to avoid — *"the condition should read off the build,
+not off my message"* — and it was already present in my own module. `Ceiling.load()` now hashes the
+DLL and raises `CeilingError` if the claim record did not come from it. Records that name their
+binary only by size and mtime are refused too, so `bench/environment.py` now writes
+`environment.build.sha256`.
+
+**Teeth.** A refusal that has just been satisfied is when it is most likely to become decoration,
+so `test_ceiling.py::TestTheRefusalStillHasTeeth` carries a positive control: a synthetic *declined*
+record that is **in frame** — same binary, 33 islands — must still collapse the extent to `[0]`
+with the structural reason. It does. Plus a negative control, an out-of-frame record (refused), a
+record with no `sha256` (refused), a missing record (`ERROR(instrument)`, raised rather than
+silently yielding an empty extent), and an unhashable DLL (raised). Discharging the condition once
+did not wire it open.
+
+### 21.2 `0` was the wrong answer, and the token that replaced it had to be measured
+
+Discharging the structural refusal exposed a second condition that had been masked underneath it:
+**the KV byte term was never earned.** `island_bytes_phi35.json` computes it analytically, and at
+past_len 8192 it is 60.5% of the modelled stream. Switch had to earn the equivalent claim for
+weights *separately* — amplification 1.000000, two non-tautological factors measured apart. Nobody
+had done that for KV, and a bound whose dominant term is an assumption is not a bound I can sign.
+
+So it was measured: `bench/results/probe_kv_bytes_earned.py`. Prediction from the model's declared
+input shapes and from no counter in the record — `32 × 2 × 32 × 96 × 2 = 393,216 B` per past token.
+Cumulative counters differenced across two iteration counts (5 and 25) to cancel the one-time
+~2185 MiB weight upload, then the slopes differenced across past_len to cancel every per-inference
+term that does not scale with context. **Slope of slopes.** Three context points, not two, so
+linearity is a finding rather than an assumption.
+
+| past_len | upload / inference | readback / inference | modelled KV |
+|---|---|---|---|
+| 0 | 399,376 B | 457,344 B | 0 B |
+| 128 | **399,376 B** | 50,788,992 B | 50,331,648 B |
+| 512 | **399,376 B** | 201,783,936 B | 201,326,592 B |
+
+| segment | upload B/past-token | readback B/past-token | predicted | readback ratio |
+|---|---|---|---|---|
+| 0 → 128 | 0.0 | **393,216.0** | 393,216 | **1.000000** |
+| 128 → 512 | 0.0 | **393,216.0** | 393,216 | **1.000000** |
+
+Linearity spread between the two segments: **0.000000**.
+
+Two axes, two different answers, and they must not be averaged. My first version of the probe did
+average them and printed `residency factor 0.0`, which reads as a refutation of a term that is in
+fact confirmed to the byte. Corrected before the record was committed:
+
+- **READBACK — MEASURED.** The present KV cache is copied device→host in full every inference,
+  `(past_len + 1) × 393,216 B`. The modelled magnitude is exact on both segments.
+- **UPLOAD — UNOBSERVABLE.** Identical at past_len 0, 128 *and* 512. The past KV cache does not
+  reach the device by the staging path these counters watch. It reaches it somehow — the answers
+  move with past_len — so the counter is blind to the path, and **its silence is not evidence that
+  the read side is free.** R12: `UNOBSERVABLE`, never `0`.
+
+**The falsifier for "past_len is wired" is an artifact it produced** (R10). Had the feeds been
+ignored, every number above would be a measurement of nothing: at past_len 0, `present.0.key` is
+`[1,32,1,96]` and argmax is 30751; at past_len 128 it is `[1,32,129,96]` and argmax is 8521. Both
+moved.
+
+Still not earned, and the record says so in a field rather than in a comment: the read-side
+residency path, and the **DRAM amplification factor** — how many times the device reads each KV
+byte per inference. Staging traffic is host↔device transfer, not kernel DRAM reads.
+
+### 21.3 Two extents, because there are two questions
+
+Earning the KV magnitude turned up a term the roofline never modelled at all — the present KV
+crossing the link every inference. So "is the DRAM bound admissible here?" and "is the DRAM bound
+the **floor** here?" now have different answers, and `ceiling.py` answers them separately.
+
+Which term binds is decided **without measuring this machine's link**, because measuring it is a
+timing and timings on this box are `STEADY_UNCERTIFIED` by standing policy (§20). Instead the
+crossover is published — the link speed at which transfer time equals DRAM time — and compared
+against two *stated* constants: the slowest PCIe configuration ever shipped (x1 gen1, 0.25 GB/s)
+and the fastest consumer link ever shipped (5.0 x16, 63 GB/s). Neither is tuned; the crossover is
+published at every context so a reader with a measured link can redo the call themselves.
+
+| past_len | DRAM floor | transfer / inference | crossover | verdict |
+|---|---|---|---|---|
+| 0 | 8.2180 ms | 0.82 MiB *(measured)* | **0.10 GB/s** | **DRAM binds — this is the floor** |
+| 128 | 8.4146 ms | 48.82 MiB *(measured)* | 6.08 GB/s | undecided |
+| 512 | 9.0045 ms | 192.82 MiB *(measured)* | 22.45 GB/s | undecided |
+| 2048 | 11.3638 ms | 768.82 MiB *(modelled)* | 70.94 GB/s | **transfer-bound** |
+| 4096 | 14.5095 ms | 1536.82 MiB *(modelled)* | 111.06 GB/s | **transfer-bound** |
+| 8192 | 20.8009 ms | 3072.82 MiB *(modelled)* | 154.90 GB/s | **transfer-bound** |
+
+    extent()          -> [0, 128, 512, 2048, 4096, 8192]   the DRAM bound describes this build
+    binding_extent()  -> [0]                               and is the floor of the inference
+
+At 128 and 512 the crossover falls between the two constants and the honest answer is *undecided* —
+it needs a measured link bandwidth. That is the threshold-episode discipline again: I did not move
+a constant until the count of awkward contexts reached zero. The sensitivity is the table above.
+
+**At past_len ≥ 2048 the crossover exceeds any link that exists, so the inference is bound by
+host↔device KV transfer and the DRAM roofline is nowhere near the floor there.** That is a
+direction for work, not a figure, and it is conditional on the readback law continuing past 512 —
+the verdicts at 2048+ carry that caveat in the record rather than in a footnote.
+
+### 21.4 The pairing, stated per context rather than assumed to travel
+
+My line from §20 was that *the one admissible bound and the one quotable figure sit at the same
+context — that is why the 67% comparison survives, not luck.* It stops being automatic the moment
+the extent widens, and the extent has now widened.
+
+- The DRAM bound is **admissible at 128…8192, where this project holds no quotable figure at all.**
+  The bound is admissible in regimes where the comparison is not.
+- It is the **floor only at past_len 0**, which is the one context we have ever run and the context
+  of the one quotable figure.
+
+So the sentence survives with its noun changed: the one *binding* bound and the one quotable figure
+sit at the same context. That was true for a structural reason and is now true for a measured one.
+`compare()` enforces it — a comparison at 8192 still returns a number, because the DRAM bound does
+describe this build, but carries `floor_is_binding: False` and says a percentage read there would
+be a percentage of the wrong roofline.
+
+**`12.1847 ms` — zero context, one token — remains the only quotable figure, at 67.4% of the
+binding roofline, headroom 1.48×.** Unchanged by this round, which is what should happen: the
+binary changed, the bound at past_len 0 did not, because the KV term at past_len 0 is exactly zero
+and the weight term was already earned.
+
+Reproduce: `python bench/ceiling.py`, `python bench/results/probe_kv_bytes_earned.py`.
+Locked by `bench/test_ceiling.py` (36 tests).
