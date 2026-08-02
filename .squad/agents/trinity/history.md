@@ -197,3 +197,53 @@ enforcing against a 9-entry ledger — and that is Mouse's ground, reported not 
 R13: quote the failure text, and an inherited condition is not a detection about my branch.
 
 Commit `e39bdd6` on `squad/trinity`, not pushed.
+
+---
+
+## Round 29 — criterion 12: the twelve surfaces no census mechanism watched (2026-08-02)
+
+`unwired: []` was measured against a denominator the census supplied itself. Link's
+independent whole enumerates 50 surfaces from production Rust; twelve were instrumented and
+observed by nothing. Two new mechanisms in `tests/ops/test_wiring_census.py`:
+
+* `ep_entrypoints` — `compile_calls` / `compute_calls` / `subgraphs_stub`. New state
+  `ENTERED-NO-DISPATCH`: a `Compute()` that entered and dispatched nothing. The census
+  inferred execution from `dispatches_executed`, so a broken kernel path and a partitioner
+  that claimed nothing were the same number.
+* `flag_frame` — the nine uncensused env switches, two arms (`flags_a`, `flags_b`).
+  6 MOVED / 3 UNOBSERVABLE-with-a-reason on **both** selectors. Every segment carries
+  `census_frame=` (disclosure, cannot fail) beside a state token (discrimination, can).
+
+Extent moved, which is the criterion's real content: `gpu_tracer` 1/12 -> 12/12,
+`ledger_lookup` 4/7 -> 7/7, `net_benefit_gate` 0/6 -> 6/6, `validation_messenger` 0/3 -> 3/3,
+`broken_commitment_warn` 0/2 -> 2/2, `partitioner` 1/2 -> 2/2, `retain_viable` 0/1 -> 1/1.
+The tracer now names WHICH of the ten `Phase` variants the trace carried (6/10) rather than
+a count of distinct names — the reading that would have certified `Phase::Record` again.
+
+**A crash.** `DEVICE_MEMORY=1` + `VA_RESERVE_MIB=64` = STATUS_ACCESS_VIOLATION on a six-node
+chain, deterministic, both devices; either flag alone is clean, 1024 is clean.
+`factory.rs:897` declines to publish a device allocator, says so, and the device-memory path
+runs anyway. Pinned as `test_device_memory_with_small_va_reservation`, xfail(strict).
+Found on the flag frame's first run — the whole argument for censusing what nobody watches.
+
+**Two findings against myself.**
+
+1. The first tracer matcher looked for the Rust identifier and reported `0/10 Phase variants
+   emitted`. The trace spells them `vulkan.record` etc. per `Phase::as_str`; six were in the
+   artifact I was reading. I went looking for a gap and got the biggest one available on the
+   first try, and it was my bug. R13's second corollary, earned again.
+2. `probe_stall_guard.py` wrote its four cells as `wiring_census-dev0-<cell>.json`, matching
+   Link's arm glob. His screen counted frozen snapshots as census arms, so any text
+   improvement read as `VARIES`. Renamed to `stall_guard_census-*`. The honest number over
+   the two real arms is **2 VARIES / 12 INVARIANT**, worse than the 3/9 reported. Moving it
+   needs arms designed to vary each mechanism — named, not faked.
+
+Verified: `tests/ops/test_wiring_census.py` 6 passed + 1 xfailed on dev0 (56 s) and dev1
+(95 s), DLL rebuilt after merging `origin/main` (hash 8D07173F -> 1A802D09).
+`test_r13_lane.py` + `test_verdict.py` 83 passed. `audit_instruments.py --check` PASS.
+
+Row 12 **not closed**; `closes_row: false` written into the census artifact with the reason.
+Link's screen now reports `FAIL(condition=unclaimed_mechanism_name)` for the two new
+mechanisms, which is his screen working — the two `mechanism_names` claims and the twelve
+re-dispositions are his file and are spelled out in
+`.squad/decisions/inbox/trinity-criterion12-flag-frame.md`.

@@ -1,0 +1,50 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+============================= test session starts =============================
+platform win32 -- Python 3.12.7, pytest-7.4.4, pluggy-1.0.0
+rootdir: C:\Users\justinchu\dev\ep-vulkan-trinity
+plugins: anyio-4.2.0
+collected 388 items
+
+tests\ops\test_a_ep_smoke.py ..                                          [  0%]
+Windows fatal exception: access violation
+
+Thread 0x0000ceb8 (most recent call first):
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\onnxruntime\capi\onnxruntime_inference_collection.py", line 640 in _create_inference_session
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\onnxruntime\capi\onnxruntime_inference_collection.py", line 534 in __init__
+  File "C:\Users\justinchu\dev\ep-vulkan-trinity\tests\ops\_models.py", line 1094 in run_with_backend
+  File "C:\Users\justinchu\dev\ep-vulkan-trinity\tests\ops\test_barrier_parity.py", line 122 in test_barrier_parity
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py", line 194 in pytest_pyfunc_call
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_callers.py", line 39 in _multicall
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_manager.py", line 80 in _hookexec
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_hooks.py", line 265 in __call__
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py", line 1792 in runtest
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 169 in pytest_runtest_call
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_callers.py", line 39 in _multicall
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_manager.py", line 80 in _hookexec
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_hooks.py", line 265 in __call__
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 262 in <lambda>
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 341 in from_call
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 261 in call_runtest_hook
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 222 in call_and_report
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 133 in runtestprotocol
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\runner.py", line 114 in pytest_runtest_protocol
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_callers.py", line 39 in _multicall
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_manager.py", line 80 in _hookexec
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_hooks.py", line 265 in __call__
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\main.py", line 350 in pytest_runtestloop
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_callers.py", line 39 in _multicall
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_manager.py", line 80 in _hookexec
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_hooks.py", line 265 in __call__
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\main.py", line 325 in _main
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\main.py", line 271 in wrap_session
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\main.py", line 318 in pytest_cmdline_main
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_callers.py", line 39 in _multicall
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_manager.py", line 80 in _hookexec
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pluggy\_hooks.py", line 265 in __call__
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\config\__init__.py", line 169 in main
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\config\__init__.py", line 192 in console_main
+  File "C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\pytest\__main__.py", line 5 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+tests\ops\test_barrier_parity.py .

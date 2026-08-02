@@ -165,7 +165,18 @@ def _run_cell(name: str, *, inject: bool, loaded: bool, device: str) -> dict:
             census = json.loads(census_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             census = {}
-        (_RESULTS / f"wiring_census-dev{device}-{name}.json").write_text(
+        # `stall_guard_census-`, NOT `wiring_census-`, and the rename is a defect fix.
+        #
+        # `ci/check_census_completeness.py` globs `wiring_census-*.json` and treats every
+        # match as a CENSUS ARM in its name-against-content analysis.  These four cells are
+        # snapshots taken by a stall-guard probe, not arms the census ran, and because they
+        # are snapshots they freeze the census's output FORMAT at the moment they were
+        # written.  A later round that improves an observation's text then reads as
+        # `VARIES` in Link's report — content responding to input — when what actually
+        # varied was the format between an old snapshot and a new run.  Found round 29,
+        # when six mechanisms flipped to VARIES and only two of them had actually moved
+        # between the two device arms.
+        (_RESULTS / f"stall_guard_census-dev{device}-{name}.json").write_text(
             json.dumps(census, indent=2), encoding="utf-8"
         )
 
