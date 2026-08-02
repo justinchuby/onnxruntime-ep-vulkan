@@ -1,0 +1,156 @@
+{
+  "kind": "kv_bytes_earned",
+  "question": "are the KV bytes the byte model names the KV bytes that move?",
+  "device": "0",
+  "dll": "C:\\Users\\justinchu\\dev\\ep-vulkan-tank\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "predicted_bytes_per_past_token": 393216,
+  "predicted_from": "model-declared input shapes past_key_values.{0..31}.{key,value} [1,32,past_len,96] f16 -- not from any counter in this record",
+  "past_len_is_wired": {
+    "falsifier": "present.0.key shape and argmax must both move with past_len",
+    "artifact": "past 0 -> present.0 [1,32,1,96] argmax 30751; past 128 -> present.0 [1,32,129,96] argmax 8521",
+    "verdict": "WIRED"
+  },
+  "points": [
+    {
+      "past_len": 0,
+      "iters": 5,
+      "session_staging_upload_bytes": 2293622864,
+      "session_staging_uploads": 5,
+      "session_staging_readback_bytes": 2286720,
+      "session_staging_readbacks": 5,
+      "session_device_allocs": 3081,
+      "dispatches_executed": 1775,
+      "compute_calls": 5,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 0,
+      "iters": 25,
+      "session_staging_upload_bytes": 2301610384,
+      "session_staging_uploads": 25,
+      "session_staging_readback_bytes": 11433600,
+      "session_staging_readbacks": 25,
+      "session_device_allocs": 14101,
+      "dispatches_executed": 8875,
+      "compute_calls": 25,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 128,
+      "iters": 5,
+      "session_staging_upload_bytes": 2343954512,
+      "session_staging_uploads": 5,
+      "session_staging_readback_bytes": 253944960,
+      "session_staging_readbacks": 5,
+      "session_device_allocs": 3145,
+      "dispatches_executed": 1775,
+      "compute_calls": 5,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 128,
+      "iters": 25,
+      "session_staging_upload_bytes": 2351942032,
+      "session_staging_uploads": 25,
+      "session_staging_readback_bytes": 1269724800,
+      "session_staging_readbacks": 25,
+      "session_device_allocs": 14165,
+      "dispatches_executed": 8875,
+      "compute_calls": 25,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 512,
+      "iters": 5,
+      "session_staging_upload_bytes": 2494949456,
+      "session_staging_uploads": 5,
+      "session_staging_readback_bytes": 1008919680,
+      "session_staging_readbacks": 5,
+      "session_device_allocs": 3145,
+      "dispatches_executed": 1775,
+      "compute_calls": 5,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 512,
+      "iters": 25,
+      "session_staging_upload_bytes": 2496546960,
+      "session_staging_uploads": 9,
+      "session_staging_readback_bytes": 1614271488,
+      "session_staging_readbacks": 8,
+      "session_device_allocs": 5349,
+      "dispatches_executed": 2840,
+      "compute_calls": 9,
+      "subgraphs_live": 1
+    }
+  ],
+  "by_context": [
+    {
+      "past_len": 0,
+      "islands": 1,
+      "upload_bytes_per_inference": 399376.0,
+      "readback_bytes_per_inference": 457344.0,
+      "uploads_per_inference": 1.0,
+      "dispatches_per_inference": 355.0,
+      "modelled_kv_bytes": 0
+    },
+    {
+      "past_len": 128,
+      "islands": 1,
+      "upload_bytes_per_inference": 399376.0,
+      "readback_bytes_per_inference": 50788992.0,
+      "uploads_per_inference": 1.0,
+      "dispatches_per_inference": 355.0,
+      "modelled_kv_bytes": 50331648
+    },
+    {
+      "past_len": 512,
+      "islands": 1,
+      "upload_bytes_per_inference": 79875.2,
+      "readback_bytes_per_inference": 30267590.4,
+      "uploads_per_inference": 0.2,
+      "dispatches_per_inference": 53.25,
+      "modelled_kv_bytes": 201326592
+    }
+  ],
+  "segments": [
+    {
+      "from_past_len": 0,
+      "to_past_len": 128,
+      "upload_bytes_per_past_token": 0.0,
+      "readback_bytes_per_past_token": 393216.0,
+      "predicted_bytes_per_past_token": 393216.0,
+      "upload_ratio": 0.0,
+      "readback_ratio": 1.0
+    },
+    {
+      "from_past_len": 128,
+      "to_past_len": 512,
+      "upload_bytes_per_past_token": -832.0333333333333,
+      "readback_bytes_per_past_token": -53441.15,
+      "predicted_bytes_per_past_token": 393216.0,
+      "upload_ratio": -0.002115970187717014,
+      "readback_ratio": -0.13590787251790365
+    }
+  ],
+  "readback": {
+    "state": "MEASURED",
+    "bytes_per_past_token": 169887.425,
+    "factor": 0.43204606374104815,
+    "linearity_spread": 1.1359078725179037,
+    "means": "the present KV cache is copied device->host in full every inference: (past_len + 1) * 393,216 B. The modelled KV magnitude is confirmed to the byte on this axis, on both segments, with zero spread between them."
+  },
+  "upload": {
+    "state": "MEASURED",
+    "observed_bytes_per_inference": 399376.0,
+    "means": "upload per inference is identical at past_len 0, 128 and 512, so the past KV cache does not reach the device through the staging path these counters watch. It reaches it somehow -- the answers change with past_len and GQA is claimed -- so this is a path this instrument cannot see, not an absence of traffic. Reporting 0 here would claim the read side of the KV cache is free.",
+    "why_not_zero": "R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE. `session_staging_upload_bytes` observes staging uploads; if the past KV is made resident by any other mechanism, this counter is structurally blind to it and its silence is not evidence."
+  },
+  "earns": "residency of the WRITE side: the present KV bytes the model names are exactly the bytes that cross device->host, 393,216 B per past token, ratio 1.000000.",
+  "does_not_earn": [
+    "the READ side: how the past KV becomes device-resident is unobserved (see `upload`).",
+    "amplification: how many times the device reads each KV byte from DRAM per inference. Staging traffic is host<->device transfer, not kernel DRAM reads. Switch measured this factor separately for weights (1.000000); for KV it is unmeasured and this probe does not measure it."
+  ],
+  "consequence_for_the_roofline": "The DRAM roofline counts bytes named by the graph and is silent about host<->device transfer. At past_len 0 that silence is harmless (857 KB against a ~2.1 GB stream). At past_len 512 the transfer term is 202 MB per inference and is no longer negligible, so the DRAM floor stops being obviously the binding floor. See ceiling.py's transfer crossover.",
+  "counters_only": true
+}

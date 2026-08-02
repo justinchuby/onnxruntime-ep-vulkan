@@ -412,6 +412,12 @@ BENCH_INSTRUMENT_FILES = [
     "devices.py",
     "stats.py",
     "portability.py",
+    # Arrived with main d9a9c0c. Both render a verdict rather than record a number:
+    # `ceiling.py` has an explicit refusal state, and `clock_log.window` returns
+    # UNOBSERVABLE for a window with no samples — the R12 distinction this census exists
+    # to keep, so it is screened rather than treated as capture.
+    "ceiling.py",
+    "clock_log.py",
 ]
 
 # Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
@@ -440,6 +446,7 @@ BENCH_HELD_OUT: dict[str, str] = {
     "test_run_disturbance.py": "test module.",
     "test_tenancy_signature.py": "test module.",
     "test_win_gpu_counters.py": "test module.",
+    "test_ceiling.py": "test module — a caller, screened as polarity, not as an instrument.",
 }
 
 

@@ -249,3 +249,49 @@ evidence the new arms are at baseline. `pytest tests/ops/test_harness_census.py`
 and the verdict it supports is about the census, not about the build.
 
 **Decision record:** `tank-census-frame-is-declared.md` (D-T87).
+
+## Session 23 — 2026-08-02 — offer_shared_device re-decision: the KV hypothesis, refuted and re-aimed
+
+**Asked:** does arming the device-memory provider remove the host round-trip for
+`past_key_values`/`present`? Counters only, no clock, and do not let a ctx-0 result decide it.
+
+**Answer: no, and the mechanism says why.** Readback is byte-identical in both lanes —
+393,216.0 B per past token on the admissible 0->128 segment, `readback_slope_delta = 0.0`.
+`bind_target_for` is called on inputs only (vk/session.rs:1143-1148); the output readback is an
+unconditional sum over `actual_output_byte_sizes` (vk/session.rs:1957-1974). **No output-side
+bind exists, so no configuration can decline the readback.** Switch's arena is not an alternative
+route — it is the only one, and the output-side bind is the seam it needs.
+
+**The half I did not expect:** arming collapses upload from 2.29 GB to 1.57 MB over five inferences
+(399,376 B -> 8 B per inference), `alloc_device_buffer_binds` off 0 for the first time. That is
+weight residency, and it makes M1's weight-residency criterion measurable. Replaced the expired
+default-OFF rationale in factory.rs with that measurement. Did **not** flip the default: the benefit
+is on the upload axis and the VRAM cost at long context is unmeasured, and this is Switch's and
+Niobe's to hold with me.
+
+**Ran Niobe's probe unchanged, once per lane.** Re-deriving her slope would have made my falsifier
+depend on her arithmetic in the other direction, which is Mouse's rule applied to myself.
+
+**Two instrument findings, both of which presented as data.**
+
+1. Both 512 points were truncated. My first diagnosis — a failed best-effort snapshot write leaving
+   a well-formed prefix — was **wrong**, and I am recording that it was wrong. The real cause,
+   quoted: `vkWaitForFences failed: The logical device has been lost` ->
+   `Falling back to ['CPUExecutionProvider'] and retrying.` -> **EXIT=0**. The control matters:
+   the identical text appears in the **default** lane at the same point, so device loss at ctx 512
+   is not a cost of arming. Differencing the truncated pair before I had a screen produced an
+   apparent **6.7% KV saving that was an observation ending early** — the shape of a real result.
+   The only signal that refused it was `compute_calls < iters` and `uploads == readbacks + 1`.
+   Sixth mode again: a mechanism failing indistinguishably from what it measures. R13 classifies
+   it; the exit code cannot.
+2. Added `counters_snapshot_writes` / `counters_snapshot_write_failures` so a stale snapshot is
+   self-announcing. Verified live: `{'counters_snapshot_writes': 2, ...write_failures: 0}`. Not
+   the ctx-512 cause, but the mode it closes was unobservable.
+
+**Census:** main's new bench modules arrived undeclared and the frame check caught them — exactly
+what it was built for. `ceiling.py` and `clock_log.py` in frame (both render a verdict;
+`clock_log.window` returns UNOBSERVABLE for an unrecorded window, which is the R12 distinction),
+`test_ceiling.py` held out as a test module. Baseline updated, Trinity's two guards still held out
+on purpose, `CENSUS VERDICT: PASS`.
+
+**Decision:** `tank-device-memory-kv-re-decision.md` (D-T88).
