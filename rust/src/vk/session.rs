@@ -1008,7 +1008,12 @@ impl VulkanSession {
                 ),
                 None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
             };
-            if (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor).is_ok() {
+            // The `Err` is bound rather than discarded by `is_ok()`. R13: a broken commitment
+            // whose message is "translate failed" tells a reader that something failed, which
+            // they already knew from the WARN. The handler's own text is the only thing here
+            // that says *which* precondition the run-time shapes violated.
+            let dyn_translate = (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor);
+            if dyn_translate.is_ok() {
                 // Update actual output byte sizes and shapes, and record intermediate descs.
                 for (token, desc) in &sor.output_desc_by_token {
                     let token = *token;
@@ -1055,8 +1060,9 @@ impl VulkanSession {
                 }
             } else {
                 log::error!(
-                    "dispatch_ort: dynamic re-run of translate for op '{}' failed",
-                    recipe.node_desc.op_type
+                    "dispatch_ort: dynamic re-run of translate for op '{}' failed: {:?}",
+                    recipe.node_desc.op_type,
+                    dyn_translate.as_ref().err()
                 );
                 // SAFETY: `api` is a live `OrtApi` for this call; the message is a 'static
                 // NUL-terminated literal. No GPU buffers have been allocated yet at this point

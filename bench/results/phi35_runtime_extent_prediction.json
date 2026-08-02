@@ -1,0 +1,42 @@
+{
+  "written_at": "2026-08-02T08:20:00-07:00",
+  "rule": "R10 - state what the ledger will decline before running it",
+  "context": "The coordinator's 0/363 diagnostic was taken against the pre-e97b186 ledger. At the merged state (73 entries) four of the five named keys are already present; only GroupQueryAttention is missing, and it is missing because its proof run returned DIVERGENT worst_rel=16.72642029784887, twice, to the digit. This file is written before running the real Phi-3.5 artifact at the merged state.",
+  "predictions": [
+    {
+      "id": "P1",
+      "claim": "The claimed count is no longer 0/363. Four of the five leading forms are proven at runtime-extent in the merged ledger; only GQA is not.",
+      "falsifier": "the session INFO still reads `claims 0/363`"
+    },
+    {
+      "id": "P2",
+      "claim": "It is also not 363/363. The 32 GroupQueryAttention nodes decline with exactly `[unproven]` and no other code, naming the runtime-extent GQA key.",
+      "falsifier": "fewer or more than 32 nodes decline [unproven] on the GQA key, or GQA declines with an additional code"
+    },
+    {
+      "id": "P3",
+      "claim": "The claimed count lands strictly between 300 and 340. 363 total minus 32 GQA is 331; a handful of the remaining 10 non-headline nodes are likely to decline on [staged] or [not-registered] rather than [unproven].",
+      "falsifier": "claimed count outside [300, 340]"
+    },
+    {
+      "id": "P4",
+      "claim": "test_criterion10 does NOT go green. GQA sits at the centre of every decoder layer, so the fused islands are cut at 32 places; even if islands are retained, the model's logits path runs through attention on the CPU EP and the series verdict has a fair chance of staying non-MATCH. I expect the failure text to CHANGE - away from `claims 0/363` - which is itself the observation.",
+      "falsifier": "test_criterion10 passes"
+    },
+    {
+      "id": "P5",
+      "claim": "The ledger will NOT grow in this round. GQA is the only missing key of the five and it is DIVERGENT; the honest outcome is that the ledger stays at 73 entries and the number that moves is the claimed count, not the entry count.",
+      "falsifier": "a 74th entry is written"
+    }
+  ],
+  "guard_named_by_the_coordinator": "a ledger that grows without the claimed count moving. The check for it is this run: entry count 73 held constant while claimed count is measured.",
+  "scored_at": "2026-08-02T09:40:00-07:00",
+  "results": {
+    "P1": "CONFIRMED - session INFO reports 7 proven forms; claim log reads 323/363.",
+    "P2": "CONFIRMED exactly - 32 GroupQueryAttention nodes decline with [unproven] alone, naming com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache.",
+    "P3": "CONFIRMED - 323 is inside [300, 340]; the residual 8 are coverage gaps, not [unproven].",
+    "P4": "CONFIRMED - test_criterion10 still fails; the failure text changed from `claims 0/363` to a BROKEN COMMITMENT on fused subgraph #15.",
+    "P5": "CONFIRMED - ledger held at 73 entries, digest e3ea94196b4fd84f unchanged. The number that moved was the claimed count, 0 -> 323."
+  },
+  "guard_verdict": "NOT TRIPPED, and in the inverse: the claimed count moved 0 -> 323 while the ledger did not grow at all."
+}

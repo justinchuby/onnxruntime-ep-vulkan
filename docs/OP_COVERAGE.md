@@ -3720,6 +3720,79 @@ Of the 37, **26** are `test_op_table` coverage gaps, **5** are Phi-3.5 behind th
 **3** are `Min`/`Max`/`Clip`-no-bounds (`[staged]`, `[arity]`), **1** is criterion 10 behind the same
 GQA divergence, and **0** are instrument errors.
 
+### 8.9.9 The real Phi-3.5: 0 → 323/363 claimed, with the ledger unchanged (2026-08-02)
+
+The request that produced this section carried a diagnostic taken from the real Phi-3.5 artifact,
+listing five `[unproven]` keys behind `claims 0/363`, and a premise: *everything the ledger proves is
+`static`; everything Phi-3.5 needs is `runtime-extent`*.
+
+**The premise was already stale when it arrived.** It was taken against the pre-`e97b186` ledger. At
+the merged state, **four of the five keys are in the ledger at `runtime-extent`** — `MatMulNBits`
+(`scales`), `Mul` f16, `SkipSimplifiedLayerNormalization` f16 (`>f16,-,-,f16`), and `Sigmoid` f16.
+Only `GroupQueryAttention` is absent, and it is absent for a reason that is not an oversight (below).
+This is worth recording because the correct response to a stale premise is not to act on it: minting
+more `runtime-extent` keys would have been work whose effect was already achieved.
+
+**What was written down before the run.** Per R10, `bench/results/phi35_runtime_extent_prediction.json`
+was written before the real model was loaded, with five predictions and a falsifier for each. All five
+scored CONFIRMED, P2 and P5 exactly:
+
+| | Prediction | Outcome |
+|---|---|---|
+| P1 | not `0/363` any more | 7 proven forms; **323/363** |
+| P2 | exactly 32 GQA nodes decline, `[unproven]` **alone** | exactly that, on that key |
+| P3 | claimed count inside `[300, 340]` | 323 |
+| P4 | criterion 10 does **not** go green; the *failure text* changes | it did, to a broken commitment |
+| P5 | the ledger does **not** grow | held at 73 entries, digest `e3ea94196b4fd84f` |
+
+**The guard the coordinator named was "a ledger that grows without the claimed count moving." What
+happened is its inverse**: the claimed count moved `0 → 323` across `33/33` retained islands, with
+**zero** new ledger entries. `ledger_hits=323`, `unproven_forms_claimed=0`,
+`claimed_form_evidence=ALL-PROVEN`, `ledger_gate=MIXED` — `MIXED` because 40 nodes are still declined,
+which is the gate reporting a partial claim rather than rounding it to either end.
+
+**`GroupQueryAttention` stays out, and this is a finding rather than an obstacle.** Its proof run
+returns `DIVERGENT` with `worst_rel=16.72642029784887`, reproducible to the digit across runs. It is
+not written to the ledger — a non-`MATCH` verdict in `evidence/proof_ledger.jsonl` becomes a
+`Ledger::fault`, and a faulted ledger refuses **every** claim, not just the bad one. It is recorded in
+`evidence/proof_attempts.jsonl` instead, which grants nothing and is not baked in. The 32 GQA nodes
+are the only pure-`[unproven]` declines left in the flagship model. Note what this combination means:
+the handler *claims* the form and then disagrees with the CPU oracle by 16.7×, so claiming-then-
+diverging is itself the defect; it corroborates the pre-existing strict-`xfail` `_GQA_COMPUTE_BUG`.
+
+**The next defect is now visible, and it is not in `ops/`.** With 323 nodes claimed, ORT still fell
+back to the CPU EP for the whole graph, and Tank's broken-commitment WARN fired correctly, naming
+fused subgraph #15. The root text, obtained after a five-line R13 diagnostic change in
+`rust/src/vk/session.rs` that logs the handler's own error instead of a bare "translate failed":
+
+    Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at compile time")
+
+raised from `common_dtype(node, 0, 2)?` in `rust/src/ops/common/templates.rs::simplified_norm` during
+the **dynamic** re-run of translate. Island #15 is `embed_tokens/Gather → layers.0/input_layernorm →
+qkv_proj/MatMul_Q4`, so SLN's input 0 is an island-internal intermediate; the `patched_node` handed to
+translate carries a shape but no element type. **The handler is right to refuse — the caller's
+construction is the defect**, and `rust/src/vk/` is Switch's.
+
+**A consequence that must not be read past.** Because the islands still execute zero times,
+`criterion10-dev0.json` reports `own_provider_execution_count: 0` and
+`executed_by: {CPUExecutionProvider: 1377}`. Its `oracle_outputs_degenerate: 0` was therefore measured
+on a CPU-versus-CPU run. **Switch's all-65 oracle arm has still not had its first real reading**, and
+the reopened degenerate-KV question is still open. `series verdict is UNATTRIBUTED` is the correct
+finding, and it is now blocked on the SLN defect rather than on the ledger.
+
+**Union defect repaired in the same change.** Trinity's criterion-11(c) controls referenced
+`evidence/cases/mul_f16_unproven.onnx`, which `e97b186` deleted when the planted control moved to
+`sub_f16_dyn_unproven` (the `Mul`/f16/static form had become *proven*, which disarms a control
+silently — the worst failure mode a control has). Restoring the file would have restored a control
+that passes for the wrong reason. Control 1's axis is *dtype*, so it now uses a different op:
+`Abs` f32 (proven) against `Abs` f16 (unproven), the f16 arm **built in `tmp_path`** so the generator
+cannot pick it up and quietly prove it. Control 2 gained its own static `Mul` arm, because a
+shape-class control whose two arms are different ops is not a shape-class control. And
+`test_ledger_key_discriminates_optional_inputs` selected the `MatMulNBits` pair by counting *all*
+`MatMulNBits` entries (`== 2`); the ledger legitimately grew to five, so it now selects the pair by
+form (f16, `static`) instead. A control keyed to a total is a control that goes red when the artifact
+it guards gets better.
+
 ---
 
 ## 9. Op module layout
