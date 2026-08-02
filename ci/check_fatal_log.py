@@ -47,6 +47,25 @@ def main(argv: list[str]) -> int:
         print(__doc__, flush=True)
         return EXIT_USAGE
 
+    # `--lane-marker=PATH` distinguishes "the lane ran and captured no fatal line" from
+    # "the lane died before it ever produced a log". Both are non-passes and neither is a
+    # detection, but only the first is a statement about this check's subject. Observed on
+    # the 2026-08-01 main run: both device lanes died at Clippy, never reached the pytest
+    # step that tees its output, and this check added a second ERROR(instrument) on top of
+    # a failure it had nothing to do with. The marker is written by the lane's own log
+    # producer, so it cannot be absent on a run that did produce a log.
+    lane_marker = ""
+    rest: list[str] = []
+    for a in argv:
+        if a.startswith("--lane-marker="):
+            lane_marker = a.split("=", 1)[1]
+        else:
+            rest.append(a)
+    argv = rest
+    if not argv:
+        print(__doc__, flush=True)
+        return EXIT_USAGE
+
     sys.path.insert(0, str(REPO_ROOT / "tests" / "ops"))
     try:
         import _verdict  # type: ignore
@@ -68,11 +87,36 @@ def main(argv: list[str]) -> int:
     for name in argv:
         path = Path(name)
         if not path.exists():
+            if lane_marker and not Path(lane_marker).exists():
+                print("FATAL-LOG-CHECK: ERROR(instrument=lane_did_not_reach_evidence)", flush=True)
+                print(
+                    f"{path} does not exist and the lane marker {lane_marker} was never "
+                    "written, so the lane failed before it produced any log at all.\n"
+                    "This is NOT a pass. It is also not a detection: ORT cannot have "
+                    "announced a fallback in a run that never started. The lane is "
+                    "already red for the reason that stopped it, and this check declines "
+                    "to add a second red on top of a first one it did not cause.",
+                    flush=True,
+                )
+                print(
+                    "::warning title=Fatal-log check had no subject::"
+                    "The lane did not reach log capture. Fix the earlier failure and "
+                    "re-read this step.",
+                    flush=True,
+                )
+                return EXIT_PASS
             print("FATAL-LOG-CHECK: ERROR(instrument=log_not_captured)", flush=True)
             print(
                 f"{path} does not exist. The lane step that was supposed to tee its "
                 "output here did not, so this check has no input. UNOBSERVABLE is not "
-                "zero hits: it is no observation, and it must not read as a clean lane.",
+                "zero hits: it is no observation, and it must not read as a clean lane."
+                + (
+                    f"\nThe lane marker {lane_marker} IS present, so the lane did reach "
+                    "log capture and then captured nothing — an instrument failure, not "
+                    "an empty run."
+                    if lane_marker
+                    else ""
+                ),
                 flush=True,
             )
             return EXIT_ERROR_INSTRUMENT
