@@ -1127,7 +1127,6 @@ mod tests {
         // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
         // below moves the process-global tally. Same lock as everything that asserts on it.
         let _g = ledger::test_lock();
-        use crate::engine::DeviceMemoryProvider as _;
         let provider = Arc::new(RecordingProvider::default());
         crate::engine::register_device_memory_provider(4243, provider.clone());
 
