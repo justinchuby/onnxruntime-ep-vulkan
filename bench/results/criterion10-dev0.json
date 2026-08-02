@@ -5,11 +5,11 @@
   "attribution_witnesses": {
     "counters_dispatches_executed": "UNOBSERVABLE",
     "counters_witness_reason": "counters not armed: ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE was unset in this process. On Windows the DLL caches this variable at load time, so it CANNOT be armed from inside a test that has already imported onnxruntime -- it must be set before the process starts",
-    "profile_digest": "sha256:94ef319f82813ea3",
-    "profile_mtime_ns": 1785671020032461800,
+    "profile_digest": "sha256:8a1a4f3a0a4d3362",
+    "profile_mtime_ns": 1785678844081579500,
     "profile_node_events": 0,
     "profile_node_events_total": 1377,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-114\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-02_04-42-53_290.json",
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-128\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-02_06-53-19_374.json",
     "witness_agreement": "UNOBSERVABLE",
     "witnesses_present": [
       "ort_profile"
@@ -29,29 +29,3572 @@
   "own_provider_execution_count": 0,
   "per_run": [
     {
+      "all_output_oracle_outcome": "AGREE",
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0,
-      "outputs_compared": 65,
+      "cross_run_outputs_compared": 65,
+      "logits_max_abs_diff": 0.0,
+      "logits_oracle_outcome": "AGREE",
+      "oracle_degenerate_indices": [],
+      "oracle_failing_indices": [],
+      "oracle_max_abs_diff_over_all_outputs": 0.0,
+      "oracle_outputs_compared": 65,
+      "oracle_outputs_degenerate": 0,
+      "oracle_outputs_total": 65,
+      "oracle_outputs_within_tolerance": 65,
+      "oracle_worst_output_index": 0,
+      "per_output": [
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 0,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            1,
+            32064
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 1,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 2,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 3,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 4,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 5,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 6,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 7,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 8,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 9,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 10,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 11,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 12,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 13,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 14,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 15,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 16,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 17,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 18,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 19,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 20,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 21,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 22,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 23,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 24,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 25,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 26,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 27,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 28,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 29,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 30,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 31,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 32,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 33,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 34,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 35,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 36,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 37,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 38,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 39,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 40,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 41,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 42,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 43,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 44,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 45,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 46,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 47,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 48,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 49,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 50,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 51,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 52,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 53,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 54,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 55,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 56,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 57,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 58,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 59,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 60,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 61,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 62,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 63,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 64,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        }
+      ],
       "top10_overlap": 10,
       "vk_max_abs_logit": 13.0859375
     },
     {
+      "all_output_oracle_outcome": "AGREE",
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0,
-      "outputs_compared": 65,
+      "cross_run_outputs_compared": 65,
+      "logits_max_abs_diff": 0.0,
+      "logits_oracle_outcome": "AGREE",
+      "oracle_degenerate_indices": [],
+      "oracle_failing_indices": [],
+      "oracle_max_abs_diff_over_all_outputs": 0.0,
+      "oracle_outputs_compared": 65,
+      "oracle_outputs_degenerate": 0,
+      "oracle_outputs_total": 65,
+      "oracle_outputs_within_tolerance": 65,
+      "oracle_worst_output_index": 0,
+      "per_output": [
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 0,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            1,
+            32064
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 1,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 2,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 3,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 4,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 5,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 6,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 7,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 8,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 9,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 10,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 11,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 12,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 13,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 14,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 15,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 16,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 17,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 18,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 19,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 20,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 21,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 22,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 23,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 24,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 25,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 26,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 27,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 28,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 29,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 30,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 31,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 32,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 33,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 34,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 35,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 36,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 37,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 38,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 39,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 40,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 41,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 42,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 43,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 44,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 45,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 46,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 47,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 48,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 49,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 50,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 51,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 52,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 53,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 54,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 55,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 56,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 57,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 58,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 59,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 60,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 61,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 62,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 63,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 64,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        }
+      ],
       "top10_overlap": 10,
       "vk_max_abs_logit": 13.0859375
     },
     {
+      "all_output_oracle_outcome": "AGREE",
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0,
-      "outputs_compared": 65,
+      "cross_run_outputs_compared": 65,
+      "logits_max_abs_diff": 0.0,
+      "logits_oracle_outcome": "AGREE",
+      "oracle_degenerate_indices": [],
+      "oracle_failing_indices": [],
+      "oracle_max_abs_diff_over_all_outputs": 0.0,
+      "oracle_outputs_compared": 65,
+      "oracle_outputs_degenerate": 0,
+      "oracle_outputs_total": 65,
+      "oracle_outputs_within_tolerance": 65,
+      "oracle_worst_output_index": 0,
+      "per_output": [
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 0,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            1,
+            32064
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 1,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 2,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 3,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 4,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 5,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 6,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 7,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 8,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 9,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 10,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 11,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 12,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 13,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 14,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 15,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 16,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 17,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 18,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 19,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 20,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 21,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 22,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 23,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 24,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 25,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 26,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 27,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 28,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 29,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 30,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 31,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 32,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 33,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 34,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 35,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 36,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 37,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 38,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 39,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 40,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 41,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 42,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 43,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 44,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 45,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 46,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 47,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 48,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 49,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 50,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 51,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 52,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 53,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 54,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 55,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 56,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 57,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 58,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 59,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 60,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 61,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 62,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 63,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        },
+        {
+          "atol": 0.001,
+          "cpu_degenerate": false,
+          "dtype": "float16",
+          "index": 64,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "rtol": 0.02,
+          "shape": [
+            1,
+            32,
+            1,
+            96
+          ],
+          "status": "WITHIN_TOLERANCE",
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for",
+          "vk_degenerate": false
+        }
+      ],
       "top10_overlap": 10,
       "vk_max_abs_logit": 13.0859375
     }
