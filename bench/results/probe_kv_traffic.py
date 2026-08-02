@@ -321,7 +321,43 @@ def main() -> int:
             f"   floor {tot/(PEAK_GB_S*1e9)*1e3:6.2f} ms   {ref/tot:5.3f}x"
         )
 
-    # The portability row: the same kernel on a genuinely grouped model.
+    # ── The link axis ────────────────────────────────────────────────────────
+    # Everything above is a DRAM floor: bytes moved between the device and its own memory.
+    # MEASURED 2026-08-02 (`probe_kv_bytes_earned.py`, this build), the KV cache also crosses
+    # the host<->device boundary every inference, on both axes and exactly:
+    #
+    #   readback  393,216 B per past token   ratio 1.000000, linearity spread 0.000000
+    #   upload    393,216 B per past token   ratio 1.000000   <- newly observable
+    #
+    # The upload term read UNOBSERVABLE until today, and the reason is a defect rather than an
+    # unseen path: the EP's input cache was keyed on `(cpu_ptr, byte_size)` and was skipping the
+    # past-KV upload entirely, serving the first inference's KV to every later one. Correcting
+    # the predicate did not add traffic; it stopped hiding a cost that was being paid in wrong
+    # answers. Niobe's instrument was right and the build was wrong.
+    #
+    # No link rate is asserted here. This box's real host<->device rate has not been measured,
+    # and the whole point of the exercise is that the DRAM figure was quoted against the wrong
+    # constraint. Bytes are reported; a rate is not invented.
+    link_per_past_token = 2 * 393_216
+    link_bytes = link_per_past_token * L
+    dram_bytes = WEIGHT_BYTES + base["kv_total_bytes"]
+    print()
+    print(f"  LINK AXIS at past_len={L} (measured, both directions, per inference)")
+    print(f"    host->device upload           {link_bytes/2/2**20:9.1f} MiB")
+    print(f"    device->host readback         {link_bytes/2/2**20:9.1f} MiB")
+    print(f"    link total                    {link_bytes/2**20:9.1f} MiB")
+    print(f"    DRAM total (table above)      {dram_bytes/2**20:9.1f} MiB")
+    print(f"    link / DRAM                   {link_bytes/dram_bytes:9.3f}")
+    print("    link rate                     UNMEASURED on this box -- no floor is quoted")
+    print(
+        "    The DRAM levers above are admissible at every extent and BINDING only where the"
+    )
+    print(
+        "    link term is smaller. The fused-copy change is a DRAM reduction; it moves no byte"
+    )
+    print("    off this axis, so at the contexts where KV matters it is not the constraint.")
+
+
     print()
     print("  Group amplification is invisible here and is NOT invisible in general.")
     copy_units = (1 if fused else 2) if c["growing_cache"] else 0
@@ -345,6 +381,28 @@ def main() -> int:
         "our_amplification_over_cache": kv_bytes_per_token(c, 8192, fused)["amplification_over_cache"],
         "copy_fused": fused,
         "alias_feasibility": alias_feasibility(c, 8192),
+        "link_axis": {
+            "measured_by": "bench/results/probe_kv_bytes_earned.py",
+            "upload_bytes_per_past_token": 393_216,
+            "readback_bytes_per_past_token": 393_216,
+            "ratio_upload": 1.0,
+            "ratio_readback": 1.0,
+            "link_rate_gb_s": None,
+            "link_rate_state": "UNMEASURED",
+            "note": (
+                "The upload term read UNOBSERVABLE before 2026-08-02 because the EP's input "
+                "cache was keyed on (cpu_ptr, byte_size) and skipped the past-KV upload, "
+                "serving stale KV. Correcting the predicate made the cost visible; it did not "
+                "create it. No link rate is asserted: this box's host<->device rate is not "
+                "measured, and quoting a floor against an unmeasured constraint is the error "
+                "this section exists to correct."
+            ),
+            "binding": (
+                "The DRAM levers in `per_token` are admissible at every extent and binding only "
+                "where the link term is smaller. The fused-copy change (1.377x at 8192) is a "
+                "DRAM reduction and moves no byte off the link axis."
+            ),
+        },
     }
     rec = ROOT / "bench" / "results" / "kv_traffic.json"
     rec.write_text(json.dumps(out, indent=2), encoding="utf-8")

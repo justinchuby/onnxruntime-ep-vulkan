@@ -1622,6 +1622,35 @@ unsafe fn plan_for_fused_node(
     plan.inputs = fused.inputs;
     plan.outputs = fused.outputs;
 
+    // Recover constancy for the island's boundary inputs from the body nodes.
+    //
+    // MEASURED 2026-08-02 on Phi-3.5 (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`): the fused node
+    // has 457 inputs and `ValueInfo_IsConstantInitializer` answers **false for every one of
+    // them**, while the body nodes of the same island report 388 constant inputs. ORT surfaces
+    // an island's initializers as fused-node inputs but does not re-mark them constant on the
+    // boundary value_info. Asking the fused node is therefore not "no initializers here"; it is
+    // "this question is not answered at this level".
+    //
+    // The join is by name, which is sound because value names are graph-unique. A name that
+    // appears constant on one body node and non-constant on another is a contradiction we
+    // resolve toward `false`: the cost of a false negative is an upload, the cost of a false
+    // positive is a stale answer.
+    let const_names: std::collections::HashSet<&str> = plan
+        .nodes
+        .iter()
+        .flat_map(|n| n.inputs.iter())
+        .filter(|t| t.is_initializer)
+        .map(|t| t.name.as_str())
+        .collect();
+    let const_flags: Vec<bool> = plan
+        .inputs
+        .iter()
+        .map(|t| t.is_initializer || const_names.contains(t.name.as_str()))
+        .collect();
+    for (t, is_const) in plan.inputs.iter_mut().zip(const_flags) {
+        t.is_initializer = is_const;
+    }
+
     Ok(plan)
 }
 
@@ -1867,6 +1896,15 @@ unsafe fn compile_impl(
             .iter()
             .map(|r| r.desc.as_ref().and_then(|d| d.byte_size()).unwrap_or(0) as u64)
             .collect();
+        // Which subgraph inputs are graph initializers, in `KernelContext_GetInput` order.
+        //
+        // This is ORT's own answer (`GraphViewer::input_is_constant` on the fused node), and it
+        // is the only correct predicate for "may this tensor's device copy be reused across
+        // inferences". `dispatch_ort` previously inferred it from `(cpu_ptr, byte_size)` plus a
+        // 32 KiB size floor, which is a different question: an address identifies storage, not
+        // contents. See the comment at the cache site.
+        let input_is_constant: Vec<bool> =
+            plan.inputs.iter().map(|r| r.is_initializer).collect();
         let output_byte_sizes: Vec<u64> = plan
             .outputs
             .iter()
@@ -1904,6 +1942,7 @@ unsafe fn compile_impl(
                 plan,
                 kernels,
                 input_byte_sizes,
+                input_is_constant,
                 output_byte_sizes,
                 output_shapes,
                 n_intermediates,
@@ -1976,6 +2015,12 @@ struct SubgraphComputeInfo {
     kernels: Vec<CompiledKernel>,
     /// Byte size of each subgraph input, in `KernelContext_GetInput` index order.
     input_byte_sizes: Vec<u64>,
+    /// Whether each subgraph input is a graph initializer (a constant), same order.
+    ///
+    /// This is the predicate the device-buffer cache must key on. A constant's bytes cannot
+    /// change for the life of the session, so its device copy is reusable; a non-constant's
+    /// can change on every `Run` even when ORT hands back the same address.
+    input_is_constant: Vec<bool>,
     /// Byte size of each subgraph output, in `KernelContext_GetOutput` index order.
     output_byte_sizes: Vec<u64>,
     /// Concrete shape of each subgraph output, same order.
@@ -2028,6 +2073,7 @@ impl SubgraphComputeInfo {
         plan: crate::engine::Plan,
         kernels: Vec<CompiledKernel>,
         input_byte_sizes: Vec<u64>,
+        input_is_constant: Vec<bool>,
         output_byte_sizes: Vec<u64>,
         output_shapes: Vec<Vec<i64>>,
         n_intermediates: usize,
@@ -2044,6 +2090,7 @@ impl SubgraphComputeInfo {
             plan,
             kernels,
             input_byte_sizes,
+            input_is_constant,
             output_byte_sizes,
             output_shapes,
             n_intermediates,
@@ -2073,6 +2120,7 @@ impl SubgraphComputeInfo {
             plan,
             kernels: Vec::new(),
             input_byte_sizes: Vec::new(),
+            input_is_constant: Vec::new(),
             output_byte_sizes: Vec::new(),
             output_shapes: Vec::new(),
             n_intermediates: 0,
@@ -2402,6 +2450,7 @@ unsafe fn compute_impl(
         (*info.session).dispatch_ort(
             &info.kernels,
             &info.input_byte_sizes,
+            &info.input_is_constant,
             &info.output_byte_sizes,
             &info.output_shapes,
             info.n_intermediates,

@@ -83,5 +83,16 @@
     "present_fits_in_past": false,
     "alias_feasible": false,
     "blocked_by": "graph declares present at total_sequence_length > past_sequence_length; an alias cannot place the larger tensor in the smaller allocation"
+  },
+  "link_axis": {
+    "measured_by": "bench/results/probe_kv_bytes_earned.py",
+    "upload_bytes_per_past_token": 393216,
+    "readback_bytes_per_past_token": 393216,
+    "ratio_upload": 1.0,
+    "ratio_readback": 1.0,
+    "link_rate_gb_s": null,
+    "link_rate_state": "UNMEASURED",
+    "note": "The upload term read UNOBSERVABLE before 2026-08-02 because the EP's input cache was keyed on (cpu_ptr, byte_size) and skipped the past-KV upload, serving stale KV. Correcting the predicate made the cost visible; it did not create it. No link rate is asserted: this box's host<->device rate is not measured, and quoting a floor against an unmeasured constraint is the error this section exists to correct.",
+    "binding": "The DRAM levers in `per_token` are admissible at every extent and binding only where the link term is smaller. The fused-copy change (1.377x at 8192) is a DRAM reduction and moves no byte off the link axis."
   }
 }
