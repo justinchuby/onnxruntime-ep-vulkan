@@ -266,9 +266,21 @@ mod tests {
                 r.domain,
                 r.status
             );
-            assert_eq!(
-                r.translate as usize, templates::simplified_norm as usize,
+            assert!(
+                std::ptr::fn_addr_eq(
+                    r.translate,
+                    templates::simplified_norm as crate::registry::TranslateHandler
+                ),
                 "a live row must point at the RMSNorm handler, not `unimplemented`"
+            );
+            // The negative polarity: an address comparison that can only return true is not a
+            // check. This pins that the assertion above discriminates between handlers.
+            assert!(
+                !std::ptr::fn_addr_eq(
+                    r.translate,
+                    templates::unimplemented as crate::registry::TranslateHandler
+                ),
+                "the comparison must distinguish handlers, or the assertion above proves nothing"
             );
         }
     }

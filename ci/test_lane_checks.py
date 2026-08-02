@@ -917,3 +917,156 @@ def test_the_real_workflow_has_no_unclassified_gate_steps():
         str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
     )
     assert r.returncode == EXIT_PASS, r.stdout
+
+# ---------------------------------------------------------------------------------------
+# ci/check_tautological_assertions.py
+#
+# This screen reports 0 detections over the real tree, so every scrap of evidence that it
+# is a screen at all comes from planted violations. R9: a check observed only to pass is
+# not known to be a check. Each test below is a pair - the form that must be caught, and
+# the neighbouring form that must NOT be, because three of this screen's first four
+# detections were false positives and an unscoped screen asserts things rather than
+# merely missing them.
+# ---------------------------------------------------------------------------------------
+
+TAUT = "check_tautological_assertions.py"
+
+
+def _taut(tmp_path):
+    return run_check(TAUT, "--root", str(tmp_path))
+
+
+def test_identical_operands_under_equality_are_caught_in_rust(tmp_path):
+    (tmp_path / "a.rs").write_text(
+        "#[test]\nfn t() {\n    let x = compute();\n    assert_eq!(x, x);\n}\n",
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "IDENTICAL_OPERANDS" in r.stderr
+    assert "a.rs:4" in r.stderr
+
+
+def test_identical_operands_under_equality_are_caught_in_python(tmp_path):
+    (tmp_path / "a.py").write_text(
+        "def test_t():\n    x = compute()\n    assert x.mean() == x.mean()\n",
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "IDENTICAL_OPERANDS" in r.stderr
+
+
+def test_both_literals_are_caught_at_either_polarity(tmp_path):
+    """Also pins the precedence: identical text wins the label when both rules apply.
+
+    `assert_eq!(0.0, 0.0)` is both identical and both-literal; it reports as
+    IDENTICAL_OPERANDS. `assert_eq!(1u32, 1)` is the equality case that only BOTH_LITERAL
+    catches - different text, both constant, always passes reading nothing.
+    """
+    (tmp_path / "a.rs").write_text(
+        "fn t() {\n"
+        "    assert_eq!(0.0, 0.0);\n"
+        "    assert_ne!(1, 2);\n"
+        "    assert_eq!(1u32, 1);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout + r.stderr
+    assert "tautological_assertions=3" in r.stderr, r.stderr
+    assert r.stderr.count("BOTH_LITERAL") == 2, r.stderr
+    assert r.stderr.count("IDENTICAL_OPERANDS") == 1, r.stderr
+
+
+def test_the_nan_idiom_is_not_reported(tmp_path):
+    """`x != x` is the NaN test, and it was this screen's first false positive.
+
+    The hazard is *passing without reading the subject*, not sameness. Identical operands
+    under inequality either always fail - which is safe, a permanently red assertion gets
+    fixed on its first run - or are a deliberate NaN probe.
+    """
+    (tmp_path / "a.py").write_text(
+        "def test_t():\n    assert empty.median != empty.median\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.rs").write_text("fn t() {\n    assert_ne!(v.median, v.median);\n}\n", "utf-8")
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+
+
+def test_distinct_string_subscripts_are_not_identical(tmp_path):
+    """The scanner's own defect 2, pinned so blanking cannot come back.
+
+    Neutralising string literals by blanking them turns `frame["a"] == frame["b"]` into a
+    term compared to itself. Three of the first four detections were this shape and all
+    three were correct code.
+    """
+    (tmp_path / "a.py").write_text(
+        'def test_t():\n    assert frame["dispatched_devices"] == frame["capable_devices"]\n',
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+
+
+def test_an_assertion_inside_a_string_literal_is_invisible(tmp_path):
+    """The other direction, which is why blanking existed in the first place.
+
+    rust/tests/layering.rs carries `assert_eq!(1, 1)` inside a string as fixture text for
+    the layering lint. Neutralising must hide that without merging distinct operands - the
+    two requirements pull opposite ways and both have a test.
+    """
+    (tmp_path / "a.rs").write_text(
+        'fn t() {\n    let planted = "fn innocent() { assert_eq!(1, 1); }";\n'
+        "    assert_eq!(scan(planted).len(), 1);\n}\n",
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+
+
+def test_a_commented_out_tautology_is_invisible(tmp_path):
+    (tmp_path / "a.rs").write_text(
+        "fn t() {\n    // assert_eq!(x, x);\n    assert_eq!(got, want);\n}\n",
+        encoding="utf-8",
+    )
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+
+
+def test_a_language_that_yields_no_assertions_is_an_outage_not_a_pass(tmp_path):
+    """The screen's own defect 1, which shipped for one revision.
+
+    A leading-whitespace bug meant 89 Python files contributed zero assertions and the run
+    still said PASS, because Rust's count carried the total. A total another language paid
+    for is not coverage, so coverage is asserted per language.
+    """
+    (tmp_path / "a.rs").write_text("fn t() {\n    assert_eq!(got, want);\n}\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "language_scanned_nothing" in r.stderr
+
+
+def test_a_tree_with_no_sources_is_an_outage(tmp_path):
+    (tmp_path / "notes.md").write_text("nothing here\n", encoding="utf-8")
+    r = _taut(tmp_path)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
+    assert "no_sources_found" in r.stderr
+
+
+def test_the_real_repository_passes_and_says_what_it_does_not_cover(tmp_path):
+    """The PASS arm, and the scope sentence is asserted as part of it.
+
+    A detection with a false description is worse than no description (D-T85). The two
+    assertion defects that actually occurred in this repository - two different
+    expressions that always evaluate equal, and a test whose assertions are all one
+    polarity - are both outside this screen. If that disclaimer is ever trimmed out of the
+    output, this test fails.
+    """
+    r = run_check(TAUT)
+    assert r.returncode == EXIT_PASS, r.stdout + r.stderr
+    assert "ASSERTIONS: PASS(" in r.stdout
+    assert "does NOT detect" in r.stdout
+    assert "all one polarity" in r.stdout

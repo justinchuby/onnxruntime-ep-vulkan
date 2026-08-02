@@ -114,9 +114,22 @@ mod tests {
             .find(|s| s.op_type == "Gather")
             .expect("Gather must be registered");
         assert_eq!(row.status, OpStatus::Ready);
-        assert_eq!(
-            row.translate as usize, templates::gather as usize,
+        assert!(
+            std::ptr::fn_addr_eq(
+                row.translate,
+                templates::gather as crate::registry::TranslateHandler
+            ),
             "a Ready row must not point at `unimplemented`"
+        );
+        // The negative polarity. `fn_addr_eq` compares addresses, and an address comparison that
+        // can only ever return true is not a check — this pins that the assertion above
+        // discriminates rather than passing for every row.
+        assert!(
+            !std::ptr::fn_addr_eq(
+                row.translate,
+                templates::unimplemented as crate::registry::TranslateHandler
+            ),
+            "the comparison must distinguish handlers, or the assertion above proves nothing"
         );
         assert!(
             row.schema.is_none(),
