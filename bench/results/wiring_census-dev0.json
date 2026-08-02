@@ -15,20 +15,20 @@
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 535,
-      "counters_child_inject": 506,
-      "add_session_profiling": 7,
-      "validation_probe": 64,
-      "layering_lint": 173
+      "counters_child_clean": 579,
+      "counters_child_inject": 517,
+      "add_session_profiling": 14,
+      "validation_probe": 130,
+      "layering_lint": 5976
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 40,
-      "counters_child_inject": 47,
-      "add_session_profiling": 7,
-      "validation_probe": 19,
-      "layering_lint": 56
+      "counters_child_clean": 89,
+      "counters_child_inject": 74,
+      "add_session_profiling": 14,
+      "validation_probe": 65,
+      "layering_lint": 3658
     },
-    "clock_units_total": 1442,
+    "clock_units_total": 8267,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },

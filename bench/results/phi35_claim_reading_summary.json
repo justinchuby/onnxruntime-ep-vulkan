@@ -1,0 +1,13 @@
+{
+  "device_selector": "0",
+  "ledger_entries": 73,
+  "dll_mtime": 1785683665.987708,
+  "claimed_nodes": 323,
+  "ledger_hits": 323,
+  "unproven_declines": 34,
+  "unproven_forms_claimed": 0,
+  "islands_offered": 33,
+  "viable_islands_retained": 33,
+  "ledger_gate": "MIXED",
+  "claimed_form_evidence": "ALL-PROVEN"
+}

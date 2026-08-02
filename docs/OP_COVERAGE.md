@@ -3793,6 +3793,81 @@ shape-class control whose two arms are different ops is not a shape-class contro
 form (f16, `static`) instead. A control keyed to a total is a control that goes red when the artifact
 it guards gets better.
 
+### 8.9.10 ORT's own refusal, and the branch that actually holds Phi-3.5 (2026-08-02)
+
+**`session.disable_cpu_ep_fallback`, wired into the proof harness.** Our attribution was already
+counter-based (`claimed_nodes`, `dispatches_executed`, per-key `admitted ⊆ offered`), but every one
+of those counters is written by the thing being audited. This ORT session option is a refusal from
+*outside* our code: if any node lands on the default CPU EP, ORT declines to build the session at
+all. For a single-form evidence case — where the EP either takes the one node or the case proves
+nothing — that converts a silently vacuous CPU-versus-CPU comparison into a raise at session
+creation.
+
+Two implementation facts, both learned by running it:
+
+- **It conflicts with naming the CPU EP explicitly.** With
+  `providers=["VulkanExecutionProvider", "CPUExecutionProvider"]` ORT raises
+  `InvalidArgument: Conflicting session configuration: explicitly added the CPU EP to the session,
+  but also disabled fallback to the CPU EP via session configuration options` — which reads nothing
+  about our EP and is `ERROR(instrument)`. The strict arm offers this EP alone.
+- **It is deliberately not set on the discovery pass.** Discovery runs before the hatch is open, the
+  node is declined by design, and a refusal there is the expected state rather than a finding.
+
+The refusal is raised as `CpuFallbackRefusal`, distinct from `InstrumentError`, and `prove()` turns
+it into `UNATTRIBUTED` with the ORT text quoted. An outage and a reading must not spell the same
+(R13).
+
+**Mutation-tested in both polarities before it was trusted** —
+`rust/tools/probe_cpu_fallback_guard.py`, witness `bench/results/cpu_fallback_guard_probe.json`.
+Subject is the planted control `sub_f16_dyn_unproven`, chosen because the generator refuses to write
+its key under any circumstance, so neither arm can contaminate the ledger:
+
+| Arm | Hatch | Verdict | ORT refused |
+|---|---|---|---|
+| CLAIMED | the real key | `MATCH` | no |
+| DECLINED | a key that does not exist | `UNATTRIBUTED` | **yes** |
+
+A guard that fired in both arms would be worse than none — it would make every proof run look
+vacuous. One that fired in neither is not wired. The probe asserts the arms differ, not that either
+is non-zero.
+
+**What it did not change: `GroupQueryAttention` is still `DIVERGENT`.** Re-run under the strict
+guard, ORT did *not* refuse — the EP genuinely took the node and executed — and the verdict is
+`worst_rel = 16.72642029784887`, identical to the digit across three runs now. **The divergence was
+never vacuous.** It stays out of the ledger; it is a correctness finding on the flagship model, and
+the handler claiming the form and then disagreeing by 16.7× is itself the defect.
+
+**Current-state reading of the real model** (`rust/tools/probe_phi35_claim_reading.py`, witness
+`bench/results/phi35_claim_reading_summary.json`), recorded because a `0/363` diagnostic has now been
+routed twice from an older build — the frame of a result is the binary that produced it:
+
+    claimed_nodes 323   ledger_hits 323   unproven_declines 34   unproven_forms_claimed 0
+    islands_offered 33  viable_islands_retained 33
+    ledger_gate MIXED   claimed_form_evidence ALL-PROVEN   ledger_entries 73
+
+**The critical path is no longer the ledger.** With 323 nodes claimed the model still runs entirely
+on the CPU EP, and the branch that causes it is now identified exactly rather than approximately. In
+`rust/src/vk/session.rs`, the loop that patches concrete `TensorDesc`s onto a node before the dynamic
+re-run of translate handles two token ranges — external ORT inputs, and intermediates from prior
+kernels — and leaves the middle range, *island outputs that are also consumed internally*, as `None`,
+under a comment reading "theoretically possible but unusual … the translate handler will degrade
+gracefully". A temporary instrumented build, since reverted, measured which branch the real model
+takes:
+
+    node=/model/layers.0/input_layernorm/LayerNorm op=SimplifiedLayerNormalization
+    slot=0 token=5 n_plan_inputs=5 n_plan_outputs=2 branch=island-output-consumed-internally
+
+It is not unusual; it is island #15's normal shape, because `embed_tokens/Gather`'s result is both an
+island output and an internal edge. The handler does not degrade gracefully — it refuses with
+`Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at compile time")`, which is
+correct of the handler — so the island is dropped and ORT falls back wholesale.
+
+**This was deliberately not repaired in `ops/`.** `common_dtype` could be made to infer the missing
+element type from a sibling input, and it would have made the number move today. It would also be a
+check that moves with the reader's confidence rather than with its subject (R9 amendment 5): the
+information was lost by the caller, and a handler that fabricates it stops being able to detect that
+the caller lost it. The branch is one `else` in `vk/session.rs`, which is Switch's.
+
 ---
 
 ## 9. Op module layout

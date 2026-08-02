@@ -985,6 +985,16 @@ impl VulkanSession {
                 // Tokens in [n_plan_inputs, n_plan_inputs+n_plan_outputs): external outputs
                 // of this island used as inputs by another kernel — theoretically possible but
                 // unusual. Leave as symbolic (None); the translate handler will degrade gracefully.
+                //
+                // MEASURED 2026-08-02 (Mouse), and it is not unusual: on the real Phi-3.5 this
+                // is the branch island #15 takes. `/model/layers.0/input_layernorm/LayerNorm`
+                // slot 0, token 5, with n_plan_inputs=5 and n_plan_outputs=2 — the
+                // `embed_tokens/Gather` result is an island output AND an internal edge. The
+                // handler does not "degrade gracefully"; it refuses with
+                //   Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at
+                //   compile time")
+                // which is correct of the handler, so the island is dropped and the whole model
+                // falls back to the CPU EP. Owner: Switch (`rust/src/vk/`).
             }
 
             let patched_node = NodeDesc {

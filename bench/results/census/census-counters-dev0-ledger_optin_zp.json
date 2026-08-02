@@ -81,7 +81,7 @@
   "session_staging_upload_us": 16,
   "session_staging_readbacks": 1,
   "session_staging_readback_bytes": 64,
-  "session_staging_readback_us": 64,
+  "session_staging_readback_us": 51,
   "session_device_allocs": 6,
   "session_device_frees": 6,
   "session_device_bytes_in_use": 0,

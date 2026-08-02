@@ -100,6 +100,20 @@ def _child_main(spec_path: str) -> int:
 
     so = ort.SessionOptions()
     so.log_severity_level = 2
+    if use_ep and spec.get("strict_ep"):
+        # ORT'S OWN REFUSAL, FROM OUTSIDE OUR CODE (added 2026-08-02).
+        #
+        # Every evidence case is a single-form model: either this EP claims the node or the
+        # case proves nothing.  Our attribution is already counter-based (`claimed_nodes`,
+        # `dispatches_executed`), but both of those counters are written by the thing being
+        # audited.  This option is ORT refusing to build the session at all if any node lands
+        # on the default CPU EP, so a run that would have compared CPU against CPU raises at
+        # session creation instead of returning a `worst_rel` that has to be distrusted.
+        #
+        # It is deliberately *not* set on the discovery pass: discovery runs before the hatch
+        # is open, the node is declined by design, and a refusal there is the expected state
+        # rather than a finding.
+        so.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
     if use_ep:
         ep_lib = os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]
         try:
@@ -107,9 +121,15 @@ def _child_main(spec_path: str) -> int:
         except Exception as exc:  # already registered in this process is fine
             if "already" not in str(exc).lower():
                 raise
-        sess = ort.InferenceSession(
-            model, so, providers=["VulkanExecutionProvider", "CPUExecutionProvider"]
-        )
+        provs = ["VulkanExecutionProvider", "CPUExecutionProvider"]
+        if spec.get("strict_ep"):
+            # ORT rejects `disable_cpu_ep_fallback` outright when the CPU EP is *also* named
+            # explicitly ("Conflicting session configuration"), which is an InvalidArgument at
+            # session creation and reads nothing about our EP. The strict arm therefore offers
+            # this EP alone; the CPU EP remains available to ORT as the default it is refusing
+            # to fall back to.
+            provs = ["VulkanExecutionProvider"]
+        sess = ort.InferenceSession(model, so, providers=provs)
     else:
         sess = ort.InferenceSession(model, so, providers=["CPUExecutionProvider"])
 
@@ -259,7 +279,9 @@ def _feed_plan_for(model: str) -> dict:
     return ledger_case_models.feed_plan(pathlib.Path(model).stem)
 
 
-def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path) -> None:
+def _run_child(
+    model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path, strict_ep: bool = False
+) -> None:
     with tempfile.TemporaryDirectory(dir=str(REPO / "bench" / "results")) as td:
         spec = pathlib.Path(td) / "spec.json"
         spec.write_text(
@@ -267,6 +289,7 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
                 {
                     "model": model,
                     "use_ep": use_ep,
+                    "strict_ep": strict_ep,
                     "outputs": str(outputs),
                     "input_domain": _domain_for(model),
                     "feed_plan": _feed_plan_for(model),
@@ -291,6 +314,14 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
             timeout=1800,
         )
         if r.returncode != 0:
+            blob = f"{r.stdout}\n{r.stderr}"
+            if _CPU_FALLBACK_REFUSAL in blob:
+                # Not an instrument failure: ORT reached a conclusion about our EP and stated
+                # it. Quote the text (R13) and let the caller record it as UNATTRIBUTED.
+                raise CpuFallbackRefusal(
+                    f"ORT refused the session for {model} because a node was assigned to the "
+                    f"default CPU EP:\n{blob[-2000:]}"
+                )
             # R13: an instrument failure is not a detection.  Raise, never return "no keys".
             raise InstrumentError(
                 f"proof-ledger child failed (exit {r.returncode}) on {model}\n"
@@ -298,8 +329,20 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
             )
 
 
+_CPU_FALLBACK_REFUSAL = "fallback to CPU EP has been explicitly disabled"
+
+
 class InstrumentError(RuntimeError):
     """The generator could not reach an observation.  Never a proof, never a decline."""
+
+
+class CpuFallbackRefusal(RuntimeError):
+    """ORT declined to build a session because a node fell to the default CPU EP.
+
+    This is a *reading*, not an outage: it says the EP did not take the node, which for a
+    single-form evidence case is exactly the vacuous-comparison state the ledger exists to
+    exclude.  It is raised separately from `InstrumentError` so the two are never conflated.
+    """
 
 
 def discover_keys(model: str) -> tuple[list[str], dict]:
@@ -365,15 +408,24 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     counters = REPO / "bench" / "results" / "_ledger_counters.json"
     if counters.exists():
         counters.unlink()
-    _run_child(
-        model,
-        True,
-        {
-            "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN": ";".join(keys),
-            "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE": str(counters),
-        },
-        ep_out,
-    )
+    try:
+        _run_child(
+            model,
+            True,
+            {
+                "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN": ";".join(keys),
+                "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE": str(counters),
+            },
+            ep_out,
+            strict_ep=True,
+        )
+    except CpuFallbackRefusal as exc:
+        return "UNATTRIBUTED", {
+            "reason": "ORT refused to build the session because a node was assigned to the "
+            "default CPU EP; the comparison this run would have produced was CPU against CPU",
+            "ort_refusal": str(exc)[-1200:],
+            "offered": sorted(keys),
+        }
     _run_child(model, False, {}, cpu_out)
 
     if not counters.is_file():
