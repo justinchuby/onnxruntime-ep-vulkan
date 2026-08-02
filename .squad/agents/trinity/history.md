@@ -297,3 +297,54 @@ Verified: 25 GPU-free arms + 2 hardware arms pass on both selectors; 126 passed 
 `test_wiring_census` / both new modules on dev0. Criterion 10 still FAIL(condition)
 `UNATTRIBUTED` on both devices — inherited, correct, and the bar moved UP not down.
 Criterion 10 not closed.
+
+## Round 31 — ORT refuses the session we spent the session learning to detect (2026-08-02)
+
+**Handed to me:** the user asked whether ORT has a flag preventing EP fallback. It does:
+`session.disable_cpu_ep_fallback`. Never used here; the string appeared nowhere in `tests/`,
+`bench/` or `rust/src/`.
+
+**Probed before designing** (`bench/results/probe_disable_cpu_fallback.py`, both selectors,
+ORT 1.28.0). Two things the brief did not have, either of which would have made a naive
+wiring actively harmful:
+
+1. With `CPUExecutionProvider` in the providers list — which `EP_PROVIDERS` has — the flag
+   is a **configuration conflict**, `INVALID_ARGUMENT`, on **every** graph including one the
+   EP claims in full. That refusal looks like a detection and is not. Wiring it into
+   `EP_PROVIDERS` sessions would have made a working EP read as broken on every test.
+2. A **misspelled config key is accepted silently**. A precondition on a typo is inert and
+   green — the specimen shape of this entire session, one level up. Hence
+   `assert_no_cpu_fallback_is_live()`: an fp64 `Add` ORT must refuse, run once per process
+   **before** first use, not after.
+
+With `providers=[EP_NAME]`: claimed single-op -> created; declined -> refused; partially
+claimed -> refused. The first row is load-bearing — ORT plants no CPU nodes of its own at
+single-op scale, so the precondition is exact where it is proposed and useless nowhere.
+
+**Built:** `ORT_DISABLE_CPU_FALLBACK_KEY`, `CpuFallbackRefused` (an `AssertionError` —
+FAIL(condition), asserted not assumed), `ep_only_session_or_refusal`,
+`assert_ep_owns_whole_graph`, `assert_no_cpu_fallback_is_live` in `_models.py`;
+`tests/ops/test_no_cpu_fallback.py`, 9 arms, **9 passed on dev0 and dev1**. `check()` gains
+an opt-in precondition behind `ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK`, off by default.
+
+**Both mechanisms kept, extents written down.** This precondition reaches only graphs the EP
+must claim entirely and fires before any number exists; Guard D reaches any graph and fires
+after the run. The flag is wrong for Phi-3.5 — ten legitimate declines — which is exactly
+where Guard D is indispensable. Two gates whose extents differ compose to the weaker extent
+and the stronger name, so I stated them separately in code and artifact rather than letting
+a reader infer one gate reaching everything.
+
+**Red-text migration measured**, `test_elementwise.py`, both selectors:
+`25 failed / 11 passed` -> `25 failed / 11 passed`, **failing set identical on both devices**.
+The count does not improve and was never meant to; the text moves from our
+`AssertionError: Vulkan EP claimed 0 nodes` to ORT's own refusal (R13). The identical set is
+the better result — it is the falsifier for over-firing, and not one healthy test went red.
+
+**Regression:** verdict + output-attribution + hw + r13 + no-cpu-fallback lanes,
+116 passed / 0 FAIL / 0 ERROR on dev0.
+
+**The lesson, and it is not about fallback.** We spent a session building detectors for a
+state the runtime would have refused to enter. The user found it. Next time "does the
+runtime already refuse this?" comes before "how do we detect this?".
+
+Closes no row.

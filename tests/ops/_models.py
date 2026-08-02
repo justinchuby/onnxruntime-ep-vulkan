@@ -923,6 +923,226 @@ def assert_matches_cpu(
         )
 
 
+# ---------------------------------------------------------------------------
+# ORT's own refusal — session.disable_cpu_ep_fallback (2026-08-02)
+# ---------------------------------------------------------------------------
+# Found by the user, not by us, after seven CPU-vs-CPU incidents and an all-night hunt.
+# Every mechanism that has caught a vacuous comparison in this project is OURS — Guard D,
+# the attribution requirement, _verdict.py's unrepresentable MATCH — and can therefore
+# share a blind spot with the thing it watches.  This one is ORT's, in ORT's code, and it
+# fires at SESSION CREATION: it makes the vacuous comparison unconstructible rather than
+# detectable.  That is the shape the whole session has been pushing toward.
+#
+# Two things measured here before it was wired anywhere
+# (bench/results/probe_disable_cpu_fallback.py, both selectors, ORT 1.28.0):
+#
+#   1. **CPUExecutionProvider must NOT be in the providers list.**  With our usual
+#      ``EP_PROVIDERS = [EP_NAME, "CPUExecutionProvider"]`` the flag is a *configuration
+#      conflict* and ORT raises INVALID_ARGUMENT — "explicitly added the CPU EP ... but
+#      also disabled fallback" — on EVERY graph, including one the EP claims in full.
+#      Reading that as "the flag fired" would be a false detection on a healthy run, so
+#      the two texts are distinguished below and only one of them is a finding.
+#   2. **An unknown session-config key is accepted silently.**  ``add_session_config_entry
+#      ("session.disable_cpu_ep_fallbackk", "1")`` does not raise.  A precondition that
+#      silently does nothing is worse than no precondition, so it carries its own
+#      falsifier: :func:`assert_no_cpu_fallback_is_live` builds a session ORT MUST refuse.
+#
+# Measured behaviour with ``providers=[EP_NAME]`` and the flag set:
+#   claimed single-op graph  -> session created  (so this is exact at single-op scale)
+#   declined single-op graph -> FAIL, ORT's text
+#   partially claimed graph  -> FAIL, ORT's text
+#
+# Which is exactly why it cannot be global: Phi-3.5 legitimately declines ten edge ops in
+# a fully healthy run, so a whole-model session would be refused for working correctly.
+
+#: ORT's session-config key.  Not ours; do not rename.
+ORT_DISABLE_CPU_FALLBACK_KEY: str = "session.disable_cpu_ep_fallback"
+
+#: The substring in ORT's refusal that means *nodes fell back to CPU*.  The finding.
+_ORT_FALLBACK_TEXT = "fallback to CPU EP has been explicitly disabled"
+#: The substring that means *we configured the session wrongly*.  Never a finding.
+_ORT_CONFLICT_TEXT = "Conflicting session configuration"
+
+
+class CpuFallbackRefused(AssertionError):
+    """ORT refused to create the session because nodes were assigned to the CPU EP.
+
+    An ``AssertionError`` deliberately: under R13 this is ``FAIL(condition)``, a finding
+    about what the EP claimed, not an instrument outage.  It carries ORT's own text so
+    the failure quotes the instrument that produced it rather than our paraphrase.
+    """
+
+    def __init__(self, ort_text: str, context: str = "") -> None:
+        self.ort_text = ort_text
+        super().__init__(
+            f"[ORT refused the session] {context}\n"
+            f"ORT's own text: {ort_text}\n"
+            "\n"
+            f"{ORT_DISABLE_CPU_FALLBACK_KEY}=1 was set and ORT found graph nodes assigned "
+            "to the default CPU EP.  For a single-op test that means the EP did not claim "
+            "the op, so any CPU-vs-CPU comparison that followed would have been vacuous.\n"
+            "This is ORT's refusal, not ours: an instrument we do not own, agreeing with "
+            "Guard D from outside it (R9).  It fires at session creation, before a single "
+            "number exists."
+        )
+
+
+def _no_cpu_fallback_options(*, profiling: bool = False, prefix: str = "vulkan_test"):
+    opts = _make_session_options(profiling=profiling, prefix=prefix)
+    opts.add_session_config_entry(ORT_DISABLE_CPU_FALLBACK_KEY, "1")
+    return opts
+
+
+def ep_only_session_or_refusal(
+    model: bytes,
+    *,
+    profiling: bool = False,
+    prefix: str = "vulkan_test",
+) -> "ort.InferenceSession":
+    """Create a session in which **CPU fallback is impossible**, or raise.
+
+    ``providers=[EP_NAME]`` — the CPU EP is deliberately *not* listed.  Listing it turns
+    the flag into a configuration conflict that fails healthy graphs too; see the module
+    comment above.  ORT still appends ``CPUExecutionProvider`` to ``get_providers()``,
+    which is why the returned session looks identical to an ordinary one: the difference
+    is that this one could not have been created if anything had fallen back.
+
+    Raises
+    ------
+    CpuFallbackRefused
+        ``FAIL(condition)`` — nodes were assigned to the CPU EP.
+    _verdict.InstrumentError
+        ``ERROR(instrument)`` — we configured the session wrongly (CPU EP explicitly
+        listed), or ORT failed for a reason that is not about fallback at all.
+    """
+    try:
+        return ort.InferenceSession(
+            model, _no_cpu_fallback_options(profiling=profiling, prefix=prefix),
+            providers=[EP_NAME],
+        )
+    except Exception as exc:  # noqa: BLE001
+        text = str(exc)
+        if _ORT_FALLBACK_TEXT in text:
+            raise CpuFallbackRefused(text.strip()) from None
+        if _ORT_CONFLICT_TEXT in text:
+            raise _verdict.InstrumentError(
+                "[no-cpu-fallback instrument failure] ORT reports a configuration "
+                f"conflict, not a fallback: {text.strip()}\n"
+                "The CPU EP was listed in `providers` alongside "
+                f"{ORT_DISABLE_CPU_FALLBACK_KEY}=1.  This fails EVERY graph, including "
+                "ones the EP claims in full, so reading it as a detection would be a "
+                "false red on a healthy run.  Fix the harness (R13)."
+            ) from exc
+        raise _verdict.InstrumentError(
+            f"[no-cpu-fallback instrument failure] session creation failed for a reason "
+            f"that is not about CPU fallback: {type(exc).__name__}: {text.strip()}\n"
+            "ERROR(instrument), never a finding about what the EP claimed (R13)."
+        ) from exc
+
+
+def assert_no_cpu_fallback_is_live() -> str:
+    """Falsifier for "ORT's refusal is wired" (R10).  Returns ORT's refusal text.
+
+    An unknown session-config key is accepted **silently** by ORT, so a typo in the key
+    would leave every precondition below passing while checking nothing — the exact shape
+    of the 2026-07-30 specimen, one level up.  This builds a graph the EP cannot claim in
+    full and requires ORT to refuse it: an artifact the mechanism produced whose content
+    varies with its input.
+
+    Raises
+    ------
+    _verdict.InstrumentError
+        ORT did **not** refuse.  The key is misspelled, the flag is unsupported in this
+        ORT build, or the EP has started claiming the deliberately-unclaimable op.  In
+        all three cases every no-fallback precondition in the suite is inert and nothing
+        that depends on one may be reported.
+    """
+    x = tensor("x", ir.DataType.DOUBLE, [4])
+    out = tensor("out", ir.DataType.DOUBLE, [4])
+    # fp64 arithmetic is permanent CPU fallback for this EP (DESIGN.md conservative-claim
+    # list), so ORT must assign this node to the CPU EP and must therefore refuse.
+    node = ir.Node("", "Add", inputs=[x, x], outputs=[out], name="fp64_add_never_claimed")
+    graph = ir.Graph(
+        inputs=[x], outputs=[out], nodes=[node], name="fallback_canary",
+        opset_imports={"": 17},
+    )
+    canary = ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+    try:
+        ep_only_session_or_refusal(canary)
+    except CpuFallbackRefused as refusal:
+        return refusal.ort_text
+    raise _verdict.InstrumentError(
+        "[no-cpu-fallback instrument failure] ORT created a session for a graph whose "
+        "only node is fp64 Add — an op this EP must never claim — while "
+        f"{ORT_DISABLE_CPU_FALLBACK_KEY}=1 was set.  ORT accepts unknown session-config "
+        "keys SILENTLY, so a typo leaves every no-fallback precondition inert.  No result "
+        "resting on one may be reported (R13)."
+    )
+
+
+def assert_ep_owns_whole_graph(
+    model: bytes,
+    *,
+    context: str = "",
+) -> None:
+    """Precondition: ORT itself must be unable to build a CPU-fallback session for *model*.
+
+    This is a **precondition, not a gate**.  It says nothing about correctness and cannot
+    say ``PASS`` about anything it did not test — it says only that the comparison which
+    follows is not our-CPU against ORT's-CPU.
+
+    **Extent, stated because it differs from Guard D's** (two gates whose extents differ
+    compose to the weaker extent and the stronger name, so neither may borrow the other's
+    reach):
+
+    ===================  =========================================  ====================
+    mechanism            reaches                                    when it fires
+    ===================  =========================================  ====================
+    this precondition    graphs the EP must claim **entirely** —    session creation,
+                         single-op tests, probes, negative           before any number
+                         controls
+    Guard D              **any** graph, including whole models      after the run, from
+                         with legitimate declines (Phi-3.5          ORT's profile
+                         declines ten edge ops when healthy)
+    ===================  =========================================  ====================
+
+    Keep both.  This one is unavailable exactly where Guard D is indispensable.
+    """
+    ep_only_session_or_refusal(model)
+    # No assertion follows on purpose: the session's *existence* is the observation, and
+    # a precondition that also asserted something would be a gate wearing a precondition's
+    # name.
+
+
+#: Opt-in switch.  **Off by default**, and deliberately so: the precondition is exact only
+#: for graphs the EP must claim entirely, and turning it on globally would refuse
+#: whole-model sessions that are working correctly.  Setting it makes ORT's refusal the
+#: first thing every ``check()`` call meets.
+STRICT_NO_CPU_FALLBACK_ENV = "ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK"
+
+_strict_liveness: str | None = None
+
+
+def strict_no_cpu_fallback_enabled() -> bool:
+    return os.environ.get(STRICT_NO_CPU_FALLBACK_ENV, "") not in ("", "0")
+
+
+def _strict_precondition(model: bytes, context: str = "") -> None:
+    """Apply ORT's refusal as a precondition, having first proved the refusal is live.
+
+    The liveness proof runs **once per process and before the first use**, not after.  A
+    silently-accepted misspelled key would otherwise leave the whole strict run green
+    while checking nothing — which is the precise failure this mechanism exists to make
+    unconstructible, one level up.
+    """
+    if not strict_no_cpu_fallback_enabled():
+        return
+    global _strict_liveness
+    if _strict_liveness is None:
+        _strict_liveness = assert_no_cpu_fallback_is_live()
+    assert_ep_owns_whole_graph(model, context=context)
+
+
 def cpu_can_run(model: bytes, feeds: dict[str, np.ndarray]) -> bool:
     """Return True if ORT's CPU EP can execute this model (used to skip fp16 comparisons)."""
     try:
@@ -946,7 +1166,13 @@ def check(
     vacuous-pass guard), then assert_matches_cpu if the CPU EP can run the model. Use this
     in almost every test. Use assert_vulkan_claims alone only when the CPU EP lacks a kernel
     for the dtype and you only need to prove device placement.
+
+    With ``ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK=1`` set, ORT's own refusal runs
+    first: the session that would have produced a CPU-vs-CPU comparison cannot be created
+    at all, and the failure text a reader gets is ORT's rather than ours (R13).  Off by
+    default — see ``assert_ep_owns_whole_graph`` for why this is not global.
     """
+    _strict_precondition(model, context="check()")
     assert_vulkan_claims(model, feeds)
     if cpu_can_run(model, feeds):
         assert_matches_cpu(model, feeds, rtol=rtol, atol=atol)
