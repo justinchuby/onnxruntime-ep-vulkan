@@ -1860,11 +1860,54 @@ The sixth is the arm the criterion actually needs: **a census that misses a mech
 
 ---
 
+## 7.17 Two guards the census called `unfalsified`, and why it was right — added 2026-08-02T11:40-07:00
+
+Tank's instrument census failed `test_census_baseline_has_no_drift` with two new unfalsified instruments:
+
+```
+tests/ops/_models.py::assert_ep_owns_whole_graph        calls=5 reject_polarity=0 accept_polarity=0
+tests/ops/_models.py::assert_no_cpu_fallback_is_live    calls=2 reject_polarity=0 accept_polarity=0
+```
+
+This looks wrong, because `test_no_cpu_fallback.py` already calls both in both polarities. It is not wrong. **Every one of those calls sits behind `require_vulkan`, and the screen counts a polarity only from a test that is not GPU-gated** — a polarity nobody can observe without hardware has never been observed on the machines where the census runs. `calls>0` says the guards have callers; `reject=0 accept=0` says nothing has watched them *disagree*, so a guard that always passes, always raises, or has inverted polarity would look exactly like a working one.
+
+`tests/ops/test_no_cpu_fallback_screen.py` supplies the missing polarities in the always-on lane. Both instruments are now `SCREENED` (`reject=2 accept=2`) and the census verdict is `PASS`.
+
+### 7.17.1 The extent of the screen, stated
+
+Only ORT is substituted — `_models.ort.InferenceSession`, plus `_make_session_options` replaced by a recorder so the test can read back which session-config entries the code under test actually set. `_no_cpu_fallback_options`, the key, `ep_only_session_or_refusal`'s three-way classification of ORT's text, the fp64 canary graph, and both guards' own logic are the real code.
+
+**This file cannot tell you that ORT honours the key.** Only the hardware lane can, and it does. What it can tell you is that our side produces two different answers for two different worlds — which is the question `reject=0 accept=0` asked.
+
+### 7.17.2 The trap in screening a falsifier
+
+`assert_no_cpu_fallback_is_live` *is* the falsifier for a silently-swallowed config key, so its self-test must separate "the option takes effect and the check says so" from "the check would say so regardless." A screen built only from the first arm certifies the second. Two arms answer it:
+
+- the recorded entries are asserted to contain `session.disable_cpu_ep_fallback = "1"` — asserted on the recorder, not the return value, because the return value is exactly what a check that never asked would still produce;
+- the key is mutated to a typo against a fake that honours only the correct spelling (ORT's measured behaviour: unknown keys are accepted silently) — the 2026-07-30 specimen reproduced without hardware. The fake snapshots the honoured key at construction; a fake that re-read it would honour whatever the test just misspelled and the arm would screen nothing.
+
+### 7.17.3 Both arms of the screen itself
+
+`tests/ops/probe_fallback_screen_mutations.py` mutates `_models.py`, one property per mutation, and requires the screen to catch each. All three CAUGHT:
+
+- **M1** precondition never asks ORT (a guard that always passes) → `DID NOT RAISE CpuFallbackRefused`;
+- **M2** refusal raised unconditionally (a guard that rejects everything) → `DID NOT RAISE InstrumentError`;
+- **M3** the key is never armed (silently inert) → `ORT created a session … while session.disable_cpu_ep_fallback=1 was set`.
+
+The probe restores `_models.py`, verifies it hashes back to the original, clears `__pycache__` between arms and runs the child with `-B` — R12 generalisation 4 applies to Python: a restored source served from stale bytecode is the same frame error as a stale DLL.
+
+### 7.17.4 Known scope gap, not mine to fix
+
+The census scans `rust/src` and `tests/ops` only — **never `bench/`**. Every instrument under `bench/` is outside its frame, so "the census is clean" currently says nothing about them. Found by Niobe, routed to Tank; recorded here so nobody reads the verdict wider than it reaches.
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---
 
 ## 8. OQ-1: Extension Coverage Data and the Frozen Decision
+
 
 > **Status: RESOLVED** — `docs/DESIGN.md` §7 frozen 2026-07-28T19:16:08-07:00 by Morpheus. The evidence below drove the decision. The data and sources are preserved here because DESIGN.md cites them and they remain the authoritative measurement basis.
 

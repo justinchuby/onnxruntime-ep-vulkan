@@ -1,0 +1,49 @@
+{
+  "probe": "no-cpu-fallback screen, both arms",
+  "baseline": [
+    "8 passed in 0.03s"
+  ],
+  "mutations": [
+    {
+      "mutation": "M1_precondition_never_asks_ORT",
+      "broke": "assert_ep_owns_whole_graph stops building a session \u2014 a guard that always passes",
+      "outcome": "CAUGHT",
+      "failing_tests": [
+        "FAILED test_no_cpu_fallback_screen.py::test_owning_the_whole_graph_fails_on_a_partially_claimed_graph",
+        "FAILED test_no_cpu_fallback_screen.py::test_a_configuration_conflict_is_an_instrument_error_and_never_a_finding",
+        "FAILED test_no_cpu_fallback_screen.py::test_the_two_worlds_are_actually_different_worlds"
+      ],
+      "failure_text": "E       Failed: DID NOT RAISE <class '_models.CpuFallbackRefused'>"
+    },
+    {
+      "mutation": "M2_refusal_raised_unconditionally",
+      "broke": "every session is refused \u2014 a guard that rejects everything certifies nothing",
+      "outcome": "CAUGHT",
+      "failing_tests": [
+        "FAILED test_no_cpu_fallback_screen.py::test_the_live_check_raises_when_the_option_is_silently_inert",
+        "FAILED test_no_cpu_fallback_screen.py::test_the_live_check_sets_the_key_it_claims_to_depend_on",
+        "FAILED test_no_cpu_fallback_screen.py::test_a_misspelled_key_is_not_reported_as_a_working_option",
+        "FAILED test_no_cpu_fallback_screen.py::test_owning_the_whole_graph_passes_when_nothing_fell_back",
+        "FAILED test_no_cpu_fallback_screen.py::test_a_configuration_conflict_is_an_instrument_error_and_never_a_finding",
+        "FAILED test_no_cpu_fallback_screen.py::test_the_two_worlds_are_actually_different_worlds"
+      ],
+      "failure_text": "E       Failed: DID NOT RAISE <class '_verdict.InstrumentError'>"
+    },
+    {
+      "mutation": "M3_key_never_armed",
+      "broke": "the session-config key is not set \u2014 the option is silently inert",
+      "outcome": "CAUGHT",
+      "failing_tests": [
+        "FAILED test_no_cpu_fallback_screen.py::test_the_live_check_returns_orts_text_when_the_option_takes_effect",
+        "FAILED test_no_cpu_fallback_screen.py::test_the_live_check_sets_the_key_it_claims_to_depend_on",
+        "FAILED test_no_cpu_fallback_screen.py::test_a_misspelled_key_is_not_reported_as_a_working_option",
+        "FAILED test_no_cpu_fallback_screen.py::test_owning_the_whole_graph_fails_on_a_partially_claimed_graph",
+        "FAILED test_no_cpu_fallback_screen.py::test_the_two_worlds_are_actually_different_worlds"
+      ],
+      "failure_text": "E       _verdict.InstrumentError: [no-cpu-fallback instrument failure] ORT created a session for a graph whose only node is fp64 Add \u2014 an op this EP must never claim \u2014 while session.disable_cpu_ep_fallback=1 was set.  ORT accepts unknown session-config keys SILENTLY, so a typo leaves every no-fallba"
+    }
+  ],
+  "restored_identical": true,
+  "green_after_restore": true,
+  "note": "A mutation that is MISSED means the screen would certify that broken guard."
+}
