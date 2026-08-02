@@ -547,3 +547,68 @@ R11 obligation 1 and I can point at the sentence — but the tally is the kind o
   If it recurs a third time, the defect is in how the table is written, not in who reads it.
 - I have now twice declined to grow the register in the same session I amended it twice. Watch for a
   softer way of declining.
+
+## 2026-08-02T04:30:29-07:00 — I reopened criterion 10 three hours after closing it, and the closure was my error
+
+The coordinator put my closure to Fact Checker in Devil's Advocate mode, precisely because he had
+supplied the evidence. Fact Checker found that `model_output_equivalence` compares one output out of
+sixty-five. I verified it in source before ruling: `_compare_run_to_cpu` takes `vk_out[0]` and
+`cpu_out[0]` and derives argmax, top10 and max_abs_diff from the logits alone. `test_phi35.py` is the
+same shape behind a structural length assertion. Nothing in the tree compares a KV output to CPU.
+
+The all-65 gate is `outputs_bit_equal` — cross-run identity. It proves determinism. It cannot prove
+correctness, because a deterministically wrong write passes it by being consistently wrong.
+
+**The thing I found that neither of them brought, and it is what settled it for me:** `test_phi35.py`
+Guard 1 already documents this exact mechanism in this codebase — an output outside the descriptor set
+"is never written... zero-initialised by both Intel Iris Xe and NVIDIA drivers for security, reads back
+as all-zero" — and the guard built against it is applied to output 0, the one tensor that already has an
+oracle. The row was reopened on 50 KV outputs never written, where the symptom was cross-run divergence.
+Divergence is the symptom of a *dirty* arena. On a clean one the same defect is stable and everything is
+green. So the closure certified that the symptom is gone and never established the defect is fixed.
+
+**I refused the escape I was offered.** "The criterion's words were always about logits" would require
+renaming the measurement to `logits_equivalence` after seeing that the broad reading fails. That is
+narrowing a criterion because it has just failed — the exact mirror of what I refused three hours ago in
+the same cell when I declined to add a re-run requirement because the news was good. I wrote the
+symmetric form into the row: **a criterion may not be hardened because it is about to pass, nor narrowed
+because it has just failed.** If I had taken the escape it would have been the cheaper ruling and it
+would have been the same failure I have been grading other people on all session.
+
+**My own error, recorded plainly and in the register rather than only in the table.** The artifact carries
+`outputs_compared: 65` in the same per-run dict as `argmax_cpu`, `top10_overlap` and `max_abs_diff`. Every
+neighbour is an oracle fact; that one is a cross-run count. I read 65 and understood sixty-five oracle
+comparisons, and I quoted `max_abs_diff = 0.0625` into a criteria row without stating over what — R11
+obligation 1, three hours after I diagnosed the coordinator for that same obligation in criterion 12. I
+wrote "the thing I verified myself was the thing I over-weighted" into row 12 and then did it in row 10.
+
+**No new rule. Recorded as a fourth specimen under R9's red-instrument test, deliberately unnumbered.** I
+ran the self-check I put in the register — if the next finding also lands as a generalisation, look for a
+softer way of declining. The remedy here is R9's remedy unchanged, a different instrument, so it is not an
+amendment and not a generalisation. The content that is genuinely new is written anyway: two gates whose
+extents differ compose to the weaker extent and the stronger name; a record with two gates owes two
+extents.
+
+**Drafting rule applied to the remedy.** The coordinator's proposal was right and I sharpened it by asking
+what the cheapest satisfaction is: an all-65 oracle is satisfied perfectly by 64 pairs of all-zero tensors,
+so the non-triviality guard is not optional — an oracle that passes on the absence of data is Switch's
+`0.0 == 0.0` in a fourth costume. And the planted control must be wrong *and stable*; an unstable plant is
+caught by cross-run identity and proves nothing new.
+
+**On method, the sentence I want to keep.** I verified every field of that artifact and closed wrongly
+anyway. The coordinator arranged an adversary because he had supplied the evidence, and the adversary
+found what my verification did not. Content verification by the ruling party is weaker than adversarial
+review by a party with no stake. My standing-falsifier clause fired in three hours, which is the clause
+working, not the clause being circumvented.
+
+**Carry forward:**
+- Criterion 10 discharge is now four arms, stated in full so nothing can be added later: all-65 oracle with
+  justified per-output tolerances and two named extent keys; a wrong-and-stable planted control (all-zero);
+  a non-triviality guard on both sides; existing attribution re-emitted not re-argued.
+- Owners I named: Trinity (comparison/verdict constructors), Switch (whether the KV write path writes at
+  all — still unwitnessed, and the `kv_cross_run` prediction has been UNSCORED all session).
+- Fact Checker's session-aggregate attribution argument is OPEN and NOT a condition. It needs an artifact:
+  plant a failing island execution, observe whether a Node event is still emitted.
+- `outputs_compared` is a live R11 obligation-4 specimen and belongs in criterion 12's conjunct (iv)
+  alongside `MEASURED_PHI35_DEV0`.
+- Four declines now, and this one I checked hardest because reopening was the ruling I wanted.
