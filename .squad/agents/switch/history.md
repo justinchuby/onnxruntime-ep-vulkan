@@ -708,3 +708,48 @@ bit-identical — but that is an argument, and the evidence is `test_matmulnbits
 the ledger lands.
 
 Commit `d6628b3`.
+
+## Session 46b — the multiplication, and the term nobody had costed
+
+**Relay:** multiply the InB load count by the load width. If it lands near 2.09 GB each weight
+byte is read once and the 67% is real; if it lands at 2× or 4×, re-reading is the defect and
+blocking is the fix.
+
+**It lands exactly.** 116,324,352 loads × 16 B = 1,861,189,632 B = 1775.0 MiB = the int4 weight
+total from the graph. **Amplification 1.000000.** Blocking is not the defect. Branch one.
+
+**I checked whether my own check could fail**, because it came within one factor of being a
+tautology: `blobs × blob_bytes = weight_bytes` *is* an identity. Two factors are not, and both
+were measured — **loads per blob = 1** (the def-use walk finds one `%v4uint` where the unpacked
+path issues four `%uint`; a per-element loader would be 8× higher over the same blobs), and
+**each blob is touched by exactly one workgroup** (`col0 = WorkGroupID.x * QB_COLS` partitions
+columns; the tail-tile redirect would break it and is unreachable because all five Phi-3.5 `N`
+values divide by 16). Remove either and the product stops matching.
+
+**The fusion prize is 0.47%, and I had the cost model wrong in the same way twice.** Intermediates
+across all 366 nodes at batch 1: **9.52 MiB against 1996.8 MiB of weights**. 354 dispatch
+boundaries *sounds* like traffic, but at batch 1 every intermediate is a **vector** — 6 KiB at
+hidden 3072, 16 KiB at FFN 8192 — so the boundary count multiplies something negligible. Same
+error shape as charging activation re-reads to DRAM last session: **a large count of small things
+is not a large thing, and I keep reaching for the count.**
+
+**The term nobody had costed: the KV cache.** `past_key_values.N.key` is `[batch, 32, past_seq,
+96]` and each of the 32 `GroupQueryAttention` nodes reads its whole history every token.
+
+| past_len | weights | KV | inter | total | KV% | inter% | floor |
+|---|---|---|---|---|---|---|---|
+| 0 | 1996.8 | 0.0 | 9.52 | 2006.4 | 0.0% | 0.474% | 8.22 ms |
+| 2048 | 1996.8 | 768.0 | 9.52 | 2774.4 | 27.7% | 0.343% | 11.36 ms |
+| 8192 | 1996.8 | 3072.0 | 9.52 | 5078.4 | 60.5% | 0.187% | 20.80 ms |
+
+It is **zero in the regime 12.1847 ms was measured in**, which is exactly why it has been
+invisible. It passes the entire fusion prize at 32 tokens of context. Unlike weights it is not
+irreducible; unlike intermediates it is not small; **it is unbounded.** And this model does no
+grouping — 32 KV heads for 32 query heads despite the op's name — so the cache is 4–8× a
+genuinely grouped model. We implement the op (`attention.rs`), so the traffic is ours.
+
+**Consequence for the roofline itself, and it is a methodological one: the floor is not a
+constant.** 8.22 ms at zero context, 14.51 ms at 4096. Any figure quoted against "the roofline"
+must say which context length it was taken at, the way a timing must carry its device state.
+
+Nothing here needed a clock, a device state, or a working EP. Commit `eaa9aef`.
