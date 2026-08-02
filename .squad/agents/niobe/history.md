@@ -345,3 +345,55 @@ ceiling of 0.
 242 tests pass in `bench/`. Committed on `squad/niobe`, not pushed. Scoped small on purpose: the
 `MARGINAL_TAIL` census cross-check remains the more important of the two and did not collide with
 this.
+
+---
+
+## 2026-08-02 — the union failure was a name collision, and the prescribed fix would not have fixed it
+
+**Task.** `bench/test_marginal_tail_withholds.py` broke Link's `ci/test_lane_checks.py` in one
+pytest process; 3 failures, each file green alone. Holding the push. Diagnosis given: two
+unrestored `sys.path.insert` calls; fix given: `monkeypatch.syspath_prepend`.
+
+**I did not accept the diagnosis, and it was wrong.** The failures were `AttributeError: module
+'device_state' has no attribute 'certifies_comparison'` / `'lavapipe_note'` — not
+`ImportError`. The module was found; it was the wrong module. `import` consults `sys.modules`
+before `sys.path`. Two files were named `device_state.py`: mine in `bench/`, Link's in
+`ci/`. Whichever imported first bound the name for the process. I proved the prescribed fix
+insufficient with an artifact (R10): with `sys.path` restored byte-identically (`sys.path clean:
+True`), Link's import still resolved to my file.
+
+Also too narrow by one file: `bench/test_device_state.py` + lane checks reproduces the same three
+failures with the reported file absent. Six `bench/` modules bind the name; all poison equally.
+
+**Fix.** `bench/device_state.py` → `bench/device_companion.py`; eight sites repointed as
+`import device_companion as device_state` so only the `sys.modules` key moves. Nothing of
+Link's touched. It was the repository's only duplicate base name.
+
+**Screen (Tank's rule — a checklist decays).** `bench/test_import_isolation.py`: (1) no two
+flat-imported modules across `bench/`, `bench/results/`, `ci/`, `tests/ops/`,
+`rust/tools/` share a base name — text-decidable, and the half that caused the failure; (2) no
+`bench/` library module leaves `sys.path` mutated — executed, not grepped. Both with positive
+controls. **Screen 2 found three real violations on its first run**, none in the reported file:
+`cases.py`, `island_attribution.py`, `transfer_calibration.py` all leaked `tests/ops`
+process-wide; `island_attribution.py` inserted it and never used it. Blind spot declared in the
+docstring: a module inserting its own directory is invisible to screen 2 by construction.
+
+**One ERROR(instrument), logged as such.** My first cut of screen 2 purged `sys.modules` between
+imports and hard-faulted the interpreter — re-initialising dropped C extension modules. That is the
+screen breaking, not a defect found. The purge was never needed; the screen measures `sys.path`.
+
+**On the CI question — I agree, and both remedies, not one.** Per-directory runs make this class
+invisible by construction. But a single invocation only catches pairs pytest happens to order
+adversarially; `ci/` collecting first would have been green with the defect present. The name
+screen is deterministic and fails with both paths named. Keep both.
+
+**Flagged, not fixed:** `ci/device_state.py` and `bench/device_companion.py` cover overlapping
+subject matter. If two descriptions of one subject, that is what made me import Tank's
+`decode_both` and Switch's `probe_gpustate.py` rather than rewrite them. Link's call.
+
+**Verification.** lane checks alone 55; the three-file union 62; screen 4;
+`pytest bench/ ci/ tests/ops/` in one process **402 passed, 321 skipped, 0 failed**.
+
+**Docs/records.** `docs/PERF.md` §17.0; decision record
+`niobe-module-name-collision-not-syspath.md`. Worktree is shared with `niobe-1` — staged
+explicit paths only, no `git add -A`.

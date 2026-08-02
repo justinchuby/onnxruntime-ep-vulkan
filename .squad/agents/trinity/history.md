@@ -173,3 +173,75 @@ GPU-free: 95 passed (`test_r13_lane` 37, `test_verdict` 44, `test_harness_census
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+
+## Round 27 — the union defect: a required parameter and a caller that was not on my branch (2026-08-02)
+
+**Branch:** `squad/trinity` @ `1ccbfef`, then merged `main` @ `79674d6`. Not pushed.
+
+### What broke
+`TypeError: _run_counters_child() missing 1 required keyword-only argument: 'guard'` in
+`tests/ops/test_wiring_census.py::test_ledger_lookup_wired`, on both devices. I added the
+required keyword-only `guard` on my branch; Mouse added the caller on his. Both green alone.
+
+### The fix, and the decision inside it
+`guard=None`, where **None means build one, not run unguarded**. `None -> unguarded`
+would satisfy "callable without a guard" while silently undoing round 25: every future caller
+opts out of stall detection with nothing to notice. An ambient guard loses only *bookkeeping*
+(its costs never reach the census-wide ledger, so they are absent from `observed_units`),
+never protection. Both halves carry falsifiers because either alone is satisfiable by the
+wrong fix. `test_stall_guard.py`: **16 passed**, deterministic, no GPU.
+
+Same shape one line down: `_BUDGET_UNITS[label]` -> `_budget_for(label)` with a generous
+default. Safe because the unit is *work*: a loose work budget detects a hang later in work,
+never not at all, and contention cannot stretch it. That is not true of a wall clock.
+
+### tests/union_check.py — and only tier 3 is a gate
+Tiers 1 (file intersection), 2 (`sys.path.insert(0,)` in a colliding directory) and 2b
+(module-basename collisions, computed from the working tree) are **preconditions**, never
+gates — R9 A5: a union can break with no intersecting file and no scanned side effect, so
+their silence is a statement about the tool. It prints
+`PRECONDITION(tiers=1,2; tier 3 not run)`, never a bare PASS.
+
+Tier 2 was 21 findings and useless at first. The signal was never the insert — it was the
+**population of colliding basenames**. Against pre-fix history tier 2b reports
+`COLLISION device_state.py <- bench, ci` and names `bench/device_state.py` and
+`ci/check_lane_inventory.py`: it retrodicts the Niobe x Link incident. Against current main
+(after Niobe's rename) it reports `none`. Same code, different tree, different report —
+the R10 falsifier for the tool itself.
+
+Tier 3, both arms, real history, same target, same device:
+- broken union `2fee5ef..c55a389` -> `FAIL(condition=union_red)`, exit 1, quoting the TypeError
+- repaired union `main..squad/trinity` -> `PASS`, exit 0, `ERROR(instrument): 0`
+
+Conflicts confined to `bench/results/` artefacts resolve to HEAD under
+`--resolve-artifacts`; anything else stays `ERROR(instrument=merge_conflict)` — an
+instrument that cannot construct its subject has not observed it. Scratch worktree lives
+under the repo's parent (not Niobe's `bench/results/`) and is removed in a `finally`;
+`git worktree list` shows no leak.
+
+### The near-miss I want on the record
+My first post-merge census read `proven_key_lookups == 0` / `ledger_entries=0` and I
+almost filed "the S8.9 ledger is UNWIRED". The cause was a **stale
+`rust/target/release/onnxruntime_vulkan_ep.dll`** predating Mouse's ledger code. After
+`cargo build --release` it passed. This is Mouse's exact failure mode from earlier today,
+and in a shared worktree (`trinity` and `trinity-1` map to the same directory) it is the
+default state after any merge. **Rebuild after merging** is now part of my standing
+obligation, not an optional step.
+
+### Verification on the fully merged tree
+- `test_stall_guard.py` — 16 passed.
+- `test_wiring_census.py` dev1 (Intel) — 3 passed, `ERROR(instrument): 0`.
+- `test_wiring_census.py` dev0 (NVIDIA) — 3 passed, `ERROR(instrument): 0`.
+
+No timing figure is quoted as a claim of record (S10.0 obligation 8).
+
+### Recommendation to the coordinator
+Standing obligation: **merge `main`, rebuild, then `python tests/union_check.py --run`**
+before reporting a branch done. Targeted rather than full-suite, deliberately: the full suite
+is stronger but the targeted form is the one people will actually run, and it caught this.
+
+### Routed, not edited
+`docs/DESIGN.md` S10.0 (~line 2781) shows an `attribution_witnesses` example with two keys
+where the record now emits six. Morpheus's file.
+
+Decision record: `.squad/decisions/inbox/trinity-union-check-and-guard-default.md`.

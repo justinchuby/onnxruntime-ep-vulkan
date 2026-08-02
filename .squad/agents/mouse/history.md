@@ -1652,3 +1652,89 @@ size-versioned so old readers are safe). Decision record in
 failed once in four full lib runs and passes in isolation — it `set_var`s a process-global env var
 shared with sibling tests. **ERROR(instrument), not a detection.** Pre-existing, Tank's file, and
 recorded so nobody rediscovers it as new.
+
+
+---
+
+## 2026-08-02 — criterion 11 reopened over my own write-up; provenance, the digest refusal, and the three-token miss (Mouse)
+
+Four items from the coordinator, in his priority order.
+
+**1. BLOCKING — clippy at the union.** Ran `cargo clippy --release --all-targets -- -D warnings` at
+the merged state and got **five errors, not the one quoted**: `registry.rs:2261` `manual-contains`
+(the union defect), plus unused import in `transfer.rs:1130`, `manual RangeInclusive::contains` in
+`ops/quant.rs:888`, and fn-item-to-integer casts in `ops/norm.rs:270` and `ops/indexing.rs:118`.
+Fixed all five. **The other four pre-exist on `origin/main`** — verified with
+`git show origin/main:<file>` — so only `registry.rs` was a union defect and *the quoted CI command
+was already red on main independently of my merge*. Whatever was green at Switch's commit cannot
+have been this command at this scope. Two further violations appeared from my own new tests
+(`cloned_ref_to_slice_refs`, two `undocumented_unsafe_blocks`) and were fixed. **Green at the final
+state, not mid-way.**
+
+**2. The rename.** `Island::MEASURED_PHI35_DEV0` → `ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`,
+via `MEASURED_PHI35_DEV0(?!_)` so `..._REAL_BYTES` was untouched. Two test names that had become
+ambiguous about *which* estimate went with it, and
+`the_override_carries_the_verdict_it_overrode` gained a note explaining in one place why its
+`TransferDominated` assertion is consistent with `overrides 1 → 0` shipping. Morpheus's reason is
+the part I kept: **names outlive doc comments**, and keeping both constants was correct.
+
+**3. The bound, held as an assertion rather than prose.** I had said the economics arm *concurs*
+with the exemption; Morpheus refused it — *"agreement between two things fed the same fabricated
+input is not a second opinion."* What survives is an inequality:
+`the_claim_survives_an_adversarial_inflation_of_the_term_opposing_it` asserts monotonicity of
+`transfer_ns` in bytes over six sizes incl. `u64::MAX/4`, that the gate **claims** at the inflated
+13,936,509,056 B, that measured (856,720 B) is smaller, and therefore the truthful island claims
+**a fortiori** — the claim survives a **16,268× adversarial inflation of the term opposing it**.
+§10.0.4's third form: **prefer the bound you can sign.** The narrow half is a standing falsifier of
+its own: `the_substituted_extent_under_counts_on_a_long_prefill_and_the_bound_evaporates` — 128
+over-counts at decode extent 1 and **under-counts** at prefill extent 4096, where the inequality
+reverses and the bound *evaporates rather than weakening*. Both mutation-tested in both polarities.
+
+**4. Criterion 11 — reopened, and I agree with the call against me.** My row said MET; Morpheus's
+said *not met — scaffolding only*; the coordinator took his. His argument is one I could not answer:
+the cheapest satisfaction is a ledger derived from the same enumeration that produces the claims,
+under which `ledger_hits == proven_key_lookups` forever and **`6/6` reads identically under both
+stories**. Mine is not that shape — but *nothing in the artifact distinguished the two shapes*,
+which is R11 on my own mechanism.
+
+- **(a) provenance — done.** Every entry carries `claimed_nodes`, `dispatches_executed`, `worst_rel`.
+  A dispatch count only exists after a session executed; an enumeration cannot forge one. The
+  generator **raises** rather than writing an unattributed entry, `--check` fails on one, and
+  `parse_ledger` **faults** it. **Absent is treated exactly like zero**, and a **quoted** count like
+  absent. Four ledgers differing only in those fields, four outcomes.
+- **(b)(iii) the digest refusal — done.** `ONNXRUNTIME_EP_VULKAN_LEDGER_FILE`; disagreement (or a
+  named file that cannot be read) → `Ledger::faults` → **every form declines**. This is a *second*
+  threat from the header-vs-body digest: that catches a hand-edit before the build, this catches the
+  file changing after it — the case where the artifact a reviewer reads is not the one the binary
+  claimed from. Three arms, including the identical-file arm, **which is what makes the other arm a
+  detection rather than a check that fails on everything**.
+- **(d) the three-token miss — done.** `LedgerLookup::{Hit,KeyAbsent,Faulted,NeverAttempted}`;
+  `record_ledger_lookup` takes the outcome, not a `bool`; counters carry `"ledger_miss"`.
+  `LEDGER-FAULTED` **outranks** `KEY-ABSENT` (R13: a run with no reading about any form must not
+  spell an outage the way it spells a detection). `NEVER-ATTEMPTED` is derived, never counted —
+  recording it would be a lookup, which is what it asserts did not happen.
+- (b)(i) `mul_f16_unproven` and (b)(ii) the `MatMulNBits` `zero_points` pair were already in the
+  lane and in the ledger. **(c) and lane membership are Trinity's.** I did not close the row.
+
+**Ledger digest `e4436e93c19c8744` → `331003e0ff88df3f`** on regeneration with provenance; 9 entries,
+all re-attributed `MATCH` at `claimed_nodes=1 dispatches_executed=1`.
+
+**Predicted before running** (`bench/results/proof_ledger_prediction.json`, R10): the `mul_f16`
+decline, both `MatMulNBits` keys hitting, `HIT`/`LEDGER-FAULTED`/`NEVER-ATTEMPTED` in their three
+frames, and a provenance-stripped entry faulting. All confirmed.
+
+**State:** `cargo test --release` **455 lib passed / 0 failed / 3 ignored**, epctl 15, all bins green;
+clippy green at the merged state; `test_proof_ledger.py` 10 passed; census 3 passed on Intel, and
+`ledger_lookup` still reads `ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9
+unproven_declines=0` — unchanged by all of the above, which is the point.
+
+**ERROR(instrument), recorded so nobody rediscovers it:** `Copy-Item` preserves the source file's
+`LastWriteTime`, so cargo's fingerprint does not notice a restore-from-backup and silently re-runs
+the **previously compiled mutated** test binary. This produced a persistent false failure I nearly
+"fixed" by weakening a correct assertion. Touch the mtime after any restore. The assertion now
+**quotes its numbers**, because I could not diagnose what it would not tell me.
+
+**Declared crossings:** `rust/src/transfer.rs` (Switch — one unused import), `rust/src/counters.rs`
+(Tank — `record_ledger_lookup` signature, two statics, `ledger_miss`), `docs/DESIGN.md` criterion 11
+row. **Collision to sequence:** I edited `partition.rs` this session, which collides with sibling
+instance `mouse`'s held `Verdict::Claim` return-site change.

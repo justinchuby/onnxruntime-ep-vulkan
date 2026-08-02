@@ -156,3 +156,51 @@ failed" regression that did not exist. That is R13's second clause with a stopwa
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
 
 ---
+
+## Session 12 — 2026-08-02 — the composed workflow, and planted vs observed falsifiers
+
+**Asked:** classify the `Tautological-assertion screen` step that arrived from Switch's
+branch and became unclassified only in the *union* of two correct merges; record union
+blindness as a lane-structure property; say whether lanes should verify the composed
+workflow. Also: `rust/src/trace.rs` assigned to Niobe.
+
+**Done — commit `596f545` on `squad/link` (not pushed).**
+
+1. `hostfree.tautological_assertions` registered `UNDEMONSTRATED`. Not green. Switch's own
+   first paragraph says neither assertion defect that actually occurred here is within its
+   reach; 1,056 scanned / 0 detections is a regression barrier, not evidence it works.
+   Registering it correctly demoted the whole `lane-checks` lane green -> operational.
+
+2. **Went further than asked, deliberately.** Marking Switch down while calling my own tick
+   screen `DEMONSTRATED` would apply a stricter standard to another agent than to myself —
+   my screen's red arms are all injections I wrote. `DEMONSTRATED` was conflating "somebody
+   planted a defect and the check caught it" with "the check caught something nobody
+   planted". Added an orthogonal axis, `PLANTED` / `OBSERVED`, required on every green check
+   by `validate()`. Census: build-test-linux 6/8 planted, build-test-windows 5/7,
+   lane-checks 4/5. Only `build.portability_lint`, `build.clippy` (both RED_NOW) and
+   `hostfree.tick_screen_negative_control` are OBSERVED. **My tick screen is PLANTED.**
+   A planted arm does not demote to UNDEMONSTRATED — "somebody performed the mutation" and
+   "nobody ever has" are different states — but it must not be read as load-bearing.
+
+3. **My call: lanes verify the composed workflow, not the branch's view of it.**
+   `ci/check_lane_inventory.py --union-with <ref> [--union-required]`. Deliberately not a
+   merge: a three-way merge can conflict, and a conflict is a different conversation; the
+   union of two step-name lists answers the question without needing the merge to succeed,
+   and is correct in the case that bit us (different regions, clean merge). `--union-required`
+   exists because an unreadable ref silently returns the check to the branch-only view it
+   was written to replace. Wired into `lane-checks` after `git fetch --depth=1 origin main`.
+   Both polarities hold on a synthesised two-branch repo plus an outage arm, and the real
+   merge was **replayed** on the two actual pre-merge blobs: branch-only GREEN, union view
+   naming exactly Switch's step. Real inputs, wrong clock — a replay, not a live catch, and
+   the code and PLATFORMS.md 7.14.1 both say so.
+
+4. Scope limit, stated so nobody over-quotes it: it covers one shape (workflow step names)
+   in one file. The other four instances of 2026-08-02 are untouched; a general union check
+   is with Trinity.
+
+5. `trace.rs` owner recorded as Niobe in `ci/tick_conversion_allowlist.json` (all 3 entries)
+   and in PLATFORMS.md 7.14.3.
+
+**Verification:** `pytest ci/test_lane_checks.py` 80 passed (65 -> 80, +5 this session);
+tick screen PASS; negative control PASS (all 7 arms + baseline); `check_lane_inventory
+--union-with main` PASS. Staged per-path — `link-1` shares this worktree.
