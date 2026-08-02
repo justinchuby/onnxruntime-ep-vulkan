@@ -48,6 +48,7 @@
 
 pub mod allocator;
 pub mod counters;
+pub mod disclosure;
 pub mod engine;
 pub mod ep;
 pub mod factory;

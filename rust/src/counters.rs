@@ -599,6 +599,24 @@ static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
 static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
+
+/// How many §8.9.7 session-creation disclosures ran in this process.
+///
+/// The in-frame witness for [`claimed_form_evidence`]: zero here means the claim set was never
+/// examined, which is not the same as a claim set that examined clean.
+static SESSION_DISCLOSURES: AtomicU64 = AtomicU64::new(0);
+/// Distinct claimed forms backed by a ledger `MATCH`.
+static CLAIMED_FORMS_PROVEN: AtomicU64 = AtomicU64::new(0);
+/// Distinct claimed forms with no proof at all.
+static CLAIMED_FORMS_UNMEASURED: AtomicU64 = AtomicU64::new(0);
+/// Distinct claimed forms whose recorded verdict is not `MATCH`.
+static CLAIMED_FORMS_DIVERGENT: AtomicU64 = AtomicU64::new(0);
+/// Distinct claimed forms whose evidence could not be read because the ledger is faulted.
+static CLAIMED_FORMS_LEDGER_FAULTED: AtomicU64 = AtomicU64::new(0);
+/// Disclosures that emitted the mandatory WARN.
+static SESSION_DISCLOSURE_WARNS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose WARN reached ORT's own logging sink.
+static SESSION_DISCLOSURE_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 /// Compute failures produced by the fault-injection control rather than suffered.
 static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
 
@@ -915,6 +933,79 @@ pub fn record_injected_compute_failure() {
     COMPUTE_FAILURES_INJECTED.fetch_add(1, ORD);
 }
 
+/// Record one §8.9.7 session-creation disclosure.
+///
+/// Counts **distinct forms**, not nodes: the disclosure itself is per form, and a counter whose
+/// units differ from the disclosure it measures cannot be reconciled with it.
+///
+/// **This writes the counters artifact immediately**, for the same R12 reason as
+/// [`record_broken_commitment`]. The moment this observable must be read is session creation; a
+/// session that goes on to claim unproven forms is by construction a session that may end
+/// abnormally, and an observable that can only be read at a shutdown that no longer occurs is
+/// out-of-frame by construction. Read it at the instant of the event instead.
+pub fn record_session_disclosure(
+    proven: usize,
+    unmeasured: usize,
+    divergent: usize,
+    ledger_faulted: usize,
+    warned: bool,
+    warn_reached_ort_sink: bool,
+) {
+    SESSION_DISCLOSURES.fetch_add(1, ORD);
+    CLAIMED_FORMS_PROVEN.fetch_add(proven as u64, ORD);
+    CLAIMED_FORMS_UNMEASURED.fetch_add(unmeasured as u64, ORD);
+    CLAIMED_FORMS_DIVERGENT.fetch_add(divergent as u64, ORD);
+    CLAIMED_FORMS_LEDGER_FAULTED.fetch_add(ledger_faulted as u64, ORD);
+    if warned {
+        SESSION_DISCLOSURE_WARNS.fetch_add(1, ORD);
+        if warn_reached_ort_sink {
+            SESSION_DISCLOSURE_WARNS_TO_ORT.fetch_add(1, ORD);
+        }
+    }
+    dump_if_requested();
+}
+
+/// The evidence standing of every form this process's sessions claimed, as one token.
+///
+/// * `"UNOBSERVABLE"` — no session-creation disclosure ran in this frame, so no claim set has
+///   been examined and nothing is known. **Never `"ALL-PROVEN"`**: a claim set that was never
+///   assembled is not a claim set that was proven, and that substitution is precisely the §6.5
+///   coincidence — an agreement produced by the absence of the event rather than by its outcome.
+/// * `"ALL-PROVEN"` — at least one form was claimed and every claimed form has a ledger `MATCH`.
+/// * `"NO-CLAIMS"` — a disclosure ran and the sessions claimed nothing at all.
+/// * `"UNMEASURED-PRESENT"` / `"DIVERGENT-PRESENT"` / `"LEDGER-FAULTED"` — the escalating
+///   findings, reported most-specific-first so a divergence is never hidden behind an absence.
+fn claimed_form_evidence() -> &'static str {
+    if SESSION_DISCLOSURES.load(ORD) == 0 {
+        return "UNOBSERVABLE";
+    }
+    if CLAIMED_FORMS_LEDGER_FAULTED.load(ORD) > 0 {
+        "LEDGER-FAULTED"
+    } else if CLAIMED_FORMS_DIVERGENT.load(ORD) > 0 {
+        "DIVERGENT-PRESENT"
+    } else if CLAIMED_FORMS_UNMEASURED.load(ORD) > 0 {
+        "UNMEASURED-PRESENT"
+    } else if CLAIMED_FORMS_PROVEN.load(ORD) > 0 {
+        "ALL-PROVEN"
+    } else {
+        "NO-CLAIMS"
+    }
+}
+
+/// Which channel carried the session-creation WARNs, as a token. Same three states, and the same
+/// argument, as [`broken_commitment_channel`]: silence does not prove a channel.
+fn session_disclosure_channel() -> &'static str {
+    let warns = SESSION_DISCLOSURE_WARNS.load(ORD);
+    let delivered = SESSION_DISCLOSURE_WARNS_TO_ORT.load(ORD);
+    if warns == 0 {
+        "UNOBSERVABLE"
+    } else if delivered == warns {
+        "ORT_SINK"
+    } else {
+        "PRIVATE_LOG_ONLY"
+    }
+}
+
 /// The three-state reading of `broken_commitments`.
 ///
 /// `0` is only printable when at least one `Compute` ran: with `compute_calls == 0` this EP never
@@ -1003,6 +1094,13 @@ pub fn reset() {
     NET_BENEFIT_OVERRIDE_REASONS.store(0, ORD);
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
+    SESSION_DISCLOSURES.store(0, ORD);
+    CLAIMED_FORMS_PROVEN.store(0, ORD);
+    CLAIMED_FORMS_UNMEASURED.store(0, ORD);
+    CLAIMED_FORMS_DIVERGENT.store(0, ORD);
+    CLAIMED_FORMS_LEDGER_FAULTED.store(0, ORD);
+    SESSION_DISCLOSURE_WARNS.store(0, ORD);
+    SESSION_DISCLOSURE_WARNS_TO_ORT.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
     LEDGER_LOOKUPS.store(0, ORD);
     LEDGER_HITS.store(0, ORD);
@@ -1061,6 +1159,15 @@ impl VulkanEpCounters {
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
+             \"session_disclosures\": {},\n  \
+             \"claimed_forms_proven\": {},\n  \
+             \"claimed_forms_unmeasured\": {},\n  \
+             \"claimed_forms_divergent\": {},\n  \
+             \"claimed_forms_ledger_faulted\": {},\n  \
+             \"claimed_form_evidence\": \"{}\",\n  \
+             \"session_disclosure_warns\": {},\n  \
+             \"session_disclosure_warns_to_ort_sink\": {},\n  \
+             \"session_disclosure_channel\": \"{}\",\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -1096,6 +1203,15 @@ impl VulkanEpCounters {
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
+            SESSION_DISCLOSURES.load(ORD),
+            CLAIMED_FORMS_PROVEN.load(ORD),
+            CLAIMED_FORMS_UNMEASURED.load(ORD),
+            CLAIMED_FORMS_DIVERGENT.load(ORD),
+            CLAIMED_FORMS_LEDGER_FAULTED.load(ORD),
+            claimed_form_evidence(),
+            SESSION_DISCLOSURE_WARNS.load(ORD),
+            SESSION_DISCLOSURE_WARNS_TO_ORT.load(ORD),
+            session_disclosure_channel(),
             equiv,
         )
     }
@@ -1483,6 +1599,70 @@ mod tests {
             !doc.contains("\"session_staging_upload_bytes\": 0,"),
             "the staging bytes reached the counters module but not the document; got:\n{doc}"
         );
+    }
+
+    /// **R12 / R10 falsifier for the §8.9.7 disclosure observable.**
+    ///
+    /// Two things at once. First: with no session-creation disclosure in this frame,
+    /// `claimed_form_evidence` must read `UNOBSERVABLE` and never `ALL-PROVEN` — a claim set that
+    /// was never assembled is not a claim set that came back clean, and the substitution of the
+    /// second for the first is the §6.5 coincidence. Second: the token's content must **vary with
+    /// its input**, which is the only thing that distinguishes a wired observable from a constant.
+    #[test]
+    fn the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"claimed_form_evidence\": \"UNOBSERVABLE\""),
+            "no disclosure has run, so nothing is known about any claim set. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_channel\": \"UNOBSERVABLE\""),
+            "a channel with no traffic is not a proven channel. Got:\n{doc}"
+        );
+
+        record_session_disclosure(3, 0, 0, 0, false, false);
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"claimed_form_evidence\": \"ALL-PROVEN\""),
+            "three proven forms and nothing else should read ALL-PROVEN. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_channel\": \"UNOBSERVABLE\""),
+            "no WARN was emitted, so the WARN channel is still unexercised. Got:\n{doc}"
+        );
+
+        record_session_disclosure(1, 1, 0, 0, true, true);
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"claimed_form_evidence\": \"UNMEASURED-PRESENT\""),
+            "an unmeasured claimed form must surface. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_channel\": \"ORT_SINK\""),
+            "the WARN reached ORT's logger and must say so. Got:\n{doc}"
+        );
+
+        record_session_disclosure(0, 0, 1, 0, true, false);
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"claimed_form_evidence\": \"DIVERGENT-PRESENT\""),
+            "a divergent form must not hide behind an unmeasured one. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_channel\": \"PRIVATE_LOG_ONLY\""),
+            "a WARN that did not reach ORT's logger is invisible to the audience that matters, \
+             and the artifact must say so. Got:\n{doc}"
+        );
+
+        record_session_disclosure(0, 0, 0, 1, true, true);
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"claimed_form_evidence\": \"LEDGER-FAULTED\""),
+            "R13: an instrument error outranks the findings it makes unreadable. Got:\n{doc}"
+        );
+        reset();
     }
 
     /// **R12 falsifier.** `alloc_device_authoritative_spans` may never appear as the number `0` in
