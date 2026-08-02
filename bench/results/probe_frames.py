@@ -256,6 +256,17 @@ def verdict_for(census: "list[dict]") -> dict:
                     f"{LARGE_SPREAD_RSD:.0%} AND a tail that publishes a number. The two "
                     "statements can therefore disagree about a quotable figure, and one of the "
                     "instruments is wrong. Resolve before either certifies anything.")}
+    if not publishing:
+        # A one-sided census. Every trace has a large spread and none publishes, which is
+        # consistent with the finding but cannot establish the separation on its own -- there is
+        # no publishing set to be separated from. Say so rather than reporting the full verdict
+        # over half the evidence.
+        return {"verdict": "ONE_SIDED(no publishing trace)", "counts": counts,
+                "detail": (
+                    f"All {len(large)} large-spread trace(s) in this census refuse to publish, "
+                    "which is consistent with SAME_FRAME_ORDERED_SELECTION but does not "
+                    "establish it: no trace in this selection publishes a tail figure, so there "
+                    "is no separation to demonstrate. Run over the full trace set.")}
     return {"verdict": "SAME_FRAME_ORDERED_SELECTION", "counts": counts,
             "detail": (
                 f"Same frame, and no conflict is constructible from the evidence we hold. Across "
