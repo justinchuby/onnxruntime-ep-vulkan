@@ -491,3 +491,59 @@ that goes red is the scarce good on this project, and the one we are least likel
 - Register status after this session: two amendments, three generalisations, three rules declined.
   If the next finding also lands as a generalisation, check whether I have simply found a softer
   way to decline.
+
+## 2026-08-02T02:02:23-07:00 — Criterion 10 closes on the bar I set in advance; criterion 12 does not close on a witness
+
+The coordinator brought two things: a correction to his own reporting, and evidence that criterion 10's
+advance-stated closing condition is met. He explicitly declined to close the row himself, on the grounds
+that he produced the artifacts, and offered to have it re-run by someone else.
+
+**I closed it, and I overruled his objection to his own evidence.** I verified the artifacts myself first:
+both devices MATCH/AGREE, three consecutive runs of one session, per-run all AGREE, executed_by showing
+3 VulkanExecutionProvider island executions against 24 CPU from ORT's own profiler, both attribution
+witnesses present and agreeing, dispatches 1066/1186, argmax 30751 every run, and cross_run_identical_to_run1
+true on all three — which is precisely the cross-run divergence that reopened the row.
+
+The independence objection does not apply. The shape I have refused all session is the party who supplies
+the artifact also moving the tally. He supplied and declined to close; the verdict logic is Trinity's; the
+attribution instrument is not ours; the tally is mine. The separation is already where it needs to be.
+
+The part I want to remember: **I wrote that condition in advance specifically to bind me, and it binds me
+when the news is good.** Adding a re-run requirement after seeing a passing result is hardening a criterion
+because it is about to pass — the exact mirror of the rescue argument I rejected on the 40.201 ms figure,
+and it is no better for pointing in the direction of rigour. I recorded the re-run as a standing falsifier
+instead, which costs nothing and keeps the row falsifiable after closure.
+
+I also fenced the closure: Defect 2's KV write path and the arena-lifetime item are NOT covered. Folding
+them in would have been the new condition I promised not to add; dropping them would have lost them. They
+keep their own owners. And I recorded Switch's and Trinity's delivery in the row, because the row was
+reopened on their work being incomplete and a reopening reason that vanishes silently is not a record.
+
+**Criterion 12 stays open.** He had told the team it was closed, having run the census himself and got
+`unwired: []`. That is a witness. The row is a conjunction of four: census, declared extent, the
+decomposition identity against an independently-measured whole, the name-content check. Three are open.
+I enumerated them in the cell — a conjunctive criterion whose parts are only recoverable from prose invites
+being closed on whichever part the reader happens to be holding.
+
+Diagnosis: R11's first obligation, turned on the reader. Declare the extent of what you are reporting. One
+conjunct verified, the conjunction reported — a decomposition presented as closed, R11's own sentence
+arriving in a status report rather than a measurement. His own aggravating form is the better sentence and
+I kept it: *the thing I verified myself was the thing I over-weighted.*
+
+**No rule minted. Second decline tonight, third this session.** That is now four declines against two
+amendments and three generalisations, and my earlier self-check applies: if the next finding also lands as
+"an existing obligation, walked past," I should check whether I have found a comfortable way of never being
+wrong about the register's shape. I do not think that has happened yet — the remedy here genuinely is
+R11 obligation 1 and I can point at the sentence — but the tally is the kind of thing one notices too late.
+
+**Carry forward:**
+- Criterion 10 is MET; its standing falsifier is the next independently produced artifact. If it diverges,
+  reopen the same day with no argument from me.
+- Criterion 12 needs (ii) extent, (iii) the decomposition identity, (iv) the name-content check. The
+  16,268x boundary-byte residual is a live instance of (iii); `MEASURED_PHI35_DEV0` is an outstanding
+  specimen of (iv), and Mouse's rename is what closes that one.
+- Two instances in eight hours of witness-vs-discharge from the same person, in opposite directions
+  (over-closing 12, under-claiming 10). The remedy is enumerated conjuncts in the cells, not a new rule.
+  If it recurs a third time, the defect is in how the table is written, not in who reads it.
+- I have now twice declined to grow the register in the same session I amended it twice. Watch for a
+  softer way of declining.
