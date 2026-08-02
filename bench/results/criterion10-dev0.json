@@ -1,77 +1,74 @@
 {
   "artifact": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
   "attribution_source": "ort_profile",
-  "attribution_witness_agreement": "AGREE",
+  "attribution_witness_agreement": "UNOBSERVABLE",
   "attribution_witnesses": {
-    "counters_dispatches_executed": 1066,
-    "counters_witness_reason": "",
-    "profile_digest": "sha256:ae0bceb4d92e31a1",
-    "profile_mtime_ns": 1785649701800655300,
-    "profile_node_events": 3,
-    "profile_node_events_total": 27,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-66\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-01_22-48-12_523.json",
-    "witness_agreement": "AGREE",
+    "counters_dispatches_executed": "UNOBSERVABLE",
+    "counters_witness_reason": "counters not armed: ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE was unset in this process. On Windows the DLL caches this variable at load time, so it CANNOT be armed from inside a test that has already imported onnxruntime -- it must be set before the process starts",
+    "profile_digest": "sha256:94ef319f82813ea3",
+    "profile_mtime_ns": 1785671020032461800,
+    "profile_node_events": 0,
+    "profile_node_events_total": 1377,
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-114\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-02_04-42-53_290.json",
+    "witness_agreement": "UNOBSERVABLE",
     "witnesses_present": [
-      "ort_profile",
-      "ep_counters"
+      "ort_profile"
     ]
   },
   "attribution_witnesses_present": [
-    "ort_profile",
-    "ep_counters"
+    "ort_profile"
   ],
   "comparison": "AGREE",
-  "detail": "3-run series, per-run comparisons ['AGREE', 'AGREE', 'AGREE'], 3 VulkanExecutionProvider fused-island execution(s) across 3 consecutive run(s) of one session = 1 island(s) per run. This counts ISLAND EXECUTIONS, not graph nodes: Phi-3.5 fuses 355 of 363 graph nodes into one island, so 3 run(s) of a healthy session report exactly 3. A reader who takes this for a graph-node count will read a catastrophe where the record says success.",
+  "detail": "3-run series, per-run comparisons ['AGREE', 'AGREE', 'AGREE'], 0 VulkanExecutionProvider fused-island execution(s) across 3 consecutive run(s) of one session = 0 island(s) per run. This counts ISLAND EXECUTIONS, not graph nodes: Phi-3.5 fuses 355 of 363 graph nodes into one island, so 3 run(s) of a healthy session report exactly 3. A reader who takes this for a graph-node count will read a catastrophe where the record says success.",
   "device_index": "0",
   "device_name": "",
   "executed_by": {
-    "CPUExecutionProvider": 24,
-    "VulkanExecutionProvider": 3
+    "CPUExecutionProvider": 1377
   },
   "own_provider_count_means": "fused-island executions by this EP, NOT graph nodes; one island can cover hundreds of graph nodes",
-  "own_provider_execution_count": 3,
+  "own_provider_execution_count": 0,
   "per_run": [
     {
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0625,
+      "max_abs_diff": 0.0,
       "outputs_compared": 65,
       "top10_overlap": 10,
-      "vk_max_abs_logit": 13.140625
+      "vk_max_abs_logit": 13.0859375
     },
     {
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0625,
+      "max_abs_diff": 0.0,
       "outputs_compared": 65,
       "top10_overlap": 10,
-      "vk_max_abs_logit": 13.140625
+      "vk_max_abs_logit": 13.0859375
     },
     {
       "argmax_cpu": 30751,
       "argmax_vk": 30751,
       "cross_run_identical_to_run1": true,
-      "max_abs_diff": 0.0625,
+      "max_abs_diff": 0.0,
       "outputs_compared": 65,
       "top10_overlap": 10,
-      "vk_max_abs_logit": 13.140625
+      "vk_max_abs_logit": 13.0859375
     }
   ],
-  "permits_triple_and_ratio": true,
+  "permits_triple_and_ratio": false,
   "required_runs": 3,
   "series": {
     "counts_what": "fused-island executions, not graph nodes",
-    "islands_per_run": 1.0,
-    "own_provider_execution_count": 3,
+    "islands_per_run": 0.0,
+    "own_provider_execution_count": 0,
     "per_run_comparison": [
       "AGREE",
       "AGREE",
       "AGREE"
     ],
     "runs": 3,
-    "uniformly_attributed": true
+    "uniformly_attributed": false
   },
-  "verdict": "MATCH"
+  "verdict": "UNATTRIBUTED"
 }
