@@ -1,0 +1,52 @@
+{
+  "written_before_the_run": true,
+  "author": "mouse",
+  "datetime": "2026-08-02T04:40:00-07:00",
+  "rule": "R10 - state what the ledger will decline before running it. A prediction written after the run is a description.",
+  "enumeration": {
+    "how": "one gated `pytest tests/ops` run with ONNXRUNTIME_EP_VULKAN_CLAIM_LOG set; every record whose decline codes are exactly {unproven}",
+    "distinct_keys_found": 57,
+    "artifact": "bench/results/_opsuite_keys.txt",
+    "not_from": "the claim table's enumeration - that shape makes criterion 11 true by construction"
+  },
+  "predictions": [
+    {
+      "id": "P1",
+      "claim": "The exact-arithmetic f32 unaries prove cleanly: Abs, Neg, Sign, Floor, Ceil, Round, Identity, Reciprocal. No rounding is involved beyond IEEE, so worst_rel should be 0.0 or denormal-small."
+    },
+    {
+      "id": "P2",
+      "claim": "The transcendental f32 unaries prove at rtol=1e-3: Exp, Log, Erf, Sigmoid, Tanh, Gelu, Mish, Softplus, the trig and hyperbolic family. GLSL built-ins and the CPU EP agree far inside 1e-3 at f32."
+    },
+    {
+      "id": "P3",
+      "claim": "AT LEAST ONE f16 form will come back DIVERGENT at atol=1e-5, and it will be a transcendental one (Erf, Gelu or Tanh at f16), because f16 machine epsilon is ~9.8e-4 - two orders of magnitude LARGER than the atol - so any difference in the order of operations exceeds the tolerance. If this happens it is a finding about the tolerance's applicability to f16, not about the kernel, and the form stays OUT of the ledger."
+    },
+    {
+      "id": "P4",
+      "claim": "GroupQueryAttention will NOT be proven this round. It has 7 inputs and 3 outputs including in-place KV-cache updates, and a one-node case model that feeds it correctly is not a small piece of work. It will be reported as unproven with a reason, not quietly omitted."
+    },
+    {
+      "id": "P5",
+      "claim": "Clip's suite failure is NOT fixed by a ledger entry. The claim log shows `[arity] Clip has 1 inputs; this handler takes exactly 3` - a different code from `[unproven]`. A proof of the 3-input form leaves the 1-input form declining for the same reason it declines now. This is a coverage gap, not a proof gap."
+    },
+    {
+      "id": "P6",
+      "claim": "Some enumerated keys will produce `unproven_only: 0` at discovery - the form declines for a second reason as well, so proving it changes nothing. Those get no entry and are reported."
+    },
+    {
+      "id": "P7",
+      "claim": "The suite will NOT go to 0 failures. Forms declining for [staged], [dtype], [attribute], [opset] and [arity] reasons are unaffected by the ledger, and the claim log counted 87 such records against 765 unproven ones."
+    },
+    {
+      "id": "P8",
+      "claim": "Every entry written will carry claimed_nodes > 0 and dispatches_executed > 0, because the generator raises rather than writing an unattributed entry. If a proof run falls back to CPU the verdict is UNATTRIBUTED and no entry appears - the count of entries can therefore go DOWN relative to the number of keys attempted, and that is the mechanism working."
+    }
+  ],
+  "will_not_do": [
+    "Relax Guard D to reduce the failure count.",
+    "Derive any entry from the claim table's enumeration.",
+    "Widen rtol/atol to make a DIVERGENT form pass. A tolerance chosen after seeing the number it must admit is not a tolerance.",
+    "Quote any timing figure: gpu_steady_tail detects foreign work only through non-stationarity, six agents are on this machine, and no duration is certifiable right now. worst_rel against a CPU oracle needs no clock."
+  ]
+}

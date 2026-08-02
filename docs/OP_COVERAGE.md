@@ -3653,6 +3653,221 @@ is gated on Trinity's first harness run producing a non-empty ledger.
 computes its proof key, and asserts it appears in the merged (ledger ∪ CLAIM_UNPROVEN) set. Must go
 red if a row is marked `Live` and its key is in neither source.
 
+### 8.9.8 Populating the ledger — the 154 reds and what they cost to clear (2026-08-02)
+
+Landing the gate took `pytest tests/ops` to **154 failed / 276 passed**. Not one of those was a
+regression: Guard D refuses to report a CPU-vs-CPU comparison as a pass, and a form the gate
+declines runs on the CPU EP in both arms. The remedy is proofs, never a softer guard.
+
+**Enumeration is mechanical, and the instrument that enumerates has a defect worth naming.** Every
+claim-log line carries `proof_key`, so the set of forms a red suite needs is a parse away. But the
+claim log is **truncated by whichever process opens it**, and several tests spawn a child that
+loads the DLL. A whole-suite run therefore reports only the records written after the last such
+child — 786 records, where the same tests enumerated **per file** produce 3,140. The first triage
+built on the whole-suite log concluded the residual was one form; the per-file triage found five.
+Enumerate per file. A census that under-counts silently is worse than one that refuses.
+
+**The residual, triaged by decline code rather than by count (R13).** Of the 45 forms still
+declining after the first population round:
+
+| population | ledger authority | what it is |
+|---|---|---|
+| `unproven` alone | yes | a form nothing has proven — 5 keys |
+| `unproven` + `dtype`/`arity` | no | the handler declines it on another axis too |
+| `staged` / `not-registered` / `attribute` / `opset` | no | coverage gaps; §8.9 has no say |
+
+Four of the five pure-`unproven` keys were `SkipSimplifiedLayerNormalization` forms differing from
+the already-proven pair **only in `shape_class` (static vs runtime-extent) and dtype (f32 vs f16)**
+— which is the key doing its job. Proving them took four case models and cleared **seven** tests.
+
+**The fifth is `GroupQueryAttention`, and it is a finding, not an obstacle.** Its proof run returns
+
+    DIVERGENT {'reason': 'output o0 outside tolerance', 'worst_rel': 16.72642029784887}
+
+reproducibly, to the digit, on two runs. So GQA stays out of the ledger, Phi-3.5's five tests stay
+red, and they stay red **for the correct reason**: the fused attention kernel does not reproduce the
+CPU oracle on the decode form. This corroborates the pre-existing strict-`xfail` `_GQA_COMPUTE_BUG`
+in `tests/ops/test_gqa.py` from a second, independent instrument.
+
+A non-`MATCH` verdict **cannot** be recorded in `proof_ledger.jsonl`: `parse_ledger` pushes it to
+`Ledger::faults`, and a ledger with faults refuses *every* claim, not just the bad one. So attempts
+are appended to **`evidence/proof_attempts.jsonl`**, which grants nothing and is not baked into the
+binary. It exists so that *"we measured GQA and it disagreed by 16.7×"* cannot decay into *"GQA has
+no entry"* — the same distinction `Ledger::demoted` draws at session disclosure.
+
+**Feed plans.** Some inputs are not free variables. GQA's `total_sequence_length` must equal past +
+current and `seqlens_k` must agree with the cache extent; a random `int32` there is not a harsher
+test, it is an invalid model, and the CPU arm raises rather than producing an oracle — an
+`ERROR(instrument)`, not a verdict. `ledger_case_models.feed_plan()` pins those values and the
+symbolic extents beside the case that needs them. The dims stay symbolic *in the model*, which is
+what keeps the form in the `runtime-extent` shape class; only the run binds them.
+
+**A compile input that lives outside `rust/`.** The ledger is baked with
+`include_str!("../../evidence/proof_ledger.jsonl")`, and the criterion-5 shader-less witness builds
+from a copy of `rust/` alone. It therefore failed with
+
+    error: couldn't read `src\../../evidence/proof_ledger.jsonl`: The system cannot find the path specified.
+    error: could not compile `onnxruntime-ep-vulkan` (lib) due to 1 previous error
+
+and reported `ERROR(instrument)` — correctly, because a build that failed for an unrelated reason is
+not a criterion-5 result. The scratch tree now carries the ledger, and the ledger's mtime now
+participates in the witness's staleness check, so a re-generated ledger cannot be witnessed against
+the previous binary.
+
+**Result:** `154 failed / 276 passed` → **`37 failed / 393 passed`**; ledger **9 → 73 entries**;
+census `ledger_lookup: ALL-PROVEN … ledger_entries=73`, byte-identical on device 0 and device 1.
+Of the 37, **26** are `test_op_table` coverage gaps, **5** are Phi-3.5 behind the GQA divergence,
+**3** are `Min`/`Max`/`Clip`-no-bounds (`[staged]`, `[arity]`), **1** is criterion 10 behind the same
+GQA divergence, and **0** are instrument errors.
+
+### 8.9.9 The real Phi-3.5: 0 → 323/363 claimed, with the ledger unchanged (2026-08-02)
+
+The request that produced this section carried a diagnostic taken from the real Phi-3.5 artifact,
+listing five `[unproven]` keys behind `claims 0/363`, and a premise: *everything the ledger proves is
+`static`; everything Phi-3.5 needs is `runtime-extent`*.
+
+**The premise was already stale when it arrived.** It was taken against the pre-`e97b186` ledger. At
+the merged state, **four of the five keys are in the ledger at `runtime-extent`** — `MatMulNBits`
+(`scales`), `Mul` f16, `SkipSimplifiedLayerNormalization` f16 (`>f16,-,-,f16`), and `Sigmoid` f16.
+Only `GroupQueryAttention` is absent, and it is absent for a reason that is not an oversight (below).
+This is worth recording because the correct response to a stale premise is not to act on it: minting
+more `runtime-extent` keys would have been work whose effect was already achieved.
+
+**What was written down before the run.** Per R10, `bench/results/phi35_runtime_extent_prediction.json`
+was written before the real model was loaded, with five predictions and a falsifier for each. All five
+scored CONFIRMED, P2 and P5 exactly:
+
+| | Prediction | Outcome |
+|---|---|---|
+| P1 | not `0/363` any more | 7 proven forms; **323/363** |
+| P2 | exactly 32 GQA nodes decline, `[unproven]` **alone** | exactly that, on that key |
+| P3 | claimed count inside `[300, 340]` | 323 |
+| P4 | criterion 10 does **not** go green; the *failure text* changes | it did, to a broken commitment |
+| P5 | the ledger does **not** grow | held at 73 entries, digest `e3ea94196b4fd84f` |
+
+**The guard the coordinator named was "a ledger that grows without the claimed count moving." What
+happened is its inverse**: the claimed count moved `0 → 323` across `33/33` retained islands, with
+**zero** new ledger entries. `ledger_hits=323`, `unproven_forms_claimed=0`,
+`claimed_form_evidence=ALL-PROVEN`, `ledger_gate=MIXED` — `MIXED` because 40 nodes are still declined,
+which is the gate reporting a partial claim rather than rounding it to either end.
+
+**`GroupQueryAttention` stays out, and this is a finding rather than an obstacle.** Its proof run
+returns `DIVERGENT` with `worst_rel=16.72642029784887`, reproducible to the digit across runs. It is
+not written to the ledger — a non-`MATCH` verdict in `evidence/proof_ledger.jsonl` becomes a
+`Ledger::fault`, and a faulted ledger refuses **every** claim, not just the bad one. It is recorded in
+`evidence/proof_attempts.jsonl` instead, which grants nothing and is not baked in. The 32 GQA nodes
+are the only pure-`[unproven]` declines left in the flagship model. Note what this combination means:
+the handler *claims* the form and then disagrees with the CPU oracle by 16.7×, so claiming-then-
+diverging is itself the defect; it corroborates the pre-existing strict-`xfail` `_GQA_COMPUTE_BUG`.
+
+**The next defect is now visible, and it is not in `ops/`.** With 323 nodes claimed, ORT still fell
+back to the CPU EP for the whole graph, and Tank's broken-commitment WARN fired correctly, naming
+fused subgraph #15. The root text, obtained after a five-line R13 diagnostic change in
+`rust/src/vk/session.rs` that logs the handler's own error instead of a bare "translate failed":
+
+    Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at compile time")
+
+raised from `common_dtype(node, 0, 2)?` in `rust/src/ops/common/templates.rs::simplified_norm` during
+the **dynamic** re-run of translate. Island #15 is `embed_tokens/Gather → layers.0/input_layernorm →
+qkv_proj/MatMul_Q4`, so SLN's input 0 is an island-internal intermediate; the `patched_node` handed to
+translate carries a shape but no element type. **The handler is right to refuse — the caller's
+construction is the defect**, and `rust/src/vk/` is Switch's.
+
+**A consequence that must not be read past.** Because the islands still execute zero times,
+`criterion10-dev0.json` reports `own_provider_execution_count: 0` and
+`executed_by: {CPUExecutionProvider: 1377}`. Its `oracle_outputs_degenerate: 0` was therefore measured
+on a CPU-versus-CPU run. **Switch's all-65 oracle arm has still not had its first real reading**, and
+the reopened degenerate-KV question is still open. `series verdict is UNATTRIBUTED` is the correct
+finding, and it is now blocked on the SLN defect rather than on the ledger.
+
+**Union defect repaired in the same change.** Trinity's criterion-11(c) controls referenced
+`evidence/cases/mul_f16_unproven.onnx`, which `e97b186` deleted when the planted control moved to
+`sub_f16_dyn_unproven` (the `Mul`/f16/static form had become *proven*, which disarms a control
+silently — the worst failure mode a control has). Restoring the file would have restored a control
+that passes for the wrong reason. Control 1's axis is *dtype*, so it now uses a different op:
+`Abs` f32 (proven) against `Abs` f16 (unproven), the f16 arm **built in `tmp_path`** so the generator
+cannot pick it up and quietly prove it. Control 2 gained its own static `Mul` arm, because a
+shape-class control whose two arms are different ops is not a shape-class control. And
+`test_ledger_key_discriminates_optional_inputs` selected the `MatMulNBits` pair by counting *all*
+`MatMulNBits` entries (`== 2`); the ledger legitimately grew to five, so it now selects the pair by
+form (f16, `static`) instead. A control keyed to a total is a control that goes red when the artifact
+it guards gets better.
+
+### 8.9.10 ORT's own refusal, and the branch that actually holds Phi-3.5 (2026-08-02)
+
+**`session.disable_cpu_ep_fallback`, wired into the proof harness.** Our attribution was already
+counter-based (`claimed_nodes`, `dispatches_executed`, per-key `admitted ⊆ offered`), but every one
+of those counters is written by the thing being audited. This ORT session option is a refusal from
+*outside* our code: if any node lands on the default CPU EP, ORT declines to build the session at
+all. For a single-form evidence case — where the EP either takes the one node or the case proves
+nothing — that converts a silently vacuous CPU-versus-CPU comparison into a raise at session
+creation.
+
+Two implementation facts, both learned by running it:
+
+- **It conflicts with naming the CPU EP explicitly.** With
+  `providers=["VulkanExecutionProvider", "CPUExecutionProvider"]` ORT raises
+  `InvalidArgument: Conflicting session configuration: explicitly added the CPU EP to the session,
+  but also disabled fallback to the CPU EP via session configuration options` — which reads nothing
+  about our EP and is `ERROR(instrument)`. The strict arm offers this EP alone.
+- **It is deliberately not set on the discovery pass.** Discovery runs before the hatch is open, the
+  node is declined by design, and a refusal there is the expected state rather than a finding.
+
+The refusal is raised as `CpuFallbackRefusal`, distinct from `InstrumentError`, and `prove()` turns
+it into `UNATTRIBUTED` with the ORT text quoted. An outage and a reading must not spell the same
+(R13).
+
+**Mutation-tested in both polarities before it was trusted** —
+`rust/tools/probe_cpu_fallback_guard.py`, witness `bench/results/cpu_fallback_guard_probe.json`.
+Subject is the planted control `sub_f16_dyn_unproven`, chosen because the generator refuses to write
+its key under any circumstance, so neither arm can contaminate the ledger:
+
+| Arm | Hatch | Verdict | ORT refused |
+|---|---|---|---|
+| CLAIMED | the real key | `MATCH` | no |
+| DECLINED | a key that does not exist | `UNATTRIBUTED` | **yes** |
+
+A guard that fired in both arms would be worse than none — it would make every proof run look
+vacuous. One that fired in neither is not wired. The probe asserts the arms differ, not that either
+is non-zero.
+
+**What it did not change: `GroupQueryAttention` is still `DIVERGENT`.** Re-run under the strict
+guard, ORT did *not* refuse — the EP genuinely took the node and executed — and the verdict is
+`worst_rel = 16.72642029784887`, identical to the digit across three runs now. **The divergence was
+never vacuous.** It stays out of the ledger; it is a correctness finding on the flagship model, and
+the handler claiming the form and then disagreeing by 16.7× is itself the defect.
+
+**Current-state reading of the real model** (`rust/tools/probe_phi35_claim_reading.py`, witness
+`bench/results/phi35_claim_reading_summary.json`), recorded because a `0/363` diagnostic has now been
+routed twice from an older build — the frame of a result is the binary that produced it:
+
+    claimed_nodes 323   ledger_hits 323   unproven_declines 34   unproven_forms_claimed 0
+    islands_offered 33  viable_islands_retained 33
+    ledger_gate MIXED   claimed_form_evidence ALL-PROVEN   ledger_entries 73
+
+**The critical path is no longer the ledger.** With 323 nodes claimed the model still runs entirely
+on the CPU EP, and the branch that causes it is now identified exactly rather than approximately. In
+`rust/src/vk/session.rs`, the loop that patches concrete `TensorDesc`s onto a node before the dynamic
+re-run of translate handles two token ranges — external ORT inputs, and intermediates from prior
+kernels — and leaves the middle range, *island outputs that are also consumed internally*, as `None`,
+under a comment reading "theoretically possible but unusual … the translate handler will degrade
+gracefully". A temporary instrumented build, since reverted, measured which branch the real model
+takes:
+
+    node=/model/layers.0/input_layernorm/LayerNorm op=SimplifiedLayerNormalization
+    slot=0 token=5 n_plan_inputs=5 n_plan_outputs=2 branch=island-output-consumed-internally
+
+It is not unusual; it is island #15's normal shape, because `embed_tokens/Gather`'s result is both an
+island output and an internal edge. The handler does not degrade gracefully — it refuses with
+`Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at compile time")`, which is
+correct of the handler — so the island is dropped and ORT falls back wholesale.
+
+**This was deliberately not repaired in `ops/`.** `common_dtype` could be made to infer the missing
+element type from a sibling input, and it would have made the number move today. It would also be a
+check that moves with the reader's confidence rather than with its subject (R9 amendment 5): the
+information was lost by the caller, and a handler that fabricates it stops being able to detect that
+the caller lost it. The branch is one `else` in `vk/session.rs`, which is Switch's.
+
 ---
 
 ## 9. Op module layout

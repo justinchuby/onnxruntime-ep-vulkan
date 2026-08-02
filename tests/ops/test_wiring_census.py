@@ -2346,6 +2346,30 @@ def _dynamic_mul_f32(path: Path) -> Path:
     return path
 
 
+def _static_abs_f16(path: Path) -> Path:
+    """`Abs` on f16 with static extents — a form no proof run has entered in the ledger.
+
+    Replaces `evidence/cases/mul_f16_unproven.onnx`, which no longer exists: on 2026-08-02 a
+    proof run entered `Mul/f16/static` in the ledger, which was the planted control's own form,
+    and the control moved to `sub_f16_dyn_unproven` (shape class) rather than leaving a whole
+    dtype of a core op permanently unclaimable. Control 1 here needs a *dtype* axis, so it needs
+    a different op: `Abs` is proven on f32 and unproven on f16.
+
+    Built in `tmp_path` rather than checked in, so that it cannot be picked up by the generator
+    and quietly proven — which is exactly how the previous control was disarmed. If a future
+    round does prove `Abs/f16/static`, the two readings converge and this test goes **red**, not
+    silently green.
+    """
+    import onnx_ir as ir  # noqa: PLC0415
+
+    a = ir.Value(name="a", type=ir.TensorType(DT.FLOAT16), shape=ir.Shape([4, 8]))
+    out = ir.Value(name="out", type=ir.TensorType(DT.FLOAT16), shape=ir.Shape([4, 8]))
+    node = ir.node("Abs", [a], outputs=[out])
+    graph = ir.Graph([a], [out], nodes=[node], name="abs_f16", opset_imports={"": 21})
+    path.write_bytes(ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString())
+    return path
+
+
 @pytest.mark.skipif(
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
     reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
@@ -2353,7 +2377,7 @@ def _dynamic_mul_f32(path: Path) -> Path:
 def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
     """Criterion 11(c), control 1 and control 2 — `arms_must_differ`, twice.
 
-    Control 1 (dtype): `mul_f32` is in the ledger, `mul_f16_unproven` is not.  Same op,
+    Control 1 (dtype): `abs_f32` is in the ledger, the same graph on f16 is not.  Same op,
     same shape, same graph; only the dtype component of the key differs.
 
     Control 2 (shape class): the same `Mul` on f32 with symbolic extents.  Same op, same
@@ -2366,21 +2390,24 @@ def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
     Nothing here asserts a count is non-zero.  It asserts two readings differ, which is
     the only assertion a derived counter cannot satisfy.
     """
-    proven = _ledger_arm("ledger_dtype_proven", model=_EVIDENCE_CASES / "mul_f32.onnx")
+    proven = _ledger_arm("ledger_dtype_proven", model=_EVIDENCE_CASES / "abs_f32.onnx")
     unproven = _ledger_arm(
-        "ledger_dtype_unproven", model=_EVIDENCE_CASES / "mul_f16_unproven.onnx"
+        "ledger_dtype_unproven", model=_static_abs_f16(tmp_path / "abs_f16_unproven.onnx")
     )
+    # Control 2 needs its own static arm: the runtime-extent arm below is `Mul`, and a
+    # shape-class control whose two arms are different ops would not be a shape-class control.
+    mul_static = _ledger_arm("ledger_shape_static", model=_EVIDENCE_CASES / "mul_f32.onnx")
     dynamic = _ledger_arm(
         "ledger_shape_runtime", model=_dynamic_mul_f32(tmp_path / "dyn_mul_f32.onnx")
     )
     witness = _write_ledger_witness(
         "ledger-arms",
-        [proven, unproven, dynamic],
-        "criterion 11(c): ledger_hits read under three inputs differing in exactly one "
-        "proof-key component each",
+        [proven, unproven, mul_static, dynamic],
+        "criterion 11(c): ledger_hits read under four inputs forming two pairs that differ "
+        "in exactly one proof-key component each",
     )
 
-    for arm in (proven, unproven, dynamic):
+    for arm in (proven, unproven, mul_static, dynamic):
         assert arm["ledger_faults"] == 0, (
             f"ERROR(instrument): the ledger faulted during arm {arm['arm']!r}, so this run "
             "produced no reading about any form and is not evidence about the gate (R13). "
@@ -2399,20 +2426,21 @@ def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
         f"would look like. proven={_reading(proven)} unproven={_reading(unproven)}  "
         f"witness={witness}"
     )
-    assert _reading(proven) != _reading(dynamic), (
+    assert _reading(mul_static) != _reading(dynamic), (
         "arms_must_differ FAILED (control 2, shape class). Same op, same dtype, same "
         "optional inputs, same one-node enumeration — only the extents are symbolic — and "
         "the ledger reading did not move. A proof written for the static form would be "
         "returned for the runtime-extent form, which is the class of defect the key's "
-        f"shape-class component exists to prevent. static={_reading(proven)} "
+        f"shape-class component exists to prevent. static={_reading(mul_static)} "
         f"runtime-extent={_reading(dynamic)}  witness={witness}"
     )
 
     # The direction is asserted too: differing is necessary, but two arms could differ with
     # the signs swapped and that would be a gate reading its input backwards.
-    assert proven["ledger_miss"] == "HIT" and proven["ledger_hits"] > 0, (
-        f"the form WITH a ledger entry did not read HIT: {proven}  witness={witness}"
-    )
+    for arm in (proven, mul_static):
+        assert arm["ledger_miss"] == "HIT" and arm["ledger_hits"] > 0, (
+            f"the form WITH a ledger entry did not read HIT: {arm}  witness={witness}"
+        )
     for arm in (unproven, dynamic):
         assert arm["ledger_miss"] == "KEY-ABSENT" and arm["ledger_hits"] == 0, (
             f"a form with no ledger entry did not read KEY-ABSENT: {arm}  witness={witness}"
@@ -2454,25 +2482,33 @@ def test_ledger_key_discriminates_optional_inputs(require_vulkan) -> None:
         if line.strip()
     ]
     nbits = sorted(k for k in keys if "MatMulNBits" in k)
-    assert len(nbits) == 2, (
-        "expected exactly the two MatMulNBits forms in the ledger — the pair is the "
-        f"regression control for the 2026-07-30 defect. Found: {nbits}"
+    # The pair is specifically the two arms run above: f16, static extents, differing only in
+    # whether `zero_points` is populated. Selected by form rather than by counting every
+    # MatMulNBits entry, because the ledger legitimately grows — a f32 pair and an f16
+    # runtime-extent form are also proven now, and none of them is this control.
+    pair = sorted(
+        k for k in nbits if "/f16," in k and k.split("/")[4] == "static"
     )
-    a, b = (k.split("/") for k in nbits)
+    assert len(pair) == 2, (
+        "expected exactly the two static f16 MatMulNBits forms in the ledger — the pair is "
+        f"the regression control for the 2026-07-30 defect. Found: {pair}  (all MatMulNBits "
+        f"entries: {nbits})"
+    )
+    a, b = (k.split("/") for k in pair)
     differing = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
     assert differing, (
-        f"the two MatMulNBits ledger keys are identical: {nbits}. One entry would answer "
+        f"the two MatMulNBits ledger keys are identical: {pair}. One entry would answer "
         "for both forms."
     )
     # Components: domain::op / opset / dtypes / variant / shape_class / opt_inputs.
     assert 5 in differing, (
         "the two MatMulNBits keys do not differ in their populated-optional-input "
-        f"component (index 5). Differing components: {differing}; keys: {nbits}. That "
+        f"component (index 5). Differing components: {differing}; keys: {pair}. That "
         "component is the one whose absence produced the 2026-07-30 all-zero logits."
     )
     assert differing == [2, 5], (
         "the pair is meant to differ in the optional-input set and the dtype signature it "
-        f"implies, and nothing else. Differing components: {differing}; keys: {nbits}"
+        f"implies, and nothing else. Differing components: {differing}; keys: {pair}"
     )
 
     for arm in (zp, noz):

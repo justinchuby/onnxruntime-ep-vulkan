@@ -1,0 +1,81 @@
+{
+  "by_context_length": [
+    {
+      "floor_ms_at_spec_peak": 8.2180345,
+      "intermediate_share": 0.00474304409405923,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 0.0,
+      "kv_share": 0.0,
+      "past_sequence_length": 0,
+      "total_MiB": 2006.3560791015625,
+      "weight_MiB": 1996.83984375
+    },
+    {
+      "floor_ms_at_spec_peak": 8.4146425,
+      "intermediate_share": 0.004632222937575779,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 48.0,
+      "kv_share": 0.023364985499978164,
+      "past_sequence_length": 128,
+      "total_MiB": 2054.3560791015625,
+      "weight_MiB": 1996.83984375
+    },
+    {
+      "floor_ms_at_spec_peak": 9.004466500000001,
+      "intermediate_share": 0.00432879615910615,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 192.0,
+      "kv_share": 0.08733798943002342,
+      "past_sequence_length": 512,
+      "total_MiB": 2198.3560791015625,
+      "weight_MiB": 1996.83984375
+    },
+    {
+      "floor_ms_at_spec_peak": 11.3637625,
+      "intermediate_share": 0.003430069926223819,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 768.0,
+      "kv_share": 0.2768209912869967,
+      "past_sequence_length": 2048,
+      "total_MiB": 2774.3560791015625,
+      "weight_MiB": 1996.83984375
+    },
+    {
+      "floor_ms_at_spec_peak": 14.5094905,
+      "intermediate_share": 0.0026864141094409895,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 1536.0,
+      "kv_share": 0.4336097122087092,
+      "past_sequence_length": 4096,
+      "total_MiB": 3542.3560791015625,
+      "weight_MiB": 1996.83984375
+    },
+    {
+      "floor_ms_at_spec_peak": 20.800946500000002,
+      "intermediate_share": 0.0018738810755558647,
+      "intermediates_MiB": 9.5162353515625,
+      "kv_cache_MiB": 3072.0,
+      "kv_share": 0.6049201655318905,
+      "past_sequence_length": 8192,
+      "total_MiB": 5078.3560791015625,
+      "weight_MiB": 1996.83984375
+    }
+  ],
+  "intermediate_breakdown_bytes": {
+    "GroupQueryAttention q/k/v/out": 786432,
+    "MatMulNBits activations (5/layer)": 3342336,
+    "Mul (2/layer)": 3145728,
+    "Sigmoid (1/layer)": 1048576,
+    "SkipSimplifiedLayerNormalization (2/layer)": 1572864,
+    "final norm + lm_head output + embed gather": 82560
+  },
+  "probe": "whole_island_bytes_phi35_decode",
+  "weight_reread_amplification": {
+    "amplification": 1.0,
+    "inb_load_instructions_per_inference": 116324352,
+    "int4_weight_bytes_from_graph": 1861189632,
+    "load_width_bytes": 16,
+    "product_bytes": 1861189632,
+    "verdict": "each weight byte is read exactly once; blocking is not the defect"
+  }
+}

@@ -83,7 +83,7 @@ SPEC_COLS = 4
 SPEC_PACKED = 5
 
 # `GEMV_RED_WORDS` in ops/quant.rs -- the shared reduction array, sized by a literal.
-RED_WORDS = 1024
+RED_WORDS = 2048
 SHARED_BYTES = RED_WORDS * 4
 
 # The two vendors' shared-memory budgets, from the project's own device survey.
@@ -93,7 +93,7 @@ NVIDIA_SHARED_KIB = 48
 # `gemv_workgroup` in ops/quant.rs: the largest power of two in [32,256] that DIVIDES
 # blocks_per_col and leaves at least GEMV_MIN_BLOCKS_PER_INVOCATION blocks each.
 GEMV_MIN_BLOCKS_PER_INVOCATION = 2
-GEMV_MAX_COLS = 8
+GEMV_MAX_COLS = 16
 GEMV_MIN_WORKGROUPS = 64
 
 

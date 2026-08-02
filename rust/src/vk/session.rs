@@ -985,6 +985,16 @@ impl VulkanSession {
                 // Tokens in [n_plan_inputs, n_plan_inputs+n_plan_outputs): external outputs
                 // of this island used as inputs by another kernel — theoretically possible but
                 // unusual. Leave as symbolic (None); the translate handler will degrade gracefully.
+                //
+                // MEASURED 2026-08-02 (Mouse), and it is not unusual: on the real Phi-3.5 this
+                // is the branch island #15 takes. `/model/layers.0/input_layernorm/LayerNorm`
+                // slot 0, token 5, with n_plan_inputs=5 and n_plan_outputs=2 — the
+                // `embed_tokens/Gather` result is an island output AND an internal edge. The
+                // handler does not "degrade gracefully"; it refuses with
+                //   Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at
+                //   compile time")
+                // which is correct of the handler, so the island is dropped and the whole model
+                // falls back to the CPU EP. Owner: Switch (`rust/src/vk/`).
             }
 
             let patched_node = NodeDesc {
@@ -1008,7 +1018,12 @@ impl VulkanSession {
                 ),
                 None => ShapeOnlyRecorder::new(kernel.n_plan_inputs),
             };
-            if (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor).is_ok() {
+            // The `Err` is bound rather than discarded by `is_ok()`. R13: a broken commitment
+            // whose message is "translate failed" tells a reader that something failed, which
+            // they already knew from the WARN. The handler's own text is the only thing here
+            // that says *which* precondition the run-time shapes violated.
+            let dyn_translate = (recipe.spec.translate)(recipe.spec, &patched_node, &mut sor);
+            if dyn_translate.is_ok() {
                 // Update actual output byte sizes and shapes, and record intermediate descs.
                 for (token, desc) in &sor.output_desc_by_token {
                     let token = *token;
@@ -1055,8 +1070,9 @@ impl VulkanSession {
                 }
             } else {
                 log::error!(
-                    "dispatch_ort: dynamic re-run of translate for op '{}' failed",
-                    recipe.node_desc.op_type
+                    "dispatch_ort: dynamic re-run of translate for op '{}' failed: {:?}",
+                    recipe.node_desc.op_type,
+                    dyn_translate.as_ref().err()
                 );
                 // SAFETY: `api` is a live `OrtApi` for this call; the message is a 'static
                 // NUL-terminated literal. No GPU buffers have been allocated yet at this point

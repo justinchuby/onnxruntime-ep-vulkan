@@ -1,0 +1,22 @@
+{
+  "claimed": {
+    "key_offered": "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2",
+    "verdict": "MATCH",
+    "ort_refused": false,
+    "reason": null,
+    "refusal_text": "",
+    "worst_rel": 0.0,
+    "claimed_nodes": 1,
+    "dispatches_executed": 1
+  },
+  "declined": {
+    "key_offered": "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/NOT-A-REAL-SLOT-SET",
+    "verdict": "UNATTRIBUTED",
+    "ort_refused": true,
+    "reason": "ORT refused to build the session because a node was assigned to the default CPU EP; the comparison this run would have produced was CPU against CPU",
+    "refusal_text": "kages\\onnxruntime\\capi\\onnxruntime_inference_collection.py\", line 640, in _create_inference_session\n    sess.initialize_session(providers, provider_options, disabled_optimizers)\nonnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.\n",
+    "worst_rel": null,
+    "claimed_nodes": null,
+    "dispatches_executed": null
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "note": "criterion 11(c): ledger_hits read under three inputs differing in exactly one proof-key component each",
+  "note": "criterion 11(c): ledger_hits read under four inputs forming two pairs that differ in exactly one proof-key component each",
   "device_selector": "1",
   "arms": [
     {
@@ -8,7 +8,7 @@
       "ledger_hits": 1,
       "ledger_gate": "ALL-PROVEN",
       "ledger_miss": "HIT",
-      "ledger_entries": 9,
+      "ledger_entries": 73,
       "ledger_faults": 0,
       "unproven_declines": 0,
       "claimed_nodes": 1,
@@ -20,11 +20,23 @@
       "ledger_hits": 0,
       "ledger_gate": "ALL-DECLINED",
       "ledger_miss": "KEY-ABSENT",
-      "ledger_entries": 9,
+      "ledger_entries": 73,
       "ledger_faults": 0,
       "unproven_declines": 1,
       "claimed_nodes": 0,
       "dispatches_executed": 0
+    },
+    {
+      "arm": "ledger_shape_static",
+      "proven_key_lookups": 1,
+      "ledger_hits": 1,
+      "ledger_gate": "ALL-PROVEN",
+      "ledger_miss": "HIT",
+      "ledger_entries": 73,
+      "ledger_faults": 0,
+      "unproven_declines": 0,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
     },
     {
       "arm": "ledger_shape_runtime",
@@ -32,7 +44,7 @@
       "ledger_hits": 0,
       "ledger_gate": "ALL-DECLINED",
       "ledger_miss": "KEY-ABSENT",
-      "ledger_entries": 9,
+      "ledger_entries": 73,
       "ledger_faults": 0,
       "unproven_declines": 1,
       "claimed_nodes": 0,

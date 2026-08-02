@@ -1,0 +1,1095 @@
+{
+  "instrument": "probe_gemv_counts",
+  "arms": {
+    "QB_PACKED=0": {
+      "inb_load_result_types": {
+        "%uint": 1
+      },
+      "ina_load_result_types": {
+        "%float": 8
+      },
+      "inb_load_width_bytes": 4,
+      "loads_per_blob": 4,
+      "accumulator_updates_per_blob": 4,
+      "independent_partial_sums_per_update": 1,
+      "serial_fp_adds_on_critical_path_per_blob": 4,
+      "hot_block_fp_chain": 10,
+      "hot_block_fmul": 8,
+      "hot_block_bodies_per_blob": 4
+    },
+    "QB_PACKED=1": {
+      "inb_load_result_types": {
+        "%v4uint": 1
+      },
+      "ina_load_result_types": {
+        "%float": 2
+      },
+      "inb_load_width_bytes": 16,
+      "loads_per_blob": 1,
+      "accumulator_updates_per_blob": 1,
+      "independent_partial_sums_per_update": 4,
+      "serial_fp_adds_on_critical_path_per_blob": 3,
+      "hot_block_fp_chain": 12,
+      "hot_block_fmul": 32,
+      "hot_block_bodies_per_blob": 1
+    }
+  },
+  "blob_bytes": 16,
+  "arms_differ": true,
+  "caveat": "The two halves of the packed-loads claim are not equally well supported, and the counts say which. The LOAD half is exact: one 128-bit load per blob in place of four 32-bit ones, verified from the SPIR-V load types rather than from the GLSL, giving 465,297,408 -> 116,324,352 InB load instructions per inference. The ACCUMULATOR half is real but small: the four multiply-adds of the general path are already mutually independent, and only their four `bacc[c] +=` updates are serialized. Restructuring them into four partial sums plus a depth-2 tree takes the accumulator read-modify-write count per blob from 4 to 1 and the serial FP adds on the critical path from 4 to 3. That is a real reduction in a loop-carried dependency, but it is nowhere near 4x, and the commit message for 538db70 -- 'the serial `t += ...` chain of the general path is a latency dependency that pins memory-level parallelism near one outstanding load' -- overstated it: the four 32-bit loads have no dependency on each other and can all be in flight. The instruction count is the finding; the dependency restructuring is a secondary term.",
+  "spec": {
+    "local_size_x": 128,
+    "QB_COLS": 8,
+    "QB_BITS": 4,
+    "QB_BLOCK": 32,
+    "QB_HAS_ZP": 0
+  },
+  "shared_memory": {
+    "requested_bytes": 8192,
+    "requested_kib": 8.0,
+    "intel_budget_kib": 32,
+    "nvidia_budget_kib": 48,
+    "fraction_of_intel_budget": 0.25,
+    "note": "sized by the literal RED_WORDS, not by local_size_x * QB_COLS, so the request does not move with the tile and cannot spill on the smaller budget. This eliminates shared memory as a candidate for the Intel gap."
+  },
+  "model_census": {
+    "count": 161,
+    "nodes": [
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32
+      },
+      {
+        "K": 3072,
+        "N": 32064,
+        "bits": 4,
+        "block_size": 32
+      }
+    ]
+  },
+  "bytes": {
+    "weight_bytes": 1861189632,
+    "scale_bytes": 232648704,
+    "activation_bytes": 465297408,
+    "total_bytes": 2559135744,
+    "activation_share": 0.18181818181818182,
+    "blobs_per_inference": 116324352,
+    "activation_bytes_at_cols_1": 7444758528,
+    "total_bytes_at_cols_1": 9538596864,
+    "bytes_reduction_from_column_tile": 3.727272727272727,
+    "shapes": [
+      {
+        "K": 3072,
+        "N": 9216,
+        "bits": 4,
+        "block_size": 32,
+        "wg": 32,
+        "cols": 16,
+        "blob_bytes": 16,
+        "blobs_per_node": 884736,
+        "nodes": 32
+      },
+      {
+        "K": 3072,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32,
+        "wg": 32,
+        "cols": 16,
+        "blob_bytes": 16,
+        "blobs_per_node": 294912,
+        "nodes": 32
+      },
+      {
+        "K": 3072,
+        "N": 8192,
+        "bits": 4,
+        "block_size": 32,
+        "wg": 32,
+        "cols": 16,
+        "blob_bytes": 16,
+        "blobs_per_node": 786432,
+        "nodes": 64
+      },
+      {
+        "K": 8192,
+        "N": 3072,
+        "bits": 4,
+        "block_size": 32,
+        "wg": 128,
+        "cols": 16,
+        "blob_bytes": 16,
+        "blobs_per_node": 786432,
+        "nodes": 32
+      },
+      {
+        "K": 3072,
+        "N": 32064,
+        "bits": 4,
+        "block_size": 32,
+        "wg": 32,
+        "cols": 16,
+        "blob_bytes": 16,
+        "blobs_per_node": 3078144,
+        "nodes": 1
+      }
+    ]
+  },
+  "verdict": "COUNTED"
+}

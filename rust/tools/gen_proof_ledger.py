@@ -100,6 +100,20 @@ def _child_main(spec_path: str) -> int:
 
     so = ort.SessionOptions()
     so.log_severity_level = 2
+    if use_ep and spec.get("strict_ep"):
+        # ORT'S OWN REFUSAL, FROM OUTSIDE OUR CODE (added 2026-08-02).
+        #
+        # Every evidence case is a single-form model: either this EP claims the node or the
+        # case proves nothing.  Our attribution is already counter-based (`claimed_nodes`,
+        # `dispatches_executed`), but both of those counters are written by the thing being
+        # audited.  This option is ORT refusing to build the session at all if any node lands
+        # on the default CPU EP, so a run that would have compared CPU against CPU raises at
+        # session creation instead of returning a `worst_rel` that has to be distrusted.
+        #
+        # It is deliberately *not* set on the discovery pass: discovery runs before the hatch
+        # is open, the node is declined by design, and a refusal there is the expected state
+        # rather than a finding.
+        so.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
     if use_ep:
         ep_lib = os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]
         try:
@@ -107,9 +121,15 @@ def _child_main(spec_path: str) -> int:
         except Exception as exc:  # already registered in this process is fine
             if "already" not in str(exc).lower():
                 raise
-        sess = ort.InferenceSession(
-            model, so, providers=["VulkanExecutionProvider", "CPUExecutionProvider"]
-        )
+        provs = ["VulkanExecutionProvider", "CPUExecutionProvider"]
+        if spec.get("strict_ep"):
+            # ORT rejects `disable_cpu_ep_fallback` outright when the CPU EP is *also* named
+            # explicitly ("Conflicting session configuration"), which is an InvalidArgument at
+            # session creation and reads nothing about our EP. The strict arm therefore offers
+            # this EP alone; the CPU EP remains available to ORT as the default it is refusing
+            # to fall back to.
+            provs = ["VulkanExecutionProvider"]
+        sess = ort.InferenceSession(model, so, providers=provs)
     else:
         sess = ort.InferenceSession(model, so, providers=["CPUExecutionProvider"])
 
@@ -128,16 +148,37 @@ def _child_main(spec_path: str) -> int:
             return np.abs(v) + 0.5
         if domain == "nonzero":
             return np.where(np.abs(v) < 0.25, np.copysign(0.25, v), v)
+        if domain == "unit":
+            # |x| <= 0.9 — inside the domain of asin/acos and strictly inside atanh's, whose
+            # value diverges at |x| = 1. `tanh` of a normal is a clean way to get there without
+            # clipping, which would pile mass on the two endpoints and test them twice.
+            return 0.9 * np.tanh(v)
+        if domain == "ge_one":
+            # acosh is real only for x >= 1.
+            return 1.0 + np.abs(v)
         return v
 
     feeds = {}
+    plan = spec.get("feed_plan") or {}
+    symbolic = plan.get("symbolic_dims") or {}
+    fixed = plan.get("fixed_inputs") or {}
+    scale = float(plan.get("float_scale", 1.0))
     for inp in sess.get_inputs():
-        shape = [d if isinstance(d, int) and d > 0 else 2 for d in inp.shape]
+        shape = [
+            d if isinstance(d, int) and d > 0 else symbolic.get(d, 2) if isinstance(d, str) else 2
+            for d in inp.shape
+        ]
         dt = inp.type
+        if inp.name in fixed:
+            f = fixed[inp.name]
+            feeds[inp.name] = np.asarray(f["values"], dtype=np.dtype(f["dtype"])).reshape(
+                f["shape"]
+            )
+            continue
         if "float16" in dt:
-            feeds[inp.name] = _floats(shape).astype(np.float16)
+            feeds[inp.name] = (_floats(shape) * scale).astype(np.float16)
         elif "float" in dt or "double" in dt:
-            feeds[inp.name] = _floats(shape).astype(np.float32)
+            feeds[inp.name] = (_floats(shape) * scale).astype(np.float32)
         elif "int64" in dt:
             feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int64)
         elif "int32" in dt:
@@ -159,6 +200,54 @@ def _child_main(spec_path: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+
+ATTEMPTS = REPO / "evidence" / "proof_attempts.jsonl"
+
+
+def _record_attempt(model_path, keys, verdict, detail, device, ort_build, tolerance, when):
+    """Append every proof attempt, including the ones that prove nothing.
+
+    A form that stays unproven after an honest attempt and a form nobody has attempted are two
+    different states, and only one of them is a finding. The ledger cannot hold the difference:
+    a non-MATCH line in `proof_ledger.jsonl` populates `Ledger::faults`, and a ledger with
+    faults refuses every claim, not just the bad one. So the record goes beside it.
+
+    This file grants nothing and is not baked into the binary. It exists so "we measured GQA
+    and it disagreed by 16.7x" cannot decay into "GQA has no entry".
+    """
+    ATTEMPTS.parent.mkdir(parents=True, exist_ok=True)
+    with ATTEMPTS.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "case": model_path.name,
+                    "keys": list(keys),
+                    "verdict": verdict,
+                    "detail": detail,
+                    "device": device,
+                    "ort_build": ort_build,
+                    "tolerance": tolerance,
+                    "attempted_at": when,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
+def _planted_control_key() -> str:
+    """The key the ledger must never contain.
+
+    Imported rather than duplicated: two copies of a constant is how the control gets disarmed
+    on one side and left armed on the other.
+    """
+    try:
+        import ledger_case_models
+    except ImportError:
+        return ""
+    return getattr(ledger_case_models, "PLANTED_CONTROL_KEY", "")
+
+
 def _domain_for(model: str) -> str:
     """The input sampling domain declared by the case model, keyed by file stem.
 
@@ -172,7 +261,27 @@ def _domain_for(model: str) -> str:
     return ledger_case_models.input_domain(pathlib.Path(model).stem)
 
 
-def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path) -> None:
+def _feed_plan_for(model: str) -> dict:
+    """Per-case overrides for inputs a random sampler cannot produce.
+
+    Some forms have inputs that are not free variables: `GroupQueryAttention`'s
+    `total_sequence_length` must equal past + current, and `seqlens_k` must agree with the KV
+    cache extent. A random int32 there is not a harsher test, it is an invalid model — the CPU
+    arm raises and the run reports ERROR(instrument) rather than a verdict.
+
+    The plan is declared beside the case model, not here, for the same reason `input_domain`
+    is: the next case would otherwise have to rediscover it in the runner.
+    """
+    try:
+        import ledger_case_models
+    except ImportError:
+        return {}
+    return ledger_case_models.feed_plan(pathlib.Path(model).stem)
+
+
+def _run_child(
+    model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path, strict_ep: bool = False
+) -> None:
     with tempfile.TemporaryDirectory(dir=str(REPO / "bench" / "results")) as td:
         spec = pathlib.Path(td) / "spec.json"
         spec.write_text(
@@ -180,8 +289,10 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
                 {
                     "model": model,
                     "use_ep": use_ep,
+                    "strict_ep": strict_ep,
                     "outputs": str(outputs),
                     "input_domain": _domain_for(model),
+                    "feed_plan": _feed_plan_for(model),
                 }
             ),
             encoding="utf-8",
@@ -193,9 +304,24 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
             env=env,
             capture_output=True,
             text=True,
+            # The EP writes "§8.9.7" to its log sink. `text=True` alone decodes with the
+            # platform default (cp1252 here), the decode raises inside subprocess's reader
+            # *thread*, and the exception does not propagate — so `r.stderr` comes back empty
+            # and a failing child's diagnostics are lost exactly when they are needed. R13: an
+            # instrument that cannot report its own failure text turns FAIL into a mystery.
+            encoding="utf-8",
+            errors="replace",
             timeout=1800,
         )
         if r.returncode != 0:
+            blob = f"{r.stdout}\n{r.stderr}"
+            if _CPU_FALLBACK_REFUSAL in blob:
+                # Not an instrument failure: ORT reached a conclusion about our EP and stated
+                # it. Quote the text (R13) and let the caller record it as UNATTRIBUTED.
+                raise CpuFallbackRefusal(
+                    f"ORT refused the session for {model} because a node was assigned to the "
+                    f"default CPU EP:\n{blob[-2000:]}"
+                )
             # R13: an instrument failure is not a detection.  Raise, never return "no keys".
             raise InstrumentError(
                 f"proof-ledger child failed (exit {r.returncode}) on {model}\n"
@@ -203,8 +329,20 @@ def _run_child(model: str, use_ep: bool, env_extra: dict, outputs: pathlib.Path)
             )
 
 
+_CPU_FALLBACK_REFUSAL = "fallback to CPU EP has been explicitly disabled"
+
+
 class InstrumentError(RuntimeError):
     """The generator could not reach an observation.  Never a proof, never a decline."""
+
+
+class CpuFallbackRefusal(RuntimeError):
+    """ORT declined to build a session because a node fell to the default CPU EP.
+
+    This is a *reading*, not an outage: it says the EP did not take the node, which for a
+    single-form evidence case is exactly the vacuous-comparison state the ledger exists to
+    exclude.  It is raised separately from `InstrumentError` so the two are never conflated.
+    """
 
 
 def discover_keys(model: str) -> tuple[list[str], dict]:
@@ -270,15 +408,24 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     counters = REPO / "bench" / "results" / "_ledger_counters.json"
     if counters.exists():
         counters.unlink()
-    _run_child(
-        model,
-        True,
-        {
-            "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN": ";".join(keys),
-            "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE": str(counters),
-        },
-        ep_out,
-    )
+    try:
+        _run_child(
+            model,
+            True,
+            {
+                "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN": ";".join(keys),
+                "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE": str(counters),
+            },
+            ep_out,
+            strict_ep=True,
+        )
+    except CpuFallbackRefusal as exc:
+        return "UNATTRIBUTED", {
+            "reason": "ORT refused to build the session because a node was assigned to the "
+            "default CPU EP; the comparison this run would have produced was CPU against CPU",
+            "ort_refusal": str(exc)[-1200:],
+            "offered": sorted(keys),
+        }
     _run_child(model, False, {}, cpu_out)
 
     if not counters.is_file():
@@ -297,14 +444,40 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
             "claimed_nodes": claimed,
             "dispatches_executed": dispatches,
         }
-    if sorted(hatch) != sorted(keys):
-        # The forms we set out to prove are not the forms the run actually claimed.  Recording
-        # the intended list rather than the observed one is how a ledger acquires an entry for a
-        # form nothing executed.
+    # ATTRIBUTION IS PER KEY, NOT PER RUN (revised 2026-08-02).
+    #
+    # The rule was `admitted == offered`, and it refused three legitimate proofs — `gelu_f16`,
+    # `hardswish_f32`, `mish_f32`. The cause is not a defect in the EP: ORT calls `GetCapability`
+    # on **more than one form of the graph** (`gelu_f16` produced 19 claim-log records for a
+    # one-node model), so discovery sees keys belonging to graph states that the run that
+    # actually executes does not contain. Requiring set equality made those models unprovable and
+    # would have made every composite op unprovable forever.
+    #
+    # The replacement is stronger, not weaker, and it is stronger in the direction that matters:
+    #
+    #   * `admitted` must be **non-empty** — nothing used, nothing proven;
+    #   * `admitted` must be a **subset** of `offered` — a key the run claimed under that nobody
+    #     offered means the harness does not know what it ran, which is worse than a miss;
+    #   * and the caller writes entries **only for the admitted keys**.
+    #
+    # Under the old rule a model offering two keys and using one wrote *two* entries whenever the
+    # sets happened to match; under this one an entry can only exist for a key the run actually
+    # claimed under. The number of entries a run can produce is now bounded by what it used
+    # rather than by what it intended.
+    if not hatch:
         return "UNATTRIBUTED", {
-            "reason": "the escape hatch admitted a different set of keys than the ones offered",
+            "reason": "the run admitted no unproven form; nothing was claimed under any offered "
+            "key, so no key was exercised",
+            "offered": sorted(keys),
+        }
+    unoffered = sorted(set(hatch) - set(keys))
+    if unoffered:
+        return "UNATTRIBUTED", {
+            "reason": "the run claimed under a key that was never offered; the harness cannot "
+            "say what it ran",
             "offered": sorted(keys),
             "admitted": sorted(hatch),
+            "unoffered": unoffered,
         }
 
     a = np.load(str(ep_out))
@@ -353,6 +526,8 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         "worst_rel": worst,
         "claimed_nodes": claimed,
         "dispatches_executed": dispatches,
+        # The keys this run actually claimed under. Entries are written for these and no others.
+        "admitted": sorted(hatch),
     }
 
 
@@ -448,9 +623,18 @@ def check_ledger(path: pathlib.Path) -> int:
             f"entry_count {header.get('entry_count')} != {len(lines) - 1} entries present"
         )
     seen = set()
+    planted = _planted_control_key()
     for raw in lines[1:]:
         e = json.loads(raw)
         key = e.get("key", "")
+        if planted and key == planted:
+            # The control is only a control while it is unproven. A ledger containing it looks
+            # exactly like a healthy ledger, and every test that depends on the control passes
+            # for the wrong reason — this is the one failure the artifact cannot self-report.
+            failures.append(
+                f"entry {key} is the PLANTED CONTROL key; a proof of the control disarms the "
+                f"only check that shows the gate declines anything at all"
+            )
         if key in seen:
             failures.append(f"duplicate key {key}")
         seen.add(key)
@@ -528,6 +712,11 @@ def main() -> int:
         ][1:]
     have = {json.loads(l)["key"] for l in existing}
 
+    planted = _planted_control_key()
+    planted_case = getattr(
+        __import__("ledger_case_models"), "PLANTED_CONTROL_CASE", "?"
+    ) if planted else "?"
+
     new_lines = list(existing)
     for model in args.model:
         model_path = pathlib.Path(model).resolve()
@@ -537,6 +726,7 @@ def main() -> int:
             print(f"    would decline without a proof: {k}")
         verdict, detail = prove(str(model_path), keys, (args.rtol, args.atol))
         print(f"[prove]    {model_path.name}: {verdict} {detail}")
+        _record_attempt(model_path, keys, verdict, detail, device, ort_build, tolerance, now)
         if verdict != "MATCH":
             print(f"    no entries written for {model_path.name} — only MATCH proves")
             continue
@@ -545,7 +735,26 @@ def main() -> int:
             rel = str(model_path.relative_to(REPO)).replace("\\", "/")
         except ValueError:
             rel = str(model_path).replace("\\", "/")
+        # Only the admitted keys. A key that was discovered but never claimed under in the
+        # proof run has no proof, however green the run looked.
+        admitted = set(detail.get("admitted") or [])
+        skipped = [k for k in keys if k not in admitted]
+        if skipped:
+            print(f"    discovered but not exercised by the proof run, so unproven: {skipped}")
         for k in keys:
+            if k not in admitted:
+                continue
+            if k == planted:
+                # 2026-08-02: the ledger acquired the planted control's form and disarmed the
+                # only check that would have noticed. The generator refuses rather than warns —
+                # a warning here is a line of output in a forty-minute run.
+                raise SystemExit(
+                    f"REFUSING to write an entry for the planted control key {k!r} "
+                    f"(case {planted_case!r}). A proof of the control is the control switched "
+                    f"off, and it is switched off silently. If this form genuinely needs to be "
+                    f"claimable, MOVE the control first and say so, in "
+                    f"rust/tools/ledger_case_models.py."
+                )
             if k in have:
                 continue
             have.add(k)
