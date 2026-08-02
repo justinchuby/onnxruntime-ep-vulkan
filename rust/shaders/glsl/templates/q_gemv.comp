@@ -123,7 +123,26 @@ layout(constant_id = 5) const uint QB_PACKED = 0u;
 // Largest column tile this module can hold in registers. Every per-column array below is sized by
 // this literal, never by the specialisation constant, so the register budget is a static property
 // of the module. `quant.rs` clamps `QB_COLS` to it.
-#define QB_MAX_COLS 8u
+//
+// **16, raised from 8.** The tile width is a *byte count* before it is a tuning constant: one
+// workgroup re-reads the whole `A` row, so the row is read `ceil(N / QB_COLS)` times per node and
+// doubling the tile halves that traffic. Over Phi-3.5's 161 `MatMulNBits` nodes the static byte
+// model puts activation reads at 887.5 MiB per inference at a tile of 8 and 443.7 MiB at 16 --
+// 443.8 MiB removed, 15.4% of all bytes the GEMV island moves. The weight stream (1996.8 MiB of
+// int4 plus fp16 scales) is irreducible, so activation re-reads are where the only reducible
+// traffic lives.
+//
+// **Why not 32, which the same model says would remove another 221.8 MiB.** `QB_RED_WORDS` must
+// cover `local_size_x * QB_COLS`, so a 32-wide tile at the 128-invocation workgroup the `K = 8192`
+// shape takes needs 4096 floats = 16 KiB of shared memory -- exactly the *whole* of the
+// `maxComputeSharedMemorySize` floor `OP_COVERAGE.md` §7.2 guarantees. A workgroup that consumes
+// 100% of the guaranteed minimum is one workgroup resident per unit on any device that only meets
+// the floor, which trades the latency hiding a bandwidth-bound kernel depends on for the bandwidth
+// it was trying to save. 16 costs 8 KiB, half the floor, and leaves the other half. The register
+// cost points the same way -- `acc`/`ucol`/`s`/`bacc` are each `QB_MAX_COLS` wide -- but that one
+// is an estimate about an unseen driver allocator, whereas the shared-memory limit is a number the
+// specification promises, so the decision rests on the promise and not on the estimate.
+#define QB_MAX_COLS 16u
 
 layout(push_constant) uniform Params {
     uint m_total;         // product of all leading dims of A times M
@@ -255,12 +274,13 @@ float mac4_8b(uint word, vec2 a0, vec2 a1, float z) {
 
 // -- reduction ----------------------------------------------------------------------------------
 
-// Shared floats reserved for the reduction: 1024 = 4 KiB, comfortably inside the 16 KiB
-// shared-memory floor of §7.2 and inside the 32 KiB an Intel Xe subslice offers without
-// collapsing occupancy. Sized by the literal rather than by `local_size_x * QB_COLS` so the
-// storage requirement is a static property of the module and cannot become device-dependent.
-// `quant.rs` guarantees `local_size_x * QB_COLS <= 1024`.
-#define QB_RED_WORDS 1024
+// Shared floats reserved for the reduction: 2048 = 8 KiB, half the 16 KiB shared-memory floor of
+// §7.2 and a quarter of the 32 KiB an Intel Xe subslice offers, so more than one workgroup stays
+// resident on a device that only meets the floor. Sized by the literal rather than by
+// `local_size_x * QB_COLS` so the storage requirement is a static property of the module and
+// cannot become device-dependent.
+// `quant.rs` guarantees `local_size_x * QB_COLS <= 2048`.
+#define QB_RED_WORDS 2048
 shared float red[QB_RED_WORDS];
 
 void main() {
