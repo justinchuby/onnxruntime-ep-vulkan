@@ -115,7 +115,8 @@ mod tests {
             .expect("Gather must be registered");
         assert_eq!(row.status, OpStatus::Ready);
         assert_eq!(
-            row.translate as usize, templates::gather as usize,
+            row.translate as usize,
+            templates::gather as *const () as usize,
             "a Ready row must not point at `unimplemented`"
         );
         assert!(

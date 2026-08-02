@@ -885,7 +885,7 @@ mod tests {
             for bpc in [1u64, 7, 96, 256, 4096] {
                 let wg = gemv_workgroup(bpc);
                 let cols = gemv_cols(n, wg);
-                assert!(cols >= 1 && cols <= GEMV_MAX_COLS);
+                assert!((1..=GEMV_MAX_COLS).contains(&cols));
                 assert!(
                     cols.is_power_of_two(),
                     "the paired store needs an even tile"

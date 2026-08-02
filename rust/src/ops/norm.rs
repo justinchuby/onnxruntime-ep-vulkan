@@ -267,7 +267,8 @@ mod tests {
                 r.status
             );
             assert_eq!(
-                r.translate as usize, templates::simplified_norm as usize,
+                r.translate as usize,
+                templates::simplified_norm as *const () as usize,
                 "a live row must point at the RMSNorm handler, not `unimplemented`"
             );
         }
