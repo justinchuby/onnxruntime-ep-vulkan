@@ -162,6 +162,70 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.tick_conversion_screen",
+        lane=LANE_HOSTFREE,
+        step="Tick-conversion screen (static, no GPU, no vocabulary)",
+        watches=(
+            "Every source site that could scale a device tick into a duration, asserting "
+            "each goes through GpuTimestampCalibration's converters — and that raw, "
+            "unmasked ticks enter the program at exactly one place."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Inject `let bypass_ns = end_ticks - begin_ticks;` into a scratch copy of "
+            "rust/src. Also: launder it through a rename (`let raw_span = end_ticks;`), "
+            "multiply by the period by hand while skipping the valid-bit mask, and add a "
+            "second caller of read_results()."
+        ),
+        arm_healthy="every scaling site is a sanctioned converter or a recorded exemption",
+        arm_broken=(
+            "TICK-SCREEN: FAIL(condition=tick_conversion_bypassed), quoting the injected "
+            "line and its file:line — verified on all four injections 2026-08-01 by "
+            "ci/negative_control_tick_conversions.py"
+        ),
+        observed="2026-08-01",
+        misses=(
+            "It decides from NAMES, so it sees a tick only while the word survives. The "
+            "rename rule catches the first hop out of a tick-named binding, which is where "
+            "the laundering must start; it does not follow the value further.",
+            "It says nothing about whether the conversion is arithmetically CORRECT. A "
+            "wrong formula inside a sanctioned converter passes this screen untouched — "
+            "that is trace.rs's unit tests' question, and neither arm substitutes for the "
+            "other.",
+            "An exemption in ci/tick_conversion_allowlist.json is a human's judgement, not "
+            "a machine's. The screen guarantees the judgement is written down and pinned "
+            "to a line, not that it is right.",
+            "#[cfg(test)] bodies are out of frame by design. A test that encodes a wrong "
+            "expectation about ticks is invisible here.",
+        ),
+    ),
+    Check(
+        id="hostfree.tick_screen_negative_control",
+        lane=LANE_HOSTFREE,
+        step="Tick-conversion screen negative control (inject the defect, demand red)",
+        watches=(
+            "The screen above. It injects each defect the screen claims to detect into a "
+            "scratch COPY of rust/src and fails if the screen stays green."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own baseline arm is the mutation in reverse: if the unmodified copy is "
+            "not green, it reports ERROR(instrument=baseline_not_green) rather than "
+            "attributing a red to an injection that did not cause it."
+        ),
+        arm_healthy="every injection produces the expected condition token AND the quoted line",
+        arm_broken=(
+            "anchor drift is reported as ERROR(instrument=anchor_not_found) — observed "
+            "2026-08-01, when the first draft's anchor did not exist in session.rs and the "
+            "control refused to report a pass"
+        ),
+        observed="2026-08-01",
+        misses=(
+            "It proves the screen detects the defects SOMEONE THOUGHT OF. A defect shape "
+            "absent from CASES is as invisible to the control as it is to the screen.",
+        ),
+    ),
+    Check(
         id="hostfree.verdict_vocabulary",
         lane=LANE_HOSTFREE,
         step="Verdict vocabulary preflight",
@@ -572,10 +636,28 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
         why_ci_is_blind=(
             "Unit tests prove the arithmetic. Execution on lavapipe would prove the call "
             "site, but lavapipe's period of 1.0 makes a dropped call indistinguishable "
-            "from a performed one, which is where this started."
+            "from a performed one, which is where this started. Neither of the two "
+            "instrument families this project runs — unit tests and device lanes — can "
+            "see this class, which is what made it worth a third."
         ),
-        substitute=None,
-        substitute_status=IMPOSSIBLE_HERE,
+        substitute=(
+            "ci/check_tick_conversions.py, a STATIC source screen, added 2026-08-01. It "
+            "decides the question from source text, where the period's value is "
+            "irrelevant, so the identity-at-1.0 problem that blinds every device lane does "
+            "not apply to it. Three rules: tick arithmetic only inside the sanctioned "
+            "converters; raw ticks enter the program at exactly one site "
+            "(TimestampPool::read_results) whose enclosing function builds the "
+            "calibration; and every exemption in ci/tick_conversion_allowlist.json still "
+            "matches a live line. Falsified on 2026-08-01 by "
+            "ci/negative_control_tick_conversions.py, which injects the raw delta, the "
+            "same defect laundered through a rename, a by-hand period multiply that skips "
+            "the valid-bit mask, and a second reader of raw ticks — into a scratch COPY of "
+            "rust/src, never the tree — and demands the screen go red quoting the line, on "
+            "all four. Its residual is named rather than closed: it decides from names and "
+            "cannot follow a value past the first rename, and it would pass over a wrong "
+            "formula inside a sanctioned converter."
+        ),
+        substitute_status=DEMONSTRATED,
     ),
 )
 

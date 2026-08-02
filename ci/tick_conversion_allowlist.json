@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Sites where a tick-valued or timestamp_period_ns-valued expression takes part in",
+    "arithmetic outside GpuTimestampCalibration's sanctioned converters.",
+    "",
+    "An entry here is an admission, not a suppression. Each one records WHY the site is",
+    "not the 52x defect (see docs/PLATFORMS.md and ci/check_tick_conversions.py), and",
+    "WHO owns the file, so that adding a bypass requires a visible edit to this file in",
+    "the same diff as the bypass. A reviewer who sees this file change should read the",
+    "reason and decide whether they believe it.",
+    "",
+    "'contains' pins the entry to the text of the line it covers, with runs of",
+    "whitespace collapsed. If that text changes, ci/check_tick_conversions.py reports",
+    "the entry as having lost its site rather than letting it drift into a blanket over",
+    "whatever moved into its place."
+  ],
+  "sanctioned_sites": [
+    {
+      "file": "rust/src/trace.rs",
+      "function": "ticks_to_ns",
+      "contains": "Some(span as f64 * f64::from(self.timestamp_period_ns))",
+      "reason": "This IS the conversion. It is the single place in the tree licensed to multiply a tick span by timestampPeriod, and it earns that licence by doing the other two things the period alone does not do: both operands were masked to timestampValidBits by self.mask() on the lines above, and a single counter wrap is recovered via tick_modulus() rather than producing a plausible-looking negative span. An interval longer than the counter period returns None instead of a wrong number.",
+      "owner": "unassigned; rust/src/trace.rs has no roster owner. Nearest owners: Switch (rust/src/vk/ produces the ticks), Link (this screen). Any change to this line needs an owner assigned first."
+    },
+    {
+      "file": "rust/src/trace.rs",
+      "function": "ticks_to_axis_us",
+      "contains": "let delta_ns = (ticks - anchor) as f64 * f64::from(self.timestamp_period_ns);",
+      "reason": "The second sanctioned conversion: a device tick onto the shared absolute microsecond axis. Same licence, same earning of it — both operands were masked on the two lines above, and the subtraction is done in i128 precisely because a tick before the anchor is legal and must stay signed rather than wrapping through u64. Distinct from ticks_to_ns because it converts a POINT, not a SPAN, so it cannot share that function's wrap recovery.",
+      "owner": "unassigned; see the ticks_to_ns entry."
+    },
+    {
+      "file": "rust/src/trace.rs",
+      "function": "mask_ticks",
+      "contains": "raw_ticks & ((1u64 << valid_bits) - 1)",
+      "reason": "Not a tick-to-duration conversion at all: the arithmetic here is on the MASK (1<<valid_bits)-1, not on the tick, which is only ANDed with it. It is flagged because the screen is deliberately conservative and reads a '-' on a line carrying a tick token as a scale until a human says otherwise. This is that human. The function is a free function rather than a method specifically so the mask can be unit-tested without constructing a calibration, and it is the reason Intel's 36 valid bits are honoured at all.",
+      "owner": "unassigned; see the ticks_to_ns entry."
+    }
+  ]
+}
