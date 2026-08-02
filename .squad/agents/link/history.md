@@ -386,3 +386,131 @@ failed" regression that did not exist. That is R13's second clause with a stopwa
   substitution is most of the job.
 
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+---
+
+## Session 10 — 2026-08-01 — Obligation 8 lands in the lanes; a negative control turns out to have been a constant
+
+Merged `origin/main` to `ef58b4a` first (the merge aborted once on a stale untracked
+`tests/ops/_verdict.py` I had been carrying — Trinity's file, deleted, remerged clean).
+
+### The finding I was reacting to
+
+`gpu_steady_tail()` is a variance test over a suffix and therefore cannot see a bias. A
+board pinned at 210 MHz idle against a 3105 MHz boost produces a series that is perfectly
+steady about a *wrong* mean, so the wrong number carries the better RSD: `contended3`
+truncated to 28 gave `STEADY 126.647 ms RSD 0.8035%`, 10.99x wrong, against `soloA`
+`11.525 ms RSD 0.8098%` correct. R9 amendment 5 — a check that moves *with* the reader's
+confidence when its subject is wrong cannot be repaired by tightening; it is demoted from
+gate to precondition.
+
+### Task 1 — the lanes did not carry this, and now cannot avoid it
+
+Confirmed the coordinator's grep: zero matches for `tenancy|SOLE_TENANT|sm_clock|
+STEADY_UNCERTIFIED|gpu_steady` anywhere under `ci/`.
+
+Built `ci/device_state.py` (library) + `ci/check_device_state.py` (lane step), wired on
+`always()` into both `ci.yml` build lanes and `conformance.yml`. Terminal states: `PASS` /
+`FAIL(condition=STEADY_UNCERTIFIED)` / `ERROR(instrument=device_state_producer_absent |
+device_state_probe_failed | lane_evidence_absent)`. **Absence of telemetry produces
+`ERROR(instrument)`, never a pass** — amendment 2, the loophole whose biggest beneficiary
+at scale is a CI runner with no GPU.
+
+Two witnesses with different failure modes: a walk over lane JSON artifacts, and a regex
+over `$GITHUB_STEP_SUMMARY` prose. A JSON parser cannot see `11.525 ms` in a sentence.
+
+Took **Niobe's** record format from `bench/results/probe_gpustate.py :: summarise()` rather
+than defining a second one — same reason I refused a second verdict vocabulary. One key is
+missing for obligation 8: `window`, declaring the *statistic's own suffix*. I did not add
+it unilaterally to her file; the request is a decision record.
+
+### The premise was already false
+
+The guard's first run against real lane evidence went red. `gate-dev0-counters.json`
+carries `session_staging_upload_us=68` and `session_staging_readback_us=159`, and ORT's
+profile carries a `dur` per node event. "No CI lane quotes a timing figure" was untrue the
+day it was written — the lane does not *author* those figures but it does *upload* them.
+
+Resolved with `INSTRUMENT_DUMPS`: a closed code-level list, **a reason per entry, no
+`--exclude` flag** (a test greps my own source to assert the flag does not exist), and
+excused figures are still **printed every run** as `STEADY_UNCERTIFIED (carried, not
+claimed)` rather than silently skipped. A runtime exclusion switch would have been a
+waiver with a command-line interface.
+
+### Task 3 — I was asked to confirm a probe was wired. It was. It was wired to a constant.
+
+The Windows ICD negative control guarded itself by matching `'passed the §7.2 capability
+gate'`. `instance.rs:1072` prints that phrase on **every** run, with `n = 0` when
+suppression works. The guard matched always and short-circuited to `exit 0` always: **the
+control has never once executed**, and when it did not fire the lane reported "the gate
+cannot fail", blaming the gate.
+
+Replaced with `ci/check_icd_suppression.py` (pure `classify()`, `--record-out` artifact for
+R10). Then **my own replacement had the same class of bug**: with the ICD genuinely
+suppressed, `vkCreateInstance` returns `ERROR_INCOMPATIBLE_DRIVER` and the capability-gate
+line is *never printed*, so my count parser would have called every successful suppression
+`probe_report_unreadable`. Found only by running the real binary in both polarities. Fixed
+with `NO_ICD_RE` plus an `EXPECTED_EPCTL_EXIT` second witness. Both polarities re-verified
+against real `epctl.exe`: suppressed → PASS exit 0; healthy loader →
+`ERROR(instrument=icd_suppression_ineffective)` exit 4. Also wired into the Linux lane,
+where suppression actually works.
+
+### Task 2 — criterion 5
+
+Not exposed. `gate_chain_fp32`'s verdict is a function of counts and one exact comparison
+(`own_provider_execution_count`, `counters_dispatches_executed`, `profile_node_events`,
+`max_abs_diff`). No total, no denominator, nothing that moves at 210 MHz. Both negative
+controls equally clock-invariant.
+
+But I did not earn it — the gate is count-based because CI timing thresholds are flaky,
+not because I foresaw this. Recorded as an accident that coincides with the right property,
+because claiming it as design would make the next person trust reasoning that was never
+there. The property is protected by nothing; §10.0.4's named abuse (*hand the reader a
+count and let them supply the clock*) remains live.
+
+### Task 4 — the 40.201 ms figure
+
+Inherited into `PLATFORMS.md` §7.4.4: **"≤ 40.201 ms, device state unrecorded."** Not
+withdrawn, re-qualified. There are not two clock regimes — the board moved 210 → 2490 MHz
+within one run and a governor is continuous. Margin is **6.1x, not 21x**. RSD 0.033% keeps
+its descriptive role and loses its certifying one. OQ-12's canonical form (**~32.67% as of
+2026-07-30, ceiling and floor simultaneously**) was already correct; left alone.
+
+### lavapipe
+
+A CPU renderer can **never** certify a device-clock figure — permanent, not pending.
+Registered as `none_structural`, deliberately distinct from `unimplemented` (AMD, Intel,
+Apple, Adreno, Mali — a backlog item) and `available` (NVIDIA only). Consequence stated
+plainly so it is not read as a gap: **no CI lane can ever publish a certified device-clock
+figure.** A weaker host-state/wall-clock claim is legitimate and unstarted, and must never
+borrow the device-state name.
+
+### Verification
+
+`python -m pytest ci/test_lane_checks.py -q` → **41 passed**, GPU-free. Four device-state
+polarities exercised by hand on real artifacts; both ICD polarities against the real
+binary; both workflow YAMLs parse.
+
+### Blocked
+
+Closing the duty-cycle mechanism needs `nvidia-smi --lock-gpu-clocks` and an elevated
+shell. Justin will provide one later.
+
+### Lessons
+
+- I was asked to confirm something was wired, found it was, and nearly stopped there. The
+  question that mattered was not *is it connected* but *does its output vary with its
+  input*. R10 is the whole of it.
+- Writing the replacement instrument was not enough either. My draft was wrong in the
+  polarity I could not observe by reading, and only running it showed that.
+- The most dangerous premise in the brief ("no lane quotes a timing figure") was the one
+  nobody was checking, and it was already false.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+

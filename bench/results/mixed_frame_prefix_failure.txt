@@ -1,0 +1,118 @@
+warning: direct cast of function item into an integer
+   --> src\ops\norm.rs:270:66
+    |
+270 |                 r.translate as usize, templates::simplified_norm as usize,
+    |                                                                  ^^^^^^^^
+    |
+    = note: `#[warn(function_casts_as_integer)]` on by default
+help: first cast to a pointer `as *const ()`
+    |
+270 |                 r.translate as usize, templates::simplified_norm as *const () as usize,
+    |                                                                  ++++++++++++
+
+warning: direct cast of function item into an integer
+   --> src\ops\indexing.rs:118:55
+    |
+118 |             row.translate as usize, templates::gather as usize,
+    |                                                       ^^^^^^^^
+    |
+help: first cast to a pointer `as *const ()`
+    |
+118 |             row.translate as usize, templates::gather as *const () as usize,
+    |                                                       ++++++++++++
+
+warning: `onnxruntime-ep-vulkan` (lib test) generated 2 warnings (run `cargo fix --lib -p onnxruntime-ep-vulkan --tests` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.96s
+     Running unittests src\lib.rs (target\release\deps\onnxruntime_vulkan_ep-a779f106f0f3d142.exe)
+
+running 1 test
+test counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame ... FAILED
+
+failures:
+
+---- counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame stdout ----
+
+thread 'counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame' (25684) panicked at src\counters.rs:1332:9:
+two providers declared two different frames in this process, so no single frame describes these numbers; reporting either one of them as THE frame is how a selector-1 population gets read as a selector-0 measurement. Got:
+{
+  "abi_version": 2,
+  "compile_calls": 0,
+  "subgraphs_live": 0,
+  "subgraphs_stub": 0,
+  "compute_calls": 0,
+  "compute_failures": 0,
+  "dispatches_executed": 0,
+  "claimed_nodes": 0,
+  "islands_offered": 0,
+  "viable_islands_retained": "UNWIRED",
+  "net_benefit_gate": "UNWIRED",
+  "net_benefit_gate_clusters_seen": 0,
+  "net_benefit_gate_evaluations": 0,
+  "net_benefit_gate_bypasses": 0,
+  "broken_commitments": "UNOBSERVABLE",
+  "broken_commitment_warns_to_ort_sink": 0,
+  "broken_commitment_warn_channel": "UNOBSERVABLE",
+  "compute_failures_injected": 0,
+  "fault_injection": "NONE",
+  "model_output_equivalence": "UNMEASURED",
+  "pointers_observed": 0,
+  "pointers_host": 0,
+  "pointers_at_base": 0,
+  "pointers_interior": 0,
+  "pointers_in_guard_band": 0,
+  "pointers_use_after_free": 0,
+  "pointer_max_offset": 0,
+  "alloc_allocations": 0,
+  "alloc_frees": 0,
+  "alloc_bytes": 0,
+  "alloc_high_water_bytes": 0,
+  "alloc_device_backed_spans": 0,
+  "alloc_staged_spans": 0,
+  "alloc_staged_bytes": 0,
+  "alloc_allocators_released": 0,
+  "alloc_allocators_live": 0,
+  "alloc_frees_after_release": 0,
+  "alloc_live_at_release_spans": 0,
+  "alloc_live_at_release_bytes": 0,
+  "alloc_device_uploads": 0,
+  "alloc_device_upload_bytes": 0,
+  "alloc_device_downloads": 0,
+  "alloc_device_download_bytes": 0,
+  "alloc_unified_memory": 0,
+  "alloc_quarantine_peak_spans": 0,
+  "alloc_quarantine_retired": 0,
+  "alloc_device_buffer_binds": 0,
+  "alloc_failed_lookups": 0,
+  "alloc_device_authoritative_ceiling": 0,
+  "alloc_device_residency_evaluations": 2,
+  "alloc_device_authoritative_spans": 0,
+  "alloc_device_frame": "SHARED",
+  "alloc_device_frame_device": "Device A",
+  "alloc_device_frame_allocator_index": "unset",
+  "alloc_device_frame_session_devices": "none",
+  "alloc_device_frame_sides": "alloc_device_frame=SHARED — BOTH sides are on the same VkDevice: 'Device A' (factory device index unset). Sessions have offered: none.",
+  "session_staging_uploads": 0,
+  "session_staging_upload_bytes": 0,
+  "session_staging_upload_us": 0,
+  "session_staging_readbacks": 0,
+  "session_staging_readback_bytes": 0,
+  "session_staging_readback_us": 0,
+  "session_device_allocs": 0,
+  "session_device_frees": 0,
+  "session_device_bytes_in_use": 0,
+  "session_device_high_water_bytes": 0,
+  "weight_cache_release_calls": 0,
+  "weight_cache_release_buffers": 0,
+  "weight_cache_release_bytes": 0,
+  "weight_cache_bytes_resident": 0
+}
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 426 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `--lib`

@@ -2582,6 +2582,15 @@ mod tests {
             crate::allocator::ledger::test_lock()
         }
 
+        /// `ORTCHAR_T` as the platform defines it. `onnxruntime_c_api.h` typedefs it to `wchar_t`
+        /// on `_WIN32` and `char` elsewhere, so bindgen emits `ort::wchar_t` **only** on Windows
+        /// and naming it unguarded breaks the Linux lane hours later (portability rule P1). Same
+        /// alias as `tests/mock_ort/mod.rs::OrtChar`, kept local because this module is `cfg(test)`.
+        #[cfg(windows)]
+        type OrtChar = ort::wchar_t;
+        #[cfg(not(windows))]
+        type OrtChar = c_char;
+
         /// Stands in for ORT's `Logger_LogMessage`. This is the *host's* channel: a message that
         /// arrives here is one a user with ORT logging configured would see, and a message that
         /// does not arrive here is invisible to them however loudly we printed it elsewhere.
@@ -2589,7 +2598,7 @@ mod tests {
             _logger: *const ort::OrtLogger,
             severity: ort::OrtLoggingLevel,
             message: *const c_char,
-            _file: *const ort::wchar_t,
+            _file: *const OrtChar,
             _line: std::os::raw::c_int,
             _func: *const c_char,
         ) -> ort::OrtStatusPtr {

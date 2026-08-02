@@ -1155,6 +1155,7 @@ pub fn dump_observations_if_requested() {
         t.device_authoritative_spans.to_string()
     };
     let frame_sides = crate::allocator::tally::frame_sides_sentence();
+    let frames_declared = crate::allocator::tally::frames_declared();
     let session_devices = crate::allocator::tally::session_devices();
     let alloc_device_index = crate::allocator::tally::allocator_device_index();
     let snap = snapshot();
@@ -1187,6 +1188,7 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_authoritative_spans\": {},\n  \
              \"alloc_device_frame\": \"{}\",\n  \
              \"alloc_device_frame_device\": \"{}\",\n  \
+             \"alloc_device_frames_declared\": {},\n  \
              \"alloc_device_frame_allocator_index\": \"{}\",\n  \
              \"alloc_device_frame_session_devices\": \"{}\",\n  \
              \"alloc_device_frame_sides\": \"{}\",\n  \
@@ -1237,6 +1239,7 @@ pub fn dump_observations_if_requested() {
             authoritative,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
+            frames_declared,
             alloc_device_index
                 .replace('\\', "\\\\")
                 .replace('"', "\\\""),
@@ -1462,7 +1465,7 @@ mod tests {
         );
 
         // Frame 2: a second VkDevice — the §6.5 defect. Still pinned.
-        crate::allocator::tally::set_device_frame(
+        crate::allocator::tally::set_only_frame_for_test(
             crate::allocator::tally::FRAME_SPLIT,
             "Some Other Device",
         );
@@ -1503,7 +1506,7 @@ mod tests {
         // Frame 3: §6.5 satisfied — observable at last, and STILL not a measurement, because the
         // residency predicate has not run on anything. R10's third state, in the artifact's type
         // system: `"UNWIRED"` is a JSON string, so arithmetic on it fails loudly.
-        crate::allocator::tally::set_device_frame(
+        crate::allocator::tally::set_only_frame_for_test(
             crate::allocator::tally::FRAME_SHARED,
             "The Session's Device",
         );
@@ -1540,6 +1543,85 @@ mod tests {
         unsafe { std::env::remove_var(ENV_COUNTERS_FILE) };
         std::fs::remove_file(&path).ok();
         crate::allocator::tally::reset_for_test();
+    }
+
+    /// **The frame is a property of the POPULATION, not of the last writer.**
+    ///
+    /// `PROVIDERS` in `vk::host_device_memory` is a map keyed by factory device index, so a single
+    /// process can stand up a device-memory provider for device 0 and another for device 1 — two
+    /// ORT sessions on two GPUs is an ordinary thing for a user to do. Both call `set_device_frame`.
+    /// The allocator tallies they feed are process-global, so the artifact ends up with **one
+    /// frame label over a population drawn from two frames**, and which label wins depends on
+    /// which session registered last.
+    ///
+    /// That is an R12 defect and not a test defect: in a mixed process the old code would emit
+    /// `alloc_device_authoritative_spans` as a *number* — a measurement — whenever the SHARED
+    /// provider happened to register second, even though every span from the SPLIT provider is
+    /// in a frame where the counted event cannot occur. R12 says a counter whose event cannot
+    /// occur in its frame reports `UNOBSERVABLE`; a population spanning two frames has no single
+    /// frame in which to ask the question, so the honest answer is the same one.
+    ///
+    /// This is the falsifier for the claim "the frame is confined". It runs the two registrations
+    /// concurrently, because the defect's signature is *scheduling-dependent output*: before the
+    /// fix this test reported `SHARED` or `SPLIT-DEVICE` depending on which thread won, and now
+    /// it reports `MIXED` under every interleaving.
+    #[test]
+    fn two_frames_in_one_process_are_never_reported_as_one_frame() {
+        use crate::allocator::tally;
+        let _g = crate::allocator::ledger::test_lock();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("counters_r12_mixed_frame_test.json");
+        std::fs::remove_file(&path).ok();
+        tally::reset_for_test();
+
+        // Two providers, two devices, one process, no ordering between them.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tally::set_device_frame(tally::FRAME_SHARED, "Device A");
+                tally::on_residency_evaluated(false);
+            });
+            s.spawn(|| {
+                tally::set_device_frame(tally::FRAME_SPLIT, "Device B");
+                tally::on_residency_evaluated(false);
+            });
+        });
+
+        // SAFETY: single-threaded again by the time this runs; removed on the way out.
+        unsafe { std::env::set_var(ENV_COUNTERS_FILE, &path) };
+        dump_observations_if_requested();
+        let doc = std::fs::read_to_string(&path).expect("dump must have written the file");
+        // Leave the artifact behind. R10: the falsifier for "the frame is a property of the
+        // population, not of the last writer" is a document the mechanism produced.
+        std::fs::write(dir.join("mixed_frame_dump.json"), &doc).ok();
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(ENV_COUNTERS_FILE) };
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            doc.contains("\"alloc_device_frame\": \"MIXED\""),
+            "two providers declared two different frames in this process, so no single frame \
+             describes these numbers; reporting either one of them as THE frame is how a \
+             selector-1 population gets read as a selector-0 measurement. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_authoritative_spans\": \"UNOBSERVABLE\""),
+            "the residency screen ran (so the counter is wired) but the population spans two \
+             frames, and there is no frame in which to ask whether the event could occur. R12 \
+             says that is UNOBSERVABLE, never a number. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"alloc_device_frames_declared\": 2"),
+            "the artifact must say how many frames it is standing on, or MIXED is an assertion \
+             rather than a count; got:\n{doc}"
+        );
+        assert!(
+            doc.contains("Device A") && doc.contains("Device B"),
+            "a mixed frame must NAME the frames it mixed — `MIXED` alone is the same detection \
+             -without-description that made `SPLIT-DEVICE` unreadable. Got:\n{doc}"
+        );
+
+        tally::reset_for_test();
     }
 
     /// The counters are process-wide statics, so tests that touch them must not run concurrently
