@@ -994,6 +994,11 @@ InstrumentError = _verdict.InstrumentError
 write_equivalence_record = _verdict.write_equivalence_record
 read_equivalence_record = _verdict.read_equivalence_record
 read_counters_dispatches = _verdict.read_counters_dispatches
+read_counters_witness = _verdict.read_counters_witness
+WITNESS_UNOBSERVABLE: str = _verdict.WITNESS_UNOBSERVABLE
+WITNESS_AGREEMENT_AGREE: str = _verdict.WITNESS_AGREEMENT_AGREE
+WITNESS_AGREEMENT_DISAGREE: str = _verdict.WITNESS_AGREEMENT_DISAGREE
+WITNESS_AGREEMENT_UNOBSERVABLE: str = _verdict.WITNESS_AGREEMENT_UNOBSERVABLE
 find_fatal_log_lines = _verdict.find_fatal_log_lines
 
 

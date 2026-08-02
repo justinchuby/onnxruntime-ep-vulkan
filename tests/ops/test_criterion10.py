@@ -192,7 +192,8 @@ def test_criterion_10_three_consecutive_attributed_match(
             f"[Device {device_index}] criterion-10 attribution instrument failure "
             f"(fix the harness, not the EP): {exc}"
         ) from exc
-    attribution = attribution.with_counters_witness(m.read_counters_dispatches(counters_path))
+    _counters_value, _counters_reason = m.read_counters_witness(counters_path)
+    attribution = attribution.with_counters_witness(_counters_value, reason=_counters_reason)
 
     # CPU oracle: a CPU-only run of the same artifact (§10.0 point 4 — not a golden file).
     cpu_opts = ort.SessionOptions()

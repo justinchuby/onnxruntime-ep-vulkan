@@ -575,7 +575,8 @@ def test_phi35_vulkan_matches_cpu_logits(
         ) from _guard_d_err
     # Second witness (clause 2): our own dispatch counter.  It may not be the primary
     # witness; recording it is what makes SPLIT-FRAME detectable.
-    attribution = attribution.with_counters_witness(m.read_counters_dispatches(counters_path))
+    _counters_value, _counters_reason = m.read_counters_witness(counters_path)
+    attribution = attribution.with_counters_witness(_counters_value, reason=_counters_reason)
 
     print(f"\n[Phi-3.5 correctness gate / Device {device_index}]")
     print(f"  Guard D observation: {attribution.describe()}")

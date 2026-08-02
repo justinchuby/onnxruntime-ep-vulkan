@@ -1,0 +1,150 @@
+{
+  "probe": "stall_guard_arms",
+  "device_selector": "0",
+  "claim": "The census stall detector fires on a hang and does not fire on contention, and does both regardless of which of the two is happening at the time.",
+  "why_not_a_bigger_timeout": "A wall-clock threshold moves the same way when the box is loaded and when the census hangs, so no value of it separates them (R9 amendment 5).  The hung_loaded cell is the discriminator: a timeout loose enough to survive this host's measured suite inflation passes there, and a budget denominated in work units fails there.",
+  "arms_must_differ": true,
+  "load_arms_must_differ": true,
+  "load_witness": {
+    "flat_out_units_per_second": {
+      "quiet": 6477.0,
+      "loaded": 680.0
+    },
+    "census_clock_units_total": {
+      "quiet": 1460,
+      "loaded": 35131
+    },
+    "what_the_second_witness_shows": "The healthy census consumed more of this machine's reference work when loaded than when quiet.  That is the CPU-only limit of the work clock, measured rather than asserted: a duty-cycled CPU-bound unit under-tracks load that also hits the GPU, the disk and the scheduler, so the budgets carry margin for it and this run reports how much of that margin the load consumed."
+  },
+  "injected_step": "validation_probe",
+  "fault_injection_marking": "Every injected cell announces [STALL-INJECT] on the child's stderr and the census artifact records stall_detector.fault_injection, so a planted stall can never be read as a suffered one.",
+  "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 reference_units_per_second describes the measuring rod, not the EP.  No cell quotes how long anything took, and no verdict here depends on a duration.",
+  "cells": [
+    {
+      "cell": "healthy_quiet",
+      "fault_injected": "NONE",
+      "machine": "QUIET",
+      "load_processes": 0,
+      "reference_units_per_second": 83.2,
+      "flat_out_units_per_second": 6477.0,
+      "pytest_exit": 0,
+      "verdict": "PASS",
+      "detector_fired": false,
+      "stall_text": [],
+      "census_stalled": [],
+      "observed_units": {
+        "counters_child_clean": 606,
+        "counters_child_inject": 530,
+        "add_session_profiling": 14,
+        "validation_probe": 52,
+        "layering_lint": 152
+      },
+      "observed_max_silence_units": {
+        "counters_child_clean": 73,
+        "counters_child_inject": 28,
+        "add_session_profiling": 14,
+        "validation_probe": 4,
+        "layering_lint": 52
+      },
+      "clock_units_total": 1460
+    },
+    {
+      "cell": "healthy_loaded",
+      "fault_injected": "NONE",
+      "machine": "LOADED",
+      "load_processes": 40,
+      "reference_units_per_second": 63.0,
+      "flat_out_units_per_second": 680.0,
+      "pytest_exit": 0,
+      "verdict": "PASS",
+      "detector_fired": false,
+      "stall_text": [],
+      "census_stalled": [],
+      "observed_units": {
+        "counters_child_clean": 18303,
+        "counters_child_inject": 13711,
+        "add_session_profiling": 42,
+        "validation_probe": 364,
+        "layering_lint": 1713
+      },
+      "observed_max_silence_units": {
+        "counters_child_clean": 240,
+        "counters_child_inject": 509,
+        "add_session_profiling": 42,
+        "validation_probe": 346,
+        "layering_lint": 1374
+      },
+      "clock_units_total": 35131
+    },
+    {
+      "cell": "hung_quiet",
+      "fault_injected": "validation_probe",
+      "machine": "QUIET",
+      "load_processes": 0,
+      "reference_units_per_second": 65.2,
+      "flat_out_units_per_second": 5834.5,
+      "pytest_exit": 1,
+      "verdict": "FAIL",
+      "detector_fired": true,
+      "stall_text": [
+        "# itself, which is precisely criterion 12's subject \u2014 FAIL(condition=NO_PROGRESS).",
+        "E           [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2022 work units (budget 2000); this machine completed 3147 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.",
+        "E             validation_messenger: STALLED (validation_probe: [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2022 work units (budget 2000); this machine completed 3147 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.)",
+        "\u0000[STALL-INJECT] replacing step 'validation_probe' with a silent non-terminating child ($ONNXRUNTIME_EP_VULKAN_TEST_STALL=validation_probe).  fault_injection: ACTIVE.",
+        "[WIRING CENSUS] validation_messenger: STALLED (validation_probe: [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2022 work units (budget 2000); this machine completed 3147 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.)"
+      ],
+      "census_stalled": [
+        "validation_messenger"
+      ],
+      "observed_units": {
+        "counters_child_clean": 537,
+        "counters_child_inject": 538,
+        "add_session_profiling": 15,
+        "layering_lint": 94
+      },
+      "observed_max_silence_units": {
+        "counters_child_clean": 86,
+        "counters_child_inject": 84,
+        "add_session_profiling": 15,
+        "validation_probe": 2022,
+        "layering_lint": 56
+      },
+      "clock_units_total": 3385
+    },
+    {
+      "cell": "hung_loaded",
+      "fault_injected": "validation_probe",
+      "machine": "LOADED",
+      "load_processes": 40,
+      "reference_units_per_second": 57.5,
+      "flat_out_units_per_second": 776.5,
+      "pytest_exit": 1,
+      "verdict": "FAIL",
+      "detector_fired": true,
+      "stall_text": [
+        "# itself, which is precisely criterion 12's subject \u2014 FAIL(condition=NO_PROGRESS).",
+        "E           [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2002 work units (budget 2000); this machine completed 5823 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.",
+        "E             validation_messenger: STALLED (validation_probe: [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2002 work units (budget 2000); this machine completed 5823 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.)",
+        "\u0000[STALL-INJECT] replacing step 'validation_probe' with a silent non-terminating child ($ONNXRUNTIME_EP_VULKAN_TEST_STALL=validation_probe).  fault_injection: ACTIVE.",
+        "[WIRING CENSUS] validation_messenger: STALLED (validation_probe: [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2002 work units (budget 2000); this machine completed 5823 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.)"
+      ],
+      "census_stalled": [
+        "validation_messenger"
+      ],
+      "observed_units": {
+        "counters_child_clean": 1737,
+        "counters_child_inject": 2040,
+        "add_session_profiling": 2,
+        "layering_lint": 960
+      },
+      "observed_max_silence_units": {
+        "counters_child_clean": 31,
+        "counters_child_inject": 91,
+        "add_session_profiling": 2,
+        "validation_probe": 2002,
+        "layering_lint": 908
+      },
+      "clock_units_total": 7042
+    }
+  ]
+}
