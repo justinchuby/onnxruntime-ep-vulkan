@@ -1,0 +1,215 @@
+  stripper self-test: 7/7 cases pass
+  frame-declaration self-test: 4/4 cases pass
+CENSUS FRAME (R12 applied to this screen: what it did not look at, said out loud)
+  repository root: C:\Users\justinchu\dev\ep-vulkan-tank
+
+  IN FRAME
+    rust/src   42 .rs file(s); 6 in the instrument frame; 36 not screened — `pub fn` surface only, and only in files that emit.
+    tests/     41 .py file(s); 4 instrument module(s) screened; callers and polarity read from ALL of them.
+    bench/     30 .py file(s); 10 instrument module(s) screened; 20 held out with a stated reason; callers and polarity read from ALL of them.
+
+  OUT OF FRAME (declared, with the reason — this is the line whose absence was the bug)
+    .copilot/      agent configuration, not shipped mechanism.   [no source present]
+    .github/       workflow YAML; see ci/lane_inventory.py.   [no source present]
+    .squad/        team state and prose records, not shipped mechanism.   [no source present]
+    ci/            lane gates, Link's. Every file here is `check_*`/`gate_*` invoked by name from a workflow, so `uninvoked` is decided by ci/lane_inventory.py against the workflow files, not by a call-graph screen. Two censuses over one tree is the failure this file exists to prevent; if that inventory stops running, this line is the wrong answer and should be moved to IN FRAME.
+    docs/          prose. Contains no executable instrument.   [no source present]
+    evidence/      recorded artifacts. Data, not mechanism.   [no source present]
+    third_party/   vendored. Not ours to screen or to fix.   [no source present]
+
+  bench/ modules held out of the instrument screen:
+    bench.py                         runner — orchestrates a run, renders no verdict.
+    cases.py                         case table — data.
+    compare.py                       presentation of two runs; the verdicts it prints come from stats.py.
+    environment.py                   capture — records the world, judges nothing.
+    exec_census.py                   runner for a census defined elsewhere.
+    island_attribution.py            attribution arithmetic; its verdict lives in phases.py.
+    phi35.py                         model construction and output classification for one model.
+    producers.py                     builds the inputs a measurement runs on.
+    test_contention.py               test module — a caller, screened as polarity, not as an instrument.
+    test_device_state.py             test module.
+    test_harness.py                  test module.
+    test_import_isolation.py         test module.
+    test_island_boundary_cost.py     test module.
+    test_marginal_tail_withholds.py  test module.
+    test_phases.py                   test module.
+    test_plausible_but_wrong.py      test module.
+    test_run_disturbance.py          test module.
+    test_tenancy_signature.py        test module.
+    test_win_gpu_counters.py         test module.
+    transfer_calibration.py          calibration data producer.
+
+  NOTE: a directory or a bench module in neither list is FAIL(drift), not silence.
+  Until 2026-08-02 this census scanned rust/src and tests/ops and printed PASS, and
+  the reader could not tell that from a PASS over the tree. bench/ holds the SM-clock
+  record that refused a device-clock series reading STEADY at RSD 0.0717% and 20.18x
+  wrong; it had never been audited by anything.
+
+INSTRUMENT WIRING SCREEN (uninvoked = no production caller; tests do not count)
+  scanned 132 public instrument fn(s) across 6 file(s)
+
+  UNINVOKED  counters.rs:1123  to_json                  prod_refs=0 test_refs=22
+  UNINVOKED  trace.rs:309   observes_gpu_work        prod_refs=0 test_refs=1
+  UNINVOKED  trace.rs:713   note_thread              prod_refs=0 test_refs=0
+  UNINVOKED  trace.rs:860   record_path              prod_refs=0 test_refs=0
+  UNINVOKED  trace.rs:967   op_span                  prod_refs=0 test_refs=0
+  UNINVOKED  trace.rs:979   op_timer_start           prod_refs=0 test_refs=0
+  UNINVOKED  trace.rs:991   record_op_meta           prod_refs=0 test_refs=0
+  UNINVOKED  trace.rs:1425  transfer_totals          prod_refs=0 test_refs=0
+
+  REFERENCED BUT NEVER CALL-SHAPED (`.map(f)`, or a same-named local/param elsewhere —
+  this class needs a human; `claim_log::record` lives here because `logging.rs` has a
+  parameter named `record`, which is not a call to it):
+  AMBIGUOUS  counters.rs:124   extract_equivalence      prod_refs=1 test_refs=15
+  AMBIGUOUS  counters.rs:171   extract_equivalence_record prod_refs=1 test_refs=4
+
+  NOTE: this screen cannot see whether a WIRED instrument reports the right thing.
+  Phase::Record passed it cleanly while 96% of its time was a memcpy nested inside it.
+
+HARNESS INSTRUMENT SCREEN (tests/ — a guard nothing falsifies is not a guard)
+  scanned 17 instrument fn(s) in ['ops/_models.py', 'ops/_verdict.py', 'ops/conftest.py', 'ops/_watchdog.py']
+
+  UNFALSIFIED tests/ops/conftest.py::_assert_oracle_versions             calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/conftest.py::_classify_failure                   calls=10 reject_polarity=0 accept_polarity=9
+  UNFALSIFIED tests/ops/_models.py::assert_ep_in_session                 calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_models.py::assert_ep_owns_whole_graph           calls=5 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_models.py::assert_matches_cpu                   calls=16 reject_polarity=0 accept_polarity=9
+  UNFALSIFIED tests/ops/_models.py::assert_no_cpu_fallback_is_live       calls=2 reject_polarity=0 accept_polarity=0
+  UNINVOKED   tests/ops/_models.py::assert_qdq_reference_oracle_safe     calls=0 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_models.py::assert_vulkan_claims                 calls=22 reject_polarity=0 accept_polarity=14
+  UNFALSIFIED tests/ops/_models.py::assert_vulkan_does_not_claim         calls=3 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_models.py::check                                calls=12 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_verdict.py::classify_plant_run                  calls=7 reject_polarity=0 accept_polarity=6
+  UNFALSIFIED tests/ops/_verdict.py::classify_validation_probe           calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED tests/ops/_models.py::count_vulkan_executions_from_profile calls=2 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED tests/ops/conftest.py::require_vulkan                      calls=53 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED tests/ops/_models.py::write_unmeasured_verdict             calls=6 reject_polarity=0 accept_polarity=4
+
+  SCREENED   tests/ops/_models.py::assert_vulkan_executed_runtime       calls=9 reject_polarity=4 accept_polarity=2
+  SCREENED   tests/ops/_verdict.py::require_validation_armed            calls=6 reject_polarity=1 accept_polarity=1
+
+  UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+  nothing in the always-on lane has ever watched this instrument disagree, so a
+  broken one and a working one would look the same. Guard D lived here for its
+  whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+
+BENCH INSTRUMENT SCREEN (bench/ — the certification apparatus, in frame since 2026-08-02)
+  scanned 90 instrument fn(s) in ['device_companion.py', 'phases.py', 'admissible.py', 'contention.py', 'run_disturbance.py', 'timestamp_audit.py', 'win_gpu_counters.py', 'devices.py', 'stats.py', 'portability.py']
+
+  UNFALSIFIED bench/win_gpu_counters.py::adapters                        calls=4 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/phases.py::analyse                                   calls=52 reject_polarity=0 accept_polarity=52
+  UNFALSIFIED bench/phases.py::anchor_quality                            calls=2 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/phases.py::attribute                                 calls=8 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/phases.py::attribute_gpu_ordinally                   calls=10 reject_polarity=0 accept_polarity=7
+  UNFALSIFIED bench/timestamp_audit.py::audit                            calls=4 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/win_gpu_counters.py::available                       calls=2 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/admissible.py::baseline_comparability                calls=6 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/contention.py::baseline_path                         calls=2 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/devices.py::by_ep_index                              calls=5 reject_polarity=0 accept_polarity=4
+  UNINVOKED   bench/devices.py::by_index                                 calls=0 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/devices.py::capture                                  calls=7 reject_polarity=0 accept_polarity=7
+  UNFALSIFIED bench/device_companion.py::certify                         calls=20 reject_polarity=0 accept_polarity=20
+  UNFALSIFIED bench/run_disturbance.py::classify                         calls=5 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/stats.py::comparable                                 calls=1 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/device_companion.py::compose                         calls=6 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/phases.py::contention_signature                      calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/timestamp_audit.py::conversion_self_check            calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/timestamp_audit.py::cross_check                      calls=5 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/phases.py::decomposition_identity                    calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/portability.py::describe                             calls=10 reject_polarity=0 accept_polarity=7
+  UNFALSIFIED bench/phases.py::device_fingerprint                        calls=2 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/devices.py::device_identity_check                    calls=4 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/stats.py::drift                                      calls=8 reject_polarity=0 accept_polarity=8
+  UNFALSIFIED bench/device_companion.py::empty_axis                      calls=11 reject_polarity=0 accept_polarity=3
+  UNFALSIFIED bench/timestamp_audit.py::end_to_end                       calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/devices.py::ep_index_of                              calls=1 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/devices.py::ep_selection_order                       calls=4 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/portability.py::evaluate                             calls=11 reject_polarity=0 accept_polarity=10
+  UNFALSIFIED bench/win_gpu_counters.py::expand_engine_paths             calls=2 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/timestamp_audit.py::find_epctl                       calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/devices.py::find_vulkaninfo                          calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/portability.py::fits_device                          calls=4 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/device_companion.py::from_nvidia_record              calls=1 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/contention.py::gate                                  calls=5 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/phases.py::gpu_containment                           calls=2 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/phases.py::gpu_span_accounting                       calls=7 reject_polarity=0 accept_polarity=6
+  UNFALSIFIED bench/phases.py::gpu_spans                                 calls=17 reject_polarity=0 accept_polarity=13
+  UNFALSIFIED bench/phases.py::gpu_steady_tail                           calls=27 reject_polarity=0 accept_polarity=25
+  UNFALSIFIED bench/phases.py::gpu_totals                                calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/admissible.py::grade                                 calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::host_phase_totals                         calls=9 reject_polarity=0 accept_polarity=7
+  UNFALSIFIED bench/devices.py::identify_by_timestamp                    calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/phases.py::is_leaf_phase                             calls=4 reject_polarity=0 accept_polarity=3
+  UNFALSIFIED bench/win_gpu_counters.py::live_luids                      calls=5 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/phases.py::load                                      calls=16 reject_polarity=0 accept_polarity=13
+  UNFALSIFIED bench/contention.py::load_baseline                         calls=2 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/run_disturbance.py::localise                         calls=8 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/contention.py::machine_key                           calls=3 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/timestamp_audit.py::mask_ticks                       calls=2 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::nested_phase_names                        calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/win_gpu_counters.py::observe                         calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/contention.py::occupancy_check                       calls=6 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/contention.py::occupancy_probe                       calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/win_gpu_counters.py::parse_instance                  calls=5 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/phases.py::partition_stats                           calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::phase_containment                         calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/phases.py::phase_leaf_accounting                     calls=6 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/phases.py::phase_nesting                             calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/admissible.py::phase_share_admissibility             calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::phase_spans                               calls=12 reject_polarity=0 accept_polarity=11
+  UNFALSIFIED bench/devices.py::probe                                    calls=8 reject_polarity=0 accept_polarity=5
+  UNFALSIFIED bench/timestamp_audit.py::probe_ep                         calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/contention.py::quiescence                            calls=13 reject_polarity=0 accept_polarity=12
+  UNFALSIFIED bench/phases.py::record_scaling                            calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::red_flags                                 calls=6 reject_polarity=0 accept_polarity=6
+  UNFALSIFIED bench/stats.py::relative_delta                             calls=5 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/admissible.py::report                                calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/contention.py::sample_now                            calls=2 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/contention.py::save_baseline                         calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/phases.py::sibling_phases                            calls=4 reject_polarity=0 accept_polarity=3
+  UNFALSIFIED bench/stats.py::significant                                calls=4 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/timestamp_audit.py::span_ns                          calls=3 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::steady_state_split                        calls=1 reject_polarity=0 accept_polarity=0
+
+FAIL: 2 NEW unfalsified instrument(s):
+  + tests/ops/_models.py::assert_ep_owns_whole_graph
+  + tests/ops/_models.py::assert_no_cpu_fallback_is_live
+  A harness instrument with no two-polarity self-test is the Guard D shape.
+  Give it one in the always-on lane (see tests/ops/test_guard_d.py), or add it
+  to the baseline WITH a hand note in `hand.harness_notes` saying why it cannot
+  be falsified without hardware.
+  UNFALSIFIED bench/phases.py::subgraph_spans                            calls=13 reject_polarity=0 accept_polarity=10
+  UNFALSIFIED bench/win_gpu_counters.py::summarise                       calls=15 reject_polarity=0 accept_polarity=12
+  UNFALSIFIED bench/run_disturbance.py::synthetic_jittered               calls=1 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/run_disturbance.py::synthetic_uniform_slowdown       calls=4 reject_polarity=0 accept_polarity=1
+  UNFALSIFIED bench/phases.py::timestamp_conversion_integrality          calls=2 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::trace_matches_counters                    calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::transfer_events                           calls=3 reject_polarity=0 accept_polarity=2
+  UNFALSIFIED bench/portability.py::transfer_model_merge_refusal         calls=3 reject_polarity=0 accept_polarity=3
+  UNFALSIFIED bench/phases.py::transfer_totals                           calls=1 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/phases.py::upload_accounting                         calls=5 reject_polarity=0 accept_polarity=4
+  UNFALSIFIED bench/phases.py::valid_bits_applied                        calls=2 reject_polarity=0 accept_polarity=0
+  UNFALSIFIED bench/timestamp_audit.py::wrap_period_seconds              calls=4 reject_polarity=0 accept_polarity=2
+
+  SCREENED   bench/win_gpu_counters.py::luid_for_adapter                calls=6 reject_polarity=1 accept_polarity=1
+  SCREENED   bench/run_disturbance.py::measure                          calls=13 reject_polarity=2 accept_polarity=6
+  SCREENED   bench/run_disturbance.py::per_inference_kernel_us          calls=13 reject_polarity=1 accept_polarity=4
+  SCREENED   bench/run_disturbance.py::synthetic_clean                  calls=8 reject_polarity=1 accept_polarity=3
+
+  UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+  nothing in the always-on lane has ever watched this instrument disagree, so a
+  broken one and a working one would look the same. Guard D lived here for its
+  whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+
+  READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON
+  bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench
+  instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,
+  `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches
+  `gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the
+  same limit already recorded for `classify_` in the harness domain. `unfalsified`
+  here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says
+  it should say, and not that no test watches one. Crediting a polarity this screen
+  did not observe would be the Guard D shape with the sign flipped.
+  Handed to Niobe: a value-polarity model for total instruments, or a note per row.
+
+CENSUS VERDICT: FAIL(drift)

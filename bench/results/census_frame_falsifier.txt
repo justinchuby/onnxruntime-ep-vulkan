@@ -1,0 +1,14 @@
+
+  UNDECLARED DIRECTORIES (source present, no frame decision):
+    ? zz_frame_probe/
+  UNDECLARED bench/ MODULES (neither screened nor held out):
+    ? bench/zz_probe_module.py
+FAIL: 2 undeclared item(s) in the census frame. Add each to FRAME_DIRS / BENCH_INSTRUMENT_FILES / BENCH_HELD_OUT with a reason. 'Not 
+scanned' is an acceptable answer; not saying which is not.
+CENSUS VERDICT: FAIL(drift)
+
+
+
+CENSUS VERDICT: FAIL(drift)
+
+
