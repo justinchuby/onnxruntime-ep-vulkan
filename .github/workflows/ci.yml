@@ -132,6 +132,14 @@ jobs:
       - name: Two-polarity tests for ci/ lane checks
         run: python -m pytest ci/test_lane_checks.py -q -p no:randomly
 
+      - name: Tautological-assertion screen (no GPU, whole tree)
+        # Scans Rust and Python sources for assertions that pass without reading their
+        # subject. It reports 0 detections over the tree today and exists as a regression
+        # barrier, not a discovery tool -- the two assertion defects that actually
+        # occurred here are outside its reach and its own output says so. Its evidence
+        # that it works is entirely planted, in the step above.
+        run: python ci/check_tautological_assertions.py
+
   # ----------------------------------------------------------------
   # 3. Linux: build + clippy + op tests (lavapipe GPU-less lane)
   #    + criterion 10 gate artifact + negative control

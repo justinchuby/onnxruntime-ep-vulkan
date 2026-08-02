@@ -334,7 +334,8 @@ def sibling_phases(phases: "list[dict]") -> "list[dict]":
     return [p for p in phases if p["phase"] not in nested]
 
 
-def decomposition_identity(host: dict, gpu: dict, in_compute_ms: float,
+
+def decomposition_identity(host: dict, gpu: dict, in_compute_ms: float,
                            independent_whole_ms: "float | None" = None,
                            whole_source: str = "") -> dict:
     """R11: does the decomposition close, and **against a whole from a different source**?
@@ -1854,7 +1855,7 @@ def gpu_steady_tail(busy_us: "list[float | None]") -> dict:
            "certification": {"verdict": "UNCERTIFIED", "quotable": False,
                              "detail": ("no device-state companion was supplied to "
                                         "phases.analyse(). An RSD over a suffix is silent about "
-                                        "the level of that suffix; see bench/device_state.py.")}}
+                                        "the level of that suffix; see bench/device_companion.py.")}}
     if len(vals) < GPU_TAIL_MIN_N + 1:
         out.update(verdict="INSUFFICIENT",
                    detail=f"{len(vals)} usable inferences; need at least {GPU_TAIL_MIN_N + 1}.")
@@ -2171,7 +2172,7 @@ def analyse(events: "list[dict]", counters: "dict | None" = None,
     # which watched the same window from outside the series, can lift that. Passing no companion
     # leaves it UNCERTIFIED -- there is no code path here that turns absence of evidence into a
     # pass, because that is precisely how a 21.4x-wrong figure was published with a 0.12% RSD.
-    from device_state import certify as _certify
+    from device_companion import certify as _certify
     tail = (report.get("steady_state") or {}).get("gpu_steady_tail")
     if isinstance(tail, dict):
         tail["certification"] = _certify(tail, device_state)

@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import device_state  # noqa: E402
+import device_companion as device_state  # noqa: E402
 import win_gpu_counters as wgc  # noqa: E402
 
 RESULTS = Path(__file__).resolve().parent / "results"

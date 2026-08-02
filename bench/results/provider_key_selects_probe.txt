@@ -1,0 +1,24 @@
+Artifact: the PROVIDERS key now selects a device (fourth face of the index-space defect).
+Recorded 2026-08-01 by Switch, worktree ep-vulkan-switch, branch squad/switch.
+Machine: contended (>=6 agents active). NEITHER PROBE BELOW IS A TIMING MEASUREMENT --
+both are counts and identities, which contention cannot corrupt.
+
+BEFORE (Tank, bench/results/two_device_frame_probe.txt, main @ ca283a9):
+  device_index 0: frame now "SPLIT-DEVICE", 1 declared
+  device_index 1: frame now "SPLIT-DEVICE", 1 declared
+  This box stood up only one provider for indices 0 and 1 (SPLIT-DEVICE on
+  'NVIDIA GeForce RTX 4060 Laptop GPU'), so it cannot exhibit the mixed frame.
+
+=== PROBE 1: cargo test --release --lib probe_provider_key_resolution -- --ignored --nocapture
+best-first capable devices (2), and the physical index each carries:
+  best-first position 0 -> physical enumerate index 1 -> 'NVIDIA GeForce RTX 4060 Laptop GPU'   <- select_device
+  best-first position 1 -> physical enumerate index 0 -> 'Intel(R) Iris(R) Xe Graphics'
+PROVIDERS key -> device:
+  key 0: was 'NVIDIA GeForce RTX 4060 Laptop GPU' (old rule: always select_device) -> now 'Intel(R) Iris(R) Xe Graphics' [Translated(1)]
+  key 1: was 'NVIDIA GeForce RTX 4060 Laptop GPU' (old rule: always select_device) -> now 'NVIDIA GeForce RTX 4060 Laptop GPU' [Translated(0)]
+2 key(s) -> 2 distinct device(s). Under the old rule this was 2 key(s) -> 1 device, which is why `PROVIDERS`' key was inert and a two-provider run could not form a two-device population.
+
+=== PROBE 2: Tank's two-device frame probe, same build ===
+device_index 0: frame now "SPLIT-DEVICE", 1 declared
+device_index 1: frame now "MIXED", 2 declared
+FINDING: production declared 2 frames in one process.

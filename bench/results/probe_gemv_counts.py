@@ -3,7 +3,7 @@
 Why this exists
 ---------------
 Every performance figure this project has taken on the device clock is now `UNCERTIFIED` or
-`WITHHELD` under `bench/device_state.py`: a `STEADY` tail was measured at 10.99x wrong (foreign
+`WITHHELD` under `bench/device_companion.py`: a `STEADY` tail was measured at 10.99x wrong (foreign
 GPU work outliving the run) and at 21.4x wrong (a board that never left its 210 MHz idle clock),
 both times with a *better* RSD than the correct run. And Intel cannot be certified at all here,
 because `nvidia-smi` is NVIDIA-only, so its device-state record is `UNOBSERVABLE`.

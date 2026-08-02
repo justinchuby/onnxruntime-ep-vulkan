@@ -3078,3 +3078,53 @@ belief that it came from `baseline_certified`. **It did not.** Two artifacts wer
 
 Different model, different probe, different number. The standing caveat on 12.1847 ms is unchanged
 and is not this one: **it is comparable to nothing yet.**
+
+
+---
+
+## 17.0 The harness's import surface — a name collision, and the screen that now covers it
+
+`bench/test_marginal_tail_withholds.py` and `ci/test_lane_checks.py` each passed alone and produced
+three failures together. The diagnosis I was handed was an unrestored `sys.path.insert`; the actual
+mechanism was a **module name collision**, and the distinction matters because the prescribed fix
+would have left the defect live.
+
+The failure text, which is the evidence (R13 — quote the text, never the count):
+
+```
+AttributeError: module 'device_state' has no attribute 'certifies_comparison'
+AttributeError: module 'device_state' has no attribute 'lavapipe_note'
+```
+
+`AttributeError`, not `ImportError`: the module was found and it was the wrong one. `import`
+consults `sys.modules` before `sys.path`. Two files were named `device_state.py` —
+`bench/device_state.py` (this document's mandatory companion, §15.2) and `ci/device_state.py` —
+so whichever imported first bound the name process-wide. Restoring `sys.path` to a byte-identical
+copy of the original list does **not** fix it; that was measured, not assumed.
+
+**Fix.** `bench/device_state.py` is now **`bench/device_companion.py`**. Every reference in §15 and
+§16 to `bench/device_state.py` means this file; the rename changed the `sys.modules` key and
+nothing else. **No verdict, threshold, artifact or number in this document moves**: the eight import
+sites bind it as `import device_companion as device_state`, `BOOST_FLOOR` is unchanged, and the certification
+tests that grade the committed artifacts (`bench/test_device_state.py`, 15 tests, built on Switch's
+`gpustate_*.json`) pass unchanged against the renamed module.
+
+**Screen.** `bench/test_import_isolation.py` — no two flat-imported modules under `bench/`,
+`bench/results/`, `ci/`, `tests/ops/`, `rust/tools/` may share a base name, and no library module
+under `bench/` may leave `sys.path` mutated. Both carry a positive control that feeds them a planted
+violation, because an always-green screen and an absent screen are the same artifact. The leak half
+found three real violations on its first run — `bench/cases.py`, `bench/island_attribution.py` and
+`bench/transfer_calibration.py` all left `tests/ops` permanently at the front of `sys.path`; one of
+the three inserted it and never used it. All three fixed.
+
+**Why this is in a performance document.** A harness whose modules silently resolve to each other's
+files is an instrument whose identity is not determined by its own source. That is the same class as
+§15's central finding — an instrument that cannot see the thing it is being read for — one level
+down, in the import graph rather than in the statistics. And per §10.0 the failure of an instrument
+is `ERROR(instrument)`, never a detection: the first cut of the leak screen purged `sys.modules` and
+hard-faulted the interpreter, which is the screen breaking, not a defect found, and it is recorded
+that way.
+
+Verified as one pytest invocation, which is also the only arrangement in which this class is
+visible at all: `pytest bench/ ci/ tests/ops/` → **402 passed, 321 skipped, 0 failed**. Under
+per-directory runs each step passes with the defect fully present.

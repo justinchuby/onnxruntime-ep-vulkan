@@ -238,6 +238,46 @@ impl HostDeviceMemory {
     }
 }
 
+/// Where [`resolve_provider_position`] landed, and whether the provider's key is what put it there.
+///
+/// The distinction is the whole point. `Translated` means the `PROVIDERS` key named a device and
+/// this provider is on that device — the map's key selects. `Untranslatable` means it did not, and
+/// the position came from somewhere else, so **this provider's key does not name its value**. A
+/// caller that cannot tell those apart cannot tell a working map from an inert one, which is
+/// exactly how the fourth face of the index defect went unnoticed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderPosition {
+    /// The physical index was found; this is its position in the best-first list.
+    Translated(usize),
+    /// No capable device carries that physical index; this is the fallback position.
+    Untranslatable(usize),
+}
+
+impl ProviderPosition {
+    pub(crate) fn position(self) -> usize {
+        match self {
+            Self::Translated(p) | Self::Untranslatable(p) => p,
+        }
+    }
+}
+
+/// Resolve a `PROVIDERS` key (a *physical* enumerate index) to a position in the best-first
+/// capable-device list, falling back to `selected` when the key names no capable device.
+///
+/// Split out from [`OwnedDevice::create`] with no Vulkan in it so the rule can be falsified without
+/// a GPU — the resolution is the part that has been wrong twice, and it does not need a device to
+/// be wrong. R10: a mechanism that can only be checked on this desk is a mechanism CI cannot hold.
+pub(crate) fn resolve_provider_position(
+    physical_indices: impl Iterator<Item = usize>,
+    device_index: usize,
+    selected: usize,
+) -> ProviderPosition {
+    match crate::vk::instance::position_of_physical_in(physical_indices, device_index) {
+        Some(pos) => ProviderPosition::Translated(pos),
+        None => ProviderPosition::Untranslatable(selected),
+    }
+}
+
 impl OwnedDevice {
     /// Stand up a device of our own — the §6.5 fallback. `None` if Vulkan is unavailable.
     ///
@@ -250,40 +290,91 @@ impl OwnedDevice {
         if capables.is_empty() {
             return None;
         }
-        // Resolve the device the SAME WAY `VulkanSession::create` does.
-        //
-        // (Tank, 2026-07-30) This used to be `capables[device_index]`, and that was wrong in a way
-        // no counter reported. Three different index spaces are in play:
+        // Resolve the device from `device_index` by TRANSLATING it, not by indexing with it and
+        // not by ignoring it. Three index spaces are in play:
         //
         //   1. `enumerate_capable_devices()` — SORTED best-first (discrete > integrated), see
         //      `vk/instance.rs`. On this desk that is [RTX 4060, Iris Xe].
         //   2. `ONNXRUNTIME_EP_VULKAN_DEVICE` — an index into (1), applied by `select_device`.
         //      This is what the compute session obeys.
-        //   3. `device_index` as passed here — the *factory's* advertised-device index, assigned
-        //      in `factory.rs`, which is not guaranteed to agree with either of the above.
+        //   3. `device_index` as passed here — the factory's advertised-device index, which is
+        //      `DeviceInfo::index`, i.e. the *physical* `vkEnumeratePhysicalDevices` index.
         //
-        // Indexing (1) with (3) silently put the mirror on a different physical device from the
-        // one running the kernels: measured `alloc_unified_memory=1` (UMA/Intel) on BOTH
-        // selector values, including the run whose kernels were on the discrete card. The counter
-        // was numerically correct and attributed to the wrong device — the same failure shape as
-        // the process-global `HandleRegistry` scope error, one level up.
+        // (Tank, 2026-07-30) This used to be `capables[device_index]` — indexing (1) with (3).
+        // That silently put the mirror on a different physical device from the one running the
+        // kernels: measured `alloc_unified_memory=1` (UMA/Intel) on BOTH selector values,
+        // including the run whose kernels were on the discrete card. The counter was numerically
+        // correct and attributed to the wrong device.
         //
-        // Matching indices does NOT make this one device: §6.5 is about the `VkDevice` object, not
-        // the physical device it was created from. Agreeing here only means the two `VkDevice`s
-        // wrap the same GPU, which is why the frame is still `SPLIT-DEVICE`.
-        let idx = crate::vk::instance::select_device(&capables).unwrap_or(0);
+        // (Tank, 2026-08-01) The repair for that was `select_device(&capables)` — ignoring (3)
+        // entirely. That fixed the attribution and broke the map: `PROVIDERS` is a `HashMap` keyed
+        // by (3), and a key that every value ignores is not a key. `ensure_registered(0)` and
+        // `ensure_registered(1)` returned providers on the *same* physical device
+        // (`bench/results/two_device_frame_probe.txt`), so a two-provider run drew from one device
+        // while the frame label claimed to describe two. Fourth face of this defect.
+        //
+        // (Switch, 2026-08-01) Neither indexing nor ignoring is right, because (3) and (1) are
+        // different spaces and `position_of_physical` is the only place they are allowed to meet —
+        // the same seam `VulkanSession::create` already uses for ORT's binding. Translating makes
+        // the key *select*: distinct physical indices resolve to distinct devices, so the map's
+        // key means what a map key means.
+        //
+        // Why this does not reintroduce the attribution bug. The mirror must land on the device
+        // the session runs on, and after translation it does so BY CONSTRUCTION rather than by
+        // agreement of two independent choices:
+        //
+        //   * pinned selector — `devices_to_advertise` (§6.5) offers ONLY the pinned device, so
+        //     the only key ORT can ever hand back is that device's physical index, which
+        //     translates to exactly the position `select_device` would have returned;
+        //   * unpinned — the session follows ORT's binding (`vk/device.rs`, the `(Some(_),
+        //     Some(pos))` arm), and so now does the mirror, because both translate the same
+        //     physical index through the same function.
+        //
+        // Divergence therefore survives in exactly one case: an explicit `ep.device_index` that
+        // disagrees with ORT's binding. `vk/device.rs` already documents that case as an honest
+        // `SPLIT-DEVICE`, and it is reported below rather than silently resolved.
+        //
+        // Matching indices does NOT by itself make this one `VkDevice`: §6.5 is about the
+        // `VkDevice` object, not the physical device it was created from.
+        let selected = crate::vk::instance::select_device(&capables).unwrap_or(0);
+        let idx = match resolve_provider_position(
+            capables.iter().map(|d| d.info.index),
+            device_index,
+            selected,
+        ) {
+            ProviderPosition::Translated(pos) => {
+                if pos != selected {
+                    log::warn!(
+                        "§6.5 index spaces: the allocator was created for physical enumerate \
+                         index {device_index} ('{}', best-first selector index {pos}), but {} \
+                         selects selector index {selected} ('{}'). Following the allocator's own \
+                         device, because the mirror must back the buffers ORT bound and not some \
+                         other device's. Expect alloc_device_frame = SPLIT-DEVICE. Set {} before \
+                         the EP library is registered to remove the divergence at its source.",
+                        capables[pos].info.name,
+                        crate::vk::instance::ENV_DEVICE_SELECTOR,
+                        capables[selected].info.name,
+                        crate::vk::instance::ENV_DEVICE_SELECTOR,
+                    );
+                }
+                pos
+            }
+            ProviderPosition::Untranslatable(pos) => {
+                // A real answer, not a fallback to hide behind: no capable device carries that
+                // physical index. Reached by unit tests using synthetic keys, and on a machine
+                // where a device disappeared between enumerations.
+                log::debug!(
+                    "VulkanExecutionProvider: no §7.2-capable device carries physical enumerate \
+                     index {device_index} ({} enumerated). Falling back to the {} selection \
+                     (selector index {selected}); this provider's key does not name a device.",
+                    capables.len(),
+                    crate::vk::instance::ENV_DEVICE_SELECTOR,
+                );
+                pos
+            }
+        };
         let capable = capables.swap_remove(idx);
         let device_name = capable.info.name.clone();
-        if idx != device_index {
-            log::debug!(
-                "VulkanExecutionProvider: device-backed allocation resolved to capable-device \
-                 index {idx} ('{device_name}') via {}, while the allocator was created for \
-                 factory device index {device_index}. The mirror follows the compute session's \
-                 device, which is the one that matters; these two index spaces are not the same \
-                 and must not be assumed equal.",
-                crate::vk::instance::ENV_DEVICE_SELECTOR,
-            );
-        }
         // SAFETY: `instance` is live; `capable` came from its own enumeration.
         let device = unsafe { Device::create(instance.ash(), &capable, false) }?;
         Some(Self {
@@ -742,7 +833,10 @@ pub(crate) fn bind_target_for(p: *mut u8, len: usize) -> Option<(vk::Buffer, u64
 
 #[cfg(test)]
 mod tests {
-    use super::{OfferResolution, resolve_offer};
+    use super::{
+        OfferResolution, ProviderPosition, resolve_offer, resolve_provider_position,
+    };
+
 
     /// The rule must be SYMMETRIC under swapping the two devices.
     ///
@@ -793,6 +887,177 @@ mod tests {
             OfferResolution::Ambiguous,
             "two distinct devices are on offer and neither is the one asked for — this is the \
              only genuinely ambiguous case, and guessing here would be the coincidence again"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // The fourth face: a `PROVIDERS` key that does not select a device.
+    //
+    // These cover `OwnedDevice::create`'s resolution, which is reached only on the `NoOffer` and
+    // `Ambiguous` arms above — which is exactly where Tank's probe landed
+    // (`bench/results/two_device_frame_probe.txt`: no session, so `NoOffer` on both indices).
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// **The load-bearing one. This fails on the code it replaces.**
+    ///
+    /// Before the fix, `create` resolved with `select_device(&capables)` and never read
+    /// `device_index`, so this assertion had the same value on both sides no matter what the
+    /// caller asked for — `ensure_registered(0)` and `ensure_registered(1)` produced providers on
+    /// the *same* physical device, and a `HashMap` whose key every value ignores is not a map.
+    ///
+    /// The prior repair was not careless: indexing the sorted list with a physical index had put
+    /// the mirror on the wrong GPU, and ignoring the index fixed that. But "don't index with it"
+    /// and "don't read it" are different instructions, and only the first was needed.
+    #[test]
+    fn distinct_provider_keys_resolve_to_distinct_devices() {
+        // A desk where the two spaces disagree: the discrete GPU enumerates second but sorts
+        // first, so best-first order carries physical indices [1, 0].
+        let physical = [1usize, 0usize];
+        let a = resolve_provider_position(physical.iter().copied(), 1, 0);
+        let b = resolve_provider_position(physical.iter().copied(), 0, 0);
+        assert_eq!(a, ProviderPosition::Translated(0));
+        assert_eq!(b, ProviderPosition::Translated(1));
+        assert_ne!(
+            a.position(),
+            b.position(),
+            "two different provider keys must not resolve to the same device — if they do, the \
+             map's key is inert and a two-provider run draws from one device while the frame \
+             label claims to describe two (R12)"
+        );
+    }
+
+    /// The two index spaces become one **by construction**, and on both selectors.
+    ///
+    /// §6.5 makes `devices_to_advertise` offer only the pinned device, so the only key ORT can
+    /// hand back is that device's physical index. The claim is that translating it lands on
+    /// exactly the position `select_device` chose — for *either* selector, on a desk where the
+    /// physical and best-first orders are inverted. A fix that works on one selector and not the
+    /// other is the coincidence again with a different index.
+    ///
+    /// **This test passes on the code it replaces, and is therefore NOT evidence for the fix.**
+    /// I checked, because a test whose polarity I have not verified is a printed opinion. The old
+    /// code returned `selected` unconditionally, and in the pinned case the right answer *is*
+    /// `selected` — so this asserts an invariant that both versions satisfy. It is kept because
+    /// the invariant is the thing §6.5 depends on and it must not regress; the falsifiers for
+    /// this defect are the other three tests in this block, which do fail on the old code.
+    #[test]
+    fn a_pinned_offer_translates_onto_the_selectors_own_position_on_both_selectors() {
+        let physical = [1usize, 0usize]; // best-first [discrete@1, integrated@0]
+        for selected in 0..physical.len() {
+            // Pinned to `selected` ⇒ that device's physical index is the only one advertised.
+            let advertised = physical[selected];
+            assert_eq!(
+                resolve_provider_position(physical.iter().copied(), advertised, selected),
+                ProviderPosition::Translated(selected),
+                "selector {selected}: the pinned offer's physical index {advertised} must \
+                 translate onto position {selected}, so SHARED is a construction rather than an \
+                 agreement between two independent choices"
+            );
+        }
+    }
+
+    /// A key that names no device must SAY it names no device.
+    ///
+    /// The fallback position is the same number the old code always produced, so if the two cases
+    /// were collapsed into a bare `usize` the caller could not distinguish "the key selected this
+    /// device" from "the key selected nothing and I guessed" — which is the state we were in.
+    #[test]
+    fn a_key_that_names_no_capable_device_is_reported_as_such_not_silently_resolved() {
+        let physical = [1usize, 0usize];
+        // 4243 is the synthetic key `transfer.rs`'s provider tests use; a device that vanished
+        // between enumerations reaches the same branch.
+        let r = resolve_provider_position(physical.iter().copied(), 4243, 1);
+        assert_eq!(r, ProviderPosition::Untranslatable(1));
+        assert_eq!(r.position(), 1, "it still resolves — it just does not pretend to have selected");
+        assert_ne!(
+            r,
+            ProviderPosition::Translated(1),
+            "an untranslatable key must not be indistinguishable from one that selected position \
+             1, or an inert key looks exactly like a working one"
+        );
+        // And with nothing enumerated at all.
+        assert_eq!(
+            resolve_provider_position(std::iter::empty(), 0, 0),
+            ProviderPosition::Untranslatable(0)
+        );
+    }
+
+    /// The identity of the spaces is not assumed anywhere: on a desk where they *do* coincide the
+    /// answer must still come from translation, not from the coincidence.
+    #[test]
+    fn agreement_between_the_two_spaces_is_permitted_but_never_relied_on() {
+        let physical = [0usize, 1usize]; // the orders agree here
+        assert_eq!(
+            resolve_provider_position(physical.iter().copied(), 1, 0),
+            ProviderPosition::Translated(1),
+            "the key still decides even when it equals its own position — the previous code \
+             returned the selector's 0 here, and on this desk that looked correct"
+        );
+    }
+
+    /// Print what each `PROVIDERS` key resolves to **on this desk**, old rule beside new.
+    ///
+    /// R10: the tests above are constructed, so they show the rule is right and not that this
+    /// machine agrees. This enumerates the real devices — it creates no logical device and
+    /// dispatches nothing, so it is cheap enough to run on a contended box — and prints the
+    /// translation table so the claim "the key selects" can be read off hardware rather than
+    /// inferred from a passing build.
+    ///
+    /// Ignored by default only because it needs a Vulkan loader. Run with:
+    ///   `cargo test --release --lib probe_provider_key_resolution -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a Vulkan loader; prints the per-key device resolution for this desk"]
+    fn probe_provider_key_resolution() {
+        let Some(instance) = crate::vk::instance::Instance::create(false) else {
+            println!("SKIPPED, and a skip is not a pass: no Vulkan instance on this machine.");
+            return;
+        };
+        let capables = instance.enumerate_capable_devices();
+        if capables.is_empty() {
+            println!("SKIPPED, and a skip is not a pass: no device passed the §7.2 gate.");
+            return;
+        }
+        let selected = crate::vk::instance::select_device(&capables).unwrap_or(0);
+        println!(
+            "best-first capable devices ({}), and the physical index each carries:",
+            capables.len()
+        );
+        for (pos, d) in capables.iter().enumerate() {
+            println!(
+                "  best-first position {pos} -> physical enumerate index {} -> '{}'{}",
+                d.info.index,
+                d.info.name,
+                if pos == selected { "   <- select_device" } else { "" }
+            );
+        }
+        // Every physical index the factory could ever advertise as a PROVIDERS key.
+        let mut keys: Vec<usize> = capables.iter().map(|d| d.info.index).collect();
+        keys.sort_unstable();
+        let mut resolved = Vec::new();
+        println!("\nPROVIDERS key -> device:");
+        for &key in &keys {
+            let r = resolve_provider_position(capables.iter().map(|d| d.info.index), key, selected);
+            let pos = r.position();
+            resolved.push(pos);
+            println!(
+                "  key {key}: was '{}' (old rule: always select_device) -> now '{}' [{:?}]",
+                capables[selected].info.name, capables[pos].info.name, r,
+            );
+        }
+        let distinct: std::collections::BTreeSet<usize> = resolved.iter().copied().collect();
+        println!(
+            "\n{} key(s) -> {} distinct device(s). Under the old rule this was {} key(s) -> 1 \
+             device, which is why `PROVIDERS`' key was inert and a two-provider run could not \
+             form a two-device population.",
+            keys.len(),
+            distinct.len(),
+            keys.len(),
+        );
+        assert_eq!(
+            distinct.len(),
+            keys.len(),
+            "on this desk every advertisable key must name its own device; if two keys collapse \
+             the map is still inert here regardless of what the constructed tests say"
         );
     }
 }
