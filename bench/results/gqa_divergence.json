@@ -1,0 +1,151 @@
+{
+  "dll_sha256": "a06277babdaf540f41e7cd226a6d6a68cda5a764d91281e98a2dd4996d32b1d5",
+  "case": "group_query_attention_f16.onnx",
+  "node_inputs": [
+    "packed_qkv",
+    "",
+    "",
+    "past_key",
+    "past_value",
+    "seqlens_k",
+    "total_seq",
+    "cos_cache",
+    "sin_cache"
+  ],
+  "node_outputs": [
+    "attn_out",
+    "present_key",
+    "present_value"
+  ],
+  "attributes": {
+    "do_rotary": 1,
+    "kv_num_heads": 2,
+    "local_window_size": -1,
+    "num_heads": 8,
+    "rotary_interleaved": 0,
+    "scale": 0.1767766922712326,
+    "smooth_softmax": 0
+  },
+  "feeds": {
+    "packed_qkv": {
+      "dtype": "float16",
+      "shape": [
+        1,
+        1,
+        384
+      ]
+    },
+    "past_key": {
+      "dtype": "float16",
+      "shape": [
+        1,
+        2,
+        4,
+        32
+      ]
+    },
+    "past_value": {
+      "dtype": "float16",
+      "shape": [
+        1,
+        2,
+        4,
+        32
+      ]
+    },
+    "seqlens_k": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ]
+    },
+    "total_seq": {
+      "dtype": "int32",
+      "shape": []
+    },
+    "cos_cache": {
+      "dtype": "float16",
+      "shape": [
+        64,
+        8
+      ]
+    },
+    "sin_cache": {
+      "dtype": "float16",
+      "shape": [
+        64,
+        8
+      ]
+    }
+  },
+  "per_output": [
+    {
+      "index": 0,
+      "name": "attn_out",
+      "shape": [
+        1,
+        1,
+        256
+      ],
+      "max_abs": 0.126220703125,
+      "max_abs_diff": 3.814697265625e-06,
+      "worst_rel": 0.0007293946109712124,
+      "frac_differing": 0.01953125,
+      "vk_all_zero": false
+    },
+    {
+      "index": 1,
+      "name": "present_key",
+      "shape": [
+        1,
+        2,
+        5,
+        32
+      ],
+      "max_abs": 0.283447265625,
+      "max_abs_diff": 0.0,
+      "worst_rel": 0.0,
+      "frac_differing": 0.0,
+      "vk_all_zero": false
+    },
+    {
+      "index": 2,
+      "name": "present_value",
+      "shape": [
+        1,
+        2,
+        5,
+        32
+      ],
+      "max_abs": 0.33984375,
+      "max_abs_diff": 0.0,
+      "worst_rel": 0.0,
+      "frac_differing": 0.0,
+      "vk_all_zero": false
+    }
+  ],
+  "worst": {
+    "index": 0,
+    "name": "attn_out",
+    "shape": [
+      1,
+      1,
+      256
+    ],
+    "max_abs": 0.126220703125,
+    "max_abs_diff": 3.814697265625e-06,
+    "worst_rel": 0.0007293946109712124,
+    "frac_differing": 0.01953125,
+    "vk_all_zero": false
+  },
+  "ledger_worst_rel": 16.72642029784887,
+  "reproduced_to_the_digit": false,
+  "error_structure": {
+    "axis0_len": 1,
+    "axis0_slices_with_error": 1,
+    "axis1_len": 1,
+    "axis1_slices_with_error": 1,
+    "axis2_len": 256,
+    "axis2_slices_with_error": 5
+  }
+}

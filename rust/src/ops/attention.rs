@@ -451,21 +451,69 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
     let kv_num_heads = attr_i64("kv_num_heads")? as u32;
     let head_dim = packed_dim / (num_heads + 2 * kv_num_heads);
 
-    // `rotary_embedding_dim` is optional; default to full head_dim (Phi-3.5 pattern).
+    // `rotary_embedding_dim` is optional — but its absence does not mean "full width".
+    // `cos_cache` is [max_seq, rotary_dim/2], and that second dimension is the only place
+    // the true rotary width is recorded, which is why ORT derives it from the cache rather
+    // than defaulting it. Defaulting to head_dim is correct only when the rotary is
+    // full-width; on a partial-rotary graph it makes the shader stride cos/sin rows by
+    // twice their real length, so every head reads another position's angles.
+    //
+    // MEASURED 2026-08-02: `group_query_attention_f16` has head_dim 32 and cos_cache
+    // [64, 8] — true rotary_dim 16 against a defaulted 32 — and was DIVERGENT at
+    // worst_rel 16.726. Phi-3.5 has cos_cache [max_seq, head_dim/2], where the old default
+    // happened to be right, which is why 32 nodes were declined by a defect none of them
+    // had.
+    //
+    // When neither the attribute nor the cache shape is available the width is simply not
+    // recoverable, so refuse. Inferring it from head_dim is what produced the defect, and
+    // a handler that guesses can no longer detect that the information was missing.
     let rotary_dim = match node.attributes.get("rotary_embedding_dim") {
-        Some(AttrValue::Int(v)) => *v as u32,
-        _ => head_dim,
+        Some(AttrValue::Int(v)) if *v > 0 => *v as u32,
+        _ => {
+            let half = node.inputs[7]
+                .desc
+                .as_ref()
+                .and_then(|d| d.shape.get(1).copied())
+                .filter(|h| *h > 0)
+                .ok_or_else(|| {
+                    EpError::Unsupported(format!(
+                        "`{}` has no positive `rotary_embedding_dim` attribute and cos_cache \
+                         has no usable second dimension, so the rotary width is not \
+                         recoverable; refusing rather than assuming head_dim",
+                        node.op_type
+                    ))
+                })?;
+            (half as u32) * 2
+        }
     };
+    if rotary_dim > head_dim || rotary_dim % 2 != 0 {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` derived rotary_dim = {rotary_dim}, which is not an even value at most \
+             head_dim = {head_dim}",
+            node.op_type
+        )));
+    }
 
     // `scale` is optional; default to 1/sqrt(head_dim).
     let scale = attr_f32_opt("scale").unwrap_or_else(|| (head_dim as f32).sqrt().recip());
 
     // past_len_max from past_key shape[2] (buffer S dimension).
+    //
+    // This was `.unwrap_or(0)`, and 0 is not a neutral default: it is the empty-past case,
+    // which takes a different branch below and sizes `present` to `seq_len`. A missing desc
+    // and a genuinely empty cache produced the same number and were then indistinguishable.
+    // Refuse instead — the extent is not recoverable from anything else here.
     let past_len_max = node.inputs[3]
         .desc
         .as_ref()
         .and_then(|d| d.shape.get(2).copied())
-        .unwrap_or(0) as u32;
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` has no shape for past_key, so the cache extent is not recoverable; \
+                 refusing rather than defaulting to an empty past",
+                node.op_type
+            ))
+        })? as u32;
 
     // -- Resolve input buffers ----------------------------------------------------------
     let qkv_buf = ctx.resolve(&node.inputs[0])?;
@@ -499,58 +547,80 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
         EpError::InvalidGraph(format!("`{}` has no present_value slot", node.op_type))
     })?;
 
-    // present_key / present_value handling depends on whether ORT gave us a KV buffer to
-    // update in place (`past_len_max > 0`) or an *empty* past (`past_len_max == 0`, the
-    // first-token / prefill and growing-KV case that genai-exported graphs emit — see
-    // `_build_phi35_feeds`, which feeds `past_key_values.N.key = [1, Nkv, 0, D]`).
+    // present_key / present_value length. There are two ORT GQA cache conventions and they
+    // are distinguished only by the declared `present` shape:
     //
-    // In-place aliasing is only valid when a past buffer exists whose positions the shader can
-    // inherit: `present` and `past` must be the *same* allocation with the same S-dimension.
-    // When the past is empty there is nothing to alias onto — the ORT-declared present shape is
-    // `[B, Nkv, past_len + seq_len, D] = [B, Nkv, seq_len, D]`, strictly larger than the (zero-
-    // element) past.  Aliasing it onto the past bound the 0-byte present output to the 4-byte
-    // zero-element placeholder, so `dispatch_ort` sized it 0 and the placeholder branch skipped
-    // the write entirely: the 50 KV outputs were never written (Guard D cross-run defect).
+    //  * **growing cache** — `past` is [B, Nkv, past_len, D] and `present` is
+    //    [B, Nkv, past_len + seq_len, D]. `present` is a *different, larger* buffer, so it
+    //    cannot alias `past`, and it must be filled with the past tokens as well as the new
+    //    ones because ORT's `present` output is the whole cache.
+    //  * **shared buffer** — `past` and `present` are both [B, Nkv, max_seq, D], the same
+    //    allocation, updated in place at `tok_pos`.
     //
-    // `kv_len` is the present buffer's S-dimension and also the shader's KV write stride
-    // (push-constant `past_len_max`); the shader writes each token at `tok_pos = past_len +
-    // s_local`, so for an empty past (`past_len == 0`) it fills positions `[0, seq_len)` — the
-    // whole buffer.
-    let empty_past = past_len_max == 0;
-    let kv_len = if empty_past { seq_len } else { past_len_max };
+    // This handler previously assumed the shared-buffer convention unconditionally
+    // (`kv_len = past_len_max`), with an `empty_past` special case that was really the one
+    // growing-cache instance where the two conventions happen to agree. MEASURED
+    // 2026-08-02: both graphs we target are growing — the evidence case declares past
+    // [B,2,4,32] against present [B,2,5,32], and Phi-3.5 declares `past_sequence_length`
+    // against `total_sequence_length`. With present bound one token short, the shader's
+    // write at `tok_pos == past_len` fell outside the buffer and was dropped, so
+    // `present_key`/`present_value` read back all-zero.
+    //
+    // Read the declared present extent rather than deriving it: the two conventions differ
+    // in exactly that number, so deriving it picks one and cannot tell it picked wrong.
+    let declared_present_len = pres_k_ref
+        .desc
+        .as_ref()
+        .and_then(|d| d.shape.get(2).copied())
+        .filter(|s| *s > 0)
+        .map(|s| s as u32);
+    let present_len = declared_present_len.unwrap_or(past_len_max + seq_len);
+    if present_len < past_len_max + seq_len && present_len != past_len_max {
+        return Err(EpError::InvalidGraph(format!(
+            "`{}` declares present length {present_len}, which is neither the shared-buffer \
+             extent ({past_len_max}) nor large enough for the growing-cache extent \
+             ({past_len_max} + {seq_len})",
+            node.op_type
+        )));
+    }
+    let shares_past_buffer = past_len_max > 0 && present_len == past_len_max;
     let kv_desc = TensorDesc::new(
         dtype,
         vec![
             batch_size as i64,
             kv_num_heads as i64,
-            kv_len as i64,
+            present_len as i64,
             head_dim as i64,
         ],
     );
-    let (pres_k_buf, pres_v_buf) = if empty_past {
-        // No in-place past to inherit: bind fresh present buffers the shader fills completely.
-        (
-            ctx.bind_output(pres_k_ref, kv_desc.clone())?,
-            ctx.bind_output(pres_v_ref, kv_desc)?,
-        )
-    } else {
-        // Fixed-buffer KV cache: present aliases past, shader updates `tok_pos` in place.
+    let (pres_k_buf, pres_v_buf) = if shares_past_buffer {
+        // Shared fixed-size cache: present aliases past, shader updates `tok_pos` in place.
         // M2's device-backed allocator must honour the alias (see OP_COVERAGE.md §9.5 #3).
         (
             ctx.bind_aliased_output(&node.inputs[3], pres_k_ref, kv_desc.clone())?,
             ctx.bind_aliased_output(&node.inputs[4], pres_v_ref, kv_desc)?,
         )
+    } else {
+        // Growing cache: bind fresh present buffers. The shader copies the past tokens in
+        // and appends the new ones, so the output is the whole cache ORT expects.
+        (
+            ctx.bind_output(pres_k_ref, kv_desc.clone())?,
+            ctx.bind_output(pres_v_ref, kv_desc)?,
+        )
     };
 
-    // -- Push constants (32 bytes, matches shader PC struct) ---------------------------
-    let mut push = Vec::with_capacity(32);
+    // -- Push constants (36 bytes, matches shader PC struct) ---------------------------
+    // Field 6 stays the KV *write* stride (the present buffer's S dimension); field 7 is
+    // the past buffer's S dimension. They were one field while the two were assumed equal.
+    let mut push = Vec::with_capacity(36);
     push.extend_from_slice(&batch_size.to_le_bytes());
     push.extend_from_slice(&seq_len.to_le_bytes());
     push.extend_from_slice(&num_heads.to_le_bytes());
     push.extend_from_slice(&kv_num_heads.to_le_bytes());
     push.extend_from_slice(&head_dim.to_le_bytes());
     push.extend_from_slice(&rotary_dim.to_le_bytes());
-    push.extend_from_slice(&kv_len.to_le_bytes());
+    push.extend_from_slice(&present_len.to_le_bytes());
+    push.extend_from_slice(&past_len_max.to_le_bytes());
     push.extend_from_slice(&scale.to_bits().to_le_bytes());
 
     // -- Dispatch: one invocation per (batch, query_head, query_seq_pos) ---------------
@@ -851,10 +921,25 @@ mod tests {
     }
 
     fn gqa_node(b: i64, s: i64, nq: i64, nkv: i64, d: i64, past_max: i64) -> NodeDesc {
-        // packed_qkv: [B, S, (Nq+2*Nkv)*D]
+        // Growing-cache convention: present is [B, Nkv, past + S, D], a different and larger
+        // buffer than past. Both graphs this EP targets declare it this way.
+        gqa_node_with_present(b, s, nq, nkv, d, past_max, past_max + s, d / 2)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gqa_node_with_present(
+        b: i64,
+        s: i64,
+        nq: i64,
+        nkv: i64,
+        d: i64,
+        past_max: i64,
+        present_max: i64,
+        rot_half: i64,
+    ) -> NodeDesc {
+        // packed_qkv: [B, S, (Nq+2*Nkv)*D]; cos_cache/sin_cache: [max_pos, rot_half], where
+        // the second dim IS half the rotary width.
         let qkv_dim = (nq + 2 * nkv) * d;
-        // cos_cache/sin_cache: [max_pos, d/2] — shape doesn't matter for translate
-        let rot_half = d / 2;
         let mut attrs = std::collections::BTreeMap::new();
         attrs.insert("num_heads".into(), AttrValue::Int(nq));
         attrs.insert("kv_num_heads".into(), AttrValue::Int(nkv));
@@ -896,8 +981,8 @@ mod tests {
             ],
             outputs: vec![
                 make_out("attn", vec![b, s, nq * d]),
-                make_out("pres_k", vec![b, nkv, past_max, d]),
-                make_out("pres_v", vec![b, nkv, past_max, d]),
+                make_out("pres_k", vec![b, nkv, present_max, d]),
+                make_out("pres_v", vec![b, nkv, present_max, d]),
             ],
             ..Default::default()
         }
@@ -918,28 +1003,27 @@ mod tests {
         assert_eq!(k.shader, "gqa_f16", "must dispatch gqa_f16 shader");
         assert_eq!(k.workgroups, [32, 1, 1], "B*Nq*S = 1*32*1 = 32 invocations");
         assert_eq!(k.bindings.len(), 9, "9 bindings: 6 inputs + 3 outputs");
-        // Only attn_output calls bind_output; present_key/value use bind_aliased_output.
-        // In this test Recorder, bind_aliased_output uses the trait default (→ resolve, no
-        // bind_output), so outputs.len()==1. ShapeOnlyRecorder overrides bind_aliased_output
-        // to also register the KV descriptor — that is the Defect 2 fix, and is exercised by
-        // the dispatch_ort path, not by this unit test.
+        // Phi-3.5 declares the growing-cache convention (present S = past + S), so present
+        // is a fresh, larger allocation rather than an alias onto past: attn + present_key
+        // + present_value are all real outputs.
         assert_eq!(
             ctx.outputs.len(),
-            1,
-            "only attn_output has a new allocation in the Recorder stub"
+            3,
+            "growing cache: attn + present_key + present_value are real allocations"
         );
 
-        // Verify push constants byte layout (32 bytes = 8 × u32/f32)
+        // Verify push constants byte layout (36 bytes = 9 × u32/f32)
         let pc = &k.push_constants;
-        assert_eq!(pc.len(), 32, "push constant block must be 32 bytes");
+        assert_eq!(pc.len(), 36, "push constant block must be 36 bytes");
         let batch_size = u32::from_le_bytes(pc[0..4].try_into().unwrap());
         let seq_len = u32::from_le_bytes(pc[4..8].try_into().unwrap());
         let num_heads = u32::from_le_bytes(pc[8..12].try_into().unwrap());
         let kv_num_heads = u32::from_le_bytes(pc[12..16].try_into().unwrap());
         let head_dim = u32::from_le_bytes(pc[16..20].try_into().unwrap());
         let rotary_dim = u32::from_le_bytes(pc[20..24].try_into().unwrap());
-        let past_len_max = u32::from_le_bytes(pc[24..28].try_into().unwrap());
-        let scale_bits = u32::from_le_bytes(pc[28..32].try_into().unwrap());
+        let present_len = u32::from_le_bytes(pc[24..28].try_into().unwrap());
+        let past_stride = u32::from_le_bytes(pc[28..32].try_into().unwrap());
+        let scale_bits = u32::from_le_bytes(pc[32..36].try_into().unwrap());
         let scale = f32::from_bits(scale_bits);
 
         assert_eq!(batch_size, 1);
@@ -947,8 +1031,15 @@ mod tests {
         assert_eq!(num_heads, 32);
         assert_eq!(kv_num_heads, 32);
         assert_eq!(head_dim, 96);
-        assert_eq!(rotary_dim, 96, "default rotary_dim == head_dim");
-        assert_eq!(past_len_max, 256);
+        assert_eq!(
+            rotary_dim, 96,
+            "rotary_dim comes from cos_cache's second dim (48) × 2"
+        );
+        assert_eq!(
+            present_len, 257,
+            "KV write stride is the PRESENT extent, past + seq_len"
+        );
+        assert_eq!(past_stride, 256, "past reads still stride by the past extent");
         assert!(
             (scale - 96f32.sqrt().recip()).abs() < 1e-6,
             "scale = 1/sqrt(D)"
@@ -993,6 +1084,116 @@ mod tests {
         assert_eq!(
             kv_stride, 2,
             "KV write stride must be seq_len for an empty past"
+        );
+    }
+
+    /// Defect A falsifier. `rotary_embedding_dim` is absent here and `head_dim != 2 *
+    /// cos_cache.shape[1]`, so the two candidate sources disagree and the test can tell
+    /// them apart. MEASURED 2026-08-02: the `group_query_attention_f16` evidence case is
+    /// exactly this shape (head_dim 32, cos_cache [64, 8]); defaulting to head_dim made it
+    /// DIVERGENT at worst_rel 16.726, because the shader strides cos/sin rows by
+    /// `rotary_dim / 2` and a doubled stride reads another position's angles.
+    #[test]
+    fn translate_gqa_rotary_dim_follows_cos_cache_not_head_dim() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        // head_dim 32, cos_cache [4096, 8] → true rotary_dim 16, half the head.
+        let node = gqa_node_with_present(1, 1, 8, 2, 32, 4, 5, 8);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+        let rotary_dim =
+            u32::from_le_bytes(ctx.dispatches[0].push_constants[20..24].try_into().unwrap());
+        assert_eq!(
+            rotary_dim, 16,
+            "rotary_dim must be 2 * cos_cache.shape[1], not head_dim"
+        );
+    }
+
+    /// Defect A falsifier, refusal arm. With no attribute *and* no cos_cache shape the
+    /// rotary width is not recoverable. Guessing head_dim is what produced the defect, and
+    /// a handler that guesses can no longer report that the information was missing.
+    #[test]
+    fn translate_gqa_refuses_when_rotary_width_is_unrecoverable() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let mut node = gqa_node(1, 1, 8, 2, 32, 4);
+        node.inputs[7].desc = None;
+        let mut ctx = Recorder::default();
+        let err = translate_gqa(spec, &node, &mut ctx)
+            .expect_err("must refuse rather than assume head_dim");
+        assert!(
+            matches!(err, EpError::Unsupported(_)),
+            "unrecoverable rotary width is Unsupported, got {err:?}"
+        );
+    }
+
+    /// Defect B falsifier. Under the growing-cache convention `present` is a *different,
+    /// larger* buffer than `past`, so it must be a fresh allocation of `past + S` and the
+    /// shader's write stride must be that extent. MEASURED 2026-08-02: bound at the past
+    /// extent, the shader's write at `tok_pos == past_len` fell outside the buffer and was
+    /// dropped, so `present_key`/`present_value` read back all-zero on Vulkan while the CPU
+    /// reference returned the concatenated cache.
+    #[test]
+    fn translate_gqa_growing_cache_binds_present_at_past_plus_seq() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        // Evidence-case shape: past 4 + S 1 = present 5, with a non-empty past.
+        let node = gqa_node(1, 1, 8, 2, 32, 4);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(
+            ctx.outputs.len(),
+            3,
+            "present is larger than past, so it cannot alias it"
+        );
+        for desc in &ctx.outputs[1..] {
+            assert_eq!(
+                desc.shape,
+                vec![1, 2, 5, 32],
+                "present must be [B, Nkv, past + S, D]"
+            );
+        }
+        let pc = &ctx.dispatches[0].push_constants;
+        assert_eq!(
+            u32::from_le_bytes(pc[24..28].try_into().unwrap()),
+            5,
+            "KV write stride is the present extent"
+        );
+        assert_eq!(
+            u32::from_le_bytes(pc[28..32].try_into().unwrap()),
+            4,
+            "past reads keep the past extent"
+        );
+    }
+
+    /// The other arm: when the graph declares `present` at the *same* extent as `past`, it
+    /// is the shared fixed-size buffer convention and must still alias. The two conventions
+    /// are distinguished only by that declared number, which is why it is read rather than
+    /// derived.
+    #[test]
+    fn translate_gqa_shared_buffer_cache_still_aliases_past() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node_with_present(1, 1, 8, 2, 32, 256, 256, 16);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(
+            ctx.outputs.len(),
+            1,
+            "shared buffer: present aliases past, only attn is a new allocation"
+        );
+        let pc = &ctx.dispatches[0].push_constants;
+        assert_eq!(
+            u32::from_le_bytes(pc[24..28].try_into().unwrap()),
+            u32::from_le_bytes(pc[28..32].try_into().unwrap()),
+            "the two strides coincide exactly when the buffer is shared — and the shader \
+             uses that equality to skip the past->present copy"
         );
     }
 

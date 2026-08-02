@@ -120,6 +120,10 @@ impl std::fmt::Debug for CompiledKernel {
 // CompileRecorder — recording DispatchContext for compile_impl
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Sentinel token for an absent optional input: outside every real token range, so no
+/// binding, patch, or allocation step resolves it to a tensor.
+pub(crate) const NO_TOKEN: u64 = u64::MAX;
+
 /// A [`DispatchContext`] that records kernel templates without issuing Vulkan commands.
 ///
 /// Used by `compile_impl` to run the registry's translate handlers and extract
@@ -237,7 +241,16 @@ impl CompileRecorder {
     ) {
         let mut bindings = Vec::with_capacity(node_desc.inputs.len() + node_desc.outputs.len());
         for inp in &node_desc.inputs {
-            bindings.push(self.resolve_token(&inp.name));
+            // An empty name is an *absent* optional input. It has no plan slot, so it has no
+            // token, and the positional fallback would otherwise hand it token 0 — the same
+            // token as the first real input, which the Compute-time patch loop would then
+            // read a desc off. `NO_TOKEN` is outside every token range, so both the patch
+            // loop and the binder skip it instead of resolving it to the wrong tensor.
+            bindings.push(if inp.name.is_empty() {
+                NO_TOKEN
+            } else {
+                self.resolve_token(&inp.name)
+            });
         }
         for out in &node_desc.outputs {
             bindings.push(self.bind_token(&out.name, 0));
@@ -966,6 +979,10 @@ impl VulkanSession {
             // in `computed_descs`, which is populated by prior kernels in the same island.
             let mut patched_inputs = recipe.node_desc.inputs.clone();
             for (slot, &binding_token) in kernel.bindings[..n_inputs].iter().enumerate() {
+                if binding_token == NO_TOKEN {
+                    // Absent optional input — no plan slot, nothing to patch.
+                    continue;
+                }
                 if binding_token < n_plan_inputs as u64 {
                     // External ORT input.
                     let global_idx = binding_token as usize;
