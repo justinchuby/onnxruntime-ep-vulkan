@@ -725,3 +725,69 @@ ledger, and in a probe.
 - When a precondition lands, go back and re-read the sentence that named it. Reasons expire.
 - Ask of every probe: does its extract contain the keys that make its own numbers interpretable?
 - Never collapse two "not X" states into one. The third token is where the refutation lives.
+
+## 2026-08-01T20:39:12-07:00 — The phantom key: R13, not R11, and the census I did not want to owe
+
+Third ruling today, and the second in a row where the coordinator brought me a finding
+pre-diagnosed and asked me not to mint a rule to reward it. Good instinct; wrong diagnosis,
+narrowly.
+
+**The specimen.** `bench/results/probe_sec65.py:89` requests `alloc_device_spans`. I grepped the
+whole repo: the string occurs exactly once, at the line that requests it. No emitter, never was
+one. The read is `data.get(k, '<absent>')`, so it has printed `'<absent>'` on every run since it
+was written and nothing has ever thrown.
+
+**Why not R11, which is where the coordinator put it.** I ran my own individuation test: a rule is
+what its obligations require. R11's four obligations cannot even be *evaluated* here — extent of
+what, no parts to decompose, no table, and name-content agreement needs content. R11 governs a
+reported quantity, on the writer's side of the artifact. This is a request, on the reader's side.
+A mismatch needs two relata and this has one. A name that means nothing is not the extreme case
+of a name that means the wrong thing; it is a different failure on the other side of the seam.
+
+**Why R13.** His own sentence is R13 verbatim: two opposite diagnoses with opposite fixes, one
+token. R13's costume, R10's face. And everything that makes it frightening — longest latency in
+the register, the hole *filled* rather than left open, the look of evidence of absence — follows
+from the token, not from the name. Three tokens would have caught it on run one.
+
+**What is new is the surface, so: amendment 1, the defaulting lookup.** Every prior R13 specimen
+failed loudly and was mis-rendered downstream. This one has no exception anywhere, manufactured
+by a construct whose whole purpose is not to fail. `dict.get`, `unwrap_or`, `?? fallback`,
+`getattr` — where the key set is knowable, the default is not a value and absence is not a
+reading.
+
+I wrote the not-minting-R14 paragraph explicitly, because I declined a rule yesterday too and a
+habit of declining is its own defect. Remedy-identity cuts both ways.
+
+**The key census.** Two tiers, runtime and static; exact string match; owner Tank with Niobe,
+importing `audit_instruments.py`'s five states rather than minting a sixth vocabulary. I named
+four cheapest-satisfactions — the fuzzy matcher is the one that worries me, because
+`alloc_device_spans` is one word from `alloc_device_backed_spans` and a lax matcher would
+*certify the specimen*. Planted-phantom positive control required. I explicitly did **not**
+reopen M0 criterion 12: no milestone claim rests on `probe_sec65.py`, and bolting a probe
+obligation onto a milestone because a bad probe turned up today is hardening a criterion to
+punish a bad week.
+
+**Niobe's `span_accounting()`.** Upheld the report-without-judging call — after `gpu_steady_tail`
+the case against letting describers move verdicts writes itself. But "feeds no check" is not "has
+no teeth", so I gave it attachment instead of authority: the classification travels in the same
+artifact as every span count it describes, per the `executed_by` lesson.
+
+**And I found a defect in it.** `NOT_A_NUMBER` fires on `not isinstance(auth, int)` while the
+extract still reads `data.get(k, "<absent>")` — so a phantom or missing key lands there and is
+described as *"a string state and not a count; the type is the answer"*. False, and reassuring
+in exactly the wrong direction. She inherited the defaulting read; it is not hers to carry. It is
+the whole argument for fixing the lookup rather than the classifier: one fix at the defect site,
+or N fixes plus a new one every time someone adds a consumer.
+
+Three sightings in one day of an instrument-side absence rendered as a subject-side state. That
+recurrence is why I signed the obligation. Any one of them alone would have been an anecdote.
+
+**Carry forward**
+- Key census is Tank's, with Niobe. Watch for it landing static-tier-only, or with a fuzzy matcher.
+- `alloc_device_spans` must be classified wanted-and-non-existent vs typo *before* deletion.
+- `NOT_A_NUMBER` must split until the census lands; unresolvable key is `ERROR(instrument)`.
+- Niobe's `71610cd` still awaiting merge; my ruling assumes it lands.
+- Still owed from earlier today: Tank + Switch re-justify `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY`
+  default-off by M2 entry; Link's device-state survey for non-NVIDIA platforms.
+- I have now declined to mint a rule twice and amended twice. If the next finding also lands as
+  an amendment, check whether I am protecting the register's shape rather than reading it.
