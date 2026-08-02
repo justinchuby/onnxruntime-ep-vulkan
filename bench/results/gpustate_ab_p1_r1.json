@@ -1,0 +1,50 @@
+{
+  "n": 134,
+  "seconds": 199.6,
+  "sm_mhz": {
+    "n": 134,
+    "min": 210.0,
+    "median": 210.0,
+    "mean": 465.3,
+    "max": 2010.0
+  },
+  "sm_max_mhz": 3105.0,
+  "util_pct": {
+    "n": 134,
+    "min": 0.0,
+    "median": 0.0,
+    "mean": 1.8,
+    "max": 55.0
+  },
+  "power_w": {
+    "n": 134,
+    "min": 2.5,
+    "median": 3.0,
+    "mean": 5.8,
+    "max": 18.9
+  },
+  "foreign_sample_fraction": 0.0,
+  "foreign_pids": {},
+  "own_pids_on_gpu": [
+    17828
+  ],
+  "clock_ramp_x": 9.5714,
+  "clock_at_max_pct": 15.0,
+  "verdict": "SOLE_TENANT",
+  "tag": "ab_p1_r1",
+  "command": [
+    "python",
+    "bench\\results\\probe_gemv.py",
+    "--device",
+    "0",
+    "--iters",
+    "44",
+    "--warmup",
+    "1",
+    "--tag",
+    "ab_p1_r1"
+  ],
+  "command_exit": 0,
+  "own_root_pid": 21240,
+  "wall_s": 199.4
+}

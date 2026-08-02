@@ -660,3 +660,68 @@ one, the Guard D one, and the phase table.
 - Withdraw != re-qualify. An upper bound is worth keeping and is not a certification.
 - Prefer the invariant that survives the contended machine — and do not hand the reader a count and
   let them supply the clock.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+
+
+---
+
+## 2026-08-01T18:59:38-07:00 — §6.5 closed a conditional, and I had not said which lane armed it
+
+### The report came from scoring old predictions, not from new work
+That is the part worth keeping. Six standing predictions scored against artifacts: three confirmed,
+one UNSCORABLE for frame mismatch, one UNSCORED for having no artifact, and **one refuted by a third
+state**. No new measurement was needed. **Scoring what we already said against what we already have
+found something that six agents running instruments did not.** I should schedule that, not wait for
+it to happen.
+
+### The instrument declined to pick one of my two options
+The prediction was `SHARED` xor `SPLIT-DEVICE`. The counter returned `OFF`. Both `OFF` and
+`SPLIT-DEVICE` are "not SHARED", and if we had ever collapsed them the prediction would have scored
+a **clean pass** and the scope gap would still be invisible. **A binary prediction met by a third
+token is a refutation you cannot talk yourself out of** — and that is the whole return on the
+family discipline (`UNMEASURED`, `UNWIRED`, `UNOBSERVABLE`, `SPLIT-DEVICE`, `UNATTRIBUTED`, `OFF`).
+Every one of those tokens costs an argument at the time it is added. This is what they buy.
+
+### Neither of the two options I was offered was the answer
+Asked: intended, or the `offer_shared_device` gap? Neither. **Intended — and its recorded reason has
+expired.** The source says the transfer "cannot be written until the handle->VkBuffer seam is
+filled"; the seam is filled, `CreateDataTransfer` is registered, armed sessions complete on the real
+model. **The condition the switch was waiting for was met and nobody went back to the switch.**
+
+R12 with a **date** as the frame. Third generalisation of that rule now: counter -> device, verdict
+-> executor, rationale -> date. And it has `retain_viable`'s shape exactly: **a default whose stated
+reason has expired is indistinguishable from one still needed.**
+
+I did **not** rule that the flag should flip. There is a live reason for OFF that the source does
+not give — it buys host memory wearing a device handle, risk with no measured benefit. But **a
+default defended by a reason its own documentation does not give is a default nobody has
+re-decided**, and saying "it is probably still right" is the move I ruled against yesterday.
+
+### The zero was fine, and the artifact that showed it was not
+`authoritative=0` with `backed=9, evaluations=9` looked like R12 and is not: the counter is an
+**int** not a string (three-state type discipline answering before it was asked), its unconditional
+twin moved 9 (so it is nine measured negatives), and `ceiling = backed - staged = 0`, so zero is the
+only value it could take. **A zero at a zero ceiling is contingent; UNOBSERVABLE would be a stronger
+and false claim.**
+
+But the *probe's extract* dropped `alloc_staged_spans` and `alloc_device_authoritative_ceiling` —
+the two keys that make the zero readable — so a careful reader **correctly** could not tell. That is
+**R11 in a selection rather than in a name**: a set of numbers published as though it closed. The
+counter was honest and the artifact was not, and I have now seen that failure in a phase table, in a
+ledger, and in a probe.
+
+### Carry forward
+- State a closure **with its lane**. A closure without its lane is a different sentence, not a
+  shorter one.
+- Score predictions only against artifacts from the lane they described. Wrong lane and no artifact
+  are both non-passes. **The denominator never shrinks to flatter the numerator.**
+- When a precondition lands, go back and re-read the sentence that named it. Reasons expire.
+- Ask of every probe: does its extract contain the keys that make its own numbers interpretable?
+- Never collapse two "not X" states into one. The third token is where the refutation lives.

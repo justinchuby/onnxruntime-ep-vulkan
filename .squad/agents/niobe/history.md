@@ -459,3 +459,243 @@ Commits `e551ca7` and `9a8a42c` on `squad/niobe`, not pushed. 186 tests. Three d
 I am one quiet six-minute window away from the end-to-end figure and no code has to change to get it.
 
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+---
+
+## 2026-08-01 — the harness died on someone else's WARN, and the exciting reading was the false one
+
+**Merged local `main`, not `origin/main`.** `origin/main` is 21 commits behind and carries neither
+Switch's barrier fix nor Tank's WARN; the branch I was told about is the local one (`1cd0b55`).
+Worth knowing before the next merge: `rust/tools/probe_broken_commitment.py` — which `bench/` now
+imports — exists only on local `main`.
+
+### The crash was R12 and the fix was to borrow, not to write
+
+`subprocess.run(..., text=True)` decoded the worker as UTF-8. ORT's sink writes UTF-16LE on Windows,
+our narrow lines share the handle, and Tank's WARN goes through ORT's sink, so the reader thread
+raised at byte `0xa7`. Then the error path raised on top of it: `proc.stderr.strip()` on `None`.
+**A harness that dies on its own error path cannot report the error it found.**
+
+Two instruments each correct about a different world, colliding as a crash rather than as a wrong
+number — which is the good version of this failure. I took Tank's `decode_both` rather than writing
+a third decoder; his docstring already records what each naive version got wrong, and a second
+dialect for one channel is what Link refused to create for the verdict vocabulary. If his module is
+absent the tail is `ERROR(instrument=stream_decoder)` — not a private fallback decode, because an
+unreadable tail is an instrument error and a mangled string is evidence.
+
+Capture is bytes now. `text=True` puts the decode in `subprocess`'s reader thread, which is the one
+place a failure cannot be classified: it arrives as a traceback from inside the apparatus.
+Instrument errors go to `instrument_errors`, never `refusals` (R13) — a refusal is a condition I
+found, an instrument error is my not having looked.
+
+### The A/B, and why interleaved
+
+The machine was never quiet: 4.7–11.4 foreign cores all afternoon, and the survey named the sources
+— the other agents' `copilot.exe`, `Code.exe`, Defender. Justin's project had indeed stopped; we
+replaced it ourselves. **The gate refused end-to-end on both devices and I did not override it. Third
+session running.**
+
+So I measured what survives a loud machine. Switch's prediction — host moves sharply, device barely
+— cannot be tested by "run old DLL, run new DLL, subtract", because host time is exactly what load
+moves and the load is not constant across two runs minutes apart. Alternated the DLLs **A B A B** in
+one sitting instead, each arm carrying its own survey. `bench/results/probe_barrier_ab.py`.
+
+- **Host `record`: 16.412/20.344 ms → 3.780/3.687 ms median; leaf-only 810.0 → 139.0 ms over 43
+  recordings (5.8×).** The load ordering scrambled — the second post run ran at *more* foreign load
+  (8.12 cores) than the first pre run (5.06) and was still 4.3× cheaper. Load cannot make that shape.
+- **Device: 13.3463 pre vs 13.3432 post on the matched pair (both n=43, both 100% coverage, back to
+  back) — 0.02%.** No shader changed between the two DLLs, so a device movement would have had to be
+  the barrier. There isn't one. **Both halves of his prediction hold.**
+- His ~94 ns/struct falls out of my numbers independently: 86–106 ns over the same 147,618 structs.
+
+### The ruling, and it cost me the headline
+
+Morpheus asked for a call on a minimum-n floor. **Yes, and the floor is on coverage more than on n.**
+The 2% RSD bar constrains the tail's *internal spread*, not its agreement with the device's true
+rate, so five samples from a flat stretch of a wandering series clear it as easily as a settled
+device. My own two bad tails: n=5/coverage 12% reading 37.562 ms against its run's warm mean of
+26.412 (+42%), and n=7/coverage 15% reading 20.055 against 15.03 (+33%). Every good tail sat at
+87–100% coverage and agreed with its warm mean inside 0.6%. A warmup ramp is a short *prefix*; a
+device that never settled makes a short flat *suffix*. Floors: `n >= 8` **and** `coverage >= 50%`;
+`MARGINAL_TAIL` otherwise, median parked in `withheld_median_ms`.
+
+**Its first act was to refuse the reading that said the barrier fix improved GPU time by 33%.** That
+was my exciting number, it was produced by a 5-sample tail, and it was false — under the floor the
+two arms agree to 0.02%. Switch's `contended` row (n=8, 17% coverage, 2.1% above solo) is refused
+by the same rule.
+
+### Numbers of record, current `main`
+
+- **NVIDIA RTX 4060: 13.3432 ms/inference GPU busy** (STEADY, n=43, coverage 100%, RSD 1.72%),
+  `MATCH`, 355/363 nodes claimed, 1 island, 16,330 dispatch spans. Comparable to the same figure on
+  the same box minutes apart, which is what §14.2 is. **Not** comparable to my 40.201 ms of
+  2026-07-31 — the GEMV rewrite, the partitioner fusion and residency all landed in between, and
+  dividing them credits four people's work to whichever one is under discussion. 40.201 ms is
+  **retired as a baseline, not beaten by one.**
+- **Intel Iris Xe: withheld, `NO_STEADY_TAIL`.** The series wanders 53.4–91.3 ms with no flat region.
+  Same refusal and the same structural reason as last time: an iGPU shares its power budget with the
+  loaded CPU cores, so the device clock is not contention-immune there.
+- **End-to-end wall clock and the Vulkan/CPU ratio: withheld on both devices, gate `CONTENDED`.**
+- The devices are not compared. `bench/compare.py`'s cross-device refusal stands.
+
+199 tests in `bench/` pass (was 195). Three decision records filed. Not pushed.
+
+**Left standing:** the pre-fix worktree at `../ep-vulkan-niobe-ab` (detached at `42deaba`) is the A/B
+arm — remove it with `git worktree remove` when the comparison stops being interesting.
+
+## 2026-08-01 (mid-day, reconstructed) — the device-state companion, logged late
+
+This round is **not in this file** as it happened; the entry below is reconstructed from
+`docs/PERF.md` §15 and `bench/device_state.py` so the chain is not broken. A Scribe run around this
+time read 47 inbox records and deleted 50, and my own log entry went missing in the same window.
+
+`DESIGN.md` §10.0 obligation 8: a device-clock figure is quotable only if it carries a
+**device-state companion** — a tenancy verdict **and** a clock record — over the statistic's own
+window. Built `bench/device_state.py` (five terminal verdicts, only `QUOTABLE` releases a number)
+on top of Switch's `bench/results/probe_gpustate.py` sampler, imported rather than re-implemented.
+
+Two things worth keeping:
+
+- **I published dev0 #2 against myself.** `MARGINAL_TAIL`, median 12.187 ms withheld, on the lowest
+  RSD I have ever recorded (0.086%) — and it agreed with the quotable 12.1847 ms to four
+  significant figures. *A refusal is not a claim the number was wrong.* Coverage was 26%; the gate
+  is about coverage, not about agreement, and letting agreement excuse coverage is how a gate stops
+  being one.
+- **I reproduced Switch's bug at my own call site.** `FOREIGN_GPU_WORK` in 93% of samples, against
+  a PID holding 0.0 MiB, which was **my own worker** — `_run_worker` blocked, so the sampler
+  learned the PID only after the child had exited. `ERROR(instrument)`, never a detection, exactly
+  as his `_is_ours` docstring warned. Fixed with `Popen` + an `on_start` callback and a regression
+  test that asserts the PID arrives while the process is still alive.
+
+Also applied Switch's standard to my own 40.201 ms: it survives as a **regime**, not as a pairable
+measurement, and I withdrew every "at most" argument I had used to put a floor under a difference —
+**two upper bounds do not bound a difference from below.**
+
+---
+
+## 2026-08-01 (later) — Intel has no clock producer, and half a companion is not one
+
+The task: obligation 8's only producer is `nvidia-smi`, so **every Intel figure is permanently
+`UNCERTIFIED`** — and Intel is where the open question lives, because the 4.39× residual of the
+13.52× kernel gap that memory bandwidth does not explain is a claim about Intel. The coordinator
+handed me a lead, explicitly as a lead and not a solution: Windows' vendor-neutral
+`\GPU Engine(*)\Running Time` / `Utilization Percentage`.
+
+### What I built
+
+- **`bench/win_gpu_counters.py`** — an in-process PDH sampler over the WDDM `\GPU Engine` counter
+  set: LUID join from the Vulkan device name through `HKLM\SOFTWARE\Microsoft\DirectX`, per-PID
+  cumulative-tick differencing, ancestry via Switch's `_is_ours`. **Tenancy only. It emits
+  `clock: UNOBSERVABLE` in every record it will ever produce**, and its docstring says so before it
+  says anything else.
+- **`bench/results/probe_wingpu.py`** — the capability experiment. Samples the target adapter *and
+  every other live adapter* as a negative control while a real Phi-3.5 pass runs.
+- **`bench/test_win_gpu_counters.py`** — 22 tests. 38 with `test_device_state.py`; 237 in `bench/`.
+- **`bench/device_state.py`** — the record is now **two independent axes**, tenancy and clock, each
+  with its own producer, verdict and silence set. New states `TENANCY_ONLY`, `NO_PRODUCER`,
+  `UNCERTIFIED_PARTIAL`; `compose()`, `empty_axis()`, `from_nvidia_record()`.
+- **`docs/PERF.md` §16**, and the §15.2/§15.3 tables updated.
+
+### The capability, measured rather than hoped
+
+Intel arm, 8 inferences, `MATCH`, 71.7 s, 46 enumerations: our worker accrued **1.4292 s on
+`engtype_3d` on the Intel LUID and 0 s on each of the three other live LUIDs**. `Code.exe` held
+0.1296 s (0.18%, under the 1% bar) → `SOLE_TENANT`, clock `UNOBSERVABLE`.
+
+The negative control is the load-bearing half. Our process holds counter *instances* on both
+adapters, so "our PID is in the set" proves nothing; that engine time accrues **only** on the
+adapter we ran on is what checks a registry-string join that would otherwise be silently wrong.
+
+Second-order facts that came out of it: there is **no `engtype_Compute` node on either adapter** —
+compute is scheduled on `3d`; **PID 4 (`System`) accrues Copy-engine paging time** on behalf of
+whoever faulted (2.03 s on the NVIDIA arm), so counting it foreign would make the detector a
+constant and it gets its own class; and on this hybrid laptop the panel hangs off the iGPU, so the
+compositor's hold is `FOREIGN_GPU_WORK(display)` — **permanent, named as such rather than looking
+like bad luck.**
+
+### The verdict, and why it is not a pass
+
+`TENANCY_ONLY` → **`UNCERTIFIED(partial_companion)`**, its own state at both levels, because
+*bypassed / all-rejected / unobservable* sharing one `0` is Tank's lesson and this is the same
+shape. **The failure the clock record exists to catch is a sole-tenant failure**: `base_b` was
+verified sole tenant, 21.4× wrong, at the project's second-best RSD, because the board never left
+210 MHz. A tenancy-only companion says `SOLE_TENANT` about that run and is *correct*.
+
+And engine `Running Time` cannot be pressed into the clock role: it is a **duration**, so at a
+lower clock the same kernel occupies the engine *longer* — it moves the same way as the figure it
+would certify. A second copy of the quantity under certification, not a second quantity from
+outside the series. That is the same-source falsifier that put 246.735 ms into the record.
+
+The asymmetry that makes it safe to have at all: **it may subtract confidence and may never add
+it.** `FOREIGN_GPU_WORK` without a clock is still a detection → `WITHHELD`. `SOLE_TENANT` without a
+clock is not a pass. Implemented in `compose`, not merely stated.
+
+### The reads-clean shape — three bugs, all of which made the record *cleaner*
+
+1. `devices.by_index(1)` gave me **NVIDIA**: `vulkaninfo` enumerates 0=Intel, the EP's best-first
+   order is 0=NVIDIA. `bench/devices.py` documents this trap and I walked into it. The sampler
+   watched an untouched adapter → clean `SOLE_TENANT`.
+2. Ancestry for all 204 instances cost **21.2 s/round**: 3 samples in 62 s → clean again. Cached
+   per-PID and classified only PIDs with nonzero in-window ticks (21.2 s → 0.40 s).
+3. **PDH caches its instance list per process** — my own worker was invisible for a whole 60 s run.
+   Proved it with a poller using `PdhEnumObjectsW(..., bRefresh=TRUE)`, which sees the instances
+   appear ~14 s in. Clean a third time.
+
+R9 amendment 5 says ask which way a check moves when its subject is wrong; all three moved **with**
+the reader's confidence, so none was fixable by tightening a threshold. Fixed at source and
+backstopped by two interlocks that make the clean reading *unavailable*: `UNOBSERVABLE(self_not_witnessed)`
+(a record must carry positive evidence it watched the right device) and a **blind-gap limit**
+(>10× interval → `ERROR(instrument)`). The blind-gap interlock fired for real on the first NVIDIA
+corroboration run — four samplers each re-enumerating, 12.6 s gap — and the fix was one shared
+enumeration cache, not a looser limit.
+
+### The ruling
+
+**An Intel device-clock figure cannot be certified on this hardware. Permanent, not pending.**
+Unlike Link's lavapipe `none_structural` there *is* a subject — the Iris Xe has a real clock that
+really varies — so it gets its own classification, **`none_available`**: no `GPU *` counter set
+carries MHz, no `root\wmi` GPU class exists here, `Win32_VideoController` has no core clock,
+`nvidia-smi` exits 6, Vulkan has no clock query, and engine time is inadmissible as a proxy.
+Reopening it needs a **producer**, not a better analysis — a Link/platform question, not on M0's
+path.
+
+**For Switch:** the 4.39× residual must be attacked with **counts and shapes, not clocks** —
+which is §10.0.4's preference anyway, and now there is no alternative on Intel.
+
+**The uncomfortable direction:** Morpheus's amendment 2 notes the iGPU shares its power budget with
+loaded CPU cores, so it is *more* exposed to the clock failure than the discrete board — and it is
+the device where we can never see it. The Iris Xe's `NO_STEADY_TAIL` refusals are **consistent
+with** a wandering clock and are **not evidence of one**.
+
+### Portability
+
+Morpheus required a **record, not a tool**, and WDDM counters are as Windows-locked as `nvidia-smi`
+is NVIDIA-locked. So the record is emitted **in full on every platform**, with `NO_PRODUCER` in the
+axes nothing can fill — a missing key is indistinguishable from a key nobody thought to write; a
+`NO_PRODUCER` axis is a statement. `winreg` is imported under a guard, `available()` is False
+off-Windows, the Windows tests skip rather than fail, and
+`test_the_record_is_emitted_in_full_where_no_producer_exists_at_all` holds the line.
+
+### Corroboration, since one existed for once
+
+On the 4060 both producers ran over the same window and both said `SOLE_TENANT` (`agree: true`,
+peak 2010/3105 MHz). Obligation 7's shape, with the agreement **in the artifact**. It licenses
+nothing about the clock axis and does not move Intel any closer to quotable.
+
+### State
+
+38 targeted tests pass; **237 in `bench/`, 0 failed**. Scratch prototypes deleted; the
+`wingpu-idle-intel-dev1.json` artifact from the mis-joined run deleted rather than kept. Three
+decision records filed. Committed on `squad/niobe`, not pushed.
+
+**Still blocked on Justin:** `nvidia-smi --lock-gpu-clocks` + an elevated shell, which would close
+the duty-cycle mechanism on the NVIDIA side. Not designed around, not blocked on.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+

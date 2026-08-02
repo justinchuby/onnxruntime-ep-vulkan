@@ -127,6 +127,11 @@ Two consequences worth keeping:
   these spaces that is correct in general. Where §6.5 guarantees exactly one `VkDevice` per
   (physical device, EP instance), the device itself is the unambiguous key and the index is
   metadata — see `resolve_offer`.
+- **Verify with a two-armed artifact, not a one-armed one (R10).** A unit test can show symmetry in
+  principle; only a run on *both* selectors shows the counter actually moving. `probe_indexspace.py`
+  requires `alloc_device_frame_allocator_index` to **differ** between selectors and to match the
+  session's offered index in each, and fails a pair that agrees on both arms *even when both report
+  `SHARED`* — because that is exactly the pre-fix state seen from one side.
 
 ### 2.1 Instance Creation
 

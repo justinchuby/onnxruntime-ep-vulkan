@@ -937,6 +937,7 @@ impl HandleRegistry {
 /// things and does not need to be. See D-T69.
 pub mod tally {
     use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1134,6 +1135,19 @@ pub mod tally {
     /// they were measured in another world.
     static DEVICE_FRAME: Mutex<Option<(String, String)>> = Mutex::new(None);
 
+    /// **Every distinct `(frame, device)` any provider has declared in this process.**
+    ///
+    /// `DEVICE_FRAME` alone is last-writer-wins, and the tallies it labels are process-global
+    /// while `vk::host_device_memory::PROVIDERS` is a *map keyed by factory device index* — so a
+    /// process with two sessions on two GPUs stands up two providers, both call `set_device_frame`,
+    /// and one label ends up over a population drawn from both. Which label wins depends on
+    /// registration order, i.e. on scheduling.
+    ///
+    /// This set is what makes that detectable rather than silent: more than one entry and the
+    /// frame is `MIXED`, whose numbers belong to no single frame and therefore cannot be
+    /// measurements (R12).
+    static DECLARED_FRAMES: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
     /// The factory device index ORT asked *this allocator* for, or `usize::MAX` if never set.
     static ALLOC_DEVICE_INDEX: AtomicU64 = AtomicU64::new(u64::MAX);
 
@@ -1201,6 +1215,15 @@ pub mod tally {
                 "alloc_device_frame=SHARED — BOTH sides are on the same VkDevice: '{alloc_device}' \
                  (factory device index {idx}). Sessions have offered: {sessions}."
             ),
+            FRAME_MIXED => format!(
+                "alloc_device_frame=MIXED — this process declared MORE THAN ONE frame ({} of \
+                 them: {alloc_device}), and the alloc_device_* tallies are process-global, so \
+                 they aggregate spans from all of them. No single VkDevice is described by these \
+                 numbers and none of them may be attributed to one. Sessions have offered: \
+                 {sessions}. The allocator side was last stood up for factory device index {idx}, \
+                 which describes only the most recent provider and not this population.",
+                frames_declared()
+            ),
             other => format!(
                 "alloc_device_frame={other} — THE TWO SIDES ARE ON DIFFERENT VkDevices. \
                  ALLOCATOR side: '{alloc_device}', stood up for factory device index {idx} \
@@ -1219,13 +1242,59 @@ pub mod tally {
     /// `frame` is `"SHARED"` (§6.5 satisfied — the session's device) or `"SPLIT-DEVICE"` (a second
     /// device, so those numbers describe a world the kernels did not run in).
     pub fn set_device_frame(frame: &str, device: &str) {
+        if let Ok(mut d) = DECLARED_FRAMES.lock() {
+            d.insert((frame.to_string(), device.to_string()));
+        }
         if let Ok(mut f) = DEVICE_FRAME.lock() {
             *f = Some((frame.to_string(), device.to_string()));
         }
     }
 
+    /// Declare `frame` as the **only** frame in this process, discarding any earlier declaration.
+    ///
+    /// Tests walk a process through several frames in sequence to check what each one reports;
+    /// production never does that, it declares one frame per provider and lives with it. Without
+    /// this, sequencing a test through two frames would look exactly like the two-provider defect
+    /// and every frame test would report `MIXED`. Test-only on purpose: production must keep the
+    /// accumulating behaviour, because that is what makes a second provider detectable at all.
+    #[doc(hidden)]
+    pub fn set_only_frame_for_test(frame: &str, device: &str) {
+        if let Ok(mut d) = DECLARED_FRAMES.lock() {
+            d.clear();
+        }
+        set_device_frame(frame, device);
+    }
+
+    /// How many distinct `(frame, device)` pairs have been declared in this process.    ///
+    /// `MIXED` without this is an assertion; with it, it is a count a reader can check.
+    pub fn frames_declared() -> usize {
+        DECLARED_FRAMES.lock().map(|d| d.len()).unwrap_or(0)
+    }
+
+    /// `"SHARED on 'Device A'; SPLIT-DEVICE on 'Device B'"` — every frame this run stands on.
+    pub fn declared_frames_sentence() -> String {
+        let Ok(d) = DECLARED_FRAMES.lock() else {
+            return "unknown".to_string();
+        };
+        if d.is_empty() {
+            return "none".to_string();
+        }
+        d.iter()
+            .map(|(f, dev)| format!("{f} on '{dev}'"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// The frame, or `("OFF", "")` when no provider exists. Never guesses.
+    ///
+    /// Reports `MIXED` when providers declared more than one frame: the process-global tallies
+    /// then describe a population from several `VkDevice`s, and naming any one of them as *the*
+    /// frame would be a true label on the wrong population — the same shape as reading a
+    /// selector-1 number as a selector-0 number, which is now the fourth instance on this project.
     pub fn device_frame() -> (String, String) {
+        if frames_declared() > 1 {
+            return (FRAME_MIXED.to_string(), declared_frames_sentence());
+        }
         DEVICE_FRAME
             .lock()
             .ok()
@@ -1239,12 +1308,22 @@ pub mod tally {
     pub const FRAME_SHARED: &str = "SHARED";
     /// §6.5 violated: a second `VkDevice`, so no dispatch can bind these buffers.
     pub const FRAME_SPLIT: &str = "SPLIT-DEVICE";
+    /// More than one frame was declared in this process, so the process-global tallies describe a
+    /// population drawn from several `VkDevice`s and belong to none of them.
+    pub const FRAME_MIXED: &str = "MIXED";
 
     /// Whether `device_authoritative_spans` is in a position to be non-zero at all (R12).
     ///
     /// It can only ever move when the provider's buffers are on the session's device. In the
     /// `SPLIT-DEVICE` and `OFF` frames the event it counts **cannot occur**, so its zero is not a
     /// measurement and the artifact prints `UNOBSERVABLE` in its place.
+    ///
+    /// `MIXED` is the same verdict for a different reason, and the distinction matters when
+    /// reading the code: there the event *can* occur for part of the population and cannot for
+    /// the rest, and the tallies do not record which span came from which frame. A number over
+    /// that population would be true of no frame. R12 asks whether the event can occur *in this
+    /// counter's frame*; a counter with more than one frame cannot answer, and an unanswerable
+    /// question is never a measurement.
     pub fn device_authoritative_observable() -> bool {
         device_frame().0 == FRAME_SHARED
     }
@@ -1732,6 +1811,9 @@ pub mod tally {
         crate::counters::staging::reset();
         if let Ok(mut f) = DEVICE_FRAME.lock() {
             *f = None;
+        }
+        if let Ok(mut d) = DECLARED_FRAMES.lock() {
+            d.clear();
         }
     }
 
@@ -2329,6 +2411,9 @@ mod tests {
     /// live handles; with reserved address space they stay in-span by construction.
     #[test]
     fn interior_pointers_from_planner_arithmetic_resolve_to_their_own_span() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         let b = r.alloc(4096).expect("alloc");
@@ -2354,6 +2439,9 @@ mod tests {
     /// integer handles it is the *next allocation*; here it must be a diagnosable hole.
     #[test]
     fn one_past_the_end_lands_in_a_guard_band_not_on_the_next_allocation() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         let b = r.alloc(4096).expect("alloc");
@@ -2378,6 +2466,9 @@ mod tests {
     /// end of the tensor.
     #[test]
     fn lookups_are_bounded_by_the_requested_size_not_the_padded_one() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(100).expect("alloc");
         assert!(r.resolve(a + 99).is_ok());
@@ -2391,6 +2482,9 @@ mod tests {
     /// aliasing onto a live tensor.
     #[test]
     fn a_freed_handle_is_rejected_loudly_and_never_aliases_a_live_one() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(8192).expect("alloc");
         assert!(r.resolve(a + 16).is_ok());
@@ -2433,6 +2527,9 @@ mod tests {
 
     #[test]
     fn a_double_free_is_survivable_and_counted() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         r.free(a);
@@ -2447,6 +2544,9 @@ mod tests {
 
     #[test]
     fn foreign_and_interior_pointers_are_told_apart() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         let host = Box::new(42u64);
@@ -2469,6 +2569,9 @@ mod tests {
     /// dequantised weight that was allocated and freed before the check would be invisible.
     #[test]
     fn high_water_records_the_peak_not_the_current_live_bytes() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(1_000_000).expect("alloc");
         let b = r.alloc(2_000_000).expect("alloc");
@@ -2485,6 +2588,9 @@ mod tests {
 
     #[test]
     fn a_zero_byte_allocation_returns_a_distinct_freeable_handle() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r
             .alloc(0)
@@ -2560,7 +2666,7 @@ mod tests {
         let _g = ledger::test_lock();
         tally::reset_for_test();
         // §6.5 satisfied — otherwise the count is contradicted by its own frame (R12).
-        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
         // 10 allocations, 10 device-backed, 2 staged -> ceiling 8. Claim 6, with real binds.
         tally::seed_for_test(10, 10, 2, 8192);
         tally::seed_authoritative_for_test(6, 33);
@@ -2580,7 +2686,7 @@ mod tests {
     fn a_nonzero_authoritative_count_in_a_split_frame_is_not_credible() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Some Other Device");
         tally::seed_for_test(10, 10, 2, 8192);
         tally::seed_authoritative_for_test(6, 33);
         let v = tally::staging_verdict();
@@ -2602,7 +2708,7 @@ mod tests {
     fn a_zero_authoritative_count_says_it_is_unwired_rather_than_measured() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
         tally::seed_for_test(10, 10, 2, 8192);
         let v = tally::staging_verdict();
         assert!(v.contains("is UNWIRED, NOT 0"), "got: {v}");
@@ -2623,7 +2729,7 @@ mod tests {
     fn the_same_zero_becomes_a_measurement_once_the_residency_screen_has_run() {
         let _g = ledger::test_lock();
         tally::reset_for_test();
-        tally::set_device_frame(tally::FRAME_SHARED, "Test Device");
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, "Test Device");
         tally::seed_for_test(10, 10, 2, 8192);
         let unwired = tally::staging_verdict();
         assert!(unwired.contains("is UNWIRED, NOT 0"), "got: {unwired}");
@@ -2657,7 +2763,7 @@ mod tests {
         let _g = ledger::test_lock();
         tally::reset_for_test();
         tally::seed_for_test(10, 10, 2, 8192);
-        tally::set_device_frame(tally::FRAME_SPLIT, "Intel(R) Iris(R) Xe Graphics");
+        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Intel(R) Iris(R) Xe Graphics");
         tally::set_allocator_device_index(0);
         tally::note_session_device(1, "NVIDIA GeForce RTX 4060 Laptop GPU");
         let v = tally::staging_verdict();
@@ -2675,7 +2781,7 @@ mod tests {
              spaces disagreeing IS the defect; got: {v}"
         );
 
-        tally::set_device_frame(tally::FRAME_SHARED, "NVIDIA GeForce RTX 4060 Laptop GPU");
+        tally::set_only_frame_for_test(tally::FRAME_SHARED, "NVIDIA GeForce RTX 4060 Laptop GPU");
         let v = tally::staging_verdict();
         assert!(
             v.contains("BOTH sides are on the same VkDevice: 'NVIDIA GeForce RTX 4060 Laptop GPU'"),
@@ -2703,7 +2809,7 @@ mod tests {
         );
 
         // Frame SPLIT-DEVICE — the §6.5 defect.
-        tally::set_device_frame(tally::FRAME_SPLIT, "Some Other Device");
+        tally::set_only_frame_for_test(tally::FRAME_SPLIT, "Some Other Device");
         let v = tally::staging_verdict();
         assert!(v.contains("UNOBSERVABLE, NOT 0"), "got: {v}");
         assert!(
@@ -2778,6 +2884,9 @@ mod tests {
 
     #[test]
     fn attach_buffer_records_the_device_side_and_refuses_stale_handles() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         assert!(r.resolve(a).expect("resolve").buffer.is_none());
@@ -2849,9 +2958,264 @@ mod tests {
     /// we assert structurally: it is inside our `PROT_NONE`/`PAGE_NOACCESS` reservation.
     #[test]
     fn handles_live_inside_the_inaccessible_reservation() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let r = registry();
         let a = r.alloc(4096).expect("alloc");
         assert!(a >= r.arena.base && a < r.arena_end());
         assert_eq!(a % SPAN_GRANULARITY, 0, "handles are page-aligned");
+    }
+
+    /// **Production reachability of the MIXED frame, on real devices.**
+    ///
+    /// `#[ignore]`d deliberately: it stands up two real `VkDevice`s and registers both into the
+    /// process-global provider map, which is a side effect the rest of the suite must not inherit.
+    /// Run it on its own —
+    ///
+    /// ```text
+    /// ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1 cargo test --release --lib \
+    ///     two_allocators_on_two_devices -- --ignored --nocapture
+    /// ```
+    ///
+    /// It drives the **production** path only: two `HandleRegistry`s with different device
+    /// indices, each allocating one span. `try_attach_device_buffer` calls `ensure_registered`,
+    /// which stands up a provider per index and declares that provider's frame. Nothing here
+    /// touches `tally::set_device_frame`, so if the frame comes out `MIXED` it is production that
+    /// mixed it — the in-process falsifier in `counters` shows the same thing with less ceremony
+    /// but could be dismissed as a test arrangement. This one cannot.
+    #[test]
+    #[ignore = "stands up two real VkDevices and registers both process-globally"]
+    fn two_allocators_on_two_devices_declare_two_frames_through_production_code() {
+        let _g = ledger::test_lock();
+        if !HandleRegistry::device_memory_requested() {
+            eprintln!(
+                "SKIPPED, and a skip is not a pass: set ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1 or \
+                 this test allocates nothing and proves nothing."
+            );
+            return;
+        }
+        tally::reset_for_test();
+        for idx in [0usize, 1usize] {
+            let r = registry();
+            r.set_device_index(idx);
+            let h = r.alloc(4096).expect("alloc");
+            eprintln!(
+                "device_index {idx}: frame now {:?}, {} declared",
+                tally::device_frame().0,
+                tally::frames_declared()
+            );
+            r.free(h);
+        }
+        let declared = tally::frames_declared();
+        assert!(
+            declared >= 1,
+            "no provider was stood up at all, so this run says nothing about frames — check the \
+             Vulkan loader before reading a verdict from it"
+        );
+        if declared > 1 {
+            assert_eq!(
+                tally::device_frame().0,
+                tally::FRAME_MIXED,
+                "two providers declared different frames and the report named only one of them"
+            );
+            assert!(
+                !tally::device_authoritative_observable(),
+                "a two-frame population has no frame in which the authoritative event could \
+                 occur, so it must not be reported as a number (R12)"
+            );
+            eprintln!("FINDING: production declared {declared} frames in one process.");
+        } else {
+            eprintln!(
+                "This box stood up only one provider for indices 0 and 1 ({}), so it cannot \
+                 exhibit the mixed frame. That is a fact about this box, not about the mechanism.",
+                tally::declared_frames_sentence()
+            );
+        }
+        tally::reset_for_test();
+    }
+
+    /// **The screen that keeps the shared-state flake from coming back, in every future form.**
+    ///
+    /// `counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero`
+    /// failed about 1 run in 14 under the default harness and passed under `--test-threads=1`.
+    /// The cause was leakage, not a mechanism race: `HandleRegistry::free` now runs the residency
+    /// screen, so several tests that used to be tally-neutral started moving a process-global
+    /// counter, and one of them landed between the R12 test's `reset_for_test` and its dump. The
+    /// observed failure was `alloc_device_residency_evaluations: 2` where that test had performed
+    /// exactly one evaluation.
+    ///
+    /// `--test-threads=1` would have hidden it, and would go on hiding every future instance —
+    /// including a *mechanism* defect, which has the identical symptom and the opposite fix. So
+    /// the isolation is per-test, and this screen is what makes it hold: adding a test that moves
+    /// the global ledger without taking the lock fails here, at the point the test is written,
+    /// rather than 1 run in 14 later in someone else's lane.
+    ///
+    /// Text-decidable, no execution required — the state it screens for is `absent`, and only a
+    /// source-level screen can see that one.
+    #[test]
+    fn no_test_moves_the_process_global_ledger_without_taking_the_lock() {
+        let _g = ledger::test_lock();
+
+        /// Returns `(tests_seen, offenders)` for one file's source text.
+        ///
+        /// Resolves **one level of helper**, which is not a refinement but the whole point: the
+        /// leak that survived the first version of this screen was `transfer.rs`, whose tests
+        /// never name a global. They call `registries()`, which builds real `HandleRegistry`s,
+        /// and every `alloc`/`free` underneath moves the process-global tally. A screen that only
+        /// reads test bodies reports those tests clean, and a clean report from an instrument
+        /// that cannot see the thing is worse than no instrument at all.
+        fn screen(tag: &str, src: &str) -> (usize, Vec<String>) {
+            // Naming any of these moves state that outlives the test.
+            let touches = [
+                "tally::",
+                "ledger::",
+                "HandleRegistry::",
+                "registry()",
+                "dump_observations_if_requested",
+            ];
+            let touched = |body: &str| touches.iter().any(|t| body.contains(t));
+            let locked = |body: &str| body.contains("test_lock()");
+
+            // Every `fn` in the file with its body and whether it is a test.
+            let mut fns: Vec<(String, String, bool)> = Vec::new();
+            let mut cursor = 0usize;
+            while let Some(rel) = src[cursor..].find("fn ") {
+                let at = cursor + rel;
+                cursor = at + 3;
+                let Some(open_rel) = src[cursor..].find('{') else {
+                    break;
+                };
+                let open = cursor + open_rel;
+                let header = &src[cursor..open];
+                // A `fn` with a `;` or another `fn` before its brace is a signature, not a body.
+                if header.contains(';') || header.contains("fn ") {
+                    continue;
+                }
+                let name = header.split('(').next().unwrap_or("").trim().to_string();
+                if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                let mut depth = 0i32;
+                let mut end = open;
+                for (i, c) in src[open..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // Look back only as far as the end of the previous item: a `#[test]` that belongs
+                // to the function *above* this one must not make this one look like a test.
+                let mut lo = at.saturating_sub(400);
+                while lo < at && !src.is_char_boundary(lo) {
+                    lo += 1;
+                }
+                let before = &src[lo..at];
+                let after_prev = match before.rfind('}') {
+                    Some(i) => &before[i..],
+                    None => before,
+                };
+                let is_test = after_prev.contains(&format!("#[{}]", "test"));
+                fns.push((name, src[open..end].to_string(), is_test));
+                cursor = open;
+            }
+
+            let helpers: Vec<(String, bool, bool)> = fns
+                .iter()
+                .filter(|(_, _, is_test)| !is_test)
+                .map(|(n, b, _)| (n.clone(), touched(b), locked(b)))
+                .collect();
+
+            let (mut seen, mut offenders) = (0usize, Vec::new());
+            for (name, body, _) in fns.iter().filter(|(_, _, t)| *t) {
+                seen += 1;
+                let mut t = touched(body);
+                let mut l = locked(body);
+                for (h, ht, hl) in &helpers {
+                    if body.contains(&format!("{h}(")) {
+                        t |= *ht;
+                        l |= *hl;
+                    }
+                }
+                if t && !l {
+                    offenders.push(format!("{tag}::{name}"));
+                }
+            }
+            (seen, offenders)
+        }
+
+        // **Positive control, run first.** A screen that silently matches nothing passes every
+        // check ever put to it — the `unfalsified` state, which is the one this project keeps
+        // rediscovering. So the parser is put to a source it MUST flag, and one it must not,
+        // before its answer about the real files is allowed to mean anything.
+        // Assembled at runtime rather than written literally, because a literal `#[test]` inside
+        // this file would itself be picked up by the screen — the instrument would detect its own
+        // fixture. That is an instrument error wearing the costume of a finding (R13), and the
+        // cheapest place to make it impossible is here.
+        let marker = format!("#[{}]", "test");
+        let control = format!(
+            "\nfn helper_reg() {{ HandleRegistry::new(); }}\
+             \n{marker}\nfn locked() {{ let _g = ledger::test_lock(); tally::snapshot(); }}\
+             \n{marker}\nfn unlocked() {{ tally::snapshot(); }}\
+             \n{marker}\nfn via_helper() {{ helper_reg(); }}\
+             \n{marker}\nfn innocent() {{ assert_eq!(1, 1); }}\n"
+        );
+        let (control_seen, control_offenders) = screen("control", &control);
+        assert_eq!(
+            control_seen, 4,
+            "the parser did not find all four control tests, so it is not parsing"
+        );
+        assert_eq!(
+            control_offenders,
+            vec![
+                "control::unlocked".to_string(),
+                "control::via_helper".to_string()
+            ],
+            "the screen must flag an unlocked test AND one that reaches the globals only through \
+             a helper — that second case is the one that survived the first version of this \
+             screen — and must flag neither the locked test nor the innocent one. It did not, so \
+             any verdict it gives about the real files is an INSTRUMENT ERROR and not a detection \
+             (§10.0.1 R13)"
+        );
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = ["allocator.rs", "counters.rs", "transfer.rs", "ep.rs"];
+        let mut offenders = Vec::new();
+        let mut screened = 0usize;
+        for f in files {
+            let path = root.join(f);
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "INSTRUMENT ERROR, not a detection: this screen could not read {} ({e}). A \
+                     screen that cannot read its input has found nothing and must never be \
+                     reported as a pass (§10.0.1 R13).",
+                    path.display()
+                )
+            });
+            let (seen, mut found) = screen(f, &src);
+            screened += seen;
+            offenders.append(&mut found);
+        }
+        assert!(
+            screened >= 40,
+            "this screen parsed only {screened} tests across four files that hold dozens, so its \
+             parser has stopped matching and it has been passing without looking at anything"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these tests move the process-global ledger or tally without holding \
+             `ledger::test_lock()`, so their events are visible inside another test's frame and \
+             that test fails intermittently:\n  {}\n\nAdd `let _g = ledger::test_lock();` as the \
+             first statement. Do NOT reach for `--test-threads=1`: it hides this AND it hides a \
+             frame defect in shipping code, which has the same symptom and the opposite fix.",
+            offenders.join("\n  ")
+        );
     }
 }

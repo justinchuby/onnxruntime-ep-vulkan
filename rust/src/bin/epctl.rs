@@ -489,6 +489,14 @@ fn print_frame_identity(path: &str) {
     // `"UNOBSERVABLE"` and `"UNWIRED"` are JSON strings on purpose: arithmetic on them fails
     // loudly, and an increment can forge a number but never a type.
     match json_str(&raw, "alloc_device_authoritative_spans") {
+        Some("UNOBSERVABLE") if json_str(&raw, "alloc_device_frame") == Some("MIXED") => println!(
+            "epctl: alloc_device_authoritative_spans = UNOBSERVABLE (R12, MIXED frame) — this \
+             process declared more than one frame and the alloc_device_* tallies are \
+             process-global, so they describe a population drawn from several VkDevices. There is \
+             no frame in which to ask whether the counted event could occur, and an unanswerable \
+             question is never a measurement. Do not quote ANY alloc_device_* number from this \
+             run against a single device."
+        ),
         Some("UNOBSERVABLE") => println!(
             "epctl: alloc_device_authoritative_spans = UNOBSERVABLE (R12) — the event it counts \
              cannot occur in this run's frame. Not a negative result, and not fixable by adding a \

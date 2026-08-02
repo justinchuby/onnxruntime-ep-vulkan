@@ -1,0 +1,46 @@
+{
+  "instrument": "probe_indexspace",
+  "arms": {
+    "0": {
+      "alloc_device_frame": "SHARED",
+      "alloc_device_frame_allocator_index": "1",
+      "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+      "alloc_device_frame_sides": "alloc_device_frame=SHARED \u2014 BOTH sides are on the same VkDevice: 'NVIDIA GeForce RTX 4060 Laptop GPU' (factory device index 1). Sessions have offered: 1=NVIDIA GeForce RTX 4060 Laptop GPU.",
+      "alloc_device_buffer_binds": 6,
+      "alloc_device_backed_spans": 9,
+      "alloc_device_authoritative_spans": 0,
+      "alloc_device_residency_evaluations": 9
+    },
+    "1": {
+      "alloc_device_frame": "SHARED",
+      "alloc_device_frame_allocator_index": "0",
+      "alloc_device_frame_device": "Intel(R) Iris(R) Xe Graphics",
+      "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+      "alloc_device_frame_sides": "alloc_device_frame=SHARED \u2014 BOTH sides are on the same VkDevice: 'Intel(R) Iris(R) Xe Graphics' (factory device index 0). Sessions have offered: 0=Intel(R) Iris(R) Xe Graphics.",
+      "alloc_device_buffer_binds": 6,
+      "alloc_device_backed_spans": 9,
+      "alloc_device_authoritative_spans": 0,
+      "alloc_device_residency_evaluations": 9
+    }
+  },
+  "checks": {
+    "allocator_index_varies_with_selector": true,
+    "allocator_follows_session_on_selector_0": true,
+    "allocator_follows_session_on_selector_1": true,
+    "frame_shared_on_selector_0": true,
+    "frame_shared_on_selector_1": true,
+    "binds_left_zero_on_selector_0": true,
+    "binds_left_zero_on_selector_1": true
+  },
+  "allocator_indices": {
+    "selector_0": "1",
+    "selector_1": "0"
+  },
+  "offered_indices": {
+    "selector_0": "1",
+    "selector_1": "0"
+  },
+  "verdict": "ONE_INDEX_SPACE",
+  "detail": "the allocator's factory index moved '1' -> '0' as the selector moved 0 -> 1, matching the session's offered index on each arm ('1', '0'). The artifact's content varies with its input, so this is not a coincidence of two spaces agreeing on this box: swapping the GPUs swaps both indices together. Both arms SHARED, and alloc_device_buffer_binds is non-zero on both, so the engine binds its own device buffers on the same device the session runs on."
+}
