@@ -846,8 +846,8 @@ pub enum DeclineCode {
     ///
     /// Under §8.9 (`DESIGN.md`), claiming is gated on evidence: a `Ready` row without a proof
     /// entry is, for claiming purposes, equivalent to a row we cannot run.  The escape hatch
-    /// (`CLAIM_UNPROVEN`) accepts a comma-separated list of explicit proof keys and nothing else
-    /// — no wildcards, no `=1`, no domain patterns.
+    /// (`CLAIM_UNPROVEN`) accepts a semicolon-separated list of explicit proof keys and nothing
+    /// else — no wildcards, no `=1`, no domain patterns.
     Unproven,
     /// An internal inconsistency; should never reach a user.
     Internal,
@@ -1543,6 +1543,37 @@ impl ProofKey {
         ProofKey(s.trim().to_owned())
     }
 
+    /// Derive the key for one node against the row that would dispatch it.
+    ///
+    /// **This function is the whole of §8.7's expression-vs-path distinction.** Two nodes that
+    /// differ only in an *expression* (a different constant, a different name, a different extent
+    /// within the same shape class) produce the same string; two nodes that differ in a *path*
+    /// (dtype, variant, shape class, which optional inputs are populated) produce different
+    /// strings. There is no judgement call left in it, which is the point: the lookup is by key,
+    /// so evidence about one path cannot be returned for another.
+    ///
+    /// The `populated_optional_input_set` component is the one that would have caught the
+    /// 2026-07-30 all-zero-logits defect: `MatMulNBits` with `zero_points` and without are
+    /// different bindings, so they are different keys, so a proof of one is not findable under
+    /// the other.
+    pub fn from_node(view: &NodeView<'_>, spec: &'static OpSpec) -> ProofKey {
+        use crate::ops::common::claim::classify_shapes;
+        ProofKey(format!(
+            "{}::{}/{}/{}/{}/{}/{}",
+            if spec.domain.as_str().is_empty() {
+                "ai.onnx"
+            } else {
+                spec.domain.as_str()
+            },
+            spec.op_type,
+            opset_bucket(spec),
+            dtype_signature(view),
+            variant_key(view, spec),
+            shape_class_tag(classify_shapes(view)),
+            populated_input_set(view, spec),
+        ))
+    }
+
     /// Reject values that the §8.9.4 escape hatch must never accept.
     ///
     /// §8.9.4 rule 1: "a parser that can express 'everything' must not exist", enforced as a
@@ -1564,6 +1595,29 @@ impl ProofKey {
             return Err("bare op-type is not a valid proof key; use the full \
                  domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
         }
+        // The full structure, not merely "has a slash somewhere".
+        //
+        // Found 2026-08-01 by the separator control below, which planted a comma-split key and
+        // expected every fragment to be rejected. The first fragment — `ai.onnx::Add/7+/f32` —
+        // was *accepted*. A key truncated after its third component is not a narrower key; it is
+        // a key that matches nothing and reads like a key that matches something, and an
+        // operator who typed one would see no error and get a silent decline.
+        //
+        // R9 amendment 5: a validator that accepts a prefix moves with the reader's confidence —
+        // it says "yes" most readily to the input the reader is least equipped to check. So the
+        // structure is required outright rather than warned about.
+        if !t.contains("::") {
+            return Err("proof key is missing its `domain::op_type` prefix; use the full \
+                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
+        }
+        if t.matches('/').count() != 5 {
+            return Err("proof key does not have all six components; use the full \
+                 domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs form");
+        }
+        if t.split('/').any(|c| c.trim().is_empty()) {
+            return Err("proof key has an empty component; an empty field is a wildcard \
+                 by another name");
+        }
         Ok(ProofKey(t.to_owned()))
     }
 }
@@ -1574,15 +1628,40 @@ impl ProofKey {
 /// log) if any key fails validation — per §8.9.4, the default-safe setting requires no act, and a
 /// malformed allowlist fails loudly rather than silently enabling everything.
 ///
-/// The env var takes a comma-separated list of full proof keys.  There is no boolean form, no
-/// `=1`, and no wildcard.
-pub fn claim_unproven_keys() -> Vec<ProofKey> {
+/// The env var takes a **semicolon**-separated list of full proof keys.  There is no boolean form,
+/// no `=1`, and no wildcard.
+///
+/// # Why semicolons, and how we found out
+///
+/// It was comma-separated until 2026-08-01, and that was a defect the generator's attribution
+/// control caught on its first real run. **A proof key contains commas** — the dtype signature is
+/// `f32,f32>f32` — so a comma-separated list shredded every key into invalid fragments, the whole
+/// list was correctly discarded as malformed, and the run claimed nothing while reporting a clean
+/// `MATCH` against the CPU EP. The comparison was true and meant nothing: the EP had executed
+/// zero nodes. Had `prove()` not demanded `claimed_nodes > 0` and `dispatches_executed > 0`, the
+/// first ledger this project ever wrote would have been a set of proofs that the **CPU** EP is
+/// correct — R7's fabricated negative, arriving inside the mechanism built to prevent it.
+///
+/// The separator is therefore chosen to be a character `ProofKey::validate` rejects inside a key,
+/// and a test plants a comma-separated pair to keep it that way.
+pub fn claim_unproven_keys() -> &'static [ProofKey] {
+    static KEYS: std::sync::OnceLock<Vec<ProofKey>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(parse_claim_unproven_keys)
+}
+
+/// The parse itself, separated from the memo so a test can exercise it without a process-global.
+///
+/// Read once and cached: the previous shape re-read the environment and re-emitted the WARN on
+/// **every node**, which on Phi-3.5 is 365 identical warnings. A disclosure that repeats 365
+/// times is a disclosure a reader learns to filter, which is the opposite of what §8.9.4 item 3
+/// is for.
+fn parse_claim_unproven_keys() -> Vec<ProofKey> {
     let val = match std::env::var("ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),
     };
     let mut keys = Vec::new();
-    for part in val.split(',') {
+    for part in val.split(';') {
         match ProofKey::validate(part) {
             Ok(k) => keys.push(k),
             Err(e) => {
@@ -1605,23 +1684,402 @@ pub fn claim_unproven_keys() -> Vec<ProofKey> {
             keys.iter()
                 .map(|k| k.0.as_str())
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join("; ")
         );
     }
     keys
 }
 
-/// Proof ledger stub — returns `false` until Trinity's harness generates the ledger file.
+/// The row's opset window, rendered as the key's `opset_bucket` component.
 ///
-/// TODO(mouse, §8.9): Replace this with a ledger generated by the differential harness
-/// and baked into the cdylib at build time via `build.rs`. The ledger maps each
-/// `ProofKey` to the set of devices, ORT builds, and tolerance policies that proved it.
-/// A hand-edited ledger fails the regeneration check in CI.
+/// A *bucket*, not the node's `since_version`: a proof obtained at opset 14 covers opset 13 iff
+/// the same row dispatches both, and the row's window is exactly the statement "these opsets take
+/// the same path". A contrib row has no opset, so its window is `1..=any` and renders `1+`.
+fn opset_bucket(spec: &'static OpSpec) -> String {
+    if spec.max_opset == OPSET_ANY {
+        format!("{}+", spec.min_opset)
+    } else {
+        format!("{}-{}", spec.min_opset, spec.max_opset)
+    }
+}
+
+/// Element dtype of every populated input followed by every output, in slot order.
 ///
-/// Until the harness is ready, `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` is the only path
-/// to claiming `Ready` rows.
-pub fn ledger_contains(_key: &ProofKey) -> bool {
-    false
+/// `-` for an edge whose element type ORT did not give us a `DType` for; absent optional inputs
+/// contribute nothing here because they are recorded by [`populated_input_set`] instead. An f32
+/// node and an f16 node therefore differ in this component, which is why an f32 proof can never
+/// be returned for an f16 node.
+fn dtype_signature(view: &NodeView<'_>) -> String {
+    let suffix = |t: &Option<EdgeType>| -> &'static str {
+        match t.as_ref().and_then(|e| e.dtype) {
+            Some(d) => crate::ops::common::dtype::dtype_suffix(d),
+            None => "-",
+        }
+    };
+    let ins: Vec<&'static str> = view
+        .input_types()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| view.has_input(*i))
+        .map(|(_, t)| suffix(t))
+        .collect();
+    let outs: Vec<&'static str> = view.output_types().iter().map(suffix).collect();
+    format!("{}>{}", ins.join(","), outs.join(","))
+}
+
+/// The kernel variant that will actually be dispatched: the SPIR-V module stem.
+///
+/// The stem encodes template, template-op and dtype, which is the emitted code's identity. A row
+/// with no shader (metadata-only, e.g. a shape op handled on the host) reports `metadata` rather
+/// than an empty string, so that "no variant" is a value and not a hole.
+fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
+    let dispatch_dtype = view
+        .input_types()
+        .iter()
+        .enumerate()
+        .find(|(i, t)| view.has_input(*i) && t.as_ref().and_then(|e| e.dtype).is_some())
+        .and_then(|(_, t)| t.as_ref().and_then(|e| e.dtype))
+        .or_else(|| {
+            view.output_types()
+                .first()
+                .and_then(|t| t.as_ref().and_then(|e| e.dtype))
+        });
+    match dispatch_dtype.and_then(|d| spec.kernel.stem(d)) {
+        Some(stem) if !stem.is_empty() => stem.to_string(),
+        _ => "metadata".to_string(),
+    }
+}
+
+/// `shape_class ∈ {static, runtime-extent}` as §8.9 spells it, over the four classes we compute.
+///
+/// `ExtentsSymbolic` is §8.8's runtime-extent case and renders as `runtime-extent`; the two
+/// permanently-declined classes keep their own tags so that a key derived from an unclaimable
+/// node is still a distinct string rather than a collision with a claimable one.
+fn shape_class_tag(c: crate::ops::common::claim::ShapeClass) -> &'static str {
+    use crate::ops::common::claim::ShapeClass;
+    match c {
+        ShapeClass::Static => "static",
+        ShapeClass::ExtentsSymbolic => "runtime-extent",
+        other => other.tag(),
+    }
+}
+
+/// Which of an op's *optional* inputs are populated on this node.
+///
+/// The named table below is the part that makes this readable — `scales` and `scales+zero_points`
+/// are the two `MatMulNBits` forms of the 2026-07-30 defect, and they are different strings. For
+/// an op with no optional-input entry the component degrades to the populated-input **arity**,
+/// which is still a path distinction (an omitted interior optional changes it) and never a
+/// judgement call.
+fn populated_input_set(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
+    let qualified = spec.qualified_name();
+    if let Some(names) = optional_input_names(&qualified) {
+        let mut present: Vec<&'static str> = Vec::new();
+        for &(slot, name) in names {
+            if slot < view.num_inputs() && view.has_input(slot) {
+                present.push(name);
+            }
+        }
+        if present.is_empty() {
+            return "none".to_string();
+        }
+        return present.join("+");
+    }
+    let n = (0..view.num_inputs()).filter(|i| view.has_input(*i)).count();
+    format!("n{n}")
+}
+
+/// The optional inputs of the ops that have them, by slot index, in ONNX schema order.
+///
+/// Hand-written and spec-literal, per row, exactly as §1.4 C4 requires of a claim predicate: a
+/// generated or wildcard version of this table would be the domain-wide opt-in C1 forbids,
+/// wearing a different hat. An op that is absent here is not "assumed to have no optionals" —
+/// [`populated_input_set`] falls back to arity for it, which is a weaker distinction, not none.
+fn optional_input_names(qualified: &str) -> Option<&'static [(usize, &'static str)]> {
+    Some(match qualified {
+        // A, B, scales, zero_points?, g_idx?, bias?  — the defect of 2026-07-30 is slot 3.
+        "com.microsoft::MatMulNBits" => &[
+            (2, "scales"),
+            (3, "zero_points"),
+            (4, "g_idx"),
+            (5, "bias"),
+        ],
+        // query, key?, value?, past_key?, past_value?, seqlens_k, total_sequence_length,
+        // cos_cache?, sin_cache?  — key/value absent is R5's packed-QKV form.
+        "com.microsoft::GroupQueryAttention" => &[
+            (1, "key"),
+            (2, "value"),
+            (3, "past_key"),
+            (4, "past_value"),
+            (7, "cos_cache"),
+            (8, "sin_cache"),
+        ],
+        // input, skip, gamma, beta?, bias?
+        "com.microsoft::SkipSimplifiedLayerNormalization"
+        | "com.microsoft::SkipLayerNormalization" => &[(3, "beta"), (4, "bias")],
+        // X, Scale, B?
+        "LayerNormalization" | "com.microsoft::SimplifiedLayerNormalization" => &[(2, "B")],
+        // input, min?, max?
+        "Clip" => &[(1, "min"), (2, "max")],
+        // data, indices, updates? — Pad's pads/constant_value/axes are all optional after slot 0.
+        "Pad" => &[(1, "pads"), (2, "constant_value"), (3, "axes")],
+        // input, roi?, scales?, sizes?
+        "Resize" => &[(1, "roi"), (2, "scales"), (3, "sizes")],
+        _ => return None,
+    })
+}
+
+// -------------------------------------------------------------------------------------------
+// The ledger itself
+// -------------------------------------------------------------------------------------------
+
+/// The proof ledger, baked into the artifact at build time.
+///
+/// **JSON Lines, generated, never hand-edited.** `rust/tools/gen_proof_ledger.py` writes it from
+/// a differential run that obtained the evidence; `epctl --check-ledger` and
+/// `rust/tools/check_proof_ledger.py` reject a file whose digest does not match its own contents
+/// or whose evidence artifact has moved or changed. The first line is the header; every other
+/// non-empty line is one entry.
+///
+/// It is `include_str!`d rather than read from disk on purpose: a ledger a running process can be
+/// pointed at with an environment variable is an escape hatch that §8.9.4 does not authorise, and
+/// it would let the shipped artifact disagree with the tested one.
+const LEDGER_SOURCE: &str = include_str!("../../evidence/proof_ledger.jsonl");
+
+/// One proof: a key, and the evidence that proved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerEntry {
+    /// The proof key this entry proves.
+    pub key: ProofKey,
+    /// The device the differential ran on, e.g. `NVIDIA GeForce RTX 4060 Laptop GPU`.
+    pub device: String,
+    /// The ONNX Runtime build the differential ran against.
+    pub ort_build: String,
+    /// The tolerance policy applied to the comparison.
+    pub tolerance: String,
+    /// The artifact or builder the case came from.
+    pub artifact: String,
+    /// The model-level verdict of the run that produced this entry. Only `MATCH` is admissible;
+    /// a `DIVERGENT` run demotes rather than proves (§8.9.2 rule 4), so the generator writes no
+    /// entry at all for one.
+    pub verdict: String,
+    /// When the evidence was obtained.
+    pub generated_at: String,
+}
+
+/// The parsed ledger plus the header facts a checker needs.
+#[derive(Debug)]
+pub struct Ledger {
+    entries: Vec<LedgerEntry>,
+    /// The header's declared entry count.
+    pub declared_count: usize,
+    /// The header's declared content digest.
+    pub declared_digest: String,
+    /// The digest recomputed over the entry lines actually present.
+    pub actual_digest: String,
+    /// The generator that wrote it.
+    pub generator: String,
+    /// Parse or consistency problems. Non-empty means the ledger is not usable and every form
+    /// declines — a broken ledger is the safe state, not the permissive one.
+    pub faults: Vec<String>,
+}
+
+impl Ledger {
+    /// Entries, in file order.
+    pub fn entries(&self) -> &[LedgerEntry] {
+        &self.entries
+    }
+
+    /// How many proofs it holds.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether it holds no proofs at all. **This is the state that makes a ledger *hit*
+    /// `UNOBSERVABLE` rather than `0`** (R12): with no entries baked in, a hit could not have
+    /// occurred in this frame, so a count of zero hits is not a measurement of anything.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Whether the digest in the header matches the entries under it.
+    pub fn digest_ok(&self) -> bool {
+        self.declared_digest == self.actual_digest
+    }
+
+    /// Look one key up.
+    pub fn get(&self, key: &ProofKey) -> Option<&LedgerEntry> {
+        if !self.faults.is_empty() {
+            return None;
+        }
+        self.entries.iter().find(|e| &e.key == key)
+    }
+}
+
+/// FNV-1a/64 over the ledger's entry lines, matching `rust/tools/gen_proof_ledger.py`.
+///
+/// A checksum, not a signature, and the distinction is recorded rather than smoothed: it catches
+/// the careless hand-edit, which is the failure §8.9.2 rule 3 names. It does **not** catch a
+/// deliberate forgery, because anyone who can edit the file can recompute it. The defence against
+/// that is `check_proof_ledger.py`, which re-hashes each entry's evidence artifact — an entry
+/// whose artifact does not exist or does not match is rejected there.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Pull one `"field": "value"` string out of a JSON object line.
+///
+/// Deliberately small: the ledger is written by our own generator in a fixed shape, so a full
+/// JSON parser would be a dependency bought to read a file we emit. Handles the escapes
+/// `claim_log::escape` can produce and nothing else; anything unexpected surfaces as a fault
+/// rather than as a silently-empty field.
+fn json_field(line: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":");
+    let start = line.find(&needle)? + needle.len();
+    let rest = line[start..].trim_start();
+    let mut chars = rest.chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in chars {
+        if escaped {
+            out.push(match c {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                other => other,
+            });
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// Parse the baked-in ledger source.
+fn parse_ledger(source: &str) -> Ledger {
+    let mut faults: Vec<String> = Vec::new();
+    let mut lines = source
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+
+    let header = lines.next().unwrap_or("");
+    let generator = json_field(header, "generator").unwrap_or_default();
+    let declared_digest = json_field(header, "content_fnv1a64").unwrap_or_default();
+    let declared_count: usize = json_field(header, "entry_count")
+        .or_else(|| {
+            // `entry_count` is a number, not a string.
+            let needle = "\"entry_count\":";
+            let start = header.find(needle)? + needle.len();
+            let rest = header[start..].trim_start();
+            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            Some(rest[..end].to_string())
+        })
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if generator.is_empty() {
+        faults.push("ledger header names no generator".to_string());
+    }
+
+    let mut entries = Vec::new();
+    let mut digest_input = String::new();
+    for line in lines {
+        digest_input.push_str(line);
+        digest_input.push('\n');
+        let Some(raw_key) = json_field(line, "key") else {
+            faults.push(format!("ledger line has no `key` field: {line}"));
+            continue;
+        };
+        let key = match ProofKey::validate(&raw_key) {
+            Ok(k) => k,
+            Err(e) => {
+                faults.push(format!("ledger key {raw_key:?} is not a valid proof key: {e}"));
+                continue;
+            }
+        };
+        let verdict = json_field(line, "verdict").unwrap_or_default();
+        if verdict != "MATCH" {
+            // §8.9.2 rule 4: only a MATCH proves. Anything else in this file is a generator bug
+            // or a hand-edit, and either way the entry does not get to grant a claim.
+            faults.push(format!(
+                "ledger entry for {raw_key:?} carries verdict {verdict:?}; only MATCH proves"
+            ));
+            continue;
+        }
+        entries.push(LedgerEntry {
+            key,
+            device: json_field(line, "device").unwrap_or_default(),
+            ort_build: json_field(line, "ort_build").unwrap_or_default(),
+            tolerance: json_field(line, "tolerance").unwrap_or_default(),
+            artifact: json_field(line, "artifact").unwrap_or_default(),
+            verdict,
+            generated_at: json_field(line, "generated_at").unwrap_or_default(),
+        });
+    }
+
+    let actual_digest = format!("{:016x}", fnv1a64(digest_input.as_bytes()));
+    if !declared_digest.is_empty() && declared_digest != actual_digest {
+        faults.push(format!(
+            "ledger digest mismatch: header declares {declared_digest}, contents hash to \
+             {actual_digest}. The ledger has been hand-edited; regenerate it with \
+             rust/tools/gen_proof_ledger.py"
+        ));
+    }
+    if declared_count != entries.len() && faults.is_empty() {
+        faults.push(format!(
+            "ledger header declares {declared_count} entries, {} parsed",
+            entries.len()
+        ));
+    }
+    // Duplicate keys are a generator fault, not a merge convenience: two proofs of one key
+    // disagreeing about their evidence is exactly the fork R7 forbids.
+    for (i, e) in entries.iter().enumerate() {
+        if entries[..i].iter().any(|p| p.key == e.key) {
+            faults.push(format!("ledger contains duplicate key {}", e.key.0));
+        }
+    }
+
+    Ledger {
+        entries,
+        declared_count,
+        declared_digest,
+        actual_digest,
+        generator,
+        faults,
+    }
+}
+
+/// The process-wide ledger, parsed once.
+pub fn ledger() -> &'static Ledger {
+    static LEDGER: std::sync::OnceLock<Ledger> = std::sync::OnceLock::new();
+    LEDGER.get_or_init(|| {
+        let l = parse_ledger(LEDGER_SOURCE);
+        for f in &l.faults {
+            log::warn!("[VulkanEP] proof ledger fault: {f}");
+        }
+        l
+    })
+}
+
+/// Whether the ledger holds a proof for this key.
+///
+/// Wired into [`claim_audit`]; the counter it feeds is `proven_key_lookups`, which is what makes
+/// this mechanism observable rather than merely present (R10).
+pub fn ledger_contains(key: &ProofKey) -> bool {
+    ledger().get(key).is_some()
 }
 
 ///
@@ -1684,6 +2142,14 @@ pub struct ClaimAudit {
     pub shape_class: crate::ops::common::claim::ShapeClass,
     pub predicate_ok: bool,
     pub predicate_ok_with_runtime_extents: bool,
+    /// The §8.9 proof key for this node, or `None` when the op has no row at all (there is no
+    /// row to derive a variant or an opset bucket from, so there is no key — which is a third
+    /// state, not an empty string).
+    pub proof_key: Option<ProofKey>,
+    /// Whether the ledger held a proof under that key. Always `false` for a `Staged` row, which
+    /// is not a finding about evidence: the lookup does not happen because a row with no kernel
+    /// cannot be claimed on any evidence.
+    pub ledger_hit: bool,
 }
 
 impl ClaimAudit {
@@ -1723,10 +2189,12 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         return ClaimAudit {
             primary: Some(reason.clone()),
             failures: vec![reason],
-            unevaluated: vec!["opset", "contrib-schema", "status", "predicate"],
+            unevaluated: vec!["opset", "contrib-schema", "status", "predicate", "ledger"],
             shape_class,
             predicate_ok: false,
             predicate_ok_with_runtime_extents: false,
+            proof_key: None,
+            ledger_hit: false,
         };
     };
 
@@ -1770,6 +2238,48 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         failures.push(e);
     }
 
+    // --- §8.9: the proof-ledger gate ---
+    //
+    // Last, deliberately. A node that has no kernel, the wrong opset or a shape we cannot handle
+    // is those things first; reporting it as `[unproven]` would make the decline histogram (R8)
+    // say "we need evidence" where it should say "we need a kernel", and R8's whole point is that
+    // the histogram decides what gets built next.
+    //
+    // It runs for **every** node with a row, including a `Staged` one, so that `proof_key` is
+    // recorded in the claim log whether or not the node was claimable — that log is what
+    // `gen_proof_ledger.py` reads to learn which keys a run would need. A key computed only for
+    // nodes that already pass is a key that can never bootstrap.
+    let proof_key = ProofKey::from_node(view, spec);
+    let ledger_hit = if spec.is_live() {
+        let hit = ledger_contains(&proof_key);
+        crate::counters::record_ledger_lookup(hit);
+        hit
+    } else {
+        false
+    };
+    let hatch = if spec.is_live() && !ledger_hit {
+        let enabled = claim_unproven_keys().iter().any(|k| *k == proof_key);
+        if enabled {
+            crate::counters::record_unproven_form_enabled(&proof_key.0);
+        }
+        enabled
+    } else {
+        false
+    };
+    if spec.is_live() && !ledger_hit && !hatch {
+        crate::counters::record_unproven_decline();
+        failures.push(decline(
+            DeclineCode::Unproven,
+            format_args!(
+                "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
+                 correct on this form, so it runs on the CPU EP, which is always right. Prove it \
+                 with rust/tools/gen_proof_ledger.py, or enable it for development with \
+                 ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
+                proof_key.0, proof_key.0
+            ),
+        ));
+    }
+
     let predicate_ok_with_runtime_extents = if !with_counterfactual {
         predicate_ok
     } else if predicate_ok {
@@ -1786,6 +2296,8 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         shape_class,
         predicate_ok,
         predicate_ok_with_runtime_extents,
+        proof_key: Some(proof_key),
+        ledger_hit,
     }
 }
 
@@ -2315,10 +2827,106 @@ mod tests {
         );
     }
 
+    /// A truncated key must be rejected, not narrowed.
+    ///
+    /// `ai.onnx::Add/7+/f32` is what a comma-split of a real key produces, and it passed
+    /// validation until 2026-08-01. It is not a key for fewer forms; it is a key for no forms,
+    /// which an operator cannot tell apart from a working one because both produce silence.
+    #[test]
+    fn claim_unproven_rejects_a_truncated_key() {
+        assert!(ProofKey::validate("ai.onnx::Add/7+/f32").is_err());
+        assert!(ProofKey::validate("ai.onnx::Add").is_err());
+        assert!(ProofKey::validate("Add/7+/f32,f32>f32/ew/static/n2").is_err());
+        assert!(
+            ProofKey::validate("ai.onnx::Add/7+//ew_binary_add_f32/static/n2").is_err(),
+            "an empty component matches everything in that position"
+        );
+    }
+
     /// An empty key is rejected (no ambiguity, but also not a key).
     #[test]
     fn claim_unproven_rejects_empty() {
         assert!(ProofKey::validate("").is_err());
         assert!(ProofKey::validate("   ").is_err());
+    }
+
+    /// The escape-hatch list separator must not be a character that occurs *inside* a key.
+    ///
+    /// This is a regression control for a defect found on 2026-08-01 by the generator's
+    /// attribution check, not by reading the parser. The list was comma-separated; a proof key
+    /// contains commas in its dtype signature (`f32,f32>f32`); so a single well-formed key
+    /// arrived at the parser as three malformed fragments, the list was discarded, and the run
+    /// silently claimed nothing while a CPU-vs-CPU comparison returned `MATCH`.
+    ///
+    /// The test plants both halves of that failure:
+    ///   * a real key split on `,` yields fragments that do **not** validate — so a comma
+    ///     separator could never carry a key, and
+    ///   * the same key split on `;` yields exactly itself.
+    ///
+    /// Asked R9's question — which way does this move when its subject is wrong? — a separator
+    /// that collides with key syntax moves *towards* silence: the operator sets the variable,
+    /// sees no error at the shell, and gets a decline. It cannot be repaired by tightening the
+    /// validator, because the validator was already right. It is repaired by the separator.
+    #[test]
+    fn claim_unproven_separator_does_not_occur_inside_a_key() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+
+        assert!(
+            ProofKey::validate(KEY).is_ok(),
+            "the planted key must itself be valid, or the control proves nothing"
+        );
+
+        let comma_fragments: Vec<&str> = KEY.split(',').collect();
+        assert!(
+            comma_fragments.len() > 1,
+            "a real proof key must contain a comma, or this control has stopped testing anything"
+        );
+        for frag in &comma_fragments {
+            assert!(
+                ProofKey::validate(frag).is_err(),
+                "comma-splitting a key produced the validatable fragment {frag:?} — the separator \
+                 collision would be silent"
+            );
+        }
+
+        let semi_fragments: Vec<&str> = KEY.split(';').collect();
+        assert_eq!(
+            semi_fragments,
+            vec![KEY],
+            "';' must not occur inside a proof key; it is the list separator"
+        );
+    }
+
+    /// Two forms of the same op must produce two different keys.
+    ///
+    /// R11's `arms_must_differ`: a key function that returned a constant would make every proof
+    /// satisfy every form, and the ledger would appear to close while proving nothing. The pairs
+    /// below differ in exactly one component each — dtype, optional-input set, shape class — and
+    /// each is a difference §8.7 calls a *path* difference.
+    #[test]
+    fn distinct_forms_have_distinct_keys() {
+        let pairs = [
+            (
+                "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+                "ai.onnx::Add/7+/f16,f16>f16/ew_binary_add_f16/static/n2",
+            ),
+            (
+                "com.microsoft::MatMulNBits/1+/f16,u8,f16/qgemv_f16/runtime-extent/scales",
+                "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8/qgemv_f16/runtime-extent/scales+zero_points",
+            ),
+            (
+                "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+                "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/runtime-extent/n2",
+            ),
+        ];
+        for (a, b) in pairs {
+            assert!(ProofKey::validate(a).is_ok(), "{a} must be a valid key");
+            assert!(ProofKey::validate(b).is_ok(), "{b} must be a valid key");
+            assert_ne!(
+                a, b,
+                "two different forms collapsed to one key — a proof of one would be returned for \
+                 the other"
+            );
+        }
     }
 }

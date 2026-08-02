@@ -55,10 +55,11 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
-pub const COUNTERS_ABI_VERSION: u32 = 2;
+pub const COUNTERS_ABI_VERSION: u32 = 3;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -461,6 +462,33 @@ pub struct VulkanEpCounters {
     /// when 0 so that the wiring census (R10) can distinguish "gate ran, all rejected" from
     /// "UNWIRED" (key absent).  Added in ABI version 2.
     pub viable_islands_retained: u64,
+    /// Nodes for which the §8.9 proof ledger was consulted at all (`Ready` rows).  **Added in
+    /// ABI version 3.**
+    ///
+    /// The unconditional half of the pair, so a run in which the gate never executed reads `0`
+    /// here regardless of what `ledger_hits` says.  Present even when 0, for the same reason
+    /// `viable_islands_retained` is: absence of the field and a value of zero are different
+    /// facts and must not share a spelling (R12).
+    ///
+    /// The C ABI carries the *counts* only. The three-state token (`"UNWIRED"` /
+    /// `"UNOBSERVABLE"` / int) lives in the JSON artifact, because a `u64` cannot express it —
+    /// a reader of this struct must derive the state from `proven_key_lookups == 0` and
+    /// `ledger_entries == 0` rather than from a sentinel value, since every sentinel a `u64`
+    /// could carry is also a legitimate count.
+    pub proven_key_lookups: u64,
+    /// Of those lookups, the ones the ledger held a proof for.  **ABI version 3.**
+    pub ledger_hits: u64,
+    /// Nodes declined with `[unproven]` — a kernel exists and no proof covers the form.
+    /// **ABI version 3.**
+    pub unproven_declines: u64,
+    /// Entries in the ledger compiled into this binary.  **ABI version 3.**
+    ///
+    /// Needed to tell `UNOBSERVABLE` (an empty ledger — a hit could not have occurred) from a
+    /// real miss. Without it, `ledger_hits == 0` is the ambiguous digit RAI-011 was raised over.
+    pub ledger_entries: u64,
+    /// Forms claimed through the `CLAIM_UNPROVEN` escape hatch rather than on evidence.
+    /// **ABI version 3.**  Non-zero means this run's claims are not fully backed by proofs.
+    pub unproven_forms_claimed: u64,
 }
 
 static COMPILE_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -541,9 +569,29 @@ impl OverriddenVerdict {
     }
 }
 
+// --- §8.9 proof-ledger gate (criterion 11). Owner: Mouse (`registry.rs`). ---
+//
+// The same three-state shape as the net-benefit gate above, and for the same reason. Before
+// RAI-011, `viable_islands_retained: 0` meant *bypassed* and *all-rejected* and *never ran*, all
+// on one digit. `proven_key_lookups` is the unconditional half here: every node with a `Ready`
+// row increments it whether the ledger hit or missed, so a run in which the mechanism never
+// executed is `0` — a state the JSON reports as the string `"UNWIRED"`, not as a number.
+/// Nodes for which the ledger was consulted at all.
+static LEDGER_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones the ledger held a proof for.
+static LEDGER_HITS: AtomicU64 = AtomicU64::new(0);
+/// Nodes declined with `[unproven]`: a kernel exists, no proof covers the form, and the form is
+/// not in the §8.9.4 allowlist.
+static UNPROVEN_DECLINES: AtomicU64 = AtomicU64::new(0);
+/// Nodes claimed only because their key was in `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`.
+static UNPROVEN_FORMS_CLAIMED: AtomicU64 = AtomicU64::new(0);
+/// The distinct keys that the escape hatch actually let through, for
+/// `unproven_forms_enabled: [...]` (§8.9.4 item 3). A list rather than a count on purpose: the
+/// CI check has to be able to *name* what a lane claimed without evidence.
+static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
-static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
-/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
+static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 /// Compute failures produced by the fault-injection control rather than suffered.
 static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
@@ -628,11 +676,115 @@ pub fn record_net_benefit_decision(evaluated: bool) {
 /// Must be called *in addition to* [`record_net_benefit_decision`]`(true)`, never instead of it:
 /// the island was evaluated, and then its verdict was overridden. An override that suppressed the
 /// evaluation record would be the bypass again.
+///
+/// The reason is a required argument rather than a second optional call, because an entry point
+/// that records the override without the reason is the same shape as the bypass it replaced: one
+/// path that reports and one that stays quiet.
 pub fn record_sole_island_override(reason: Option<OverriddenVerdict>) {
     NET_BENEFIT_SOLE_ISLAND_OVERRIDES.fetch_add(1, ORD);
     if let Some(reason) = reason {
         NET_BENEFIT_OVERRIDE_REASONS.fetch_or(reason.bit(), ORD);
     }
+}
+
+/// Record one §8.9 proof-ledger consultation.
+///
+/// Unconditional half first, exactly as [`record_net_benefit_decision`] does it: the only way to
+/// make `ledger_hits` non-zero is through the path that also increments `proven_key_lookups`, so
+/// a hit count cannot exist without a lookup count to divide it by.
+pub fn record_ledger_lookup(hit: bool) {
+    LEDGER_LOOKUPS.fetch_add(1, ORD);
+    if hit {
+        LEDGER_HITS.fetch_add(1, ORD);
+    }
+}
+
+/// Record a node declined because nothing has proven its form (§8.9, `DeclineCode::Unproven`).
+pub fn record_unproven_decline() {
+    UNPROVEN_DECLINES.fetch_add(1, ORD);
+}
+
+/// Record that the §8.9.4 escape hatch let one node through, and which key did it.
+///
+/// The key is kept, not merely counted. `epctl --check-counters` fails on a non-empty
+/// `unproven_forms_enabled` list, and a CI lane that has to be told *what* it claimed without
+/// evidence is a lane whose operator can act on the message.
+pub fn record_unproven_form_enabled(key: &str) {
+    UNPROVEN_FORMS_CLAIMED.fetch_add(1, ORD);
+    if let Ok(mut used) = UNPROVEN_KEYS_USED.lock()
+        && !used.iter().any(|k| k == key)
+    {
+        used.push(key.to_string());
+    }
+}
+
+/// Escape a string for a JSON string literal. Proof keys are `[A-Za-z0-9:./,+_-]` by
+/// construction, so this exists to keep a malformed key from producing malformed JSON rather
+/// than because one is expected.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The three-state reading of `ledger_hits`, as a JSON fragment. Same shape, same reasons, as
+/// [`viable_islands_retained_json`] — one mechanism's vocabulary, not two (R10 sub-rule).
+///
+/// * `"UNWIRED"` — no node reached the ledger check at all, so the gate did not run.
+/// * `"UNOBSERVABLE"` — the check ran, and the ledger baked into this artifact holds **no
+///   entries**, so a hit could not have occurred in this frame. `0` here would read as "we
+///   looked and nothing matched", which is a different fact about a different world (R12).
+/// * an integer — the ledger has entries and this is how many of the lookups found one.
+fn ledger_hits_json() -> String {
+    let lookups = LEDGER_LOOKUPS.load(ORD);
+    if lookups == 0 {
+        "\"UNWIRED\"".to_string()
+    } else if crate::registry::ledger().is_empty() {
+        "\"UNOBSERVABLE\"".to_string()
+    } else {
+        LEDGER_HITS.load(ORD).to_string()
+    }
+}
+
+/// Token naming what the ledger gate did on this run, for a reader grepping a word.
+///
+/// `FAULTED` is R13's instrument state and outranks the rest: a ledger that failed its own
+/// digest or parse check has produced no reading, and reporting that as `DECLINED` would spell
+/// an instrument outage exactly like a detection.
+fn ledger_gate_state() -> &'static str {
+    let ledger = crate::registry::ledger();
+    if !ledger.faults.is_empty() {
+        return "FAULTED";
+    }
+    let lookups = LEDGER_LOOKUPS.load(ORD);
+    let hits = LEDGER_HITS.load(ORD);
+    let declines = UNPROVEN_DECLINES.load(ORD);
+    match (lookups, hits, declines) {
+        (0, _, _) => "UNWIRED",
+        (_, 0, 0) => "MIXED",
+        (_, _, 0) => "ALL-PROVEN",
+        (_, 0, _) => "ALL-DECLINED",
+        _ => "MIXED",
+    }
+}
+
+/// `unproven_forms_enabled` — the §8.9.4 item-3 disclosure, as a JSON array fragment.
+///
+/// Absent-meaning-empty is what §8.9.4 specifies, and an empty array is how JSON spells it. This
+/// is the value `epctl --check-counters` fails on when it is non-empty.
+fn unproven_forms_enabled_json() -> String {
+    let Ok(used) = UNPROVEN_KEYS_USED.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
 }
 
 /// The three-state reading of `viable_islands_retained`, as a JSON fragment.
@@ -775,6 +927,11 @@ pub fn snapshot() -> VulkanEpCounters {
         compute_failures: COMPUTE_FAILURES.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
         viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
+        proven_key_lookups: LEDGER_LOOKUPS.load(ORD),
+        ledger_hits: LEDGER_HITS.load(ORD),
+        unproven_declines: UNPROVEN_DECLINES.load(ORD),
+        ledger_entries: crate::registry::ledger().len() as u64,
+        unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
     }
 }
 
@@ -801,6 +958,13 @@ pub fn reset() {
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
+    LEDGER_LOOKUPS.store(0, ORD);
+    LEDGER_HITS.store(0, ORD);
+    UNPROVEN_DECLINES.store(0, ORD);
+    UNPROVEN_FORMS_CLAIMED.store(0, ORD);
+    if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
+        used.clear();
+    }
 }
 
 impl VulkanEpCounters {
@@ -840,6 +1004,14 @@ impl VulkanEpCounters {
              \"broken_commitment_warn_channel\": \"{}\",\n  \
              \"compute_failures_injected\": {},\n  \
              \"fault_injection\": \"{}\",\n  \
+             \"proven_key_lookups\": {},\n  \
+             \"ledger_hits\": {},\n  \
+             \"ledger_gate\": \"{}\",\n  \
+             \"ledger_entries\": {},\n  \
+             \"ledger_faults\": {},\n  \
+             \"unproven_declines\": {},\n  \
+             \"unproven_forms_claimed\": {},\n  \
+             \"unproven_forms_enabled\": {},\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -866,6 +1038,14 @@ impl VulkanEpCounters {
             } else {
                 "NONE"
             },
+            LEDGER_LOOKUPS.load(ORD),
+            ledger_hits_json(),
+            ledger_gate_state(),
+            crate::registry::ledger().len(),
+            crate::registry::ledger().faults.len(),
+            UNPROVEN_DECLINES.load(ORD),
+            UNPROVEN_FORMS_CLAIMED.load(ORD),
+            unproven_forms_enabled_json(),
             equiv,
         )
     }

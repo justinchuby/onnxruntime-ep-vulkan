@@ -36,6 +36,16 @@
 //! | `shape_class` | string      | `static` \| `extents-symbolic` \| `rank-unknown` \| `data-dependent` |
 //! | `predicate_ok` | bool           | the row's predicate accepts this node *today*, ignoring status  |
 //! | `predicate_ok_runtime_extents` | bool | the row's predicate accepts it if extents arrive at `Compute` |
+//! | `proof_key` | string \| null | the §8.9 proof key for this node; `null` when the op has no registry row at all |
+//! | `ledger_hit` | bool           | whether the proof ledger held an entry under that key |
+//!
+//! # `proof_key` is what makes the ledger bootstrappable
+//!
+//! It is recorded for **every** node with a row, claimed or declined, `Ready` or `Staged`. A key
+//! computed only for nodes that already pass is a key that can never bootstrap: the whole point
+//! of the §8.9.4 escape hatch is that you enable a form *in order to prove it*, and you cannot
+//! enable a key you have no way to learn. `rust/tools/gen_proof_ledger.py` reads this field from
+//! a claim-log pass and turns it into the allowlist for the proving pass.
 //!
 //! # `code` is first-match; `codes` is the whole truth
 //!
@@ -225,7 +235,8 @@ pub(crate) fn audit_line(
     let unevaluated = json_str_array(audit.unevaluated.iter().copied());
     format!(
         "{},\"codes\":{},\"reasons\":{},\"unevaluated\":{},\"shape_class\":\"{}\",\
-         \"predicate_ok\":{},\"predicate_ok_runtime_extents\":{}}}",
+         \"predicate_ok\":{},\"predicate_ok_runtime_extents\":{},\"proof_key\":{},\
+         \"ledger_hit\":{}}}",
         base.trim_end_matches('}'),
         codes,
         reasons,
@@ -233,6 +244,11 @@ pub(crate) fn audit_line(
         audit.shape_class.tag(),
         audit.predicate_ok,
         audit.predicate_ok_with_runtime_extents,
+        match &audit.proof_key {
+            Some(k) => format!("\"{}\"", escape(&k.0)),
+            None => "null".to_string(),
+        },
+        audit.ledger_hit,
     )
 }
 
@@ -299,6 +315,8 @@ mod tests {
             shape_class,
             predicate_ok: false,
             predicate_ok_with_runtime_extents: false,
+            proof_key: None,
+            ledger_hit: false,
         }
     }
 
