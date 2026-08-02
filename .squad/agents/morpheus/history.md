@@ -236,3 +236,69 @@ working, not the clause being circumvented.
 - `outputs_compared` is a live R11 obligation-4 specimen and belongs in criterion 12's conjunct (iv)
   alongside `MEASURED_PHI35_DEV0`.
 - Four declines now, and this one I checked hardest because reopening was the ruling I wanted.
+
+## 2026-08-02T15:15:12-07:00 — The accumulation question had a false premise; the residual is ULPs
+
+I was asked to make a cost ruling: should f16 kernels accumulate in f32, knowing it would invalidate
+all 74 freshly re-proved ledger entries. Mouse declined to make it himself and the coordinator was
+right to honour that boundary.
+
+**I checked the kernels before ruling on the economics, and every f16 kernel already accumulates in
+fp32.** `q_gemv.comp` says so in terms — "Accumulation is fp32 regardless of storage, which is also
+what ORT's SQNBIT_CompFp32 path does". Both layer-norm f16 kernels say it. `gqa_f16.comp` declares
+`float acc[128]`, `float dot`, and runs the online softmax in float, converting on load. fp16 is a
+storage format in this EP and never was an accumulation format.
+
+So the ruling is: no change, no cost, no ledger invalidation. **Had I reasoned about the trade as it
+was posed — registers, occupancy, bandwidth-bound decode at ctx 0 — I would have produced a careful
+and completely wasted analysis, and authorised a real cost to obtain a property we already have.**
+That is the lesson I want to keep from this one: the question arrived with an embedded factual claim
+and the claim was the thing to check first. I nearly reasoned about the economics because the
+economics were what I was asked about.
+
+**Then the residual.** I dumped all 65 per-output diffs. Sixty-four are exact negative powers of two
+and the sixty-fifth is 3 x 2^-9. They are small integer multiples of the fp16 ULP. KV activation
+magnitude grows with depth in a transformer, the ULP grows with it, and the absolute residual rises
+with depth for a perfectly correct implementation. **The "monotone accumulation curve" is a plot of
+tensor magnitude.**
+
+So the tolerance argument is wrong for a reason nobody in the thread had reached: atol is an absolute
+bound applied to tensors of growing scale. Section 10.0.4's "prefer the ratio", arriving as a defect
+rather than as advice. The unit is wrong, not the number — and I made a point of writing that fixing
+the unit may make the gate *tighter*, because otherwise this ruling reads as a relaxation and it is
+not one.
+
+I gave the replacement a prediction before it exists: residual in ULPs, predicted flat at 1-3 across
+all 32 layers. Flat means no defect. A step means a located defect. It is better in both outcomes and
+unlike the current gate it can be wrong.
+
+**A correction to the finding I had to make carefully.** Mouse said the curve rises monotonically. The
+absolute series broadly does; max_rel_diff does not — layer 2's key is 0.4559, above every layer from
+3 to 30, on an unremarkable absolute residual, because max_rel is attained at near-zero elements. He
+had just corrected one wrong denominator in his own instrument and there was a second one left. I
+tried to say this in a way that credits the correction he made rather than scoring the one he missed.
+
+**R9's dual, and I declined to number it again — fifth decline, second consecutive unnumbered
+finding.** I ran the self-check in the open this time because two in a row is exactly when I should
+suspect I have found a comfortable way of never growing the register. My honest conclusion: the dual
+is the same rule with the same remedy. Everything this session was a reading that does not move when
+its subject is wrong; this is a reading that moves when its subject is fine. Both are readings of
+something other than the claim. That the *dual* keeps arriving argues R9 is the home, not that a new
+number is owed.
+
+**I declined the comfort of argmax=30751 and top10=10/10, and said the reason is arithmetic rather
+than scepticism: it is one token.** The coordinator asked directly whether it was reassuring or
+misleading and said he did not know which. It is neither. The rank invariant is the right invariant —
+10.0.4 says so — and N=1 is not a stated N.
+
+**Carry forward:**
+- Criterion 10 stays open on the unit alone. Its reopening ground (all-zero KV) is measured absent:
+  degenerate 0, 65/65 compared, planted control refuses. verdict=DIVERGENT is honest and must not be
+  flipped by moving atol.
+- The ULP series is the closing artifact. Prediction on record: flat, 1-3, all 32 layers.
+- GQA's 1.37x margin is untouched by this ruling and stays open. Its proposed remedy turned out to be
+  already in place, which is not a reason to close it.
+- The CPU EP is not ground truth; it is a second fp16 implementation. Elementwise disagreement between
+  two correct fp16 implementations grows with depth by construction. Worth repeating to anyone who
+  frames this as "accumulated error".
+- Five declines now. If a sixth arrives I should ask someone else whether the register is under-growing.
