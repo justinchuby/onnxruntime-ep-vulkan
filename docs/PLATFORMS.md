@@ -1762,7 +1762,7 @@ The rule therefore keys off **the record's presence, not the token's value**. Ke
 
 Routed to Niobe (owner of `bench/`): `bench/phi35.py` should stamp `model_output_equivalence_authority` at write time so it survives regeneration. The four existing certified artifacts were stamped by hand; her code was not edited.
 
-## 7.16 Criterion 12: the three things the census cannot supply about itself — added 2026-08-02T03:30-07:00
+## 7.17 Criterion 12: the three things the census cannot supply about itself — added 2026-08-02T03:30-07:00
 
 Morpheus's ruling is the one to keep in front of you:
 
@@ -1770,7 +1770,7 @@ Morpheus's ruling is the one to keep in front of you:
 
 `unwired: []` on both devices is a true sentence about a mechanism list. Row 12 asks for three further things, and none of them can be answered from inside the census, because each one needs a fact the census does not own. `ci/check_census_completeness.py` supplies them, with `ci/census_surface_map.json` as its map and `ci/negative_control_census_completeness.py` as its falsifier. **It does not close row 12.** Trinity owns that tally, as she owns criterion 11's, and supplying the artifact and closing the row must not be the same act.
 
-### 7.16.1 The whole: twelve out of *what*
+### 7.17.1 The whole: twelve out of *what*
 
 If the denominator comes from the same list that produced the numerator, `12/12` is true by construction, can never fail, and reads as coverage while asserting nothing — R11's hardest kind of wrong, and the shape criterion 11 was refused on. So the whole is enumerated from **production Rust that the census does not write**:
 
@@ -1796,7 +1796,7 @@ Against those 50 surfaces the census's twelve mechanisms account for:
 
 Numerator and denominator now have different authors, in different files, in a different language. That is the property that lets the count be wrong — and a count that cannot be wrong is not a measurement.
 
-### 7.16.2 Extent: how much of each mechanism the observation covers
+### 7.17.2 Extent: how much of each mechanism the observation covers
 
 | Mechanism | Extent | Not named by the observation |
 |---|---|---|
@@ -1813,7 +1813,7 @@ Two disciplines here. First, an extent is an **upper bound**: the numerator coun
 
 `gpu_tracer` at 1/12 is the headline. The tracer line reports event counts, one-character event *types* and a distinct-name count; it names none of the ten phases. A phase that never fires is not distinguishable from one that does — and one of those ten is `Record`.
 
-### 7.16.3 Name against content, and why `Phase::Record` would pass
+### 7.17.3 Name against content, and why `Phase::Record` would pass
 
 Tank's vocabulary already has the terminal state: `misnamed`. The standing specimen is `Phase::Record` — wired, invoked, correct, input-varying, and **wrong by 50× in what it was called**. A census that verifies a mechanism ran and never asks whether its name describes what it did will certify that specimen.
 
@@ -1829,7 +1829,7 @@ The third state is the point: with one arm a mechanism is *unmeasured*, not inva
 
 Every mechanism now carries a **name claim** in `census_surface_map.json`: what the name asserts, and the discriminator — the observation that would differ if the name were wrong. All twelve are recorded `name_verified: false`, because none has been. The screen goes red if anyone records one as verified while the arms never varied, and red if a mechanism joins the census with no claim at all.
 
-### 7.16.4 Both arms, demonstrated — `ci/negative_control_census_completeness.py`
+### 7.17.4 Both arms, demonstrated — `ci/negative_control_census_completeness.py`
 
 Twelve arms, all fired 2026-08-02, every mutation against a **scratch copy**; nothing in the repository is modified.
 
