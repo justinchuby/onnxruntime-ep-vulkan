@@ -362,7 +362,29 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
 
 
 def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: str,
-               artifact_sha256: str, generated_at: str) -> str:
+               artifact_sha256: str, generated_at: str, proof_run: dict) -> str:
+    """One ledger entry, carrying the witnesses that a **proof run** produced it.
+
+    RAI-008(a) discharge condition, provenance half.  The cheapest way to satisfy criterion 11 is
+    to derive the ledger from the same enumeration that produces the claims: then
+    `ledger_hits == proven_key_lookups` forever, the check can never fail, and `6/6` looks
+    identical under both readings.  That is an identity whose two sides come from one source.
+
+    The defence is not a promise in a doc comment, it is a field the claim table **cannot
+    produce**.  `dispatches_executed` and `claimed_nodes` come from the EP's own execution
+    counters after a session ran; `executed_by` comes from ORT's profile, an instrument this
+    project does not own.  A ledger enumerated from the registry table would have to fabricate
+    all three, and `registry.rs::parse_ledger` faults any entry whose attribution is absent or
+    zero — so a table-derived ledger grants no claims at all rather than granting them silently.
+    """
+    claimed = int(proof_run.get("claimed_nodes", 0))
+    dispatches = int(proof_run.get("dispatches_executed", 0))
+    if claimed <= 0 or dispatches <= 0:
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: attribution is "
+            f"claimed_nodes={claimed} dispatches_executed={dispatches}. An entry with no "
+            f"attribution witness did not come from a proof run."
+        )
     return json.dumps(
         {
             "key": key,
@@ -373,6 +395,10 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             "artifact": artifact,
             "artifact_sha256": artifact_sha256,
             "generated_at": generated_at,
+            # --- provenance: written by a proof run, never by the claim table ---
+            "claimed_nodes": claimed,
+            "dispatches_executed": dispatches,
+            "worst_rel": float(proof_run.get("worst_rel", 0.0)),
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -440,6 +466,21 @@ def check_ledger(path: pathlib.Path) -> int:
             failures.append(f"entry {key} names evidence {art} which does not exist")
         elif _sha256(art_path) != e.get("artifact_sha256"):
             failures.append(f"entry {key} evidence {art} has changed since it was recorded")
+        # RAI-008(a): provenance. These three cannot be produced by enumerating the claim table,
+        # which is the cheapest-satisfaction failure mode Morpheus named. Absent or zero is the
+        # same finding as fabricated, because a run that dispatched nothing proved nothing.
+        for field in ("claimed_nodes", "dispatches_executed"):
+            value = e.get(field)
+            if not isinstance(value, int):
+                failures.append(
+                    f"entry {key} carries no {field}; it does not record a proof run and may "
+                    f"have been enumerated rather than proven"
+                )
+            elif value <= 0:
+                failures.append(
+                    f"entry {key} has {field}={value}; a run that claimed or dispatched nothing "
+                    f"is UNATTRIBUTED and proves nothing"
+                )
     if failures:
         print(f"FAIL(condition=LEDGER_INVALID): {path}")
         for f in failures:
@@ -508,7 +549,9 @@ def main() -> int:
             if k in have:
                 continue
             have.add(k)
-            new_lines.append(entry_line(k, device, ort_build, tolerance, rel, sha, now))
+            new_lines.append(
+                entry_line(k, device, ort_build, tolerance, rel, sha, now, detail)
+            )
 
     write_ledger(out, new_lines)
     print(f"[write]    {out}: {len(new_lines)} entr(ies)")

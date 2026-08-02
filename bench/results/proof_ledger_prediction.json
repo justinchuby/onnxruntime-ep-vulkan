@@ -1,57 +1,17 @@
 {
-  "_what": "Stated BEFORE the ledger gate was ever run. R10: the falsifier for 'X is wired' is an artifact X produced whose content varies with its input \u2014 and a prediction is only evidence if it is written down first. Same discipline as the net-benefit flip point (3,836,739.6 ns), which was solved and recorded before the pair was run.",
-  "_who": "Mouse",
-  "_when": "2026-08-01T17:45:00-07:00",
-  "_state_at_prediction": {
-    "ledger": "evidence/proof_ledger.jsonl, 0 entries, digest cbf29ce484222325",
-    "gate": "wired into registry.rs::claim_audit, last check in canonical order",
-    "runs_made_with_the_gate_armed": 0
-  },
-  "predictions": [
-    {
-      "id": "P1",
-      "claim": "With an empty ledger, a two-input f32 Add on static shapes declines, and its only decline code is `unproven`.",
-      "predicted_proof_key": "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
-      "derivation": "domain ai.onnx; op_type Add; row window 7..=OPSET_ANY renders 7+; two f32 inputs and one f32 output render f32,f32>f32; kernel!(EwBinary,\"add\") stems! prefix ew_binary gives ew_binary_add_f32; all extents literal gives static; Add has no optional-input table entry so the populated set degrades to arity n2."
-    },
-    {
-      "id": "P2",
-      "claim": "The counters JSON from that run reports proven_key_lookups > 0, ledger_hits as the STRING \"UNOBSERVABLE\" (not 0 \u2014 the baked ledger holds no entries, so a hit could not have occurred in this frame), unproven_declines > 0, ledger_gate ALL-DECLINED, unproven_forms_enabled []."
-    },
-    {
-      "id": "P3",
-      "claim": "After the generator writes an entry for exactly the P1 key and the artifact is rebuilt, the SAME model claims the node, ledger_hits becomes an INTEGER >= 1, ledger_gate becomes ALL-PROVEN, and unproven_declines returns to 0. The type of ledger_hits changes with the input; an increment can forge a number and cannot forge a type."
-    },
-    {
-      "id": "P4",
-      "claim": "Phi-3.5's claimed-node count goes 355 -> 0 with the gate armed and an empty ledger. Every node declines [unproven] or an earlier code; the EP claims nothing and the model runs entirely on CPU, correctly."
-    },
-    {
-      "id": "P5",
-      "claim": "An f16 Add and an f32 Add of the same graph shape produce two DIFFERENT keys, differing only in the dtype component. This is the arms_must_differ control: a probe whose two arms report the same key is a perfectly stable, perfectly wrong answer."
-    },
-    {
-      "id": "P6",
-      "claim": "A planted proof key that is in the ledger for f32 does NOT satisfy an f16 node of the same op \u2014 the lookup misses and the f16 node declines [unproven] \u2014 which is the 2026-07-30 defect made unrepresentable rather than discouraged."
-    }
-  ],
-  "P7_planted_control": {
-    "written_before_running": true,
-    "model": "evidence/cases/mul_f16_unproven.onnx",
-    "predicted_key": "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2",
-    "predicted_decline_codes": [
-      "unproven"
-    ],
-    "predicted_claimed_nodes": 0,
-    "predicted_sibling_mul_f32_claimed": 1,
-    "rationale": "ledger has Mul f32 but not Mul f16; dtype is a path difference so the keys differ"
-  },
-  "P8_matmulnbits_pair": {
-    "written_before_running": true,
-    "predicted_key_scales": "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/qgemv_f16/static/scales",
-    "predicted_key_scales_zp": "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/qgemv_f16/static/scales+zero_points",
-    "predicted_keys_differ": true,
-    "predicted_differing_component": "populated_optional_input_set",
-    "note": "exact variant/shape_class tokens uncertain; the ASSERTION is that the two keys differ and differ in the optional-input component"
+  "written_before_the_run": true,
+  "author": "mouse",
+  "datetime": "2026-08-02T00:15:00-07:00",
+  "rule": "R10 - state what the ledger will decline before running it",
+  "ledger_digest_expected": "331003e0ff88df3f",
+  "ledger_entries_expected": 9,
+  "predictions": {
+    "mul_f16_unproven": "DECLINE [unproven] - no entry; planted control",
+    "matmulnbits_scales_only": "HIT - key ends /scales",
+    "matmulnbits_scales_zero_points": "HIT - key ends /scales+zero_points, a different key",
+    "ledger_miss token on a clean run": "HIT",
+    "ledger_miss token when ONNXRUNTIME_EP_VULKAN_LEDGER_FILE names a drifted file": "LEDGER-FAULTED, and every form declines",
+    "ledger_miss token when no node reached the gate": "NEVER-ATTEMPTED",
+    "provenance-stripped entry": "faults; that form declines; ledger_gate=FAULTED"
   }
 }

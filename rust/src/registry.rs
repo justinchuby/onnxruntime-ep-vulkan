@@ -1865,6 +1865,21 @@ pub struct LedgerEntry {
     pub verdict: String,
     /// When the evidence was obtained.
     pub generated_at: String,
+    /// **Provenance witness — how many nodes this EP claimed on the proof run.**
+    ///
+    /// RAI-008(a). The cheapest way to satisfy criterion 11 is to generate the ledger from the
+    /// same enumeration that produces the claims: then `ledger_hits == proven_key_lookups`
+    /// forever, the check can never fail, and `6/6` reads identically under both stories. The
+    /// defence against that is not a promise, it is **a field the claim table cannot produce**.
+    /// This one comes from the EP's execution counters after a session ran.
+    pub claimed_nodes: u64,
+    /// **Provenance witness — dispatches this EP executed on the proof run.**
+    ///
+    /// See [`LedgerEntry::claimed_nodes`]. Zero is the 2026-07-30 specimen: a comparison that
+    /// returned `MATCH` while ORT ran everything on CPU. `parse_ledger` faults any entry whose
+    /// witnesses are absent or zero, so a table-derived ledger grants **no** claims rather than
+    /// granting them quietly.
+    pub dispatches_executed: u64,
 }
 
 /// The parsed ledger plus the header facts a checker needs.
@@ -1938,8 +1953,23 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// JSON parser would be a dependency bought to read a file we emit. Handles the escapes
 /// `claim_log::escape` can produce and nothing else; anything unexpected surfaces as a fault
 /// rather than as a silently-empty field.
-fn json_field(line: &str, field: &str) -> Option<String> {
+/// Read a **numeric** JSON field. Returns `None` when the field is absent or is not a bare
+/// integer — a string `"3"` is not an integer, because a writer that quotes its counters is a
+/// writer whose counters did not come from a counter.
+fn json_u64_field(line: &str, field: &str) -> Option<u64> {
     let needle = format!("\"{field}\":");
+    let start = line.find(&needle)? + needle.len();
+    let rest = line[start..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    rest[..end].parse().ok()
+}
+
+fn json_field(line: &str, field: &str) -> Option<String> {    let needle = format!("\"{field}\":");
     let start = line.find(&needle)? + needle.len();
     let rest = line[start..].trim_start();
     let mut chars = rest.chars();
@@ -2019,6 +2049,30 @@ fn parse_ledger(source: &str) -> Ledger {
             ));
             continue;
         }
+        // RAI-008(a) — provenance. An entry must carry the witnesses of a **proof run**. The
+        // claim table can enumerate keys; it cannot produce a dispatch count, because dispatches
+        // only exist after a session executed. Absent is treated exactly like zero: both mean
+        // this entry does not record a run that ran, and an unattributed MATCH is the specimen
+        // this project has now produced twice.
+        let claimed_nodes = json_u64_field(line, "claimed_nodes");
+        let dispatches_executed = json_u64_field(line, "dispatches_executed");
+        let (Some(claimed_nodes), Some(dispatches_executed)) = (claimed_nodes, dispatches_executed)
+        else {
+            faults.push(format!(
+                "ledger entry for {raw_key:?} carries no attribution witness \
+                 (claimed_nodes/dispatches_executed); it does not record a proof run and may \
+                 have been enumerated from the claim table rather than proven"
+            ));
+            continue;
+        };
+        if claimed_nodes == 0 || dispatches_executed == 0 {
+            faults.push(format!(
+                "ledger entry for {raw_key:?} records claimed_nodes={claimed_nodes} \
+                 dispatches_executed={dispatches_executed}; a run that claimed or dispatched \
+                 nothing is UNATTRIBUTED and proves nothing"
+            ));
+            continue;
+        }
         entries.push(LedgerEntry {
             key,
             device: json_field(line, "device").unwrap_or_default(),
@@ -2027,6 +2081,8 @@ fn parse_ledger(source: &str) -> Ledger {
             artifact: json_field(line, "artifact").unwrap_or_default(),
             verdict,
             generated_at: json_field(line, "generated_at").unwrap_or_default(),
+            claimed_nodes,
+            dispatches_executed,
         });
     }
 
@@ -2062,11 +2118,107 @@ fn parse_ledger(source: &str) -> Ledger {
     }
 }
 
+/// The environment variable naming the on-disk ledger to check the baked copy against.
+///
+/// Optional. When unset, the baked ledger is still self-checked (header digest vs. baked body),
+/// which catches a hand-edit before the build. This variable catches the *other* threat: the file
+/// on disk changing after the build, so that the artifact a reviewer reads is not the artifact
+/// the running binary claims from.
+pub const ENV_LEDGER_FILE: &str = "ONNXRUNTIME_EP_VULKAN_LEDGER_FILE";
+
+/// Compare the baked ledger's digest against the ledger on disk, and **fault on disagreement**.
+///
+/// RAI-008(b), digest half. The requirement is explicit that this **refuses to claim rather than
+/// warns**, and the mechanism for that is that the disagreement is pushed into
+/// [`Ledger::faults`] — a non-empty `faults` makes [`Ledger::get`] return `None` for every key,
+/// so every form declines. A WARN would leave the run claiming on evidence nobody can read.
+///
+/// R9 amendment 5 — ask which way this check moves when its subject is wrong. It moves *against*
+/// the reader's confidence: a mismatch removes claims. A check that granted claims on a mismatch,
+/// or that could be silenced by unsetting a variable it needs to be set, would be the wrong sign;
+/// this one is only *stronger* when the variable is set, never weaker.
+fn check_baked_against_disk(baked: &Ledger) -> Option<String> {
+    let path = std::env::var(ENV_LEDGER_FILE).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let disk = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) => {
+            return Some(format!(
+                "{ENV_LEDGER_FILE} names {path}, which cannot be read: {e}. A ledger that was \
+                 asked for and is absent is not an empty ledger; refusing to claim."
+            ));
+        }
+    };
+    let disk_ledger = parse_ledger(&disk);
+    if disk_ledger.actual_digest == baked.actual_digest {
+        return None;
+    }
+    Some(format!(
+        "baked ledger digest {} disagrees with {path} at digest {}. The binary would claim from \
+         evidence that is not the evidence on disk. Refusing to claim; rebuild, or regenerate \
+         with rust/tools/gen_proof_ledger.py.",
+        baked.actual_digest, disk_ledger.actual_digest
+    ))
+}
+
+/// Why a ledger lookup did not produce a proof. **Three findings, not one** (R13).
+///
+/// A single `bool` collapsed three different situations into one `false`, and they call for three
+/// different actions: regenerate the ledger for this form, fix the ledger file, and nothing at all
+/// respectively. `NeverAttempted` is not returned by [`lookup_key`] — it is what the *counters*
+/// report when `proven_key_lookups` is `0`, and it exists in this enum so the vocabulary is one
+/// vocabulary rather than two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedgerLookup {
+    /// The ledger parsed and holds a proof for this key.
+    Hit,
+    /// The ledger parsed and holds no proof for this key. **Regenerate the ledger for this form.**
+    KeyAbsent,
+    /// The ledger did not parse, or its digest disagrees with the header or the disk. Every form
+    /// declines. **This is an instrument failure, not a finding about the form** (R13) — the key
+    /// might well be proven, and this build cannot tell.
+    Faulted,
+    /// No lookup was attempted for this key in this frame. Distinct from `KeyAbsent`: nothing was
+    /// asked, so nothing was answered.
+    NeverAttempted,
+}
+
+impl LedgerLookup {
+    /// The single token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            LedgerLookup::Hit => "HIT",
+            LedgerLookup::KeyAbsent => "KEY-ABSENT",
+            LedgerLookup::Faulted => "LEDGER-FAULTED",
+            LedgerLookup::NeverAttempted => "NEVER-ATTEMPTED",
+        }
+    }
+}
+
+/// Look one key up and say **which** of the three answers it got.
+pub fn lookup_key(key: &ProofKey) -> LedgerLookup {
+    let l = ledger();
+    if !l.faults.is_empty() {
+        return LedgerLookup::Faulted;
+    }
+    if l.entries.iter().any(|e| &e.key == key) {
+        LedgerLookup::Hit
+    } else {
+        LedgerLookup::KeyAbsent
+    }
+}
+
 /// The process-wide ledger, parsed once.
 pub fn ledger() -> &'static Ledger {
     static LEDGER: std::sync::OnceLock<Ledger> = std::sync::OnceLock::new();
     LEDGER.get_or_init(|| {
-        let l = parse_ledger(LEDGER_SOURCE);
+        let mut l = parse_ledger(LEDGER_SOURCE);
+        if let Some(mismatch) = check_baked_against_disk(&l) {
+            l.faults.push(mismatch);
+        }
         for f in &l.faults {
             log::warn!("[VulkanEP] proof ledger fault: {f}");
         }
@@ -2079,7 +2231,7 @@ pub fn ledger() -> &'static Ledger {
 /// Wired into [`claim_audit`]; the counter it feeds is `proven_key_lookups`, which is what makes
 /// this mechanism observable rather than merely present (R10).
 pub fn ledger_contains(key: &ProofKey) -> bool {
-    ledger().get(key).is_some()
+    lookup_key(key) == LedgerLookup::Hit
 }
 
 ///
@@ -2251,14 +2403,17 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     // nodes that already pass is a key that can never bootstrap.
     let proof_key = ProofKey::from_node(view, spec);
     let ledger_hit = if spec.is_live() {
-        let hit = ledger_contains(&proof_key);
-        crate::counters::record_ledger_lookup(hit);
-        hit
+        // RAI-008(d): the outcome, not a `bool`. A miss that was the ledger failing and a miss
+        // that was this form being absent are two findings with two different repairs, and the
+        // counters artifact has to be able to say which one happened.
+        let outcome = lookup_key(&proof_key);
+        crate::counters::record_ledger_lookup(outcome);
+        outcome == LedgerLookup::Hit
     } else {
         false
     };
     let hatch = if spec.is_live() && !ledger_hit {
-        let enabled = claim_unproven_keys().iter().any(|k| *k == proof_key);
+        let enabled = claim_unproven_keys().contains(&proof_key);
         if enabled {
             crate::counters::record_unproven_form_enabled(&proof_key.0);
         }
@@ -2928,5 +3083,174 @@ mod tests {
                  the other"
             );
         }
+    }
+    /// A ledger line with a valid key, a MATCH verdict, and **no attribution** grants nothing.
+    ///
+    /// RAI-008(a). Morpheus named the cheapest satisfaction of criterion 11 exactly: derive the
+    /// ledger from the same enumeration that produces the claims, and `ledger_hits ==
+    /// proven_key_lookups` forever — an identity whose two sides come from one source, in which
+    /// `6/6` looks identical under both readings. The defence is that a proof run leaves a mark
+    /// the claim table cannot forge: a **dispatch count**, which only exists after a session
+    /// executed.
+    ///
+    /// R10 — the falsifier varies with the input. Four ledgers, differing only in the attribution
+    /// fields, produce four different outcomes.
+    #[test]
+    fn an_entry_without_attribution_proves_nothing_however_well_formed() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let key = ProofKey::validate(KEY).expect("valid key");
+
+        let ledger_with = |extra: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\"{extra}}}"
+            );
+            let digest = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            let header = format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{digest}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}"
+            );
+            parse_ledger(&format!("{header}\n{entry}\n"))
+        };
+
+        // Attributed: the only shape that proves.
+        let good = ledger_with(",\"claimed_nodes\":1,\"dispatches_executed\":1");
+        assert!(good.faults.is_empty(), "faults: {:?}", good.faults);
+        assert!(good.get(&key).is_some(), "an attributed MATCH must prove");
+
+        // Absent witnesses — the shape a claim-table-derived ledger would have.
+        let enumerated = ledger_with("");
+        assert!(
+            enumerated.get(&key).is_none(),
+            "an entry with no attribution witness must not grant a claim"
+        );
+        assert!(
+            enumerated.faults.iter().any(|f| f.contains("attribution")),
+            "the fault must name attribution, not merely fail; got {:?}",
+            enumerated.faults
+        );
+
+        // Zero dispatches — the 2026-07-30 specimen: a MATCH from a CPU-vs-CPU run.
+        let cpu_only = ledger_with(",\"claimed_nodes\":1,\"dispatches_executed\":0");
+        assert!(
+            cpu_only.get(&key).is_none(),
+            "a run that dispatched nothing proves nothing, whatever it compared"
+        );
+
+        // Quoted counters: a writer that stringifies its counters did not read a counter.
+        let stringified = ledger_with(",\"claimed_nodes\":\"1\",\"dispatches_executed\":\"1\"");
+        assert!(
+            stringified.get(&key).is_none(),
+            "a quoted count is not a count"
+        );
+    }
+
+    /// The shipped ledger is attributed, entry by entry. This is the assertion that would go red
+    /// if anyone regenerated it with a tool that stopped recording provenance.
+    #[test]
+    fn every_shipped_ledger_entry_carries_its_proof_run() {
+        let l = ledger();
+        assert!(l.faults.is_empty(), "shipped ledger faults: {:?}", l.faults);
+        assert!(!l.is_empty(), "a ledger with no entries proves nothing");
+        for e in l.entries() {
+            assert!(
+                e.claimed_nodes > 0 && e.dispatches_executed > 0,
+                "shipped entry {} has claimed_nodes={} dispatches_executed={}",
+                e.key.0,
+                e.claimed_nodes,
+                e.dispatches_executed
+            );
+        }
+    }
+
+    /// **The three-token miss path** (R13, discharge condition (d)). A miss is three findings, not
+    /// one `false`, and they call for three different actions: regenerate this form, fix the
+    /// ledger file, and nothing at all.
+    #[test]
+    fn a_ledger_miss_reports_which_of_three_things_happened() {
+        let proven = ProofKey::validate(
+            "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+        )
+        .expect("valid");
+        let absent = ProofKey::validate(
+            "ai.onnx::Add/7+/f64,f64>f64/ew_binary_add_f64/static/n2",
+        )
+        .expect("valid");
+
+        assert_eq!(lookup_key(&proven), LedgerLookup::Hit);
+        assert_eq!(lookup_key(&absent), LedgerLookup::KeyAbsent);
+
+        // Every token is distinct, and distinct from the hit. A vocabulary in which two of these
+        // share a spelling is the `0`-for-three-states defect R12 already made this project fix.
+        let tokens = [
+            LedgerLookup::Hit.token(),
+            LedgerLookup::KeyAbsent.token(),
+            LedgerLookup::Faulted.token(),
+            LedgerLookup::NeverAttempted.token(),
+        ];
+        for (i, t) in tokens.iter().enumerate() {
+            assert!(!t.is_empty());
+            assert!(
+                !tokens[..i].contains(t),
+                "two ledger-miss states share the token {t:?}"
+            );
+        }
+    }
+
+    /// A build whose baked ledger disagrees with the ledger on disk **refuses to claim**.
+    ///
+    /// RAI-008(b), digest half. The threat is not a hand-edit before the build — the header
+    /// digest already catches that — it is the file on disk changing *after* it, so the artifact
+    /// a reviewer reads is not the artifact the binary claims from.
+    ///
+    /// R9 amendment 5: this check moves **against** the reader's confidence. A mismatch removes
+    /// claims; it can never add one. That is why it is a refusal rather than a WARN, and why
+    /// pointing it at a file that does not exist is also a refusal — a ledger that was asked for
+    /// and is absent is not an empty ledger.
+    #[test]
+    fn a_disk_ledger_that_disagrees_with_the_baked_one_refuses_to_claim() {
+        let baked = parse_ledger(LEDGER_SOURCE);
+        assert!(baked.faults.is_empty(), "baseline: {:?}", baked.faults);
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).ok();
+
+        // Same content: agreement, no fault. This arm is what makes the other arm a detection
+        // rather than a check that fails on everything.
+        let same = dir.join("ledger_disk_same.jsonl");
+        std::fs::write(&same, LEDGER_SOURCE).expect("write");
+        // SAFETY: single-threaded test; the variable is removed on every path below.
+        unsafe { std::env::set_var(ENV_LEDGER_FILE, &same) };
+        assert!(
+            check_baked_against_disk(&baked).is_none(),
+            "an on-disk ledger identical to the baked one must not fault"
+        );
+
+        // One byte different: refusal, and the message must carry both digests so the failure
+        // text is diagnosable without re-running anything (R13).
+        let drifted = dir.join("ledger_disk_drifted.jsonl");
+        let mut body = LEDGER_SOURCE.to_string();
+        body.push_str(
+            "{\"key\":\"ai.onnx::Xor/7+/b,b>b/ew_binary_xor/static/n2\",\"verdict\":\"MATCH\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}\n",
+        );
+        std::fs::write(&drifted, &body).expect("write");
+        // SAFETY: single-threaded test; the variable is removed on every path below.
+        unsafe { std::env::set_var(ENV_LEDGER_FILE, &drifted) };
+        let fault = check_baked_against_disk(&baked).expect("a drifted disk ledger must fault");
+        assert!(fault.contains(&baked.actual_digest), "fault: {fault}");
+        assert!(fault.contains("Refusing to claim"), "fault: {fault}");
+
+        // Named and missing is also a refusal, not a fallback to the baked copy.
+        // SAFETY: single-threaded test; the variable is removed on every path below.
+        unsafe { std::env::set_var(ENV_LEDGER_FILE, dir.join("ledger_disk_absent.jsonl")) };
+        let missing = check_baked_against_disk(&baked).expect("an absent named ledger must fault");
+        assert!(missing.contains("not an empty ledger"), "fault: {missing}");
+
+        // SAFETY: single-threaded test.
+        unsafe { std::env::remove_var(ENV_LEDGER_FILE) };
+        assert!(check_baked_against_disk(&baked).is_none());
+        std::fs::remove_file(&same).ok();
+        std::fs::remove_file(&drifted).ok();
     }
 }

@@ -265,6 +265,16 @@ impl Island {
     /// 161 `MatMulNBits` + 32 `GroupQueryAttention` are anchors). `flops` and the boundary total
     /// are the estimator's own numbers.
     ///
+    /// The 2026-07-31 estimate of Phi-3.5's island boundary, **which counted internal edges**.
+    ///
+    /// **Renamed 2026-08-02 from `MEASURED_PHI35_DEV0` (Morpheus ruling). It never held a
+    /// measurement.** It held an estimate, now known wrong by 6.4×, sitting one screen above
+    /// [`Island::MEASURED_PHI35_DEV0_REAL_BYTES`], which holds the actually-measured bytes. The
+    /// doc comment below said all of that from the day the defect was found and it did not help:
+    /// **names outlive doc comments**, and a reader who stopped at the identifier — or at a test
+    /// name that referenced it — would conclude the opposite of what ships. Keeping the constant
+    /// beside the corrected one is right; only the name was wrong.
+    ///
     /// **Read the byte figure next to [`TransferModel::MEASURED_PHI35_UPLOAD_BYTES`] and be
     /// alarmed.** The estimator said 89,199,100,032 B crossed this island's boundary per
     /// inference; the instrumented transfer path says 856,720 B. That was a factor of ~104,000,
@@ -295,7 +305,7 @@ impl Island {
     /// fixed cost instead of two. That understates the transfer by exactly one `fixed_ns`, i.e.
     /// biases every test below *towards* claiming — the direction that makes the conclusions
     /// harder to reach, not easier.
-    pub const MEASURED_PHI35_DEV0: Island = Island {
+    pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED: Island = Island {
         nodes: 355,
         anchors: 193,
         flops: 23_020_437_504,
@@ -1185,7 +1195,7 @@ mod tests {
     #[test]
     fn an_anchor_bearing_sole_island_is_claimed_by_the_gate_not_the_override() {
         let out = gate_islands(
-            &[Island::MEASURED_PHI35_DEV0],
+            &[Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED],
             &TransferModel::DISCRETE,
             &Policy::default(),
         );
@@ -1233,9 +1243,9 @@ mod tests {
     /// `no_anchor_fixed_{1000 … 100000000}` all produce
     /// `net_benefit_sole_island_overrides: 1, viable_islands_retained: 0`.
     #[test]
-    fn fixed_ns_cannot_change_the_verdict_on_the_estimated_phi35_island() {
+    fn fixed_ns_cannot_change_the_verdict_on_the_internal_edges_counted_phi35_island() {
         let rows = fixed_ns_sensitivity(
-            &Island::MEASURED_PHI35_DEV0,
+            &Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED,
             &TransferModel::DISCRETE,
             &Policy::default(),
             &PLAUSIBLE_FIXED_NS,
@@ -1291,8 +1301,8 @@ mod tests {
     /// original defect stays on the record rather than being quietly replaced by the smaller
     /// number that succeeded it.
     #[test]
-    fn the_estimator_disagreed_with_the_measured_boundary_by_five_orders_of_magnitude() {
-        let estimated = Island::MEASURED_PHI35_DEV0.boundary_bytes();
+    fn the_internal_edges_counted_estimate_disagreed_with_the_measured_boundary_by_five_orders_of_magnitude() {
+        let estimated = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED.boundary_bytes();
         let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
         assert_eq!(measured, 856_720);
         let ratio = estimated as f64 / measured as f64;
@@ -1315,7 +1325,7 @@ mod tests {
     /// four orders of magnitude, so nobody reads the 6.4× as a closure.
     #[test]
     fn removing_internal_edges_shrank_the_estimate_but_did_not_close_the_gap() {
-        let before = Island::MEASURED_PHI35_DEV0.boundary_bytes();
+        let before = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED.boundary_bytes();
         let after = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED.boundary_bytes();
         let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
 
@@ -1349,12 +1359,184 @@ mod tests {
         );
     }
 
+    /// **§10.0.4 third form — prefer the bound you can sign.** The claim on Phi-3.5's island
+    /// survives a 16,268× adversarial inflation of the term that opposes it.
+    ///
+    /// This test exists because my own framing of the boundary fix was declined, and the
+    /// replacement is stronger and is recorded here rather than in prose. I said the economics
+    /// arm now *concurs* with the anchor exemption. Morpheus refused that: **"agreement between
+    /// two things fed the same fabricated input is not a second opinion."** A verdict that
+    /// flipped because its input moved 6.4× while remaining 16,268× wrong flipped for a reason
+    /// unrelated to the proposition. He is right, and this is what survives instead:
+    ///
+    /// - `transfer_ns` is **monotone non-decreasing in bytes** — asserted below, not assumed,
+    ///   because the whole argument rests on it and a future `cost_ns` with a discount above
+    ///   some size would silently void it;
+    /// - the gate **claims** at the estimator's inflated 13,936,509,056 B;
+    /// - the measured boundary is 856,720 B, which is **smaller**;
+    /// - therefore the gate claims *a fortiori* on the true bytes.
+    ///
+    /// That is a bound, not an agreement: a number nobody trusts, used in the one direction
+    /// where not trusting it is safe. §10.0.4 already preferred *the count* over the duration and
+    /// *the ratio* over the count; this is the third form.
+    ///
+    /// **The licence is narrow, and this is the part expected to be forgotten first.** The sign
+    /// is **not general**. Substituting 128 for an unknown dim *over*-counts on our decode
+    /// window, where the real sequence extent is 1. On a long prefill the real extent exceeds
+    /// 128, so 128 *under*-counts, the inequality reverses, and **the bound evaporates rather
+    /// than weakening** — an under-counted transfer term makes the island look cheaper to move
+    /// than it is, which is the direction that manufactures claims. Anyone touching
+    /// [`Island::symbolic_boundary_slots`] or `ep.rs::slot_bytes` must preserve that asymmetry;
+    /// the standing prefill falsifier is the check that would catch its loss.
+    #[test]
+    fn the_claim_survives_an_adversarial_inflation_of_the_term_opposing_it() {
+        let model = &TransferModel::DISCRETE;
+
+        // (1) Monotonicity of the opposing term, asserted rather than assumed.
+        let mut previous = 0.0_f64;
+        for bytes in [
+            0_u64,
+            856_720,
+            1_000_000,
+            13_936_509_056,
+            89_199_100_032,
+            u64::MAX / 4,
+        ] {
+            let island = Island {
+                nodes: 355,
+                anchors: 193,
+                flops: 23_020_437_504,
+                input_bytes: 0,
+                output_bytes: bytes,
+                symbolic_boundary_slots: 0,
+            };
+            let t = island.transfer_ns(model);
+            assert!(
+                t >= previous,
+                "transfer_ns must be monotone non-decreasing in bytes; {bytes} B gave {t} after \
+                 {previous}. The a-fortiori argument below is void the moment this stops holding."
+            );
+            previous = t;
+        }
+
+        // (2) The gate claims at the inflated figure.
+        let inflated = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED;
+        let out = gate_islands(std::slice::from_ref(&inflated), model, &Policy::default());
+        assert!(
+            out[0].is_claim() && !out[0].is_override(),
+            "the bound is only worth signing if the gate itself claims at the inflated figure; \
+             an override would mean the economics never spoke. Got {:?}",
+            out[0]
+        );
+
+        // (3) The true figure is smaller, by the residual this project has not closed.
+        let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
+        let inflated_bytes = inflated.boundary_bytes();
+        assert!(measured < inflated_bytes);
+        let inflation = inflated_bytes as f64 / measured as f64;
+        assert!(
+            inflation > 1.0e4,
+            "the inflation the claim survives is the whole point of the bound; got {inflation}"
+        );
+
+        // (4) Therefore, a fortiori. Asserted directly so the conclusion is mechanical rather
+        //     than a reader's inference from (1)–(3).
+        let truthful = Island {
+            output_bytes: Island::MEASURED_PHI35_DEV0_REAL_BYTES.output_bytes,
+            input_bytes: Island::MEASURED_PHI35_DEV0_REAL_BYTES.input_bytes,
+            ..inflated
+        };
+        assert!(
+            truthful.transfer_ns(model) <= inflated.transfer_ns(model),
+            "monotonicity was asserted in (1); this must follow. \
+             truthful={} ns on {}+{} B, inflated={} ns on {}+{} B",
+            truthful.transfer_ns(model),
+            truthful.input_bytes,
+            truthful.output_bytes,
+            inflated.transfer_ns(model),
+            inflated.input_bytes,
+            inflated.output_bytes
+        );
+        let truthful_out = gate_islands(&[truthful], model, &Policy::default());
+        assert!(
+            truthful_out[0].is_claim() && !truthful_out[0].is_override(),
+            "claiming at the inflated bytes must imply claiming at the smaller true bytes"
+        );
+    }
+
+    /// The prefill falsifier, standing. **This test asserts the direction the bound depends on,
+    /// and it is deliberately written so that it goes red if the sign is ever lost.**
+    ///
+    /// 128 substituted for an unknown dim is an over-count only while the real extent is below
+    /// 128. Above it, the substitution under-counts the transfer term, the island looks cheaper
+    /// to move than it is, and the gate manufactures a claim. The `boundary_is_fabricated()`
+    /// disclosure exists precisely because the sign of the error is not knowable from the
+    /// estimate alone.
+    #[test]
+    fn the_substituted_extent_under_counts_on_a_long_prefill_and_the_bound_evaporates() {
+        const SUBSTITUTED: u64 = 128;
+        let model = &TransferModel::DISCRETE;
+        let per_slot_bytes = 2_u64; // f16, one element per extent unit
+
+        let with_substitution = |real_extent: u64| {
+            (
+                Island {
+                    nodes: 355,
+                    anchors: 193,
+                    flops: 23_020_437_504,
+                    input_bytes: 0,
+                    output_bytes: SUBSTITUTED * per_slot_bytes,
+                    symbolic_boundary_slots: 1,
+                },
+                Island {
+                    nodes: 355,
+                    anchors: 193,
+                    flops: 23_020_437_504,
+                    input_bytes: 0,
+                    output_bytes: real_extent * per_slot_bytes,
+                    symbolic_boundary_slots: 0,
+                },
+            )
+        };
+
+        // Decode window: real extent 1. The substitution over-counts — the safe direction, and
+        // the only direction in which the a-fortiori bound above can be signed.
+        let (est, real) = with_substitution(1);
+        assert!(
+            est.transfer_ns(model) >= real.transfer_ns(model),
+            "on the decode window the substitution must over-count, or the bound is unsigned"
+        );
+
+        // Long prefill: real extent 4096. The substitution under-counts by 32×, and the
+        // inequality reverses. There is no bound here to weaken — it is gone.
+        let (est, real) = with_substitution(4096);
+        assert!(
+            est.transfer_ns(model) < real.transfer_ns(model),
+            "on a long prefill the substitution must under-count; if this assertion ever passes \
+             by accident the sign asymmetry has been lost and the bound will be quoted in a \
+             frame where it does not hold"
+        );
+
+        // And the estimate must say it is fabricated in both frames, because the sign of its
+        // error is not knowable from the estimate itself.
+        assert!(est.boundary_is_fabricated());
+        assert!(!real.boundary_is_fabricated());
+    }
+
     /// A sole-island override is not a licence to claim anything: the reason is preserved, so the
     /// artifact can say *why* the graph was kept despite failing.
+    ///
+    /// **This test asserts `TransferDominated` and it is consistent with
+    /// `net_benefit_sole_island_overrides` going 1 → 0 on the shipping build.** Establishing that
+    /// took a reader three steps, so it is written down here: this test forces
+    /// `anchor_exemption: false` and feeds
+    /// [`Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`] — the *pre-fix* estimate. The
+    /// shipping path uses neither. It runs with the exemption on and the post-fix boundary, and
+    /// on those inputs the gate claims outright, which is why the override count is 0.
     #[test]
     fn the_override_carries_the_verdict_it_overrode() {
         let out = gate_islands(
-            &[Island::MEASURED_PHI35_DEV0],
+            &[Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED],
             &TransferModel::DISCRETE,
             &Policy {
                 anchor_exemption: false,

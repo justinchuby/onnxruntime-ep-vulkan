@@ -580,6 +580,12 @@ impl OverriddenVerdict {
 static LEDGER_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones the ledger held a proof for.
 static LEDGER_HITS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones where the ledger parsed and simply held no proof for that form.
+/// **Distinct from a faulted lookup** (RAI-008(d)): this one says *regenerate this form*.
+static LEDGER_KEY_ABSENT: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones that got no reading because the ledger itself failed. R13: an instrument
+/// error is never a detection, so these are never counted as misses about a form.
+static LEDGER_FAULTED_LOOKUPS: AtomicU64 = AtomicU64::new(0);
 /// Nodes declined with `[unproven]`: a kernel exists, no proof covers the form, and the form is
 /// not in the §8.9.4 allowlist.
 static UNPROVEN_DECLINES: AtomicU64 = AtomicU64::new(0);
@@ -692,11 +698,51 @@ pub fn record_sole_island_override(reason: Option<OverriddenVerdict>) {
 /// Unconditional half first, exactly as [`record_net_benefit_decision`] does it: the only way to
 /// make `ledger_hits` non-zero is through the path that also increments `proven_key_lookups`, so
 /// a hit count cannot exist without a lookup count to divide it by.
-pub fn record_ledger_lookup(hit: bool) {
-    LEDGER_LOOKUPS.fetch_add(1, ORD);
-    if hit {
-        LEDGER_HITS.fetch_add(1, ORD);
+///
+/// RAI-008(d) — the argument is not a `bool`. A miss is three findings (`KEY-ABSENT`,
+/// `LEDGER-FAULTED`, `NEVER-ATTEMPTED`) that call for three different actions, and a `bool`
+/// spells all three `false`. That is the same collapse R12 made this project undo when *bypassed*
+/// and *all-rejected* were sharing one `0`.
+pub fn record_ledger_lookup(outcome: crate::registry::LedgerLookup) {
+    use crate::registry::LedgerLookup as L;
+    if outcome == L::NeverAttempted {
+        // Recording one would be a lookup, which is precisely what it asserts did not happen.
+        // It is derived from `proven_key_lookups == 0`, never counted.
+        return;
     }
+    LEDGER_LOOKUPS.fetch_add(1, ORD);
+    match outcome {
+        L::Hit => {
+            LEDGER_HITS.fetch_add(1, ORD);
+        }
+        L::KeyAbsent => {
+            LEDGER_KEY_ABSENT.fetch_add(1, ORD);
+        }
+        L::Faulted => {
+            LEDGER_FAULTED_LOOKUPS.fetch_add(1, ORD);
+        }
+        // `NeverAttempted` is derived from `proven_key_lookups == 0`; recording one would be a
+        // lookup, which is what it asserts did not happen.
+        L::NeverAttempted => {}
+    }
+}
+
+/// Which of R13's three miss states this run is in, as one token.
+///
+/// The precedence is deliberate and is the R13 order: an instrument outage outranks a finding.
+/// A run whose ledger faulted has *no* reading about any form, so reporting `KEY-ABSENT` — a
+/// statement about the form — would spell an outage exactly like a detection.
+fn ledger_miss_state() -> &'static str {
+    if !crate::registry::ledger().faults.is_empty() || LEDGER_FAULTED_LOOKUPS.load(ORD) > 0 {
+        return crate::registry::LedgerLookup::Faulted.token();
+    }
+    if LEDGER_LOOKUPS.load(ORD) == 0 {
+        return crate::registry::LedgerLookup::NeverAttempted.token();
+    }
+    if LEDGER_KEY_ABSENT.load(ORD) > 0 {
+        return crate::registry::LedgerLookup::KeyAbsent.token();
+    }
+    crate::registry::LedgerLookup::Hit.token()
 }
 
 /// Record a node declined because nothing has proven its form (§8.9, `DeclineCode::Unproven`).
@@ -960,6 +1006,8 @@ pub fn reset() {
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
     LEDGER_LOOKUPS.store(0, ORD);
     LEDGER_HITS.store(0, ORD);
+    LEDGER_KEY_ABSENT.store(0, ORD);
+    LEDGER_FAULTED_LOOKUPS.store(0, ORD);
     UNPROVEN_DECLINES.store(0, ORD);
     UNPROVEN_FORMS_CLAIMED.store(0, ORD);
     if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
@@ -1007,6 +1055,7 @@ impl VulkanEpCounters {
              \"proven_key_lookups\": {},\n  \
              \"ledger_hits\": {},\n  \
              \"ledger_gate\": \"{}\",\n  \
+             \"ledger_miss\": \"{}\",\n  \
              \"ledger_entries\": {},\n  \
              \"ledger_faults\": {},\n  \
              \"unproven_declines\": {},\n  \
@@ -1041,6 +1090,7 @@ impl VulkanEpCounters {
             LEDGER_LOOKUPS.load(ORD),
             ledger_hits_json(),
             ledger_gate_state(),
+            ledger_miss_state(),
             crate::registry::ledger().len(),
             crate::registry::ledger().faults.len(),
             UNPROVEN_DECLINES.load(ORD),
@@ -2016,5 +2066,61 @@ mod tests {
                 .is_none(),
             "a null record is not an object and must not be spliced back as one"
         );
+    }
+    /// **RAI-008(d)** — `ledger_miss` moves with its input, and never spells two states alike.
+    ///
+    /// R12's shape: the artifact must distinguish *no lookup happened here* from *the ledger has
+    /// no proof for this form* from *the ledger itself is unreadable*. This drives all three and
+    /// asserts three different tokens come out, which is the assertion a single `bool` could not
+    /// have supported however carefully it was read.
+    #[test]
+    fn the_ledger_miss_token_names_which_of_three_things_happened() {
+        use crate::registry::LedgerLookup as L;
+        let _g = crate::allocator::ledger::test_lock();
+
+        reset();
+        assert_eq!(
+            ledger_miss_state(),
+            "NEVER-ATTEMPTED",
+            "a run that consulted the ledger zero times has not found a form missing"
+        );
+        assert!(snapshot().to_json().contains("\"ledger_miss\": \"NEVER-ATTEMPTED\""));
+
+        reset();
+        record_ledger_lookup(L::Hit);
+        record_ledger_lookup(L::Hit);
+        assert_eq!(ledger_miss_state(), "HIT", "no miss occurred");
+        assert_eq!(snapshot().ledger_hits, 2);
+
+        reset();
+        record_ledger_lookup(L::Hit);
+        record_ledger_lookup(L::KeyAbsent);
+        assert_eq!(
+            ledger_miss_state(),
+            "KEY-ABSENT",
+            "one form absent from a healthy ledger is a finding about that form"
+        );
+        // The unconditional half still counts it: a miss is a lookup.
+        assert_eq!(snapshot().proven_key_lookups, 2);
+        assert_eq!(snapshot().ledger_hits, 1);
+
+        reset();
+        record_ledger_lookup(L::KeyAbsent);
+        record_ledger_lookup(L::Faulted);
+        assert_eq!(
+            ledger_miss_state(),
+            "LEDGER-FAULTED",
+            "R13: an instrument outage outranks a finding, or an outage reads as a detection"
+        );
+        assert!(snapshot().to_json().contains("\"ledger_miss\": \"LEDGER-FAULTED\""));
+
+        // `NeverAttempted` is not a lookup, and recording one must not manufacture the lookup it
+        // asserts did not happen.
+        reset();
+        record_ledger_lookup(L::NeverAttempted);
+        assert_eq!(snapshot().proven_key_lookups, 0);
+        assert_eq!(snapshot().ledger_hits, 0);
+
+        reset();
     }
 }

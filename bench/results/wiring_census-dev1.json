@@ -1,37 +1,8 @@
 {
   "criterion": "12",
   "device_selector": "1",
-  "vocabulary": "Tank's six states, ordered by how late the failure is discoverable: absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> misnamed; plus R13's three terminal states PASS / FAIL(condition) / ERROR(instrument).  One census (rust/tools/audit_instruments.py), not two.  A step that never returned reads STALLED, which is not UNWIRED: 'ran and produced nothing' and 'never came back' are different facts.",
-  "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 every line above is a count, a token or a byte volume.  The tracer line reports how many events it wrote and quotes none of their durations.  The stall budgets below are counts of reference computations this machine completed during this run, not seconds; that is what makes them contention-invariant.",
-  "stall_detector": {
-    "fault_injection": "INACTIVE",
-    "unit": "one SHA-256 over a fixed 256 KiB block, completed by this machine on a background thread during this run",
-    "budget_units": {
-      "counters_child_clean": 6000,
-      "counters_child_inject": 6000,
-      "counters_child_ledger": 6000,
-      "add_session_profiling": 4000,
-      "validation_probe": 2000,
-      "layering_lint": 12000
-    },
-    "observed_units": {
-      "counters_child_clean": 1088,
-      "counters_child_inject": 941,
-      "add_session_profiling": 2,
-      "validation_probe": 243,
-      "layering_lint": 1693
-    },
-    "observed_max_silence_units": {
-      "counters_child_clean": 293,
-      "counters_child_inject": 214,
-      "add_session_profiling": 2,
-      "validation_probe": 206,
-      "layering_lint": 1404
-    },
-    "clock_units_total": 4199,
-    "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
-    "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
-  },
+  "vocabulary": "Tank's six states, ordered by how late the failure is discoverable: absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> misnamed; plus R13's three terminal states PASS / FAIL(condition) / ERROR(instrument).  One census (rust/tools/audit_instruments.py), not two.",
+  "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 every line above is a count, a token or a byte volume.  The tracer line reports how many events it wrote and quotes none of their durations.",
   "observations": {
     "partitioner": "dispatches=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1",
     "partition_identity_check": "VACUOUS (claimed=1, islands=1; single-node graph is expected)",
@@ -43,9 +14,8 @@
     "validation_messenger": "ARMED",
     "layering_lint": "PASS",
     "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
-    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\onnxruntime-ep-vulkan\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
+    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev1-clean.json'",
     "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
   },
-  "unwired": [],
-  "stalled": []
+  "unwired": []
 }
