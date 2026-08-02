@@ -2092,3 +2092,66 @@ different jitter. Per-inference spread conflates them; same-ordinal RSD isolates
 3. Still open and GPU-bound: the certified NVIDIA A/B for packed loads (3 attempts, never
    obtained — tenancy is necessary but not sufficient); `gpu_steady_tail` under foreign GPU work.
 4. The packed-loads claim stands in counts (`7a1d12f`) and needs no clock.
+
+---
+
+## Session 44b — 2026-08-01 — clippy green; index fix HELD pending Tank's MIXED
+
+### DO NOT LAND THE DEVICE-INDEX RESOLUTION FIX YET
+
+Coordinator-enforced sequencing from Tank. Read this before touching
+`vk/host_device_memory.rs::OwnedDevice::create`.
+
+**The defect (fourth face of the index space, mine):** `create(device_index)` takes the factory
+index and then *ignores* it — line ~274 resolves via `crate::vk::instance::select_device(&capables)`,
+which reads the process-global `ONNXRUNTIME_EP_VULKAN_DEVICE` and therefore returns the SAME index
+for every key. So `ensure_registered(0)` and `ensure_registered(1)` stand up the same physical
+device, and the `PROVIDERS` HashMap key is inert. Verified by reading, and by Tank's
+`bench/results/two_device_frame_probe.txt` (both indices -> SPLIT-DEVICE on the RTX 4060).
+
+**Why the order matters, and it is not arbitrary:** today two providers collapse onto one physical
+device, so a genuine two-*device* population cannot form and the single frame label is wrong in
+principle but not in fact. The moment the index actually selects, providers become genuinely
+distinct and every `alloc_device_*` aggregate in a two-provider run describes a population drawn
+from two `VkDevice`s while carrying one frame label chosen by registration order. That is an R12
+violation shipped *by a correctness fix*. Tank's `MIXED` label must land before or with it.
+
+**My recommendation, given to the coordinator: land together, not serialised.** Reason is R10.
+Until my fix lands, `MIXED` cannot be produced end-to-end on this box — it would land with a
+positive arm that is unfalsifiable in fact (synthetic unit construction only). Landing together
+lets me supply the real artifact: a two-provider run on two physical devices producing `MIXED`,
+with the single-provider control producing `SHARED`/`SPLIT-DEVICE` and not `MIXED`.
+
+**Finding for Tank, from reading the only production caller:** `ensure_registered` is called from
+exactly one place, `allocator.rs:595 try_attach_device_buffer`, keyed on that allocator's own
+`device_index`. So two providers only register if one process stands up allocators for two
+different device indices. But my §6.5 fix made `devices_to_advertise()` advertise **only** the
+pinned device when `ONNXRUNTIME_EP_VULKAN_DEVICE` is set — so:
+
+  - **pinned**: one device advertised, one index reachable, `MIXED` is correctly UNOBSERVABLE.
+  - **unpinned**: all capable devices advertised, ORT may create sessions on both -> `MIXED`
+    reachable, but only after my fix makes the providers genuinely distinct.
+
+So `MIXED`'s falsifier needs an **unpinned two-session run**. Worth Tank knowing before he writes
+the control, because a pinned probe can never produce it and would read as a silent pass.
+
+### clippy, red for the life of the project, now green (`9b2a916`)
+
+`cargo clippy --release --all-targets -- -D warnings` failed on four items, all test-profile, all
+mine. Invisible because `cargo build --release` is clean — a lint gate whose failure cannot be seen
+from the step beside it.
+
+- `transfer.rs:1103` unused `DeviceMemoryProvider` import (genuinely dead — inherent methods used).
+- `quant.rs:888` manual range contains -> `(1..=GEMV_MAX_COLS).contains(&cols)`, and it was
+  asserting bare, so it got the failure message it never had.
+- `norm.rs:270`, `indexing.rs:118` function item cast to usize -> `std::ptr::fn_addr_eq` against
+  the row's own `TranslateHandler` type, which is what the comparison always meant.
+
+**Both fn_addr_eq tests gained the negative polarity they never had**: an address comparison that
+can only return true is not a check, so each now also asserts the row is NOT
+`templates::unimplemented`. Both arms pass, so the comparison discriminates.
+
+440 lib tests pass at **default parallelism** — not `--test-threads=1`. Tank's reasoning applies to
+me too: serialising would have hidden a shipping defect with the identical symptom and the opposite
+fix. I had used `--test-threads=1` to characterise the counter flake in session 42; that was a
+diagnostic, and it should not become how the suite is run.
