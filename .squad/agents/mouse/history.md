@@ -1498,3 +1498,157 @@ hit this week: seeing agreement and stopping.
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+
+### Session 26 — which arm claimed Phi-3.5 (RAI-011, second pass)
+
+The coordinator found `net_benefit_gate: EVALUATED ... sole_island_overrides=1
+viable_islands_retained=0` in `bench/results/wiring_census-dev0.json` and asked the sharper form of
+the question I closed last session: on Phi-3.5, is the island retained because the predicate
+**passed**, or because the **sole-island override** fired? Both look identical from outside.
+
+**Answer, from the artifact and not from the source: the predicate passed.** Shipping
+configuration reads `viable_islands_retained: 1`, `net_benefit_sole_island_overrides: 0`. The
+override did not fire. The island we quote is the gate's own verdict.
+
+**But which arm.** `evaluate` returns `Claim` from three places and the counters record the
+verdict, not the arm. One-variable counterfactual: exemption on -> retained 1 / overrides 0;
+exemption off -> retained 0 / overrides 1 / `TRANSFER_DOMINATED`. So **the anchor exemption is the
+deciding term**, and the economics arm, when allowed to decide, *declines the graph we ship* at
+every `fixed_ns` — for the 10^5 boundary-byte reason in §7.12.1. The economics arm is not untested;
+it is wrong, and the exemption is what stands between it and the partition. That is worse than what
+was asked about and it is the thing to carry forward.
+
+**And the coordinator's worry — "the gate has never said no on real input" — is false, which I
+checked rather than assumed.** The census lane's one-node chain rejects at shipping defaults; no
+`PARTITION_*` variable is set outside my own probe. I did not want to infer the reason from the
+node count, so `rust/tools/probe_override_reason.py` rebuilds that shape, writes the prediction
+`TOO_SMALL` down first, and observes `TOO_SMALL` on both devices; its contrast case (nothing
+claimable at all) predicts and observes `UNOBSERVABLE`.
+
+**What I added:** `net_benefit_override_reason` — a token, not a number. `overrides: 1` said the
+override fired and said nothing about what it overrode, even though `GateOutcome::SoleIslandOverride`
+carries the `RejectReason` in memory; the reason died at the counter boundary. Now
+`UNOBSERVABLE` / `TOO_SMALL` / `TRANSFER_DOMINATED` / `MIXED` / `UNRECORDED`, as a bitmask so two
+different overrides cannot collapse onto whichever ran last, and the reason is a *required*
+argument to `record_sole_island_override` because an entry point that records the override without
+its reason is the same shape as the bypass RAI-011 removed. Three distinct tokens from three
+distinct inputs, both devices. 442 lib tests.
+
+**My first attempt at this was wrong in a way worth writing down.** I asked for the wiring
+census's shape and got `ledger_gate: ALL-DECLINED`, nothing reaching the partitioner. I nearly
+recorded that as a finding. It was an instrument state: another agent is checked out in the *same*
+worktree on the *same* branch, and my `cargo build` had linked their in-flight `registry.rs`. Then
+I made the same class of mistake again — `git diff -- rust/src/counters.rs` to export "my" patch
+swept up their edits to the same file, and the scratch build failed on *their* missing function
+rather than anything of mine. Two errors, both from assuming a file's uncommitted state was mine.
+The fix was to reconstruct my four edits by hand in a scratch worktree at my own last commit. Every
+artifact above came from that tree. **A shared worktree makes `git diff` a statement about the
+directory, not about me.**
+
+**Not done, deliberately, and it needs the coordinator:** the *claim* side is still unattributed —
+`Verdict::Claim` does not record which return site produced it, so "the anchor exemption decided
+this" stays an inference from two runs instead of being a field. That needs `Verdict::Claim` to
+carry a reason, which is a `partition.rs` change, and mouse-1 is in `partition.rs`. Re-deriving the
+arm at the `ep.rs` call site would be a second copy of the predicate — exactly RAI-011 — so I did
+not. Asked to be sequenced.
+
+Committed `HEAD` of `squad/mouse` did not build while I worked: *"cannot find function `ledger` in
+module `crate::registry`"*. Concurrent §8.9 work, outside my diff, quoted as text.
+
+---
+
+## 2026-08-01T21:15:16-07:00 — criterion 11: the proof ledger, and the last `UNWIRED` is closed
+
+**The census has no `UNWIRED` line left.** `ledger_lookup` now reads, byte-identically on device 0
+and device 1:
+
+```
+ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0
+unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)
+```
+
+The artifact is `evidence/proof_ledger.jsonl` — 9 entries, digest `e4436e93c19c8744`, written by
+`rust/tools/gen_proof_ledger.py`, never hand-edited, baked in with `include_str!` so a build cannot
+claim a form whose proof is absent from the binary doing the claiming.
+
+**What I predicted before running, and what happened.** Written to
+`bench/results/proof_ledger_prediction.json` before any run, per R10:
+
+- **P1** (the gate discriminates: proven arm `ledger_hits=1 ALL-PROVEN`, unproven arm
+  `ledger_hits=0 ALL-DECLINED unproven_declines=1`) — **confirmed byte-exactly, both devices.**
+- **P4** (Phi-3.5 355 → 0) — **confirmed exactly.** `claimed_nodes=0`,
+  `proven_key_lookups=357`, `unproven_declines=357`, and the claim-log histogram shows 355 nodes
+  declining with `('unproven',)` **and nothing else** — no second reason riding along.
+- **P5** (two forms, two keys) — confirmed.
+- **P8** (the `MatMulNBits` `zero_points` pair produces keys differing *only* in the optional-input
+  component) — **confirmed on substance, and I got the variant token wrong.** I predicted
+  `qgemv_f16`; it is `q_gemv_matmul_nbits_f16`. Recorded as a miss because a prediction that is
+  only scored on the part I got right is not a prediction.
+
+**Two real defects my own controls caught, and neither was the one I was looking for.**
+
+The first attributed generator run returned `UNATTRIBUTED {'claimed_nodes': 0,
+'dispatches_executed': 0}`. The earlier `MATCH` had been **CPU against CPU**. Root cause: proof keys
+contain `,` (`f32,f32>f32`) and the `CLAIM_UNPROVEN` hatch split its list on `,`, shredding every
+key into invalid fragments. The list was *correctly* discarded, the run claimed nothing, and the
+comparison still said `MATCH`. **Only the attribution check caught it** — the mechanism that exists
+because of 2026-07-30 caught the successor of 2026-07-30. Separator is now `;`.
+
+Then the regression test I wrote for *that* found the second one: `ai.onnx::Add/7+/f32` — the first
+comma-fragment of a real key — **passed `ProofKey::validate`**, which only required a `/`. A
+truncated key matches nothing and reads exactly like a key that matches something. `validate()` now
+demands `::`, five `/`, and no empty component.
+
+**One ERROR(instrument), and R13 says it is never a detection.** `sqrt_f32` returned `DIVERGENT`
+with `worst_rel: 0.0` — self-contradictory on its face, which is the tell. `standard_normal` inputs
+meant `Sqrt` of a negative gave NaN on *both* sides; `np.allclose` calls NaN≠NaN a divergence while
+`max(0.0, nan)` returns `0.0`. I fixed both halves rather than the loud one: an `ERROR` verdict when
+the **reference** output is non-finite (EP-only non-finite stays a genuine `DIVERGENT`), plus an
+`INPUT_DOMAIN` table so `Sqrt` samples positive and `Div` non-zero.
+
+**Rai's planted control is in the lane, not behind `#[ignore]`.** `mul_f16_unproven` is deliberately
+never proven and its sibling `mul_f32` is, so the pair is two-armed and the arms are *asserted* to
+differ — Switch's `arms_must_differ` lesson applied directly, because a ledger probe whose two arms
+return the same key is a perfectly stable, perfectly wrong answer. `tests/ops/test_proof_ledger.py`:
+**10 passed, 0 skipped, 0 ignored.**
+
+**A lane bug the gate exposed, worth keeping.** The first lane run was 7 passed / **3 skipped**: the
+suite's `_probe_vulkan_device()` requires a *claim*, and MatMulNBits was now unproven, so **"no
+device" and "no proof" read as the same silent SKIP.** I fixed it by proving the op that matters —
+which is the right fix for today and not for the shape of the problem. The fragility remains: remove
+that proof and the two states collapse again. Flagged for Trinity.
+
+**The price, paid and not softened. Phi-3.5: 355 → 0.** Exactly what Morpheus accepted when he ruled
+§8.9. **The fall is temporary and the work is bounded** — the 355 nodes reduce to **8 distinct proof
+obligations**, mechanically discoverable because every claim-log audit line now carries `proof_key`;
+`bench/results/_phi35_keys.txt` came out of one gated run, not out of my head. Populating them from
+existing differential runs is a harness job, not a design one.
+
+**The 104,116× estimator defect: it was two defects, and I can only close one honestly.**
+
+- *Closed.* Internal island edges were counted as boundary. A whole-graph per-value consumer map in
+  `ep.rs` fixed it — **89,199,100,032 → 13,936,509,056 B**, and `net_benefit_sole_island_overrides`
+  went **1 → 0**: Phi-3.5's island is now claimed on the gate's own economics, not on the
+  no-alternative override. That is the more interesting half of the result.
+- *Open.* `slot_bytes` substitutes **128 for every unknown dim**, and every Phi-3.5 boundary tensor
+  is `runtime-extent`. Residual ~16,268×. This is a **fabricated** input, not an over-broad one, and
+  R9 amendment 5 applies: the number moves *with* the reader's confidence, so it cannot be repaired
+  by tightening a threshold. Different fix — resolve the extents or decline to answer. Until then it
+  is **self-disclosing**: `Island::symbolic_boundary_slots` travels with the number and the WARN
+  reports the fabricated-slot count.
+
+**Also landed:** `epctl --check-counters` now exits 1 on a non-empty `unproven_forms_enabled`, with
+`--allow-unproven` that **downgrades and never erases** — it still names the forms, because a flag
+that deletes the finding is how a run with unproven claims reads as clean three weeks later. A
+scalar hatch (`1`, `true`, `*`) is pinned as *not a list* — C1's shape, named in §8.9.
+
+**State:** `cargo test --release --lib` 446 passed / 0 failed / 2 ignored; `epctl` 15 passed;
+census 3 passed on each device; ledger lane 10 passed. Counters ABI **2 → 3** (five appended fields,
+size-versioned so old readers are safe). Decision record in
+`.squad/decisions/inbox/mouse-proof-ledger.md`, including the declared crossings into Trinity's
+`tests/` and Tank's `counters.rs`/`epctl.rs`.
+
+**Disclosed, not hidden:** `counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero`
+failed once in four full lib runs and passes in isolation — it `set_var`s a process-global env var
+shared with sibling tests. **ERROR(instrument), not a detection.** Pre-existing, Tank's file, and
+recorded so nobody rediscovers it as new.
