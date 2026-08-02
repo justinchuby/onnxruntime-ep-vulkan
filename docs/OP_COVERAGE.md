@@ -4021,6 +4021,162 @@ check that moves with the reader's confidence rather than with its subject (R9 a
 information was lost by the caller, and a handler that fabricates it stops being able to detect that
 the caller lost it. The branch is one `else` in `vk/session.rs`, which is Switch's.
 
+### 8.9.11 The ledger had no re-proof path: an entry that outlived its subject (2026-08-02)
+
+**The hole, found by Switch while fixing GQA.** `gen_proof_ledger.py --append` printed
+`UNMEASURED … no unlockable keys` and then `PASS`, writing nothing. The GQA form was already
+claimed, so the generator skipped it as an optimisation — and the entry proving it predated
+*two* shader rewrites made that same day: the index-space fix that took GQA from
+`DIVERGENT 16.726` to `MATCH 0.00072939`, and the prefill fix that took `present_key` from
+`worst_rel 774.8` to `0`. The entry was minted against a shader that no longer existed.
+
+This is the shape §8.9 was built to refuse, arriving from a direction none of us guarded. Not
+*a ledger derived from the claim table* — Morpheus's refusal — but **a ledger whose entries
+silently outlive their subject**. `ledger_hits == proven_key_lookups` stays true forever while
+the thing proven drifts out from under the proof. The key is the same; the kernel is not.
+
+**And note what caught it: nothing did.** Switch established GQA's correctness by his own
+independent comparison against the CPU EP. The ledger agreed — but it would have agreed
+identically had he broken the kernel, because it never re-measured.
+
+> **A proof that cannot be invalidated by changing its subject is not a proof of that subject.**
+
+#### The four repairs
+
+1. **The entry carries a digest of its subject.** Each `MATCH` records `shaders` — the SPIR-V
+   modules the proof run actually dispatched, by stem — and `shader_digest`, an FNV-1a/64 over
+   the compiled bytes of those modules. `parse_ledger` recomputes the digest against the SPIR-V
+   baked into *this* binary and demotes the entry on disagreement.
+2. **`--reprove`.** A form that is already claimed can be re-measured deliberately instead of
+   skipped. `discover_keys(model, reprove=True)` re-offers claimed keys and the census gained
+   `claimed_reoffered`, so "re-offered and re-measured" is distinguishable from "never offered".
+3. **`PASS` is no longer printed over a run that measured nothing.** `UNMEASURED … no unlockable
+   keys` followed by `PASS` is a report whose two halves describe different things — the same
+   defect that cost Morpheus a criterion, where `outputs_compared: 65` sat among oracle facts
+   while counting cross-run comparisons. The generator now tracks `measured_any`, prints an
+   explicit `NOT MEASURED:` line per model that offered no key, and appends a `NOTE:` to the
+   `PASS` when the run as a whole measured nothing.
+4. **Two new demotion tokens**, joining Tank's `DIVERGENT`/`UNMEASURED` at the §8.9.7 disclosure:
+   `STALE-SHADER` (digest disagrees) and `NO-SUBJECT-WITNESS` (entry carries no `shaders`
+   field at all). Both name `--reprove` as the remedy in their fault text (R13).
+
+#### The digest frame — what it covers, and what it deliberately does not
+
+The coordinator asked for this decision to be stated rather than assumed, in the shape Link uses
+for his frames. Point 1 makes an entry stale on any change to a shader it dispatched, and the
+pressure to relax that will arrive the first time someone is in a hurry. So:
+
+**COVERS.** The compiled SPIR-V bytes of every module the proof run dispatched, keyed by stem
+and hashed after sorting and dedup, so dispatch order does not move the digest. A formula
+change, an index-space change, a workgroup-size change, a binding change, a deletion or a
+rename all move it. A module named by an entry but absent from this build hashes a distinct
+`\x01MODULE-ABSENT` marker rather than being skipped — a shader that has been deleted must not
+silently produce the same digest as one that is unchanged.
+
+**DOES NOT COVER, deliberately.**
+
+- **Shaders the run did not dispatch.** A per-entry digest over the *whole* shader set would
+  make every unrelated edit demand 73 re-proof runs, and a gate whose cost is that
+  indiscriminate is a gate that gets relaxed. The narrower digest is the one that survives.
+- **Host-side code** — translation, allocation, descriptor construction, push-constant values.
+  **This is a named residual, and its falsifier is exact: a host-only numeric change leaves the
+  entry green.** `dispatches_executed` catches part of that class; it is not claimed to catch
+  all of it. Closing it properly needs a CI re-proof lane, which is Link's frame, not this one.
+- **Comment-only GLSL edits**, which do not survive to SPIR-V under our `glslc` flags. This
+  falls out of hashing the compiled bytes rather than the source, and it is the one relaxation
+  taken — taken because it is verifiable from the compiler's behaviour rather than asserted.
+
+**Staleness demotes per entry, never globally.** A blanket refusal would let one shader edit
+disable every claim in the ledger — the blunt shape that gets switched off in a hurry.
+
+#### Pre-existing entries are not grandfathered
+
+All 73 shipped entries lacked the subject witness and therefore faulted under the new parser.
+Admitting them "for compatibility" would have exempted exactly the entries that have had the
+longest to drift — GQA's among them. The whole ledger was re-proved instead.
+
+The bootstrap works because a fully-faulted ledger makes every form decline `[unproven]`, so
+`discover_keys` finds them all even without `--reprove`, and `prove()` opens the
+`CLAIM_UNPROVEN` hatch, which is independent of ledger state.
+
+**Result of the re-proof: 74 entries, digest `d07643b0c4cd2e8f`.** One more than before, and the
+new one is GQA — which under Switch's rewritten shader now proves `MATCH` where it proved
+`DIVERGENT 16.726` this morning. That is the mechanism working in the direction that costs
+something to state: the re-proof was run to invalidate entries, and it admitted one.
+
+#### The thin margin, recorded rather than smoothed
+
+Switch flagged GQA's `MATCH` margin as 1.37× — `worst_rel 0.00072939` against `rtol 0.001` —
+and said so out loud rather than letting it pass as comfort. The re-proof reproduces it exactly.
+Against the rest of the ledger it is not merely thin, it is an outlier:
+
+| entry | `worst_rel` | margin vs its `rtol` |
+|---|---|---|
+| `GroupQueryAttention/…/runtime-extent/past_key+…` | 0.000729395 | **1.37×** |
+| `Erf/9+/f32>f32/ew_unary_erf_f32/static/n1` | 0.0000045517 | ~220× |
+| `MatMulNBits/…/f32,u8,f32>f32/…/static/scales` | 0.0000026391 | ~379× |
+
+The next-tightest entry sits **160× further from its bound**. Switch believes the GQA figure is
+one fp16 ULP at small denominators — rounding rather than formula. That reading is plausible and
+is not asserted here as established. What is established is that the combination that made it
+worth watching is gone: the entry can now be re-measured on demand, and a shader change makes it
+stale rather than silently authoritative.
+
+#### What the census reports
+
+`shaders_dispatched` and `shaders_dispatched_digest` are emitted in the counters artifact beside
+`unproven_forms_enabled`. When a session dispatched nothing the digest reads `NONE-DISPATCHED`
+rather than the hash of an empty list — R12: "no shaders ran" and "shaders ran and hashed to X"
+must not share a spelling, which is the defect this project already fixed once when *bypassed*
+and *all-rejected* shared one `0`.
+
+### 8.9.12 First real reading: 355/363 claimed, and criterion 10 goes DIVERGENT (2026-08-02)
+
+With the re-proved ledger baked in, Phi-3.5 claims **355 of 363 nodes**, `ledger_hits 355`,
+`unproven_declines 2`, `unproven_forms_claimed 0`, `claimed_form_evidence ALL-PROVEN`. That is
+Morpheus's original honest cost figure — *"Phi-3.5's claimed count goes 355 → 0"* — arrived at
+from the other side, with every one of the 355 backed by a proof run rather than by a table.
+
+The guard that mattered while getting here held: **the ledger grew by one entry and the claimed
+count moved by 32.** A ledger that grows while the claimed count does not is the failure mode of
+minting `/static/` keys the model cannot use; that is not what happened.
+
+**This gave Switch's all-65 oracle arm its first reading on real data, and it is DISAGREE.**
+Three consecutive runs, bit-identical to one another across all 65 outputs, one fused island per
+run, 65 outputs reaching the EP, **0 CPU-only, 0 unobservable, 0 degenerate**. Not vacuous, and
+reproducible.
+
+`oracle_outputs_degenerate = 0` is the field to read first, and it says **the reopened
+all-zero-KV defect is not reproducing here.** The KV outputs carry information on both sides.
+
+The disagreement is `[0, 63, 64]` — `logits`, `present.31.key`, `present.31.value`. Reading the
+ratio against the criterion actually applied (`|a-b| / (atol + rtol·|b|)`, which is ≤1 exactly
+when the output passes), the pattern is not a broken layer:
+
+| output | ratio to bound |
+|---|---|
+| `present.0.key` | 0.0438 |
+| `present.1.key` | 0.127 |
+| `present.15.key` | 0.233 |
+| `present.30.key` / `.value` | 0.812 / 0.854 |
+| `present.31.key` / `.value` | **1.66 / 1.17** |
+
+**The pass/fail line falls in the middle of a smooth curve, not at a discontinuity.** The error
+grows monotonically with layer depth and crosses the bound at the last layer. Layer 30 passing
+at 0.85 is the same phenomenon as layer 31 failing at 1.66 — so the 62 passes are not 62 clean
+results. This argues *against* relaxing the tolerance: relaxing it moves the crossing point and
+leaves the curve rising.
+
+`logits` is the outlier at 46.9× the bound, driven by near-zero logits where a `max_abs_diff` of
+0.0625 is relatively enormous. It does not move the model's decision: `argmax 30751` on both
+sides, top-10 10/10, over a CPU range of `[-13.086, 13.031]`.
+
+**No tolerance was changed and no gate was relaxed.** The reading is recorded and handed on; the
+verdict on whether f16 accumulation through 32 residual layers is acceptable, or whether the f16
+kernels should accumulate in f32, is a correctness ruling and not this section's to make. The
+per-output table is reproducible with `rust/tools/probe_phi35_oracle_detail.py`, which computes
+no verdict and grants nothing.
+
 ---
 
 ## 9. Op module layout

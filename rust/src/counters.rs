@@ -596,6 +596,16 @@ static UNPROVEN_FORMS_CLAIMED: AtomicU64 = AtomicU64::new(0);
 /// CI check has to be able to *name* what a lane claimed without evidence.
 static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Shader stems this process actually dispatched, sorted and deduplicated.
+///
+/// Added 2026-08-02 (Mouse, cross-owner into Tank's file, declared) for §8.9.11. A proof-ledger
+/// entry says a form matched the CPU oracle; it has to be able to say *what code* it matched
+/// with, or the entry silently outlives its subject when that code is replaced. The stems are
+/// `&'static str` from the shader table, so this is the set of embedded SPIR-V modules the run
+/// bound to a pipeline — the run's own account of what it executed, not a re-derivation from the
+/// registry.
+static SHADERS_DISPATCHED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
 static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
@@ -1052,6 +1062,42 @@ pub fn record_dispatches(n: u64) {
     dump_if_requested();
 }
 
+/// Record that this process bound and dispatched the embedded SPIR-V module `stem`.
+///
+/// Idempotent and order-independent: the value of interest is the *set*, because a proof entry's
+/// shader digest must not depend on how many times a kernel ran.
+pub fn record_shader_dispatched(stem: &'static str) {
+    if stem.is_empty() {
+        return;
+    }
+    if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
+        if let Err(pos) = used.binary_search(&stem) {
+            used.insert(pos, stem);
+        }
+    }
+}
+
+/// The stems recorded by [`record_shader_dispatched`], sorted.
+pub fn shaders_dispatched() -> Vec<&'static str> {
+    SHADERS_DISPATCHED.lock().map(|u| u.clone()).unwrap_or_default()
+}
+
+/// `shaders_dispatched` and `shaders_dispatched_digest` as JSON fragments.
+///
+/// The digest is over the SPIR-V **bytes** of exactly those modules, so it changes when the
+/// compiled kernel changes and does not change when an unrelated shader does. Its frame — what it
+/// covers and what it deliberately does not — is stated in `docs/OP_COVERAGE.md` §8.9.11.
+fn shaders_dispatched_json() -> (String, String) {
+    let stems = shaders_dispatched();
+    let list: Vec<String> = stems.iter().map(|s| format!("\"{}\"", json_escape(s))).collect();
+    let digest = match crate::registry::shader_digest_for(&stems) {
+        Some(d) => d,
+        // R12: no module was dispatched is a different fact from "the digest is zero".
+        None => "NONE-DISPATCHED".to_string(),
+    };
+    (format!("[{}]", list.join(", ")), digest)
+}
+
 /// Current values. Not a consistent cross-counter snapshot; see [`ORD`].
 pub fn snapshot() -> VulkanEpCounters {
     VulkanEpCounters {
@@ -1080,6 +1126,9 @@ pub fn reset() {
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
+    if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
+        used.clear();
+    }
     CLAIMED_NODES.store(0, ORD);
     ISLANDS_OFFERED.store(0, ORD);
     // Both sides: Tank's staging tally and Mouse's retained-island counter. Neither excludes the
@@ -1134,6 +1183,7 @@ impl VulkanEpCounters {
         let claimed = CLAIMED_NODES.load(ORD);
         let islands = ISLANDS_OFFERED.load(ORD);
         let viable = viable_islands_retained_json();
+        let (shaders_list, shaders_digest) = shaders_dispatched_json();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
@@ -1159,6 +1209,8 @@ impl VulkanEpCounters {
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
+             \"shaders_dispatched\": {},\n  \
+             \"shaders_dispatched_digest\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
              \"claimed_forms_unmeasured\": {},\n  \
@@ -1203,6 +1255,8 @@ impl VulkanEpCounters {
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
+            shaders_list,
+            shaders_digest,
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
             CLAIMED_FORMS_UNMEASURED.load(ORD),
