@@ -1058,7 +1058,23 @@ unsafe fn get_capability_impl(
         // ever non-zero again, a second bypass has been reintroduced somewhere.
         counters::record_net_benefit_decision(true);
         if outcome.is_override() {
-            counters::record_sole_island_override();
+            // Map the verdict the override suppressed onto a counter token. The mapping is
+            // exhaustive on purpose: a new `RejectReason` must be given a token here or the build
+            // breaks, rather than quietly falling into a default that reads like a measurement.
+            let overridden = match outcome.evaluated() {
+                partition::Verdict::Reject(partition::RejectReason::TooSmall { .. }) => {
+                    Some(counters::OverriddenVerdict::TooSmall)
+                }
+                partition::Verdict::Reject(partition::RejectReason::TransferDominated {
+                    ..
+                }) => Some(counters::OverriddenVerdict::TransferDominated),
+                // Unreachable: `is_override()` is only true for `SoleIslandOverride`, which is
+                // only constructed from a rejection. Left as a branch rather than an unwrap so
+                // that if it ever happens the artifact says `UNRECORDED` instead of panicking in
+                // GetCapability.
+                partition::Verdict::Claim => None,
+            };
+            counters::record_sole_island_override(overridden);
             log::warn!(
                 "GetCapability: sole-island override — the net-benefit gate REJECTED the graph's \
                  only island ({} nodes, {} anchors, {} boundary bytes, {} est. FLOPs) and the \

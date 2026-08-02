@@ -507,6 +507,39 @@ static NET_BENEFIT_GATE_BYPASSES: AtomicU64 = AtomicU64::new(0);
 /// "the gate retained the island", "the gate rejected every island" and "the gate never ran"
 /// compressed onto one digit. They now occupy three different fields, one of which is a string.
 static NET_BENEFIT_SOLE_ISLAND_OVERRIDES: AtomicU64 = AtomicU64::new(0);
+/// Which rejection(s) the override suppressed, as a bitmask over [`OverriddenVerdict`].
+///
+/// A count of overrides tells you the override fired; it does not tell you **what it overrode**,
+/// and those are different facts. `net_benefit_sole_island_overrides: 1` was reported in the
+/// wiring census with no way to learn whether the gate had said *too small* or *transfer
+/// dominated* — the reason existed in memory (`GateOutcome::SoleIslandOverride` carries it) and
+/// died at the counter boundary. This is the missing half.
+///
+/// A bitmask rather than a last-writer-wins slot, so two overrides with different reasons in one
+/// process render as `MIXED` instead of silently reporting whichever ran last.
+static NET_BENEFIT_OVERRIDE_REASONS: AtomicU64 = AtomicU64::new(0);
+
+/// The gate verdict a sole-island override suppressed.
+///
+/// Deliberately *not* `partition::RejectReason`: this module must not depend on the partitioner,
+/// and the counter needs a token, not the arithmetic that produced it. The mapping happens once,
+/// at the single call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverriddenVerdict {
+    /// The gate rejected on the size arm (`RejectReason::TooSmall`).
+    TooSmall,
+    /// The gate rejected on the economics arm (`RejectReason::TransferDominated`).
+    TransferDominated,
+}
+
+impl OverriddenVerdict {
+    fn bit(self) -> u64 {
+        match self {
+            OverriddenVerdict::TooSmall => 1,
+            OverriddenVerdict::TransferDominated => 2,
+        }
+    }
+}
 
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
 static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
@@ -595,8 +628,11 @@ pub fn record_net_benefit_decision(evaluated: bool) {
 /// Must be called *in addition to* [`record_net_benefit_decision`]`(true)`, never instead of it:
 /// the island was evaluated, and then its verdict was overridden. An override that suppressed the
 /// evaluation record would be the bypass again.
-pub fn record_sole_island_override() {
+pub fn record_sole_island_override(reason: Option<OverriddenVerdict>) {
     NET_BENEFIT_SOLE_ISLAND_OVERRIDES.fetch_add(1, ORD);
+    if let Some(reason) = reason {
+        NET_BENEFIT_OVERRIDE_REASONS.fetch_or(reason.bit(), ORD);
+    }
 }
 
 /// The three-state reading of `viable_islands_retained`, as a JSON fragment.
@@ -630,6 +666,27 @@ fn net_benefit_gate_state() -> &'static str {
         (_, 0, _) => "BYPASSED",
         (_, _, 0) => "EVALUATED",
         _ => "MIXED",
+    }
+}
+
+/// Token naming *what the sole-island override overrode*, which is a different fact from *whether*
+/// it fired.
+///
+/// `UNOBSERVABLE` when no override happened: the event whose reason is being asked for did not
+/// occur in this frame, so there is no reason to report and reporting a reason-shaped `NONE` would
+/// invite a reader to treat absence as a verdict (R12).
+fn net_benefit_override_reason() -> &'static str {
+    let overrides = NET_BENEFIT_SOLE_ISLAND_OVERRIDES.load(ORD);
+    let mask = NET_BENEFIT_OVERRIDE_REASONS.load(ORD);
+    match (overrides, mask) {
+        (0, _) => "UNOBSERVABLE",
+        (_, 1) => "TOO_SMALL",
+        (_, 2) => "TRANSFER_DOMINATED",
+        (_, 3) => "MIXED",
+        // An override was counted but no reason reached the mask: the two halves of one call site
+        // have drifted apart. Named rather than defaulted, because a silent fallback here would
+        // hide exactly the wiring failure this field exists to expose.
+        (_, _) => "UNRECORDED",
     }
 }
 
@@ -740,6 +797,7 @@ pub fn reset() {
     NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
     NET_BENEFIT_GATE_BYPASSES.store(0, ORD);
     NET_BENEFIT_SOLE_ISLAND_OVERRIDES.store(0, ORD);
+    NET_BENEFIT_OVERRIDE_REASONS.store(0, ORD);
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
@@ -776,6 +834,7 @@ impl VulkanEpCounters {
              \"net_benefit_gate_evaluations\": {},\n  \
              \"net_benefit_gate_bypasses\": {},\n  \
              \"net_benefit_sole_island_overrides\": {},\n  \
+             \"net_benefit_override_reason\": \"{}\",\n  \
              \"broken_commitments\": {},\n  \
              \"broken_commitment_warns_to_ort_sink\": {},\n  \
              \"broken_commitment_warn_channel\": \"{}\",\n  \
@@ -797,6 +856,7 @@ impl VulkanEpCounters {
             NET_BENEFIT_GATE_EVALUATIONS.load(ORD),
             NET_BENEFIT_GATE_BYPASSES.load(ORD),
             NET_BENEFIT_SOLE_ISLAND_OVERRIDES.load(ORD),
+            net_benefit_override_reason(),
             broken_commitments_json(),
             BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD),
             broken_commitment_channel(),
@@ -1453,6 +1513,69 @@ mod tests {
 
         reset();
         assert_eq!(snapshot().compute_calls, 0);
+    }
+
+    /// An override count says *that* the gate was overruled; it does not say *what* was overruled.
+    ///
+    /// The wiring census reported `sole_island_overrides=1` with no way to learn whether the gate
+    /// had said "too small" or "transfer dominated". Those are different findings — the first is
+    /// the designed behaviour of a one-node graph, the second would mean the economics arm is
+    /// declining a graph we ship. This pins that they no longer read alike.
+    #[test]
+    fn an_override_reports_which_verdict_it_overrode() {
+        reset();
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"UNOBSERVABLE\""),
+            "no override happened, so there is no reason to report and it must not read as a \
+             verdict (R12); got:\n{json}"
+        );
+
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TooSmall));
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"TOO_SMALL\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"net_benefit_sole_island_overrides\": 1"),
+            "{json}"
+        );
+
+        // A second override with a different reason must not overwrite the first: the artifact
+        // has to say both happened, not whichever ran last.
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TransferDominated));
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"MIXED\""),
+            "two overrides with different reasons must not collapse onto one token; got:\n{json}"
+        );
+
+        reset();
+        record_net_benefit_decision(true);
+        record_sole_island_override(None);
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"UNRECORDED\""),
+            "an override whose reason never arrived must say so rather than default to a \
+             plausible verdict; got:\n{json}"
+        );
+        reset();
+    }
+
+    /// `UNOBSERVABLE` and `TOO_SMALL` are tokens, not numbers, so a reader cannot average them,
+    /// sum them, or mistake an absent override for a zero-valued one.
+    #[test]
+    fn the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly() {
+        reset();
+        assert_eq!(net_benefit_override_reason(), "UNOBSERVABLE");
+        assert!(net_benefit_override_reason().parse::<u64>().is_err());
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TransferDominated));
+        assert!(net_benefit_override_reason().parse::<u64>().is_err());
+        reset();
     }
 
     /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies

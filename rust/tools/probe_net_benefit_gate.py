@@ -115,6 +115,7 @@ KEYS = [
     "net_benefit_gate_evaluations",
     "net_benefit_gate_bypasses",
     "net_benefit_sole_island_overrides",
+    "net_benefit_override_reason",
 ]
 
 

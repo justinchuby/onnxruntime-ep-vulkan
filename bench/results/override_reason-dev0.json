@@ -1,0 +1,39 @@
+{
+  "device": "0",
+  "rows": [
+    {
+      "case": "one_elementwise_node",
+      "predicted": "TOO_SMALL",
+      "device": "0",
+      "verdict": "PASS",
+      "observed": "TOO_SMALL",
+      "counters": {
+        "claimed_nodes": 1,
+        "islands_offered": 1,
+        "viable_islands_retained": 0,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 1,
+        "net_benefit_override_reason": "TOO_SMALL"
+      }
+    },
+    {
+      "case": "nothing_claimable",
+      "predicted": "UNOBSERVABLE",
+      "device": "0",
+      "verdict": "PASS",
+      "observed": "UNOBSERVABLE",
+      "counters": {
+        "claimed_nodes": 0,
+        "islands_offered": 0,
+        "viable_islands_retained": "UNWIRED",
+        "net_benefit_gate": "UNWIRED",
+        "net_benefit_gate_evaluations": 0,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE"
+      }
+    }
+  ]
+}

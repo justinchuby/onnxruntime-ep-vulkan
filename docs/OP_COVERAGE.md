@@ -3032,6 +3032,81 @@ rather than on the first result being repeated.** 355/363 is not the number to m
 move is boundary bytes — and §7.12.1 says the estimator's version of that number is off by 10⁵,
 which is now the top of the partition backlog.
 
+### 7.14 Which arm claimed Phi-3.5, and what the override overrode (2026-08-01)
+
+A reconciliation of `bench/results/wiring_census-dev0.json` raised a sharper version of RAI-011:
+on Phi-3.5 the fused island is retained — but *by what*? "The gate approved it" and "the gate
+rejected it and the sole-island override kept it" are different facts that both produce one island,
+claimed, executing, MATCH. If it were the override, the net-benefit gate would never have said *no*
+on real input, and a gate that cannot decline is not a gate.
+
+**The trap named in the question is the important part.** `net_benefit_gate: EVALUATED` and
+`net_benefit_gate_bypasses: 0` both *look* like the gate is working, and both read exactly the same
+in a world where the gate runs and always approves. `bypasses` is a tripwire for a different
+failure — something skipping the gate — so it cannot falsify this one. Neither field is evidence
+here.
+
+**The field that is evidence: `net_benefit_sole_island_overrides`.**
+
+| run | claimed | retained | overrides | override reason |
+|---|---|---|---|---|
+| Phi-3.5, shipping configuration | 355 | **1** | **0** | `UNOBSERVABLE` |
+| one-node elementwise chain (the census lane's shape), shipping configuration | 1 | 0 | **1** | `TOO_SMALL` |
+| a graph with no claimable node at all | 0 | `UNWIRED` | 0 | `UNOBSERVABLE` |
+
+**Answer: on Phi-3.5 the predicate passed on its own.** `overrides = 0`, so the override did not
+fire and cannot be what retained the island. The headline island is claimed by the gate.
+
+**Which arm of the predicate, though, is a second question, and the answer is less comfortable.**
+`evaluate` has two rejecting arms and returns `Claim` from three places; the counters record the
+verdict, not the arm. Changing one input at a time answers it without reading the code
+(`bench/results/net_benefit_gate_probe-dev0.json`, rows `default` and `no_anchor`, everything else
+held fixed):
+
+- anchor exemption **on** (shipping): retained 1, overrides 0.
+- anchor exemption **off**: retained 0, overrides 1, reason `TRANSFER_DOMINATED`.
+
+Nothing else differs between those two runs, so **the anchor exemption is the deciding term on
+Phi-3.5**. The economics arithmetic is reached and, when allowed to decide, it *declines the graph
+we ship* — at every `fixed_ns` in §7.12's range, for the reason §7.12.1 gives: the estimator's
+boundary bytes are 10⁵ too large. The gate's economics arm is therefore not merely untested on
+real input; it is wrong on real input, and the anchor exemption is what stands between that wrong
+answer and the partition.
+
+**Has the predicate ever returned `Reject` on a real graph at shipping defaults? Yes.** The census
+lane is that case: a one-node elementwise chain, no `PARTITION_*` environment override anywhere in
+the census tooling (only `probe_net_benefit_gate.py` sets those), `overrides = 1`. So the reject
+branch does fire in production configuration today. The gate is not a decoration. What had never
+happened is an *economics* rejection at shipping defaults — the census lane rejects on **size**,
+and that is now read from an artifact rather than from the source: `rust/tools/probe_override_reason.py`
+rebuilds the census lane's shape, predicts `TOO_SMALL` before running, and observes `TOO_SMALL` on
+both devices.
+
+**The observability gap that made this hard to answer, now closed.** `overrides: 1` said the
+override fired and said nothing about what it overrode, even though `GateOutcome::SoleIslandOverride`
+carries the `RejectReason` in memory: the reason died at the counter boundary. `counters.rs` now
+emits `net_benefit_override_reason`, a token in Tank's idiom rather than a number —
+`UNOBSERVABLE` when no override occurred (R12: the event whose reason is asked for did not happen
+in this frame), else `TOO_SMALL` / `TRANSFER_DOMINATED` / `MIXED`, plus `UNRECORDED` for the
+drift case where an override was counted and no reason arrived. It is a bitmask, not a
+last-writer-wins slot, so two overrides with different reasons cannot collapse onto whichever ran
+last. **It varies with its input in the artifact** — `UNOBSERVABLE` in the shipping Phi-3.5 row,
+`TRANSFER_DOMINATED` in the eight anchor-off rows, `TOO_SMALL` on the one-node graph and
+`UNOBSERVABLE` again where nothing is claimable — which is the R10 requirement for calling it
+wired. Three distinct tokens from three distinct inputs, on both devices.
+
+**No gate behaviour changed.** The override remains correct policy for a sole island: there is no
+alternative partition, so declining it hands the whole graph back for no gain. This is
+documentation plus an observable plus tests, exactly as asked.
+
+**Backlog, needing sequencing rather than doing:** the *claim* side is still unattributed in the
+artifact. `Verdict::Claim` does not say which of the three arms produced it, so "the anchor
+exemption decided this" remains an inference from a two-run counterfactual rather than a field.
+Making it a field means `Verdict::Claim` carries a reason, which is a `partition.rs` change, and
+`partition.rs` was being edited concurrently. Deriving the arm at the `ep.rs` call site instead
+would be a second copy of the predicate — the precise thing RAI-011 was about — so it is not an
+option.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.
