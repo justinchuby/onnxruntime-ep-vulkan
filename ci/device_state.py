@@ -213,19 +213,58 @@ def host_producer_status() -> dict:
     Returns a dict with ``status`` and ``rows`` — the registry rows judged available here.
     The absence of every producer is reported as an absence, not as quiet.
 
-    ``ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=none`` forces the "no producer on this
-    host" branch so it can be exercised on a desk that has one.  It can only ever *remove*
-    producers — there is deliberately no value of it that adds one, because a switch that
-    could assert telemetry into existence would be the waiver amendment 2 forbids, wearing
-    a test harness as a disguise.
+    ``ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS`` takes two values, and only two:
+
+    ``none``
+        Force the "no producer on this host" branch, so it can be exercised on a desk that
+        has one.
+
+    ``simulate:<name>``
+        Force `<name>` — which must already be a row in `PRODUCERS` — to be treated as
+        available, so the ``FAIL(condition=STEADY_UNCERTIFIED)`` branch can be exercised on
+        a host that has no telemetry.  Added 2026-08-01 after all three "a duration with no
+        record reds the lane" tests passed on a developer machine and failed on the CI
+        runner: they had been asserting `FAIL` while the runner, having no `nvidia-smi`,
+        correctly produced `ERROR(instrument=device_state_producer_absent)`.  A test whose
+        outcome depends on which machine ran it is not a two-polarity test.
+
+    Neither value can produce a ``PASS``.  That is the property that makes this safe, and
+    it is not an argument — `test_no_producer_override_can_ever_yield_a_pass` asserts it
+    over every accepted value.  A ``PASS`` is decided by `certify()` reading the *record*;
+    the host registry only ever selects **which red** an unrecorded figure earns.  A switch
+    that could turn a red green would be the waiver amendment 2 forbids, wearing a test
+    harness as a disguise; this one cannot reach green from any input.
     """
-    if os.environ.get("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS", "").strip().lower() == "none":
+    override = os.environ.get("ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS", "").strip().lower()
+    if override == "none":
         return {
             "status": STATUS_UNIMPLEMENTED,
             "rows": {},
             "available": [],
             "platform": sys.platform,
             "forced": "producers suppressed by ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=none",
+        }
+    if override.startswith("simulate:"):
+        name = override.split(":", 1)[1].strip()
+        if name not in PRODUCERS:
+            # An unknown name is an instrument error waiting to happen, so it is refused
+            # here rather than silently ignored: silently ignoring it would turn a typo in
+            # a test harness into "this host has no producers", which is a different claim.
+            raise ValueError(
+                f"ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS=simulate:{name} names no row in "
+                f"PRODUCERS; known rows are {sorted(PRODUCERS)}"
+            )
+        row = dict(PRODUCERS[name])
+        row["status"] = STATUS_AVAILABLE
+        return {
+            "status": STATUS_AVAILABLE,
+            "rows": {name: row},
+            "available": [name],
+            "platform": sys.platform,
+            "forced": (
+                f"producer {name!r} simulated by ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS; "
+                f"this selects which red an unrecorded figure earns and can never yield a PASS"
+            ),
         }
     rows = {}
     if shutil.which("nvidia-smi"):

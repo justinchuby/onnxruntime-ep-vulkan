@@ -221,7 +221,17 @@ def test_gate_writes_unmeasured_before_it_can_fail(tmp_path):
         },
     )
     assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout + r.stderr
-    assert "ERROR(instrument=ep_library_not_found)" in r.stdout
+    # The SUBJECT of this test is the ordering — UNMEASURED reaches disk before anything
+    # can fail — not which instrument error wins the race to be reported first. On a lane
+    # that has ORT installed the gate reaches the library check and says
+    # `ep_library_not_found`; on the host-free lane it stops one step earlier at
+    # `python_dependency_missing`. Asserting only the first made this test pass on a
+    # developer machine and fail on the runner, which is one arm wearing two coats.
+    assert "GATE: ERROR(instrument=" in r.stdout, r.stdout
+    assert (
+        "ERROR(instrument=ep_library_not_found)" in r.stdout
+        or "ERROR(instrument=python_dependency_missing)" in r.stdout
+    ), r.stdout
     assert out.exists(), "the UNMEASURED record must be on disk before anything can fail"
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["verdict"] == _verdict.VERDICT_UNMEASURED
@@ -495,6 +505,14 @@ def test_icd_suppression_reports_the_three_states_apart(tmp_path):
 
 NO_PRODUCERS = {"ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS": "none"}
 
+#: A host WITH telemetry, deterministically, on a runner that has none.  Without this the
+#: three "an unrecorded duration reds the lane" tests were host-dependent: they asserted
+#: FAIL(condition=STEADY_UNCERTIFIED) and passed on a desk with nvidia-smi while the CI
+#: runner, having none, correctly produced ERROR(instrument=device_state_producer_absent).
+#: Both are red, so the guard was never wrong — the TESTS were, and a test whose outcome
+#: depends on which machine ran it has one arm, not two.
+WITH_PRODUCER = {"ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS": "simulate:nvidia"}
+
 
 def _certified_record():
     """Niobe's record shape (bench/results/probe_gpustate.py :: summarise), not a new one."""
@@ -529,7 +547,7 @@ def test_device_state_passes_when_the_lane_publishes_no_duration(tmp_path):
 def test_device_state_fails_a_duration_with_no_record(tmp_path):
     """The polarity that matters: adding a millisecond to a lane artifact reds the lane."""
     write(tmp_path, "timing.json", {"mean_ms": 11.525, "rsd_pct": 0.8098})
-    r = run_ds("--scan", str(tmp_path))
+    r = run_ds("--scan", str(tmp_path), env_extra=WITH_PRODUCER)
     assert r.returncode == EXIT_FAIL_CONDITION
     assert "FAIL(condition=STEADY_UNCERTIFIED)" in r.stdout
     assert "mean_ms=11.525" in r.stdout
@@ -585,7 +603,7 @@ def test_an_incomplete_record_does_not_certify(tmp_path):
         d = tmp_path / drop
         d.mkdir()
         write(d, "timing.json", {"mean_ms": 11.525, "device_state": rec})
-        r = run_ds("--scan", str(d))
+        r = run_ds("--scan", str(d), env_extra=WITH_PRODUCER)
         assert r.returncode == EXIT_FAIL_CONDITION, drop
         assert "STEADY_UNCERTIFIED" in r.stdout, drop
 
@@ -595,9 +613,42 @@ def test_a_duration_in_prose_is_published_too(tmp_path):
     different failure mode (R13 obligation 3)."""
     write(tmp_path, "verdict.json", record())
     summary = write(tmp_path, "summary.md", "Steady-state GPU busy 11.525 ms/inference\n")
-    r = run_ds("--scan", str(tmp_path), "--summary", str(summary))
+    r = run_ds("--scan", str(tmp_path), "--summary", str(summary), env_extra=WITH_PRODUCER)
     assert r.returncode == EXIT_FAIL_CONDITION
     assert "11.525 ms" in r.stdout
+
+
+def test_no_producer_override_can_ever_yield_a_pass(tmp_path):
+    """The override's safety property, asserted rather than argued.
+
+    ``ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS`` exists so both polarities can be reached
+    on any host. That makes it a switch on a guard, which is exactly the shape a waiver
+    takes, so the constraint is checked here for every accepted value: an unrecorded
+    duration is red under all of them. The override selects WHICH red, never green.
+    """
+    write(tmp_path, "timing.json", {"mean_ms": 11.525})
+    for value in ("none", "simulate:nvidia", "simulate:intel", "simulate:cpu_renderer", ""):
+        r = run_ds(
+            "--scan",
+            str(tmp_path),
+            env_extra={"ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS": value},
+        )
+        assert r.returncode != EXIT_PASS, value
+        assert "DEVICE-STATE: PASS" not in r.stdout, value
+
+
+def test_a_certified_record_still_passes_with_no_producer_on_the_host(tmp_path):
+    """The complement, and the reason the override is safe in the other direction too.
+
+    A PASS is decided by reading the RECORD, not by asking the host what it can measure.
+    A record certified elsewhere and carried into a telemetry-less lane still certifies —
+    otherwise obligation 8 would be unsatisfiable on exactly the machines that most need
+    to quote a figure they did not take themselves.
+    """
+    write(tmp_path, "timing.json", {"mean_ms": 11.525, "device_state": _certified_record()})
+    r = run_ds("--scan", str(tmp_path), env_extra=NO_PRODUCERS)
+    assert r.returncode == EXIT_PASS
+    assert "SOLE_TENANT" in r.stdout
 
 
 def test_missing_lane_evidence_is_unobservable_not_clean(tmp_path):
@@ -668,3 +719,201 @@ def test_lavapipe_ruling_is_written_down_not_discovered_later():
     # Not a tool registry with one row: the obligation is cross-platform by mandate.
     assert {"nvidia", "amd", "intel", "apple", "adreno", "mali"} <= set(ds.PRODUCERS)
     assert ds.PRODUCERS["intel"]["status"] != ds.STATUS_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# The lane marker — telling "the lane published no duration" apart from
+# "the lane died before it could publish anything".
+#
+# Observed on the 2026-08-01 main run: both device lanes failed at Clippy,
+# never reached the step that creates bench/results/ci-lane, and the two
+# always() checks downstream each added a second red for a subject that had
+# never existed. Both reports were true. Both were noise on top of a failure
+# they did not cause, and noise on a red lane is how a real finding gets
+# scrolled past.
+# ---------------------------------------------------------------------------
+
+
+def test_no_evidence_and_no_marker_is_not_a_pass_but_does_not_add_a_red(tmp_path):
+    r = run_ds(
+        "--scan",
+        str(tmp_path / "never-created"),
+        "--lane-marker",
+        str(tmp_path / "never-written"),
+    )
+    assert r.returncode == EXIT_PASS
+    # It must still say, in its own output, that this is not a pass.
+    assert "ERROR(instrument=lane_did_not_reach_evidence)" in r.stdout
+    assert "NOT a pass" in r.stdout
+    assert "DEVICE-STATE: PASS" not in r.stdout
+
+
+def test_no_evidence_WITH_a_marker_is_still_an_instrument_error(tmp_path):
+    """The direction that matters: the marker can only be written by the lane's own
+    evidence producer, so marker-present-and-evidence-absent is a real instrument
+    failure and keeps its exit 4."""
+    marker = tmp_path / "marker"
+    marker.write_text("", encoding="utf-8")
+    r = run_ds("--scan", str(tmp_path / "never-created"), "--lane-marker", str(marker))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=lane_evidence_absent)" in r.stdout
+    assert "did reach evidence production" in r.stdout
+
+
+def test_the_marker_cannot_excuse_a_published_duration(tmp_path):
+    """The abuse to ask about: can the marker be used to publish a figure quietly?
+
+    No. The marker is only consulted when there is no evidence at all. Evidence that
+    exists is scanned exactly as before, marker or no marker.
+    """
+    write(tmp_path, "timing.json", {"mean_ms": 11.525})
+    r = run_ds(
+        "--scan",
+        str(tmp_path),
+        "--lane-marker",
+        str(tmp_path / "never-written"),
+        env_extra=WITH_PRODUCER,
+    )
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=STEADY_UNCERTIFIED)" in r.stdout
+
+
+def test_fatal_log_marker_has_the_same_two_polarities(tmp_path):
+    absent = tmp_path / "no-such.log"
+    r = run_check(
+        "check_fatal_log.py",
+        f"--lane-marker={tmp_path / 'never-written'}",
+        str(absent),
+    )
+    assert r.returncode == EXIT_PASS
+    assert "ERROR(instrument=lane_did_not_reach_evidence)" in r.stdout
+    assert "NOT a pass" in r.stdout
+
+    marker = tmp_path / "marker"
+    marker.write_text("", encoding="utf-8")
+    r = run_check("check_fatal_log.py", f"--lane-marker={marker}", str(absent))
+    assert r.returncode == EXIT_ERROR_INSTRUMENT
+    assert "ERROR(instrument=log_not_captured)" in r.stdout
+
+
+def test_fatal_log_still_detects_with_a_marker_present(tmp_path):
+    """A marker must never suppress a detection."""
+    marker = tmp_path / "marker"
+    marker.write_text("", encoding="utf-8")
+    log = tmp_path / "run.log"
+    log.write_text(
+        "INFO: ok\n[E:onnxruntime:] EP_FAIL : Falling back to CPUExecutionProvider\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_fatal_log.py", f"--lane-marker={marker}", str(log))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "runtime_fallback_announced_by_ort" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# ci/lane_inventory.py — operational vs green, as data.
+# ---------------------------------------------------------------------------
+
+
+def test_the_inventory_is_well_formed():
+    """Every entry must carry a `misses` column and, if it claims a failing arm, the
+    observed failure TEXT rather than a status word."""
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    assert inv.validate() == []
+
+
+def test_an_undemonstrated_check_holds_its_lane_at_operational():
+    """The classification rule, exercised in both directions on a synthetic lane."""
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    for lane in inv.LANES:
+        cls, why = inv.lane_classification(lane)
+        assert cls in ("green", "green (with recorded gaps)", "operational")
+        unproven = [c for c in inv.checks_for_lane(lane) if c.status == inv.UNDEMONSTRATED]
+        if unproven:
+            assert cls == "operational", lane
+            for c in unproven:
+                assert c.id in why
+
+
+def test_a_green_status_without_an_observed_failure_is_refused(monkeypatch):
+    """The inventory must not let a status word stand in for evidence — that is the
+    whole shape of the defect it exists to record."""
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    bogus = inv.Check(
+        id="bogus.no_evidence",
+        lane=inv.LANE_HOSTFREE,
+        step="a step",
+        watches="something",
+        status=inv.DEMONSTRATED,
+        misses=("something",),
+    )
+    monkeypatch.setattr(inv, "CHECKS", inv.CHECKS + (bogus,))
+    problems = inv.validate()
+    assert any("bogus.no_evidence" in p and "arm_broken" in p for p in problems)
+    assert any("bogus.no_evidence" in p and "mutation" in p for p in problems)
+
+
+def test_the_52x_blind_spot_is_recorded_with_a_named_substitute():
+    """Task from 2026-08-01: if lavapipe cannot catch the timestampPeriod defect class,
+    say so plainly and name what would. A documented blind spot beats a lane that
+    implies coverage it does not have."""
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    spot = next(b for b in inv.BLIND_SPOTS if b.id == "timestamp_period_52x")
+    assert "1.0" in spot.why_ci_is_blind
+    assert "identity" in spot.why_ci_is_blind.lower()
+    assert spot.substitute is not None
+    assert "trace.rs" in spot.substitute
+    assert spot.substitute_status == inv.DEMONSTRATED
+
+
+def test_a_blind_spot_with_no_substitute_says_so_rather_than_going_quiet():
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    spot = next(b for b in inv.BLIND_SPOTS if b.id == "device_clock_state")
+    assert spot.substitute is None
+    assert spot.substitute_status == inv.IMPOSSIBLE_HERE
+    assert "NOTHING IN THIS REPOSITORY" in inv.render()
+
+
+def test_an_unclassified_lane_step_reds_the_checker(tmp_path):
+    """R10 for the inventory itself: it must go red when its input changes in the way
+    it exists to notice."""
+    wf = tmp_path / "wf.yml"
+    wf.write_text(
+        "jobs:\n  x:\n    steps:\n"
+        "      - name: Install Rust toolchain\n"
+        "      - name: Something Nobody Classified\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_lane_inventory.py", "--workflow", str(wf))
+    assert r.returncode == EXIT_FAIL_CONDITION
+    assert "FAIL(condition=unclassified_lane_step)" in r.stdout
+    assert "Something Nobody Classified" in r.stdout
+    # ...and green when every step is either classified or provisioning.
+    wf.write_text(
+        "jobs:\n  x:\n    steps:\n"
+        "      - name: Install Rust toolchain\n"
+        "      - name: Clippy (all warnings as errors)\n",
+        encoding="utf-8",
+    )
+    r = run_check("check_lane_inventory.py", "--workflow", str(wf))
+    assert r.returncode == EXIT_PASS
+    assert "PASS" in r.stdout
+
+
+def test_the_real_workflow_has_no_unclassified_gate_steps():
+    r = run_check(
+        "check_lane_inventory.py",
+        "--workflow",
+        str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
+    )
+    assert r.returncode == EXIT_PASS, r.stdout

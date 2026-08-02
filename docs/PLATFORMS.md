@@ -1288,6 +1288,110 @@ leave §7.11 believing otherwise.
 
 ---
 
+## 7.12 `operational` vs `green`: what each lane would catch, and what it silently misses — added 2026-08-01T18:40-07:00
+
+An **operational** lane runs. A **green** lane runs *and would go red if the thing it watches broke*. Only the second is worth having. The three CI lanes have been classified `operational` since 2026-07-31, and this section is the work of closing that gap — check by check, with the failing arm produced rather than assumed.
+
+The classification is not prose. It lives in **`ci/lane_inventory.py`** as data, is published as a lane artifact (`lane-inventory.json`) by `ci/check_lane_inventory.py`, and every entry must carry:
+
+* what the check watches;
+* the **mutation** that produces its failing arm, written down so the demonstration can be repeated — an unrepeatable demonstration is a memory;
+* both arms as observed, quoting the failure **text** and never a count (R13);
+* the **`misses`** column, which the validator refuses to let anyone leave blank. Every check misses something; a blank column means nobody looked, not that nothing is missed.
+
+Four statuses, and three of them are not "pass":
+
+| Status | Meaning |
+|---|---|
+| `DEMONSTRATED` | Both arms observed. The only status that supports the word *green*. |
+| `UNDEMONSTRATED` | Runs and passes; nobody has ever seen it fail. **May be a constant.** A candidate for evidence, not evidence. |
+| `IMPOSSIBLE_HERE` | The failing arm cannot be produced here, for a stated structural reason. A closed question with an answer, not a lesser `UNDEMONSTRATED`. |
+| `RED_NOW` | The failing arm *is* the current tree. The strongest possible falsification, and never a problem with the check. |
+
+`ci/check_lane_inventory.py` also refuses to let the inventory rot: **every gate step in `ci.yml` must have an entry.** An unclassified step is precisely the state the Windows ICD negative control lived in for weeks — running, reported, and never once falsified. The reverse direction is deliberately not checked, because "stale entry" and "silently deleted step" want opposite responses, and guessing between them from YAML is the R10 mistake in miniature.
+
+### 7.12.1 The finding that changed the shape of this work
+
+**No CI lane has ever run the crate's unit tests.** The Linux lane ran exactly one cargo test target (`--test layering`); the Windows lane ran none at all. That left **440 unit tests and four integration targets** — `cdylib_load`, `dump_capabilities`, `host_registration`, `portability` — unexecuted since the project began.
+
+Wiring them in immediately produced two live findings and one flake, none of which any lane could previously see:
+
+1. **`cargo clippy --release --all-targets -- -D warnings` is red**, on the exact CI command and the same unpinned `stable` channel CI installs (rustc 1.97.1): an unused `crate::engine::DeviceMemoryProvider` import, a manual `RangeInclusive::contains`, and two `direct cast of function item into an integer`. All four are in `--all-targets` (test-profile) code, which is why they went unnoticed — `cargo build --release` is clean, so the lane looked healthy from the build step. Confirmed failing on both device lanes of the 2026-08-01 `main` run.
+2. **The P1 portability lint is red** on `src/ep.rs:2457`: `_file: *const ort::wchar_t` named without a `#[cfg(windows)]` gate. bindgen only emits `wchar_t` when targeting Windows, so **`cargo test --lib` cannot compile on Linux at all**. The remedy is the cfg-selected `OrtChar` alias that `tests/mock_ort/mod.rs:155/158` already defines. The lint's own message names this class: *"the class of bug that only shows up on a CI lane for another OS, hours later, while blocking everything behind it."* It has existed in `rust/tests/portability.rs` and had never been run.
+3. **A flake**: `counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero` failed once in three full runs, writing to a fixed path under a process-global env var while other tests run in parallel. Recorded, not masked. The suite is wired at **default parallelism deliberately** — `--test-threads=1` would hide cross-test state leakage, which is a defect and not a test-runner setting.
+
+None of these are mine to fix (`rust/src/` is Switch's, `src/ep.rs` and `rust/tests/` are Tank's) and none is fixed here. They are routed, and the lanes that would have caught them are now wired.
+
+### 7.12.2 The software-rasteriser blind spot, stated plainly
+
+**lavapipe reports `timestampPeriod` 1.0 — exactly as NVIDIA does. Intel Iris Xe reports 52.0833.**
+
+At a period of 1.0 the conversion is the **identity**. A build that drops it is *numerically indistinguishable* from a build that performs it, on every device CI can reach, while under-reporting the Iris Xe by 52.0833×. **No amount of executing on the CI device can see this**, because the CI device cannot tell the two builds apart. It is the anti-correlated shape from R9 amendment 5 in a new place: the defect is invisible precisely where we look hardest, and a lane that runs more op tests on lavapipe gets no closer to catching it.
+
+**So: lavapipe cannot catch it, and no configuration of the lavapipe lane ever will.** Saying so is the point of this subsection. What *does* catch it is a check that never touches a device:
+
+> `rust/src/trace.rs` unit tests construct a **synthetic calibration with a non-unit period** — `cal(40.0, 64).ticks_to_ns(100, 1100) == Some(40_000.0)` — and are therefore host-independent by construction.
+
+**Falsified 2026-08-01.** Dropping both period multiplies in `trace.rs` (`Some(span as f64 * f64::from(self.timestamp_period_ns))` → `Some(span as f64)`, and the same in `ticks_to_axis_us`) turns four tests red on a Windows host whose own period is 1.0:
+
+```
+trace::tests::treating_intel_ticks_as_nanoseconds_is_wrong_by_fifty_two_times
+  panicked at src/trace.rs:1680: period scaling not applied: 100000 ns for 100000 ticks
+trace::tests::timestamp_period_is_applied_and_is_not_assumed_to_be_one
+trace::tests::undefined_upper_bits_on_a_thirty_six_bit_counter_are_masked_away
+trace::tests::an_intel_counter_wrap_does_not_produce_a_negative_or_absurd_duration
+```
+
+Arms differ; the clean tree gives `440 passed`. **The tests already existed and had simply never been run.** The blind spot was not a missing instrument, it was an unwired one — which is the same failure mode as the ICD control, one layer up.
+
+The same argument covers `timestampValidBits`: lavapipe and NVIDIA report 64, Iris Xe reports **36** and wraps roughly hourly. A 64-bit assumption is correct on every device CI can reach and wrong on the one device we own that is a spec-conformance oracle. Two of the four tests above are its falsifier.
+
+**The mirror image is still open and is recorded as such.** These tests prove the *arithmetic*; they cannot prove the conversion is **called at the real call sites**. Execution would prove the call site — and lavapipe's period of 1.0 makes a dropped call indistinguishable from a performed one, which is where this started. `ci/lane_inventory.py :: BLIND_SPOTS['conversion_call_sites']` carries it with substitute `None` and status `IMPOSSIBLE_HERE`, because nothing in this repository currently catches it.
+
+### 7.12.3 Blind spots no lane catches
+
+| Blind spot | Substitute | Status |
+|---|---|---|
+| `timestamp_period_52x` — period conversion dropped | `trace.rs` synthetic-period unit tests, now wired | `DEMONSTRATED` |
+| `timestamp_valid_bits_36` — masking / wrap | the same tests, with 36-bit calibrations | `DEMONSTRATED` |
+| `device_clock_state` — a figure taken at idle clock | **nothing.** No GPU in any lane, therefore no clock | `IMPOSSIBLE_HERE` |
+| `concurrency_and_barriers` — a missing barrier | barrier-count parity (structural) + real hardware (not reproducible) | `UNDEMONSTRATED` |
+| `vendor_driver_behaviour` — UMA/discrete, subgroup width, fp16/int8, ReBAR | local-dev observation; a GPU runner the project does not have | `IMPOSSIBLE_HERE` |
+| `conversion_call_sites` — correct arithmetic, never invoked | **nothing** | `IMPOSSIBLE_HERE` |
+
+The CI matrix has **one device in it wearing two operating systems**. That is a portability result about our code and not a hardware-coverage result, and it is why OQ-12's **~32.67% as of 2026-07-30** is simultaneously a ceiling and a floor.
+
+### 7.12.4 What was closed here
+
+| Check | Was | Now | Mutation that produced the red arm |
+|---|---|---|---|
+| `build.rust_unit_tests` | not run at all | `DEMONSTRATED` | drop both period multiplies in `trace.rs` |
+| `build.portability_lint` | not run at all | `RED_NOW` | none needed — the tree is the failing arm |
+| `build.layering_lint` | `UNDEMONSTRATED` | `DEMONSTRATED` | plant `use ash::vk as _;` in `src/ops/norm.rs` |
+| `build.clippy` | `UNDEMONSTRATED` | `RED_NOW` | none needed — reproduced locally on the CI command |
+| `device.fatal_log_line` | `UNDEMONSTRATED` | `DEMONSTRATED` | feed it a log containing ORT's `EP_FAIL ... Falling back` line |
+| `device.op_correctness` | `UNDEMONSTRATED` | `UNDEMONSTRATED` | **not performed** — needs a kernel edit (Switch) and an expectation (Trinity); named, not claimed |
+| `build.integration_targets` | not run at all | `UNDEMONSTRATED` | being wired is the precondition for falsifying; it is not the falsification |
+
+**A scope fact found while falsifying the layering lint, recorded rather than fixed:** the lint scopes to `src/ops/` only. The same `use ash::vk as _;` planted in `src/trace.rs` passed all 26 of its tests — despite the archived decision that put the timestamp arithmetic in `trace.rs` specifically to keep it *"on the right side of the layering lint (no `ash`)"*. **The rule that decision relied on does not exist.** `rust/tests/` is not mine.
+
+Both device lanes therefore remain **`operational`**, and the inventory names exactly why: `device.op_correctness` and `build.integration_targets` have never been observed to fail. `lane-checks` is **`green`** — every check in it has a demonstrated failing arm.
+
+### 7.12.5 Two defects found in my own `always()` steps
+
+Reading the real `main` run rather than my own YAML (R10) turned up two, both mine:
+
+1. **Three device-state tests were host-dependent.** They asserted `FAIL(condition=STEADY_UNCERTIFIED)` and passed on a developer machine with `nvidia-smi`; the runner, having none, correctly produced `ERROR(instrument=device_state_producer_absent)`. Both are red, so the *guard* was never wrong — **the tests were**, and a test whose outcome depends on which machine ran it has one arm wearing two coats. Closed by extending `ONNXRUNTIME_EP_CI_DEVICE_STATE_PRODUCERS` with `simulate:<name>`, so both polarities are reachable on any host. That is a switch on a guard, which is the shape a waiver takes, so its safety property is **asserted rather than argued**: `test_no_producer_override_can_ever_yield_a_pass` checks that an unrecorded duration is red under *every* accepted value. The override selects which red, never green — a `PASS` is decided by `certify()` reading the record, not by asking the host what it can measure.
+2. **Both `always()` steps added a second red to a lane that had already died.** The Linux lane failed at Clippy, never reached the step that creates `bench/results/ci-lane`, and `check_device_state.py` and `check_fatal_log.py` each reported a true instrument error about a subject that had never existed. Noise on a red lane is how a real finding gets scrolled past. Closed with a **lane marker** (`.lane-reached`) written by the lane's own evidence producer: marker absent ⇒ `ERROR(instrument=lane_did_not_reach_evidence)`, printed loudly as *not a pass*, with a `::warning` annotation and exit 0; marker **present** and evidence absent ⇒ the original exit 4, because that is a genuine instrument failure. The direction that matters is that **the marker cannot be absent on a run that did publish**, and `test_the_marker_cannot_excuse_a_published_duration` holds it: evidence that exists is scanned exactly as before, marker or no marker.
+
+### 7.12.6 Not mine, blocking, and routed
+
+* `cargo fmt --check` is red on `rust/src/allocator.rs` (×2), `rust/src/ops/indexing.rs`, `rust/src/ops/norm.rs`, `rust/src/ops/partition.rs` (×3). Not touched — those files are being edited by concurrently-running agents.
+* The clippy and portability failures in §7.12.1.
+* Closing the duty-cycle mechanism still needs `nvidia-smi --lock-gpu-clocks` and an elevated shell.
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---
