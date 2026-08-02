@@ -127,15 +127,10 @@ float f16_sin(uint i) {
     vec2 p = unpackHalf2x16(sin_buf.d[i >> 1u]);
     return (i & 1u) == 0u ? p.x : p.y;
 }
-// present_key and present_value are read-write so they need separate read/write helpers
-float f16_presk(uint i) {
-    vec2 p = unpackHalf2x16(pres_k.d[i >> 1u]);
-    return (i & 1u) == 0u ? p.x : p.y;
-}
-float f16_presv(uint i) {
-    vec2 p = unpackHalf2x16(pres_v.d[i >> 1u]);
-    return (i & 1u) == 0u ? p.x : p.y;
-}
+// present_key and present_value are written but never read. The read helpers that used to
+// exist here were removed with the sibling-key race: `present` is the one buffer in this
+// shader that other invocations of the same dispatch are concurrently writing, so any read
+// of it is unordered. Keeping a reader for it is keeping the race one edit away.
 
 // --------------------------------------------------------------------------
 // Scalar f16 write helpers (atomic to protect the neighbour half-word)
@@ -191,8 +186,18 @@ void main() {
     if (b >= pc.batch_size) return;
 
     uint kv_h    = h / (Nq / Nkv);     // KV head (group_size = Nq/Nkv; MHA has group_size=1)
-    uint past_len = uint(max(seqlens.d[int(b)], 0));
-    uint tok_pos  = past_len + s_local; // absolute position of this query token in the sequence
+    // ORT defines `seqlens_k[b]` as total_sequence_length - 1, and total = past + seq_len.
+    // So the past extent is `seqlens_k[b] + 1 - seq_len`, NOT `seqlens_k[b]`.
+    //
+    // Those two expressions are equal exactly when seq_len == 1, which is decode, which is
+    // every case this kernel had. At prefill the old reading placed the first query token
+    // at absolute position `past + seq_len - 1` instead of `past`, so it indexed past_key
+    // beyond its extent and wrote present beyond its own. Another decode-only assumption
+    // that a decode-only test set cannot see -- the same shape as the `present == past`
+    // and `rotary_dim == head_dim` defaults.
+    int  seqlens_b = seqlens.d[int(b)];
+    uint past_len  = uint(max(seqlens_b + 1 - int(S), 0));
+    uint tok_pos   = past_len + s_local; // absolute position of this query token
 
     // ------------------------------------------------------------------
     // 1. Load Q, K, V from packed_qkv
@@ -297,9 +302,35 @@ void main() {
             // self-key — use rotated k_new directly
             for (uint d = 0u; d < D; d++) dot += q[d] * k_new[d];
         } else {
-            // t in [past_len, tok_pos): key from a sibling query position, already written
-            kv_base = (b * Nkv + kv_h) * pc.present_len * D + t * D;
-            for (uint d = 0u; d < D; d++) dot += q[d] * f16_presk(kv_base + d);
+            // t in [past_len, tok_pos): a key belonging to a *sibling query position in this
+            // same dispatch*.
+            //
+            // This used to read it back out of `present_key`, where a sibling invocation had
+            // written it in step 3. Nothing orders those two invocations: they are separate
+            // workgroups (local_size = 1, one workgroup per (b, h, s_local)), and Vulkan
+            // gives no execution or memory ordering between workgroups of one dispatch. The
+            // read was a data race on every prefill — `seq_len > 1` is exactly the regime
+            // this branch exists for, and exactly the regime KV traffic is large enough to be
+            // worth optimising in. It was invisible because decode (`seq_len == 1`) never
+            // reaches this branch at all, so every test we have passes without it.
+            //
+            // The value is recomputed from `packed_qkv` instead. That buffer is a read-only
+            // dispatch input, so there is no cross-invocation dependency to order and no
+            // barrier to get wrong. It is the *same* arithmetic step 2 applies — the same
+            // cos/sin row, the same neox pairing — so the result is bit-identical to what the
+            // sibling wrote, not an approximation of it. The cost is arithmetic, in a loop
+            // that is already memory-bound.
+            uint ko = (b * S + (t - past_len)) * (Nq + 2u * Nkv) * D + Nq * D + kv_h * D;
+            uint cr = t * rh;
+            for (uint ri = 0u; ri < rh; ri++) {
+                float c  = f16_cos(cr + ri);
+                float sn = f16_sin(cr + ri);
+                float kx = f16_qkv(ko + ri);
+                float ky = f16_qkv(ko + ri + rh);
+                dot += q[ri] * (kx * c - ky * sn) + q[ri + rh] * (ky * c + kx * sn);
+            }
+            // Dimensions at or beyond rotary_dim are not rotated (partial rotary).
+            for (uint d = 2u * rh; d < D; d++) dot += q[d] * f16_qkv(ko + d);
         }
         float sc = dot * pc.scale;
 
@@ -320,8 +351,11 @@ void main() {
         } else if (t == tok_pos) {
             for (uint d = 0u; d < D; d++) acc[d] += e * v_new[d];
         } else {
-            kv_base = (b * Nkv + kv_h) * pc.present_len * D + t * D;
-            for (uint d = 0u; d < D; d++) acc[d] += e * f16_presv(kv_base + d);
+            // Same race, same fix. V carries no rotary, so this is a straight read of the
+            // sibling position's slice of `packed_qkv`.
+            uint vo = (b * S + (t - past_len)) * (Nq + 2u * Nkv) * D
+                    + (Nq + Nkv) * D + kv_h * D;
+            for (uint d = 0u; d < D; d++) acc[d] += e * f16_qkv(vo + d);
         }
     }
 
