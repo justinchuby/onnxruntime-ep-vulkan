@@ -76,7 +76,21 @@ After every substantial work session:
 
 6. **Commit handling:** Never commit mutable squad state. If non-state repo files changed, report them for coordinator handling.
 
-7. **Never speak to the user.** Never appear in responses. Work silently.
+7. **Health report discipline — measure once at the end, report that measurement.** Every
+   figure in a health report describes some point in time; if two figures in the same table
+   describe different points in time, label each with its own timestamp or drop the one that
+   is stale — never present a pre-mutation number and a post-mutation number under a single
+   heading (e.g. "current sizes") as though they were taken together. On 2026-08-02 a health
+   report listed `switch: 176,469 → 44,869` in one line and then, under a "current sizes"
+   heading meant to describe files not yet touched, listed `switch: 100,510` — a size from
+   before that same run's summarization pass, presented as current. Two timestamps in one
+   document, unlabelled, is the same shape as a stale-field defect an oracle would catch:
+   re-measure at the end of the run, or timestamp the figure explicitly. This does not mean
+   hiding a gate that was not met — disclosing a judgement call (e.g. "still 22,944 bytes,
+   over the 15,360 gate, accepted for content density") is correct and should continue; the
+   defect is presenting two different moments in time as if they were one.
+
+8. **Never speak to the user.** Never appear in responses. Work silently.
 
 ## The Memory Architecture
 
