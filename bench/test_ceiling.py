@@ -66,58 +66,210 @@ class TestCeilingHasAFrame:
 
 
 class TestCeilingHasAnExtentAndRefuses:
-    def test_the_only_admissible_context_is_zero_on_this_build(self, ceil_):
-        """GroupQueryAttention is declined and runs on CPU, so KV-cache bytes are not GPU
-        traffic. At past_len 0 the KV term is exactly zero and the question does not arise."""
+    def test_the_dram_bound_is_now_admissible_at_every_context(self, ceil_):
+        """GQA is claimed on this build -- 1 island, 355 of 363, read off the binary's own
+        counters -- so the KV bytes are the device's and the by-context table describes it.
+        This refusal is discharged. What replaced it is `binding_extent`."""
         ext = ceil_.extent()
-        assert ext["admissible"] == [0]
-        assert 8192 in ext["grid"]
+        assert ext["admissible"] == ext["grid"]
+        assert 8192 in ext["admissible"]
+
+    def test_the_bound_is_the_FLOOR_at_zero_context_only(self, ceil_):
+        """Admissible and binding are different questions. Discharging the structural
+        refusal exposed a measured one: the present KV cache crosses device->host in full
+        every inference, 393,216 B per past token, and the roofline does not model it."""
+        assert ceil_.binding_extent()["binding"] == [0]
 
     def test_zero_context_is_a_bound(self, ceil_):
         r = ceil_.floor_ms(0)
         assert r["state"] == ceiling_mod.BOUND
         assert r["kv_cache_MiB"] == 0.0
         assert 8.0 < r["floor_ms_at_spec_peak"] < 8.5
+        assert r["binding"]["binds_by"] == "DRAM"
 
-    def test_every_other_context_is_UNOBSERVABLE_and_not_a_number(self, ceil_):
-        for past in (128, 512, 2048, 4096, 8192):
-            r = ceil_.floor_ms(past)
-            assert r["state"] == ceiling_mod.UNOBSERVABLE, past
-            assert "floor_ms_at_spec_peak" not in r, past
+    def test_at_zero_context_transfer_cannot_bind_on_any_link_ever_shipped(self, ceil_):
+        """Settled without measuring this machine's link, which would be a timing."""
+        b = ceil_.binding(0)
+        assert b["state"] == "BINDS"
+        assert b["link_GB_per_s_at_which_transfer_binds"] < ceiling_mod.LINK_FLOOR_GB_PER_S
 
-    def test_UNOBSERVABLE_is_not_zero_and_says_why(self, ceil_):
-        """Reporting 0 would claim the KV traffic is free. It is not free, it is on the CPU."""
-        r = ceil_.floor_ms(8192)
-        assert "why_not_zero" in r
-        assert "free" in r["why_not_zero"]
-        # and it must still disclose the number it declined to publish, so the refusal is
-        # auditable rather than merely opaque
-        assert r["would_have_reported_ms"] > 20.0
+    def test_long_contexts_are_transfer_bound_on_any_link_that_exists(self, ceil_):
+        """The mirror argument, and it is the direction for work: at past_len 2048 and above
+        the crossover exceeds the fastest consumer link ever shipped, so the DRAM roofline is
+        nowhere near the floor there."""
+        for past in (2048, 4096, 8192):
+            b = ceil_.binding(past)
+            assert b["binds_by"] == "TRANSFER", past
+            assert b["state"] == ceiling_mod.UNOBSERVABLE, past
+            assert b["link_GB_per_s_at_which_transfer_binds"] > ceiling_mod.LINK_CEILING_GB_PER_S
+
+    def test_a_verdict_resting_on_extrapolation_says_so(self, ceil_):
+        """Transfer was measured at 0, 128 and 512. Beyond that the readback law is applied
+        rather than observed, and the caveat must travel with the verdict."""
+        assert ceil_.binding(512)["caveat"] is None
+        assert "extrapolated" in ceil_.binding(8192)["caveat"]
+
+    def test_the_middle_contexts_are_undecided_rather_than_decided_by_a_tuned_constant(self, ceil_):
+        """At 128 and 512 the crossover sits between the two stated link bounds. The honest
+        answer is that it needs a measured link bandwidth, not a constant chosen until the
+        count of awkward contexts reached zero."""
+        for past in (128, 512):
+            b = ceil_.binding(past)
+            assert b["binds_by"] == "UNDECIDED", past
+            assert b["state"] == ceiling_mod.UNOBSERVABLE, past
 
     def test_it_will_not_extrapolate_off_its_own_grid(self, ceil_):
         r = ceil_.floor_ms(777)
         assert r["state"] == ceiling_mod.UNOBSERVABLE
         assert "grid" in r["reason"]
 
-    def test_a_build_with_no_claim_record_has_an_empty_extent(self, tmp_path):
-        """Unknown claim status is not permission. Absent evidence yields no admissible
-        context at all, rather than defaulting to the whole grid."""
-        c = ceiling_mod.Ceiling.load(claim_record=tmp_path / "nope.json")
-        assert c.extent()["admissible"] == []
-        assert c.floor_ms(0)["state"] == ceiling_mod.UNOBSERVABLE
+    def test_the_kv_term_declares_which_half_of_it_was_earned(self, ceil_):
+        """Switch had to earn amplification separately from residency for weights. For KV
+        the magnitude is earned on the readback axis at ratio 1.000000; the read-side path
+        and the DRAM amplification factor are not, and the bound must say so."""
+        k = ceil_.floor_ms(0)["kv_term_earned"]
+        assert k["magnitude"] == pytest.approx(1.0, abs=1e-9)
+        assert "readback" in k["on_axis"]
+        assert "amplification" in k["not_earned"]
+
+
+class TestTheRefusalStillHasTeeth:
+    """A refusal that has just been satisfied is exactly when it becomes decoration.
+
+    The condition this module refused on -- GQA declined -- was discharged this round. These
+    are the controls that show discharging it did not wire it open, and that the stale-record
+    defect which let it be right about a build nobody was running cannot recur.
+    """
+
+    @staticmethod
+    def _record(tmp_path, *, islands, claimed, sha, name="claim.json"):
+        p = tmp_path / name
+        p.write_text(json.dumps({
+            "environment": {"build": {"sha256": sha}},
+            "results": [{"claimed_nodes": claimed, "counters": {"subgraphs_live": islands}}],
+        }), encoding="utf-8")
+        return p
+
+    def test_positive_control_a_declined_build_is_still_caught(self, tmp_path, ceil_):
+        """The control that matters. A synthetic record that is IN FRAME -- same binary --
+        but shows 33 islands must still collapse the extent to [0] with the structural
+        reason. If this ever goes green-by-default the refusal has become decoration."""
+        sha = ceil_.frame()["dll_sha256"]
+        rec = self._record(tmp_path, islands=33, claimed=323, sha=sha)
+        c = ceiling_mod.Ceiling.load(claim_record=rec)
+        assert c.extent()["admissible"] == [0]
+        assert "declined" in c.extent()["reason"]
+        assert c.floor_ms(8192)["state"] == ceiling_mod.UNOBSERVABLE
+
+    def test_negative_control_an_in_frame_claimed_build_widens(self, tmp_path, ceil_):
+        sha = ceil_.frame()["dll_sha256"]
+        rec = self._record(tmp_path, islands=1, claimed=355, sha=sha)
+        c = ceiling_mod.Ceiling.load(claim_record=rec)
+        assert c.extent()["admissible"] == c.extent()["grid"]
+
+    def test_a_record_from_another_binary_is_refused_not_believed(self, tmp_path):
+        """The defect this replaces: this module reported extent [0] off a record from the
+        previous binary while the DLL beside it had already changed, and was confidently
+        right about a build nobody was running. Artifact:
+        bench/_scratch/ceiling_stale_record_artifact.txt."""
+        rec = self._record(tmp_path, islands=33, claimed=323, sha="00" * 32)
+        with pytest.raises(ceiling_mod.CeilingError) as exc:
+            ceiling_mod.Ceiling.load(claim_record=rec)
+        assert "out of frame" in str(exc.value)
+
+    def test_a_record_that_cannot_name_its_binary_is_refused(self, tmp_path):
+        """Size and mtime do not identify a build. A claim status that cannot be tied to a
+        binary cannot decide an extent."""
+        p = tmp_path / "old.json"
+        p.write_text(json.dumps({
+            "environment": {"build": {"bytes": 1909760, "mtime": "2026-08-02T10:06:06"}},
+            "results": [{"claimed_nodes": 323, "counters": {"subgraphs_live": 33}}],
+        }), encoding="utf-8")
+        with pytest.raises(ceiling_mod.CeilingError) as exc:
+            ceiling_mod.Ceiling.load(claim_record=p)
+        assert "sha256" in str(exc.value)
+
+    def test_a_missing_claim_record_raises_rather_than_silently_passing(self, tmp_path):
+        """Trinity's shape: the premise asserts itself. Unknown claim status is not
+        permission, and it is ERROR(instrument) rather than an empty extent that a caller
+        might read as a quiet no-op."""
+        with pytest.raises(ceiling_mod.CeilingError) as exc:
+            ceiling_mod.Ceiling.load(claim_record=tmp_path / "nope.json")
+        assert "ERROR(instrument)" in str(exc.value)
+
+    def test_an_unbuilt_tree_is_an_instrument_error_not_a_verdict(self, tmp_path, ceil_):
+        sha = ceil_.frame()["dll_sha256"]
+        rec = self._record(tmp_path, islands=1, claimed=355, sha=sha)
+        with pytest.raises(ceiling_mod.CeilingError) as exc:
+            ceiling_mod.Ceiling.load(claim_record=rec, dll=tmp_path / "absent.dll")
+        assert "could not be hashed" in str(exc.value)
+
+
+class TestTheKVTermWasMeasuredNotAssumed:
+    """`0` was the wrong answer while GQA was declined. It is still the wrong answer, and
+    the token that replaced UNOBSERVABLE had to be a measurement.
+    """
+
+    @pytest.fixture(scope="class")
+    def kv(self):
+        p = BENCH / "results" / "kv_bytes_earned.json"
+        if not p.is_file():
+            pytest.skip("kv_bytes_earned.json absent")
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def test_the_prediction_came_from_the_graph_not_from_the_counters(self, kv):
+        assert kv["predicted_bytes_per_past_token"] == 32 * 2 * 32 * 96 * 2
+        assert "not from any counter" in kv["predicted_from"]
+
+    def test_past_len_was_wired_and_the_falsifier_is_an_artifact(self, kv):
+        """R10. Had the feeds been ignored, every number in that record would be a
+        measurement of nothing."""
+        w = kv["past_len_is_wired"]
+        assert w["verdict"] == "WIRED"
+        assert "30751" in w["artifact"] and "8521" in w["artifact"]
+
+    def test_readback_matches_the_model_to_the_byte_on_both_segments(self, kv):
+        for s in kv["segments"]:
+            assert s["readback_ratio"] == pytest.approx(1.0, abs=1e-9)
+        assert kv["readback"]["linearity_spread"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_the_flat_upload_axis_is_UNOBSERVABLE_and_never_zero(self, kv):
+        """The upload counter is identical at past_len 0, 128 and 512. Reporting 0 would
+        claim the read side of the KV cache is free; the counter is blind to the path by
+        which it becomes resident, and its silence is not evidence."""
+        assert kv["upload"]["state"] == "UNOBSERVABLE"
+        assert kv["upload"]["observed_bytes_per_inference"] > 0
+        assert "free" in kv["upload"]["means"]
+        assert "R12" in kv["upload"]["why_not_zero"]
+
+    def test_it_states_what_it_did_not_earn(self, kv):
+        joined = " ".join(kv["does_not_earn"]).lower()
+        assert "amplification" in joined
+        assert "read side" in joined
 
 
 class TestCeilingComparison:
-    def test_the_quotable_figure_sits_at_the_one_admissible_context(self, ceil_):
+    def test_the_quotable_figure_sits_at_the_one_binding_context(self, ceil_):
         """12.1847 ms is zero context, one token, and zero context is the only place the
-        bound holds. That is why the comparison survives."""
+        bound is the floor. That was true for a structural reason and is now true for a
+        measured one."""
         cmp = ceil_.compare(12.1847, past_len=0)
         assert cmp["quotable"] is True
+        assert cmp["floor_is_binding"] is True
         assert 0.6 < cmp["fraction_of_roofline"] < 0.7
         assert 1.4 < cmp["headroom_x"] < 1.6
 
-    def test_a_comparison_at_an_inadmissible_context_is_refused(self, ceil_):
+    def test_the_pairing_is_stated_per_context_and_does_not_travel(self, ceil_):
+        """The bound is now admissible at 128..8192, where we hold no quotable figure at
+        all. Admissible in a regime where the comparison is not."""
         cmp = ceil_.compare(12.1847, past_len=8192)
+        assert cmp["quotable"] is True          # the DRAM bound does describe this build
+        assert cmp["floor_is_binding"] is False  # but it is not the floor here
+        assert "NOT known to be the floor" in cmp["pairing"]
+        assert "no quotable figure" in ceil_.compare(12.1847, past_len=0)["pairing"]
+
+    def test_a_comparison_off_the_grid_is_refused(self, ceil_):
+        cmp = ceil_.compare(12.1847, past_len=777)
         assert cmp["quotable"] is False
         assert cmp["state"] == ceiling_mod.UNOBSERVABLE
 

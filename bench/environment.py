@@ -139,6 +139,21 @@ def probe_devices() -> "tuple[list[dict], str]":
     return devices, note
 
 
+def _sha256(path: Path) -> "str | None":
+    """Hash the artifact. The frame of a test result is the binary that ran it, so a record
+    that names its binary only by size and mtime cannot be checked against a later build."""
+    try:
+        import hashlib
+
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
 def build_info() -> dict:
     """Describe the EP artifact under test."""
     lib = os.environ.get(EP_LIB_ENV)
@@ -160,6 +175,7 @@ def build_info() -> dict:
             "bytes": stat.st_size,
             "mtime": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(stat.st_mtime)),
             "profile": profile,
+            "sha256": _sha256(p),
         }
     )
     if os.environ.get("ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC") == "1":
