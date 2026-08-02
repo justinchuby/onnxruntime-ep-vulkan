@@ -174,7 +174,7 @@ fn usage() {
     eprintln!("    epctl --probe-loader");
     eprintln!("    epctl --probe-validation [--plant-violation]");
     eprintln!(
-        "    epctl --check-counters <file> [--require-dispatches N] [--require-device-memory]"
+        "    epctl --check-counters <file> [--require-dispatches N] [--require-device-memory] [--allow-unproven]"
     );
     eprintln!();
     eprintln!("    --dump-capabilities  every registered op, its opset window, dtypes, status,");
@@ -210,6 +210,10 @@ fn usage() {
     eprintln!("                         UNMEASURED = exit 3 (no answer, same as no report).");
     eprintln!("    --require-dispatches N");
     eprintln!("                         minimum executed dispatches to pass (default 1).");
+    eprintln!("    --allow-unproven");
+    eprintln!("                         downgrade the §8.9 unproven-forms FAIL to a pass, with a");
+    eprintln!("                         WARN naming the forms. Never quote a claim about those");
+    eprintln!("                         forms from a run that needed this flag.");
     eprintln!("    --require-device-memory");
     eprintln!("                         fail unless every ALLOCATOR SPAN was backed by a VkBuffer");
     eprintln!("                         with no host staging block. NOT a claim that the run did");
@@ -274,6 +278,13 @@ enum CounterVerdict {
         device_backed: u64,
         allocations: u64,
     },
+    /// `unproven_forms_enabled` is a non-empty list — the §8.9 escape hatch was used. Exit 1.
+    ///
+    /// Deliberately ranked with `OutOfBounds` and `FreeAfterRelease` rather than with the
+    /// dispatch count: a run that claimed forms with no ledger entry produced numbers about a
+    /// claim nobody proved, however many dispatches it executed. `--allow-unproven` downgrades
+    /// this to a pass, and there is no other way past it — no `1`, no `*`, no wildcard.
+    UnprovenFormsEnabled { forms: String, claimed: u64 },
     /// Dispatches ≥ required but `model_output_equivalence = DIVERGENT`. Exit 1.
     ///
     /// The GPU executed and produced an answer; the answer is wrong. This is not "no report"
@@ -334,6 +345,24 @@ fn json_str<'a>(doc: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
+/// Read a raw JSON array value (`[...]`) as text, without parsing it.
+///
+/// Deliberately returns the *text*: the caller's whole job is to distinguish absent from `[]` from
+/// non-empty, and the non-empty case must be reproduced verbatim in the failure message. A parsed
+/// count would tell a reader how many unproven forms were enabled without telling them which — and
+/// under R13 the failure *text* is what gets quoted, never the failure count.
+fn json_array_raw<'a>(doc: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let start = doc.find(&needle)? + needle.len();
+    let rest = doc[start..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    if !rest.starts_with('[') {
+        return None;
+    }
+    let end = rest.find(']')? + 1;
+    Some(&rest[..end])
+}
+
 /// `require_device_memory`: fail unless every device handle in the run was backed by a `VkBuffer`.
 ///
 /// This exists because the staging path's caveat cannot survive as prose. A one-shot WARN saying
@@ -390,6 +419,19 @@ fn read_counters_with(path: &str, required: u64, require_device_memory: bool) ->
         && late > 0
     {
         return CounterVerdict::FreeAfterRelease { count: late };
+    }
+
+    // §8.9: the escape hatch is a list of proof keys and nothing else, and a build that used it
+    // may not pass a counters check silently. Absence of the key is a build with no ledger, which
+    // is not the same as an empty list and is not a failure here — `--check-ledger` is where a
+    // missing ledger is answered. Present-and-non-empty is the failing case.
+    if let Some(forms) = json_array_raw(&doc, "unproven_forms_enabled")
+        && forms.trim() != "[]"
+    {
+        return CounterVerdict::UnprovenFormsEnabled {
+            forms: forms.trim().to_string(),
+            claimed: json_u64(&doc, "unproven_forms_claimed").unwrap_or(0),
+        };
     }
 
     // Also ahead of the dispatch count, and for the same reason: a run whose tensors sat in host
@@ -531,6 +573,7 @@ fn check_counters_with(
     path: &str,
     required: u64,
     require_device_memory: bool,
+    allow_unproven: bool,
 ) -> std::process::ExitCode {
     // Echo whatever the file does contain before judging it — a lane that fails here is a lane
     // someone has to diagnose from the log alone.
@@ -657,6 +700,31 @@ fn check_counters_with(
                  freed afterwards mean ORT held a pointer into a registry we had torn down.\n\
                  \x20 On a build that unmaps the reservation at release, this is a use-after-free \
                  rather than a log line. Do not quote memory numbers from this run."
+            );
+            std::process::ExitCode::from(1)
+        }
+        CounterVerdict::UnprovenFormsEnabled { forms, claimed } => {
+            if allow_unproven {
+                // Downgraded, never erased. A flag that deletes the finding is how a run with
+                // unproven claims comes to read like a clean run three weeks later.
+                eprintln!(
+                    "epctl: WARN — --allow-unproven downgraded a FAIL to a pass. \
+                     unproven_forms_enabled = {forms} (unproven_forms_claimed = {claimed}). \
+                     Nothing this run produced is evidence about those forms."
+                );
+                return std::process::ExitCode::SUCCESS;
+            }
+            eprintln!(
+                "epctl: FAIL — the §8.9 escape hatch was used in this run: \
+                 unproven_forms_enabled = {forms} (unproven_forms_claimed = {claimed}).\n\
+                 \x20 Every form in that list was claimed with no entry in the proof ledger under \
+                 its proof key. Nothing in this run's output is evidence about those forms; they \
+                 executed on an assertion, not on a proof.\n\
+                 \x20 The hatch is a list of proof keys and nothing else — there is no `1`, no \
+                 `*`, no wildcard, on purpose, because a hatch that can be opened with one token \
+                 gets opened once and never closed. To pass anyway, pass --allow-unproven and say \
+                 in the artifact why. To pass honestly, prove the forms: run \
+                 `python rust/tools/gen_proof_ledger.py` and let the harness write the entries."
             );
             std::process::ExitCode::from(1)
         }
@@ -1025,6 +1093,7 @@ fn main() -> std::process::ExitCode {
     let probe_validation_flag = args.iter().any(|a| a == "--probe-validation");
     let plant_violation = args.iter().any(|a| a == "--plant-violation");
     let require_device_memory = args.iter().any(|a| a == "--require-device-memory");
+    let allow_unproven = args.iter().any(|a| a == "--allow-unproven");
 
     // `--check-counters` and `--require-dispatches` take a value, so the flat "every argument must
     // be a known flag" check below has to know to skip the values. Parse them out first.
@@ -1071,6 +1140,7 @@ fn main() -> std::process::ExitCode {
                 && a.as_str() != "--probe-validation"
                 && a.as_str() != "--plant-violation"
                 && a.as_str() != "--require-device-memory"
+                && a.as_str() != "--allow-unproven"
         })
     {
         eprintln!("epctl: unrecognised argument `{bad}`");
@@ -1079,7 +1149,12 @@ fn main() -> std::process::ExitCode {
     }
 
     if let Some(path) = counters_file {
-        return check_counters_with(&path, required_dispatches, require_device_memory);
+        return check_counters_with(
+            &path,
+            required_dispatches,
+            require_device_memory,
+            allow_unproven,
+        );
     }
 
     if probe_validation_flag {
@@ -1146,6 +1221,11 @@ mod tests {
             compute_failures: 0,
             dispatches_executed: dispatches,
             viable_islands_retained: 0,
+            proven_key_lookups: 0,
+            ledger_hits: 0,
+            unproven_declines: 0,
+            ledger_entries: 0,
+            unproven_forms_claimed: 0,
         }
         .to_json()
     }
@@ -1184,6 +1264,11 @@ mod tests {
             compute_failures: 0,
             dispatches_executed: dispatches,
             viable_islands_retained: 0,
+            proven_key_lookups: 0,
+            ledger_hits: 0,
+            unproven_declines: 0,
+            ledger_entries: 0,
+            unproven_forms_claimed: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -1201,6 +1286,11 @@ mod tests {
             compute_failures: 0,
             dispatches_executed: dispatches,
             viable_islands_retained: 0,
+            proven_key_lookups: 0,
+            ledger_hits: 0,
+            unproven_declines: 0,
+            ledger_entries: 0,
+            unproven_forms_claimed: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -1604,6 +1694,11 @@ mod tests {
             compute_failures: 0,
             dispatches_executed: 30,
             viable_islands_retained: 0,
+            proven_key_lookups: 0,
+            ledger_hits: 0,
+            unproven_declines: 0,
+            ledger_entries: 0,
+            unproven_forms_claimed: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
         std::fs::write(&f, doc).expect("write");
@@ -1676,6 +1771,11 @@ mod tests {
             compute_failures: 0,
             dispatches_executed: 354,
             viable_islands_retained: 0,
+            proven_key_lookups: 0,
+            ledger_hits: 0,
+            unproven_declines: 0,
+            ledger_entries: 0,
+            unproven_forms_claimed: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
         std::fs::write(&f, doc).expect("write");
@@ -1720,5 +1820,78 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+    /// R10 for the CI check itself: the verdict must **vary with the artifact**, not with a flag
+    /// its author set. Three inputs, three different verdicts — absent key, empty list, non-empty
+    /// list — because absent and empty are not the same fact and neither is a failure the way a
+    /// populated hatch is.
+    #[test]
+    fn unproven_forms_enabled_is_read_from_the_artifact_in_three_states() {
+        let empty = snapshot_match(7);
+
+        // Absent: a snapshot from a build with no ledger cannot answer this question, and silence
+        // is not an empty list. This build's own writer always emits the key, so the absent state
+        // has to be constructed — which is the point: it is a *different* fact from `[]`.
+        assert_eq!(
+            json_array_raw("{ \"dispatches_executed\": 7 }", "unproven_forms_enabled"),
+            None,
+            "a snapshot predating the ledger reports absent, never empty"
+        );
+
+        assert_eq!(
+            json_array_raw(&empty, "unproven_forms_enabled"),
+            Some("[]"),
+            "this build's writer emits the key, and a closed hatch is an empty list"
+        );
+
+        let populated = empty.replace(
+            "\"unproven_forms_enabled\": []",
+            "\"unproven_forms_enabled\": [\"ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2\"]",
+        )
+        .replace("\"unproven_forms_claimed\": 0", "\"unproven_forms_claimed\": 3");
+        assert_eq!(
+            json_array_raw(&populated, "unproven_forms_enabled"),
+            Some("[\"ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2\"]")
+        );
+
+        let dir = std::env::current_dir().unwrap().join("target").join("epctl-unproven-test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ok = dir.join("empty.json");
+        std::fs::write(&ok, &empty).unwrap();
+        assert_eq!(
+            read_counters_with(ok.to_str().unwrap(), 1, false),
+            CounterVerdict::Pass { dispatches: 7 },
+            "an empty hatch is a run that claimed nothing unproven; it must pass"
+        );
+
+        let bad = dir.join("populated.json");
+        std::fs::write(&bad, &populated).unwrap();
+        match read_counters_with(bad.to_str().unwrap(), 1, false) {
+            CounterVerdict::UnprovenFormsEnabled { forms, claimed } => {
+                // R13: quote the failure text, never the failure count. The message must name
+                // the form, because "3 unproven forms" tells a reader nothing they can act on.
+                assert!(forms.contains("ew_binary_mul_f16"), "forms = {forms}");
+                assert_eq!(claimed, 3);
+            }
+            other => panic!("a populated escape hatch must fail --check-counters, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The hatch's shape is the point: a list of proof keys and nothing else. `1`, `true` and `*`
+    /// are not lists, so the reader must not accept them as one — C1's shape is the failure mode
+    /// §8.9 named explicitly.
+    #[test]
+    fn a_scalar_hatch_is_not_a_list_and_is_not_read_as_one() {
+        for scalar in ["1", "true", "\"*\"", "\"all\""] {
+            let doc = format!("{{ \"unproven_forms_enabled\": {scalar} }}");
+            assert_eq!(
+                json_array_raw(&doc, "unproven_forms_enabled"),
+                None,
+                "{scalar} is not a list of proof keys and must not parse as one"
+            );
+        }
     }
 }

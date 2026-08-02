@@ -3032,6 +3032,161 @@ rather than on the first result being repeated.** 355/363 is not the number to m
 move is boundary bytes — and §7.12.1 says the estimator's version of that number is off by 10⁵,
 which is now the top of the partition backlog.
 
+### 7.14 Which arm claimed Phi-3.5, and what the override overrode (2026-08-01)
+
+A reconciliation of `bench/results/wiring_census-dev0.json` raised a sharper version of RAI-011:
+on Phi-3.5 the fused island is retained — but *by what*? "The gate approved it" and "the gate
+rejected it and the sole-island override kept it" are different facts that both produce one island,
+claimed, executing, MATCH. If it were the override, the net-benefit gate would never have said *no*
+on real input, and a gate that cannot decline is not a gate.
+
+**The trap named in the question is the important part.** `net_benefit_gate: EVALUATED` and
+`net_benefit_gate_bypasses: 0` both *look* like the gate is working, and both read exactly the same
+in a world where the gate runs and always approves. `bypasses` is a tripwire for a different
+failure — something skipping the gate — so it cannot falsify this one. Neither field is evidence
+here.
+
+**The field that is evidence: `net_benefit_sole_island_overrides`.**
+
+| run | claimed | retained | overrides | override reason |
+|---|---|---|---|---|
+| Phi-3.5, shipping configuration | 355 | **1** | **0** | `UNOBSERVABLE` |
+| one-node elementwise chain (the census lane's shape), shipping configuration | 1 | 0 | **1** | `TOO_SMALL` |
+| a graph with no claimable node at all | 0 | `UNWIRED` | 0 | `UNOBSERVABLE` |
+
+**Answer: on Phi-3.5 the predicate passed on its own.** `overrides = 0`, so the override did not
+fire and cannot be what retained the island. The headline island is claimed by the gate.
+
+**Which arm of the predicate, though, is a second question, and the answer is less comfortable.**
+`evaluate` has two rejecting arms and returns `Claim` from three places; the counters record the
+verdict, not the arm. Changing one input at a time answers it without reading the code
+(`bench/results/net_benefit_gate_probe-dev0.json`, rows `default` and `no_anchor`, everything else
+held fixed):
+
+- anchor exemption **on** (shipping): retained 1, overrides 0.
+- anchor exemption **off**: retained 0, overrides 1, reason `TRANSFER_DOMINATED`.
+
+Nothing else differs between those two runs, so **the anchor exemption is the deciding term on
+Phi-3.5**. The economics arithmetic is reached and, when allowed to decide, it *declines the graph
+we ship* — at every `fixed_ns` in §7.12's range, for the reason §7.12.1 gives: the estimator's
+boundary bytes are 10⁵ too large. The gate's economics arm is therefore not merely untested on
+real input; it is wrong on real input, and the anchor exemption is what stands between that wrong
+answer and the partition.
+
+**Has the predicate ever returned `Reject` on a real graph at shipping defaults? Yes.** The census
+lane is that case: a one-node elementwise chain, no `PARTITION_*` environment override anywhere in
+the census tooling (only `probe_net_benefit_gate.py` sets those), `overrides = 1`. So the reject
+branch does fire in production configuration today. The gate is not a decoration. What had never
+happened is an *economics* rejection at shipping defaults — the census lane rejects on **size**,
+and that is now read from an artifact rather than from the source: `rust/tools/probe_override_reason.py`
+rebuilds the census lane's shape, predicts `TOO_SMALL` before running, and observes `TOO_SMALL` on
+both devices.
+
+**The observability gap that made this hard to answer, now closed.** `overrides: 1` said the
+override fired and said nothing about what it overrode, even though `GateOutcome::SoleIslandOverride`
+carries the `RejectReason` in memory: the reason died at the counter boundary. `counters.rs` now
+emits `net_benefit_override_reason`, a token in Tank's idiom rather than a number —
+`UNOBSERVABLE` when no override occurred (R12: the event whose reason is asked for did not happen
+in this frame), else `TOO_SMALL` / `TRANSFER_DOMINATED` / `MIXED`, plus `UNRECORDED` for the
+drift case where an override was counted and no reason arrived. It is a bitmask, not a
+last-writer-wins slot, so two overrides with different reasons cannot collapse onto whichever ran
+last. **It varies with its input in the artifact** — `UNOBSERVABLE` in the shipping Phi-3.5 row,
+`TRANSFER_DOMINATED` in the eight anchor-off rows, `TOO_SMALL` on the one-node graph and
+`UNOBSERVABLE` again where nothing is claimable — which is the R10 requirement for calling it
+wired. Three distinct tokens from three distinct inputs, on both devices.
+
+**No gate behaviour changed.** The override remains correct policy for a sole island: there is no
+alternative partition, so declining it hands the whole graph back for no gain. This is
+documentation plus an observable plus tests, exactly as asked.
+
+**Backlog, needing sequencing rather than doing:** the *claim* side is still unattributed in the
+artifact. `Verdict::Claim` does not say which of the three arms produced it, so "the anchor
+exemption decided this" remains an inference from a two-run counterfactual rather than a field.
+Making it a field means `Verdict::Claim` carries a reason, which is a `partition.rs` change, and
+`partition.rs` was being edited concurrently. Deriving the arm at the `ep.rs` call site instead
+would be a second copy of the predicate — the precise thing RAI-011 was about — so it is not an
+option.
+
+### 7.15 The proof ledger is wired — criterion 11, and the last `UNWIRED` (2026-08-01)
+
+`ledger_lookup` was the twelfth mechanism and the only one still reporting `UNWIRED`. It now
+reports a value it computed on the run:
+
+```
+ledger_lookup: ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9
+               unproven_declines=0 unproven_forms_enabled=[]
+               (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)
+```
+
+The type is load-bearing, and it is the same fix R12 asked for when *bypassed* and *all-rejected*
+shared one `0`: **`UNOBSERVABLE`** (no ledger in this frame — the counters surface carries no
+ledger fields at all), **`UNWIRED`** (fields published, nothing consulted them), and an **int**
+(something looked a key up). An increment cannot forge a type.
+
+**The artifact.** `evidence/proof_ledger.jsonl`, 9 entries, header digest `e4436e93c19c8744`,
+generated by `rust/tools/gen_proof_ledger.py` and never hand-edited. It is baked into the crate
+with `include_str!`, so a build cannot claim a form whose proof is not in the binary that claims
+it.
+
+**The key** — six components, one `::`, exactly five `/`:
+
+```
+{domain}::{op_type}/{opset_bucket}/{in_dtypes}>{out_dtypes}/{variant}/{shape_class}/{optional_inputs}
+
+ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2
+com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales
+com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points
+```
+
+Those last two are the §8.9 vindication pair, and they are in the ledger on purpose: the
+2026-07-30 all-zero-logits defect was `MatMulNBits` **with** vs **without** `zero_points`. The two
+forms differ in `populated_optional_input_set`, so they are two keys, so a proof of one can never
+be returned for the other. This is asserted, not asserted-about: `distinct_forms_have_distinct_keys`
+in `registry.rs` and the two-armed case pair in `tests/ops/test_proof_ledger.py`. **Switch's
+`arms_must_differ` lesson applies here directly** — a ledger probe whose two arms produce the same
+key is a perfectly stable, perfectly wrong answer.
+
+**Two real defects my own controls caught, both worth recording:**
+
+1. **The comma collision.** Proof keys contain `,` (`f32,f32>f32`) and the `CLAIM_UNPROVEN` escape
+   hatch split its list on `,`. A well-formed key arrived as three invalid fragments, the list was
+   correctly discarded, the run claimed nothing — and the differential comparison still returned
+   `MATCH`, because it was comparing CPU against CPU. Only the **attribution** requirement
+   (`claimed_nodes > 0 && dispatches_executed > 0`, §10.0's third amendment) caught it. The
+   separator is now `;`, which cannot occur inside a key.
+2. **The prefix-accepting validator.** The regression test for (1) found that
+   `ai.onnx::Add/7+/f32` — the first comma-fragment of a real key — *passed* `ProofKey::validate`,
+   which only required a `/`. A truncated key matches nothing and reads exactly like a key that
+   matches something. `validate()` now requires the full structure.
+
+**One `ERROR(instrument)`, and it is not a detection (R13).** `sqrt_f32` first returned `DIVERGENT`
+with `worst_rel: 0.0` — self-contradictory on its face. Inputs were `standard_normal`, so `Sqrt` of
+a negative produced NaN on *both* sides; `np.allclose` calls NaN≠NaN a divergence while
+`max(0.0, nan)` returns `0.0`. Fixed in both halves: an explicit `ERROR` verdict when the
+*reference* output is non-finite (EP-only non-finite remains a genuine `DIVERGENT`), and an
+`INPUT_DOMAIN` table so `Sqrt` samples positive and `Div` samples non-zero.
+
+**The price, paid and not softened.** Phi-3.5's claimed count goes **355 → 0**. Morpheus accepted
+this explicitly when he ruled §8.9 and it is not negotiable downward. The fall is **temporary**:
+the 355 nodes reduce to **8 distinct proof obligations**, and they are mechanically discoverable —
+the claim log now carries `proof_key` on every audit line, so
+`bench/results/_phi35_keys.txt` was extracted from a single gated run rather than enumerated by
+hand. Populating them from existing differential runs is a harness job, not a design one.
+
+**The open backlog item, named so it does not get lost.** The estimator's boundary-bytes number and
+the measured one disagreed by 104,116×. That is now two independent defects, one closed and one
+open:
+
+- *Closed:* internal island edges were counted as boundary. A whole-graph per-value consumer map in
+  `ep.rs` fixed it — 89,199,100,032 B → 13,936,509,056 B, and `net_benefit_sole_island_overrides`
+  went **1 → 0**, so Phi-3.5's island is now claimed on the gate's own economics rather than on the
+  no-alternative override.
+- *Open:* `slot_bytes` substitutes **128 for every unknown dimension**, and every Phi-3.5 boundary
+  tensor is `runtime-extent`. Residual ratio ~16,268×. This is a **fabricated** input, not merely an
+  over-broad one, and it has a different fix (resolve the extents, or decline to answer). It is now
+  self-disclosing: `Island::symbolic_boundary_slots` travels with the number and the sole-island
+  WARN reports the fabricated-slot count, so the fabrication cannot be read as a measurement.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.

@@ -55,10 +55,11 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
-pub const COUNTERS_ABI_VERSION: u32 = 2;
+pub const COUNTERS_ABI_VERSION: u32 = 3;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -461,6 +462,33 @@ pub struct VulkanEpCounters {
     /// when 0 so that the wiring census (R10) can distinguish "gate ran, all rejected" from
     /// "UNWIRED" (key absent).  Added in ABI version 2.
     pub viable_islands_retained: u64,
+    /// Nodes for which the §8.9 proof ledger was consulted at all (`Ready` rows).  **Added in
+    /// ABI version 3.**
+    ///
+    /// The unconditional half of the pair, so a run in which the gate never executed reads `0`
+    /// here regardless of what `ledger_hits` says.  Present even when 0, for the same reason
+    /// `viable_islands_retained` is: absence of the field and a value of zero are different
+    /// facts and must not share a spelling (R12).
+    ///
+    /// The C ABI carries the *counts* only. The three-state token (`"UNWIRED"` /
+    /// `"UNOBSERVABLE"` / int) lives in the JSON artifact, because a `u64` cannot express it —
+    /// a reader of this struct must derive the state from `proven_key_lookups == 0` and
+    /// `ledger_entries == 0` rather than from a sentinel value, since every sentinel a `u64`
+    /// could carry is also a legitimate count.
+    pub proven_key_lookups: u64,
+    /// Of those lookups, the ones the ledger held a proof for.  **ABI version 3.**
+    pub ledger_hits: u64,
+    /// Nodes declined with `[unproven]` — a kernel exists and no proof covers the form.
+    /// **ABI version 3.**
+    pub unproven_declines: u64,
+    /// Entries in the ledger compiled into this binary.  **ABI version 3.**
+    ///
+    /// Needed to tell `UNOBSERVABLE` (an empty ledger — a hit could not have occurred) from a
+    /// real miss. Without it, `ledger_hits == 0` is the ambiguous digit RAI-011 was raised over.
+    pub ledger_entries: u64,
+    /// Forms claimed through the `CLAIM_UNPROVEN` escape hatch rather than on evidence.
+    /// **ABI version 3.**  Non-zero means this run's claims are not fully backed by proofs.
+    pub unproven_forms_claimed: u64,
 }
 
 static COMPILE_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -507,10 +535,63 @@ static NET_BENEFIT_GATE_BYPASSES: AtomicU64 = AtomicU64::new(0);
 /// "the gate retained the island", "the gate rejected every island" and "the gate never ran"
 /// compressed onto one digit. They now occupy three different fields, one of which is a string.
 static NET_BENEFIT_SOLE_ISLAND_OVERRIDES: AtomicU64 = AtomicU64::new(0);
+/// Which rejection(s) the override suppressed, as a bitmask over [`OverriddenVerdict`].
+///
+/// A count of overrides tells you the override fired; it does not tell you **what it overrode**,
+/// and those are different facts. `net_benefit_sole_island_overrides: 1` was reported in the
+/// wiring census with no way to learn whether the gate had said *too small* or *transfer
+/// dominated* — the reason existed in memory (`GateOutcome::SoleIslandOverride` carries it) and
+/// died at the counter boundary. This is the missing half.
+///
+/// A bitmask rather than a last-writer-wins slot, so two overrides with different reasons in one
+/// process render as `MIXED` instead of silently reporting whichever ran last.
+static NET_BENEFIT_OVERRIDE_REASONS: AtomicU64 = AtomicU64::new(0);
+
+/// The gate verdict a sole-island override suppressed.
+///
+/// Deliberately *not* `partition::RejectReason`: this module must not depend on the partitioner,
+/// and the counter needs a token, not the arithmetic that produced it. The mapping happens once,
+/// at the single call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverriddenVerdict {
+    /// The gate rejected on the size arm (`RejectReason::TooSmall`).
+    TooSmall,
+    /// The gate rejected on the economics arm (`RejectReason::TransferDominated`).
+    TransferDominated,
+}
+
+impl OverriddenVerdict {
+    fn bit(self) -> u64 {
+        match self {
+            OverriddenVerdict::TooSmall => 1,
+            OverriddenVerdict::TransferDominated => 2,
+        }
+    }
+}
+
+// --- §8.9 proof-ledger gate (criterion 11). Owner: Mouse (`registry.rs`). ---
+//
+// The same three-state shape as the net-benefit gate above, and for the same reason. Before
+// RAI-011, `viable_islands_retained: 0` meant *bypassed* and *all-rejected* and *never ran*, all
+// on one digit. `proven_key_lookups` is the unconditional half here: every node with a `Ready`
+// row increments it whether the ledger hit or missed, so a run in which the mechanism never
+// executed is `0` — a state the JSON reports as the string `"UNWIRED"`, not as a number.
+/// Nodes for which the ledger was consulted at all.
+static LEDGER_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones the ledger held a proof for.
+static LEDGER_HITS: AtomicU64 = AtomicU64::new(0);
+/// Nodes declined with `[unproven]`: a kernel exists, no proof covers the form, and the form is
+/// not in the §8.9.4 allowlist.
+static UNPROVEN_DECLINES: AtomicU64 = AtomicU64::new(0);
+/// Nodes claimed only because their key was in `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`.
+static UNPROVEN_FORMS_CLAIMED: AtomicU64 = AtomicU64::new(0);
+/// The distinct keys that the escape hatch actually let through, for
+/// `unproven_forms_enabled: [...]` (§8.9.4 item 3). A list rather than a count on purpose: the
+/// CI check has to be able to *name* what a lane claimed without evidence.
+static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
-static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
-/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
+static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 /// Compute failures produced by the fault-injection control rather than suffered.
 static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
@@ -595,8 +676,115 @@ pub fn record_net_benefit_decision(evaluated: bool) {
 /// Must be called *in addition to* [`record_net_benefit_decision`]`(true)`, never instead of it:
 /// the island was evaluated, and then its verdict was overridden. An override that suppressed the
 /// evaluation record would be the bypass again.
-pub fn record_sole_island_override() {
+///
+/// The reason is a required argument rather than a second optional call, because an entry point
+/// that records the override without the reason is the same shape as the bypass it replaced: one
+/// path that reports and one that stays quiet.
+pub fn record_sole_island_override(reason: Option<OverriddenVerdict>) {
     NET_BENEFIT_SOLE_ISLAND_OVERRIDES.fetch_add(1, ORD);
+    if let Some(reason) = reason {
+        NET_BENEFIT_OVERRIDE_REASONS.fetch_or(reason.bit(), ORD);
+    }
+}
+
+/// Record one §8.9 proof-ledger consultation.
+///
+/// Unconditional half first, exactly as [`record_net_benefit_decision`] does it: the only way to
+/// make `ledger_hits` non-zero is through the path that also increments `proven_key_lookups`, so
+/// a hit count cannot exist without a lookup count to divide it by.
+pub fn record_ledger_lookup(hit: bool) {
+    LEDGER_LOOKUPS.fetch_add(1, ORD);
+    if hit {
+        LEDGER_HITS.fetch_add(1, ORD);
+    }
+}
+
+/// Record a node declined because nothing has proven its form (§8.9, `DeclineCode::Unproven`).
+pub fn record_unproven_decline() {
+    UNPROVEN_DECLINES.fetch_add(1, ORD);
+}
+
+/// Record that the §8.9.4 escape hatch let one node through, and which key did it.
+///
+/// The key is kept, not merely counted. `epctl --check-counters` fails on a non-empty
+/// `unproven_forms_enabled` list, and a CI lane that has to be told *what* it claimed without
+/// evidence is a lane whose operator can act on the message.
+pub fn record_unproven_form_enabled(key: &str) {
+    UNPROVEN_FORMS_CLAIMED.fetch_add(1, ORD);
+    if let Ok(mut used) = UNPROVEN_KEYS_USED.lock()
+        && !used.iter().any(|k| k == key)
+    {
+        used.push(key.to_string());
+    }
+}
+
+/// Escape a string for a JSON string literal. Proof keys are `[A-Za-z0-9:./,+_-]` by
+/// construction, so this exists to keep a malformed key from producing malformed JSON rather
+/// than because one is expected.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The three-state reading of `ledger_hits`, as a JSON fragment. Same shape, same reasons, as
+/// [`viable_islands_retained_json`] — one mechanism's vocabulary, not two (R10 sub-rule).
+///
+/// * `"UNWIRED"` — no node reached the ledger check at all, so the gate did not run.
+/// * `"UNOBSERVABLE"` — the check ran, and the ledger baked into this artifact holds **no
+///   entries**, so a hit could not have occurred in this frame. `0` here would read as "we
+///   looked and nothing matched", which is a different fact about a different world (R12).
+/// * an integer — the ledger has entries and this is how many of the lookups found one.
+fn ledger_hits_json() -> String {
+    let lookups = LEDGER_LOOKUPS.load(ORD);
+    if lookups == 0 {
+        "\"UNWIRED\"".to_string()
+    } else if crate::registry::ledger().is_empty() {
+        "\"UNOBSERVABLE\"".to_string()
+    } else {
+        LEDGER_HITS.load(ORD).to_string()
+    }
+}
+
+/// Token naming what the ledger gate did on this run, for a reader grepping a word.
+///
+/// `FAULTED` is R13's instrument state and outranks the rest: a ledger that failed its own
+/// digest or parse check has produced no reading, and reporting that as `DECLINED` would spell
+/// an instrument outage exactly like a detection.
+fn ledger_gate_state() -> &'static str {
+    let ledger = crate::registry::ledger();
+    if !ledger.faults.is_empty() {
+        return "FAULTED";
+    }
+    let lookups = LEDGER_LOOKUPS.load(ORD);
+    let hits = LEDGER_HITS.load(ORD);
+    let declines = UNPROVEN_DECLINES.load(ORD);
+    match (lookups, hits, declines) {
+        (0, _, _) => "UNWIRED",
+        (_, 0, 0) => "MIXED",
+        (_, _, 0) => "ALL-PROVEN",
+        (_, 0, _) => "ALL-DECLINED",
+        _ => "MIXED",
+    }
+}
+
+/// `unproven_forms_enabled` — the §8.9.4 item-3 disclosure, as a JSON array fragment.
+///
+/// Absent-meaning-empty is what §8.9.4 specifies, and an empty array is how JSON spells it. This
+/// is the value `epctl --check-counters` fails on when it is non-empty.
+fn unproven_forms_enabled_json() -> String {
+    let Ok(used) = UNPROVEN_KEYS_USED.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
 }
 
 /// The three-state reading of `viable_islands_retained`, as a JSON fragment.
@@ -630,6 +818,27 @@ fn net_benefit_gate_state() -> &'static str {
         (_, 0, _) => "BYPASSED",
         (_, _, 0) => "EVALUATED",
         _ => "MIXED",
+    }
+}
+
+/// Token naming *what the sole-island override overrode*, which is a different fact from *whether*
+/// it fired.
+///
+/// `UNOBSERVABLE` when no override happened: the event whose reason is being asked for did not
+/// occur in this frame, so there is no reason to report and reporting a reason-shaped `NONE` would
+/// invite a reader to treat absence as a verdict (R12).
+fn net_benefit_override_reason() -> &'static str {
+    let overrides = NET_BENEFIT_SOLE_ISLAND_OVERRIDES.load(ORD);
+    let mask = NET_BENEFIT_OVERRIDE_REASONS.load(ORD);
+    match (overrides, mask) {
+        (0, _) => "UNOBSERVABLE",
+        (_, 1) => "TOO_SMALL",
+        (_, 2) => "TRANSFER_DOMINATED",
+        (_, 3) => "MIXED",
+        // An override was counted but no reason reached the mask: the two halves of one call site
+        // have drifted apart. Named rather than defaulted, because a silent fallback here would
+        // hide exactly the wiring failure this field exists to expose.
+        (_, _) => "UNRECORDED",
     }
 }
 
@@ -718,6 +927,11 @@ pub fn snapshot() -> VulkanEpCounters {
         compute_failures: COMPUTE_FAILURES.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
         viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
+        proven_key_lookups: LEDGER_LOOKUPS.load(ORD),
+        ledger_hits: LEDGER_HITS.load(ORD),
+        unproven_declines: UNPROVEN_DECLINES.load(ORD),
+        ledger_entries: crate::registry::ledger().len() as u64,
+        unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
     }
 }
 
@@ -740,9 +954,17 @@ pub fn reset() {
     NET_BENEFIT_GATE_EVALUATIONS.store(0, ORD);
     NET_BENEFIT_GATE_BYPASSES.store(0, ORD);
     NET_BENEFIT_SOLE_ISLAND_OVERRIDES.store(0, ORD);
+    NET_BENEFIT_OVERRIDE_REASONS.store(0, ORD);
     BROKEN_COMMITMENTS.store(0, ORD);
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
+    LEDGER_LOOKUPS.store(0, ORD);
+    LEDGER_HITS.store(0, ORD);
+    UNPROVEN_DECLINES.store(0, ORD);
+    UNPROVEN_FORMS_CLAIMED.store(0, ORD);
+    if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
+        used.clear();
+    }
 }
 
 impl VulkanEpCounters {
@@ -776,11 +998,20 @@ impl VulkanEpCounters {
              \"net_benefit_gate_evaluations\": {},\n  \
              \"net_benefit_gate_bypasses\": {},\n  \
              \"net_benefit_sole_island_overrides\": {},\n  \
+             \"net_benefit_override_reason\": \"{}\",\n  \
              \"broken_commitments\": {},\n  \
              \"broken_commitment_warns_to_ort_sink\": {},\n  \
              \"broken_commitment_warn_channel\": \"{}\",\n  \
              \"compute_failures_injected\": {},\n  \
              \"fault_injection\": \"{}\",\n  \
+             \"proven_key_lookups\": {},\n  \
+             \"ledger_hits\": {},\n  \
+             \"ledger_gate\": \"{}\",\n  \
+             \"ledger_entries\": {},\n  \
+             \"ledger_faults\": {},\n  \
+             \"unproven_declines\": {},\n  \
+             \"unproven_forms_claimed\": {},\n  \
+             \"unproven_forms_enabled\": {},\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -797,6 +1028,7 @@ impl VulkanEpCounters {
             NET_BENEFIT_GATE_EVALUATIONS.load(ORD),
             NET_BENEFIT_GATE_BYPASSES.load(ORD),
             NET_BENEFIT_SOLE_ISLAND_OVERRIDES.load(ORD),
+            net_benefit_override_reason(),
             broken_commitments_json(),
             BROKEN_COMMITMENT_WARNS_TO_ORT.load(ORD),
             broken_commitment_channel(),
@@ -806,6 +1038,14 @@ impl VulkanEpCounters {
             } else {
                 "NONE"
             },
+            LEDGER_LOOKUPS.load(ORD),
+            ledger_hits_json(),
+            ledger_gate_state(),
+            crate::registry::ledger().len(),
+            crate::registry::ledger().faults.len(),
+            UNPROVEN_DECLINES.load(ORD),
+            UNPROVEN_FORMS_CLAIMED.load(ORD),
+            unproven_forms_enabled_json(),
             equiv,
         )
     }
@@ -1535,6 +1775,69 @@ mod tests {
 
         reset();
         assert_eq!(snapshot().compute_calls, 0);
+    }
+
+    /// An override count says *that* the gate was overruled; it does not say *what* was overruled.
+    ///
+    /// The wiring census reported `sole_island_overrides=1` with no way to learn whether the gate
+    /// had said "too small" or "transfer dominated". Those are different findings — the first is
+    /// the designed behaviour of a one-node graph, the second would mean the economics arm is
+    /// declining a graph we ship. This pins that they no longer read alike.
+    #[test]
+    fn an_override_reports_which_verdict_it_overrode() {
+        reset();
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"UNOBSERVABLE\""),
+            "no override happened, so there is no reason to report and it must not read as a \
+             verdict (R12); got:\n{json}"
+        );
+
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TooSmall));
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"TOO_SMALL\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"net_benefit_sole_island_overrides\": 1"),
+            "{json}"
+        );
+
+        // A second override with a different reason must not overwrite the first: the artifact
+        // has to say both happened, not whichever ran last.
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TransferDominated));
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"MIXED\""),
+            "two overrides with different reasons must not collapse onto one token; got:\n{json}"
+        );
+
+        reset();
+        record_net_benefit_decision(true);
+        record_sole_island_override(None);
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"net_benefit_override_reason\": \"UNRECORDED\""),
+            "an override whose reason never arrived must say so rather than default to a \
+             plausible verdict; got:\n{json}"
+        );
+        reset();
+    }
+
+    /// `UNOBSERVABLE` and `TOO_SMALL` are tokens, not numbers, so a reader cannot average them,
+    /// sum them, or mistake an absent override for a zero-valued one.
+    #[test]
+    fn the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly() {
+        reset();
+        assert_eq!(net_benefit_override_reason(), "UNOBSERVABLE");
+        assert!(net_benefit_override_reason().parse::<u64>().is_err());
+        record_net_benefit_decision(true);
+        record_sole_island_override(Some(OverriddenVerdict::TransferDominated));
+        assert!(net_benefit_override_reason().parse::<u64>().is_err());
+        reset();
     }
 
     /// The verdict vocabulary is duplicated in `tests/ops/_verdict.py`. Duplicated vocabularies

@@ -241,6 +241,19 @@ pub struct Island {
     pub input_bytes: u64,
     /// Bytes leaving the island to outside the EP.
     pub output_bytes: u64,
+    /// Boundary slots whose byte count was **invented**, not read.
+    ///
+    /// `GetCapability` runs before shapes are resolved, so a tensor with a symbolic extent has
+    /// no byte count at partition time. The estimator substitutes 128 for each unknown
+    /// dimension. That is a fabricated number, and this field is how many of them went into
+    /// `input_bytes + output_bytes`.
+    ///
+    /// It exists because the alternative is a byte count that looks measured and is not.
+    /// §10.0.4 — prefer the unperturbable quantity as the claim of record; when the quantity is
+    /// perturbable, say so next to it rather than downstream. A reader (or a gate) that sees
+    /// `symbolic_boundary_slots > 0` knows the arithmetic below it is a lower bound on
+    /// confidence, not a measurement, however precise the digits look.
+    pub symbolic_boundary_slots: u64,
 }
 
 impl Island {
@@ -253,13 +266,29 @@ impl Island {
     /// are the estimator's own numbers.
     ///
     /// **Read the byte figure next to [`TransferModel::MEASURED_PHI35_UPLOAD_BYTES`] and be
-    /// alarmed.** The estimator says 89,199,100,032 B cross this island's boundary per inference;
-    /// the instrumented transfer path says 856,720 B. That is a factor of ~104,000, and it is not
-    /// a measurement disagreement — the estimator counts *every* node's outputs as boundary bytes
-    /// (deliberately, "over-counting is safe") and substitutes 128 for every unknown dimension.
-    /// Safe in the direction of declining too much; catastrophic for using this arithmetic to
-    /// reason about the real boundary. R11: the two sides of that comparison come from different
-    /// sources and only one of them is a measurement.
+    /// alarmed.** The estimator said 89,199,100,032 B crossed this island's boundary per
+    /// inference; the instrumented transfer path says 856,720 B. That was a factor of ~104,000,
+    /// and it was not a measurement disagreement — R11: the two sides of that comparison come
+    /// from different sources and only one of them is a measurement.
+    ///
+    /// **2026-08-01 (Mouse): the first of the two causes is now fixed, and this constant is
+    /// kept as the historical reading.** The defect had two independent halves:
+    ///
+    /// 1. *Internal edges counted as boundary.* The estimator counted **every** node's outputs,
+    ///    including edges wholly inside the island, and called that conservative. `ep.rs` now
+    ///    consults a whole-graph per-value consumer map and counts an output only when a node
+    ///    outside the island reads it, or nothing reads it (a graph output). Re-measured on the
+    ///    same model and device: **89,199,100,032 B → 13,936,509,056 B**, and the net-benefit
+    ///    gate stopped needing the sole-island override — it now claims Phi-3.5's island on its
+    ///    own economics (`net_benefit_sole_island_overrides` 1 → 0).
+    ///
+    /// 2. *Symbolic extents replaced by the constant 128.* Still open. Every boundary tensor in
+    ///    Phi-3.5 is `runtime-extent`, so the remaining 13.9 GB is very largely the constant 128
+    ///    raised to the power of however many symbolic dims each tensor has. The residual ratio
+    ///    against the measured boundary is ~16,268×, and it is not noise: it is one invented
+    ///    number propagating. See [`Island::symbolic_boundary_slots`], which now counts them, and
+    ///    `OP_COVERAGE.md` for the open item. Calibrating `fixed_ns` before this is fixed is
+    ///    still polishing the wrong parameter.
     ///
     /// The split between `input_bytes` and `output_bytes` is not recorded by `PartitionStats`;
     /// the whole total is parked in `output_bytes` here, which makes `transfer_ns` charge one
@@ -272,6 +301,25 @@ impl Island {
         flops: 23_020_437_504,
         input_bytes: 0,
         output_bytes: 89_199_100_032,
+        symbolic_boundary_slots: 0,
+    };
+
+    /// The same island as re-estimated on 2026-08-01 after internal edges stopped being counted.
+    ///
+    /// Read out of the verbose `PartitionStats` summary on dev0 with the same model and the same
+    /// binary that produced the 355 → 0 claim census. The number that changed is the boundary;
+    /// nodes, anchors and FLOPs are unaffected because the fix touches only which outputs are
+    /// charged to the boundary.
+    pub const ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED: Island = Island {
+        nodes: 355,
+        anchors: 193,
+        flops: 23_020_437_504,
+        input_bytes: 0,
+        output_bytes: 13_936_509_056,
+        // Every boundary tensor in Phi-3.5 carries at least one symbolic extent. The exact slot
+        // count is a per-run observable now; what matters for the constant is that it is not 0,
+        // so this figure must never be read as a measurement.
+        symbolic_boundary_slots: 1,
     };
 
     /// The same island with the *measured* boundary substituted for the estimator's.
@@ -283,7 +331,20 @@ impl Island {
         flops: 23_020_437_504,
         input_bytes: TransferModel::MEASURED_PHI35_UPLOAD_BYTES,
         output_bytes: TransferModel::MEASURED_PHI35_READBACK_BYTES,
+        symbolic_boundary_slots: 0,
     };
+
+    /// Whether this island's boundary byte count contains fabricated dimensions.
+    ///
+    /// R9 amendment 5 — ask which way a check moves when its subject is wrong. A larger
+    /// substituted dimension makes the estimate larger, makes the island look more
+    /// transfer-dominated, and makes the gate reject; a smaller one makes it claim. The gate's
+    /// verdict therefore moves with a constant nobody measured, which is not a defect that can
+    /// be repaired by tightening the gate's thresholds. It is repaired by resolving shapes, or
+    /// by declining to answer. Until then, callers can at least ask.
+    pub fn boundary_is_fabricated(&self) -> bool {
+        self.symbolic_boundary_slots > 0
+    }
 
     /// Total bytes crossing this island's boundary once per inference.
     pub fn boundary_bytes(&self) -> u64 {
@@ -764,6 +825,7 @@ mod tests {
             flops: 2 * 4096 * 4096 * 4096,
             input_bytes: 2 * 4096 * 4096 * 2,
             output_bytes: 4096 * 4096 * 2,
+            symbolic_boundary_slots: 0,
         }
     }
 
@@ -774,6 +836,7 @@ mod tests {
             flops: 4096,
             input_bytes: 4096 * 4 * 2,
             output_bytes: 4096 * 4,
+            symbolic_boundary_slots: 0,
         }
     }
 
@@ -817,6 +880,7 @@ mod tests {
             flops: 20 * 1024 * 1024,
             input_bytes: 64 * 1024 * 1024,
             output_bytes: 64 * 1024 * 1024,
+            symbolic_boundary_slots: 0,
         };
         let v = evaluate(&island, &TransferModel::DISCRETE, &Policy::default());
         assert!(
@@ -834,6 +898,7 @@ mod tests {
             flops: 0,
             input_bytes: 0,
             output_bytes: 0,
+            symbolic_boundary_slots: 0,
         };
         assert!(matches!(
             evaluate(&island, &TransferModel::UMA, &Policy::default()),
@@ -985,6 +1050,7 @@ mod tests {
                     flops: 1_000,
                     input_bytes: 1 << 20,
                     output_bytes: 1 << 20,
+                    symbolic_boundary_slots: 0,
                 })
                 .collect(),
         };
@@ -996,6 +1062,7 @@ mod tests {
                 flops: 40_000,
                 input_bytes: 1 << 20,
                 output_bytes: 1 << 20,
+                symbolic_boundary_slots: 0,
             }],
         };
 
@@ -1028,6 +1095,7 @@ mod tests {
                     flops: 1_000,
                     input_bytes: 1 << 20,
                     output_bytes: 1 << 20,
+                    symbolic_boundary_slots: 0,
                 })
                 .collect(),
         };
@@ -1216,10 +1284,14 @@ mod tests {
     }
 
     /// **The number that actually decides the gate is not `fixed_ns`.** `GetCapability`'s island
-    /// estimator reports a boundary ~10^5 larger than the instrumented transfer path measures.
+    /// estimator reports a boundary far larger than the instrumented transfer path measures.
     /// Until that is fixed, calibrating nanoseconds is polishing the wrong parameter.
+    ///
+    /// Kept as the historical reading after the 2026-08-01 partial fix, so the size of the
+    /// original defect stays on the record rather than being quietly replaced by the smaller
+    /// number that succeeded it.
     #[test]
-    fn the_estimator_disagrees_with_the_measured_boundary_by_five_orders_of_magnitude() {
+    fn the_estimator_disagreed_with_the_measured_boundary_by_five_orders_of_magnitude() {
         let estimated = Island::MEASURED_PHI35_DEV0.boundary_bytes();
         let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
         assert_eq!(measured, 856_720);
@@ -1227,6 +1299,53 @@ mod tests {
         assert!(
             (1.0e4..1.0e6).contains(&ratio),
             "estimator/measured boundary ratio was {ratio}"
+        );
+    }
+
+    /// Half the defect is fixed, and the half that is left is a different defect.
+    ///
+    /// Counting internal edges as boundary bytes removed a factor of ~6.4. What remains is not a
+    /// residue of the same error: it is the constant 128 standing in for every symbolic extent,
+    /// which is a fabricated input rather than an over-broad one. Naming them separately matters
+    /// because they have different fixes and only one of them is done.
+    ///
+    /// R11 — a decomposition that appears to close is the hardest kind of wrong. This test
+    /// deliberately does **not** assert that the estimator now agrees with the measurement. It
+    /// asserts the improvement that was actually obtained and that the disagreement is still
+    /// four orders of magnitude, so nobody reads the 6.4× as a closure.
+    #[test]
+    fn removing_internal_edges_shrank_the_estimate_but_did_not_close_the_gap() {
+        let before = Island::MEASURED_PHI35_DEV0.boundary_bytes();
+        let after = Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED.boundary_bytes();
+        let measured = Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_bytes();
+
+        assert_eq!(before, 89_199_100_032);
+        assert_eq!(after, 13_936_509_056);
+        assert!(
+            after < before,
+            "the fix must reduce the estimate, not merely change it"
+        );
+
+        let improvement = before as f64 / after as f64;
+        assert!(
+            (6.0..7.0).contains(&improvement),
+            "internal-edge removal was measured at ~6.4x on dev0; got {improvement}"
+        );
+
+        let residual = after as f64 / measured as f64;
+        assert!(
+            residual > 1.0e4,
+            "the residual disagreement is still four orders of magnitude ({residual}); a test \
+             that let this pass as closed would be the decomposition-appears-to-close failure"
+        );
+
+        assert!(
+            Island::ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_FIXED.boundary_is_fabricated(),
+            "the post-fix estimate is still built on substituted dimensions and must say so"
+        );
+        assert!(
+            !Island::MEASURED_PHI35_DEV0_REAL_BYTES.boundary_is_fabricated(),
+            "the measured boundary contains no fabricated dimension, or it is not a measurement"
         );
     }
 
