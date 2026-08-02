@@ -1,0 +1,398 @@
+{
+  "criterion": "12",
+  "produced_by": "ci/check_census_completeness.py (Link)",
+  "closes_row": false,
+  "closes_row_why": "Trinity owns row 12's tally. Supplying the artifact and closing the row must not be the same act (Morpheus, criterion 11 ruling).",
+  "independent_whole": {
+    "source": "production Rust the census does not write: counters.rs fields, trace.rs Phase variants, ONNXRUNTIME_EP_VULKAN_* switches under rust/src",
+    "size": 50,
+    "counter_fields": 14,
+    "trace_phases": 10,
+    "env_switches": 26,
+    "production_lines_scanned": 29269,
+    "cfg_test_lines_held_out": 11376,
+    "env_switches_named_only_in_prose": [
+      "ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC"
+    ]
+  },
+  "census_mechanisms": [
+    "partitioner",
+    "partition_identity_check",
+    "net_benefit_gate",
+    "gpu_tracer",
+    "model_output_equivalence",
+    "retain_viable",
+    "ledger_lookup",
+    "validation_messenger",
+    "layering_lint",
+    "broken_commitment_warn",
+    "device_state_guard",
+    "instrument_census"
+  ],
+  "census_artifacts": [
+    "wiring_census-dev0-healthy_loaded.json",
+    "wiring_census-dev0-healthy_quiet.json",
+    "wiring_census-dev0-hung_loaded.json",
+    "wiring_census-dev0-hung_quiet.json",
+    "wiring_census-dev0.json",
+    "wiring_census-dev1.json"
+  ],
+  "extent": [
+    {
+      "mechanism": "partitioner",
+      "extent": "1/2",
+      "named": 1,
+      "surfaces": 2,
+      "why": "",
+      "unnamed": [
+        "dispatches_executed"
+      ]
+    },
+    {
+      "mechanism": "partition_identity_check",
+      "extent": "UNOBSERVABLE",
+      "named": 0,
+      "surfaces": 0,
+      "why": "the independent whole enumerates no counter, trace phase or env switch for this mechanism \u2014 its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses",
+      "unnamed": []
+    },
+    {
+      "mechanism": "net_benefit_gate",
+      "extent": "0/6",
+      "named": 0,
+      "surfaces": 6,
+      "why": "",
+      "unnamed": [
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN",
+        "ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES"
+      ]
+    },
+    {
+      "mechanism": "gpu_tracer",
+      "extent": "1/12",
+      "named": 1,
+      "surfaces": 12,
+      "why": "",
+      "unnamed": [
+        "CmdUpload",
+        "Compile",
+        "DescAlloc",
+        "FenceWait",
+        "ONNXRUNTIME_EP_VULKAN_TRACE_GPU",
+        "PipelineLookup",
+        "Prepack",
+        "Readback",
+        "Record",
+        "Submit",
+        "Upload"
+      ]
+    },
+    {
+      "mechanism": "model_output_equivalence",
+      "extent": "UNOBSERVABLE",
+      "named": 0,
+      "surfaces": 0,
+      "why": "the independent whole enumerates no counter, trace phase or env switch for this mechanism \u2014 its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses",
+      "unnamed": []
+    },
+    {
+      "mechanism": "retain_viable",
+      "extent": "0/1",
+      "named": 0,
+      "surfaces": 1,
+      "why": "",
+      "unnamed": [
+        "viable_islands_retained"
+      ]
+    },
+    {
+      "mechanism": "ledger_lookup",
+      "extent": "4/7",
+      "named": 4,
+      "surfaces": 7,
+      "why": "",
+      "unnamed": [
+        "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN",
+        "ONNXRUNTIME_EP_VULKAN_LEDGER_FILE",
+        "unproven_forms_claimed"
+      ]
+    },
+    {
+      "mechanism": "validation_messenger",
+      "extent": "0/3",
+      "named": 0,
+      "surfaces": 3,
+      "why": "",
+      "unnamed": [
+        "ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION",
+        "ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION",
+        "ONNXRUNTIME_EP_VULKAN_VALIDATE"
+      ]
+    },
+    {
+      "mechanism": "layering_lint",
+      "extent": "UNOBSERVABLE",
+      "named": 0,
+      "surfaces": 0,
+      "why": "the independent whole enumerates no counter, trace phase or env switch for this mechanism \u2014 its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses",
+      "unnamed": []
+    },
+    {
+      "mechanism": "broken_commitment_warn",
+      "extent": "0/2",
+      "named": 0,
+      "surfaces": 2,
+      "why": "",
+      "unnamed": [
+        "ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE",
+        "compute_failures"
+      ]
+    },
+    {
+      "mechanism": "device_state_guard",
+      "extent": "UNOBSERVABLE",
+      "named": 0,
+      "surfaces": 0,
+      "why": "the independent whole enumerates no counter, trace phase or env switch for this mechanism \u2014 its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses",
+      "unnamed": []
+    },
+    {
+      "mechanism": "instrument_census",
+      "extent": "UNOBSERVABLE",
+      "named": 0,
+      "surfaces": 0,
+      "why": "the independent whole enumerates no counter, trace phase or env switch for this mechanism \u2014 its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses",
+      "unnamed": []
+    }
+  ],
+  "name_content": [
+    {
+      "mechanism": "partitioner",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "dispatches=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1"
+    },
+    {
+      "mechanism": "partition_identity_check",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "VACUOUS (claimed=1, islands=1; single-node graph is expected)"
+    },
+    {
+      "mechanism": "net_benefit_gate",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int \u2014 a type cannot be forged by an increment)"
+    },
+    {
+      "mechanism": "gpu_tracer",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "28 trace event(s), phases=['C', 'M', 'X', 'i'], distinct_names=16 (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; no duration from this file is quoted \u2014 \u00a710.0 obligation 8)"
+    },
+    {
+      "mechanism": "model_output_equivalence",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)"
+    },
+    {
+      "mechanism": "retain_viable",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "1"
+    },
+    {
+      "mechanism": "ledger_lookup",
+      "state": "VARIES",
+      "arms": 6,
+      "distinct_observations": 2,
+      "not_enumerated_in": [],
+      "specimen": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)"
+    },
+    {
+      "mechanism": "validation_messenger",
+      "state": "VARIES",
+      "arms": 6,
+      "distinct_observations": 3,
+      "not_enumerated_in": [],
+      "specimen": "ARMED"
+    },
+    {
+      "mechanism": "layering_lint",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "PASS"
+    },
+    {
+      "mechanism": "broken_commitment_warn",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'"
+    },
+    {
+      "mechanism": "device_state_guard",
+      "state": "VARIES",
+      "arms": 6,
+      "distinct_observations": 3,
+      "not_enumerated_in": [],
+      "specimen": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev1-clean.json'"
+    },
+    {
+      "mechanism": "instrument_census",
+      "state": "INVARIANT",
+      "arms": 6,
+      "distinct_observations": 1,
+      "not_enumerated_in": [],
+      "specimen": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
+    }
+  ],
+  "uncensused_surfaces": [
+    {
+      "kind": "counter",
+      "id": "compile_calls",
+      "file": "rust/src/counters.rs",
+      "line": 448,
+      "reason": "Counts ORT Compile() entries. No census mechanism reads it, so 'the EP was asked to compile and did not' is not a state the census can report.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "compute_calls",
+      "file": "rust/src/counters.rs",
+      "line": 455,
+      "reason": "Counts Compute() entries. The census infers execution from dispatches_executed instead; a Compute() that entered and dispatched nothing is invisible to it.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "subgraphs_stub",
+      "file": "rust/src/counters.rs",
+      "line": 453,
+      "reason": "Counts subgraphs taken as stubs. A stub subgraph is the identity outcome for the partitioner and no census mechanism observes the count.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE",
+      "file": "rust/src/vk/barrier.rs",
+      "line": 238,
+      "reason": "Selects a barrier backend probe. Unobserved by the census.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG",
+      "file": "rust/src/logging.rs",
+      "line": 42,
+      "reason": "Raises claim logging to Debug. Unobserved by the census.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG",
+      "file": "rust/src/ops/claim_log.rs",
+      "line": 118,
+      "reason": "Writes the per-claim log. Unobserved by the census.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY",
+      "file": "rust/src/factory.rs",
+      "line": 424,
+      "reason": "Switches allocations to device-local memory \u2014 changes what the EP does on every upload, and no census mechanism observes whether it was in force.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES",
+      "file": "rust/src/vk/session.rs",
+      "line": 1665,
+      "reason": "Dumps output bytes. Unobserved by the census.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED",
+      "file": "rust/src/ops/quant.rs",
+      "line": 340,
+      "reason": "Selects the packed GEMV path \u2014 a different kernel, invisible to every census line.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS",
+      "file": "rust/src/allocator.rs",
+      "line": 95,
+      "reason": "Quarantines freed spans. Unobserved by the census.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB",
+      "file": "rust/src/allocator.rs",
+      "line": 89,
+      "reason": "Sizes the VA reservation. Unobserved by the census.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_VERBOSE",
+      "file": "rust/src/logging.rs",
+      "line": 38,
+      "reason": "Raises logging to Info. Unobserved by the census.",
+      "owner": "Switch"
+    }
+  ],
+  "out_of_frame": [
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC",
+      "reason": "A build-time escape hatch consumed before any session exists; there is no run in which the census could observe it."
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE",
+      "reason": "The census's own transport for reading counters. Observing it would be the census observing itself."
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE",
+      "reason": "A lane parameter, not a mechanism: it selects which device the census runs against and is recorded in the artifact's device_selector field."
+    }
+  ],
+  "not_a_mechanism": [
+    {
+      "kind": "counter",
+      "id": "abi_version",
+      "reason": "ABI header: the version a caller checks before reading the rest. Nothing runs."
+    },
+    {
+      "kind": "counter",
+      "id": "struct_size",
+      "reason": "ABI header: the size prefix a caller checks before reading the rest. Nothing runs."
+    }
+  ],
+  "findings": []
+}

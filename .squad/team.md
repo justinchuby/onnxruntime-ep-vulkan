@@ -57,6 +57,16 @@
 - Performance-critical paths requiring benchmarking
 - Changes requiring cross-team discussion
 
+## File Ownership Notes
+
+- **`rust/src/trace.rs`** — assigned to **Niobe** (2026-08-02T02:03:46-07:00, coordinator decision,
+  recorded by Scribe). Reason: it holds the project's only sanctioned tick-to-nanosecond conversion
+  and timestamp calibration arithmetic — measurement, not counters/FFI plumbing — and Niobe already
+  owns the instruments that consume it. The file had no roster owner (flagged by Link,
+  `link-conversion-call-sites-static-screen`, 2026-08-01). Tank may have the stronger claim on
+  counters/FFI grounds and has been notified in his history.md; reassignment is a one-line change to
+  this note and to `ci/tick_conversion_allowlist.json` if he objects.
+
 ## Project Context
 
 - **Owner:** Justin Chu

@@ -36,364 +36,81 @@
 - **2026-07-31 (evening) — the falsifier was mine, and the only admissible number is a device-clock one** — Merged `origin/main` (77d5d2a), rebuilt, and went after the RED `phase_containment` Morpheus's run hit.
 - **2026-08-01 (later) — Intel has no clock producer, and half a companion is not one** — The task: obligation 8's only producer is `nvidia-smi`, so **every Intel figure is permanently `UNCERTIFIED`** — and Intel is where the open question lives, because the 4.39× residual of the 13.52× kernel gap that memory bandwidth does not explain is a claim about Intel.
 
-## 2026-08-01 — the harness died on someone else's WARN, and the exciting reading was the false one
+- **2026-08-01 — the harness died on someone else's WARN, and the A/B ruling that cost me my own headline:** Merged local `main` (not `origin/main`, which lacked Switch's barrier fix and Tank's WARN); a UTF-16LE/UTF-8 decode collision on Tank's WARN line crashed the harness on its own error path (fixed by borrowing Tank's `decode_both` rather than writing a third decoder — bytes captured, decode moved out of the reader thread). Machine never quiet (4.7–11.4 foreign cores); ran interleaved A/B/A/B instead of before/after: host `record` 16.4/20.3ms→3.78/3.69ms (5.8×, load could not explain the shape), device 13.3463 vs 13.3432 ns (0.02%, no barrier-driven device movement) — confirmed both halves of Switch's prediction. Set the `MARGINAL_TAIL` floor (`n>=8` AND `coverage>=50%`) after finding two of my own bad tails (5-sample, 12% coverage reading +42% high) — its first act refused my own "33% GPU improvement" headline, which the floor proved false (0.02% agreement). Retired 40.201 ms as a baseline (survives only as a regime, not a pairable measurement — two upper bounds don't bound a difference from below). Numbers of record: NVIDIA 13.3432 ms/inference GPU busy (STEADY, RSD 1.72%); Intel `NO_STEADY_TAIL` (wanders 53.4–91.3ms, iGPU shares power budget with loaded CPU); wall-clock and Vulkan/CPU ratio withheld both devices (`CONTENDED`).
+- **2026-08-01 (reconstructed) — device-state companion, and Intel's clock is permanently uncertifiable:** Built `bench/device_state.py` (tenancy verdict + clock record, only `QUOTABLE` releases a number) atop Switch's GPU sampler. Self-caught two near-misses: published a `MARGINAL_TAIL` refusal against my own lowest-RSD reading (0.086%) to prove refusal isn't a claim the number was wrong; reproduced Switch's own PID-timing bug at my call site (`Popen`+`on_start` callback fix). Then built `bench/win_gpu_counters.py` (WDDM `\GPU Engine` PDH sampler, tenancy-only, clock always `UNOBSERVABLE`) with a negative-control design (samples every other live adapter too). Ruled Intel device clock **permanently uncertifiable** (`none_available` — no MHz-carrying counter set, no WMI class, no `nvidia-smi` equivalent, engine-duration is same-source-tainted); told Switch to attack the 4.39× residual with counts/shapes, not clocks. Caught 3 of my own instrument bugs before publication (device-index swap, ancestry-cost O(n), PDH's cached-instance-list blind spot for a just-started process) — all three would have made the reading falsely *clean*, per R9 amendment 5 (ask which way a check moves when its subject is wrong).
+- **2026-08-01 (evening) — R11 in a *selection*:** `alloc_device_authoritative_spans = 0` in an artifact was a real zero (Morpheus ruled correctly — type discipline, companion counters, and ceiling arithmetic all agreed), but `probe_indexspace.py`'s `KEYS` list omitted the companion keys (`alloc_staged_spans`, `alloc_device_authoritative_ceiling`) needed to tell a measured zero from a pinned one — the defect was the probe's selection, not the counter. New rule: a counter interpretable only against a companion key isn't admissible without that companion on the face of the same output. Fixed 3 probes (2 more instances found in `probe_sec65.py`, including a key that has never existed in source and printed `'<absent>'` on every run). Re-ran: verdict unchanged (confirms this was a reporting fix, not a measurement change).
 
-**Merged local `main`, not `origin/main`.** `origin/main` is 21 commits behind and carries neither
-Switch's barrier fix nor Tank's WARN; the branch I was told about is the local one (`1cd0b55`).
-Worth knowing before the next merge: `rust/tools/probe_broken_commitment.py` — which `bench/` now
-imports — exists only on local `main`.
-
-### The crash was R12 and the fix was to borrow, not to write
-
-`subprocess.run(..., text=True)` decoded the worker as UTF-8. ORT's sink writes UTF-16LE on Windows,
-our narrow lines share the handle, and Tank's WARN goes through ORT's sink, so the reader thread
-raised at byte `0xa7`. Then the error path raised on top of it: `proc.stderr.strip()` on `None`.
-**A harness that dies on its own error path cannot report the error it found.**
-
-Two instruments each correct about a different world, colliding as a crash rather than as a wrong
-number — which is the good version of this failure. I took Tank's `decode_both` rather than writing
-a third decoder; his docstring already records what each naive version got wrong, and a second
-dialect for one channel is what Link refused to create for the verdict vocabulary. If his module is
-absent the tail is `ERROR(instrument=stream_decoder)` — not a private fallback decode, because an
-unreadable tail is an instrument error and a mangled string is evidence.
-
-Capture is bytes now. `text=True` puts the decode in `subprocess`'s reader thread, which is the one
-place a failure cannot be classified: it arrives as a traceback from inside the apparatus.
-Instrument errors go to `instrument_errors`, never `refusals` (R13) — a refusal is a condition I
-found, an instrument error is my not having looked.
-
-### The A/B, and why interleaved
-
-The machine was never quiet: 4.7–11.4 foreign cores all afternoon, and the survey named the sources
-— the other agents' `copilot.exe`, `Code.exe`, Defender. Justin's project had indeed stopped; we
-replaced it ourselves. **The gate refused end-to-end on both devices and I did not override it. Third
-session running.**
-
-So I measured what survives a loud machine. Switch's prediction — host moves sharply, device barely
-— cannot be tested by "run old DLL, run new DLL, subtract", because host time is exactly what load
-moves and the load is not constant across two runs minutes apart. Alternated the DLLs **A B A B** in
-one sitting instead, each arm carrying its own survey. `bench/results/probe_barrier_ab.py`.
-
-- **Host `record`: 16.412/20.344 ms → 3.780/3.687 ms median; leaf-only 810.0 → 139.0 ms over 43
-  recordings (5.8×).** The load ordering scrambled — the second post run ran at *more* foreign load
-  (8.12 cores) than the first pre run (5.06) and was still 4.3× cheaper. Load cannot make that shape.
-- **Device: 13.3463 pre vs 13.3432 post on the matched pair (both n=43, both 100% coverage, back to
-  back) — 0.02%.** No shader changed between the two DLLs, so a device movement would have had to be
-  the barrier. There isn't one. **Both halves of his prediction hold.**
-- His ~94 ns/struct falls out of my numbers independently: 86–106 ns over the same 147,618 structs.
-
-### The ruling, and it cost me the headline
-
-Morpheus asked for a call on a minimum-n floor. **Yes, and the floor is on coverage more than on n.**
-The 2% RSD bar constrains the tail's *internal spread*, not its agreement with the device's true
-rate, so five samples from a flat stretch of a wandering series clear it as easily as a settled
-device. My own two bad tails: n=5/coverage 12% reading 37.562 ms against its run's warm mean of
-26.412 (+42%), and n=7/coverage 15% reading 20.055 against 15.03 (+33%). Every good tail sat at
-87–100% coverage and agreed with its warm mean inside 0.6%. A warmup ramp is a short *prefix*; a
-device that never settled makes a short flat *suffix*. Floors: `n >= 8` **and** `coverage >= 50%`;
-`MARGINAL_TAIL` otherwise, median parked in `withheld_median_ms`.
-
-**Its first act was to refuse the reading that said the barrier fix improved GPU time by 33%.** That
-was my exciting number, it was produced by a 5-sample tail, and it was false — under the floor the
-two arms agree to 0.02%. Switch's `contended` row (n=8, 17% coverage, 2.1% above solo) is refused
-by the same rule.
-
-### Numbers of record, current `main`
-
-- **NVIDIA RTX 4060: 13.3432 ms/inference GPU busy** (STEADY, n=43, coverage 100%, RSD 1.72%),
-  `MATCH`, 355/363 nodes claimed, 1 island, 16,330 dispatch spans. Comparable to the same figure on
-  the same box minutes apart, which is what §14.2 is. **Not** comparable to my 40.201 ms of
-  2026-07-31 — the GEMV rewrite, the partitioner fusion and residency all landed in between, and
-  dividing them credits four people's work to whichever one is under discussion. 40.201 ms is
-  **retired as a baseline, not beaten by one.**
-- **Intel Iris Xe: withheld, `NO_STEADY_TAIL`.** The series wanders 53.4–91.3 ms with no flat region.
-  Same refusal and the same structural reason as last time: an iGPU shares its power budget with the
-  loaded CPU cores, so the device clock is not contention-immune there.
-- **End-to-end wall clock and the Vulkan/CPU ratio: withheld on both devices, gate `CONTENDED`.**
-- The devices are not compared. `bench/compare.py`'s cross-device refusal stands.
-
-199 tests in `bench/` pass (was 195). Three decision records filed. Not pushed.
-
-**Left standing:** the pre-fix worktree at `../ep-vulkan-niobe-ab` (detached at `42deaba`) is the A/B
-arm — remove it with `git worktree remove` when the comparison stops being interesting.
-
-## 2026-08-01 (mid-day, reconstructed) — the device-state companion, logged late
-
-This round is **not in this file** as it happened; the entry below is reconstructed from
-`docs/PERF.md` §15 and `bench/device_state.py` so the chain is not broken. A Scribe run around this
-time read 47 inbox records and deleted 50, and my own log entry went missing in the same window.
-
-`DESIGN.md` §10.0 obligation 8: a device-clock figure is quotable only if it carries a
-**device-state companion** — a tenancy verdict **and** a clock record — over the statistic's own
-window. Built `bench/device_state.py` (five terminal verdicts, only `QUOTABLE` releases a number)
-on top of Switch's `bench/results/probe_gpustate.py` sampler, imported rather than re-implemented.
-
-Two things worth keeping:
-
-- **I published dev0 #2 against myself.** `MARGINAL_TAIL`, median 12.187 ms withheld, on the lowest
-  RSD I have ever recorded (0.086%) — and it agreed with the quotable 12.1847 ms to four
-  significant figures. *A refusal is not a claim the number was wrong.* Coverage was 26%; the gate
-  is about coverage, not about agreement, and letting agreement excuse coverage is how a gate stops
-  being one.
-- **I reproduced Switch's bug at my own call site.** `FOREIGN_GPU_WORK` in 93% of samples, against
-  a PID holding 0.0 MiB, which was **my own worker** — `_run_worker` blocked, so the sampler
-  learned the PID only after the child had exited. `ERROR(instrument)`, never a detection, exactly
-  as his `_is_ours` docstring warned. Fixed with `Popen` + an `on_start` callback and a regression
-  test that asserts the PID arrives while the process is still alive.
-
-Also applied Switch's standard to my own 40.201 ms: it survives as a **regime**, not as a pairable
-measurement, and I withdrew every "at most" argument I had used to put a floor under a difference —
-**two upper bounds do not bound a difference from below.**
-
----
-
-## 2026-08-01 (later) — Intel has no clock producer, and half a companion is not one
-
-The task: obligation 8's only producer is `nvidia-smi`, so **every Intel figure is permanently
-`UNCERTIFIED`** — and Intel is where the open question lives, because the 4.39× residual of the
-13.52× kernel gap that memory bandwidth does not explain is a claim about Intel. The coordinator
-handed me a lead, explicitly as a lead and not a solution: Windows' vendor-neutral
-`\GPU Engine(*)\Running Time` / `Utilization Percentage`.
-
-### What I built
-
-- **`bench/win_gpu_counters.py`** — an in-process PDH sampler over the WDDM `\GPU Engine` counter
-  set: LUID join from the Vulkan device name through `HKLM\SOFTWARE\Microsoft\DirectX`, per-PID
-  cumulative-tick differencing, ancestry via Switch's `_is_ours`. **Tenancy only. It emits
-  `clock: UNOBSERVABLE` in every record it will ever produce**, and its docstring says so before it
-  says anything else.
-- **`bench/results/probe_wingpu.py`** — the capability experiment. Samples the target adapter *and
-  every other live adapter* as a negative control while a real Phi-3.5 pass runs.
-- **`bench/test_win_gpu_counters.py`** — 22 tests. 38 with `test_device_state.py`; 237 in `bench/`.
-- **`bench/device_state.py`** — the record is now **two independent axes**, tenancy and clock, each
-  with its own producer, verdict and silence set. New states `TENANCY_ONLY`, `NO_PRODUCER`,
-  `UNCERTIFIED_PARTIAL`; `compose()`, `empty_axis()`, `from_nvidia_record()`.
-- **`docs/PERF.md` §16**, and the §15.2/§15.3 tables updated.
-
-### The capability, measured rather than hoped
-
-Intel arm, 8 inferences, `MATCH`, 71.7 s, 46 enumerations: our worker accrued **1.4292 s on
-`engtype_3d` on the Intel LUID and 0 s on each of the three other live LUIDs**. `Code.exe` held
-0.1296 s (0.18%, under the 1% bar) → `SOLE_TENANT`, clock `UNOBSERVABLE`.
-
-The negative control is the load-bearing half. Our process holds counter *instances* on both
-adapters, so "our PID is in the set" proves nothing; that engine time accrues **only** on the
-adapter we ran on is what checks a registry-string join that would otherwise be silently wrong.
-
-Second-order facts that came out of it: there is **no `engtype_Compute` node on either adapter** —
-compute is scheduled on `3d`; **PID 4 (`System`) accrues Copy-engine paging time** on behalf of
-whoever faulted (2.03 s on the NVIDIA arm), so counting it foreign would make the detector a
-constant and it gets its own class; and on this hybrid laptop the panel hangs off the iGPU, so the
-compositor's hold is `FOREIGN_GPU_WORK(display)` — **permanent, named as such rather than looking
-like bad luck.**
-
-### The verdict, and why it is not a pass
-
-`TENANCY_ONLY` → **`UNCERTIFIED(partial_companion)`**, its own state at both levels, because
-*bypassed / all-rejected / unobservable* sharing one `0` is Tank's lesson and this is the same
-shape. **The failure the clock record exists to catch is a sole-tenant failure**: `base_b` was
-verified sole tenant, 21.4× wrong, at the project's second-best RSD, because the board never left
-210 MHz. A tenancy-only companion says `SOLE_TENANT` about that run and is *correct*.
-
-And engine `Running Time` cannot be pressed into the clock role: it is a **duration**, so at a
-lower clock the same kernel occupies the engine *longer* — it moves the same way as the figure it
-would certify. A second copy of the quantity under certification, not a second quantity from
-outside the series. That is the same-source falsifier that put 246.735 ms into the record.
-
-The asymmetry that makes it safe to have at all: **it may subtract confidence and may never add
-it.** `FOREIGN_GPU_WORK` without a clock is still a detection → `WITHHELD`. `SOLE_TENANT` without a
-clock is not a pass. Implemented in `compose`, not merely stated.
-
-### The reads-clean shape — three bugs, all of which made the record *cleaner*
-
-1. `devices.by_index(1)` gave me **NVIDIA**: `vulkaninfo` enumerates 0=Intel, the EP's best-first
-   order is 0=NVIDIA. `bench/devices.py` documents this trap and I walked into it. The sampler
-   watched an untouched adapter → clean `SOLE_TENANT`.
-2. Ancestry for all 204 instances cost **21.2 s/round**: 3 samples in 62 s → clean again. Cached
-   per-PID and classified only PIDs with nonzero in-window ticks (21.2 s → 0.40 s).
-3. **PDH caches its instance list per process** — my own worker was invisible for a whole 60 s run.
-   Proved it with a poller using `PdhEnumObjectsW(..., bRefresh=TRUE)`, which sees the instances
-   appear ~14 s in. Clean a third time.
-
-R9 amendment 5 says ask which way a check moves when its subject is wrong; all three moved **with**
-the reader's confidence, so none was fixable by tightening a threshold. Fixed at source and
-backstopped by two interlocks that make the clean reading *unavailable*: `UNOBSERVABLE(self_not_witnessed)`
-(a record must carry positive evidence it watched the right device) and a **blind-gap limit**
-(>10× interval → `ERROR(instrument)`). The blind-gap interlock fired for real on the first NVIDIA
-corroboration run — four samplers each re-enumerating, 12.6 s gap — and the fix was one shared
-enumeration cache, not a looser limit.
-
-### The ruling
-
-**An Intel device-clock figure cannot be certified on this hardware. Permanent, not pending.**
-Unlike Link's lavapipe `none_structural` there *is* a subject — the Iris Xe has a real clock that
-really varies — so it gets its own classification, **`none_available`**: no `GPU *` counter set
-carries MHz, no `root\wmi` GPU class exists here, `Win32_VideoController` has no core clock,
-`nvidia-smi` exits 6, Vulkan has no clock query, and engine time is inadmissible as a proxy.
-Reopening it needs a **producer**, not a better analysis — a Link/platform question, not on M0's
-path.
-
-**For Switch:** the 4.39× residual must be attacked with **counts and shapes, not clocks** —
-which is §10.0.4's preference anyway, and now there is no alternative on Intel.
-
-**The uncomfortable direction:** Morpheus's amendment 2 notes the iGPU shares its power budget with
-loaded CPU cores, so it is *more* exposed to the clock failure than the discrete board — and it is
-the device where we can never see it. The Iris Xe's `NO_STEADY_TAIL` refusals are **consistent
-with** a wandering clock and are **not evidence of one**.
-
-### Portability
-
-Morpheus required a **record, not a tool**, and WDDM counters are as Windows-locked as `nvidia-smi`
-is NVIDIA-locked. So the record is emitted **in full on every platform**, with `NO_PRODUCER` in the
-axes nothing can fill — a missing key is indistinguishable from a key nobody thought to write; a
-`NO_PRODUCER` axis is a statement. `winreg` is imported under a guard, `available()` is False
-off-Windows, the Windows tests skip rather than fail, and
-`test_the_record_is_emitted_in_full_where_no_producer_exists_at_all` holds the line.
-
-### Corroboration, since one existed for once
-
-On the 4060 both producers ran over the same window and both said `SOLE_TENANT` (`agree: true`,
-peak 2010/3105 MHz). Obligation 7's shape, with the agreement **in the artifact**. It licenses
-nothing about the clock axis and does not move Intel any closer to quotable.
-
-### State
-
-38 targeted tests pass; **237 in `bench/`, 0 failed**. Scratch prototypes deleted; the
-`wingpu-idle-intel-dev1.json` artifact from the mis-joined run deleted rather than kept. Three
-decision records filed. Committed on `squad/niobe`, not pushed.
-
-**Still blocked on Justin:** `nvidia-smi --lock-gpu-clocks` + an elevated shell, which would close
-the duty-cycle mechanism on the NVIDIA side. Not designed around, not blocked on.
+- **2026-08-02 — the union failure was a name collision, and the prescribed fix would not have fixed it:** `bench/test_marginal_tail_withholds.py` broke Link's `ci/test_lane_checks.py` in one pytest process (3 failures, each file green alone). Rejected the given diagnosis (unrestored `sys.path.insert`, fix `monkeypatch.syspath_prepend`) — the errors were `AttributeError`, not `ImportError`: two files were both named `device_state.py` (mine in `bench/`, Link's in `ci/`); `sys.modules` resolves before `sys.path`, so whichever imported first bound the name process-wide, and proved the prescribed fix insufficient with an artifact (`sys.path` restored byte-identically, wrong module still resolved). Fixed by renaming mine to `bench/device_companion.py` (8 sites repointed; Link's file untouched). Built `bench/test_import_isolation.py`: a base-name-collision screen (found this was the repo's only duplicate) + an executed (not grepped) `sys.path`-mutation screen, which caught 3 real pre-existing leaks in unrelated files on its first run. Flagged (not fixed, his call) that `ci/device_state.py` and `bench/device_companion.py` cover overlapping subject matter. 402 passed / 321 skipped / 0 failed across `bench/ ci/ tests/ops/` in one process.
 
 📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
 
-
 📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
-
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+---
 
-## 2026-08-01 (evening) — R11 in a *selection*: the probe misled by omission while every field it printed was true
-
-Small fix, and the size of the fix is not the size of the finding. Two `KEYS` lists and a print
-line; the shape is new and worth carrying.
-
-**The question.** Was `alloc_device_authoritative_spans = 0` in `bench/results/indexspace.json` a
-real zero or R12 (a counter reporting `0` for an event that cannot occur in its frame)? Morpheus
-ruled it **a real zero and he was right**: it is an `int`, not the string `"UNOBSERVABLE"`/
-`"UNWIRED"`, so the type discipline had already answered; `alloc_device_residency_evaluations = 9`
-from the same call site says the question was *asked* nine times and answered no; and
-`ceiling = backed 9 − staged 9 = 0`, so zero is the only correct value. `UNOBSERVABLE` would have
-been a **stronger and false** claim.
-
-**The defect is the probe, not the counter.** `probe_indexspace.py`'s `KEYS` took
-`alloc_device_backed_spans` and `alloc_device_authoritative_spans` and did **not** take
-`alloc_staged_spans` or `alloc_device_authoritative_ceiling` — both emitted by `counters.rs`
-(L934, L945) and simply not selected. So the artifact **genuinely did not contain** what a reader
-needs to tell a measured zero from a pinned one. The coordinator's failure to interpret it was not
-ignorance, and anyone who *had* interpreted it confidently would have been guessing.
-
-**The shape, which is the part to keep.** R11 usually appears in a *name* that claims more than
-the value supports. Here it appeared in a **selection**: a probe can mislead through what it omits
-while every field it prints is individually true. Rule adopted in the file:
-
-> a counter whose value is only interpretable against a companion key is not admissible without
-> that companion key on the face of the same output.
-
-### What I changed
-
-- `probe_indexspace.py` `KEYS` gains `alloc_staged_spans`, `alloc_device_authoritative_ceiling`
-  and — from the audit below — `alloc_allocations`. The printed line now shows
-  `ceiling=0 (= backed 9 - staged 9)` and `authoritative_spans=0 over 9 residency evaluation(s)`,
-  so the arithmetic is on the face of the output rather than reconstructable by someone who
-  already knows to look.
-- A `span_accounting()` note that **names which kind of zero it is**:
-  `MEASURED_ZERO_AT_A_ZERO_CEILING` / `MEASURED_ZERO_BELOW_A_NONZERO_CEILING` / `UNWIRED_ZERO` /
-  `NOT_A_NUMBER`. The middle one is the interesting state and it must never hide inside the same
-  `0` as the first — same discipline as Tank's five states sharing one zero.
-- **It reports; it does not judge.** Nothing in it feeds `checks`, so it cannot withhold
-  `ONE_INDEX_SPACE`. An accounting note that could move the verdict would be a different
-  instrument wearing this one's name.
-
-### Re-run: the verdict did not move, and it should not have
-
-`ONE_INDEX_SPACE`, both arms intact, all seven checks ok — allocator index `'1' → '0'` as the
-selector moved `0 → 1`, matching the offered index on each arm, both `SHARED`, binds non-zero on
-both. Identical values to the previous artifact (binds 6, allocations 9, staged 9, backed 9,
-ceiling 0, authoritative 0, evaluations 9). **This changed what is reported, not what is
-measured** — which is exactly what should be true of a reporting fix, and the confirmation is the
-point of re-running rather than reasoning.
-
-Worth noting what the newly-visible arithmetic actually says: **staged 9 of 9 spans, so every
-device-backed span is a mirror and the ceiling is 0.** The §6.5 frame is shared and the residency
-screen runs, but nothing is device-authoritative yet — visible now, invisible before.
-
-### Audit: one instance of a shape is usually not one instance
-
-| consumer | verdict |
-|---|---|
-| `probe_indexspace.py` | **two** instances — the reported `authoritative_spans` (fixed), and `alloc_device_backed_spans = 9` as a **bare numerator** with no `alloc_allocations` denominator: 9 of 9 and 9 of 900 are different findings and the extract could not tell them apart (fixed) |
-| `probe_sec65.py` | **two more.** It printed `alloc_device_spans` — **a key that exists nowhere in the source**, so it printed `'<absent>'` on every run since it was written, and an always-absent key reads like a measurement that came back empty. Real name: `alloc_device_backed_spans`. And it printed `authoritative_spans` with no ceiling and no residency evaluations — the same uninterpretable zero. Both fixed |
-| `probe_residency_screen.py` | clean — its `KEYS` already carries ceiling, evaluations, binds, backed and staged |
-| `bench/phi35.py` `staging_label()` | clean — it reads staged **and** backed as a pair, and treats absent as its own `"unknown"` state that is explicitly *not* the same as device-backed |
-
-`phi35.py` would classify this configuration as `mixed` ("both staged and device-backed spans
-observed; attribution is ambiguous"), which is the correct reading of 9/9 and agrees with the
-ceiling of 0.
-
-242 tests pass in `bench/`. Committed on `squad/niobe`, not pushed. Scoped small on purpose: the
-`MARGINAL_TAIL` census cross-check remains the more important of the two and did not collide with
-this.
+📌 Team update (2026-08-02T02:03:46-07:00): ust/src/trace.rs had no roster owner (flagged by Link). The coordinator assigned it to Niobe — timestamp calibration and trace-event arithmetic are measurement, and she already owns the instruments that consume it. Recorded in 	eam.md's new File Ownership Notes section. Tank may have the stronger claim on counters/FFI grounds and may object; reassignment is a one-line change if so. — decided by Scribe
 
 ---
 
-## 2026-08-02 — the union failure was a name collision, and the prescribed fix would not have fixed it
+## 2026-08-02 — PER_DISPATCH is not a tenancy signature; the tail's second hole is bigger than the first
 
-**Task.** `bench/test_marginal_tail_withholds.py` broke Link's `ci/test_lane_checks.py` in one
-pytest process; 3 failures, each file green alone. Holding the push. Diagnosis given: two
-unrestored `sys.path.insert` calls; fix given: `monkeypatch.syspath_prepend`.
+**Merged** `origin/main` (`57d7018`). No measurement taken and no binary exercised — everything
+recomputed from committed artifacts, so no figure here has a binary frame and I said so rather than
+rebuild to imply one. Six agents running; my own gate would refuse a fresh run.
 
-**I did not accept the diagnosis, and it was wrong.** The failures were `AttributeError: module
-'device_state' has no attribute 'certifies_comparison'` / `'lavapipe_note'` — not
-`ImportError`. The module was found; it was the wrong module. `import` consults `sys.modules`
-before `sys.path`. Two files were named `device_state.py`: mine in `bench/`, Link's in
-`ci/`. Whichever imported first bound the name for the process. I proved the prescribed fix
-insufficient with an artifact (R10): with `sys.path` restored byte-identically (`sys.path clean:
-True`), Link's import still resolved to my file.
+**Q1 — does `PER_DISPATCH` track witnessed foreign tenancy? No.** The two traces I was handed both
+hold (`contended3` FOREIGN/PER_DISPATCH, `ab_p1_long` SOLE/SUBMISSION_LEVEL). Nine device-0
+traces carry both a localisation and a committed `gpustate_*.json`. Sorted by
+`explained_by_level` the three witnessed-foreign traces sit at the extreme bottom (-0.2265) **and**
+near the extreme top (+0.8408, +0.8638). `contended` — `foreign_sample_fraction 1.0`, the most
+disturbed trace in the census — is more submission-level than four of six sole-tenant traces. The
+two false positives are `base_b` and `baseline_certified`, i.e. the two idle-clock 21.4x
+specimens: a guard on this signal fires on the runs whose defect was clock, not tenancy.
 
-Also too narrow by one file: `bench/test_device_state.py` + lane checks reproduces the same three
-failures with the reported file absent. Six `bench/` modules bind the name; all poison equally.
+**Swept every cut from -0.50 to +1.00 rather than report failure at one.** Best achievable J =
++0.333 (7/9). The classes interleave, so it is a signal that does not carry the distinction, not a
+boundary in the wrong place. Published the whole table, chose nothing — threshold-episode discipline
+a second time. Recorded the qualification against my own conclusion: n=9 is small.
 
-**Fix.** `bench/device_state.py` → `bench/device_companion.py`; eight sites repointed as
-`import device_companion as device_state` so only the `sys.modules` key moves. Nothing of
-Link's touched. It was the repository's only duplicate base name.
+**Q2 — the level moves, the verdict does not follow.** Against a sole-tenant boosted reference of
+**11.5248 ms**: `contended` 11.7697 (1.021x), `ab_p0_r1` 20.6159 (1.789x), `contended3`
+truncated **126.6465 (10.99x)**. So not level-blind to contention the way it is to bias. But the
+verdict is dispersion, and a sustained steady foreign load is steady: contended3 truncated to
+20/28/34 publishes STEADY at 126.6 ms with RSD 0.79–0.91%; full length refuses. **The refusal is a
+property of run length, not sensitivity.** Ruling: *`gpu_steady_tail` detects foreign work only
+through its non-stationarity, never through its magnitude; a steady foreign load is
+indistinguishable from a slower GPU.* Strictly larger than the bias hole — bias needed a board at
+idle clock (rare, recoverable from magnitude at 21x regime separation); a sustained tenant is
+ordinary and wrong at any magnitude.
 
-**Screen (Tank's rule — a checklist decays).** `bench/test_import_isolation.py`: (1) no two
-flat-imported modules across `bench/`, `bench/results/`, `ci/`, `tests/ops/`,
-`rust/tools/` share a base name — text-decidable, and the half that caused the failure; (2) no
-`bench/` library module leaves `sys.path` mutated — executed, not grepped. Both with positive
-controls. **Screen 2 found three real violations on its first run**, none in the reported file:
-`cases.py`, `island_attribution.py`, `transfer_calibration.py` all leaked `tests/ops`
-process-wide; `island_attribution.py` inserted it and never used it. Blind spot declared in the
-docstring: a module inserting its own directory is invisible to screen 2 by construction.
+**Q3 — both directions, and they are not in tension.** All four contended3 readings, including the
+three confident STEADY publications, are `WITHHELD` by `device_companion.certify` on
+`foreign_sample_fraction 1.0` — evidence from outside the series. The companion is load-bearing
+for two holes now, not one. Also: `contended` was a confident STEADY at n=8/2.1% high in the
+retraction and now grades MARGINAL_TAIL — my floor working — **and** the clearest proof the floor is
+necessary but not sufficient, since contended3 truncated satisfies every floor and publishes 10.99x
+wrong.
 
-**One ERROR(instrument), logged as such.** My first cut of screen 2 purged `sys.modules` between
-imports and hard-faulted the interpreter — re-initialising dropped C extension modules. That is the
-screen breaking, not a defect found. The purge was never needed; the screen measures `sys.path`.
+**Two ERROR(instrument) of my own, both caught before publication, both recorded.** (1) A 1000x
+units error: `gpu_steady_tail` takes `busy_us` and converts internally, I pre-divided. **Every
+verdict, RSD and ratio is scale-invariant and did not move** — which is why it survived a first
+reading. A units error that changes no verdict is the kind that gets published; caught by checking
+soloA against its independently published 11.525 ms. (2) A reference built partly from *withheld*
+MARGINAL_TAIL medians, giving 15.5159 ms — a number that exists nowhere, and a withheld median used
+as a denominator is that median published, against my own §16 rule.
 
-**On the CI question — I agree, and both remedies, not one.** Per-directory runs make this class
-invisible by construction. But a single invocation only catches pairs pytest happens to order
-adversarially; `ci/` collecting first would have been green with the defect present. The name
-screen is deterministic and fails with both paths named. Keep both.
+**Imported, not rebuilt:** Switch's `localise`/`per_inference_kernel_us`; my
+`gpu_steady_tail`/`certify`. Reproduced 11.5252 / 11.7697 / 126.647 / 126.676 exactly.
 
-**Flagged, not fixed:** `ci/device_state.py` and `bench/device_companion.py` cover overlapping
-subject matter. If two descriptions of one subject, that is what made me import Tank's
-`decode_both` and Switch's `probe_gpustate.py` rather than rewrite them. Link's call.
+**Artifacts:** `bench/results/probe_tenancy_signature.py`, `bench/results/tenancy_signature.json`,
+`bench/test_tenancy_signature.py` (6 tests), `docs/PERF.md` §18, decision record
+`niobe-per-dispatch-is-not-a-tenancy-signature.md`.
 
-**Verification.** lane checks alone 55; the three-file union 62; screen 4;
-`pytest bench/ ci/ tests/ops/` in one process **402 passed, 321 skipped, 0 failed**.
+**Accepted `rust/src/trace.rs`.** Timestamp calibration and trace-event arithmetic; every
+certification instrument I own consumes it, and this session is the argument — `gpu_ns` and the
+us/ms conversions around it are exactly where a scale error hides without changing a verdict.
 
-**Docs/records.** `docs/PERF.md` §17.0; decision record
-`niobe-module-name-collision-not-syspath.md`. Worktree is shared with `niobe-1` — staged
-explicit paths only, no `git add -A`.
+**Verification:** `pytest bench/ ci/ tests/ops/` one invocation — 485 passed, 336 skipped, 0
+failed, ERROR(instrument) 0.

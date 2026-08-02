@@ -513,6 +513,203 @@ def outputs_bit_equal(a: list[np.ndarray], b: list[np.ndarray]) -> tuple[bool, l
     return len(differing) == 0, differing
 
 
+# =========================================================================================
+# All-output CPU-oracle comparison (criterion 10's missing arm)
+# =========================================================================================
+#
+# WHY THIS EXISTS
+# ===============
+# Criterion 10 closed on 2026-08-01 and was reopened three hours later.  ``_compare_run_to
+# _cpu`` in test_criterion10.py binds ``vk_out[0]`` / ``cpu_out[0]`` and derives every
+# oracle fact from the logits.  **No KV output was compared against CPU anywhere in the
+# tree.**  The tree does have an all-65 gate, but it is cross-run identity — Vulkan run 1
+# == run 2 == run 3 — which proves determinism, not correctness:
+#
+#     gate                  outputs   property
+#     cross-run identity    all 65    determinism only
+#     CPU oracle             1 of 65  correctness
+#
+# A deterministically wrong KV write passes both.  That is not a hypothetical: I planted
+# one before writing this and every gate stayed green — see
+# ``bench/results/planted_kv_probe.json``.  Sixty-four of sixty-five outputs were zero and
+# the series verdict was ``MATCH``.
+#
+# The row had been closed on *divergence*, which is the symptom of a dirty arena.  On a
+# clean arena the same binding-arity defect is stable and silent.  Morpheus's sentence: the
+# closure certified the symptom was gone; it never established the defect was fixed.
+#
+# NON-TRIVIALITY IS NOT OPTIONAL HERE
+# ===================================
+# Sixty-four pairs of zeros pass an all-output allclose *perfectly*.  That is ``0.0 == 0.0``
+# in another costume, and it is the precise failure this arm exists to catch — so a
+# comparison over degenerate tensors reports ``NOT_PERFORMED``, never ``AGREE``.  Absence of
+# evidence gets its own token rather than borrowing the passing one.
+
+#: KV-cache outputs of the int4 Phi-3.5 artifact are fp16 and are produced by the
+#: MatMulNBits qkv path.  The tolerance is therefore **not chosen for this gate** — it is the
+#: fp16 MatMulNBits tolerance already derived from measured data in the header of this file
+#: (max_abs=3.6e-3, rtol_max=4.6e-3 observed; 2e-2/1e-3 pinned above it).  Reusing the
+#: tolerance justified for the arithmetic that produces the tensor is the justification;
+#: picking a number that makes this gate green would not be.
+KV_CACHE_FP16 = dict(MATMULNBITS_FP16)
+
+#: fp32 outputs on the same path get the fp32 MatMulNBits tolerance, same reasoning.
+KV_CACHE_FP32 = dict(MATMULNBITS_FP32)
+
+
+def tolerance_for_output(arr: np.ndarray) -> tuple[dict, str]:
+    """Return ``(tolerance, justification)`` for one output, keyed on its dtype.
+
+    The justification travels with the number.  A tolerance whose reason is not recorded
+    beside it is a tolerance nobody can re-derive, and this project has already been bitten
+    by a default defended by a reason its own documentation did not give.
+    """
+    if arr.dtype == np.float16:
+        return KV_CACHE_FP16, (
+            "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: "
+            "max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is "
+            "the arithmetic that tolerance was justified for"
+        )
+    if arr.dtype in (np.float32, np.float64):
+        return KV_CACHE_FP32, (
+            "fp32 MatMulNBits tolerance (_models.py header); same path, fp32 activations"
+        )
+    return FP32_EXACT, (
+        f"{arr.dtype} is integral or non-floating; a tolerance would be meaningless and any "
+        "difference is a defect"
+    )
+
+
+def _is_degenerate(arr: np.ndarray) -> bool:
+    """A tensor carrying no information: empty, all-NaN, or every element identical.
+
+    All-zero is the case that matters — an output outside the descriptor set is never
+    written and reads back zero-initialised on both Intel and NVIDIA drivers — but the guard
+    is written on *constancy* rather than on zero, because a buffer left holding one repeated
+    residue value is the same absence of evidence and a zero-only test would miss it.
+    """
+    if arr.size == 0:
+        return True
+    flat = arr.reshape(-1)
+    if np.issubdtype(arr.dtype, np.floating):
+        finite = flat[np.isfinite(flat)]
+        if finite.size == 0:
+            return True
+        return bool(finite.min() == finite.max())
+    return bool(flat.min() == flat.max())
+
+
+def compare_all_outputs_to_cpu(
+    vk_out: list[np.ndarray],
+    cpu_out: list[np.ndarray],
+) -> tuple[str, dict]:
+    """Compare **every** output against the CPU oracle, with a non-triviality guard.
+
+    Returns ``(outcome, facts)`` where outcome is ``COMPARISON_AGREE`` /
+    ``COMPARISON_DISAGREE`` / ``COMPARISON_NOT_PERFORMED`` — a comparison outcome, never a
+    verdict.  The verdict is derived downstream from this plus attribution (§10.0 amendment
+    3: a comparison of tensors cannot, on its own, say ``MATCH``).
+
+    The three outcomes are kept distinct on purpose:
+
+    ``AGREE``
+        Every output was compared, every one was within its justified tolerance, and every
+        one carried information on **both** sides.
+    ``DISAGREE``
+        Some output exceeded its tolerance, or the two runs disagree in arity/shape/dtype.
+    ``NOT_PERFORMED``
+        Some output pair was degenerate, so the comparison over it is vacuous.  This is
+        **absence of evidence, not evidence of agreement**, and collapsing it into either of
+        the other two is the mistake that produced the reopened row.
+
+    ``facts`` carries ``oracle_outputs_compared`` — and note that name.  The artifact this
+    replaces carried ``outputs_compared: 65`` *listed among the oracle facts* while counting
+    **cross-run** comparisons; it was read as sixty-five oracle comparisons and a
+    ``max_abs_diff`` over one tensor was quoted beside it.  The two counts now have two names
+    and cannot be read off one key.
+    """
+    facts: dict = {
+        "oracle_outputs_total": len(vk_out),
+        "oracle_outputs_compared": 0,
+        "oracle_outputs_within_tolerance": 0,
+        "oracle_outputs_degenerate": 0,
+        "oracle_degenerate_indices": [],
+        "oracle_failing_indices": [],
+        "oracle_max_abs_diff_over_all_outputs": 0.0,
+        "oracle_worst_output_index": None,
+        "per_output": [],
+    }
+
+    if len(vk_out) != len(cpu_out):
+        facts["oracle_arity_mismatch"] = {"vk": len(vk_out), "cpu": len(cpu_out)}
+        return COMPARISON_DISAGREE, facts
+
+    worst = -1.0
+    for i, (v, c) in enumerate(zip(vk_out, cpu_out)):
+        entry: dict = {"index": i, "shape": list(v.shape), "dtype": str(v.dtype)}
+
+        if v.shape != c.shape or v.dtype != c.dtype:
+            entry["status"] = "SHAPE_OR_DTYPE_MISMATCH"
+            entry["cpu_shape"] = list(c.shape)
+            entry["cpu_dtype"] = str(c.dtype)
+            facts["oracle_failing_indices"].append(i)
+            facts["per_output"].append(entry)
+            continue
+
+        vk_degenerate = _is_degenerate(v)
+        cpu_degenerate = _is_degenerate(c)
+        entry["vk_degenerate"] = vk_degenerate
+        entry["cpu_degenerate"] = cpu_degenerate
+
+        if vk_degenerate or cpu_degenerate:
+            # Non-triviality guard, on BOTH sides.  Two constant tensors compare equal to
+            # any tolerance, so this pair proves nothing whichever way it falls.
+            entry["status"] = "DEGENERATE"
+            facts["oracle_outputs_degenerate"] += 1
+            facts["oracle_degenerate_indices"].append(i)
+            facts["per_output"].append(entry)
+            continue
+
+        tol, why = tolerance_for_output(v)
+        a = v.astype(np.float64)
+        b = c.astype(np.float64)
+        abs_diff = np.abs(a - b)
+        max_abs = float(abs_diff.max()) if abs_diff.size else 0.0
+        denom = tol["atol"] + np.abs(b)
+        max_rel = float(np.max(abs_diff / np.where(denom == 0, 1.0, denom))) if a.size else 0.0
+        within = bool(np.allclose(a, b, rtol=tol["rtol"], atol=tol["atol"], equal_nan=True))
+
+        entry.update(
+            {
+                "status": "WITHIN_TOLERANCE" if within else "OUTSIDE_TOLERANCE",
+                "max_abs_diff": max_abs,
+                "max_rel_diff": max_rel,
+                "rtol": tol["rtol"],
+                "atol": tol["atol"],
+                "tolerance_justification": why,
+            }
+        )
+        facts["oracle_outputs_compared"] += 1
+        if within:
+            facts["oracle_outputs_within_tolerance"] += 1
+        else:
+            facts["oracle_failing_indices"].append(i)
+        if max_abs > worst:
+            worst = max_abs
+            facts["oracle_worst_output_index"] = i
+        facts["per_output"].append(entry)
+
+    facts["oracle_max_abs_diff_over_all_outputs"] = max(worst, 0.0)
+
+    if facts["oracle_failing_indices"]:
+        return COMPARISON_DISAGREE, facts
+    if facts["oracle_outputs_degenerate"]:
+        return COMPARISON_NOT_PERFORMED, facts
+    if facts["oracle_outputs_compared"] != facts["oracle_outputs_total"]:
+        return COMPARISON_NOT_PERFORMED, facts
+    return COMPARISON_AGREE, facts
+
+
 def run_session_n_times(
     sess: "ort.InferenceSession",
     feeds: dict[str, np.ndarray],

@@ -267,6 +267,87 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.census_completeness",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Census extent and independent whole (criterion 12 evidence, no GPU)",
+        watches=(
+            "The three things DESIGN.md §10 row 12 asks for that the census line cannot "
+            "supply about itself: how much of each mechanism's surface the observation "
+            "covers; what the census's twelve is twelve OF, enumerated from production "
+            "Rust the census does not write; and whether any observation's CONTENT ever "
+            "moved, which is the only thing that can distinguish a name from a wrong name."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Plant a counter field, a trace Phase variant and an env switch in a scratch "
+            "copy of rust/src; drop a mechanism from a scratch copy of the census "
+            "artifacts; rot the map; record a name as verified against arms that never "
+            "varied. Twelve arms in "
+            "ci/negative_control_census_completeness.py, all fired 2026-08-02."
+        ),
+        arm_healthy=(
+            "50 instrumented surfaces enumerated (14 counter fields, 10 trace phases, 26 "
+            "env switches) against the census's 12 mechanisms: 33 censused, 12 "
+            "instrumented-and-uncensused gaps with named owners, 3 out of frame, 2 not "
+            "mechanisms"
+        ),
+        arm_broken=(
+            "CENSUS-EXTENT: FAIL(condition=unmapped_surface) quoting "
+            "rust/src/counters.rs:449 and the planted field text — the arm that proves "
+            "the denominator is not derived from the numerator"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "It does NOT close row 12. Trinity owns that tally, and supplying the "
+            "artifact and closing the row must not be the same act (Morpheus, on "
+            "criterion 11). A PASS here means every surface is accounted for, not that "
+            "the census covers it — the twelve recorded gaps are precisely the evidence "
+            "that criterion 12 is not met.",
+            "Its whole is the INSTRUMENTED surface of the EP, not the EP. A mechanism "
+            "that touches no counter, no trace phase and no env switch is invisible to "
+            "the denominator as surely as to the census.",
+            "Extent is an UPPER bound and a weak one: the numerator counts identifiers "
+            "the observation happens to mention. A mechanism reading 6/6 has been shown "
+            "to name six strings, nothing more.",
+            "INVARIANT means no recorded arm distinguished the observation, not that no "
+            "arm could. The arms are the census runs that exist; nobody designed one to "
+            "vary each mechanism.",
+            "It never decides a name is WRONG. Phase::Record — wired, invoked, correct, "
+            "input-varying, wrong by 50x in what it was called — would read INVARIANT "
+            "here, which is the flag, not the verdict.",
+        ),
+    ),
+    Check(
+        id="hostfree.census_completeness_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Census extent negative control (plant a mechanism, demand red)",
+        watches=(
+            "The screen above. A completeness check that has only ever been observed "
+            "passing reads as coverage and asserts nothing, which is the exact defect "
+            "that screen exists to find."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own baseline arm: if the unmutated tree is not green, no red from a "
+            "later arm can be attributed to the injection that was supposed to cause it."
+        ),
+        arm_healthy="all twelve arms fired 2026-08-02, each naming the surface it planted",
+        arm_broken=(
+            "a mutation that cannot be performed is reported "
+            "ERROR(instrument=anchor_not_found), never as a pass — the same discipline "
+            "that caught the tick control's anchor drift on 2026-08-01"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "It proves the screen detects the defect shapes SOMEBODY THOUGHT OF. A "
+            "mechanism that arrives in a form none of the three extractors reads — "
+            "neither counter, nor trace phase, nor env switch — is invisible to the "
+            "control exactly as it is to the screen.",
+        ),
+    ),
+    Check(
         id="hostfree.tautological_assertions",
         lane=LANE_HOSTFREE,
         step="Tautological-assertion screen (no GPU, whole tree)",
@@ -658,6 +739,33 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
             "undefined_upper_bits_on_a_thirty_six_bit_counter_are_masked_away and "
             "an_intel_counter_wrap_does_not_produce_a_negative_or_absurd_duration both "
             "went red under the 2026-08-01 mutation."
+        ),
+        substitute_status=DEMONSTRATED,
+    ),
+    BlindSpot(
+        id="census_denominator",
+        defect=(
+            "A wiring census that is complete by construction: twelve mechanisms out of "
+            "twelve, where the twelve in the denominator is the same list that produced "
+            "the numerator. It reads as coverage and can never go red."
+        ),
+        why_ci_is_blind=(
+            "No amount of running the census can see this. The census is the numerator; "
+            "asking it for the denominator is asking a decomposition to certify itself, "
+            "which is R11's hardest kind of wrong and the shape criterion 11 was refused "
+            "on. Nor can a device lane see it: every mechanism the census enumerates does "
+            "run, on both devices, so the lane is green and the question is never asked."
+        ),
+        substitute=(
+            "ci/check_census_completeness.py enumerates the whole from production Rust "
+            "the census does not write — C ABI counter fields, trace.rs Phase variants "
+            "and ONNXRUNTIME_EP_VULKAN_* switches. Numerator and denominator then have "
+            "different authors in different files in a different language, so the count "
+            "can be wrong, which is the only reason it can be evidence. Falsified "
+            "2026-08-02: a counter field, a trace phase and an env switch planted in a "
+            "scratch copy of rust/src are each named by the screen. The measured answer "
+            "is not 12/12: it is 50 surfaces, 33 censused, 12 instrumented and observed "
+            "by nothing."
         ),
         substitute_status=DEMONSTRATED,
     ),

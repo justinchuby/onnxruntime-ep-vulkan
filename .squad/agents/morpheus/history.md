@@ -48,398 +48,22 @@ M0 open: validation positive control (criterion 3) + CI lanes. All architectural
 - **Session 27 — 2026-07-31T07:45:10-07:00 — The verdict that certified a run we did not execute, and the guard whose crash I called a catch** — The EP executed Phi-3.5 on the GPU today for the first time — **354 of 364 nodes in one fused island, 10 on CPU matching Mouse's declines exactly, `argmax 30751` == CPU, read from ORT's own profiler.** Persistent residency landed on bytes: **1997.6 MiB → 0.756 MiB per inference.*
 - **2026-08-01T18:59:38-07:00 — §6.5 closed a conditional, and I had not said which lane armed it** — ### The report came from scoring old predictions, not from new work That is the part worth keeping.
 
-## 2026-08-01T13:19:00-07:00 — `STEADY` is not `QUOTABLE`, and the register did not need to grow
-
-### I was asked whether this is R11 and I had already decided it was
-That is the part to keep. I wrote the brief arguing R11, and R11 is wrong — because R11's *epigram*
-fits and R11's *obligations* do not. Run them against `gpu_steady_tail`: no decomposition, no flat
-table, no inclusive parent, and name-content agreement **passes** — "RSD over the steady tail" is
-exactly an RSD over the steady tail. **All four certify the specimen.** That is the same test I used
-on 2026-07-30 to refuse folding R11 into R10; it was right then and it disqualifies my own reading
-now. **A rule is what its obligations require, not what its best sentence suggests.**
-
-Nor is it R14. It is **R9**: bias in a series' level sits in a dispersion statistic's silence set,
-and R9 already obliges us to record an instrument's silence when we add it. We never did for
-`gpu_steady_tail`. **The register individuates by remedy** — R10 observe invocation, R11 an
-independent whole, R12 frame identity, R13 three tokens, R9 a different instrument — and this remedy
-is already spoken for. A second name for one failure class is two names for one measurement,
-appearing to close.
-
-What *is* new is a mechanism inside R9. R9 describes plural instruments **jointly silent**. This is
-one instrument whose confidence is **anti-correlated with the error**: the further the level is from
-truth, the steadier the device that produced it. **Silence is neutral; this is worse than silence**,
-and the consequence R9 did not state is that **you cannot fix it by tightening the threshold — a
-tighter bound admits more of the failure.** Rule 5. And: precision is not accuracy, and this
-register had never had to say so.
-
-### The cheapest satisfaction, asked three times and it paid three times
-Switch's companion requirement was right and each tightening came from my own drafting question.
-Stated as a *tool*, it binds NVIDIA and exempts everyone else. Stated without "absence is not a
-waiver", **the cheapest pass is to measure on a platform with no telemetry** — and the Intel iGPU,
-which shares its power budget with loaded CPU cores, is the platform most exposed and most rewarded
-by that loophole. And criterion 5 — recording share below 5% — has a live attack I could not have
-seen a day ago: **run on a board stuck at idle clock.** Device time inflates 21x, host recording
-does not, the share collapses, the series is perfectly steady, every gate goes to its most confident
-verdict. **A share-of-a-total criterion is satisfiable by inflating the total.**
-
-M1 needed no restating. **Criteria 1, 2 and 4 were untouched, and that is the finding** — bytes and
-counts, the only criteria that survived a week in which every timing figure was withdrawn twice.
-
-### I withdrew a sentence of mine, and it was load-bearing
-*Contention inflates host work but cannot touch the GPU clock.* I said that when Niobe and I moved
-the performance criteria onto the device clock. It is false twice: foreign GPU work inflates
-device-busy directly, and the board's own governor varies it **14.8x** with nothing foreign running.
-The device clock was a better surface than wall clock and I treated "better" as "immune". **There is
-no third surface to retreat to now, and that is the honest state.**
-
-### The rescue argument, and the asymmetry inside it
-Switch's regime-separation rescue of Niobe's 40.201 ms fails, and it fails on his own evidence: the
-board ranged **210 -> 2490 MHz within a single run**. A boost governor is continuous. "The two
-regimes do not overlap" is *"the two clock states I sampled do not overlap"* promoted to a claim
-about the device. Also: the margin protecting 40.201 is **6.1x, not the 21x quoted**, and it sits at
-the top edge of the band; and the rescue argues about clock while contention inflates continuously
-and that run has no tenancy verdict.
-
-But the figure is **re-qualified, not withdrawn** — every perturbation we have catalogued has a
-non-negative sign on time, so it is a sound **upper bound**, and deleting it would be hardening a
-criterion to punish a bad week exactly as certifying it would be softening one. **Withdraw and
-re-qualify are different outcomes and I have been sloppy about the difference.**
-
-The thing I want to remember: Switch held **his own** before/after to the strict standard (⛔, "and
-probably sound is not the standard") and accepted a rescue for **Niobe's** figure that he did not
-hold his own numbers to. Generous instinct, real asymmetry — and the same one I have, pointed the
-other way, when I audit my own work harder on a bad day. **Asymmetric standards are invisible from
-inside them.**
-
-### Fifth time this week
-I confirmed a hypothesis and stopped — solo and hog agreed to 0.08%, so the instrument held. The
-count is now five, and the pattern is always the same shape: **the confirming result gets no second
-look precisely because it agreed.** R13's second clause is mine and I keep failing it. The
-mechanical form I will actually use, because attitude does not survive being tired: **when a check
-agrees with me, ask which way it moves if I am wrong.** Ten seconds, and it would have caught this
-one, the Guard D one, and the phase table.
-
-### Carry forward
-- A rule is what its obligations require. Run them against the specimen before assigning it.
-- Ask which way a check moves when its subject is wrong. If it moves with me, it is not evidence.
-- Any statistic of *shape* is silent about *level*. Write the silence down beside the instrument.
-- Two bounds on the same side do not bound a difference. Declare the sign, every time.
-- Withdraw != re-qualify. An upper bound is worth keeping and is not a certification.
-- Prefer the invariant that survives the contended machine — and do not hand the reader a count and
-  let them supply the clock.
+- **2026-08-01T13:19:00 — `STEADY` is not `QUOTABLE`; R9 gets its fifth rule rather than a new number:** Ruled that `gpu_steady_tail`'s bias-in-level failure (RSD certifies a confident-but-wrong reading) is R9, not R11/R14 — a rule is what its obligations require, and R9 already obliges recording an instrument's silence, which was never done for this one. New mechanism inside R9 (Rule 5): an instrument whose confidence is *anti-correlated* with its error cannot be fixed by tightening the threshold — a tighter bound admits more of the failure; precision ≠ accuracy. Also ruled the device-clock companion requirement must state "absence is not a waiver" (else the cheapest pass is measuring on a telemetry-free platform — exactly Intel, which is also the most power-budget-exposed) and that a share-of-total criterion (recording share <5%) is satisfiable by inflating the total (board stuck at idle clock inflates device time 21×, share collapses, series looks perfectly steady). Withdrew his own claim "contention inflates host work but cannot touch the GPU clock" — false twice over (foreign GPU work inflates device-busy directly; the governor itself varies 14.8× with nothing foreign running). Ruled Switch's regime-separation rescue of Niobe's 40.201ms is unsound (a boost governor ranged 210→2490MHz within one run — "regimes don't overlap" was really "the two clock states I sampled don't overlap") but the figure is *re-qualified* not withdrawn: every catalogued perturbation has a non-negative sign on time, so it survives as a sound upper bound — withdraw and re-qualify are different outcomes. Named a fifth instance this week of "confirmed a hypothesis and stopped" (solo/hog agreed 0.08%) — mechanical fix adopted: when a check agrees with me, ask which way it moves if I'm wrong.
+- **2026-08-01T18:59:38 — §6.5 closed a conditional nobody had said which lane armed:** Scoring six old standing predictions against artifacts (no new measurement) found one refuted by a *third state*: predicted `SHARED` xor `SPLIT-DEVICE`, counter returned `OFF` — a binary prediction met by a third token is an unavoidable refutation, the whole payoff of the multi-state-token discipline. Ruled the flag's OFF default is not a re-decided default: its documented reason ("seam not yet filled") had expired (the seam was filled) and nobody went back to re-check it — R12's third generalisation: counter→device, verdict→executor, rationale→**date** (a default defended by an expired reason is indistinguishable from one still needed). Confirmed `authoritative=0` in Niobe's indexspace artifact was a real, contingent zero (type discipline + companion counters + ceiling arithmetic all agreed) but the *probe's extract* had dropped the two keys that make the zero readable — R11 appearing in a **selection** rather than a name (now seen in a phase table, a ledger, and a probe).
+- **2026-08-01T20:39:12 — the phantom key is R13, not R11:** `probe_sec65.py` requested a counter key (`alloc_device_spans`) that never existed anywhere in source; the defaulting `.get(k, '<absent>')` printed a plausible-looking absent value on every run without ever raising. Ruled this is **R13** (two opposite diagnoses, one silent token) not R11 (R11 needs two relata — a reported quantity vs. its name; this is a one-sided reader-side request with nothing on the writer's side to compare against) — R13 amendment 1: the "dangling reference" class — any defaulting lookup (`dict.get`, `unwrap_or`, `?? fallback`, `getattr`) where the key set is knowable and absence is mis-read as a value. Ordered a key census (Tank+Niobe) using the existing 5-state vocabulary rather than minting a 6th. Explicitly declined to reopen M0 criterion 12 over this (a bad probe isn't grounds for a new milestone obligation). Also caught a defect in Niobe's own `span_accounting()`: `NOT_A_NUMBER` fired on the same defaulted-value confusion it was meant to classify.
+- **2026-08-01T22:02:39 — the anchor exemption is the deciding term, §5.4.1:** Verified in `partition.rs:475` that the anchor exemption is an *early return* placed above the byte-estimator's economics arithmetic — so on any anchor-bearing island (MatMul/Gemm/Conv/Attention/MatMulNBits/GQA/MHA/QMoE/etc.) the economics model isn't outvoted, it's never evaluated. This is design working as intended (every real transformer island has an anchor), not a scandal — but ruled three genuine problems: (1) the exemption's warrant is asserted not measured, live falsifier is a small-MatMul/edge-shape graph; (2) R9's silence-set rule now generalises to a *policy term*, not just an instrument (the exemption's silence covers "the byte estimator is broken" — it was, by 104,116×); (3) `Verdict::Claim` is R11 at the value level (one field wearing three findings). Named the "cheapest satisfaction" drafting-rule's second live example: an unconditional early return *inside* a gate satisfies "always evaluated, no branch in front of it" (RAI-011) while being exactly the thing RAI-011 exists to catch — the two are observably indistinguishable.
+- **2026-08-01T22:25:29 — the estimator's first half, and declining a false concurrence:** Mouse's fix (internal island edges no longer charged to the boundary) cut the byte-estimator error 89.2GB→13.9GB (6.4×); declined to read this as the economics arm *independently concurring* with the anchor exemption, since both were fed the same fabricated input — agreement between two things sharing one bad input isn't a second opinion. Found something stronger instead: `transfer_ns` is monotone in bytes and the gate claims even at the inflated 13.9GB, so it claims *a fortiori* at the true measured boundary (856,720B) — a bound survives a 16,268× adversarial inflation of the term opposing it. Renamed `MEASURED_PHI35_DEV0` (still an estimate wrong by 6.4×) vs. `MEASURED_PHI35_DEV0_REAL_BYTES` (the actual measurement) so the name stops outliving the doc comment's disclosure. General rule minted: **a criterion is discharged by an observable that changes when the claim is false, never by one that's true whatever happens.**
+- **2026-08-01T23:36:43 — ratifying the coordinator's merge; two generalisations:** Row 11 (ledger criterion) kept Morpheus's "not yet MET" over Mouse's "MET" — a row closed by the agent who supplied the artifact, in the change that supplied it, is an identity whose two sides share one source; recorded explicitly that Mouse's evidence is neither rejected nor lost, only the *tally* is withheld, never the work. Row 12 (census criterion) kept Mouse's over Morpheus's stale text, with reconciling language: a census answers whether a mechanism ran, a criterion answers whether a claim is falsifiable — neither substitutes for the other. Minted **R9's third generalisation**: a criterion is discharged by an observable that changes when false, never one true regardless (three same-day specimens: RAI-011's early return, Link's screen on an undefined variable, Switch's 0.0==0.0 assertion). Named the **dangling-reference class** formally under R13 amendment 1 (phantom key + Morpheus's own stale line-number citation + Link's undefined-variable screen are one failure; a broken URL fails loudly and is merely broken — the class is references that *resolve anyway*). Found his own §10.0 `attribution_witnesses` doc example was stale (showed 2 keys, record now emits 6) — regenerated from a real artifact rather than from memory.
 
 📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
 
-
 📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
-
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+📌 Team update (2026-08-01T20:39:12-07:00): Link found the layering lint (`tests/layering.rs`) scopes to `src/ops/` only — planting `use ash::vk as _;` in `src/ops/norm.rs` reds it, but the identical line in `src/trace.rs` passes all 26 of its tests. The archived decision that placed timestamp arithmetic in `trace.rs` specifically to stay "on the right side of the layering lint (no `ash`)" was justified by a rule that does not exist. That archived rationale is invalidated by this finding — it was never wrong to put the arithmetic in `trace.rs`, but the stated reason for doing so was never true. — decided by Link
 
 ---
-
-📌 Team update (2026-08-01T20:39:12-07:00): Link found the layering lint (`tests/layering.rs`) scopes to `src/ops/` only — planting `use ash::vk as _;` in `src/ops/norm.rs` reds it, but the identical line in `src/trace.rs` passes all 26 of its tests. The archived decision that placed timestamp arithmetic in `trace.rs` specifically to stay "on the right side of the layering lint (no `ash`)" was justified by a rule that does not exist. That archived rationale is invalidated by this finding — it was never wrong to put the arithmetic in `trace.rs`, but the stated reason for doing so was never true. — decided by Link
-## 2026-08-01T18:59:38-07:00 — §6.5 closed a conditional, and I had not said which lane armed it
-
-### The report came from scoring old predictions, not from new work
-That is the part worth keeping. Six standing predictions scored against artifacts: three confirmed,
-one UNSCORABLE for frame mismatch, one UNSCORED for having no artifact, and **one refuted by a third
-state**. No new measurement was needed. **Scoring what we already said against what we already have
-found something that six agents running instruments did not.** I should schedule that, not wait for
-it to happen.
-
-### The instrument declined to pick one of my two options
-The prediction was `SHARED` xor `SPLIT-DEVICE`. The counter returned `OFF`. Both `OFF` and
-`SPLIT-DEVICE` are "not SHARED", and if we had ever collapsed them the prediction would have scored
-a **clean pass** and the scope gap would still be invisible. **A binary prediction met by a third
-token is a refutation you cannot talk yourself out of** — and that is the whole return on the
-family discipline (`UNMEASURED`, `UNWIRED`, `UNOBSERVABLE`, `SPLIT-DEVICE`, `UNATTRIBUTED`, `OFF`).
-Every one of those tokens costs an argument at the time it is added. This is what they buy.
-
-### Neither of the two options I was offered was the answer
-Asked: intended, or the `offer_shared_device` gap? Neither. **Intended — and its recorded reason has
-expired.** The source says the transfer "cannot be written until the handle->VkBuffer seam is
-filled"; the seam is filled, `CreateDataTransfer` is registered, armed sessions complete on the real
-model. **The condition the switch was waiting for was met and nobody went back to the switch.**
-
-R12 with a **date** as the frame. Third generalisation of that rule now: counter -> device, verdict
--> executor, rationale -> date. And it has `retain_viable`'s shape exactly: **a default whose stated
-reason has expired is indistinguishable from one still needed.**
-
-I did **not** rule that the flag should flip. There is a live reason for OFF that the source does
-not give — it buys host memory wearing a device handle, risk with no measured benefit. But **a
-default defended by a reason its own documentation does not give is a default nobody has
-re-decided**, and saying "it is probably still right" is the move I ruled against yesterday.
-
-### The zero was fine, and the artifact that showed it was not
-`authoritative=0` with `backed=9, evaluations=9` looked like R12 and is not: the counter is an
-**int** not a string (three-state type discipline answering before it was asked), its unconditional
-twin moved 9 (so it is nine measured negatives), and `ceiling = backed - staged = 0`, so zero is the
-only value it could take. **A zero at a zero ceiling is contingent; UNOBSERVABLE would be a stronger
-and false claim.**
-
-But the *probe's extract* dropped `alloc_staged_spans` and `alloc_device_authoritative_ceiling` —
-the two keys that make the zero readable — so a careful reader **correctly** could not tell. That is
-**R11 in a selection rather than in a name**: a set of numbers published as though it closed. The
-counter was honest and the artifact was not, and I have now seen that failure in a phase table, in a
-ledger, and in a probe.
-
-### Carry forward
-- State a closure **with its lane**. A closure without its lane is a different sentence, not a
-  shorter one.
-- Score predictions only against artifacts from the lane they described. Wrong lane and no artifact
-  are both non-passes. **The denominator never shrinks to flatter the numerator.**
-- When a precondition lands, go back and re-read the sentence that named it. Reasons expire.
-- Ask of every probe: does its extract contain the keys that make its own numbers interpretable?
-- Never collapse two "not X" states into one. The third token is where the refutation lives.
-
-## 2026-08-01T20:39:12-07:00 — The phantom key: R13, not R11, and the census I did not want to owe
-
-Third ruling today, and the second in a row where the coordinator brought me a finding
-pre-diagnosed and asked me not to mint a rule to reward it. Good instinct; wrong diagnosis,
-narrowly.
-
-**The specimen.** `bench/results/probe_sec65.py:89` requests `alloc_device_spans`. I grepped the
-whole repo: the string occurs exactly once, at the line that requests it. No emitter, never was
-one. The read is `data.get(k, '<absent>')`, so it has printed `'<absent>'` on every run since it
-was written and nothing has ever thrown.
-
-**Why not R11, which is where the coordinator put it.** I ran my own individuation test: a rule is
-what its obligations require. R11's four obligations cannot even be *evaluated* here — extent of
-what, no parts to decompose, no table, and name-content agreement needs content. R11 governs a
-reported quantity, on the writer's side of the artifact. This is a request, on the reader's side.
-A mismatch needs two relata and this has one. A name that means nothing is not the extreme case
-of a name that means the wrong thing; it is a different failure on the other side of the seam.
-
-**Why R13.** His own sentence is R13 verbatim: two opposite diagnoses with opposite fixes, one
-token. R13's costume, R10's face. And everything that makes it frightening — longest latency in
-the register, the hole *filled* rather than left open, the look of evidence of absence — follows
-from the token, not from the name. Three tokens would have caught it on run one.
-
-**What is new is the surface, so: amendment 1, the defaulting lookup.** Every prior R13 specimen
-failed loudly and was mis-rendered downstream. This one has no exception anywhere, manufactured
-by a construct whose whole purpose is not to fail. `dict.get`, `unwrap_or`, `?? fallback`,
-`getattr` — where the key set is knowable, the default is not a value and absence is not a
-reading.
-
-I wrote the not-minting-R14 paragraph explicitly, because I declined a rule yesterday too and a
-habit of declining is its own defect. Remedy-identity cuts both ways.
-
-**The key census.** Two tiers, runtime and static; exact string match; owner Tank with Niobe,
-importing `audit_instruments.py`'s five states rather than minting a sixth vocabulary. I named
-four cheapest-satisfactions — the fuzzy matcher is the one that worries me, because
-`alloc_device_spans` is one word from `alloc_device_backed_spans` and a lax matcher would
-*certify the specimen*. Planted-phantom positive control required. I explicitly did **not**
-reopen M0 criterion 12: no milestone claim rests on `probe_sec65.py`, and bolting a probe
-obligation onto a milestone because a bad probe turned up today is hardening a criterion to
-punish a bad week.
-
-**Niobe's `span_accounting()`.** Upheld the report-without-judging call — after `gpu_steady_tail`
-the case against letting describers move verdicts writes itself. But "feeds no check" is not "has
-no teeth", so I gave it attachment instead of authority: the classification travels in the same
-artifact as every span count it describes, per the `executed_by` lesson.
-
-**And I found a defect in it.** `NOT_A_NUMBER` fires on `not isinstance(auth, int)` while the
-extract still reads `data.get(k, "<absent>")` — so a phantom or missing key lands there and is
-described as *"a string state and not a count; the type is the answer"*. False, and reassuring
-in exactly the wrong direction. She inherited the defaulting read; it is not hers to carry. It is
-the whole argument for fixing the lookup rather than the classifier: one fix at the defect site,
-or N fixes plus a new one every time someone adds a consumer.
-
-Three sightings in one day of an instrument-side absence rendered as a subject-side state. That
-recurrence is why I signed the obligation. Any one of them alone would have been an anecdote.
-
-**Carry forward**
-- Key census is Tank's, with Niobe. Watch for it landing static-tier-only, or with a fuzzy matcher.
-- `alloc_device_spans` must be classified wanted-and-non-existent vs typo *before* deletion.
-- `NOT_A_NUMBER` must split until the census lands; unresolvable key is `ERROR(instrument)`.
-- Niobe's `71610cd` still awaiting merge; my ruling assumes it lands.
-- Still owed from earlier today: Tank + Switch re-justify `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY`
-  default-off by M2 entry; Link's device-state survey for non-NVIDIA platforms.
-- I have now declined to mint a rule twice and amended twice. If the next finding also lands as
-  an amendment, check whether I am protecting the register's shape rather than reading it.
-
-## 2026-08-01T22:02:39-07:00 — The anchor exemption is the deciding term (§5.4.1)
-
-Fourth ruling today. The coordinator brought this as a §7.12 finding and I think it is a §5.4
-finding — which is to say it is mine, not Mouse's.
-
-**What I verified before ruling.** `partition.rs:475`. The exemption is an *early return*, above
-`transfer_ns` and `compute_ns`. So on an anchor-bearing island the economics arithmetic is not
-outvoted, it is not evaluated. Stage 3 is a constant function on our graph: nothing about the
-island can change its answer. That is a sharper statement than "the predicate claimed it via one
-arm" and it is the one the artifact supports.
-
-Then I read `is_anchor` — MatMul, Gemm, Conv, ConvTranspose, Attention, MatMulNBits, GQA, MHA,
-QMoE, LinearAttention — and the diagnosis inverted. Every non-trivial transformer island contains
-an anchor. So "the economics model does not decide our partition" is not an accident of Phi-3.5
-and not a defect. It is the design working. 3c was written to kill anchor-free elementwise
-scatter and our island is not that. The doc comment says so.
-
-I had to resist writing this up as a scandal. It is not one. But three things are genuinely
-wrong and I wrote them without inflation:
-
-1. The exemption's warrant is asserted, not measured, and is now the sole term deciding every
-   production partition. Falsifier is a *future* exposure: a small MatMul inside large boundary
-   traffic. Small models, edge shapes. Generality is the constraint I am told to check
-   continuously and this is where it bites.
-2. The exemption's silence set includes "the byte estimator is broken." The 104,116× is why 3c
-   declines us when allowed to answer. R9's silence-set rule applies to a *policy term*, not only
-   to an instrument. That generalisation is the part of this ruling I expect to reuse.
-3. `Verdict::Claim` is three findings wearing one name. R11 at the value level. Mouse's fix is
-   right and his refusal to re-derive the arm at the call site is righter — that is RAI-011
-   reappearing inside the fix for its own sibling.
-
-**On whether §7.12 misleads.** It does not. It says the thing, in those words. What failed is
-propagation: the sentence sat under a subsection about calibrating a parameter already shown not
-to matter, and never reached §5.4's stage list or the M1 ordering's rank 2. Both were mine. Both
-are fixed. I am getting a taste for findings that turn out to be located in my own document.
-
-Rank 2 was worse than under-qualified — it credited `retain_viable` with the 321 → 33 collapse,
-which §10.0.1's own R10 table attributes correctly to wiring the clustering. Two mis-attributions
-in one row. Position withdrawn, row kept as the record.
-
-**The drafting rule got its second live example and this one bothers me.** RAI-011's criterion is
-"always evaluated, no branch in front of it". The cheapest satisfaction is an unconditional early
-return *inside* the gate — every word true, `bypasses` 0 forever. 3b is not that; it predates
-RAI-011 and lives in the right module. But RAI-011's observables cannot tell them apart. That is
-the whole argument for item 3.
-
-**What I refused.** Removing the exemption to let the model decide. Deferring to a model measured
-wrong by five orders of magnitude is not rigour, it is ceremony, and it loses M0.
-
-The worktree collision is the coordinator's and he recorded it as his; I noted in the decision
-that Mouse caught both consequences himself, including a false ALL-DECLINED he nearly wrote up.
-An agent that catches its own contaminated build is worth more than the hours it cost.
-
-**Carry forward**
-- Mouse owes `Verdict::Claim` carrying its reason, in `partition.rs`, once `mouse-1` clears.
-  Until then "the exemption decided this" stays an inference, and I have written it as one.
-- The byte estimator (104,116×) is a correctness item ahead of any nanosecond calibration, and
-  ahead of the optimisation rank 2 used to hold.
-- Named falsifier to keep live: an anchor-bearing island that should be declined. First small
-  model or edge-shape graph we touch, look for it.
-- Fourth ruling in a row where the reported rule was wrong but the finding was real. The pattern
-  is that people diagnose correctly and file incorrectly; that is a cheap error and I should stop
-  treating the filing as the claim.
-
-## 2026-08-01T22:25:29-07:00 — The estimator's first half, and why I would not take the concurrence
-
-Fifth ruling today. The coordinator verified my §5.4.1 himself against the code before accepting
-it, which is the second time today someone has read the source rather than take my word, and I
-should say plainly that this is the reason any of this holds.
-
-**What landed.** `mouse-1` fixed the first half of the estimator defect: internal island edges
-were being charged to the boundary. 89.2 GB → 13.9 GB, 6.4× gone, and with the exemption off the
-gate now claims Phi-3.5 on its own economics. Verified on `squad/mouse` before ruling — the
-consumer map in `ep.rs`, the new constant, `symbolic_boundary_slots`, the doc comment.
-
-**And I declined the conclusion offered with it.** The invitation was to read this as the
-economics arm *concurring* with the exemption rather than being masked by it. Two problems. The
-128-for-every-unknown-dim substitution is untouched and the residual is 16,268×. And more
-importantly, agreement between two things fed the same fabricated input is not a second opinion —
-which is the sentence this whole register is built around. A verdict that flipped because its
-input moved 6.4× while staying 16,268× wrong flipped for a reason unrelated to the proposition.
-
-**But the same fact supports something stronger, and finding it is the part of today I am
-actually pleased with.** `transfer_ns` is monotone in bytes. The gate claims at 13.9 GB. The
-measured boundary is 856,720 B, which is smaller. So it claims a fortiori on the true bytes: the
-claim survives a 16,268× adversarial inflation of the term opposing it. That is a bound, not an
-estimate, taken from a number I do not trust in the one direction where not trusting it is safe.
-Third form of the invariance preference: prefer the count, prefer the ratio, prefer the bound you
-can sign.
-
-I wrote the licence tightly because this is precisely the shape that has failed here when it
-favoured us. Monotone, sign established by independent measurement for that window, used only in
-the licensed direction. Absent the sign it is a guess with a confident tone. And the sign is not
-general — 128 over-counts on our window and under-counts on a long prefill, where the bound does
-not weaken, it evaporates. That falsifier goes beside the small-MatMul one.
-
-**The naming call.** `MEASURED_PHI35_DEV0` holds an estimate wrong by 6.4×, next to
-`MEASURED_PHI35_DEV0_REAL_BYTES` which holds the measurement. Rename. Mouse's doc comment is the
-best disclosure I have read on this project — he volunteered that parking the total in
-`output_bytes` biases every test towards claiming, i.e. against his own conclusions — and it is
-still not enough, because names outlive doc comments. That is the coordinator's sentence and I
-took it into the register verbatim. Keeping the old constant beside the new is right; only the
-name is wrong.
-
-**Line numbers.** Mine went stale within the hour. A line number is a reference that decays
-without failing — it points at something else rather than erroring, which is `'<absent>'` in a
-different costume. Cite the symbol.
-
-**Criterion 11.** He asked that the RAI-011 cheapest-satisfaction observation survive into the
-discharge language, and it should, so I wrote the discharge language now, while the row is still
-open — which costs nothing and retracts nothing, the same reasoning as criterion 12 on 07-30.
-The cheapest satisfaction of "no form claimed without a ledger entry" is a ledger generated from
-the claim table: true by construction, 6/6 forever, identical under both readings. Four
-conditions, none of them "the ledger exists".
-
-The general sentence I want to keep: a criterion is discharged by an observable that changes when
-the claim is false, never by one that is true whatever happens.
-
-**Carry forward**
-- Mouse: three changes now bundled — `Verdict::Claim` carries its reason, the rename, the test
-  rename. All in `partition.rs`, all once the worktree is clear.
-- The 128 substitution is the remaining half and it is a correctness item, not an optimisation.
-  Calibrating `fixed_ns` before it is fixed is still polishing the wrong parameter.
-- Falsifier list for §5.4.1 now has two: an anchor-bearing island that should be declined, and a
-  boundary tensor whose real extent exceeds 128.
-- Criterion 11's tally is Trinity's; the discharge conditions are written and I should not be the
-  one to declare the row met.
-- Five rulings today. Four of them relocated a finding from the file it was reported against to
-  the file that actually carried the defect, and three of those were mine. That is the pattern to
-  watch, not the rule count.
-
-## 2026-08-01T23:36:43-07:00 — Ratifying a merge I did not make, and two generalisations the day earned
-
-The coordinator resolved a conflict in my criteria table and told me exactly what he chose and
-why, which is the correct way to touch someone else's file.
-
-**Row 11.** He kept mine over Mouse's "MET", on the ground I had written into the cell: a row
-closed by the agent who supplied the artifact, in the change that supplied it, is an identity
-whose two sides come from one source. I ratified rather than reversed, and I wrote into the cell
-that Mouse's evidence is neither rejected nor lost — what is withheld is the tally, not the work.
-That distinction is worth being explicit about; I do not want the register to become a way of
-declining people's findings.
-
-**Row 12.** He kept Mouse's, against my stale tail, because he ran the census himself on both
-devices and got `unwired: []`. He was right and my text was wrong. But he flagged that rows 11
-and 12 now read as a contradiction, and he was right about that too, so I wrote the reconciliation
-into row 12: the census answers whether a mechanism ran, a criterion answers whether a claim is
-false-able, and neither can do the other's job. A wired mechanism beside an undischarged criterion
-is the normal state of a row being taken seriously.
-
-**Two generalisations, and I checked both against the no-minting rule before writing them.**
-
-*R9's third generalisation.* The sentence he is now briefing agents with — a criterion is
-discharged by an observable that changes when the claim is false, never by one that is true
-whatever happens — is the red-instrument test with "criterion" substituted for "claim". Same
-remedy, wider scope. So a generalisation, not an amendment, and I said so in the text. Three
-specimens in one day: RAI-011's early return, Link's screen on a variable nothing defines, and
-Switch's assertion comparing 0.0 with 0.0. Two green, one negative — the class does not care about
-polarity, which is our own sentence about the census arriving as a property.
-
-*The dangling reference.* He is right that the phantom key, my stale line number and Link's
-undefined variable are one failure. I named the class under R13 amendment 1. The line number is
-the worst of the three because there is no lookup to fail — the reader performs it by hand and
-receives a plausible statement. I also wrote where the class stops: a broken URL fails loudly and
-is merely broken. The class is references that resolve anyway.
-
-**Trinity's finding.** The §10.0 `attribution_witnesses` example showed two keys where the record
-emits considerably more. She did not edit my document, which is correct. I regenerated the example
-from `criterion10-dev0.json` rather than from memory, and wrote down why: a schema example is a
-claim about the record's extent, and R11's extent obligation binds a document's example exactly as
-it binds a producer's output. Two live keys were missing for a day and the defect was mine.
-
-**Carry forward**
-- Mouse still owes three things in `partition.rs`, all blocked on the shared worktree: the
-  `Verdict::Claim` reason field, the `MEASURED_PHI35_DEV0` rename, the test rename.
-- Row 11 closes when Trinity's tally moves against the four conditions. Not before, and not by me.
-- The prefill falsifier for the bound (real extents above 128) is now a standing item on the
-  coordinator's list, which is where I wanted it.
-- Regenerate document examples from artifacts. I have now been caught by the same class of defect
-  I ruled on twice today, in my own file, in a code fence.
 
 ## 2026-08-02T01:42:02-07:00 — Restoring one sentence, and declining a rule I would have enjoyed minting
 
@@ -547,3 +171,68 @@ R11 obligation 1 and I can point at the sentence — but the tally is the kind o
   If it recurs a third time, the defect is in how the table is written, not in who reads it.
 - I have now twice declined to grow the register in the same session I amended it twice. Watch for a
   softer way of declining.
+
+## 2026-08-02T04:30:29-07:00 — I reopened criterion 10 three hours after closing it, and the closure was my error
+
+The coordinator put my closure to Fact Checker in Devil's Advocate mode, precisely because he had
+supplied the evidence. Fact Checker found that `model_output_equivalence` compares one output out of
+sixty-five. I verified it in source before ruling: `_compare_run_to_cpu` takes `vk_out[0]` and
+`cpu_out[0]` and derives argmax, top10 and max_abs_diff from the logits alone. `test_phi35.py` is the
+same shape behind a structural length assertion. Nothing in the tree compares a KV output to CPU.
+
+The all-65 gate is `outputs_bit_equal` — cross-run identity. It proves determinism. It cannot prove
+correctness, because a deterministically wrong write passes it by being consistently wrong.
+
+**The thing I found that neither of them brought, and it is what settled it for me:** `test_phi35.py`
+Guard 1 already documents this exact mechanism in this codebase — an output outside the descriptor set
+"is never written... zero-initialised by both Intel Iris Xe and NVIDIA drivers for security, reads back
+as all-zero" — and the guard built against it is applied to output 0, the one tensor that already has an
+oracle. The row was reopened on 50 KV outputs never written, where the symptom was cross-run divergence.
+Divergence is the symptom of a *dirty* arena. On a clean one the same defect is stable and everything is
+green. So the closure certified that the symptom is gone and never established the defect is fixed.
+
+**I refused the escape I was offered.** "The criterion's words were always about logits" would require
+renaming the measurement to `logits_equivalence` after seeing that the broad reading fails. That is
+narrowing a criterion because it has just failed — the exact mirror of what I refused three hours ago in
+the same cell when I declined to add a re-run requirement because the news was good. I wrote the
+symmetric form into the row: **a criterion may not be hardened because it is about to pass, nor narrowed
+because it has just failed.** If I had taken the escape it would have been the cheaper ruling and it
+would have been the same failure I have been grading other people on all session.
+
+**My own error, recorded plainly and in the register rather than only in the table.** The artifact carries
+`outputs_compared: 65` in the same per-run dict as `argmax_cpu`, `top10_overlap` and `max_abs_diff`. Every
+neighbour is an oracle fact; that one is a cross-run count. I read 65 and understood sixty-five oracle
+comparisons, and I quoted `max_abs_diff = 0.0625` into a criteria row without stating over what — R11
+obligation 1, three hours after I diagnosed the coordinator for that same obligation in criterion 12. I
+wrote "the thing I verified myself was the thing I over-weighted" into row 12 and then did it in row 10.
+
+**No new rule. Recorded as a fourth specimen under R9's red-instrument test, deliberately unnumbered.** I
+ran the self-check I put in the register — if the next finding also lands as a generalisation, look for a
+softer way of declining. The remedy here is R9's remedy unchanged, a different instrument, so it is not an
+amendment and not a generalisation. The content that is genuinely new is written anyway: two gates whose
+extents differ compose to the weaker extent and the stronger name; a record with two gates owes two
+extents.
+
+**Drafting rule applied to the remedy.** The coordinator's proposal was right and I sharpened it by asking
+what the cheapest satisfaction is: an all-65 oracle is satisfied perfectly by 64 pairs of all-zero tensors,
+so the non-triviality guard is not optional — an oracle that passes on the absence of data is Switch's
+`0.0 == 0.0` in a fourth costume. And the planted control must be wrong *and stable*; an unstable plant is
+caught by cross-run identity and proves nothing new.
+
+**On method, the sentence I want to keep.** I verified every field of that artifact and closed wrongly
+anyway. The coordinator arranged an adversary because he had supplied the evidence, and the adversary
+found what my verification did not. Content verification by the ruling party is weaker than adversarial
+review by a party with no stake. My standing-falsifier clause fired in three hours, which is the clause
+working, not the clause being circumvented.
+
+**Carry forward:**
+- Criterion 10 discharge is now four arms, stated in full so nothing can be added later: all-65 oracle with
+  justified per-output tolerances and two named extent keys; a wrong-and-stable planted control (all-zero);
+  a non-triviality guard on both sides; existing attribution re-emitted not re-argued.
+- Owners I named: Trinity (comparison/verdict constructors), Switch (whether the KV write path writes at
+  all — still unwitnessed, and the `kv_cross_run` prediction has been UNSCORED all session).
+- Fact Checker's session-aggregate attribution argument is OPEN and NOT a condition. It needs an artifact:
+  plant a failing island execution, observe whether a Node event is still emitted.
+- `outputs_compared` is a live R11 obligation-4 specimen and belongs in criterion 12's conjunct (iv)
+  alongside `MEASURED_PHI35_DEV0`.
+- Four declines now, and this one I checked hardest because reopening was the ruling I wanted.

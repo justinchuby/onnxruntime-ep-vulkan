@@ -1,0 +1,463 @@
+{
+  "why": "The independent whole for DESIGN.md \u00a710 criterion 12. Every instrumented surface the EP exposes in production Rust, and what the wiring census does about it. Read ci/check_census_completeness.py first: this file is the map, not the screen. An entry here is a claim by a named owner, and a surface with no entry fails the screen \u2014 which is the only reason the count can ever be wrong.",
+  "not_a_closure": "A PASS from the screen means every surface is accounted for, NOT that the census covers them. The 'uncensused' entries below are the standing gaps and they are the evidence that criterion 12 is not met. Trinity owns row 12's tally.",
+  "surfaces": [
+    {
+      "kind": "counter",
+      "id": "struct_size",
+      "disposition": "not_a_mechanism",
+      "reason": "ABI header: the size prefix a caller checks before reading the rest. Nothing runs.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
+      "id": "abi_version",
+      "disposition": "not_a_mechanism",
+      "reason": "ABI header: the version a caller checks before reading the rest. Nothing runs.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "counter",
+      "id": "compile_calls",
+      "disposition": "uncensused",
+      "reason": "Counts ORT Compile() entries. No census mechanism reads it, so 'the EP was asked to compile and did not' is not a state the census can report.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "subgraphs_stub",
+      "disposition": "uncensused",
+      "reason": "Counts subgraphs taken as stubs. A stub subgraph is the identity outcome for the partitioner and no census mechanism observes the count.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "compute_calls",
+      "disposition": "uncensused",
+      "reason": "Counts Compute() entries. The census infers execution from dispatches_executed instead; a Compute() that entered and dispatched nothing is invisible to it.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "counter",
+      "id": "subgraphs_live",
+      "disposition": "censused",
+      "reason": "The partitioner line reads this delta and names it.",
+      "owner": "Mouse",
+      "mechanism": "partitioner"
+    },
+    {
+      "kind": "counter",
+      "id": "dispatches_executed",
+      "disposition": "censused",
+      "reason": "The partitioner line reads this delta and names it.",
+      "owner": "Mouse",
+      "mechanism": "partitioner"
+    },
+    {
+      "kind": "counter",
+      "id": "compute_failures",
+      "disposition": "censused",
+      "reason": "The broken-commitment arm is driven by forced compute failure; this is the counter that records it.",
+      "owner": "Tank",
+      "mechanism": "broken_commitment_warn"
+    },
+    {
+      "kind": "counter",
+      "id": "viable_islands_retained",
+      "disposition": "censused",
+      "reason": "The namesake counter of retain_viable (ABI version 2).",
+      "owner": "Mouse",
+      "mechanism": "retain_viable"
+    },
+    {
+      "kind": "counter",
+      "id": "proven_key_lookups",
+      "disposition": "censused",
+      "reason": "\u00a78.9 ledger gate: lookups attempted.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "counter",
+      "id": "ledger_hits",
+      "disposition": "censused",
+      "reason": "\u00a78.9 ledger gate: lookups that hit.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "counter",
+      "id": "unproven_declines",
+      "disposition": "censused",
+      "reason": "\u00a78.9 ledger gate: claims declined for want of a proof.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "counter",
+      "id": "ledger_entries",
+      "disposition": "censused",
+      "reason": "\u00a78.9 ledger gate: entries the ledger holds.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "counter",
+      "id": "unproven_forms_claimed",
+      "disposition": "censused",
+      "reason": "\u00a78.9 ledger gate: forms claimed without a proof, under CLAIM_UNPROVEN.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Compile",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Prepack",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Upload",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Record",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does. Record is the standing MISNAMED specimen: wired, invoked, correct, input-varying, and wrong by 50x in what it was called.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "DescAlloc",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "PipelineLookup",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "CmdUpload",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Submit",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "FenceWait",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "trace_phase",
+      "id": "Readback",
+      "disposition": "censused",
+      "reason": "A phase the tracer can emit. The census's tracer line reports event and name counts and the ONE-CHARACTER trace-event types, never the phase names, so a phase that never fires is not distinguishable from one that does.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_TRACE",
+      "disposition": "censused",
+      "reason": "Arms the tracer; the census sets it itself and names it in the observation.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_TRACE_GPU",
+      "disposition": "censused",
+      "reason": "Arms GPU timestamps inside the tracer. The census does not set it, so the GPU half of the tracer is unexercised in this frame.",
+      "owner": "Niobe",
+      "mechanism": "gpu_tracer"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE",
+      "disposition": "censused",
+      "reason": "The fault injection the broken-commitment arm is built on.",
+      "owner": "Tank",
+      "mechanism": "broken_commitment_warn"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_LEDGER_FILE",
+      "disposition": "censused",
+      "reason": "Points the \u00a78.9 gate at a ledger.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN",
+      "disposition": "censused",
+      "reason": "Enables claiming forms with no proof; the gate's other polarity.",
+      "owner": "Mouse",
+      "mechanism": "ledger_lookup"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION",
+      "disposition": "censused",
+      "reason": "Plants the violation the messenger is supposed to carry.",
+      "owner": "Switch",
+      "mechanism": "validation_messenger"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION",
+      "disposition": "censused",
+      "reason": "Makes the lane fail when validation is not installed.",
+      "owner": "Switch",
+      "mechanism": "validation_messenger"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_VALIDATE",
+      "disposition": "censused",
+      "reason": "Installs the validation layer the messenger reports through.",
+      "owner": "Switch",
+      "mechanism": "validation_messenger"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (net-benefit margin). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (minimum island size). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (compute term of the cost model). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (fixed term of the cost model). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (bandwidth term of the cost model). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION",
+      "disposition": "censused",
+      "reason": "A net-benefit gate input (anchor exemption). The census observes the gate's decision counters and never reports which of these inputs were in force, so two runs with different cost models read identically.",
+      "owner": "Mouse",
+      "mechanism": "net_benefit_gate"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE",
+      "disposition": "out_of_frame",
+      "reason": "The census's own transport for reading counters. Observing it would be the census observing itself.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE",
+      "disposition": "out_of_frame",
+      "reason": "A lane parameter, not a mechanism: it selects which device the census runs against and is recorded in the artifact's device_selector field.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC",
+      "disposition": "out_of_frame",
+      "reason": "A build-time escape hatch consumed before any session exists; there is no run in which the census could observe it.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY",
+      "disposition": "uncensused",
+      "reason": "Switches allocations to device-local memory \u2014 changes what the EP does on every upload, and no census mechanism observes whether it was in force.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB",
+      "disposition": "uncensused",
+      "reason": "Sizes the VA reservation. Unobserved by the census.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS",
+      "disposition": "uncensused",
+      "reason": "Quarantines freed spans. Unobserved by the census.",
+      "owner": "Tank"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED",
+      "disposition": "uncensused",
+      "reason": "Selects the packed GEMV path \u2014 a different kernel, invisible to every census line.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES",
+      "disposition": "uncensused",
+      "reason": "Dumps output bytes. Unobserved by the census.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE",
+      "disposition": "uncensused",
+      "reason": "Selects a barrier backend probe. Unobserved by the census.",
+      "owner": "Switch"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG",
+      "disposition": "uncensused",
+      "reason": "Writes the per-claim log. Unobserved by the census.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG",
+      "disposition": "uncensused",
+      "reason": "Raises claim logging to Debug. Unobserved by the census.",
+      "owner": "Mouse"
+    },
+    {
+      "kind": "env_switch",
+      "id": "ONNXRUNTIME_EP_VULKAN_VERBOSE",
+      "disposition": "uncensused",
+      "reason": "Raises logging to Info. Unobserved by the census.",
+      "owner": "Switch"
+    }
+  ],
+  "mechanism_names": [
+    {
+      "mechanism": "partitioner",
+      "name_asserts": "that graph nodes were grouped into islands by a partitioning decision, not merely claimed one by one",
+      "discriminator": "an observation that differs between a run that merges and a run that does not \u2014 islands_offered strictly below claimed_nodes on a graph with more than one fusible node",
+      "name_verified": false
+    },
+    {
+      "mechanism": "partition_identity_check",
+      "name_asserts": "that the identity case (one island per node) is detected and is an explicit red state",
+      "discriminator": "a run in which claimed == islands with both > 1, showing RED rather than VACUOUS",
+      "name_verified": false
+    },
+    {
+      "mechanism": "net_benefit_gate",
+      "name_asserts": "that a NET BENEFIT was computed and decided the retention, not that a counter incremented",
+      "discriminator": "two runs with different cost-model env inputs producing different retention decisions on the same graph",
+      "name_verified": false
+    },
+    {
+      "mechanism": "gpu_tracer",
+      "name_asserts": "that GPU work was traced \u2014 device-side spans, not host spans emitted around a submit",
+      "discriminator": "an observation naming the phases emitted, and differing with ONNXRUNTIME_EP_VULKAN_TRACE_GPU set versus unset",
+      "name_verified": false
+    },
+    {
+      "mechanism": "model_output_equivalence",
+      "name_asserts": "that MODEL outputs were compared and found equivalent, with the frame that executed them named",
+      "discriminator": "a verdict carrying executed_by, differing between a run the EP executed and a run it declined",
+      "name_verified": false
+    },
+    {
+      "mechanism": "retain_viable",
+      "name_asserts": "that viable islands were RETAINED by a decision, distinct from no island being offered at all",
+      "discriminator": "a run where islands were offered and rejected, distinguishable from one where none was offered",
+      "name_verified": false
+    },
+    {
+      "mechanism": "ledger_lookup",
+      "name_asserts": "that a claim was checked against a ledger entry that exists independently of the claim table",
+      "discriminator": "a lookup that MISSES \u2014 ledger_hits strictly below proven_key_lookups on a key the ledger does not hold",
+      "name_verified": false
+    },
+    {
+      "mechanism": "validation_messenger",
+      "name_asserts": "that a validation-layer message was CARRIED to the host, not that the layer was installed",
+      "discriminator": "the planted-violation arm reporting a different token from the clean arm",
+      "name_verified": false
+    },
+    {
+      "mechanism": "layering_lint",
+      "name_asserts": "that the layering rule was enforced over the whole crate",
+      "discriminator": "a planted layering violation outside src/ops/ turning the observation from PASS to a failure \u2014 on 2026-08-01 it did not",
+      "name_verified": false
+    },
+    {
+      "mechanism": "broken_commitment_warn",
+      "name_asserts": "that a broken commitment produced a WARNING on the channel a user would see",
+      "discriminator": "the planted arm reporting a warn line and the clean arm reporting the channel UNOBSERVABLE",
+      "name_verified": false
+    },
+    {
+      "mechanism": "device_state_guard",
+      "name_asserts": "that device steadiness was certified before a measurement was admitted",
+      "discriminator": "the planted arm exiting non-zero with STEADY_UNCERTIFIED",
+      "name_verified": false
+    },
+    {
+      "mechanism": "instrument_census",
+      "name_asserts": "that every instrument in the tree was classified into Tank's six states",
+      "discriminator": "an instrument added to the tree and left unclassified turning the verdict from PASS to a finding",
+      "name_verified": false
+    }
+  ]
+}

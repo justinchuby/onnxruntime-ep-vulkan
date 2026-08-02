@@ -46,3 +46,162 @@ Quarantine detector positive-control present (`the_quarantine_detector_fires_whe
 - **2026-08-01 — Tank — the broken-commitment WARN, through ORT's own sink, with a control that bites** — Ruling 2 specified the mechanism; my job was to build it and then to make it *falsifiable*.
 - **2026-08-01 addendum — the load was misattributed, and my evidence is unaffected by the correction** — The coordinator withdrew his attribution of the machine load: it is a second development project of Justin's running CPU **and GPU** tests, not squad orchestration.
 - **STOP POINT 2026-08-01T11:39 — read this first if you are resuming as Tank with no memory** — **Everything is committed.** Worktree `C:\Users\justinchu\dev\ep-vulkan-tank`, branch `squad/tank`, commit `bce87cd`, on top of `main` at `17c2fab`.
+
+📌 Team update (2026-08-02T02:03:46-07:00): ust/src/trace.rs had no roster owner (flagged by Link). The coordinator assigned it to Niobe — timestamp calibration and trace-event arithmetic are measurement, and she already owns the instruments that consume it. Recorded in 	eam.md's new File Ownership Notes section. Tank may have the stronger claim on counters/FFI grounds and may object; reassignment is a one-line change if so. — decided by Scribe
+
+---
+
+## 2026-08-02 — Tank — the session-creation disclosure (§8.9.7 / RAI-009), with the arm that matters
+
+**Worktree** `C:\Users\justinchu\dev\ep-vulkan-tank`, branch `squad/tank`, merged on `main`
+(`ca283a9` and later). Rebuilt before verifying — Mouse's R12 fourth generalisation says the frame
+for a test result is *the binary that ran it*, and `Copy-Item` preserving `LastWriteTime` is enough
+to make cargo re-run a stale one.
+
+**What the requirement was.** A user creating a session against a build that would claim ops whose
+correctness is `UNMEASURED` or known `DIVERGENT` must be told **at session creation**, not left to
+discover it from a wrong answer later. RAI-008's second discharge condition.
+
+### What I built
+
+- `rust/src/disclosure.rs` (new, mine). `FormEvidence` = `Proven` / `Unmeasured` / `Divergent` /
+  `LedgerFaulted`; `evidence_for(key)`; `disclose_claimed_forms(forms)`; `disclose_zero_claims(...)`.
+  Four states, not three: `LedgerFaulted` is an **instrument** state (R13) and is not a finding
+  about the form, and `Unmeasured` vs `Divergent` is the distinction RAI-008's falsifier names.
+- `rust/src/logging.rs` — `info_through_ort_sink`, sibling of `warn_through_ort_sink`. The INFO and
+  the WARN are a *pair* and must travel down the same channel, or a user who sees the WARN looks
+  for its context in a log we never wrote to.
+- `rust/src/registry.rs` (Mouse's, two additive changes, decision record filed):
+  - `Ledger::demoted` + `demotion_for(key)`. A non-`MATCH` verdict already faults the ledger; now
+    it is also **remembered**. Without this, "the evidence measured this and it was wrong" and
+    "nothing has ever measured this" both arrive at the disclosure layer as "no proof".
+  - `claim_decision_audited(view)` returning the whole `ClaimAudit`; `claim_decision` delegates.
+    `ep.rs` needs each claimed node's proof key, and calling `claim_audit` a second time would
+    **double-count `proven_key_lookups`** — which is criterion 11's evidence. One audit, one
+    lookup, two readers.
+- `rust/src/counters.rs` — `session_disclosures`, `claimed_forms_{proven,unmeasured,divergent,
+  ledger_faulted}`, `session_disclosure_warns[_to_ort_sink]`, and two tokens:
+  `claimed_form_evidence` (`UNOBSERVABLE` / `NO-CLAIMS` / `ALL-PROVEN` / `UNMEASURED-PRESENT` /
+  `DIVERGENT-PRESENT` / `LEDGER-FAULTED`) and `session_disclosure_channel` (`UNOBSERVABLE` /
+  `ORT_SINK` / `PRIVATE_LOG_ONLY`). The C ABI struct is unchanged; JSON only.
+- `rust/src/ep.rs::GetCapability` — collects distinct claimed forms during the existing claim loop
+  and discloses once, before any fusion decision. The zero-claim branch gets the aggregate INFO.
+
+### Is the new observable in-frame at the moment it must be read?
+
+Yes, and deliberately. `record_session_disclosure` **writes the counters artifact at the instant of
+the disclosure**, the same argument as `record_broken_commitment`. The moment this observable must
+be read is session creation; a session that claims unproven forms is by construction one that may
+end abnormally, and an observable readable only at a shutdown that no longer occurs is out-of-frame
+by construction — the fifth state in my own vocabulary, and the exact hazard I created for myself
+when I leaked the production device to close §6.5.
+
+And `claimed_form_evidence` reads **`UNOBSERVABLE`, never `ALL-PROVEN`**, when no disclosure ran.
+A claim set that was never assembled is not a claim set that came back clean. That substitution is
+precisely the §6.5 coincidence: agreement produced by the absence of the event rather than by its
+outcome.
+
+### The control — both arms, in the lane, PLANTED
+
+**In-lane Rust (`ep::tests::session_disclosure`, not `#[ignore]`)**, driving the real
+`disclose_claimed_forms` through a fake `OrtApi` whose only live slot is `Logger_LogMessage`:
+- red arm: a planted `UNMEASURED` form → exactly one WARN at `ORT_LOGGING_LEVEL_WARNING` on ORT's
+  sink, naming the form, the kernel, `UNMEASURED`, and the env var that caused it;
+- green arm: an all-proven claim set → **no** WARN, with `d.proven >= 1` asserted **first** so the
+  silence is not the silence of a session that claimed nothing;
+- mixed arm: the WARN names the unproven form and **not** the proven one.
+
+The proven key is read out of the shipped ledger, never pasted. A hardcoded key that drifts turns
+the *green* arm green for the wrong reason.
+
+**Mutation-tested — all three bite:**
+
+| mutation | caught by |
+| --- | --- |
+| A — suppress the WARN entirely | 5 tests, incl. both ORT-sink red arms |
+| B — warn unconditionally | **only** the two green arms (2 tests) |
+| C — count `UNMEASURED` as proven | 3 tests |
+
+Mutation B is the one that matters: nothing except the good-run polarity notices a WARN that always
+fires. That is the whole of Rai's point, demonstrated rather than asserted.
+
+**Out-of-process (`rust/tools/probe_session_disclosure.py`), PASS on device 0 and device 1**,
+artifact `bench/results/session-disclosure-control.json`:
+- arm A: `mul_f16_unproven` (Mouse's planted case) enabled through the escape hatch. The proof key
+  is **learned from the claim log in a first pass**, never hardcoded — otherwise a drifted key
+  makes the plant silently inert. Result both devices: `claimed_form_evidence=UNMEASURED-PRESENT`,
+  `session_disclosure_channel=ORT_SINK`, WARN present on ORT's sink naming the key.
+- arm B: `add_f32` (in the ledger), no hatch. Both devices: `claimed_forms_proven=1`,
+  `claimed_nodes=1`, `claimed_form_evidence=ALL-PROVEN`, **zero** WARNs on ORT's sink. Non-vacuity
+  is checked before the silence, and a FAIL is raised if the silence is vacuous.
+- `decode_both` is **imported** from `probe_broken_commitment.py`, not re-implemented. ORT's sink
+  is UTF-16LE on Windows and our narrow line shares the handle; a second decoder is a second thing
+  that can drift, and the defect it reintroduces is a delivered WARN reported as absent.
+- R13 blindness control: if neither arm sees anything on ORT's sink the probe returns
+  **ERROR(instrument)**, exit 4, never FAIL. Verified by disarming arm A's plant: the probe
+  returned ERROR, not PASS.
+
+**Evidence class: `PLANTED`**, recorded as such in the artifact itself. Both arms' `UNMEASURED`
+condition is one I constructed; it is reachable only by naming a key in
+`ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`, and no production build of this repo has ever produced one.
+What is demonstrated is the *warning path*, not the frequency of the fault. The `DIVERGENT` arm is
+more planted still — it needs a ledger line no generator writes — and is covered by a unit test on
+`parse_ledger` (`a_divergent_ledger_line_is_remembered_as_a_demotion`) rather than end to end.
+
+### Verification
+
+`cargo build --lib` and `--release` rebuilt from the merged state. `cargo test --lib`:
+**469 passed / 0 failed** (was 459 before this work; +10). `cargo clippy --all-targets`: clean, no
+warnings at all. `cargo fmt --check`: my files clean; the pre-existing drift in `partition.rs`,
+`allocator.rs`, `epctl.rs` and two spots in `counters.rs` is not mine and I left it alone.
+
+### No inadmissible measurement
+
+Nothing here has a time term. Every figure above is a count or a token from a log or a JSON
+artifact, so `machine_quiescence: CONTENDED` does not bear on any of it.
+
+### Next step if I am a fresh session
+
+1. `offer_shared_device` — with Switch, by M2 entry. Morpheus ruled it intended and opt-in (it has
+   a production caller in `vk/session.rs`), but its **recorded reason has expired**: the source says
+   the transfer cannot be written until the handle→VkBuffer seam is filled, and that seam is filled.
+   He explicitly did not rule that the flag should flip. Find the live reason for `OFF` (host memory
+   wearing a device handle: risk, no measured benefit) or re-decide it. *A default defended by a
+   reason its own documentation does not give is a default nobody has re-decided.*
+2. RAI-011, handed to Mouse (below) — check he has what he needs.
+3. `transfer.rs::device_buffer_for` is still uninvoked; `alloc_device_buffer_binds` still 0. That
+   is Switch's half to bind. Coordinate, do not build it.
+
+### `union_check.py --run` — RED, and it is not mine
+
+`python tests/union_check.py --run` returns `FAIL(condition=union_red)`: **154 failed / 276 passed
+/ 30 skipped / 9 xfailed** in one process (54 min). The dominant failure text is
+
+> `VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a
+> vacuous pass. Providers seen: ['CPUExecutionProvider'].`
+
+with the EP's own decline reason immediately above it:
+
+> `[unproven] no proof ledger entry for com.microsoft::SkipSimplifiedLayerNormalization/1+/...`
+
+**That is the ledger gate working.** The `ops` lane exercises forms the 9-entry
+`evidence/proof_ledger.jsonl` does not prove, nothing in `tests/` arms
+`ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN`, so the EP correctly declines and the op tests correctly
+refuse a vacuous CPU-only pass.
+
+**Attributed, not assumed.** I did not stop at the nearest available cause. I stashed
+`rust/src` + `rust/tools`, rebuilt release from the merge base, and ran
+`tests/ops/test_skipnorm.py tests/ops/test_shape_inference_delta.py`:
+
+| build | result |
+| --- | --- |
+| merge base, my changes stashed | 19 failed / 18 passed |
+| same commit, my changes applied | 19 failed / 18 passed |
+
+Identical. My work does not move this number in either direction. The remedy is either regenerating
+the ledger over the op-lane forms (`rust/tools/gen_proof_ledger.py`) or arming the hatch in
+`tests/ops/conftest.py` — **Mouse's gate and Trinity's harness, not mine**, and I have not touched
+either. Flagging it rather than fixing it in someone else's file.
+
+**Rebuilt before every verdict above.** Cargo's fingerprint does not notice a restore that
+preserves `LastWriteTime`, so each of the three states above was compiled, not assumed.

@@ -22,148 +22,8 @@
 - **Round 21 (2026-07-31T07:20:03-07:00) — Guard D proven to fire; harness joins the census** — **Trigger:** Guard D (`assert_vulkan_executed_runtime`) had raised `NameError: name 'pathlib' is not defined` at its first statement since the day it landed and had **never read a single profiling event**.
 - **Round 22 (2026-07-31T21:08:53-07:00) — the verdict becomes a record; MATCH made unrepresentable** — **Task:** implement §10.0's third metric amendment and §10.0.1 R13.
 
-## Round 20 (2026-07-31T00:26:22-07:00) -- Guard D: runtime-fallback vacuous-pass closed
-
-Trigger: Allocator::alloc(size=0) returns None for KV-cache [1,32,0,96] inputs. ORT prints EP_FAIL, falls back to CPU silently. get_providers() still shows EP. test_phi35_vulkan_matches_cpu_logits PASSED (CPU-vs-CPU). Fourth fallback trap instance.
-
-Fixes (commit 5b3518b):
-- _models.py: count_vulkan_executions_from_profile, assert_vulkan_executed_runtime (Guard D)
-- test_phi35.py: Guard D in 4 tests (matches_cpu, cross_run, f16_logits, multirun_stable)
-- test_wiring_census.py: model_output_equivalence validity condition documented
-- Device labels fixed (commit 00c576c): selector 0=NVIDIA, selector 1=Intel
-
-Needed from Switch:
-1. alloc.rs: zero-size alloc must return valid zero-length buffer, not None
-2. Remove #[ignore] from ep_messenger_fires_for_planted_fence_leak
-
----
-
-## Round 23 (2026-08-01) — R13 reaches the subprocesses; criterion 3's frame gate
-
-Merged `origin/main@efbf18c` first (fast-forward; the branch was 10 commits behind and every
-number below is post-merge). Round 22's work — `_verdict.py`, `test_criterion10.py`,
-`test_verdict.py`, `test_r13_lane.py`, the `counters.rs`/`epctl.rs` record splice — was still
-uncommitted in the worktree; it survived the merge, was re-verified against the rebuilt DLL,
-and is committed here together with this round.
-
-### 1. Criterion 3's last open item — closed, both devices
-
-Switch: *gate the wrapper on `Instance::validation_armed()` so an unarmed machine reports
-ERROR(instrument) rather than green.* Done, and the `#[ignore]` stands — his reason is right:
-a process-wide `EP_VALIDATION_ERROR_COUNT` with an instance-scoped messenger is only sound
-when the test owns the process, so subprocess isolation is the mechanism, not a workaround.
-
-`epctl --probe-validation` is the in-lane predicate. `classify_validation_probe()` ->
-ARMED / LAYER-ABSENT / NO-LOADER / PROBE-ERROR, and **exit 0 with no ARMED line is
-PROBE-ERROR** — exit 0 alone is not the observation. `require_validation_armed()` raises
-`InstrumentError` for everything else, so an unarmed machine is neither green (the old
-`pytest.skip`) nor a detection (which would accuse Switch's messenger of a defect the
-machine made unobservable). R12: UNOBSERVABLE, never 0.
-
-**Not a code reading.** `test_the_armed_gate_changes_its_answer_when_the_layer_is_removed`
-strips `VK_LAYER_PATH` on a real epctl process here and requires the classifier to change its
-answer: ARMED -> LAYER-ABSENT, gate refuses. If a loader still armed under the redirection the
-test raises `InstrumentError` rather than passing — a simulation that did not take establishes
-nothing.
-
-Both devices: `EP_VALIDATION_ERROR_COUNT = 1`, frame ARMED checked first. 3 passed each.
-
-`classify_plant_run()` splits the control's own transcript three ways. The branch that
-matters: **no artifact line at all is ERROR**, because a control that crashed before the plant
-and a control that watched the plant fail both exit non-zero — a bare `assert returncode == 0`
-scores the crash as a detection, which is the Guard D `NameError` verbatim. A count of `0` IS
-an observation (armed frame checked first) and is the only genuine FAIL in the table.
-
-### 2. The census timeout — and outages leave the detection channel
-
-`test_wiring_census` shelled out on 60 s / 120 s budgets calibrated for a quiet machine.
-`run_subprocess_checked(quiet_seconds=N)` now inflates every budget by 6.0 (Niobe's measured
-worst case is 4.4×; the extra is headroom, because over-waiting costs minutes and under-waiting
-costs a fabricated regression the whole team then investigates) with a 120 s floor and a
-`$ONNXRUNTIME_EP_VULKAN_TIMEOUT_SCALE` override that ignores junk values rather than falling
-to zero.
-
-`TimeoutExpired` / `FileNotFoundError` / `OSError` become `InstrumentError`. An unobservable
-mechanism records `INSTRUMENT-ERROR (...)` and **never enters `failures`**, so a timed-out
-mechanism is not reported as UNWIRED. Any instrument error then raises after the
-mandatory-wired assertion — ordering deliberate: a real UNWIRED outranks an outage elsewhere,
-because it was actually observed.
-
-Selector 1: **2 passed, 1 xfailed in 468 s** — nearly 4× the old 120 s budget for one of its
-two subprocesses, which is exactly why it had to be `--ignore`d. Selector 0: 45 s warm, census
-line now carries the frame: `verdict=MATCH executed_by={'CPUExecutionProvider': 24,
-'VulkanExecutionProvider': 3} source=ort_profile permits_triple=True`.
-
-No assertion anywhere in this harness compares a wall-clock duration to a threshold. A timeout
-is a ceiling on waiting, not a measurement.
-
-### 3. XPASS is a fourth token, and it was in the outage bucket
-
-The full run classified `test_gqa_present_kv_shape[0]` — an `xfail(strict)` that PASSED — as
-ERROR(instrument), i.e. into the bucket labelled *none of these is evidence about the EP*. It
-is evidence about the EP: **the condition the xfail recorded has been fixed.** R13's third
-corollary is that a result contradicting a prediction deserves more scrutiny than one
-confirming it, and burying somebody else's good news in the outage bucket guarantees it gets
-none. `XPASS(stale expect)` is now its own token with its own falsifier and a paired control
-that fails if the other three states stop being reachable.
-
-**Switch:** `test_gqa_present_kv_shape[0]` XPASSes on selector 1. Your zero-size-alloc fix
-appears to have landed; the xfail reason (`absent optional inputs produce size=0 alloc
-requests; EP falls back to CPU`) is stale for that parametrisation only. Yours to remove.
-
-### 4. The harness screen could not see the guards this project now rests on
-
-`audit_instruments.py` scanned `ops/_models.py` alone, so it reported *9 harness instruments*
-while everything §10.0's third amendment and R13 rest on sat outside its frame — a census
-reporting a number about a world it has not surveyed. Added `ops/_verdict.py` and the
-`classify_` prefix; 12 instruments now, `require_validation_armed` **SCREENED**.
-
-**Stated limit rather than a silent exclusion:** `classify_validation_probe` and
-`classify_plant_run` read UNFALSIFIED and the screen is wrong about them. Its polarity model
-is raise-based; these are total functions that return the token instead of raising it. The
-generalisation is mechanically decidable and not implemented in this pass — **value-polarity:
-screened iff a non-gated test asserts two different return values for two different inputs.**
-In `hand.harness_notes`. Baseline rewritten; it also absorbs `offer_shared_device` becoming
-wired (Switch, §6.5), which I looked at rather than ignored.
-
-### 5. A stale literal that would have punished progress
-
-`test_verdict.py` pinned `"353"` as the Phi-3.5 fusion ratio. It is 355 of 363 since Mouse
-claimed `SimplifiedLayerNormalization` and `Gather`, so that assertion would have gone red for
-the EP doing MORE work. Replaced with the property: the description must carry
-`<claimed> of <total> graph nodes` whose claimed figure exceeds 100× the island count.
-
-Same discipline in `test_criterion10.py`, and it paid: the CPU count fell **30 -> 24** on both
-devices this round, for exactly that good reason. A suite that pinned `30` would be red.
-
-### Results (post-merge, DLL rebuilt from this tree)
-
-| lane | selector 0 (RTX 4060) | selector 1 (Iris Xe) |
-|---|---|---|
-| `test_criterion10.py` | 2 passed — 3 VulkanEP / 24 CPU, argmax 30751 ×3, identical, MATCH | 2 passed — identical figures |
-| `test_validation.py` | 3 passed (3a/3b/3c) | 3 passed + 3d gate falsifier |
-| `test_wiring_census.py` | 2 passed, 1 xfailed, 45 s | 2 passed, 1 xfailed, 469 s |
-| full `tests/ops` | — | **351 passed / 32 failed** in 1018 s, census INCLUDED |
-
-R13 splits that 32 into **31 FAIL(condition) + 1 XPASS**, and the 31 are one cause: §8.9
-evidence gating declines `Min`/`Max`/`Cast`/comparisons/bitwise as `[staged]` against a suite
-that still asserts they are claimed. Policy/expectation mismatch, still not mine to patch, and
-I am still not loosening 31 assertions to make a suite green. Justin's baseline was 32 failed
-/ 272 passed with the census `--ignore`d: **same failures, 79 more passes, census back in.**
-
-GPU-free: 95 passed (`test_r13_lane` 37, `test_verdict` 44, `test_harness_census` 7,
-`test_guard_d` 12 — ERROR(instrument) 0). Rust: epctl 13, counters 10,
-`validation_control` 3. `bench/test_contention.py` 62.
-
-### Owed to others
-- **Switch:** the stale GQA xfail (above). `counters.rs` additive splice from Round 22 stands.
-- **Niobe:** vocabulary decision from Round 22 plus this round's timeout wrapper — if a bench
-  probe shells out, `_verdict.run_subprocess_checked` gives it a contention-tolerant budget
-  and turns a hang into ERROR(instrument) instead of a fabricated red.
-- **Tank:** `audit_instruments.py` extended again, additively (two entries in the file list
-  and one regex alternative). Say the word and I move the harness domain out of your file.
-- **Me, next:** value-polarity in the harness screen; then `assert_matches_cpu`, still
-  UNFALSIFIED and still the correctness oracle; then wire `assert_qdq_reference_oracle_safe`.
+- **Round 20 (2026-07-31T00:26:22-07:00) — Guard D: runtime-fallback vacuous-pass closed:** `Allocator::alloc(size=0)` returned `None` for KV-cache `[1,32,0,96]` inputs; ORT printed `EP_FAIL`, fell back to CPU silently, `get_providers()` still showed the EP, and `test_phi35_vulkan_matches_cpu_logits` PASSED (CPU-vs-CPU) — fourth fallback-trap instance. Fixed via `count_vulkan_executions_from_profile`/`assert_vulkan_executed_runtime` (Guard D) wired into 4 phi35 tests; device labels corrected (selector 0=NVIDIA, selector 1=Intel). Needed from Switch: zero-size alloc must return a valid zero-length buffer, not `None`.
+- **Round 23 (2026-08-01) — R13 reaches the subprocesses; criterion 3's frame gate closed both devices:** `epctl --probe-validation` → `classify_validation_probe()` → ARMED/LAYER-ABSENT/NO-LOADER/PROBE-ERROR (exit 0 with no ARMED line is PROBE-ERROR, not green); `require_validation_armed()` raises `InstrumentError` so an unarmed machine is neither green nor a false detection (R12: UNOBSERVABLE, never 0) — verified by a real test that strips `VK_LAYER_PATH` and requires the classifier's answer to change. Added `run_subprocess_checked(quiet_seconds=N)` with a 6.0× contention multiplier (Niobe's measured 4.4× worst case + headroom) and 120s floor, turning timeouts into `InstrumentError` rather than false UNWIRED. Discovered `XPASS` (an `xfail(strict)` that passed) was being misclassified into the outage bucket — R13's corollary that a result contradicting a prediction deserves scrutiny means good news shouldn't be buried there either; gave it its own token. `audit_instruments.py` extended to see `ops/_verdict.py` (12 instruments now). Replaced a stale pinned `"353"` fusion-ratio literal with a property assertion (actual count moved 355→over the session as Mouse's claims grew, then CPU count fell 30→24 for a good reason — a suite pinning literals would have gone red on progress). Post-merge results: `test_criterion10.py`/`test_validation.py`/`test_wiring_census.py` all passing both devices; full `tests/ops` **351 passed / 32 failed** in 1018s — R13 splits the 32 into 31 FAIL(condition, policy/expectation mismatch on §8.9 evidence gating, not mine to patch) + 1 XPASS; no wall-clock assertion anywhere in the harness.
 
 📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
 
@@ -245,3 +105,95 @@ is stronger but the targeted form is the one people will actually run, and it ca
 where the record now emits six. Morpheus's file.
 
 Decision record: `.squad/decisions/inbox/trinity-union-check-and-guard-default.md`.
+
+📌 Team update (2026-08-02T02:03:46-07:00): Morpheus named R12's fourth generalisation — for a test result, the frame is the binary that ran it — from two of Mouse's self-caught near-misses this session: a build in a shared worktree that linked a sibling's in-flight file (nearly reported as a false ALL-DECLINED finding), and Copy-Item preserving LastWriteTime, which let cargo silently keep running a mutated binary after a restore-from-backup. Your own union-check work independently reproduced the same failure shape (a stale DLL in a shared worktree nearly read as an UNWIRED §8.9 ledger) — worth checking any mutation harness you build touches or hashes a restored file and asserts the rebuild happened before reading a result as a control. — decided by Scribe
+
+---
+
+## Round 28 — criterion 11(c), and which `model_output_equivalence` is of record (2026-08-02T03:10-07:00)
+
+### Standing obligation, executed first
+Fetched, merged `main`, then **rebuilt and hashed either side** — R12 generalisation 4, which
+Morpheus minted from my own round-27 stale-DLL scare. `3B0C0ACD7AA7...` -> `8D07173F8AE5...`,
+`rebuilt=True`. No reading was treated as a control before that assertion passed.
+The merge aborted on regenerated `bench/results/wiring_census-dev{0,1}.json` and an untracked
+`bench/results/census/`; both are outputs, discarded, merge clean.
+
+### Criterion 11(c): `ledger_hits` moves with its input
+Three tests in the census lane, not behind `#[ignore]`:
+`test_ledger_hits_moves_with_its_input`, `test_ledger_key_discriminates_optional_inputs`,
+`test_ledger_digest_refusal_is_in_the_lane`.
+
+I **probed nine arms before writing a single assertion**. An assertion written ahead of the
+reading is a test of my guess, not of the mechanism — and it mattered here, because my brief
+was wrong about which control moves the counter.
+
+The **shape-class arm is load-bearing**: static `mul_f32` vs dynamic-extent `mul_f32` is the
+same op, dtype, optional-input set and one-node enumeration; only the key's `shape_class`
+changes, and `ledger_hits` goes `1 -> 0`. The enumeration is identical work in both arms, so a
+counter derived from the enumeration could not have moved. That is the falsifier.
+
+The **MatMulNBits `scales` / `scales+zero_points` pair does NOT move `ledger_hits`** — both
+proven, both `HIT`. Reporting it as a mover would have been R11 exactly. Its real content is
+that they must be two keys, asserted on the key string: `differing == [2, 5]` over the six
+components; index 5 is the populated-optional-input set (the 2026-07-30 all-zero-logits defect).
+
+The **digest-identical arm is the control**; without it every other assertion would pass
+against a check that rejects everything. Its failure classifies `ERROR(instrument)`.
+
+**Both arms demonstrated** — `probe_ledger_mutations.py`, three mutations, all CAUGHT on
+**both** devices. Quoting failure text, not counts (R13).
+
+`ledger_lookup` promoted into `_MANDATORY_WIRED`; `_KNOWN_UNWIRED_M0` emptied (kept as a seam).
+A ledger that stops being consulted now fails the lane.
+
+### `model_output_equivalence`: `MATCH` beside `UNMEASURED`
+Not two sources disagreeing. The EP has no CPU oracle; `to_json()` defaults the field. The
+nested value is **a field nobody set**. The mechanical tell needs no judgement:
+`write_equivalence_record` writes the token and the record in one call, so a token with no
+record beside it was never written by a comparison — and in the phi35 artifacts the record key
+is absent. The rule keys off **record presence, not token value**: keying off
+`token == "UNMEASURED"` would read the field under suspicion, and would mislabel a genuine
+comparison that legitimately concluded `UNMEASURED`. Both polarities asserted.
+
+It did not "go" null — the phi35 bench path never calls `write_equivalence_verdict`, so that
+copy has always been the default. Per R12 the reconciliation is `UNOBSERVABLE` **with a reason**;
+`agreement = (outer == inner)` would have read `DISAGREE` and sent a reader after a
+contradiction that does not exist.
+
+**R9 A5 turned on my own check.** My first run flagged ~20 historical artifacts. Frozen,
+unowned, non-regenerable — a permanently red gate gets loosened, so I demoted them to a printed
+`PRECONDITION` and scoped the gate to the 4 certified files. Two *genuine* contradicting
+readings stay a finding everywhere.
+
+### Verified
+Intel: census + equivalence + stall-guard 26 passed, `ERROR(instrument): 0`.
+NVIDIA: census 6 passed, `ERROR(instrument): 0`. Mutation probe PASS both devices.
+Stale-stamp falsifier fired with the right text; artifact restored.
+`audit_instruments.py --check`: `CENSUS VERDICT: PASS`.
+
+### Routed, not edited
+`bench/phi35.py` should stamp `model_output_equivalence_authority` at write time so it survives
+regeneration — **Niobe's file**. I stamped the four existing certified artifacts by hand.
+`docs/DESIGN.md` S10.0 attribution_witnesses example still shows two keys where six are emitted
+— Morpheus's file, still open.
+
+Decision record: `.squad/decisions/inbox/trinity-criterion11c-and-equivalence-authority.md`.
+
+### Addendum — a defect the 11(c) arms introduced, caught by their own artifacts
+The tracer witness path is shared across census arms. A faulted-ledger arm dispatches
+nothing by construction, so it unlinked the clean arm's tracer file and wrote none — a
+**false UNWIRED available purely by running later**, invisible in a green lane and visible
+only as a tracked artifact missing from `git status` after six passing tests. Fixed with
+`trace=None` defaulting to the historical behaviour (no required kwarg — round 27's `guard`
+lesson). Both arms shown: absent before, present on both devices after.
+
+### union_check: FAIL(condition=union_red), and the condition is not mine
+153 failed / 277 passed on the merged tree. Attribution before alarm: `git diff main --
+rust/ evidence/ ops/` is empty, and the same subset scores **21 failed / 18 passed
+identically** in main's own checkout with main's own DLL. The decline text is
+`[unproven] no proof ledger entry for ...`. So main is red on its own — the ledger gate is
+enforcing against a 9-entry ledger — and that is Mouse's ground, reported not touched.
+R13: quote the failure text, and an inherited condition is not a detection about my branch.
+
+Commit `e39bdd6` on `squad/trinity`, not pushed.
