@@ -2155,3 +2155,115 @@ can only return true is not a check, so each now also asserts the row is NOT
 me too: serialising would have hidden a shipping defect with the identical symptom and the opposite
 fix. I had used `--test-threads=1` to characterise the counter flake in session 42; that was a
 diagnostic, and it should not become how the suite is run.
+
+---
+
+## Session 44c — 2026-08-01 — the PROVIDERS key now selects a device (`1d2a663`)
+
+Sequencing block lifted: Tank's `MIXED` landed on main at `ca283a9`. Merged (one conflict in
+`transfer.rs` — he added a function-local `DeviceMemoryProvider as _` where I had removed the
+file-level import; took his side, then clippy caught that one of his two local imports was itself
+unused because that test calls inherent methods on the concrete `RecordingProvider`).
+
+### The fix
+
+`PROVIDERS` is a `HashMap` keyed by the factory's advertised device index; `OwnedDevice::create`
+resolved through `select_device` and never read its argument. Every key produced the same device.
+
+**The previous repair was not careless and it is worth understanding why.** Indexing the best-first
+sorted list *with* a physical enumerate index had put the mirror on the wrong GPU (Tank, 07-30), and
+ignoring the index fixed that. But *"don't index with it"* and *"don't read it"* are different
+instructions, and only the first was needed. The two spaces meet at `position_of_physical` — the
+same seam `VulkanSession::create` already uses for ORT's binding — so translate, don't ignore.
+
+Split out `resolve_provider_position` with no Vulkan in it, returning
+`Translated(pos)` / `Untranslatable(pos)` rather than a bare `usize`. **The two-variant return is
+the point**: the fallback position is the same number the old code always produced, so collapsing
+them leaves a caller unable to distinguish a working map from an inert one — which is the state we
+were in for a week.
+
+### Scope — state this precisely, it is narrower than it sounds
+
+`create` is reached only on `ensure_registered`'s `NoOffer`/`Ambiguous` arms. When a session has
+offered a device, the §6.5 `SoleDevice` identity rule adopts it and `create` never runs. **So this
+does NOT change `alloc_device_frame` on the ordinary pinned production path**, which was already
+`SHARED` by identity. What it changes is the fallback path — which is exactly where Tank's probe
+landed (no session ⇒ `NoOffer` on both indices).
+
+### Falsifiers — three of four fail on the old code, and I checked rather than assumed
+
+Restored the old semantics temporarily and re-ran:
+`distinct_provider_keys_resolve_to_distinct_devices`, `a_key_that_names_no_capable_device_...` and
+`agreement_between_the_two_spaces_is_permitted_but_never_relied_on` **FAIL**.
+
+`a_pinned_offer_translates_onto_the_selectors_own_position_on_both_selectors` **PASSES on the old
+code** — because in the pinned case the right answer *is* `selected`, which is what the old code
+always returned. It is kept (§6.5 depends on the invariant) but its doc comment now says in as many
+words that it is **not evidence for this fix**. A test whose polarity I have not checked is a
+printed opinion, and this is the second time this week I have caught one of mine.
+
+### The artifact — `bench/results/provider_key_selects_probe.txt`
+
+`probe_provider_key_resolution` enumerates capable devices and prints the table. It creates no
+logical device and dispatches nothing, so it is admissible on a contended box — counts and
+identities, not timings.
+
+```
+best-first position 0 -> physical enumerate index 1 -> 'NVIDIA GeForce RTX 4060'  <- select_device
+best-first position 1 -> physical enumerate index 0 -> 'Intel(R) Iris(R) Xe Graphics'
+key 0: was NVIDIA (old rule) -> now Intel   [Translated(1)]
+key 1: was NVIDIA (old rule) -> now NVIDIA  [Translated(0)]
+2 key(s) -> 2 distinct device(s).  Old rule: 2 key(s) -> 1 device.
+```
+
+**The two index spaces are inverted on this desk in fact, not hypothetically** — the RTX is physical
+1 / position 0. That is why every constructed test above uses `[1, 0]`.
+
+And Tank's detector fires. His probe read `SPLIT-DEVICE`/`SPLIT-DEVICE` with *"this box cannot
+exhibit the mixed frame"*; on the same build it now reads:
+
+```
+device_index 0: frame now "SPLIT-DEVICE", 1 declared
+device_index 1: frame now "MIXED", 2 declared
+FINDING: production declared 2 frames in one process.
+```
+
+**The sequencing constraint was right and this is the evidence.** `MIXED` landed first; this change
+made it observable in production code within the hour rather than by unit construction. Had the
+order been reversed, a two-provider run would have described a two-`VkDevice` population under a
+single frame label — an R12 violation shipped *by a correctness fix*.
+
+503 passed / 0 failed. `cargo clippy --release --all-targets -- -D warnings` green.
+
+### Also: `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` default re-justified (record filed)
+
+Morpheus ruled the default intended but not re-decided. The recorded reason ("the handle→VkBuffer
+seam is not filled") **has expired** — the seam is filled, 6 binds measured on both selectors.
+
+The real blocker is one level up and the docs conflate them: `vk::session` still binds buffers it
+allocated itself and reads through `host_backing_for`, so the device buffer stays a mirror.
+`alloc_device_authoritative_spans` reads **0**, and that zero is *measured* — `allocator.rs:681`
+evaluates every device-backed span at free against `buffer.is_some() && staging.is_none()`, and
+counts evaluations separately from outcomes, so a measured zero is distinguishable from an unwired
+one.
+
+Recommendation: **keep it off, with the reason replaced.** New reason: turning it on pays full cost
+(device allocation + a bus write per copy-in) for a benefit no counter can currently report.
+Second, independent reason: the leaked production device makes the shutdown-validation gate
+`UNOBSERVABLE`, and device-backed allocation is precisely the path that gate would police — enabling
+it by default while its safety net cannot fire is the wrong order. The two reasons should not be
+collapsed; if the residency work lands, the second still stands.
+
+Filed to main's inbox: `switch-device-memory-default-rejustified.md`. Needs Tank's half (counter
+surface readiness off this desk) before M2 entry.
+
+### Next step for whoever resumes
+
+1. **The named change that flips the default**: make `vk::session` bind `device_buffer_for`'s buffer
+   instead of allocating and re-uploading its own, then run with the flag on and read
+   `alloc_device_authoritative_spans`. **Non-zero is the entire argument.** Engine-side, mine.
+2. Still GPU-bound and waiting on a quiet window: the certified NVIDIA packed-loads A/B (attempted
+   3x, never obtained — `SOLE_TENANT` twice yet still `MARGINAL_TAIL`), and *does foreign GPU work
+   move `gpu_steady_tail()`?*. Do not quote the uncertified 11.5673 ms archive.
+3. The packed-loads claim stands **in counts** (`7a1d12f`: 465,297,408 -> 116,324,352 InB load
+   instructions) and needs no clock, so it is quotable as-is.
