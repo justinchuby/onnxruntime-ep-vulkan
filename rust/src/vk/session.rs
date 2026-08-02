@@ -976,25 +976,39 @@ impl VulkanSession {
                             patched_inputs[slot].desc = Some(td);
                         }
                     }
-                } else if binding_token >= (n_plan_inputs + n_plan_outputs) as u64 {
-                    // Intermediate input from a prior kernel in this island.
-                    if let Some(td) = computed_descs.get(&binding_token) {
-                        patched_inputs[slot].desc = Some(td.clone());
-                    }
+                } else if let Some(td) = computed_descs.get(&binding_token) {
+                    // Produced by an earlier kernel in this island. Two token ranges reach here
+                    // and both are ordinary:
+                    //
+                    // * `>= n_plan_inputs + n_plan_outputs` — a pure intermediate, consumed only
+                    //   inside the island.
+                    // * `[n_plan_inputs, n_plan_inputs + n_plan_outputs)` — an island *output*
+                    //   that is also consumed internally. This branch previously did not exist;
+                    //   the range was left symbolic under a comment calling it "theoretically
+                    //   possible but unusual" and promising the translate handler would "degrade
+                    //   gracefully". It is island #15's normal shape — every residual stream in
+                    //   Phi-3.5 has it — and the handler does not degrade, it refuses, which is
+                    //   the correct response to a `None` it cannot interpret. The result was 323
+                    //   claimed nodes that executed zero times.
+                    //
+                    // The distinction the two ranges once carried was never about where the desc
+                    // comes from; it is the same producer either way. Keying off "did a prior
+                    // kernel produce this token" instead of off the token range is what removes
+                    // the case that had no branch.
+                    patched_inputs[slot].desc = Some(td.clone());
                 }
-                // Tokens in [n_plan_inputs, n_plan_inputs+n_plan_outputs): external outputs
-                // of this island used as inputs by another kernel — theoretically possible but
-                // unusual. Leave as symbolic (None); the translate handler will degrade gracefully.
+                // A token that reaches neither arm has no producer at all. It stays `None` and
+                // the translate handler refuses, which is correct: nothing here infers a desc
+                // from a sibling slot. The information is restored at the point it still exists
+                // (the producer, below), not reconstructed at the point it was lost.
                 //
-                // MEASURED 2026-08-02 (Mouse), and it is not unusual: on the real Phi-3.5 this
-                // is the branch island #15 takes. `/model/layers.0/input_layernorm/LayerNorm`
-                // slot 0, token 5, with n_plan_inputs=5 and n_plan_outputs=2 — the
-                // `embed_tokens/Gather` result is an island output AND an internal edge. The
-                // handler does not "degrade gracefully"; it refuses with
+                // MEASURED 2026-08-02 (Mouse), which is how the missing case was located:
+                // `/model/layers.0/input_layernorm/LayerNorm` slot 0, token 5, with
+                // n_plan_inputs=5 and n_plan_outputs=2 — the `embed_tokens/Gather` result is an
+                // island output AND an internal edge, and the handler refused with
                 //   Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at
                 //   compile time")
-                // which is correct of the handler, so the island is dropped and the whole model
-                // falls back to the CPU EP. Owner: Switch (`rust/src/vk/`).
+                // so the island was dropped and the model fell back to the CPU EP.
             }
 
             let patched_node = NodeDesc {
@@ -1036,6 +1050,17 @@ impl VulkanSession {
                             actual_output_byte_sizes[j] = sz as u64;
                             actual_output_shapes[j] = desc.shape.clone();
                         }
+                        // An island output can also be consumed by a later kernel *inside* this
+                        // island — a residual stream is the ordinary case, not an exotic one:
+                        // `SkipSimplifiedLayerNormalization` emits the skip sum as an island
+                        // output and the next block reads it. Record the desc for that reader.
+                        //
+                        // This is the same `desc` the two lines above trust for allocation, so
+                        // the reader is given exactly what the allocator was given. Nothing is
+                        // inferred here: a consumer that cannot find a producer still gets
+                        // `None` and still refuses, which is what keeps a genuinely absent
+                        // producer distinguishable from a present one.
+                        computed_descs.insert(token, desc.clone());
                     } else if token >= (n_plan_inputs + n_plan_outputs) as u64
                         && token < first_temp_token as u64
                     {
