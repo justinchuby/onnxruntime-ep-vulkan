@@ -136,3 +136,175 @@ llama.cpp is MIT-licensed, so its GLSL/SPIR-V shader source is legally readable 
 **Overall verdict: 🔴 unchanged.** Correct output on three consecutive runs is real progress and does not discharge a disclosure obligation — those are different claims, and RAI-008's falsifier was written to be about disclosure, not about correctness, specifically so that this day would not be mistaken for a discharge.
 
 **Falsifier for RAI-008 (extended):** see the three-part test above — (a) criterion 11 MET with planted CI control, (b) session-creation disclosure §8.9.7 observed to run via a produced artifact, (c) a two-polarity-verified runtime WARN on claimed-node `Compute()` failure. **Falsifier for Ruling 2:** the mechanism is falsified if a planted Compute-failure control fails to produce the WARN, or if the WARN fires on a normal successful run (false positive) — either observation means the mechanism is not what this ruling requires. **Falsifier for Ruling 3:** either named trigger firing — an undisclosed tolerance widening, or a device-conditional precision choice — converts this from "not yet" to an active finding; their absence is what keeps it advisory rather than critical.
+
+---
+
+## Audit Entry — 2026-08-02T03:21:20-07:00
+
+**Review type:** Fresh pass at Justin's request via coordinator — re-status RAI-008 against material progress since 2026-08-01; four new RAI-surface items; sanity check of the coordinator's own conduct this session
+**Files reviewed:** `docs/DESIGN.md` (current, last revised 2026-08-02T02:02:23-07:00 — criterion 10 closing ruling, criterion 11 table row with the four discharge conditions and their status, criterion 12's four-conjunct enumeration, §10.0 obligation 8/8b the device-state companion, wiring census with `broken_commitment_warn` and `net_benefit_gate`), `.squad/decisions/inbox/morpheus-criterion-10-closes.md`, `.squad/decisions/inbox/trinity-criterion11c-and-equivalence-authority.md`, `.squad/decisions/inbox/niobe-per-dispatch-is-not-a-tenancy-signature.md`, `git log` (main at `57d7018`), branch `evidence/criterion-rerun-null-witness`
+**Requested by:** Justin Chu, via coordinator
+
+### Context
+
+Criterion 10 (model-level correctness, attributed) closed tonight on the condition written in
+advance: real Phi-3.5, three consecutive attributed `MATCH` runs in one session, both devices,
+`executed_by` from ORT's own profiler (3 `VulkanExecutionProvider` island executions vs 24 CPU),
+`cross_run_identical_to_run1 = true` on all three. Main: Rust 459/0 across ten targets, Python
+union 479/0, clippy green, 80 lane checks, both device wiring censuses `unwired: []`. Criterion 11
+(the proof ledger) is **closer, not closed** — Morpheus refused the cheapest satisfaction ("a ledger
+generated from the claim table would make the check unable to fail") and wrote four discharge
+conditions before the tally could move: (a) provenance and (d) the three-token miss path are DONE
+(Mouse); (b)(iii) the digest-refusal control is DONE (Mouse); (c), Trinity's — `ledger_hits` shown
+to move with its input — is still open. Criterion 12 (wiring census) was over-claimed as closed by
+the coordinator and corrected by Morpheus the same night, on the coordinator's own report.
+
+### RAI-008 — re-status against the extended (2026-08-01) falsifier
+
+My falsifier from the last pass has three parts. Checking each against tonight's artifact, not
+against the prose describing it:
+
+| Part | Requirement | Status tonight | Evidence |
+|---|---|---|---|
+| (a) | Criterion 11 MET — no form claimable without a ledger entry, planted CI control | **Still NOT MET** | Table row 11: "Not met — scaffolding only," open specifically on Trinity's (c). Three of four discharge conditions landed; the row is correctly still open, and correctly not closed by the agent who supplied the artifacts (Morpheus's own ruling on this exact temptation, restored this session after a merge nearly dropped it) |
+| (b) | Session-creation disclosure (§8.9.7) — INFO per claimed form + proof key/ledger entry, WARN on UNMEASURED/DIVERGENT | **Still NOT MET, in flight** | §10 criterion-list text still reads "Owner: Tank at session creation" with no artifact produced yet; the escape-hatch WARN (criterion 11 item (c) in the older enumeration) is a narrower, already-built cousin — it discloses only when the hatch is manually enabled, which is not this obligation |
+| (c) **[new since last pass]** | Runtime WARN on a *claimed* node's `Compute()` failure, two-polarity control | **MET** | Wiring census now carries `broken_commitment_warn` (Tank): planted `ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE` reads `channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1` against a clean run reading `channel='UNOBSERVABLE' broken_commitments=0` — exactly the two-polarity discipline my falsifier asked for, and it is in the census, not behind a flag |
+
+**Verdict: RAI-008 remains 🔴 OPEN. It is not discharged — two of three parts are unmet — and I am
+recording, without softening either direction, that one part I added last session has actually
+landed, verified, in the shape I specified.** This is the correct way for a 🔴 to move: not by the
+news being good, but by an instrument I named actually going green. I am glad to write that
+sentence for once instead of a caution against writing it.
+
+**RAI-011 (single-cluster bypass) — update.** The census now reports `net_benefit_gate: EVALUATED
+clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0` — bypass
+and override are now separate, typed fields instead of sharing one `0` (R12; this is the exact fix
+RAI-011 asked for). **Downgrading RAI-011 to resolved-as-instrumented**: the ambiguity I flagged
+(bypassed vs. all-rejected reading the same) is gone; whether the gate's *economics* are right on a
+single-island graph is Mouse's and Morpheus's question now, not a disclosure gap.
+
+### New RAI surface, traffic-lighted
+
+**1. The `CLAIM_UNPROVEN` escape hatch — 🟡 Advisory, not 🔴.** The hatch cannot silently claim
+unproven forms: it takes a list of exact proof keys only (a planted `*`, `1`, and bare op-type are
+all rejected — C1's enforcement shape), logs at WARN naming every enabled key, and
+`unproven_forms_enabled` fails `epctl --check-counters` without an explicit `--allow-unproven`. That
+is real disclosure infrastructure, not a name on a settings screen. **The residual risk is real and
+worth naming precisely: a user who is annoyed by the WARN can pass `--allow-unproven` once and
+silence it for good**, at which point the escape hatch behaves exactly like the pre-ledger world for
+every key on that list. This is not a defect in the mechanism — an escape hatch that could not be
+disabled would not be an escape hatch — but it means the ledger's guarantee is only as strong as the
+friction around `--allow-unproven`. **WHAT would raise this to 🔴:** if `--allow-unproven` ever
+becomes settable via a config file, environment default, or anything other than an explicit
+per-invocation flag a human types, the friction is gone and the hatch becomes the silent path again.
+**Recommendation, not a blocker:** `--allow-unproven` should require a reason string logged beside
+the enabled-keys line (mirrors this project's own `DeclineCode` discipline — every decline already
+carries a reason, an override should carry one too), and CI should refuse to green a lane that uses
+it, exactly as `epctl` already refuses without the flag. Owner: Tank, non-blocking.
+
+**2. Is there an RAI obligation on performance claims for an inference accelerator, beyond
+Morpheus's engineering gate? Yes, and I recommend writing it into policy rather than leaving it as
+one project's discipline.** Morpheus's obligation (no timing figure quotable outside `MATCH`, the
+device-state companion, `STEADY_UNCERTIFIED` as a fourth state, the two-polarity Guard-D pattern
+applied to `gpu_steady_tail`) is the engineering version of a principle that is squarely RAI's: **an
+accelerator's performance claim is a claim a user acts on** — it informs purchase decisions, capacity
+planning, and trust in every other number the project publishes. `baseline_certified` being the
+cleanest run by every dispersion measure the project owns and still 21.4× wrong, caught only by the
+device-state companion, is the sharpest specimen available anywhere in this project of *engineering
+rigor discharging what would otherwise be an RAI failure* — a number that looked unimpeachable by
+every test available and was wrong by more than an order of magnitude. **My recommendation: add a
+policy line under Deceptive Patterns in `.squad/rai/policy.md` — "A performance figure for an
+accelerator or ML system is an ungrounded factual claim (🔴) unless it carries the record of the
+instrument that could have contradicted it."** This does not change today's practice, which already
+meets that bar; it makes durable what is currently one engineer's vigilance, so that the standard
+survives a personnel change or a rushed milestone in a way a discipline that lives only in one
+person's rulings does not. **Trigger for treating this project's own practice as falling short:** any
+future benchmark quoted without its device-state companion or its `MATCH`/attribution frame.
+
+**3. Intel iGPU performance is permanently uncertifiable on the hardware in this project's matrix,
+and that is a disclosure gap nobody has named as one yet — 🟡 Advisory, escalating to a hard
+pre-publication gate.** §10.0's obligation 8 already establishes that a platform with no clock
+telemetry reports `STEADY_UNCERTIFIED` forever, and names Intel's iGPU as *more*, not less, exposed
+(shared power budget with loaded CPU cores). If that is durable — no counter, no WMI class, no tool,
+no Vulkan query surfaces a usable device clock on this hardware — then **every performance figure
+this project will ever publish is NVIDIA-only, permanently, and a user on Intel silicon receives an
+EP whose speed characteristics on their own hardware can never be stated.** This is not currently a
+violation because no performance figure has shipped publicly yet (Morpheus's own withdrawal
+discipline has kept it that way). **It becomes a blocking disclosure requirement, not merely
+advisory, the day any performance figure ships publicly (README, release notes, PERF.md marked
+final rather than in-progress):** that artifact must state, explicitly and not in a footnote, that
+timing figures are certified on NVIDIA only and that Intel iGPU performance is and will remain
+uncertified absent new instrumentation — the same prominence Morpheus already requires for the
+wall-clock ratio itself (§10.0 disclosure obligation, "never omitted, including when it is worse
+than 1.0"). Owner: Link to confirm the "permanently" claim holds after a genuine cross-platform
+search (WMI, `NVML`-equivalent, `VK_EXT_calibrated_timestamps` extensions, driver-specific counters)
+before this is written as a permanent fact rather than a current one; Niobe/PERF.md to carry the
+disclosure text once a figure ships.
+
+**4. `rust/src/trace.rs` ownership — 🟢 Green, closed by the coordinator's own action.** Assigning
+ownership tonight to the file holding the project's only sanctioned tick conversion, after Link's
+static screen proved it is the single entry point for raw ticks in the tree, is exactly the right
+remedy and needs no further finding from me. One process recommendation, non-blocking: this
+project's ownership assignments currently live in prose (rulings, this session's message) rather
+than in a single artifact a new contributor or a script could read. A `CODEOWNERS`-shaped file
+(or a table in `DESIGN.md` itself) would make "who owns this file" a lookup rather than a memory,
+which is the same class of improvement R10 asks for applied to governance instead of mechanisms.
+
+### Sanity check of the coordinator's conduct this session
+
+- **Resolving merge conflicts inside other agents' authored documents, then disclosing after rather
+  than asking before — 🟡 Advisory, not a violation, with a process refinement.** The one concrete
+  instance reviewed (the withheld-tally sentence, restored 2026-08-02T01:42:02) shows the right
+  outcome: the coordinator's own ruling notes "neither side was a superset," he "correctly declined
+  to splice" prose, told Morpheus, and the sentence was restored with the underlying finding
+  unchanged throughout (Mouse's evidence was never disputed — only whether the tally could move).
+  **Telling-after was sufficient in this instance because nothing load-bearing was lost for longer
+  than one review cycle and the correction was public.** I would not generalize "tell after" as the
+  standing rule, though: the specific risk is a conflict resolution that *silently* drops a
+  dissenting verdict rather than a supporting sentence — had this been a rejected 🔴 finding rather
+  than a restored sentence, telling-after would be too late by definition, because the finding would
+  already have shipped without it. **Recommendation:** for merge conflicts inside a named agent's
+  *verdict* text specifically (not supporting prose), stop and flag before completing the merge,
+  because a verdict is the one artifact class where "ask forgiveness" and "the thing already shipped
+  wrong" are the same event.
+- **Preserving unclaimed artifacts on `evidence/criterion-rerun-null-witness` rather than committing
+  to main or discarding — 🟢 Green.** Textbook handling of a finding whose owner had not ruled:
+  neither buried nor prematurely promoted to a claim. No finding.
+- **Pushing with three known, precisely-attributed, in-flight red items rather than holding
+  twenty-one verified commits off origin — 🟢 Green.** This matches the project's own established
+  convention throughout `DESIGN.md`'s M0 table — partial/open criteria are the normal state of a
+  transparently tracked milestone, not a defect to hide behind a hold. The distinguishing test is
+  the one this project already applies everywhere else: is each red item named, owned, and does its
+  status say so, rather than being silent or claimed green. It is. No finding.
+- **Over-claiming criterion 12 as closed, then correcting publicly — 🟡 Advisory, self-corrected,
+  and worth naming as a pattern rather than an incident.** This is a real instance of exactly the
+  witness/discharge conflation Morpheus's own ruling names ("he held a witness and read it as a
+  discharge"), and it is at least the second time this conflation has occurred on this project by a
+  different name (RAI-008/009's own history has a structurally identical shape: a correct run being
+  read as a discharge of a disclosure obligation). **The self-correction, same session, is the
+  standard this project has set for itself and I am not treating it as a violation** — but I record
+  it because a pattern repeating across two different people (Mouse's union-defect specimen,
+  the coordinator's criterion-12 specimen) in one week is worth a durable check rather than a
+  standing vigilance requirement on any one person. **Recommendation:** a small doc-consistency
+  script asserting that any prose claiming a criterion "closed"/"met" agrees with that criterion's
+  own table cell before a status update is posted to the team — mechanical, cheap, and it converts
+  a recurring human error into an `ERROR(instrument)` the register already has a name for.
+
+### Verdict Summary
+- 🔴 Critical: 1 (RAI-008 — **remains open, unchanged severity, one of three falsifier parts now
+  genuinely discharged**)
+- 🟡 Advisory: 4 new (escape-hatch friction; performance-claim policy recommendation; Intel
+  permanent-uncertifiability disclosure, escalating to a hard gate on first public figure;
+  witness/discharge conflation as a recurring pattern) + RAI-011 downgraded to resolved-as-instrumented
+- 🟢 Green: 3 (branch preservation; pushing with attributed red items; trace.rs ownership assignment)
+- Overall: **no 🔴 escalation this pass.** Nothing reviewed tonight — the coordinator's conduct
+  included — rises to a genuine 🔴 beyond the one already open and already tracked.
+
+**Falsifiers, named per new item:** escape hatch (2) — falsified into 🔴 if `--allow-unproven`
+becomes settable other than as an explicit per-invocation flag; performance-claim policy (3) —
+falsified (i.e., shown unnecessary) if this project ever quotes a figure without its companion and
+suffers no consequence, which would mean the discipline was never load-bearing; Intel disclosure
+(4) — falsified if Link's search finds a usable device-clock surface on Intel after all, in which
+case "permanent" becomes "not yet solved" and the obligation softens accordingly; witness/discharge
+pattern — falsified if the doc-consistency script, once built, never fires, meaning the human
+discipline alone was already sufficient.

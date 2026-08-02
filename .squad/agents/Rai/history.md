@@ -208,6 +208,102 @@ Justin's standing performance directive; and a llama.cpp licence boundary paragr
 
 ---
 
+## Session — 2026-08-02T03:21:20-07:00 (Fresh pass — criterion 10 closes, criterion 11 nearly, coordinator conduct)
+
+### Task
+Justin asked for a fresh RAI pass via the coordinator: re-status RAI-008 now that criterion 10
+closed on the condition set in advance and criterion 11's proof ledger landed most of its four
+discharge conditions; assess four new possible RAI-surface items (the escape hatch, a
+performance-claim policy question, Intel's permanent performance-uncertifiability, and
+`trace.rs`'s prior lack of an owner); and sanity-check the coordinator's own conduct this session
+(merge-conflict resolution inside others' documents, preserving an unclaimed branch, pushing with
+known red items, and self-correcting an over-claimed criterion).
+
+### Key Facts Established
+
+- **RAI-008 remains 🔴 OPEN, and I checked it against my own three-part falsifier rather than
+  against the good news surrounding it.** (a) criterion 11's ledger — still not met, correctly:
+  Morpheus refused to let the row close on the artifact-supplier's own tally, and it is open
+  specifically on Trinity's one remaining discharge condition. (b) the §8.9.7 session-creation
+  disclosure — still not built, owned by Tank, in flight. (c) **the part I added last session — a
+  runtime WARN on a claimed node's `Compute()` failure — has actually landed**, as
+  `broken_commitment_warn` in the wiring census, with the exact two-polarity control I asked for
+  (`fault_injection='ACTIVE'` vs a clean run reading `UNOBSERVABLE`). **A 🔴 moving because a named
+  instrument actually went green, one part at a time, without the whole verdict softening, is the
+  falsifier discipline working as designed** — I recorded the progress precisely and did not let it
+  bleed into the other two unmet parts.
+
+- **RAI-011 (single-cluster bypass) downgraded to resolved-as-instrumented.** The wiring census now
+  reports `bypasses` and `sole_island_overrides` as separate typed fields instead of one collapsing
+  `0` — the exact ambiguity I flagged is gone. Whether the *economics* are right on a single-island
+  graph is now an engineering question for Mouse/Morpheus, not a disclosure gap for me.
+
+- **The escape hatch (`CLAIM_UNPROVEN`) is real disclosure infrastructure, not a facade — but its
+  guarantee is only as strong as the friction around disabling the WARN.** Recommended a reason
+  string requirement on `--allow-unproven`, mirroring this project's own `DeclineCode` discipline
+  (every decline already carries a reason; an override should too). Named the exact trigger that
+  would raise this from 🟡 to 🔴: `--allow-unproven` becoming settable other than as an explicit
+  per-invocation flag.
+
+- **Performance claims for an accelerator are an RAI matter, and I recommended writing that into
+  policy rather than leaving it as one engineer's discipline.** `baseline_certified` — the cleanest
+  run by every dispersion measure this project owns, and 21.4× wrong, caught only by the
+  device-state companion — is the sharpest specimen on this project of engineering rigor
+  discharging what would otherwise have been a deceptive, ungrounded claim shipped with full
+  confidence. Proposed a `.squad/rai/policy.md` addition: an accelerator performance figure is a
+  🔴 deceptive claim unless it carries the record of the instrument that could have contradicted it.
+
+- **Intel iGPU performance is on track to be permanently uncertifiable on this project's hardware,
+  and nobody had named that as a disclosure question until asked.** Not a violation today — no
+  performance figure has shipped publicly — but I named it as a **hard gate** that activates the
+  day any figure does ship: the artifact must say, at the same prominence as the wall-clock ratio
+  itself, that timing is NVIDIA-only and Intel is and will remain uncertified absent new
+  instrumentation. Asked Link to confirm "permanently" holds after an exhaustive platform search
+  before it is written as durable fact.
+
+- **Sanity-checked the coordinator's own conduct and did not manufacture a finding to seem
+  balanced.** Branch preservation and pushing with attributed red items are both 🟢 — they match
+  conventions this project already applies to itself throughout the M0 table. The merge-conflict
+  handling (tell-after) was sufficient in the one instance reviewed because nothing load-bearing
+  was lost for longer than one cycle and the fix was public — but I distinguished that from the
+  higher-risk case (a dissenting *verdict*, not supporting prose, silently dropped in a conflict),
+  where tell-after would be structurally too late, and recommended stopping before completing a
+  merge specifically for verdict text. The criterion-12 over-claim was a real instance of the
+  witness/discharge conflation Morpheus's own ruling names, correctly self-corrected same session —
+  I logged it as a recurring pattern (a second person, same conflation, in one week) rather than
+  either dismissing it or treating a self-corrected, disclosed error as a violation.
+
+### Learnings
+
+1. **A falsifier is doing its job when it can move a verdict one part at a time without moving the
+   whole verdict.** RAI-008 stayed 🔴 tonight while I explicitly credited one of its three parts as
+   discharged — that asymmetry (partial credit, no change in severity) is the correct behaviour of
+   a conjunctive test and is worth modeling explicitly rather than reporting only the aggregate.
+
+2. **Sanity-checking a requester's own conduct requires the same discipline as reviewing anyone
+   else's work: name what's fine as fine.** Three of four coordinator conduct items were 🟢 on
+   inspection; manufacturing advisory findings to appear balanced would be its own violation of
+   R9 (a finding with no falsifier, issued to satisfy an expectation rather than an observation).
+
+3. **A recurring human error pattern (witness read as discharge) across two different people is
+   worth a mechanical check, not a renewed vigilance instruction to either person.** This mirrors
+   R10/R11's own lesson applied to process rather than code: a rule that depends on someone
+   remembering to apply it decays the same way an unwired mechanism does.
+
+4. **A latent RAI concern (the performance-claim policy question) is worth writing into durable
+   policy the moment a project's own practice already meets the bar it implies** — codifying what
+   is currently good discipline is cheaper before a personnel change or a rushed milestone tests it
+   than after.
+
+### Deliverables
+- Appended to `.squad/rai/audit-trail.md` (RAI-008 re-status, RAI-011 downgrade, four new advisory
+  items, coordinator-conduct sanity check)
+- Appended to `.squad/agents/Rai/history.md` (this entry)
+- Created `.squad/decisions/inbox/rai-fresh-pass-2026-08-02.md`
+- Working branch: `squad/rai` (not pushed)
+
+---
+
 📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
 
 Two findings apply to every agent on the team:
