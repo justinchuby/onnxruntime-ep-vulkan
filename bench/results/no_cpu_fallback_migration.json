@@ -20,6 +20,37 @@
   },
   "red_text_migration": {
     "slice": "tests/ops/test_elementwise.py",
+    "measured_at": "2026-08-02T09:40:00-07:00",
+    "dll_sha256": "D45B3A8C8C2B13C6C568B5CCEDE3B4CC2AD7DE5D6FC16DBC42E0A11E14A0CBEF",
+    "note": "re-measured after Mouse ledger (73 entries) landed at a0bd22d; the pre-ledger reading 25/11 is kept above because a superseded number that quietly disappears is how a stale reading becomes an escalation",
+    "devices": {
+      "0": {
+        "failed_off": 3,
+        "failed_on": 3,
+        "passed": 33,
+        "failing_set_identical": true
+      },
+      "1": {
+        "failed_off": 3,
+        "failed_on": 3,
+        "passed": 33,
+        "failing_set_identical": true
+      }
+    },
+    "still_failing": [
+      "test_binary_elementwise[Min-fp32]",
+      "test_binary_elementwise[Max-fp32]",
+      "test_clip_no_bounds"
+    ],
+    "failure_text_off": "AssertionError: Vulkan EP claimed 0 nodes ... (ours)",
+    "failure_text_on": "_models.CpuFallbackRefused carrying ORT text",
+    "reading": "the identical failing set is the falsifier for over-firing, and it is a much stronger reading than the pre-ledger one: 33 claimed single-op tests now pass WITH the precondition armed, against 11 before. The precondition does not fire on a healthy single-op test at 3x the previous sample."
+  },
+  "default": "off. ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK=1 opts in.",
+  "closes_row": false,
+  "closes_row_reason": "this is a mechanism, not a criterion tally. Supplying an artifact and closing a row must not be the same act.",
+  "red_text_migration_superseded_2026_08_02_pre_ledger": {
+    "slice": "tests/ops/test_elementwise.py",
     "devices": {
       "0": {
         "failed_off": 25,
@@ -38,7 +69,11 @@
     "failure_text_on": "_models.CpuFallbackRefused carrying ORT text: This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user",
     "reading": "the count does not improve and was never expected to. The failing SET is identical on both devices, which is the falsifier that the precondition does not fire on a healthy single-op test. What moves is which instrument the reader is quoted (R13)."
   },
-  "default": "off. ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK=1 opts in.",
-  "closes_row": false,
-  "closes_row_reason": "this is a mechanism, not a criterion tally. Supplying an artifact and closing a row must not be the same act."
+  "fixture_defect_2026_08_02": {
+    "what": "two arms went red and one went silently vacuous when the proof ledger claimed Erf",
+    "cause": "the declined fixture was declined by POLICY (no ledger entry), not by CAPABILITY",
+    "worse_half": "test_a_misspelled_key_is_accepted_silently did not go red - it became vacuous, because a claimed graph creates a session with or without the flag",
+    "fix": "all declined fixtures are now fp64, for which the EP has no path; premise checked by _require_structurally_declined against the EP own claim report, which is independent of the refusal being asserted",
+    "terminal_state_change": "a future capability addition now arrives as ERROR(instrument) naming the premise, not as Failed: DID NOT RAISE, which reads as a finding about ORT and is not one"
+  }
 }
