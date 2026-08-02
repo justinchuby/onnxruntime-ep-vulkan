@@ -412,7 +412,8 @@ baked push constants at Compile time.
    DynKernelRecipe { node_desc, spec } is stored on CompiledKernel.
 
 2. dispatch_ort pre-pass (Steps 1.5/1.6): reads GetTensorSizeInBytes for 0-size inputs,
-   then ead_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
+   then 
+ead_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
    for each dynamic kernel input slot, re-runs translate via ShapeOnlyRecorder to capture
    push_constants, workgroups, spec_constants, shader, and output TensorDescs.
 
@@ -424,7 +425,8 @@ Command buffer is already re-recorded on every Compute call. Dynamic path adds o
 
 **D-S18-03 — ENGINE_ACCEPTS_RUNTIME_EXTENTS flipped**
 Three tests in ops/common/claim.rs updated to reflect new baseline (	rue not alse).
-Test untime_extent_support_is_a_single_switch updated; symbolic_shape_is_tagged_dynamic_shape
+Test 
+untime_extent_support_is_a_single_switch updated; symbolic_shape_is_tagged_dynamic_shape
 and symbolic_extents_are_accepted_once_extents_are_runtime_parameters both updated.
 
 **Cross-owner edits (flagged to coordinator):**
@@ -1914,3 +1916,12 @@ That distrusts the archive; it does not license quoting 19.6.
    `probe_gemv_counts.py` first; it was accurate to 18% for the column tile.
 3. Decision records filed: `switch-packed-loads-in-counts.md`,
    `switch-sole-tenant-is-not-certifiable.md`, `switch-index-space-one-space.md`.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+

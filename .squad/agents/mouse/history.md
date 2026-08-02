@@ -1324,3 +1324,177 @@ root write is how `island_attribution.json` got committed. Added the raw claim-l
   `TransferModel::fit` a real staircase once R13 permits it.
 
 📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
+
+---
+
+## Session 25 — 2026-08-01 — RAI-011, the fixed_ns sensitivity, and the declines re-attributed
+
+Merged `origin/main` first (fast-forwarded `squad/mouse` e98de4c → b04347c; my branch was already
+in main, so there was nothing to reconcile). Baseline for everything below is that commit, measured
+by me, on this machine.
+
+### Task 1 — RAI-011
+
+Rai was right and I had already written the finding down without closing it (§7.10). The gate was
+not "unexercised on Phi-3.5" — it was **unreachable** on Phi-3.5, because `GetCapability` decided
+whether to call it:
+
+```rust
+let verdict = if only_one_cluster { Verdict::Claim } else { partition::evaluate(..) };
+```
+
+Fixed by making `partition::gate_islands` the only entry point. It always calls `evaluate`, once
+per island. The single-island exemption is applied **after** evaluation as
+`GateOutcome::SoleIslandOverride(RejectReason)` — it carries the verdict it overrode, because an
+override that throws that verdict away is a bypass with a new name. `retain_viable` is now a
+projection of the same function, so the survivors and the gate's opinion cannot drift apart.
+Behaviour is unchanged; observability is not.
+
+Tank's warning — that a second `partition.rs` path would reproduce RAI-011 inside its own fix — is
+why the set-level rule lives in `partition.rs`, where the set is the argument, and not at a call
+site. A call site that decides whether to consult the gate *is* a second gate.
+
+Added one counter to Tank's file in Tank's idiom: `net_benefit_sole_island_overrides`.
+`viable_islands_retained` and it are different fields, so "the gate retained it" and "the gate
+rejected it and we kept it anyway" can never share a digit again. In `partition.rs` they are
+different variants of a sum type, so no arithmetic can conflate them either.
+`net_benefit_gate_bypasses` is now a tripwire: permanently 0 from `GetCapability`, and non-zero
+means someone reintroduced an un-evaluated path.
+
+### The artifact (R10), both devices, byte-identical
+
+`rust/tools/probe_net_benefit_gate.py` → `bench/results/net_benefit_gate_probe-dev{0,1}.json`.
+
+| config | gate | evals | bypasses | retained | overrides |
+|---|---|---|---|---|---|
+| default (shipping) | EVALUATED | 1 | 0 | **1** | 0 |
+| anchor exemption off | EVALUATED | 1 | 0 | 0 | **1** |
+| anchor off, `fixed_ns` 1e3…1e8 (6 runs) | EVALUATED | 1 | 0 | 0 | **1** |
+| anchor off, bytes free, `fixed_ns` 1e6 | EVALUATED | 1 | 0 | **1** | 0 |
+| anchor off, bytes free, `fixed_ns` 1e7 | EVALUATED | 1 | 0 | 0 | **1** |
+
+`claimed_nodes` = 355 in every row. The verdict moves; the graph does not.
+
+**Prediction, written before the last two ran:** flip at 23,020,437.5 / 6 = 3,836,739.6 ns, so 1e6
+claims and 1e7 overrides. *Falsifier: either on the wrong side, or neither moving.* **CONFIRMED,
+both devices.** I want to be precise about why I bothered: the default row alone
+(`net_benefit_gate: EVALUATED`) is exactly the kind of evidence I would have accepted a week ago,
+and it is a constant. A constant is not an R10 falsifier no matter how green it is.
+
+### Task 2 — `fixed_ns` sensitivity, not calibration
+
+Quoted no timing figure and needed none.
+
+- **With the estimator's own bytes:** rejects at *every* `fixed_ns` including 0. The byte term
+  beats the margin requirement by ~968×. Six measured runs over five orders of magnitude, both
+  devices, identical.
+- **With the measured bytes (399,376 + 457,344 = 856,720 B, readback larger):** claims everywhere
+  below a flip at ~3.80 ms per transfer — 63× above the 60 µs guess.
+
+Either way `fixed_ns` decides nothing. **Calibrating it is not on the critical path**, and I have
+pinned both statements as unit tests so the claim goes red if the constants move.
+
+### What the sweep found instead, and it is my error, not someone else's
+
+The two halves disagree about the same island's boundary by **104,116×** — 89,199,100,032 B
+estimated by `GetCapability` against 856,720 B measured. `ep.rs` counts every claimed node's
+outputs as boundary bytes and substitutes 128 for unknown dims; on a 355-node island with symbolic
+`sequence_length` those compound.
+
+**R11, on my own model.** It looked closed — bytes calibrated, a gate comparing compute to
+transfer, a counter proving it ran — and the two sides of the comparison came from different
+sources, only one of which is a measurement. I spent last session being pleased that the bytes were
+calibrated. The bytes I calibrated are not the bytes the gate uses. Turn off the anchor exemption
+and the EP declines the whole model at every `fixed_ns` I swept; the exemption is the only reason
+Phi-3.5 is claimed at all.
+
+Did not fix the estimator here. It fails safe, it is load-bearing for the anchor exemption's design
+intent, and changing it in the same commit that makes the gate observable would destroy attribution
+for any resulting behaviour change. Top of the partition backlog, ahead of any nanosecond work.
+
+### Task 3 — what I took from the instrument finding
+
+`gpu_steady_tail()` reporting STEADY at 10.99× wrong, with the *better* RSD, is the same failure I
+made with the claim-log control last session: two agreeing readings and I stopped. So this session
+I used counts throughout — claim counts, island counts, decline positions, evaluation counts — and
+the one place I needed a continuous quantity I swept it five orders of magnitude instead of picking
+a value. Counts do not care whether the box is busy.
+
+Also noted Switch's correction that `min()` bounds from above: I have no difference-of-minima in
+anything here, deliberately.
+
+### Task 4 — the eight declines, re-attributed
+
+355 claimed, 1 island, 8 declines, **0 cut-instances**, both devices.
+
+Cut count is no longer sufficient with one island, so `rust/tools/probe_decline_position.py`
+classifies each decline by position (reads the CLAIM_LOG; does not run the model, so it cannot
+perturb what it measures):
+
+- `DETACHED` ×5 — `Gather`[dtype], `Greater`, `ReduceSum`, `Shape`, `Sub`[dtype]. The INT64 control
+  plane never touches a claimed tensor.
+- `EDGE_ENTRY` ×3 — `Cast` ×2, `If`. Each feeds exactly 32 claimed GQA nodes and is fed by nothing
+  claimed. Prologue.
+- `INTERIOR` — **none.** No decline sits between claimed nodes. No category changed.
+
+The probe also carries a falsifier that is not a backlog item: `INTERIOR` together with
+`island_count == 1` is a *contradiction* (a claimed→declined→claimed path inside one island is a
+fusion cycle). Empty on both devices. `If` stays declined and its position gives no argument to
+reopen it.
+
+### Verification
+
+- 440 lib tests pass (was 413 + the new gate/sensitivity tests).
+- `tests/portability.rs::platform_conditional_bindings_are_cfg_gated` FAILS at `src/ep.rs:2457`
+  (`ort::wchar_t` named without a `#[cfg(windows)]` gate). **Pre-existing at the merge base and not
+  mine** — my `ep.rs` diff is confined to the 830–1100 region. Quoting the failure text, not a
+  count, per R13.
+
+### Housekeeping
+
+Checked the Scribe incident: my three records from last session (`last-ten-nodes`,
+`retain-viable-gap`, `transfer-recalibration`) are all present in `.squad/decisions.md`. Nothing of
+mine was lost; nothing to resubmit. All probe output went to `bench/results/`; the 300 KB raw trace
+and the raw claim-log dumps were left untracked.
+
+### Session 25 — addendum (post-merge reconfirmation)
+
+Committed as `5da7dce` on `squad/mouse`, then merged `main` at `ef58b4a` → `9b2e968`. The merge
+brought `docs/DESIGN.md` and `.squad/agents/morpheus/history.md` only; **no `rust/src` change**, so
+the release binary is the same one the artifact was produced against. I re-ran the R10 probe anyway,
+because "the code did not change" is a code reading and R10 asks for an artifact.
+
+Re-ran `probe_net_benefit_gate.py` on dev0 at `9b2e968`: **VERDICT PASS**. Diffing the ten
+per-config counters snapshots against the committed ones, the only fields that moved are the two
+staging-microsecond fields — which I quote nowhere. Every gate observable is byte-identical:
+`net_benefit_gate=EVALUATED`, `evaluations=1`, `bypasses=0`, `clusters_seen=1`, `claimed_nodes=355`,
+`islands_offered=1` in all ten; and the flip pair still separates
+`viable_islands_retained=1 / overrides=0` from `viable_islands_retained=0 / overrides=1` across
+`fixed_ns` 1e6→1e7 with the byte term removed. The prediction (3,836,739.6 ns) survives a
+re-measurement it was not fitted to.
+
+**One honest loose end, recorded as ERROR(instrument), not a detection (R13).** The first
+`cargo test --release --lib` run after the merge reported one failing test. I did not capture its
+text before the buffer rolled, and I could not reproduce it: 24 subsequent runs of the same command
+were clean at 440 passed. So I have a failure I cannot quote, which by R13 I may not convert into a
+count and may not call a detection. What I can say structurally: **none of my tests mutate
+process-global state** — `grep set_var|remove_var` over `rust/src` returns hits only in
+`allocator.rs`, `counters.rs`, `vk/barrier.rs` and `vk/dispatch_integration.rs`, and
+`allocator.rs:2504` already carries a comment describing exactly this cross-test env race. My
+partition tests are pure. I am not claiming that diagnosis is right — I am recording that the
+instrument produced an unreproducible verdict once, so that if it recurs the second sighting starts
+from a written first sighting instead of from nothing. That is the failure mode Switch and I both
+hit this week: seeing agreement and stopping.
+
+`tests/portability.rs::platform_conditional_bindings_are_cfg_gated` still fails with
+*"`ort::wchar_t` is named without a `#[cfg(windows)]` gate on the item that defines it"* at
+`src/ep.rs:2457`. Pre-existing at the merge base, outside my diff, quoted as text.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+
