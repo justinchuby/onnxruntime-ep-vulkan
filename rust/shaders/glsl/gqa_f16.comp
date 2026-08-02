@@ -18,7 +18,12 @@
 //
 //   Supported:
 //     - Packed QKV:   input_0 = [B, S, (Nq + 2*Nkv) * D]; inputs 1 and 2 absent
-//     - KV cache:     past_key/value [B, Nkv, past_len_max, D]  (append-then-read layout)
+//     - KV cache:     past_key/value [B, Nkv, past_stride, D], present_key/value
+//                     [B, Nkv, present_len, D].  Both the shared-buffer convention
+//                     (present_len == past_stride, updated in place) and the growing
+//                     convention (present_len == past_stride + S, past copied in) are
+//                     supported; the two strides are separate push constants because they
+//                     are only equal in the first case.
 //     - RoPE:         half-rotation (neox) with do_rotary=1, rotary_interleaved=0
 //     - Attention:    online softmax over [0 .. tok_pos] tokens, causal
 //     - Output:       attn_output [B, S, Nq*D]; present_key/value written at tok_pos
@@ -36,20 +41,21 @@
 //   offset 12: kv_num_heads u32    (Nkv)
 //   offset 16: head_dim     u32    (D)
 //   offset 20: rotary_dim   u32    (rot_D; rot_D/2 cos/sin entries per position)
-//   offset 24: past_len_max u32    (KV buffer S dimension)
-//   offset 28: scale        f32    (1/sqrt(D))
+//   offset 24: present_len  u32    (present KV buffer S dimension = KV write stride)
+//   offset 28: past_stride  u32    (past KV buffer S dimension)
+//   offset 32: scale        f32    (1/sqrt(D))
 //
 // # Binding table (must match translate_gqa order)
 //
 //   binding 0: packed_qkv   readonly   [B, S, (Nq+2*Nkv)*D]   f16 packed as uint
-//   binding 1: past_key     readonly   [B, Nkv, past_len_max, D]  f16 packed as uint
-//   binding 2: past_value   readonly   [B, Nkv, past_len_max, D]  f16 packed as uint
+//   binding 1: past_key     readonly   [B, Nkv, past_stride, D]   f16 packed as uint
+//   binding 2: past_value   readonly   [B, Nkv, past_stride, D]   f16 packed as uint
 //   binding 3: seqlens_k    readonly   [B]   i32  (actual past length per batch element)
 //   binding 4: cos_cache    readonly   [max_seq, rot_D/2]   f16 packed as uint
 //   binding 5: sin_cache    readonly   [max_seq, rot_D/2]   f16 packed as uint
 //   binding 6: attn_output  writeonly  [B, S, Nq*D]          f16 packed as uint
-//   binding 7: present_key  readwrite  [B, Nkv, past_len_max, D]  f16 packed as uint
-//   binding 8: present_value readwrite [B, Nkv, past_len_max, D]  f16 packed as uint
+//   binding 7: present_key  readwrite  [B, Nkv, present_len, D]   f16 packed as uint
+//   binding 8: present_value readwrite [B, Nkv, present_len, D]   f16 packed as uint
 //
 // # f16 packing convention (shared with all other shaders in this project)
 //
@@ -73,7 +79,11 @@ layout(push_constant) uniform PC {
     uint  kv_num_heads;
     uint  head_dim;
     uint  rotary_dim;
-    uint  past_len_max;
+    // KV *write* stride — the present buffer's S dimension. Under the growing-cache
+    // convention this is past_stride + seq_len; under the shared-buffer convention the two
+    // are equal. They were a single field while the shared case was assumed.
+    uint  present_len;
+    uint  past_stride;   // the past buffer's S dimension
     float scale;
 } pc;
 
@@ -224,15 +234,38 @@ void main() {
 
     // ------------------------------------------------------------------
     // 3. Write rotated K/V into present_key/value at position tok_pos.
-    //    present layout: [B, Nkv, past_len_max, D]
+    //    present layout: [B, Nkv, present_len, D]
     //    (Atomic writes — with local_size=1 they are never contended, but must be correct
     //    for seq_len > 1 where sibling invocations on the same kv_head can co-exist.)
     // ------------------------------------------------------------------
     {
-        uint pb = (b * Nkv + kv_h) * pc.past_len_max * D + tok_pos * D;
+        uint pb = (b * Nkv + kv_h) * pc.present_len * D + tok_pos * D;
         for (uint d = 0u; d < D; d++) {
             wr_presk(pb + d, k_new[d]);
             wr_presv(pb + d, v_new[d]);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3a. Growing cache: copy the past tokens into present.
+    //     ORT's present_key/value output is the WHOLE cache, past ++ new. Under the
+    //     shared-buffer convention present IS past and the tokens are already there; under
+    //     the growing convention present is a separate, larger allocation and nothing else
+    //     puts the past in it.
+    //     One invocation per (b, kv_h) does the copy — the first query head of each group
+    //     at the first query position — so the work is not repeated by every query head.
+    //     Nothing reads these positions from `present` during attention (step 4 reads
+    //     `past_k`/`past_v` directly for t < past_len), so this adds no cross-invocation
+    //     ordering requirement.
+    // ------------------------------------------------------------------
+    if (pc.present_len != pc.past_stride && s_local == 0u && (h % (Nq / Nkv)) == 0u) {
+        for (uint t = 0u; t < past_len; t++) {
+            uint src = (b * Nkv + kv_h) * pc.past_stride  * D + t * D;
+            uint dst = (b * Nkv + kv_h) * pc.present_len * D + t * D;
+            for (uint d = 0u; d < D; d++) {
+                wr_presk(dst + d, f16_pk(src + d));
+                wr_presv(dst + d, f16_pv(src + d));
+            }
         }
     }
 
@@ -258,14 +291,14 @@ void main() {
         float dot = 0.0;
         uint kv_base;
         if (t < past_len) {
-            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
             for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
         } else if (t == tok_pos) {
             // self-key — use rotated k_new directly
             for (uint d = 0u; d < D; d++) dot += q[d] * k_new[d];
         } else {
             // t in [past_len, tok_pos): key from a sibling query position, already written
-            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            kv_base = (b * Nkv + kv_h) * pc.present_len * D + t * D;
             for (uint d = 0u; d < D; d++) dot += q[d] * f16_presk(kv_base + d);
         }
         float sc = dot * pc.scale;
@@ -282,12 +315,12 @@ void main() {
 
         // Accumulate e * V[t]
         if (t < past_len) {
-            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
             for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
         } else if (t == tok_pos) {
             for (uint d = 0u; d < D; d++) acc[d] += e * v_new[d];
         } else {
-            kv_base = (b * Nkv + kv_h) * pc.past_len_max * D + t * D;
+            kv_base = (b * Nkv + kv_h) * pc.present_len * D + t * D;
             for (uint d = 0u; d < D; d++) acc[d] += e * f16_presv(kv_base + d);
         }
     }

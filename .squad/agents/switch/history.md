@@ -833,3 +833,75 @@ incumbent *and* to my proposal. Pre-existing; neither introduced it.
 four orders of magnitude smaller is R11 in the tolerance. And since the flagged set moves
 with the prompt, a count of diverging outputs must carry its feed the way a timing carries
 its device state.
+
+---
+
+## Session 46e — 2026-08-02 — GQA: 16.726 -> 0.00073, and the root was the token space
+
+**Task (relay):** fix `com.microsoft::GroupQueryAttention`, the only DIVERGENT form on
+Phi-3.5, at `worst_rel = 16.72642029784887`. Correctness before bandwidth: no KV
+optimisation until GQA is MATCH.
+
+**Result.** MATCH at `worst_rel = 0.00072939`, 1 claimed node / 1 dispatch (non-vacuous).
+All 32 GQA nodes claimed on Phi-3.5. Islands per run 33 -> **1, covering 355 of 363
+nodes** — the fragmentation Niobe was measuring was GQA being declined, and it is gone.
+Ledger 73 -> 74 entries, digest `372bcd276a7aa35c`. DLL `BD08DEBC949C2E32` ->
+`654630DD599C7209`. Commit `a29025e`.
+
+**Three defects, one root.**
+
+*Root — two index spaces, the fourth on this project.* `ep.rs` built the name->token map
+only when `plan.nodes.len() > 1`. Without it the recorder numbers inputs by the order the
+translate handler calls `resolve`, which matches ORT's order only if the handler resolves
+every plan input exactly once in slot order. GQA resolves 0,3,4,5,7,8 — never `total_seq`
+(slot 6, a real plan input) — and slots 1/2 are empty optionals. So `cos_cache` was bound
+to `total_seq`, `sin_cache` to `cos_cache`, and the patch loop read `past_key`'s desc off
+`seqlens_k`. Map now built unconditionally; `plan.inputs` IS the `KernelContext_GetInput`
+order, so a name lookup into it cannot drift from it. Absent optionals get `NO_TOKEN`.
+
+*A — `rotary_dim` guessed.* Defaulted to `head_dim` when the attribute is absent. Absence
+is not full width: `cos_cache` is `[max_seq, rotary_dim/2]` and that is the only record of
+the true width. Evidence case: head_dim 32, cos_cache [64,8] -> true 16, defaulted 32.
+Now derived from the cache; refuses when neither source has it.
+
+*B — `present` assumed to be `past`.* Two ORT conventions, distinguished only by the
+declared present extent: shared-buffer (present == past) and growing (present == past+S).
+Both graphs we target are growing. Present was bound one token short, the write at
+`tok_pos` fell outside and was dropped, and present KV read back **all zero**. Shader now
+carries two strides (present_len at offset 24, past_stride at 28, scale at 32) and copies
+past into present when they are not the same buffer.
+
+**What actually broke the case open.** I diagnosed A and B correctly from source, fixed
+both, and 16.726 -> 7.5. It *improved*, which is the most misleading outcome a partial fix
+can have: I had two real defects and a mechanism for each, and I nearly reported a partial
+win. What stopped me was building `probe_gqa_present_copy.py`, which compares the copied
+region of `present` against **the fed input tensor** rather than against the CPU EP —
+a value known without reference to any other implementation. It read a mismatch on data
+that is a straight copy, which neither A nor B could explain. Filed as
+`switch-a-default-is-an-unlabelled-branch.md`: *a partial fix that moves the number is
+harder to stop at than one that does not; a remaining gap is an unnamed mechanism, not
+evidence your fix was too small.*
+
+**The `unwrap_or(0)` that hid it.** `past_len_max` defaulted to 0 on a missing desc, and 0
+is not neutral — it *is* the empty-past branch. A missing desc and an empty cache became
+the same number and were thereafter indistinguishable, so a caller-side defect arrived
+here as a plausible input and left as a wrong answer. Converting it to a refusal located
+the root in one run: the error text named `past_key` and the shape it did not have.
+
+**A control that arrived free.** criterion 10 on the real model still flags exactly
+[0, 63, 64] with the same 0.0625 and the same 62/65 — but `present.31.*` is now produced
+by the Vulkan GQA kernel instead of the CPU EP. **The producer changed completely and the
+number did not move.** That is what a tolerance mis-scoping does and what a producer
+defect cannot; it is a stronger form of the refutation I filed at `2453847` and it cost
+nothing.
+
+**Flagged, not fixed.** The attention loop reads `present_key` for `t` in
+`[past_len, tok_pos)` — written by sibling invocations with no barrier. Unsound for
+`seq_len > 1`. The past->present copy does not worsen it.
+
+**Verification:** 473 lib + 59 integration green; clippy `--all-targets -D warnings`
+green. Four new unit tests pin the contracts (rotary from cos_cache, refusal when
+unrecoverable, growing extent, shared-buffer aliasing).
+
+**Next:** KV bandwidth is now unblocked — 27.7% of the byte floor at past_len 2048, 60.5%
+at 8192, and this model does no grouping at all (32 KV heads for 32 query heads).

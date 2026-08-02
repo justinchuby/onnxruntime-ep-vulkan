@@ -1,47 +1,15 @@
 {
   "by_provider": {
-    "CPUExecutionProvider": 40,
-    "VulkanExecutionProvider": 33
+    "CPUExecutionProvider": 8,
+    "VulkanExecutionProvider": 1
   },
-  "ep_library_sha256": "bd08debc949c2e32d7c0246e12586ff52fdf754cf3c52e64300ac72bc95329a6",
+  "ep_library_sha256": "654630dd599c720959005324c21491c90fbb66abbbb99476639f9d95092c5937",
   "logits_finite": true,
   "n_outputs": 65,
   "probe": "phi35_node_executions_by_provider",
-  "total_executions": 73,
+  "total_executions": 9,
   "vulkan_by_op": {
-    "VulkanExecutionProvider_13948954645276092517_0": 1,
-    "VulkanExecutionProvider_13948954645276092517_1": 1,
-    "VulkanExecutionProvider_13948954645276092517_10": 1,
-    "VulkanExecutionProvider_13948954645276092517_11": 1,
-    "VulkanExecutionProvider_13948954645276092517_12": 1,
-    "VulkanExecutionProvider_13948954645276092517_13": 1,
-    "VulkanExecutionProvider_13948954645276092517_14": 1,
-    "VulkanExecutionProvider_13948954645276092517_15": 1,
-    "VulkanExecutionProvider_13948954645276092517_16": 1,
-    "VulkanExecutionProvider_13948954645276092517_17": 1,
-    "VulkanExecutionProvider_13948954645276092517_18": 1,
-    "VulkanExecutionProvider_13948954645276092517_19": 1,
-    "VulkanExecutionProvider_13948954645276092517_2": 1,
-    "VulkanExecutionProvider_13948954645276092517_20": 1,
-    "VulkanExecutionProvider_13948954645276092517_21": 1,
-    "VulkanExecutionProvider_13948954645276092517_22": 1,
-    "VulkanExecutionProvider_13948954645276092517_23": 1,
-    "VulkanExecutionProvider_13948954645276092517_24": 1,
-    "VulkanExecutionProvider_13948954645276092517_25": 1,
-    "VulkanExecutionProvider_13948954645276092517_26": 1,
-    "VulkanExecutionProvider_13948954645276092517_27": 1,
-    "VulkanExecutionProvider_13948954645276092517_28": 1,
-    "VulkanExecutionProvider_13948954645276092517_29": 1,
-    "VulkanExecutionProvider_13948954645276092517_3": 1,
-    "VulkanExecutionProvider_13948954645276092517_30": 1,
-    "VulkanExecutionProvider_13948954645276092517_31": 1,
-    "VulkanExecutionProvider_13948954645276092517_32": 1,
-    "VulkanExecutionProvider_13948954645276092517_4": 1,
-    "VulkanExecutionProvider_13948954645276092517_5": 1,
-    "VulkanExecutionProvider_13948954645276092517_6": 1,
-    "VulkanExecutionProvider_13948954645276092517_7": 1,
-    "VulkanExecutionProvider_13948954645276092517_8": 1,
-    "VulkanExecutionProvider_13948954645276092517_9": 1
+    "VulkanExecutionProvider_13948954645276092517_0": 1
   },
-  "vulkan_executions": 33
+  "vulkan_executions": 1
 }

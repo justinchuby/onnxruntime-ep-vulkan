@@ -1,0 +1,34 @@
+{
+  "vulkan_node_executions": 1,
+  "past_len": 4,
+  "regions": {
+    "present_key": {
+      "copied_vs_fed_past_max_abs": 0.0,
+      "cpu_copied_vs_fed_past_max_abs": 0.0,
+      "appended_vs_cpu_max_abs": 0.0,
+      "copied_region_is_a_permutation_of_the_source": true
+    },
+    "present_value": {
+      "copied_vs_fed_past_max_abs": 0.0,
+      "cpu_copied_vs_fed_past_max_abs": 0.0,
+      "appended_vs_cpu_max_abs": 0.0,
+      "copied_region_is_a_permutation_of_the_source": true
+    }
+  },
+  "present_key_copy_error_by_position": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "vk_present_position_equals_past_position": {
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3
+  },
+  "verdict": [
+    "present_key: COPY EXACT",
+    "present_value: COPY EXACT"
+  ]
+}

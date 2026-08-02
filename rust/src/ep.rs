@@ -1735,16 +1735,34 @@ unsafe fn compile_impl(
         let n_plan_inputs = plan.inputs.len();
         let n_plan_outputs = plan.outputs.len();
 
-        // For multi-node islands, build a name→token map so that intermediate outputs (produced
-        // by one node, consumed by another within the island) get stable tokens distinct from
-        // both the external ORT inputs and outputs.
+        // Build a name→token map so that every buffer the island touches gets a stable token
+        // in ORT's own index space.
         //
         // Token ranges:
         //   0..n_plan_inputs                                     → external ORT inputs
         //   n_plan_inputs..n_plan_inputs+n_plan_outputs          → external ORT outputs
         //   n_plan_inputs+n_plan_outputs..first_temp_token       → intermediate buffers
         //   first_temp_token..                                   → alloc_temp scratch
-        let (name_map_opt, n_intermediates, first_temp_token) = if plan.nodes.len() > 1 {
+        //
+        // This was gated on `plan.nodes.len() > 1`, on the reasoning that a single-node island
+        // has no intermediates and therefore needs no map. It does need one, for a different
+        // reason: the map is what makes a token an *ORT input index*. Without it the recorder
+        // numbers inputs by the order the translate handler happens to call `resolve`, and that
+        // only coincides with ORT's order when the handler resolves every plan input exactly
+        // once, in slot order.
+        //
+        // MEASURED 2026-08-02: `GroupQueryAttention` resolves slots 0,3,4,5,7,8 — it never
+        // resolves `total_seq` (slot 6, a real plan input) and slots 1/2 are empty optional
+        // inputs. Counting calls gave cos_cache the token of `total_seq` and sin_cache the token
+        // of `cos_cache`, and the Compute-time patch loop then read `past_key`'s desc off
+        // `seqlens_k`. Both the RoPE tables and the cache extent were wrong, which is the
+        // GQA form's DIVERGENT at worst_rel 16.726.
+        //
+        // Two index spaces again — the same shape as the device-ordinal and
+        // `dispatches_executed`/`compute_calls` defects. The remedy is the same one: key off
+        // what the other side uses, so there is only one space. `plan.inputs` *is* the
+        // `KernelContext_GetInput` order, so a name lookup into it cannot drift from it.
+        let (name_map_opt, n_intermediates, first_temp_token) = {
             let plan_output_names: std::collections::HashSet<&str> =
                 plan.outputs.iter().map(|r| r.name.as_str()).collect();
 
@@ -1774,8 +1792,6 @@ unsafe fn compile_impl(
             }
             let first_temp = n_plan_inputs + n_plan_outputs + n_intermediates;
             (Some(std::sync::Arc::new(map)), n_intermediates, first_temp)
-        } else {
-            (None, 0usize, n_plan_inputs + n_plan_outputs)
         };
 
         let mut recorder = if let Some(ref nm) = name_map_opt {

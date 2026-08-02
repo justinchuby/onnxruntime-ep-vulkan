@@ -1,5 +1,5 @@
 {
-  "dll_sha256": "bd08debc949c2e32d7c0246e12586ff52fdf754cf3c52e64300ac72bc95329a6",
+  "dll_sha256": "654630dd599c720959005324c21491c90fbb66abbbb99476639f9d95092c5937",
   "gqa_nodes_in_graph": 32,
   "gqa_by_layer": {
     "0": "/model/layers.0/attn/GroupQueryAttention",
@@ -169,167 +169,166 @@
   "gqa_claims": {
     "0": {
       "node": "/model/layers.0/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "1": {
       "node": "/model/layers.1/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "2": {
       "node": "/model/layers.2/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "3": {
       "node": "/model/layers.3/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "4": {
       "node": "/model/layers.4/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "5": {
       "node": "/model/layers.5/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "6": {
       "node": "/model/layers.6/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "7": {
       "node": "/model/layers.7/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "8": {
       "node": "/model/layers.8/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "9": {
       "node": "/model/layers.9/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "10": {
       "node": "/model/layers.10/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "11": {
       "node": "/model/layers.11/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "12": {
       "node": "/model/layers.12/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "13": {
       "node": "/model/layers.13/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "14": {
       "node": "/model/layers.14/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "15": {
       "node": "/model/layers.15/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "16": {
       "node": "/model/layers.16/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "17": {
       "node": "/model/layers.17/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "18": {
       "node": "/model/layers.18/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "19": {
       "node": "/model/layers.19/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "20": {
       "node": "/model/layers.20/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "21": {
       "node": "/model/layers.21/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "22": {
       "node": "/model/layers.22/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "23": {
       "node": "/model/layers.23/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "24": {
       "node": "/model/layers.24/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "25": {
       "node": "/model/layers.25/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "26": {
       "node": "/model/layers.26/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "27": {
       "node": "/model/layers.27/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "28": {
       "node": "/model/layers.28/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "29": {
       "node": "/model/layers.29/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "30": {
       "node": "/model/layers.30/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     },
     "31": {
       "node": "/model/layers.31/attn/GroupQueryAttention",
-      "claimed": false,
-      "reason": "[unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache"
+      "claimed": true,
+      "reason": null
     }
   },
-  "claimed_layers": [],
-  "declined_layers": [
+  "claimed_layers": [
     0,
     1,
     2,
@@ -363,5 +362,6 @@
     30,
     31
   ],
-  "profile": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\gqa_attr_prof_2026-08-02_09-49-41_896.json"
+  "declined_layers": [],
+  "profile": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\gqa_attr_prof_2026-08-02_11-37-39_418.json"
 }
