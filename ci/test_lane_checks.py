@@ -1240,3 +1240,139 @@ def test_the_real_source_tree_has_no_unsanctioned_tick_arithmetic():
     r = run_check("check_tick_conversions.py")
     assert r.returncode == EXIT_PASS, r.stdout
     assert "TICK-SCREEN: PASS" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# --union-with: the composed-workflow blind spot.
+#
+# On 2026-08-02 the same shape occurred five times in one day: two correct branches
+# composing into a broken whole, with no command either author could have run that would
+# have shown it. My instance was a lane step that was complete on Switch's branch and a
+# lane inventory that was complete on mine; the union was unclassified. These tests build
+# a real two-branch git repository and check that the union view goes red where the
+# branch-only view is green.
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=True
+    )
+
+
+def _two_branch_repo(tmp_path: Path, mine: str, theirs: str) -> Path:
+    """A repo whose `main` carries `theirs` and whose working tree carries `mine`."""
+    repo = tmp_path / "repo"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    _git(repo.parent, "init", "-q", "repo")
+    _git(repo, "config", "user.email", "link@squad.test")
+    _git(repo, "config", "user.name", "link")
+    wf = repo / ".github" / "workflows" / "ci.yml"
+    wf.write_text("jobs:\n  x:\n    steps:\n" + theirs, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "theirs")
+    _git(repo, "branch", "-M", "main")
+    _git(repo, "checkout", "-q", "-b", "squad/link")
+    wf.write_text("jobs:\n  x:\n    steps:\n" + mine, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "mine")
+    return repo
+
+
+CLASSIFIED_STEP = "      - name: Clippy (all warnings as errors)\n"
+OTHER_CLASSIFIED_STEP = "      - name: Portability lint (cargo test --test portability)\n"
+UNKNOWN_STEP = "      - name: A Step Nobody On My Branch Can See\n"
+
+
+def test_union_reds_on_a_step_that_only_exists_on_the_other_branch(tmp_path):
+    """The exact defect: my branch is complete, theirs is complete, the union is not."""
+    repo = _two_branch_repo(
+        tmp_path, mine=CLASSIFIED_STEP, theirs=OTHER_CLASSIFIED_STEP + UNKNOWN_STEP
+    )
+    wf = repo / ".github" / "workflows" / "ci.yml"
+
+    # Branch-only view — green. This is what every author could run, and it is why
+    # nobody saw it coming.
+    r = run_check("check_lane_inventory.py", "--workflow", str(wf))
+    assert r.returncode == EXIT_PASS, r.stdout
+
+    # Union view — red, naming the step and which side it came from.
+    r = run_check(
+        "check_lane_inventory.py", "--workflow", str(wf), "--union-with", "main"
+    )
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=unclassified_lane_step)" in r.stdout
+    assert "A Step Nobody On My Branch Can See" in r.stdout
+    assert "union of this tree and main" in r.stdout
+
+
+def test_union_is_green_when_both_sides_are_classified(tmp_path):
+    """The other polarity: --union-with must not simply be red all the time."""
+    repo = _two_branch_repo(
+        tmp_path, mine=CLASSIFIED_STEP, theirs=OTHER_CLASSIFIED_STEP
+    )
+    wf = repo / ".github" / "workflows" / "ci.yml"
+    r = run_check(
+        "check_lane_inventory.py", "--workflow", str(wf), "--union-with", "main"
+    )
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "1 step(s) present only there" in r.stdout
+
+
+def test_an_unreadable_union_reference_is_an_outage_not_a_pass(tmp_path):
+    """A missing ref degrades the check to the branch-only view it exists to replace.
+
+    Silently returning to that view would be the worst outcome available: green, for the
+    reason the check was written to stop being green for.
+    """
+    repo = _two_branch_repo(tmp_path, mine=CLASSIFIED_STEP, theirs=CLASSIFIED_STEP)
+    wf = repo / ".github" / "workflows" / "ci.yml"
+    r = run_check(
+        "check_lane_inventory.py",
+        "--workflow",
+        str(wf),
+        "--union-with",
+        "no/such/ref",
+        "--union-required",
+    )
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "ERROR(instrument=union_reference_unreadable)" in r.stdout
+    assert "branch's own view" in r.stdout
+
+
+def test_a_green_check_must_say_whether_its_falsifier_was_planted_or_observed():
+    """The distinction found while classifying Switch's screen, applied to everything.
+
+    A planted falsifier proves the check works on the shape somebody wrote for it. It
+    does not show the check is load-bearing. Most of this project's green rests on
+    planted arms -- including my own tick screen -- and the table has to say so.
+    """
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    assert inv.validate() == []
+    for c in inv.CHECKS:
+        if c.is_green():
+            assert c.falsifier in inv.ALL_FALSIFIERS, c.id
+    # And the honest self-assessment: my own screen is PLANTED, not OBSERVED.
+    tick = next(c for c in inv.CHECKS if c.id == "hostfree.tick_conversion_screen")
+    assert tick.falsifier == inv.FALSIFIER_PLANTED
+    planted, observed, note = inv.falsifier_census(inv.LANE_HOSTFREE)
+    assert planted > observed
+    assert "PLANTED" in note
+
+
+def test_switchs_tautological_screen_is_not_admitted_as_green():
+    """It scanned 1,056 assertions and found 0, and neither assertion defect that
+    actually occurred here is within its reach -- by its own first paragraph."""
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    c = next(x for x in inv.CHECKS if x.id == "hostfree.tautological_assertions")
+    assert c.status == inv.UNDEMONSTRATED
+    assert not c.is_green()
+    assert c.arm_broken is None
+    assert any("NEITHER" in m for m in c.misses)
+    # One UNDEMONSTRATED check holds the whole lane at `operational`.
+    cls, _ = inv.lane_classification(inv.LANE_HOSTFREE)
+    assert cls == "operational"

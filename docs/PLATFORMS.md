@@ -1518,6 +1518,7 @@ The same argument covers `timestampValidBits`: lavapipe and NVIDIA report 64, Ir
 | `concurrency_and_barriers` — a missing barrier | barrier-count parity (structural) + real hardware (not reproducible) | `UNDEMONSTRATED` |
 | `vendor_driver_behaviour` — UMA/discrete, subgroup width, fp16/int8, ReBAR | local-dev observation; a GPU runner the project does not have | `IMPOSSIBLE_HERE` |
 | `conversion_call_sites` — correct arithmetic, never invoked | **`ci/check_tick_conversions.py`**, a static source screen (§7.13) | `DEMONSTRATED` (2026-08-01) |
+| `composed_workflow` — two correct branches, a broken union | **`--union-with`** on the lane inventory (§7.14) — one shape, one file | `DEMONSTRATED` (2026-08-02, replayed) |
 
 The CI matrix has **one device in it wearing two operating systems**. That is a portability result about our code and not a hardware-coverage result, and it is why OQ-12's **~32.67% as of 2026-07-30** is simultaneously a ceiling and a floor.
 
@@ -1626,6 +1627,77 @@ The rename case is not decoration. A name-based screen is defeated by `let raw =
 ### 7.13.6 Lane status after this
 
 `lane-checks` remains **`green`**: both new checks have a demonstrated failing arm, executed on every run rather than imagined. `device.op_correctness` and `build.integration_targets` remain **`UNDEMONSTRATED`** and both device lanes therefore remain **`operational`**. They have now run clean for a while, and **running a while is not the falsifier** — a check that has never been red is not yet known to be a check. They stay named, not claimed, until someone produces the mutation.
+
+> **Superseded 2026-08-02 (§7.14.2).** `lane-checks` is now **`operational`**, not `green`: Switch's tautological-assertion screen landed in it and is `UNDEMONSTRATED`. The paragraph above is left standing because it was true when written and because the thing that changed it is the point.
+
+---
+
+## 7.14 Two corrections to this table, both of which demote my own work — added 2026-08-02T00:40-07:00
+
+### 7.14.1 `composed_workflow`: the defect that lives in the union and in neither branch
+
+`ci/test_lane_checks.py::test_the_real_workflow_has_no_unclassified_gate_steps` went red at the `f4ed9ce` merge. My inventory did not classify a step that arrived from Switch's branch:
+
+```yaml
+- name: Tautological-assertion screen (no GPU, whole tree)
+  run: python ci/check_tautological_assertions.py
+```
+
+**Both merges were correct.** My inventory was complete for the workflow I could see; his step was complete on the branch he could see; the workflow they compose is unclassified. This was the **fifth** instance in one day, across four subsystems and three languages — a lock correct until wiring an instrument grew the population needing it; two `device_state.py` fighting over `sys.modules`, each file correct; a signature and its caller correct on their own branches; new code reintroducing a class clippy had just cleared; and this one.
+
+Five is not a coincidence, and the shared property is sharper than "merges are risky":
+
+> Nobody did anything wrong locally in any of the five, and **no command any of those authors could have run would have shown it.** Our discipline verifies branches. The defects live in unions.
+
+**My call, since it is my file:** the lanes should verify the **composed** workflow, not the branch's view of it. `ci/check_lane_inventory.py` takes `--union-with <ref>` and classifies the union of step names from both sides, so a step classified on neither is red *before* the merge. It is wired into `lane-checks` with **`--union-required`**, because a reference it cannot read leaves it silently back in the branch-only view it exists to replace — green for precisely the reason it was written to stop being green for. On a `pull_request` event GitHub already checks out the merge commit and this is belt-and-braces; on a push to a branch it is the only thing that looks at the other side at all.
+
+**It is deliberately not a merge.** A three-way merge can conflict, and a conflict is a different conversation. The union of two name lists answers "does a step exist on either side that nobody has classified" without needing the merge to succeed — and is correct in the case that actually bit us, where both sides touched different regions and merged cleanly.
+
+**Falsified on the real event, replayed.** Using the two actual pre-merge blobs (`.github/workflows/ci.yml` at `0cd6c99` and at `main`) with the tautological entry removed to reconstruct what I knew at the time:
+
+```
+branch-only view  -> GREEN
+union view        -> ['Tautological-assertion screen (no GPU, whole tree)']
+```
+
+The inputs are the real ones; only the clock is wrong. **That is a replay, not a live catch,** and it is recorded as such. Both polarities plus the outage arm also hold on a synthesised two-branch git repository.
+
+**Scope, stated so it is not over-read:** this covers exactly one shape — workflow step names — in exactly one file. **The other four instances of 2026-08-02 remain uncovered.** A general union check is with Trinity.
+
+### 7.14.2 Switch's tautological-assertion screen: `UNDEMONSTRATED`, and so is most of what I called green
+
+Classified from what its own docstring says about itself, which is unusually honest and should be quoted rather than paraphrased:
+
+* **1,056 comparison assertions scanned (rs=614, py=442), 0 detections.**
+* **Neither of the two assertion defects that actually occurred here is within its reach.** One compared two *different* expressions that both evaluated to `0.0` — textually the sides differ. The other asserted a predicate true repeatedly and never once false, which is a property of a test *function*, not of a line.
+* Scoped by its author to **regression, not discovery**. Its evidence that it works is **entirely planted**.
+
+So it is `UNDEMONSTRATED`, and one `UNDEMONSTRATED` check holds the whole lane: **`lane-checks` is now `operational`.**
+
+**But applying that standard honestly indicts my own work, and the table now says so.** My tick screen's falsifier is *also* planted — I injected bypasses into a scratch copy. So is the layering lint's, the fatal-log check's, and the criterion-10 gate's. Marking Switch's screen down for a planted falsifier while calling mine demonstrated would have been the same failure in a different direction.
+
+The inventory therefore carries a **second axis**, orthogonal to status:
+
+| | meaning |
+|---|---|
+| `PLANTED` | somebody wrote a defect on purpose and checked the screen caught it. Proves the scanner works **on the shape it was written for**. Says nothing about whether that shape occurs in real code — i.e. does not show the check is load-bearing. |
+| `OBSERVED` | the arm was produced by a defect that actually happened, or by the tree as it stands. The check has caught something nobody planted for it. |
+
+Current census, printed next to every lane verdict:
+
+| Lane | planted / with a failing arm | observed |
+|---|---|---|
+| `build-test-linux` | 6 of 8 | `build.portability_lint`, `build.clippy` — both `RED_NOW` |
+| `build-test-windows` | 5 of 7 | the same two |
+| `lane-checks` | 4 of 5 | `hostfree.tick_screen_negative_control` |
+
+**Most of what this project calls green rests on planted falsifiers.** The only `OBSERVED` arms outside my negative control are two checks that are *currently red*. A `PLANTED` arm is real evidence and it is the weaker kind, and a table that did not distinguish them was letting the word `green` carry more than it earned.
+
+A planted falsifier does **not** demote a check to `UNDEMONSTRATED` — "somebody performed the mutation" and "nobody ever has" are genuinely different states, and `validate()` now refuses any green check that does not say which it is. It is recorded, surfaced, and left for the reader to weigh.
+
+### 7.14.3 `rust/src/trace.rs` has an owner
+
+Assigned to **Niobe** on 2026-08-02: it is timestamp calibration and trace-event arithmetic — measurement — and she owns the certification instruments that consume it. Tank has the stronger claim on counters and FFI, and the coordinator will move it if either of them thinks it is backwards. Recorded in `.squad/team.md`; `ci/tick_conversion_allowlist.json` now names her instead of `unassigned`.
 
 ---
 
