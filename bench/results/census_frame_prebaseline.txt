@@ -1,0 +1,7 @@
+
+FAIL: 2 NEW unfalsified instrument(s):
+CENSUS VERDICT: FAIL(drift)
+FAIL: baseline has no `bench_uninvoked`; run --write-baseline.
+FAIL: baseline has no `bench_unfalsified`; run --write-baseline.
+
+

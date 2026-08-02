@@ -51,6 +51,23 @@ The consequence is mechanical rather than taxonomic, and it binds this script:
   in a caller of this script is `ERROR(instrument)`, never a detection, and a lane that
   records one has not run the census whatever else it reports.
 
+# THE FRAME (2026-08-02) — three domains, and the scope is declared rather than implied
+
+This screen has three domains: the Rust instruments (`rust/src`), the harness instruments
+(`tests/`), and the bench instruments (`bench/`). The third was added after Niobe found
+that `bench/` — the whole certification apparatus, including the SM-clock record that was
+the only instrument to refuse a device-clock series reading STEADY at RSD 0.0717% and
+20.18x wrong — had never been in any census's frame, while this script printed
+`CENSUS VERDICT: PASS`.
+
+The defect was not the scope. It was the silence: a reader could not tell a PASS over the
+tree from a PASS over two thirds of it. So the frame is now printed on every path
+(`frame_report`), every top-level source directory carries an IN/OUT decision with a
+reason (`FRAME_DIRS`), every `bench/*.py` is either screened or held out with a reason
+(`BENCH_HELD_OUT`), and anything declared neither way is `FAIL(drift)`. R12 turned on this
+script: "I did not look there" is a different fact from "I looked and found nothing", and
+a census that cannot say which is reporting the second when it means the first.
+
 # Why it compares against a checked-in baseline instead of just printing
 
 A census that prints a list is read once. `--check` compares against
@@ -84,7 +101,53 @@ HERE = Path(__file__).resolve()
 SRC = HERE.parents[1] / "src"
 REPO = HERE.parents[2]
 TESTS = REPO / "tests"
+BENCH = REPO / "bench"
 BASELINE = HERE.parent / "instrument_census.json"
+
+# ---------------------------------------------------------------------------
+# THE FRAME. Declared here, printed on every path, and checked.
+#
+# Found 2026-08-02 by Niobe: this screen scanned `rust/src` and `tests/ops` and had never
+# scanned `bench/` — so `CENSUS VERDICT: PASS` was true of what it scanned and read as
+# true of the tree. That is this file's own `misnamed` state turned on itself, and the
+# defect was not the scope: it was the silence. A reader could not tell whether `bench/`
+# was screened and clean or never looked at.
+#
+# So scope is now DECLARED rather than implied. Every top-level directory that contains
+# source is either screened or held out WITH A REASON, and a directory that is neither is
+# `FAIL(drift)` — the census refuses to render a verdict over a tree it cannot account for.
+# That is the arm that makes this declaration able to fail; a comment saying "we also scan
+# bench" would not have been.
+FRAME_DIRS: dict[str, str] = {
+    "rust": "IN FRAME — the Rust instrument screen (INSTRUMENT_FILES under rust/src).",
+    "tests": "IN FRAME — the harness screen (HARNESS_INSTRUMENT_FILES under tests/).",
+    "bench": "IN FRAME — the bench screen (BENCH_INSTRUMENT_FILES under bench/).",
+    "ci": (
+        "OUT OF FRAME — lane gates, Link's. Every file here is `check_*`/`gate_*` invoked "
+        "by name from a workflow, so `uninvoked` is decided by ci/lane_inventory.py "
+        "against the workflow files, not by a call-graph screen. Two censuses over one "
+        "tree is the failure this file exists to prevent; if that inventory stops "
+        "running, this line is the wrong answer and should be moved to IN FRAME."
+    ),
+    "docs": "OUT OF FRAME — prose. Contains no executable instrument.",
+    "evidence": "OUT OF FRAME — recorded artifacts. Data, not mechanism.",
+    "third_party": "OUT OF FRAME — vendored. Not ours to screen or to fix.",
+    ".github": "OUT OF FRAME — workflow YAML; see ci/lane_inventory.py.",
+    ".squad": "OUT OF FRAME — team state and prose records, not shipped mechanism.",
+    ".copilot": "OUT OF FRAME — agent configuration, not shipped mechanism.",
+}
+
+# Directory names never counted as source-bearing anywhere in the tree.
+FRAME_IGNORE_DIRS = {
+    "target",
+    "node_modules",
+    "__pycache__",
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "results",
+}
 
 # Files whose `pub fn`s are the instruments under audit. Everything the EP emits about
 # itself is produced from one of these.
@@ -307,25 +370,98 @@ HARNESS_FN = re.compile(
 # Decorators / fixtures that mean "this test does not run in the always-on lane".
 HARNESS_GATE = re.compile(r"require_vulkan|skipif|\bskip\b|xfail|slow|gpu|require_model")
 
+# ---------------------------------------------------------------------------
+# BENCH DOMAIN (added 2026-08-02, Tank, on Niobe's finding).
+#
+# WHY IT GETS ITS OWN SELECTION RULE, AND WHY THAT IS THE FINDING RATHER THAN A DETAIL.
+#
+# The first cut of this extension reused `HARNESS_FN` — the `assert_`/`check_`/`require_`
+# name vocabulary — and it under-selected so badly that the extension would have
+# reproduced, inside the fix, the exact state it was written to remove. The specimen:
+#
+#     bench/phases.py: 37 top-level functions, 0 selected by HARNESS_FN.
+#
+# That file holds `gpu_steady_tail`, `decomposition_identity`, `phase_containment`,
+# `trace_matches_counters`, `valid_bits_applied` and `red_flags` — the machinery that
+# decides whether a published figure is admissible at all. A name screen would have
+# printed "bench/ scanned" over a module in which it saw nothing. `absent`, dressed as
+# coverage.
+#
+# So the bench rule is structural, not lexical: **every module-public top-level function
+# of a declared instrument module is an instrument**, the same rule the Rust screen uses
+# (`pub fn`). `main` is the one exclusion — it is the CLI entry, not a verdict. A
+# structural rule cannot be defeated by an author who names things differently from the
+# author the vocabulary was read off, and the vocabularies here genuinely differ: Niobe
+# writes `certify`/`grade`/`quiescence`, Trinity writes `assert_`/`require_`.
+#
+# Consequence, stated up front so it is not read as a regression: this admits ~90 rows,
+# most of them `unfalsified`. `unfalsified` is the honest state of an instrument nothing
+# has watched disagree. It was always the state of these; the census simply could not say
+# so, because it had never looked.
+BENCH_FN = re.compile(r"^(?!main$)(?!_)")
 
-def _harness_instruments(tests_root=None, files=None) -> dict[str, str]:
+# Screened modules: those that render a verdict about a measurement.
+BENCH_INSTRUMENT_FILES = [
+    "device_companion.py",
+    "phases.py",
+    "admissible.py",
+    "contention.py",
+    "run_disturbance.py",
+    "timestamp_audit.py",
+    "win_gpu_counters.py",
+    "devices.py",
+    "stats.py",
+    "portability.py",
+]
+
+# Every other `bench/*.py`, with the reason it is not screened. A file in `bench/` that
+# appears in neither list is `FAIL(drift)`: the census will not silently decide for you
+# whether a new module is an instrument. This is the file-level form of the directory
+# declaration above, and it exists for the same reason — the gap Niobe found was one
+# unlisted directory, and one unlisted file is the same defect one level down.
+BENCH_HELD_OUT: dict[str, str] = {
+    "bench.py": "runner — orchestrates a run, renders no verdict.",
+    "cases.py": "case table — data.",
+    "compare.py": "presentation of two runs; the verdicts it prints come from stats.py.",
+    "environment.py": "capture — records the world, judges nothing.",
+    "exec_census.py": "runner for a census defined elsewhere.",
+    "island_attribution.py": "attribution arithmetic; its verdict lives in phases.py.",
+    "phi35.py": "model construction and output classification for one model.",
+    "producers.py": "builds the inputs a measurement runs on.",
+    "transfer_calibration.py": "calibration data producer.",
+    "test_contention.py": "test module — a caller, screened as polarity, not as an instrument.",
+    "test_device_state.py": "test module.",
+    "test_harness.py": "test module.",
+    "test_import_isolation.py": "test module.",
+    "test_island_boundary_cost.py": "test module.",
+    "test_marginal_tail_withholds.py": "test module.",
+    "test_phases.py": "test module.",
+    "test_plausible_but_wrong.py": "test module.",
+    "test_run_disturbance.py": "test module.",
+    "test_tenancy_signature.py": "test module.",
+    "test_win_gpu_counters.py": "test module.",
+}
+
+
+def _harness_instruments(tests_root=None, files=None, fn_re=None, prefix="tests") -> dict[str, str]:
     """Return {fn_name: "file::fn"} for every harness instrument."""
     import ast as _ast
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
+    fn_re = HARNESS_FN if fn_re is None else fn_re
     out: dict[str, str] = {}
     for rel in files:
         path = tests_root / rel
         tree = _ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                if HARNESS_FN.search(node.name):
-                    out[node.name] = f"tests/{rel}::{node.name}"
+                if fn_re.search(node.name):
+                    out[node.name] = f"{prefix}/{rel}::{node.name}"
     return out
 
 
-def _fixture_instruments(tests_root=None, files=None) -> set[str]:
+def _fixture_instruments(tests_root=None, files=None, fn_re=None) -> set[str]:
     """Return the subset of harness instruments that are pytest fixtures.
 
     A fixture is invoked by **parameter name**, never by a call expression, so the
@@ -342,6 +478,7 @@ def _fixture_instruments(tests_root=None, files=None) -> set[str]:
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
+    fn_re = HARNESS_FN if fn_re is None else fn_re
     out: set[str] = set()
     for rel in files:
         path = tests_root / rel
@@ -351,7 +488,7 @@ def _fixture_instruments(tests_root=None, files=None) -> set[str]:
         for node in tree.body:
             if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
                 continue
-            if not HARNESS_FN.search(node.name):
+            if not fn_re.search(node.name):
                 continue
             for dec in node.decorator_list:
                 if "fixture" in _ast.dump(dec):
@@ -373,7 +510,7 @@ def _is_gated(fn) -> bool:
     return False
 
 
-def harness_survey(tests_root=None, files=None) -> list[dict]:
+def harness_survey(tests_root=None, files=None, fn_re=None, prefix="tests") -> list[dict]:
     """Screen every harness instrument for callers and for two-polarity coverage.
 
     *tests_root* and *files* are parameters rather than constants so this screen can be
@@ -386,8 +523,9 @@ def harness_survey(tests_root=None, files=None) -> list[dict]:
 
     tests_root = TESTS if tests_root is None else Path(tests_root)
     files = HARNESS_INSTRUMENT_FILES if files is None else files
-    names = _harness_instruments(tests_root, files)
-    fixtures = _fixture_instruments(tests_root, files)
+    fn_re = HARNESS_FN if fn_re is None else fn_re
+    names = _harness_instruments(tests_root, files, fn_re, prefix)
+    fixtures = _fixture_instruments(tests_root, files, fn_re)
     stats = {n: {"calls": 0, "reject": 0, "accept": 0} for n in names}
 
     owner_files = {tests_root / rel for rel in files}
@@ -469,11 +607,19 @@ def harness_survey(tests_root=None, files=None) -> list[dict]:
     return rows
 
 
-def harness_report(rows: list[dict]) -> tuple[list[str], list[str]]:
+def harness_report(
+    rows: list[dict], title: str | None = None, files=None, note: str | None = None
+) -> tuple[list[str], list[str]]:
     """Print the harness screen; return (uninvoked, unfalsified) id lists."""
+    title = (
+        "HARNESS INSTRUMENT SCREEN (tests/ — a guard nothing falsifies is not a guard)"
+        if title is None
+        else title
+    )
+    files = HARNESS_INSTRUMENT_FILES if files is None else files
     print()
-    print("HARNESS INSTRUMENT SCREEN (tests/ — a guard nothing falsifies is not a guard)")
-    print(f"  scanned {len(rows)} harness instrument fn(s) in {HARNESS_INSTRUMENT_FILES}")
+    print(title)
+    print(f"  scanned {len(rows)} instrument fn(s) in {list(files)}")
     print()
     un = sorted(r["id"] for r in rows if r["state"] == "uninvoked")
     nf = sorted(r["id"] for r in rows if r["state"] == "unfalsified")
@@ -497,7 +643,106 @@ def harness_report(rows: list[dict]) -> tuple[list[str], list[str]]:
     print("  nothing in the always-on lane has ever watched this instrument disagree, so a")
     print("  broken one and a working one would look the same. Guard D lived here for its")
     print("  whole life while the Rust screen's question ('has it got a caller?') said WIRED.")
+    if note:
+        print()
+        for line in note.strip("\n").splitlines():
+            print(f"  {line}")
     return un, nf
+
+
+def source_dirs(repo=None) -> list[str]:
+    """Top-level directory names under *repo* that contain `.py` or `.rs` source."""
+    repo = REPO if repo is None else Path(repo)
+    out: list[str] = []
+    for child in sorted(repo.iterdir()):
+        if not child.is_dir() or child.name in FRAME_IGNORE_DIRS:
+            continue
+        for path in child.rglob("*"):
+            if path.suffix not in (".py", ".rs"):
+                continue
+            if FRAME_IGNORE_DIRS & set(path.parts):
+                continue
+            out.append(child.name)
+            break
+    return out
+
+
+def undeclared(present, declared) -> list[str]:
+    """Names in *present* that nobody has declared either way. Pure, so it has a self-test.
+
+    The whole frame declaration rests on this three-line function, which is exactly the
+    Guard D shape if it is never watched to disagree — a screen for undeclared scope that
+    silently returns `[]` reads identically to a fully declared tree. See `self_test`.
+    """
+    return sorted(n for n in present if n not in declared)
+
+
+def frame_report(repo=None) -> tuple[list[str], list[str]]:
+    """Print what this census scanned AND what it did not. Return the undeclared items.
+
+    Niobe's tick screen is the model: "41 .rs files, 33 tick-bearing production lines,
+    10979 lines held out as `#[cfg(test)]` — UNOBSERVABLE by frame, not zero findings."
+    A screen that prints only its findings cannot be distinguished from one that has no
+    frame at all, and for six weeks this one could not.
+    """
+    repo = REPO if repo is None else Path(repo)
+    present = source_dirs(repo)
+    stray_dirs = undeclared(present, FRAME_DIRS)
+
+    bench_present = sorted(p.name for p in (repo / "bench").glob("*.py"))
+    declared_bench = set(BENCH_INSTRUMENT_FILES) | set(BENCH_HELD_OUT)
+    stray_files = undeclared(bench_present, declared_bench)
+
+    rs_files = [p for p in (repo / "rust" / "src").rglob("*.rs")]
+    tests_py = [p for p in (repo / "tests").rglob("*.py") if "__pycache__" not in p.parts]
+
+    print("CENSUS FRAME (R12 applied to this screen: what it did not look at, said out loud)")
+    print(f"  repository root: {repo}")
+    print()
+    print("  IN FRAME")
+    print(
+        f"    rust/src   {len(rs_files)} .rs file(s); {len(INSTRUMENT_FILES)} in the instrument "
+        f"frame; {len(rs_files) - len(INSTRUMENT_FILES)} not screened — `pub fn` surface only, "
+        "and only in files that emit."
+    )
+    print(
+        f"    tests/     {len(tests_py)} .py file(s); {len(HARNESS_INSTRUMENT_FILES)} instrument "
+        f"module(s) screened; callers and polarity read from ALL of them."
+    )
+    print(
+        f"    bench/     {len(bench_present)} .py file(s); {len(BENCH_INSTRUMENT_FILES)} instrument "
+        f"module(s) screened; {len(BENCH_HELD_OUT)} held out with a stated reason; callers and "
+        "polarity read from ALL of them."
+    )
+    print()
+    print("  OUT OF FRAME (declared, with the reason — this is the line whose absence was the bug)")
+    for name in sorted(FRAME_DIRS):
+        reason = FRAME_DIRS[name]
+        if reason.startswith("IN FRAME"):
+            continue
+        seen = "" if name in present else "   [no source present]"
+        print(f"    {name + '/':<14} {reason.split('— ', 1)[-1]}{seen}")
+    print()
+    print("  bench/ modules held out of the instrument screen:")
+    for name in sorted(BENCH_HELD_OUT):
+        print(f"    {name:<32} {BENCH_HELD_OUT[name]}")
+    print()
+    print("  NOTE: a directory or a bench module in neither list is FAIL(drift), not silence.")
+    print("  Until 2026-08-02 this census scanned rust/src and tests/ops and printed PASS, and")
+    print("  the reader could not tell that from a PASS over the tree. bench/ holds the SM-clock")
+    print("  record that refused a device-clock series reading STEADY at RSD 0.0717% and 20.18x")
+    print("  wrong; it had never been audited by anything.")
+    if stray_dirs:
+        print()
+        print("  UNDECLARED DIRECTORIES (source present, no frame decision):", file=sys.stderr)
+        for name in stray_dirs:
+            print(f"    ? {name}/", file=sys.stderr)
+    if stray_files:
+        print()
+        print("  UNDECLARED bench/ MODULES (neither screened nor held out):", file=sys.stderr)
+        for name in stray_files:
+            print(f"    ? bench/{name}", file=sys.stderr)
+    return stray_dirs, stray_files
 
 
 def self_test() -> int:
@@ -527,7 +772,25 @@ def self_test() -> int:
         elif want and "foo(" not in stripped:
             bad += 1
     print(f"  stripper self-test: {len(cases) - bad}/{len(cases)} cases pass")
-    return 1 if bad else 0
+
+    # The frame screen's own falsifier. `undeclared` returning `[]` is what a fully
+    # declared tree looks like AND what a broken screen looks like; the only way to tell
+    # them apart is to hand it a tree with a known-undeclared directory and watch it say
+    # so. Both polarities, because a screen that always fires is no better.
+    frame_cases = [
+        ((["rust", "bench"], {"rust": "", "bench": ""}), []),
+        ((["rust", "bench", "newdir"], {"rust": "", "bench": ""}), ["newdir"]),
+        (([], {"rust": ""}), []),  # a declaration for an absent dir is not a finding
+        ((["b", "a"], {}), ["a", "b"]),  # sorted, so the output is stable to diff
+    ]
+    frame_bad = 0
+    for (present, declared), want in frame_cases:
+        got = undeclared(present, declared)
+        if got != want:
+            frame_bad += 1
+            print(f"  SELF-TEST FAIL: undeclared({present}, {sorted(declared)}) -> {got} != {want}")
+    print(f"  frame-declaration self-test: {len(frame_cases) - frame_bad}/{len(frame_cases)} cases pass")
+    return 1 if (bad or frame_bad) else 0
 
 
 class CensusInstrumentError(RuntimeError):
@@ -540,8 +803,11 @@ def main(argv: list[str]) -> int:
         # observation. Raising rather than returning 1 keeps that distinction out of the
         # caller's hands — see `main_guarded`.
         raise CensusInstrumentError(
-            "the comment/string stripper is broken; census not run and nothing was screened"
+            "a self-test failed (comment/string stripper or frame declaration screen); "
+            "census not run and nothing was screened"
         )
+    stray_dirs, stray_files = frame_report()
+    print()
     rows = survey()
     found = uninvoked(rows)
 
@@ -575,14 +841,47 @@ def main(argv: list[str]) -> int:
     h_rows = harness_survey()
     h_uninvoked, h_unfalsified = harness_report(h_rows)
 
+    b_rows = harness_survey(
+        tests_root=BENCH, files=BENCH_INSTRUMENT_FILES, fn_re=BENCH_FN, prefix="bench"
+    )
+    b_uninvoked, b_unfalsified = harness_report(
+        b_rows,
+        title="BENCH INSTRUMENT SCREEN (bench/ — the certification apparatus, in frame since 2026-08-02)",
+        files=BENCH_INSTRUMENT_FILES,
+        note=(
+            "READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON\n"
+            "bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench\n"
+            "instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,\n"
+            "`NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches\n"
+            "`gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the\n"
+            "same limit already recorded for `classify_` in the harness domain. `unfalsified`\n"
+            "here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says\n"
+            "it should say, and not that no test watches one. Crediting a polarity this screen\n"
+            "did not observe would be the Guard D shape with the sign flipped.\n"
+            "Handed to Niobe: a value-polarity model for total instruments, or a note per row."
+        ),
+    )
+
     if "--write-baseline" in argv:
         base = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {}
-        base["uninvoked"] = found
+        # Rows held out of the baseline ON PURPOSE stay out of it mechanically. A comment
+        # asking the next person not to absorb an open red is not a mechanism; this is.
+        # Present specimen: Trinity's two `assert_*` guards from 0f9a4e9, which are
+        # correctly flagged `unfalsified` and owe a two-polarity self-test. Baselining
+        # them would turn an open item into a green tick, which is the one thing a census
+        # must never do.
+        held = set(base.get("not_baselined_on_purpose", {}))
+        keep = lambda xs: [x for x in xs if x not in held]  # noqa: E731
+        base["uninvoked"] = keep(found)
         base["ambiguous"] = sorted(f"{r['file']}::{r['fn']}" for r in ambiguous)
-        base["harness_uninvoked"] = h_uninvoked
-        base["harness_unfalsified"] = h_unfalsified
+        base["harness_uninvoked"] = keep(h_uninvoked)
+        base["harness_unfalsified"] = keep(h_unfalsified)
+        base["bench_uninvoked"] = keep(b_uninvoked)
+        base["bench_unfalsified"] = keep(b_unfalsified)
         BASELINE.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
         print(f"\nwrote {BASELINE} ({len(found)} uninvoked, {len(h_unfalsified)} unfalsified)")
+        if held:
+            print(f"held out of the baseline on purpose ({len(held)}): {sorted(held)}")
         return 0
 
     if "--check" not in argv:
@@ -616,6 +915,8 @@ def main(argv: list[str]) -> int:
     for key, current in (
         ("harness_uninvoked", h_uninvoked),
         ("harness_unfalsified", h_unfalsified),
+        ("bench_uninvoked", b_uninvoked),
+        ("bench_unfalsified", b_unfalsified),
     ):
         if key not in base:
             print(f"\nFAIL: baseline has no `{key}`; run --write-baseline.", file=sys.stderr)
@@ -624,9 +925,10 @@ def main(argv: list[str]) -> int:
         exp = sorted(base[key])
         added = [x for x in current if x not in exp]
         removed = [x for x in exp if x not in current]
+        label = key.split("_", 1)[1]
         if added:
             h_bad = True
-            print(f"\nFAIL: {len(added)} NEW {key[8:]} harness instrument(s):", file=sys.stderr)
+            print(f"\nFAIL: {len(added)} NEW {label} instrument(s):", file=sys.stderr)
             for x in added:
                 print(f"  + {x}", file=sys.stderr)
             print(
@@ -639,14 +941,27 @@ def main(argv: list[str]) -> int:
         if removed:
             h_bad = True
             print(
-                f"\nFAIL: {len(removed)} harness instrument(s) left `{key[8:]}` — "
+                f"\nFAIL: {len(removed)} instrument(s) left `{label}` — "
                 "good news, update the baseline:",
                 file=sys.stderr,
             )
             for x in removed:
                 print(f"  - {x}", file=sys.stderr)
 
-    if new or gone or h_bad:
+    # The frame arm. An undeclared directory or bench module is drift in the scope itself:
+    # the census would otherwise render a verdict over a tree it cannot account for, which
+    # is the defect this whole section exists to remove.
+    frame_bad = False
+    if stray_dirs or stray_files:
+        frame_bad = True
+        print(
+            f"\nFAIL: {len(stray_dirs) + len(stray_files)} undeclared item(s) in the census "
+            "frame. Add each to FRAME_DIRS / BENCH_INSTRUMENT_FILES / BENCH_HELD_OUT with a "
+            "reason. 'Not scanned' is an acceptable answer; not saying which is not.",
+            file=sys.stderr,
+        )
+
+    if new or gone or h_bad or frame_bad:
         print("\nCENSUS VERDICT: FAIL(drift)")
         return 1
     print(f"\nOK: uninvoked set matches the baseline ({len(found)} known).")
@@ -654,6 +969,11 @@ def main(argv: list[str]) -> int:
         f"OK: harness screen matches the baseline "
         f"({len(h_uninvoked)} uninvoked, {len(h_unfalsified)} unfalsified)."
     )
+    print(
+        f"OK: bench screen matches the baseline "
+        f"({len(b_uninvoked)} uninvoked, {len(b_unfalsified)} unfalsified)."
+    )
+    print("OK: every source directory and every bench/ module has a frame decision on record.")
     print("\nCENSUS VERDICT: PASS")
     return 0
 

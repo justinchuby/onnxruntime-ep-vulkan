@@ -205,3 +205,47 @@ either. Flagging it rather than fixing it in someone else's file.
 
 **Rebuilt before every verdict above.** Cargo's fingerprint does not notice a restore that
 preserves `LastWriteTime`, so each of the three states above was compiled, not assumed.
+
+---
+
+## Session 22 — 2026-08-02 — the census frame is declared, not implied (`bench/` IN FRAME)
+
+**Input:** Niobe found that `audit_instruments.py` scanned `rust/src` and `tests/` and never
+`bench/`, while printing `CENSUS VERDICT: PASS`. My own `misnamed` state, applied to the census.
+
+**Ruling: the defect was the silence, not the scope.**
+
+- `bench/` is IN FRAME as a third domain (`BENCH_INSTRUMENT_FILES`, 10 modules, 90 fns).
+- `FRAME_DIRS`: every top-level source directory has an IN/OUT decision **with a reason**.
+  `ci/` is the deliberate OUT — its `check_*` files are invoked by name from workflow YAML and
+  are censused by `ci/lane_inventory.py`; two censuses over one tree is the failure to avoid.
+- `BENCH_HELD_OUT`: every `bench/*.py` is screened or held out with a reason.
+- Undeclared directory or bench module => `FAIL(drift)`. Falsifier both ways in
+  `bench/results/census_frame_falsifier.txt`; `undeclared()` is pure with a 4-case self-test
+  that runs before `--check`.
+- `frame_report()` prints scanned vs held-out on EVERY path. A disclosure on one path only is
+  one the diagnosing reader never sees.
+
+**The finding inside the fix.** First cut reused the harness name vocabulary. `bench/phases.py`:
+**37 top-level functions, 0 selected** — and that file holds `gpu_steady_tail`,
+`decomposition_identity`, `trace_matches_counters`, `valid_bits_applied`, `red_flags`. A lexical
+extension would have printed "bench/ scanned" over a module it saw nothing in. Selection is now
+structural (module-public top-level defs), the same rule the Rust screen uses for `pub fn`.
+
+**85 `unfalsified` is a property of the screen, not a verdict on Niobe's tests.** Polarity comes
+from `pytest.raises`; most bench instruments are total functions returning a token. Said out loud
+in the report and in `rulings`. Did not invent a value-polarity heuristic — crediting a polarity
+the screen did not observe is Guard D with the sign flipped.
+
+**New findings:** `bench/devices.py::by_index` uninvoked (Niobe's). 4 rows screened, 85 unfalsified.
+
+**Trinity's two guards:** `--write-baseline` absorbed them on the first run — an open red turned
+green. Added `not_baselined_on_purpose`, which `--write-baseline` now subtracts mechanically.
+`--check` is `FAIL(drift)` on exactly those two and nothing from my three new arms; that is the
+evidence the new arms are at baseline. `pytest tests/ops/test_harness_census.py` 9 passed,
+1 FAIL(condition), 0 ERROR(instrument).
+
+**Kept the box quiet:** static analysis only, no GPU run, no Rust rebuild — the change is Python
+and the verdict it supports is about the census, not about the build.
+
+**Decision record:** `tank-census-frame-is-declared.md` (D-T87).
