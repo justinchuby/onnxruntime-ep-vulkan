@@ -253,10 +253,20 @@ fn out_rows(view: &NodeView<'_>, spec: &OpSpec) -> Result<u64, crate::registry::
 
 /// Floats the GEMV shader reserves for its reduction tree. Mirrors `QB_RED_WORDS` in
 /// `q_gemv.comp`; the product `local_size_x * QB_COLS` may not exceed it.
-const GEMV_RED_WORDS: u32 = 1024;
+const GEMV_RED_WORDS: u32 = 2048;
 
 /// Largest column tile the GEMV shader can hold in registers. Mirrors `QB_MAX_COLS`.
-const GEMV_MAX_COLS: u32 = 8;
+///
+/// **16, raised from 8.** The tile is a byte count before it is a tuning constant: a workgroup
+/// re-reads the whole activation row, so the row is read `ceil(N / cols)` times per node. Over
+/// Phi-3.5's 161 nodes the static byte model (`bench/results/probe_roofline.py`) puts activation
+/// traffic at 887.5 MiB per inference at 8 and 443.7 MiB at 16 — 15.4% of every byte the GEMV
+/// island moves, removed without touching the weight stream, which is irreducible.
+///
+/// Not 32: `GEMV_RED_WORDS` must cover `local_size_x * cols`, and 32 columns at the 128-invocation
+/// workgroup `K = 8192` takes needs 16 KiB of shared memory — the entire floor §7.2 guarantees,
+/// leaving one resident workgroup on a device that only meets it. See `q_gemv.comp`.
+const GEMV_MAX_COLS: u32 = 16;
 
 /// Fewest workgroups a dispatch should keep, so tiling never starves the machine of parallelism.
 /// Deliberately a small absolute number rather than a multiple of anything the device reports:
@@ -287,7 +297,7 @@ const GEMV_MIN_BLOCKS_PER_INVOCATION: u64 = 2;
 ///   all — they contributed nothing and still had to arrive at all seven barriers. Dividing gives
 ///   96 = 32 × 3, every invocation with the same amount of work.
 ///
-/// Shared memory is fixed at [`GEMV_RED_WORDS`] floats = 4 KiB regardless, well inside the 16 KiB
+/// Shared memory is fixed at [`GEMV_RED_WORDS`] floats = 8 KiB regardless, half the 16 KiB
 /// floor.
 pub fn gemv_workgroup(blocks_per_col: u64) -> u32 {
     let mut best: Option<u32> = None;
@@ -873,10 +883,16 @@ mod tests {
         ] {
             let wg = gemv_workgroup(k / 32);
             let cols = gemv_cols(n, wg);
-            assert_eq!(cols, 8, "N={n} K={k} should take the full tile");
+            assert_eq!(cols, 16, "N={n} K={k} should take the full tile");
             assert!(
                 wg * cols <= GEMV_RED_WORDS,
                 "N={n} K={k}: {wg} x {cols} would overrun the {GEMV_RED_WORDS}-float `red` array"
+            );
+            assert!(
+                wg * cols * 4 <= 8 * 1024,
+                "N={n} K={k}: {wg} x {cols} floats is more than half the 16 KiB shared-memory \
+                 floor of §7.2, which would leave one resident workgroup on a device that only \
+                 meets the floor"
             );
             assert_eq!(n % u64::from(cols), 0, "no tail tile for a Phi-3.5 shape");
         }

@@ -645,3 +645,111 @@ it and did not need to.
   read `oracle_outputs_degenerate` first — if the KV outputs come back degenerate on real
   data, that is the reopened defect still live, not a harness problem.
 - No timing measurement taken. Nothing with a time term is certifiable on this box.
+
+## Session 46 — the roofline, and the first kernel change of the performance push
+
+**Relay:** priority change from the user — stop obsessing over errors, get performance up,
+do it right the first time. Verify or destroy a roofline estimate first; then bytes required
+vs bytes moved; then intermediate traffic; then name the gap owner. Explicitly: no more
+instruments, screens or guards.
+
+**The estimate survives, its arithmetic did not, and one of its premises was wrong in my favour.**
+
+Derived the weight stream from the graph rather than from recollection: 1775.0 MiB int4 +
+221.9 MiB fp16 scales = **1996.8 MiB**, confirming 1997.6 MiB independently. Scales are
+**11.1% of the stream** — not previously stated separately, and worth knowing before anyone
+proposes a finer block size.
+
+Three corrections:
+1. The floor is **8.18 ms, not 7.8** — 1997.6 MiB is 2.095 GB, not "2.0 GB".
+2. **12.1847 ms is not withdrawn.** I checked the artifact instead of accepting the premise.
+   `phi35-certified-dev0.json` says `certification.quotable = true`, STEADY at n=41, and it
+   reproduces at 12.1869 ms in a second artifact. R13 withdrew the wall-clock *speedup ratios*,
+   which were taken during CPU fallback. This is GPU-busy on the device counter. Different
+   instrument, different quantity, own companion attached.
+3. Therefore the ratio **is** establishable: 171.8 GB/s, **67.1% of roofline, 1.49× headroom**.
+   The estimate's conclusion — micro-optimisation is not the work, architecture is — stands.
+
+**The error I made and caught.** Charging activation re-reads to DRAM gives 248.2 GB/s, **97.0%
+of spec peak**. No GDDR6 controller reaches that. The right reading of an impossibly good number
+is that the model is wrong, not that the kernel is excellent — and `q_gemv.comp`'s own header
+had said so all along ("the bytes hit L1 but the instructions still issue"). The activation row
+is 6 KiB; its re-reads are cache hits. The probe now reports two counts because they are two
+quantities: weight bytes are DRAM, activation bytes are load issue.
+
+That distinction is what names the gap owner, which was the task. **DRAM sits at 67% while the
+kernel runs — a third of the bandwidth is idle, so bandwidth is not the limit.** Not coalescing
+either, on the same evidence. Of the candidates that are counts rather than guesses, activation
+load issue is the largest.
+
+**The change: `QB_MAX_COLS` 8 → 16, `QB_RED_WORDS` 1024 → 2048.** 887.5 → 443.7 MiB of
+activation load bytes, 15.4% of all bytes named by loads, removed. Barriers per output halve too.
+
+**Why not 32**, which the same model says removes another 221.8 MiB: `RED_WORDS` must cover
+`local_size_x * QB_COLS`, so 32 columns at the 128-invocation workgroup `K=8192` takes needs
+16 KiB of shared memory — *the whole of the §7.2 guaranteed floor*. One resident workgroup on a
+device that only meets the floor trades away the latency hiding a bandwidth-bound kernel lives
+on. Register pressure argues the same way, but that is an estimate about an unseen driver
+allocator whereas the shared-memory floor is a number the specification promises. **The decision
+rests on the promise, not the estimate** — worth keeping as a general rule for tuning constants.
+
+**Prediction recorded before measurement**, per the standing rule: up to ~1.15× if load issue
+owns the gap, nothing if it owns none. Not runnable today — the EP claims 0/363 nodes pending
+the proof ledger, so there is no live inference to time.
+
+**Baseline established rather than assumed.** `test_matmulnbits.py` is 23F/8P/1x with my change.
+Rather than reason that those were the known proof-ledger reds, I stashed the change, rebuilt,
+and re-ran: **identical, 23F/8P/1x**. They are `assert_vulkan_claims` failures, not numerics.
+528 Rust tests pass; clippy `--all-targets -D warnings` green.
+
+**What is not verified, said plainly:** the numeric result on the device, for the same reason.
+The tile width does not change the summation order within a column, so the output should be
+bit-identical — but that is an argument, and the evidence is `test_matmulnbits.py` the moment
+the ledger lands.
+
+Commit `d6628b3`.
+
+## Session 46b — the multiplication, and the term nobody had costed
+
+**Relay:** multiply the InB load count by the load width. If it lands near 2.09 GB each weight
+byte is read once and the 67% is real; if it lands at 2× or 4×, re-reading is the defect and
+blocking is the fix.
+
+**It lands exactly.** 116,324,352 loads × 16 B = 1,861,189,632 B = 1775.0 MiB = the int4 weight
+total from the graph. **Amplification 1.000000.** Blocking is not the defect. Branch one.
+
+**I checked whether my own check could fail**, because it came within one factor of being a
+tautology: `blobs × blob_bytes = weight_bytes` *is* an identity. Two factors are not, and both
+were measured — **loads per blob = 1** (the def-use walk finds one `%v4uint` where the unpacked
+path issues four `%uint`; a per-element loader would be 8× higher over the same blobs), and
+**each blob is touched by exactly one workgroup** (`col0 = WorkGroupID.x * QB_COLS` partitions
+columns; the tail-tile redirect would break it and is unreachable because all five Phi-3.5 `N`
+values divide by 16). Remove either and the product stops matching.
+
+**The fusion prize is 0.47%, and I had the cost model wrong in the same way twice.** Intermediates
+across all 366 nodes at batch 1: **9.52 MiB against 1996.8 MiB of weights**. 354 dispatch
+boundaries *sounds* like traffic, but at batch 1 every intermediate is a **vector** — 6 KiB at
+hidden 3072, 16 KiB at FFN 8192 — so the boundary count multiplies something negligible. Same
+error shape as charging activation re-reads to DRAM last session: **a large count of small things
+is not a large thing, and I keep reaching for the count.**
+
+**The term nobody had costed: the KV cache.** `past_key_values.N.key` is `[batch, 32, past_seq,
+96]` and each of the 32 `GroupQueryAttention` nodes reads its whole history every token.
+
+| past_len | weights | KV | inter | total | KV% | inter% | floor |
+|---|---|---|---|---|---|---|---|
+| 0 | 1996.8 | 0.0 | 9.52 | 2006.4 | 0.0% | 0.474% | 8.22 ms |
+| 2048 | 1996.8 | 768.0 | 9.52 | 2774.4 | 27.7% | 0.343% | 11.36 ms |
+| 8192 | 1996.8 | 3072.0 | 9.52 | 5078.4 | 60.5% | 0.187% | 20.80 ms |
+
+It is **zero in the regime 12.1847 ms was measured in**, which is exactly why it has been
+invisible. It passes the entire fusion prize at 32 tokens of context. Unlike weights it is not
+irreducible; unlike intermediates it is not small; **it is unbounded.** And this model does no
+grouping — 32 KV heads for 32 query heads despite the op's name — so the cache is 4–8× a
+genuinely grouped model. We implement the op (`attention.rs`), so the traffic is ours.
+
+**Consequence for the roofline itself, and it is a methodological one: the floor is not a
+constant.** 8.22 ms at zero context, 14.51 ms at 4096. Any figure quoted against "the roofline"
+must say which context length it was taken at, the way a timing must carry its device state.
+
+Nothing here needed a clock, a device state, or a working EP. Commit `eaa9aef`.
