@@ -1089,6 +1089,24 @@ def find_fatal_log_lines(text: str) -> list[str]:
 # duration to a threshold.  A timeout is a *ceiling on waiting*, not a measurement, and
 # it is the only wall-clock number the conformance lane is permitted to contain.
 # Device-clock measurement is Switch's exclusive claim; Niobe owns the reporting gate.
+#
+# 2026-08-01, Trinity — READ THIS BEFORE REACHING FOR THIS WRAPPER IN A NEW LANE.
+# Obligation 1 above is not achievable and this comment was wrong to state it as a
+# requirement.  A wall-clock budget fires the same way for "the box is loaded" and for
+# "the child hung", so it moves with the reader's confidence and R9 amendment 5 demotes it
+# from gate to precondition: no value of it separates the two cases, and the value that
+# survives this host's 9.5x `record`-step inflation is wider than the hang it exists to
+# catch.  `tests/ops/_watchdog.py` replaces it for the census with a budget denominated in
+# reference computations the machine completed during the run — contention lowers
+# units-per-second and widens the window automatically, while a hang exhausts the budget in
+# bounded work on a loaded box exactly as on a quiet one.  Both arms are demonstrated in
+# `tests/ops/probe_stall_guard.py` (four cells, `arms_must_differ`) and in the always-on
+# `tests/ops/test_stall_guard.py`.
+#
+# This wrapper stays because its other callers are short, fixed-cost commands where the
+# ceiling is a convenience rather than a gate, and because obligation 2 — a timeout is
+# ERROR(instrument), never a detection — is correct and unchanged.  New long-running or
+# hang-prone steps should use `_watchdog.guarded_run` instead.
 
 #: Multiplier applied to a quiet-machine budget.  Niobe's measured worst case is 4.4x;
 #: 6.0 is that with headroom, because the cost of over-waiting is minutes and the cost of

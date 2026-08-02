@@ -627,13 +627,47 @@ effect.
 
 ##### Verified state of `main` at the time of this revision
 
-`32 failed / 272 passed` on Intel with `test_wiring_census` excluded (it times out under
-three-agent contention; Trinity is giving it a contention-tolerant timeout and the
-`ERROR(instrument)` classification it deserves). **No wall-clock threshold appears anywhere
-in the gate, and none will be added**: the same suite took 708 s under load and 161 s quiet
-— 4.4× — and I read the resulting timeouts as a "68 failed" regression that did not exist.
-That is R13's second clause with a stopwatch attached: a count without its text, from an
-instrument measuring the machine's other tenants.
+`32 failed / 272 passed` on Intel with `test_wiring_census` excluded (it timed out under
+three-agent contention). **No wall-clock threshold appears anywhere in the gate, and none
+will be added**: the same suite took 708 s under load and 161 s quiet — 4.4× — and I read
+the resulting timeouts as a "68 failed" regression that did not exist. That is R13's second
+clause with a stopwatch attached: a count without its text, from an instrument measuring
+the machine's other tenants.
+
+**The exclusion is lifted as of 2026-08-01 and the rule above is now enforced rather than
+promised.** The census carried the last wall-clock timeout in the suite; it has been
+removed, not raised. Raising it was the one repair R9 amendment 5 forbids — a threshold
+fires the same way for "the box is loaded" and "the census hung", so it moves with the
+reader's confidence and cannot be repaired by moving it, in either direction. Widening it
+enough to survive the 4.4× above (9.5× on the `record` step) makes it wider than the hang
+it exists to catch.
+
+What replaces it is a **stall budget denominated in work the machine actually did**
+(`tests/ops/_watchdog.py`). A background thread completes a fixed reference computation
+over and over; each completion is one *work unit*. A step's budget is a number of units it
+may spend producing no output and reaching no result. Contention lowers units-per-second,
+so the same budget is automatically a wider window in wall time on a loaded box; a hang
+leaves the machine producing units while the step produces nothing, so the budget is
+exhausted in bounded work whether the box is busy or idle. The unit is CPU-bound, so it
+tracks CPU contention exactly and GPU/disk contention only by correlation — every run
+records `stall_detector.observed_units` per step in `bench/results/wiring_census-dev{N}.json`
+so that margin is auditable rather than asserted.
+
+Both arms are demonstrated, because a detector shown only to pass has been shown nothing:
+`tests/ops/probe_stall_guard.py` runs the real census in all four cells of
+{healthy, hung} × {quiet, loaded} and writes `bench/results/stall_guard_arms-dev{N}.json`
+with `arms_must_differ`. The load-bearing cell is **hung + loaded**: a timeout loose enough
+to survive this host's inflation passes there, and the work-unit budget fails there.
+`tests/ops/test_stall_guard.py` carries the same property as 13 always-on deterministic
+tests against a fake clock, including the crisp form — the *same* wall-clock silence trips
+the guard on a fast clock and does not trip it on a slow one.
+
+Terminal states follow R13 and depend on *whose* stall it is, never on how long it took: a
+stalled mechanism under census is `FAIL(condition=NO_PROGRESS)` (a mechanism that never
+returns has produced no observation of itself, which is criterion 12's subject), a stalled
+toolchain step such as a `cargo` compile is `ERROR(instrument)`. `STALLED` is a distinct
+census token from `UNWIRED` — "ran and produced nothing" and "never came back" are
+different facts.
 
 ##### How a lane fails when the EP executes nothing — the actual mechanism
 

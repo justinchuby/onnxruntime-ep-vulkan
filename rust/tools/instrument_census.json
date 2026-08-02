@@ -55,6 +55,14 @@
   "hand": {
     "harness_notes": [
       {
+        "instrument": "tests/ops/_watchdog.py::StallGuard.raise_if_stalled and WorkClock.assert_alive",
+        "state": "OUT-OF-FRAME for this screen, by construction - falsified elsewhere",
+        "artifact": "tests/ops/test_stall_guard.py: 13 always-on tests, no GPU, driven by a fake work clock so they are deterministic. Both polarities of every property: slow-but-progressing never trips / silence trips; at-budget passes / one-over fails; the SAME wall silence trips on a fast clock and does not trip on a slow one (the load-invariance crux); a hang on a loaded machine still trips; a dead clock is ERROR(instrument) and not a pass; MECHANISM and TOOLCHAIN stalls print different verdicts. Four-cell end-to-end demonstration against the real census in tests/ops/probe_stall_guard.py, artifact bench/results/stall_guard_arms-dev{N}.json with arms_must_differ.",
+        "why_out_of_frame": "This screen scans module-level functions; both instruments are methods, so adding ops/_watchdog.py to HARNESS_INSTRUMENT_FILES widened the frame without adding a scanned name. Recorded rather than left silent: a file inside the frame that contributes zero instruments looks identical to a file that has none.",
+        "misnaming_caught_here": "The method was first called `check`. The screen tallies calls by bare function name, so every guard.check() in the census was credited to tests/ops/_models.py::check and moved it UNFALSIFIED -> SCREENED. That is `misnamed` in this file's own vocabulary and it was caught by running the census, not by reading the diff. Renamed to raise_if_stalled.",
+        "owner": "trinity"
+      },
+      {
         "instrument": "tests/ops/_models.py::assert_vulkan_executed_runtime (Guard D)",
         "state": "SCREENED - the only one, as of 2026-07-31",
         "artifact": "tests/ops/test_guard_d.py: 12 always-on tests, no GPU, no model, synthesised ORT profiling JSON. Negative polarity (zero VulkanEP Node events -> AssertionError), positive polarity (one event -> returns 1), plus four MUTANT guards that must each FAIL the same protocol - including a byte-accurate reconstruction of the NameError defect that shipped.",

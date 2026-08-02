@@ -89,10 +89,61 @@ from onnx_ir import DataType as DT
 
 import _models as m
 import _verdict
+import _watchdog
+from _watchdog import (
+    KIND_MECHANISM,
+    KIND_TOOLCHAIN,
+    STALLED,
+    StallGuard,
+    Stalled,
+    WorkClock,
+)
 
 HERE = Path(__file__).parent
 _REPO_ROOT = HERE.parent.parent
 _CARGO_MANIFEST = _REPO_ROOT / "rust" / "Cargo.toml"
+
+# ---------------------------------------------------------------------------
+# Stall budgets — in WORK UNITS, never in seconds
+# ---------------------------------------------------------------------------
+#
+# This test was excluded from the suite with `--ignore` because it timed out.  The wall
+# clock is gone from the gate entirely; see `_watchdog.py` for why raising the number was
+# not an option (R9 amendment 5: a threshold that moves the same way for "loaded" and for
+# "hung" cannot be repaired by moving it).
+#
+# A budget below is the amount of work THIS MACHINE completes, measured during this run,
+# that a step is allowed to spend producing no output and reaching no result.  Because it
+# is denominated in work rather than time it needs no per-machine tuning: a box running
+# four other agents ticks the reference clock more slowly, so the same budget is a longer
+# wall window there, automatically and in proportion.
+#
+# Calibration: every run records what each step actually cost in units AND the largest
+# silence it actually produced, into `observed_units` / `observed_max_silence_units` in the
+# census artifact, so these numbers are auditable against the machine rather than asserted.
+# The budget is compared against SILENCE, not against the step's total cost — the
+# subprocess steps beat on every output line — so `observed_max_silence_units` is the
+# number to read when judging headroom.
+#
+# Measured on this host (dev0) across the four cells of probe_stall_guard.py, which is
+# also where the budgets were last wrong.  The first calibration read max silences of 327
+# (quiet) and 11221 (loaded) for a counters child, i.e. a 34x spread and only 1.4x headroom
+# under load — a budget resting on margin, not on invariance.  The cause was that the
+# child's dominant silent window was its own module imports, before any of its code could
+# announce anything.  Giving the child `-X importtime` turned that window into a stream of
+# genuine progress lines and the quiet max silence fell to 52/65 units.  The budgets below
+# are set against the measured silence, not against the step's total cost.
+#
+# Margin still exists for the one thing a CPU-bound reference unit does NOT measure: GPU
+# and disk contention slow a step without slowing the clock.  probe_stall_guard.py
+# quantifies that gap per run (`load_witness`) rather than leaving it as a claim.
+_BUDGET_UNITS = {
+    "counters_child_clean": 6_000,
+    "counters_child_inject": 6_000,
+    "add_session_profiling": 4_000,
+    "validation_probe": 2_000,
+    "layering_lint": 12_000,
+}
 
 # ---------------------------------------------------------------------------
 # Mechanism registry — what we census and what "wired" means for each.
@@ -130,6 +181,48 @@ _MANDATORY_WIRED = {
 _KNOWN_UNWIRED_M0 = {
     "ledger_lookup",   # Mouse/Trinity — criterion 11 not met; no ledger entries exist
 }
+
+
+# Which mechanisms a stalled step makes unobservable.  A stall is recorded against the
+# mechanisms that step was the sole observation for, so the census says WHICH mechanism
+# stopped rather than only that the census did.
+_STEP_MECHANISMS = {
+    "counters_child_clean": ("net_benefit_gate", "broken_commitment_warn", "retain_viable"),
+    "counters_child_inject": ("net_benefit_gate", "broken_commitment_warn", "retain_viable"),
+    "add_session_profiling": ("partitioner", "partition_identity_check", "gpu_tracer",
+                              "model_output_equivalence"),
+    "validation_probe": ("validation_messenger",),
+    "layering_lint": ("layering_lint",),
+}
+
+
+@pytest.fixture
+def census_guard():
+    """A work clock plus a stall guard, live for the duration of one census.
+
+    The clock is started before anything else so that "the machine did nothing" and "the
+    machine did everything except the census" are distinguishable from the first step —
+    without a running denominator the guard could only report silence, and silence alone
+    is what a wall-clock timeout reports.
+    """
+    clock = WorkClock().start()
+    guard = StallGuard(clock=clock, what="wiring census")
+    try:
+        yield guard
+    finally:
+        clock.stop()
+
+
+def _record_stall(observations: dict, step: str, exc: Stalled) -> None:
+    """Score a stall against the mechanisms it made unobservable.
+
+    `STALLED` is deliberately not `UNWIRED`.  "Ran and produced nothing" is a finding about
+    the call graph; "never came back" is a finding about a step.  A census that spells them
+    the same way has lost the one it exists to report (R12).
+    """
+    text = exc.args[0].splitlines()[0]
+    for mech in _STEP_MECHANISMS.get(step, (step,)):
+        observations[mech] = f"{STALLED} ({step}: {text})"
 
 
 # ---------------------------------------------------------------------------
@@ -324,12 +417,27 @@ def _chain_model(n_nodes: int = 6) -> bytes:
 
 
 def _counters_child_main(counters_path: str) -> int:
-    """Child entry point: run one session with the counters file armed, then exit."""
+    """Child entry point: run one session with the counters file armed, then exit.
+
+    Each phase announces itself on stderr before it starts.  These lines are the child's
+    forward-progress beats: `_watchdog.guarded_run` treats every output line as progress,
+    so a child that is merely crawling under load keeps the parent's stall budget from
+    advancing, while a child that has wedged inside a phase stops beating and is caught.
+    They are deliberately tied to actual phase transitions rather than emitted on a timer
+    — a timer-driven heartbeat would keep beating through the very hang it is supposed to
+    reveal, which is the "detector as decoration" failure this whole design exists to
+    avoid.
+    """
+    def phase(name: str) -> None:
+        print(f"[census-child] phase={name}", file=sys.stderr, flush=True)
+
+    phase("start")
     lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
     if not lib:
         print("[census-child] ONNXRUNTIME_VULKAN_EP_LIB unset", file=sys.stderr)
         return 3
     try:
+        phase("register_ep_library")
         ort.register_execution_provider_library(m.EP_NAME, str(Path(lib).resolve()))
     except Exception as exc:  # noqa: BLE001
         if "already registered" not in str(exc):
@@ -337,23 +445,29 @@ def _counters_child_main(counters_path: str) -> int:
             return 3
     opts = ort.SessionOptions()
     opts.log_severity_level = 2
-    sess = ort.InferenceSession(_chain_model(), opts, providers=m.EP_PROVIDERS)
+    phase("build_model")
+    model_bytes = _chain_model()
+    phase("create_session")
+    sess = ort.InferenceSession(model_bytes, opts, providers=m.EP_PROVIDERS)
     feeds = {
         "a": np.ones((4, 4), dtype=np.float32),
         "b": np.full((4, 4), 2.0, dtype=np.float32),
     }
     try:
+        phase("run")
         sess.run(None, feeds)
     except Exception as exc:  # noqa: BLE001
         # An injected Compute failure is expected to surface here; the artifact the census
         # reads is the counters file, which `record_broken_commitment` writes at the
         # instant of the event and not at teardown.
         print(f"[census-child] run raised: {type(exc).__name__}: {exc}", file=sys.stderr)
+    phase("teardown")
     del sess
+    phase("done")
     return 0 if Path(counters_path).is_file() else 3
 
 
-def _run_counters_child(*, inject: bool, tag: str) -> tuple[dict, str]:
+def _run_counters_child(*, inject: bool, tag: str, guard) -> tuple[dict, str]:
     """Run one polarity in a fresh process; return (counters doc, combined child log)."""
     out_dir = _REPO_ROOT / "bench" / "results" / "census"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -375,10 +489,26 @@ def _run_counters_child(*, inject: bool, tag: str) -> tuple[dict, str]:
     if inject:
         env[_ENV_INJECT] = "1"
 
-    result = _verdict.run_subprocess_checked(
-        [sys.executable, str(Path(__file__).resolve()), _CHILD_FLAG, str(counters)],
+    result = _watchdog.guarded_run(
+        [
+            sys.executable,
+            # The child's longest silent window is its own module imports — numpy,
+            # onnxruntime and onnx_ir all load before the first line of
+            # `_counters_child_main` can run, and under load that window was measured at
+            # 11221 work units of pure silence.  `-X importtime` emits one line per module
+            # actually finished importing, which is forward progress tied to real work: a
+            # child crawling through its imports keeps beating, a child wedged inside one
+            # stops.  It is not a timer, and that distinction is the whole design.
+            "-X", "importtime",
+            str(Path(__file__).resolve()), _CHILD_FLAG, str(counters),
+        ],
+        guard=guard,
         what=f"census counters child ({tag})",
-        quiet_seconds=180,
+        label=f"counters_child_{tag}",
+        budget_units=_BUDGET_UNITS[f"counters_child_{tag}"],
+        # This child exists to exercise the EP.  If it goes silent, the mechanisms it
+        # publishes have not been observed to run, which is criterion 12's subject.
+        kind=KIND_MECHANISM,
         env=env,
         cwd=str(HERE),
     )
@@ -535,6 +665,88 @@ def _observe_instrument_census() -> str:
     return f"exit={code} {verdict.strip()} | " + "; ".join(counts[:6])
 
 
+def _print_census(observations: dict, guard) -> "Path":
+    """Emit the census lines and write the artifact.  Called on every exit path.
+
+    A run that stalled at mechanism 3 has still observed mechanisms 1 and 2; discarding
+    those because a later step hung would throw away evidence the run actually produced.
+    """
+    print("\n[WIRING CENSUS] M0 criterion 12 — per-mechanism observations:", file=sys.stderr)
+    for mech in _MECHANISMS:
+        obs = observations.get(mech, "NOT-REACHED (an earlier step ended the census)")
+        print(f"[WIRING CENSUS] {mech}: {obs}", file=sys.stderr)
+    print("[WIRING CENSUS] end.", file=sys.stderr)
+
+    _CENSUS_OUT.mkdir(parents=True, exist_ok=True)
+    census_path = _CENSUS_OUT.parent / (
+        f"wiring_census-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
+    )
+    census_path.write_text(
+        json.dumps(
+            {
+                "criterion": "12",
+                "device_selector": os.environ.get(
+                    "ONNXRUNTIME_EP_VULKAN_DEVICE", "unset"
+                ),
+                "vocabulary": (
+                    "Tank's six states, ordered by how late the failure is discoverable: "
+                    "absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> "
+                    "misnamed; plus R13's three terminal states PASS / FAIL(condition) / "
+                    "ERROR(instrument).  One census (rust/tools/audit_instruments.py), "
+                    "not two.  A step that never returned reads STALLED, which is not "
+                    "UNWIRED: 'ran and produced nothing' and 'never came back' are "
+                    "different facts."
+                ),
+                "no_duration_quoted": (
+                    "§10.0 obligation 8 — every line above is a count, a token or a "
+                    "byte volume.  The tracer line reports how many events it wrote and "
+                    "quotes none of their durations.  The stall budgets below are counts "
+                    "of reference computations this machine completed during this run, "
+                    "not seconds; that is what makes them contention-invariant."
+                ),
+                "stall_detector": {
+                    "fault_injection": (
+                        _watchdog.injected_stall_target() or "INACTIVE"
+                    ),
+                    "unit": (                        "one SHA-256 over a fixed 256 KiB block, completed by this "
+                        "machine on a background thread during this run"
+                    ),
+                    "budget_units": dict(_BUDGET_UNITS),
+                    "observed_units": dict(guard.costs),
+                    "observed_max_silence_units": dict(guard.max_silence),
+                    "clock_units_total": guard.clock.units,
+                    "why_not_a_timeout": (
+                        "A wall-clock threshold moves the same way for 'the box is "
+                        "loaded' and 'the census hung', so no value of it is right "
+                        "(R9 amendment 5).  A budget in work units does not: contention "
+                        "lowers units-per-second, widening the window in wall time, while "
+                        "a hang leaves the machine producing units and the step producing "
+                        "nothing."
+                    ),
+                    "measures_cpu_contention_only": (
+                        "The reference unit is CPU-bound.  GPU and disk contention slow a "
+                        "step without slowing the clock; observed_units above is recorded "
+                        "on every run so that margin is auditable."
+                    ),
+                },
+                "observations": {mm: observations.get(mm, "UNWIRED") for mm in _MECHANISMS},
+                "unwired": [
+                    mm for mm in _MECHANISMS
+                    if observations.get(mm, "UNWIRED").startswith("UNWIRED")
+                ],
+                "stalled": [
+                    mm for mm in _MECHANISMS
+                    if observations.get(mm, "").startswith(STALLED)
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[WIRING CENSUS] wrote {census_path}", file=sys.stderr)
+    return census_path
+
+
 # ---------------------------------------------------------------------------
 # The census test
 # ---------------------------------------------------------------------------
@@ -543,7 +755,7 @@ def _observe_instrument_census() -> str:
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
     reason="ONNXRUNTIME_VULKAN_EP_LIB not set — no EP to census",
 )
-def test_wiring_census(require_vulkan) -> None:
+def test_wiring_census(require_vulkan, census_guard) -> None:
     """Criterion 12: emit per-mechanism census; fail on unexpected UNWIRED mechanisms.
 
     Each mechanism named in the M0 table emits one line:
@@ -559,6 +771,24 @@ def test_wiring_census(require_vulkan) -> None:
       - Partitioner: islands_offered == claimed_nodes with both > 1 is IDENTITY (red).
     """
     observations: dict[str, str] = {}
+    stalls: list[Stalled] = []
+
+    def _fatal_stall(step: str, exc: Stalled):
+        """A stall in a step the rest of the census reads from ends the census.
+
+        The partial census is printed first: a run that stopped at mechanism 3 has still
+        observed mechanisms 1 and 2, and discarding those readings because a later step
+        hung would be throwing away evidence the run actually produced.
+        """
+        _record_stall(observations, step, exc)
+        _print_census(observations, census_guard)
+        if exc.report.kind == KIND_MECHANISM and _watchdog.MECHANISM_STALL_IS_A_DETECTION:
+            # A mechanism that never returns has produced no observation, which is exactly
+            # what criterion 12 exists to detect.  R13: quote the text, never a count.
+            raise AssertionError(exc.args[0]) from exc
+        raise _verdict.InstrumentError(
+            f"[wiring census instrument failure] {exc.args[0]}"
+        ) from exc
 
     # ── The two counters-file polarities, taken once and read by three mechanisms ────
     #
@@ -566,11 +796,24 @@ def test_wiring_census(require_vulkan) -> None:
     # every JSON-published mechanism below is read from BOTH polarities and the census
     # records the pair.  A line that reads the same in both is reported as such and is not
     # allowed to pass as an observation.
-    clean_doc, clean_log = _run_counters_child(inject=False, tag="clean")
-    inject_doc, inject_log = _run_counters_child(inject=True, tag="inject")
+    try:
+        clean_doc, clean_log = _run_counters_child(
+            inject=False, tag="clean", guard=census_guard
+        )
+        inject_doc, inject_log = _run_counters_child(
+            inject=True, tag="inject", guard=census_guard
+        )
 
-    # ── Run session and collect observations ────────────────────────────────
-    counters_before, counters_after, profile_info = _run_add_session_with_profiling()
+        # ── Run session and collect observations ────────────────────────────
+        counters_before, counters_after, profile_info = _watchdog.guarded_call(
+            census_guard,
+            "add_session_profiling",
+            _run_add_session_with_profiling,
+            budget_units=_BUDGET_UNITS["add_session_profiling"],
+            kind=KIND_MECHANISM,
+        )
+    except Stalled as exc:
+        _fatal_stall(exc.report.last_beat.split(":")[0], exc)
 
     # ── Mechanism 1: partitioner ─────────────────────────────────────────
     # Observable: dispatches_executed delta > 0 (EP ran) + subgraphs_live delta > 0 (partitioned)
@@ -765,22 +1008,33 @@ def test_wiring_census(require_vulkan) -> None:
     observations["ledger_lookup"] = "UNWIRED"
 
     # ── Mechanism 7: validation_messenger ───────────────────────────────
-    # R13: this mechanism shells out.  A subprocess that hangs is an ERROR(instrument) —
-    # the census reached no observation — and must never be scored as "UNWIRED", which is
-    # a finding.  `run_subprocess_checked` raises InstrumentError on a timeout, so it is
-    # caught here and recorded as the third state rather than collapsed into the second.
-    # The budget is contention-inflated: this suite has been measured at 4.4x under four
-    # concurrent agents, and this test had to be `--ignore`d for exactly this reason.
+    # R13: this mechanism shells out.  A child that fails to start is an ERROR(instrument)
+    # — the census reached no observation — and must never be scored as "UNWIRED", which
+    # is a finding.
+    #
+    # The wall-clock budget that used to guard this call is gone; it is watched by
+    # `_watchdog.guarded_run`, whose budget is a count of reference computations this
+    # machine completed during this run.  That is what makes the contention this suite was
+    # measured at (4.4x, 9.5x on the `record` step) irrelevant to the verdict rather than
+    # merely survivable: the window widens by exactly as much as the machine slowed.  A
+    # child that goes silent here reads STALLED against `validation_messenger`, which is a
+    # different token from UNWIRED on purpose.
     epctl = _epctl_path()
     if epctl is None:
         observations["validation_messenger"] = "UNWIRED (epctl not found)"
     else:
         try:
-            result = _verdict.run_subprocess_checked(
+            result = _watchdog.guarded_run(
                 [str(epctl), "--probe-validation"],
+                guard=census_guard,
                 what="census validation probe",
-                quiet_seconds=20,
+                label="validation_probe",
+                budget_units=_BUDGET_UNITS["validation_probe"],
+                kind=KIND_MECHANISM,
             )
+        except Stalled as exc:
+            _record_stall(observations, "validation_probe", exc)
+            stalls.append(exc)
         except _verdict.InstrumentError as exc:
             observations["validation_messenger"] = (
                 f"INSTRUMENT-ERROR ({str(exc).splitlines()[0]})"
@@ -806,19 +1060,34 @@ def test_wiring_census(require_vulkan) -> None:
     # out of the test as an uncaught exception, which pytest scored as a red.  It is
     # neither a pass nor a detection: it is ERROR(instrument), and under R13 it must not
     # be counted as one of the suite's failures.
+    #
+    # The number is gone rather than bigger.  `cargo` prints a line per crate it compiles,
+    # so a build crawling under load beats continuously and cannot reach the stall budget
+    # however slow it gets; a `cargo` that has actually wedged prints nothing while the
+    # machine keeps completing reference units, and that disagreement is the signal.
     if _CARGO_MANIFEST.is_file():
         try:
-            lr = _verdict.run_subprocess_checked(
+            lr = _watchdog.guarded_run(
                 [
                     "cargo", "test", "--test", "layering",
                     "--manifest-path", str(_CARGO_MANIFEST),
                     # No --release: debug build avoids relinking the loaded DLL.
                 ],
+                guard=census_guard,
                 what="census layering lint",
-                quiet_seconds=240,
+                label="layering_lint",
+                budget_units=_BUDGET_UNITS["layering_lint"],
+                # A cargo compile is scaffolding the census needs but does not judge, so a
+                # stall here is ERROR(instrument) and not a finding about the lint.  Note
+                # cargo emits a line per crate, so a build that is merely crawling under
+                # load keeps beating and never reaches this budget.
+                kind=KIND_TOOLCHAIN,
                 env=_cargo_env(),
             )
-        except _verdict.InstrumentError as exc:
+        except Stalled as exc:
+            _record_stall(observations, "layering_lint", exc)
+            stalls.append(exc)
+        except (_verdict.InstrumentError, _watchdog.InstrumentAbsent) as exc:
             observations["layering_lint"] = f"INSTRUMENT-ERROR ({str(exc).splitlines()[0]})"
         else:
             if lr.returncode == 0:
@@ -901,48 +1170,7 @@ def test_wiring_census(require_vulkan) -> None:
     observations["instrument_census"] = _observe_instrument_census()
 
     # ── Emit census ──────────────────────────────────────────────────────
-    print("\n[WIRING CENSUS] M0 criterion 12 — per-mechanism observations:", file=sys.stderr)
-    for mech in _MECHANISMS:
-        obs = observations.get(mech, "UNWIRED")
-        print(f"[WIRING CENSUS] {mech}: {obs}", file=sys.stderr)
-    print("[WIRING CENSUS] end.", file=sys.stderr)
-
-    # The census is itself an artifact, not just a print.  Criterion 12's own falsifier is
-    # a file whose content varies with the run that produced it.
-    _CENSUS_OUT.mkdir(parents=True, exist_ok=True)
-    census_path = _CENSUS_OUT.parent / (
-        f"wiring_census-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
-    )
-    census_path.write_text(
-        json.dumps(
-            {
-                "criterion": "12",
-                "device_selector": os.environ.get(
-                    "ONNXRUNTIME_EP_VULKAN_DEVICE", "unset"
-                ),
-                "vocabulary": (
-                    "Tank's six states, ordered by how late the failure is discoverable: "
-                    "absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> "
-                    "misnamed; plus R13's three terminal states PASS / FAIL(condition) / "
-                    "ERROR(instrument).  One census (rust/tools/audit_instruments.py), "
-                    "not two."
-                ),
-                "no_duration_quoted": (
-                    "§10.0 obligation 8 — every line above is a count, a token or a "
-                    "byte volume.  The tracer line reports how many events it wrote and "
-                    "quotes none of their durations."
-                ),
-                "observations": {mm: observations.get(mm, "UNWIRED") for mm in _MECHANISMS},
-                "unwired": [
-                    mm for mm in _MECHANISMS
-                    if observations.get(mm, "UNWIRED").startswith("UNWIRED")
-                ],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    print(f"[WIRING CENSUS] wrote {census_path}", file=sys.stderr)
+    _print_census(observations, census_guard)
 
     # ── Assertions ───────────────────────────────────────────────────────
     # Mandatory wired — fail if UNWIRED (excluding known-unwired).
@@ -985,6 +1213,38 @@ def test_wiring_census(require_vulkan) -> None:
         + "\n".join(f"  {m}: {observations.get(m, 'UNWIRED')}" for m in _MECHANISMS)
     )
 
+    # ── Stalls (non-fatal ones — the fatal ones raised at the step) ───────
+    #
+    # A step that never returned is scored against the mechanisms it was the sole
+    # observation for, and it is NOT scored as UNWIRED: "ran and produced nothing" is a
+    # finding about the call graph, "never came back" is a finding about a step, and a
+    # census that spells them the same way has lost the one it exists to report.
+    #
+    # Which terminal state a stall gets depends on whose stall it is, not on how long it
+    # took.  A mechanism under census that never returns HAS produced no observation of
+    # itself, which is precisely criterion 12's subject — FAIL(condition=NO_PROGRESS).
+    # A toolchain step (cargo compiling the crate) is scaffolding the census does not
+    # judge — ERROR(instrument).  See the note in `_watchdog.py` on why Tank's
+    # ERROR(instrument)-for-timeouts ruling does not carry over: it reasons from a
+    # wall-clock timeout's firing being evidence about the box, and this detector's firing
+    # is not, which is the property demonstrated in all four cells of probe_stall_guard.py.
+    mechanism_stalls = [e for e in stalls if e.report.kind == KIND_MECHANISM]
+    toolchain_stalls = [e for e in stalls if e.report.kind == KIND_TOOLCHAIN]
+    if mechanism_stalls and _watchdog.MECHANISM_STALL_IS_A_DETECTION:
+        # R13: quote the failure text, never a failure count.
+        raise AssertionError(
+            "Wiring census FAILED — a mechanism under census made no forward progress:\n"
+            + "\n\n".join(e.args[0] for e in mechanism_stalls)
+            + "\n\nAll census observations:\n"
+            + "\n".join(f"  {m}: {observations.get(m, 'UNWIRED')}" for m in _MECHANISMS)
+        )
+    if toolchain_stalls:
+        raise _verdict.InstrumentError(
+            "[wiring census instrument failure] the census could not reach an "
+            "observation because a toolchain step made no forward progress:\n"
+            + "\n\n".join(e.args[0] for e in toolchain_stalls)
+        )
+
     # R13, LAST — and deliberately after the condition assertion above.
     #
     # An instrument outage is a lane failure of a DIFFERENT KIND, so it gets a different
@@ -1007,10 +1267,11 @@ def test_wiring_census(require_vulkan) -> None:
             "observe the following mechanisms, so it has said nothing about them:\n"
             + "\n".join(instrument_errors)
             + "\n\nAn instrument error NEVER counts as a detection (R13). None of the "
-            "lines above is evidence that a mechanism is unwired. The usual cause on this "
-            "host is machine contention (measured 4.4x with four concurrent agents); the "
-            "budgets here are already inflated for it, and "
-            "$ONNXRUNTIME_EP_VULKAN_TIMEOUT_SCALE raises them further.\n\n"
+            "lines above is evidence that a mechanism is unwired. Note the census no "
+            "longer carries a wall-clock timeout at all: its stall detector is "
+            "denominated in reference computations this machine completed during this "
+            "run (see `stall_detector` in the artifact), so contention cannot by itself "
+            "produce a line above.\n\n"
             "All census observations:\n"
             + "\n".join(f"  {mech}: {observations.get(mech, 'UNWIRED')}" for mech in _MECHANISMS)
         )

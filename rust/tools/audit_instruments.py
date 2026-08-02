@@ -271,7 +271,12 @@ def uninvoked(rows: list[dict]) -> list[str]:
 # `ERROR(instrument)` — the R13 channel itself — and it sat outside the frame while the
 # census reported on the instruments whose verdicts travel down it.  A screen that surveys
 # the speakers and not the microphone is `out-of-frame` in its own vocabulary.
-HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py", "ops/conftest.py"]
+HARNESS_INSTRUMENT_FILES = [
+    "ops/_models.py",
+    "ops/_verdict.py",
+    "ops/conftest.py",
+    "ops/_watchdog.py",
+]
 
 # A harness instrument is a function that renders a verdict: it either raises on a bad
 # world or returns a number a gate reads.  Helpers that only build models or run sessions
@@ -289,6 +294,12 @@ HARNESS_INSTRUMENT_FILES = ["ops/_models.py", "ops/_verdict.py", "ops/conftest.p
 # module-private name is private to Python, not to the call graph; hiding the two most
 # load-bearing instruments in the harness behind an underscore convention is exactly the
 # "reports a number about a world it has not surveyed" failure one line up.
+#
+# `ops/_watchdog.py` added 2026-08-01 (Trinity).  It decides whether a census step that has
+# not returned is a hang or a slow machine — the distinction that kept
+# `test_wiring_census.py` out of the suite — and `assert_alive` is the guard that stops a
+# dead watchdog from reading as "nothing to report".  An instrument that adjudicates other
+# instruments' silence must itself be inside the frame.
 HARNESS_FN = re.compile(
     r"^_?(assert_|count_|check$|check_|require_|verify_|expect_|classify_)|_verdict$"
 )
