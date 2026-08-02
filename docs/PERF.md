@@ -3128,3 +3128,115 @@ that way.
 Verified as one pytest invocation, which is also the only arrangement in which this class is
 visible at all: `pytest bench/ ci/ tests/ops/` → **402 passed, 321 skipped, 0 failed**. Under
 per-directory runs each step passes with the defect fully present.
+
+
+---
+
+## 18.0 What foreign GPU work does to the tail — a second hole, larger than the first
+
+§15 established that `gpu_steady_tail` cannot see a **bias**: `baseline_certified` is the cleanest
+trace in the census on every dispersion measure and is 21.4x wrong. This section establishes a
+second and more ordinary failure mode, and disposes of a proposed in-band remedy.
+
+### 18.1 `PER_DISPATCH` is not a foreign-work signature
+
+The proposal was that `run_disturbance.localise`'s `PER_DISPATCH` character — dispatches disagreeing
+more than the inference totals do — is what foreign GPU work produces, and would therefore be the
+first in-band signal sensitive to something dispersion is normally blind to. Two traces supported
+it. Nine device-0 traces carry both a localisation and a committed tenancy companion, and over all
+nine, sorted by `explained_by_level`:
+
+| trace | tenancy | `explained_by_level` |
+|---|---|---|
+| `contended3` | **FOREIGN_GPU_WORK** | -0.2265 |
+| `base_b` | SOLE_TENANT | -0.1039 |
+| `baseline_certified` | SOLE_TENANT | -0.0119 |
+| `after_coldboard` | SOLE_TENANT | +0.5227 |
+| `soloA` | SOLE_TENANT | +0.5413 |
+| `ab_p1_r1` | SOLE_TENANT | +0.6804 |
+| `ab_p0_r1` | **FOREIGN_GPU_WORK** | +0.8408 |
+| `contended` | **FOREIGN_GPU_WORK** | +0.8638 |
+| `ab_p1_long` | SOLE_TENANT | +0.8895 |
+
+The witnessed-foreign traces occupy the extreme bottom **and** near the extreme top; `contended`, at
+`foreign_sample_fraction = 1.0`, is more submission-level than four of six sole-tenant traces. The
+two false positives are the two idle-clock 21.4x specimens, so a guard on this signal would have
+fired on the runs whose defect was clock, not tenancy.
+
+**No cut works and none is chosen.** Every cut from -0.50 to +1.00 is swept in
+`bench/results/tenancy_signature.json`; the best achievable is Youden's J = +0.333 (7 of 9). The
+classes interleave, so this is a signal that does not carry the distinction rather than a boundary
+in the wrong place. Published in full, tuned nowhere — the same discipline as the 5%-flag sweep.
+
+Qualification, against my own conclusion: n = 9 with 3 foreign is small, and the decomposition does
+separate two real mechanical conditions. What is falsified is the mapping *low `explained_by_level`
+-> foreign GPU work*.
+
+### 18.2 The level moves; the verdict does not follow
+
+Against a sole-tenant, boosted-clock reference of **11.5248 ms** (`soloA` and `after_coldboard`, the
+only two that published — a withheld `MARGINAL_TAIL` median is never a denominator):
+
+| trace | tenancy | tail verdict | level | vs reference |
+|---|---|---|---|---|
+| `contended` | FOREIGN_GPU_WORK | `MARGINAL_TAIL` (withheld) | 11.7697 ms | 1.021x |
+| `ab_p0_r1` | FOREIGN_GPU_WORK | `MARGINAL_TAIL` (withheld) | 20.6159 ms | 1.789x |
+| `contended3` | FOREIGN_GPU_WORK | `NO_STEADY_TAIL` | — | — |
+
+So the tail is **not** level-blind to contention the way it is level-blind to uniform bias.
+But the verdict is computed from dispersion, and a sustained, steady foreign load is steady:
+
+```
+contended3 truncated to 20   STEADY  126.6465 ms  RSD 0.9103%
+contended3 truncated to 28   STEADY  126.6465 ms  RSD 0.8035%
+contended3 truncated to 34   STEADY  126.6758 ms  RSD 0.7915%
+contended3 full (62)         NO_STEADY_TAIL
+```
+
+**The full-length refusal is a property of how long the run was, not of the instrument's
+sensitivity.** The ruling:
+
+> **`gpu_steady_tail` detects foreign work only through its non-stationarity, never through its
+> magnitude. A steady foreign load is indistinguishable from a slower GPU.**
+
+This is strictly larger than the bias hole. Uniform bias needed a board pinned at idle clock — rare,
+and recoverable from magnitude because the two clock regimes are 21x apart and do not overlap. A
+sustained foreign tenant is ordinary and produces a wrong level at any magnitude, so no regime
+argument rescues it.
+
+### 18.3 The companion is load-bearing for both holes
+
+All four `contended3` readings above — including the three publishing a confident STEADY at 10.99x
+wrong with sub-1% RSD — are refused by `device_companion.certify` as `WITHHELD`, on
+`foreign_sample_fraction = 1.0`. That evidence comes from **outside** the series and does not care
+how steady the series looks. Obligation 8's companion is therefore not corroboration; on this
+specimen it is the only thing between us and a certified 126 ms, and it now covers two distinct
+failure modes rather than one.
+
+One improvement, attributed correctly: `contended` was previously a confident `STEADY` at n=8
+sitting 2.1% high; it now grades `MARGINAL_TAIL` and withholds, which is the n>=8 / coverage>=50%
+floor working. It is simultaneously the clearest demonstration that the floor is **necessary and
+not sufficient** — `contended3` truncated satisfies every floor and publishes 10.99x wrong.
+
+### 18.4 Provenance, and two instrument errors of my own
+
+No new measurement was taken and no binary was exercised, so no figure here has a binary frame;
+saying so is better than a rebuild that implies otherwise. Everything is recomputed from committed
+artifacts through code at this commit — Switch's `localise` and `per_inference_kernel_us` from
+`bench/run_disturbance.py`, my `gpu_steady_tail` and `certify` from `bench/phases.py` and
+`bench/device_companion.py`. Nothing reimplemented; the probe's value is that both sides are the
+same code that produced the figures being compared. Reproduced levels match the previously published
+11.5252 / 11.7697 / 126.647 / 126.676 exactly.
+
+Two `ERROR(instrument)` events, recorded rather than quietly corrected because both survived a first
+reading of the output:
+
+1. **A 1000x units error.** `gpu_steady_tail` takes `busy_us` and converts internally; I pre-divided.
+   **Every verdict, RSD, ratio and classification is scale-invariant and did not move**, which is
+   exactly why it was invisible. A units error that changes no verdict is the kind that gets
+   published. Caught by checking `soloA` against its independently published 11.525 ms.
+2. **A reference built partly from withheld medians**, giving 15.5159 ms — a number that exists
+   nowhere. Using a withheld median as a denominator publishes it by the back door, against §16's
+   own rule. The reference now names its sources and a test asserts no withheld tail is among them.
+
+Neither is a detection. Locked by `bench/test_tenancy_signature.py` (6 tests).
