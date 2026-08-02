@@ -5,11 +5,11 @@
   "attribution_witnesses": {
     "counters_dispatches_executed": "UNOBSERVABLE",
     "counters_witness_reason": "counters not armed: ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE was unset in this process. On Windows the DLL caches this variable at load time, so it CANNOT be armed from inside a test that has already imported onnxruntime -- it must be set before the process starts",
-    "profile_digest": "sha256:9a13a64065c012fc",
-    "profile_mtime_ns": 1785697253637998900,
+    "profile_digest": "sha256:41ab49165301cab1",
+    "profile_mtime_ns": 1785704392802315700,
     "profile_node_events": 3,
     "profile_node_events_total": 27,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-175\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-02_12-00-51_575.json",
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-182\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-02_13-59-49_721.json",
     "witness_agreement": "UNOBSERVABLE",
     "witnesses_present": [
       "ort_profile"

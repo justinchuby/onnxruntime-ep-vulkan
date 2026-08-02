@@ -12,7 +12,8 @@
   "shader_facts": {
     "copy_guarded_on_extent_mismatch": true,
     "iterates_per_query_head": true,
-    "local_size_x_1": true
+    "local_size_x_1": true,
+    "copy_fused_into_attention_loop": true
   },
   "weight_bytes": 2093838336,
   "peak_gb_s": 256.0,
@@ -30,49 +31,57 @@
       "past_len": 512,
       "cache_resident_bytes": 201326592,
       "attention_read_bytes": 201326592,
-      "copy_read_bytes": 201326592,
+      "copy_read_bytes": 0,
       "copy_write_bytes": 201326592,
-      "kv_total_bytes": 603979776,
-      "amplification_over_cache": 3.0
+      "kv_total_bytes": 402653184,
+      "amplification_over_cache": 2.0
     },
     {
       "past_len": 2048,
       "cache_resident_bytes": 805306368,
       "attention_read_bytes": 805306368,
-      "copy_read_bytes": 805306368,
+      "copy_read_bytes": 0,
       "copy_write_bytes": 805306368,
-      "kv_total_bytes": 2415919104,
-      "amplification_over_cache": 3.0
+      "kv_total_bytes": 1610612736,
+      "amplification_over_cache": 2.0
     },
     {
       "past_len": 8192,
       "cache_resident_bytes": 3221225472,
       "attention_read_bytes": 3221225472,
-      "copy_read_bytes": 3221225472,
+      "copy_read_bytes": 0,
       "copy_write_bytes": 3221225472,
-      "kv_total_bytes": 9663676416,
-      "amplification_over_cache": 3.0
+      "kv_total_bytes": 6442450944,
+      "amplification_over_cache": 2.0
     },
     {
       "past_len": 32768,
       "cache_resident_bytes": 12884901888,
       "attention_read_bytes": 12884901888,
-      "copy_read_bytes": 12884901888,
+      "copy_read_bytes": 0,
       "copy_write_bytes": 12884901888,
-      "kv_total_bytes": 38654705664,
-      "amplification_over_cache": 3.0
+      "kv_total_bytes": 25769803776,
+      "amplification_over_cache": 2.0
     },
     {
       "past_len": 131072,
       "cache_resident_bytes": 51539607552,
       "attention_read_bytes": 51539607552,
-      "copy_read_bytes": 51539607552,
+      "copy_read_bytes": 0,
       "copy_write_bytes": 51539607552,
-      "kv_total_bytes": 154618822656,
-      "amplification_over_cache": 3.0
+      "kv_total_bytes": 103079215104,
+      "amplification_over_cache": 2.0
     }
   ],
   "answer_read_is_irreducible_in_elements": true,
   "answer_read_is_reducible_in_bytes": true,
-  "our_amplification_over_cache": 3.0
+  "our_amplification_over_cache": 2.0,
+  "copy_fused": true,
+  "alias_feasibility": {
+    "past_bytes": 3221225472,
+    "present_bytes_at_seq_len_1": 3221618688,
+    "present_fits_in_past": false,
+    "alias_feasible": false,
+    "blocked_by": "graph declares present at total_sequence_length > past_sequence_length; an alias cannot place the larger tensor in the smaller allocation"
+  }
 }
