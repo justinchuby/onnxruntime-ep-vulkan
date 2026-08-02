@@ -855,3 +855,70 @@ An agent that catches its own contaminated build is worth more than the hours it
 - Fourth ruling in a row where the reported rule was wrong but the finding was real. The pattern
   is that people diagnose correctly and file incorrectly; that is a cheap error and I should stop
   treating the filing as the claim.
+
+## 2026-08-01T22:25:29-07:00 — The estimator's first half, and why I would not take the concurrence
+
+Fifth ruling today. The coordinator verified my §5.4.1 himself against the code before accepting
+it, which is the second time today someone has read the source rather than take my word, and I
+should say plainly that this is the reason any of this holds.
+
+**What landed.** `mouse-1` fixed the first half of the estimator defect: internal island edges
+were being charged to the boundary. 89.2 GB → 13.9 GB, 6.4× gone, and with the exemption off the
+gate now claims Phi-3.5 on its own economics. Verified on `squad/mouse` before ruling — the
+consumer map in `ep.rs`, the new constant, `symbolic_boundary_slots`, the doc comment.
+
+**And I declined the conclusion offered with it.** The invitation was to read this as the
+economics arm *concurring* with the exemption rather than being masked by it. Two problems. The
+128-for-every-unknown-dim substitution is untouched and the residual is 16,268×. And more
+importantly, agreement between two things fed the same fabricated input is not a second opinion —
+which is the sentence this whole register is built around. A verdict that flipped because its
+input moved 6.4× while staying 16,268× wrong flipped for a reason unrelated to the proposition.
+
+**But the same fact supports something stronger, and finding it is the part of today I am
+actually pleased with.** `transfer_ns` is monotone in bytes. The gate claims at 13.9 GB. The
+measured boundary is 856,720 B, which is smaller. So it claims a fortiori on the true bytes: the
+claim survives a 16,268× adversarial inflation of the term opposing it. That is a bound, not an
+estimate, taken from a number I do not trust in the one direction where not trusting it is safe.
+Third form of the invariance preference: prefer the count, prefer the ratio, prefer the bound you
+can sign.
+
+I wrote the licence tightly because this is precisely the shape that has failed here when it
+favoured us. Monotone, sign established by independent measurement for that window, used only in
+the licensed direction. Absent the sign it is a guess with a confident tone. And the sign is not
+general — 128 over-counts on our window and under-counts on a long prefill, where the bound does
+not weaken, it evaporates. That falsifier goes beside the small-MatMul one.
+
+**The naming call.** `MEASURED_PHI35_DEV0` holds an estimate wrong by 6.4×, next to
+`MEASURED_PHI35_DEV0_REAL_BYTES` which holds the measurement. Rename. Mouse's doc comment is the
+best disclosure I have read on this project — he volunteered that parking the total in
+`output_bytes` biases every test towards claiming, i.e. against his own conclusions — and it is
+still not enough, because names outlive doc comments. That is the coordinator's sentence and I
+took it into the register verbatim. Keeping the old constant beside the new is right; only the
+name is wrong.
+
+**Line numbers.** Mine went stale within the hour. A line number is a reference that decays
+without failing — it points at something else rather than erroring, which is `'<absent>'` in a
+different costume. Cite the symbol.
+
+**Criterion 11.** He asked that the RAI-011 cheapest-satisfaction observation survive into the
+discharge language, and it should, so I wrote the discharge language now, while the row is still
+open — which costs nothing and retracts nothing, the same reasoning as criterion 12 on 07-30.
+The cheapest satisfaction of "no form claimed without a ledger entry" is a ledger generated from
+the claim table: true by construction, 6/6 forever, identical under both readings. Four
+conditions, none of them "the ledger exists".
+
+The general sentence I want to keep: a criterion is discharged by an observable that changes when
+the claim is false, never by one that is true whatever happens.
+
+**Carry forward**
+- Mouse: three changes now bundled — `Verdict::Claim` carries its reason, the rename, the test
+  rename. All in `partition.rs`, all once the worktree is clear.
+- The 128 substitution is the remaining half and it is a correctness item, not an optimisation.
+  Calibrating `fixed_ns` before it is fixed is still polishing the wrong parameter.
+- Falsifier list for §5.4.1 now has two: an anchor-bearing island that should be declined, and a
+  boundary tensor whose real extent exceeds 128.
+- Criterion 11's tally is Trinity's; the discharge conditions are written and I should not be the
+  one to declare the row met.
+- Five rulings today. Four of them relocated a finding from the file it was reported against to
+  the file that actually carried the defect, and three of those were mine. That is the pattern to
+  watch, not the rule count.
