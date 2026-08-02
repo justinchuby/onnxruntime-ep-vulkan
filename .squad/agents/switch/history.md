@@ -1924,3 +1924,95 @@ That distrusts the archive; it does not license quoting 19.6.
 
 📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
 
+   `switch-sole-tenant-is-not-certifiable.md`, `switch-index-space-one-space.md`.
+
+---
+
+## Session 43 — 2026-08-01 — the two owed items: the leaked-device cost, and the frame reconciliation
+
+Both delivered. Neither needed the GPU, which was the point (three agents measuring concurrently).
+
+### 1. The 70% spread vs the steady tail — `SAME_FRAME_ORDERED_SELECTION`
+
+Artifact: `bench/results/probe_frames.py` + `bench/results/frames.json`.
+
+The coordinator offered two cases (different frames both right / same frame one wrong). **Neither.**
+
+**Frames, read from source not names (R11):** Niobe's `busy_us[i]` (`phases.py:890-928`) is the sum
+of `gpu_ns` over every kernel span of inference i; her tail is a **suffix** of that series. My 70%
+(history.md:1401-1411) was gap-clustered per-submission sums over all kernels — **the same
+quantity**, taken over the **whole** series. Frames coincide. The difference is *selection*.
+
+**The decisive move was refusing to compare two numbers.** A single whole-RSD-vs-tail-RSD ratio is
+an anecdote. Instead: *does any run publish a tail figure AND carry a large whole-series spread?*
+Census over all 28 committed dev0 traces, calling Niobe's own functions:
+
+- 9 traces with whole-series RSD >= 30% -> **0 publish**. All NO_STEADY_TAIL or MARGINAL_TAIL.
+- 12 publishing traces -> max whole-series RSD **10.36%**.
+- Sets disjoint, gap 10.36% -> 34.39%.
+
+**My own 70% run is `trace_gemv_notile_dev0.json`: whole 73.22%, tail `NO_STEADY_TAIL`.** On the
+exact run that produced the figure, her instrument publishes nothing. There is no number of hers to
+disagree with mine. Falsifier retained: a trace with both properties returns `CONFLICT`.
+
+**Corrected the coordinator's per-kernel hypothesis.** He said "the variance averages out". Right
+direction, wrong mechanism, and the difference is useful. Steadiest trace: within one inference RSD
+**37.90%**, spread 10.1x, **3 discrete duration clusters**; same ordinal across inferences RSD
+**0.36%**. That is population heterogeneity across node shapes, not variance — there is nearly
+none to average. Averaging predicts sum RSD 37.90%/sqrt(161) = 2.99%; observed is far below, which
+is the signature of a *deterministic* spread.
+
+**Control, and it flips:** most-disturbed trace has the same within-inference structure (35.23%, 3
+clusters) but same-ordinal-across-inferences RSD **142.41%**. So **same-ordinal RSD is a per-kernel
+discriminator between a clean and a disturbed run (0.36% vs 142%) that the per-inference sum
+hides**, and it needs no cross-run clock comparison. Worth remembering — it may be the cheapest
+in-band disturbance check we have.
+
+**Bug I shipped and caught:** rev 1 hard-coded "heterogeneity, not variance" into the output string,
+then printed it over a contended trace whose numbers said 173% variance. *A conclusion that survives
+its own refutation is not a measurement.* Now derived (`HETEROGENEITY_DOMINATED` /
+`VARIANCE_DOMINATED`) and run on two deliberately chosen traces rather than whichever came first.
+The control above only exists because that bug forced it.
+
+### 2. The leaked device — cost priced, recommendation: **keep it**
+
+Mechanism was already recorded twice (decisions.md:62, and Trinity's frame split at :446-450). What
+was missing was the price and an explicit decision to pay it.
+
+**Cost is O(1) per physical device per process, not O(sessions)** — bounded in the types:
+`EP_INSTANCE` is one instance, `EP_DEVICES` one owner per physical index (`vk/device.rs:154-159`).
+Corroborated independently: device high-water FLAT ~3.907 GiB across 3 sessions (would be ~3x or
+OOM if it scaled). **The leaked thing is a device handle, not the memory the device allocates.**
+
+**The real cost is one lost observation window**: the layer reports leaks at `vkDestroyDevice`,
+which never runs on production, so any "0 validation errors at shutdown" gate is `UNOBSERVABLE`,
+never `0`. Bought back by the planted-leak positive control (owns and destroys its own device) plus
+Trinity's dispatch-window frame of record. **Accepted residual**, stated rather than papered over:
+a leaked object that never trips a dispatch-time VUID is not caught in-process; the compensating
+instrument is device high-water across sessions, which is weaker than the layer.
+
+**Recommendation: keep the leak.** The alternative is the use-after-free we fixed, not a cleaner
+shutdown. If anyone wants the window back, do it in a subprocess that owns its own device — do not
+un-leak production.
+
+### Records filed (absolute path to main's inbox; gitignored inside worktrees)
+
+- `switch-leaked-device-validation-cost.md`
+- `switch-two-frames-one-series.md`
+
+### Next step, for a fresh session with no memory of this one
+
+Nothing here is blocked. The open work is unchanged and is all GPU-bound, so it waits on a window
+where fewer agents are measuring:
+
+1. **The certified NVIDIA A/B for packed loads.** Attempted 3x in session 42, never obtained —
+   `SOLE_TENANT` twice and still `MARGINAL_TAIL` both times, so **tenancy is necessary but not
+   sufficient for certifiability**. The board sits at 210 MHz median because our EP is host-bound
+   and never holds boost. Do not quote the uncertified archive (11.5673 ms); today's flat suffix
+   read ~19.6 ms at a lower peak clock, which makes the archive *positively suspect*.
+2. **The packed-loads claim stands in counts** (session 42, `7a1d12f`) and does not need a clock:
+   465,297,408 -> 116,324,352 InB load instructions. That is the quotable form.
+3. **`gpu_steady_tail` under foreign GPU work** — still untested, still the right question, still
+   needs a window.
+4. Consider promoting the same-ordinal-across-inferences RSD (finding 1 above) into `phases.py` or
+   a probe as a first-class disturbance check. It is cheap, in-band, and discriminates 400x.
