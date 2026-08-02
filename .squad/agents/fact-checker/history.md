@@ -17,6 +17,14 @@ Initial setup complete.
 
 ---
 
+<!-- SUMMARIZED by Scribe 2026-08-01T20:39:12-07:00 -- older entries condensed below; full text lives in git history -->
+
+### [SUMMARY] Compressed entries (condensed 2026-08-01T20:39:12-07:00)
+
+- **Audit: ORT 1.28 API Verification — 2026-07-28T18:51:35-07:00** — **Task:** Verify Justin's claim that ORT 1.28 exists and exposes `CreateExternalResourceImporterForDeviceImpl`.
+- **Audit: Vulkan Baseline Verification — 2026-07-28T17:59:54-07:00** — **Task:** Verify claims underlying Justin's Vulkan 1.3 baseline proposal.
+- **Audit: ONNX Attention Errata — Pass 4 (Focused) — 2026-07-29T10:34:41-07:00** — **Task:** Pin, blast radius, C2 blind spot, and ORT divergence — upstream summary dropped per coordinator directive.
+
 ## Audit: GEMV hardware gap, iGPU timestamps, subgroup-free Vulkan — 2026-08-01
 
 **Task:** Verify whether the 13.5x RTX 4060 Laptop / Iris Xe int4 GEMV gap is hardware-predicted,
@@ -92,68 +100,6 @@ MatMulNBits structure is current.
 
 ---
 
-## Audit: ORT 1.28 API Verification — 2026-07-28T18:51:35-07:00
-
-**Task:** Verify Justin's claim that ORT 1.28 exists and exposes `CreateExternalResourceImporterForDeviceImpl`.
-
-**Key learnings:**
-
-1. **ORT 1.28 is real and stable** — released July 24, 2026. Not a pre-release.
-
-2. **The exact symbol name `CreateExternalResourceImporterForDeviceImpl` does not exist as a public API.** The `Impl` suffix is used only in test/example code for a local static function. The real public name is `CreateExternalResourceImporterForDevice` — both in `OrtEpFactory` (EP side) and `OrtInteropApi` (caller side).
-
-3. **This API was added in ORT 1.24, not 1.28.** The code comment `"OrtEpFactory::CreateExternalResourceImporterForDevice was added in ORT 1.24"` in `interop_api.cc` and `ep_factory_provider_bridge.h` is authoritative.
-
-4. **Vulkan-specific memory handle types are already defined:** `ORT_EXTERNAL_MEMORY_HANDLE_TYPE_VK_MEMORY_WIN32` (Windows) and `ORT_EXTERNAL_MEMORY_HANDLE_TYPE_VK_MEMORY_OPAQUE_FD` (Linux). These export `VkDeviceMemory` via OS-level handles, NOT raw VkBuffer pointers.
-
-5. **The API does NOT solve OQ-3 (allocator pointer ABI).** It is orthogonal — it is for callers to import their own Vulkan memory into ORT, not for our EP's allocator to satisfy ORT's pointer-based `Alloc()`.
-
-6. **The API IS the answer for zero-copy IO binding** — callers with externally-allocated `VkDeviceMemory` (with export flags) can import it as a tensor without a host copy. The NV TensorRT RTX EP uses this for Vulkan↔CUDA interop.
-
-7. **ORT 1.28 includes important plugin EP bug fixes** (null allocator in PrePack, allocator deleter lifetime). Pin to 1.28 for development.
-
-8. **Plugin EP API is still experimental in 1.28.** No stability guarantee.
-
-**Methodology notes:**
-- GitHub code search worked well for finding the 15 files containing the real symbol name.
-- The `ort_version_supported < 24` guard in `ep_factory_provider_bridge.h` was the decisive evidence for the ORT 1.24 claim.
-- Used PowerShell grep on downloaded temp files to extract Vulkan-specific handle_type usage from `nv_vulkan_test.cc`.
-- ORT 1.28 release notes fetched directly from GitHub releases page.
-
----
-
-## Audit: Vulkan Baseline Verification — 2026-07-28T17:59:54-07:00
-
-**Task:** Verify claims underlying Justin's Vulkan 1.3 baseline proposal.
-
-**Key learnings:**
-
-1. **llama.cpp targets Vulkan 1.2 by default, not 1.3.** The popular claim is inaccurate. Only the `_cm2` (cooperative matrix 2) shaders target `vulkan1.3`. Source: `vulkan-shaders-gen.cpp`. This was verified by fetching the actual source from GitHub — GitHub code search could not index it (file too large at 987KB).
-
-2. **ExecuTorch targets Vulkan 1.1.** Confirmed from `Runtime.cpp` (`VK_API_VERSION_1_1`). Their VMA is initialized at `VK_API_VERSION_1_0`. They do use VMA and image-based tensors.
-
-3. **MoltenVK 1.3 is real** but has compute portability caveats (buffer device address, descriptor indexing). Always emits `VK_KHR_portability_subset`.
-
-4. **Vulkan 1.3 is ~26% of Android devices (Nov 2025).** Not a majority. This is a meaningful constraint for mobile targets.
-
-5. **lavapipe and SwiftShader support Vulkan 1.3.** Both viable for CI without a GPU.
-
-6. **ORT plugin EP API introduced in ORT 1.22/1.23, still experimental.** Entry point is `CreateEpFactories`. API has been revised multiple times.
-
-7. **No existing Vulkan EP for ORT.** We are first-movers. No Rust plugin-EP crate exists.
-
-**Methodology notes:**
-- GitHub code search failed to index the 987KB `ggml-vulkan.cpp` file. Used direct raw URL fetch + offset navigation instead.
-- Used `vulkan-shaders-gen.cpp` as ground truth for shader target environment.
-- ORT EP header was too large for direct API read; used PowerShell grep on temp file for version tags.
-- ExecuTorch verified directly via GitHub code search (`VK_API_VERSION` in `backends/vulkan`).
-
-**Output files:**
-- `.squad/fact-checker/audit-trail.md` — appended
-- `.squad/decisions/inbox/fact-checker-vulkan-baseline-verification.md` — created
-
----
-
 ## Audit: ONNX Attention-24 Errata Verification — 2026-07-29T09:47:45-07:00
 
 **Task:** Verify Mouse's finding that the ONNX reference implementation of `ai.onnx::Attention`-24 was wrong for `nonpad_kv_seqlen`, and characterise it for Trinity (oracle pin) and Justin (upstream reporting).
@@ -185,54 +131,3 @@ MatMulNBits structure is current.
 - `.squad/fact-checker/audit-trail.md` — Claims 1-5 appended
 - `.squad/decisions/inbox/fact-checker-onnx-attention24-oracle.md` — created (Section A: Trinity/Mouse oracle pin; Section B: Justin upstream-ready summary)
 ---
-
-## Audit: ONNX Attention Errata — Pass 4 (Focused) — 2026-07-29T10:34:41-07:00
-
-**Task:** Pin, blast radius, C2 blind spot, and ORT divergence — upstream summary dropped per coordinator directive.
-
-**Key learnings:**
-
-1. **The fix commit (2816da65) is dated June 20, 2026 — five days after ONNX 1.22.0 released June 15.** The GitHub commit API gives precise merge dates. Always check the commit timestamp against the release date to establish exactly which release contains a fix.
-
-2. **`onnx >= 1.23` is a lower bound, not an exact pin.** The oracle drifts in one direction. An exact pin would block future onnx upgrades unnecessarily.
-
-3. **The class of no-bump behavioral corrections recurs.** The PR commit message itself cites #7297 (Resize) and #7867 (Attention softcap) as precedents. When evaluating whether a given fix is a one-off, check the PR's own "Why no opset bump" rationale — if it cites prior cases, the class is confirmed recurring.
-
-4. **The PR also patches opset-23 (old.cc).** Checking `old.cc` is mandatory when a fix touches `defs.cc` — the same bug often exists in the previous version's frozen function body.
-
-5. **ORT hard-rejected the path before 1.28.** The wrong kernel existed in ORT 1.22–1.27 but never triggered in production. The active false-failure window is test-harness-specific, not model-execution-specific.
-
-6. **The commit message "Why no opset bump" section is the best primary source for the policy rationale.** It cites specific prior PRs and explains the exact condition under which ONNX allows in-place corrections. Always read this section when evaluating errata.
-
-**Methodology:** Fetched commit SHA via GitHub commits API (path=onnx/reference/ops/op_attention.py, per_page=5). Full commit message retrieved via SHA lookup. old.cc SHA from initial GitHub code search. PR precedents #7297 and #7867 confirmed via web search.
-
-**Output files:**
-- `.squad/fact-checker/audit-trail.md` — Pass 4 entry appended
-- `.squad/decisions/inbox/fact-checker-onnx-attention24-oracle.md` — overwritten with focused content (upstream summary removed; C2 blind-spot section added)
----
-
-📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
-
-Two findings apply to every agent on the team:
-
-**(a) A mechanism that exists in a file but not in a call graph is indistinguishable from
-one that does not exist.**  Verification by reading is insufficient.  Verify by running.
-Five such mechanisms surfaced in this single batch: partition.rs, the GPU tracer,
-model_output_equivalence, compute_failures, and should_claim_island.  In every
-case the code was correct; the wiring was absent; the absence was invisible to review.
-
-**(b) 85.9% of inference wall-time involves no GPU work** (recording 68.3%, fence-wait
-idle 16.3%, submit 0.3%; GPU kernels 14.1%).  Optimising GPU kernels before the
-command-buffer recording bottleneck is resolved is low-leverage.  Align work priorities
-accordingly.
-
-📌 Team update (2026-08-01T09:53:14-07:00): The EP genuinely executes now — 3 VulkanExecutionProvider fused-node events (~355 graph nodes in one fused node) + 24 CPU per run, 65/65 outputs bit-identical, argmax 30751 matching CPU; coverage figures are execution, not offer. All wall-clock figures including 3.1x/3.7x are withdrawn under R13 pending device-clock measurement. Switch holds exclusive claim on device-clock measurement while agents run in parallel. — decided by Scribe
-
-📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
-
-
-📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
-
-
-📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
-
