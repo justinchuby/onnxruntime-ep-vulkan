@@ -753,3 +753,44 @@ constant.** 8.22 ms at zero context, 14.51 ms at 4096. Any figure quoted against
 must say which context length it was taken at, the way a timing must carry its device state.
 
 Nothing here needed a clock, a device state, or a working EP. Commit `eaa9aef`.
+
+## Session 46c — the branch that was called unusual, and the control that nearly lied
+
+**Task:** fix the `else` in `vk/session.rs` that left 323 claimed nodes executing zero times.
+
+**Result: 0/459 -> 33/73.** Every retained island executes. First Vulkan execution of
+Phi-3.5 with the ledger in place. Commit on `squad/switch`.
+
+**The fix.** The patch loop served two token ranges and left the middle one -- island
+outputs that are *also* consumed internally -- symbolic. That is every residual stream in
+the model. The desc existed all along: the producer loop recorded the island output's byte
+size and shape and then dropped the desc itself. I inserted it into `computed_descs` there
+and keyed the consumer off "did an earlier kernel produce this token" instead of off the
+token range. Nothing infers a desc from a sibling; a token with no producer still returns
+`None` and the handler still refuses, so the handler keeps its ability to detect loss.
+
+**The thing worth keeping is the control, because it nearly went the other way.**
+Before merging `main` I ran the probe in my unmerged tree behind the CLAIM_UNPROVEN escape
+hatch: **2/13 with the fix, and 2/13 without it.** I had the fix in hand and a measurement
+saying it did nothing. Had I reported then, I would have reported a null result at full
+confidence. It was null because only two islands formed under the escape hatch and neither
+took the branch -- **a control that cannot distinguish the two binaries is not evidence
+that they are the same.** The discriminating control needed the merged tree, and there it
+was unambiguous at two binaries differing only in this hunk.
+
+**Second witness, free and independent:** total node executions moved 459 -> 73. Without
+the fix no island survives, so no fusion happens and ORT reports the unfused graph. The
+node-count collapse and the EP-execution count are separate readings of one event.
+
+**Process note.** `origin/main` was stale at `c144210`; local `main` was at `a9e6e1b` with
+Mouse's work already merged. My "0/363 claimed" reading last session came from fetching the
+stale remote. **Merging `origin/main` is not merging `main` on this box.**
+
+**Withdrawn:** my note that `test_phi35.py:_MODEL_DIR` was missing the
+`cuda-int4-rtn-block-32` segment. It is present; the path resolves; the model exists.
+Criterion-10 tests do not skip. That finding was stale and I should have re-checked it
+before carrying it forward a second time.
+
+**Still open:** GQA is DIVERGENT (`worst_rel` 16.726) and it produces the KV outputs
+criterion 10 reopened over, so the KV bandwidth work -- 60.5% of the byte floor at
+past_len 8192 -- stays blocked behind that correctness defect. Correctness before bandwidth.
