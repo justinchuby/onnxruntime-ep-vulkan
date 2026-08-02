@@ -409,3 +409,49 @@ quietly disappears is how a stale reading becomes an escalation.
 today" without saying so. The rule is not "use fp64" — it is that a negative fixture must be
 negative for a reason nobody else can change, and if it cannot be, the premise must be
 asserted so its failure is an instrument error rather than a finding.
+
+---
+
+## Round 29 — the two unfalsified guards, screened in the always-on lane (2026-08-02T11:40-07:00)
+
+Merged `main` (`4e70601`), rebuilt, hashed either side: `D45B3A8C8C2B...` -> `918E8FF56B2E...`,
+`rebuilt=True`. R12 generalisation 4 before any reading was treated as a control.
+
+### Why the census was right and the existing tests did not count
+`assert_ep_owns_whole_graph` and `assert_no_cpu_fallback_is_live` had `calls=5` / `calls=2`
+and `reject=0 accept=0`. `test_no_cpu_fallback.py` calls both in both polarities — but every
+one of those calls is behind `require_vulkan`, and the screen counts a polarity only from a
+**non-gated** test. A polarity that needs hardware has never been observed on the machines
+where the census runs. `calls>0` says they have callers; `reject=0 accept=0` says nothing
+has watched them disagree.
+
+### `tests/ops/test_no_cpu_fallback_screen.py` — 8 tests, no device, 0.03 s
+Only ORT is substituted, plus `_make_session_options` replaced by a recorder so the test can
+read back which config entries the code under test actually set. Everything between is real.
+**Extent stated in the file:** this cannot tell you ORT honours the key — only the hardware
+lane can. It tells you our side answers differently for two different worlds.
+
+The trap the coordinator named: `assert_no_cpu_fallback_is_live` IS the falsifier for a
+silently-swallowed key, so its screen must separate "the option works" from "the check would
+say so regardless". Two arms: the recorded entries must contain the key (asserted on the
+recorder, not the return value — the return value is what a check that never asked would
+also produce), and the key is mutated to a typo against a fake honouring only the correct
+spelling. The fake **snapshots the honoured key at construction**; my first version read it
+at call time, so the typo arm honoured the typo and the arm screened nothing. It failed
+loudly, which is how I found it.
+
+### Both arms of the screen itself
+`probe_fallback_screen_mutations.py`: M1 always-passes, M2 always-rejects, M3 key never
+armed. All three CAUGHT. Restores `_models.py`, verifies the hash returns to the original,
+clears `__pycache__` between arms and runs `-B` — R12 gen-4 applies to Python: a restored
+source served from stale bytecode is the same frame error as a stale DLL.
+
+### Verified
+`audit_instruments.py --check`: both now `SCREENED (reject=2 accept=2)`, `CENSUS VERDICT: PASS`.
+Always-on lane (harness census + screen + equivalence): 22 passed, ERROR(instrument) 0.
+dev1 census 6 passed; dev0 census + the GPU-gated `test_no_cpu_fallback.py` 16 passed — so
+the fake and real ORT still agree.
+
+### Noted, not acted on
+The census scans `rust/src` and `tests/ops` only, never `bench/`. Niobe's finding, Tank's
+fix. Recorded in PLATFORMS 7.17.4 so nobody reads the verdict wider than it reaches.

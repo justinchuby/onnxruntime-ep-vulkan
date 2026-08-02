@@ -114,3 +114,103 @@ us/ms conversions around it are exactly where a scale error hides without changi
 
 **Verification:** `pytest bench/ ci/ tests/ops/` one invocation — 485 passed, 336 skipped, 0
 failed, ERROR(instrument) 0.
+## 2026-08-02 — First real-node run: refused figure, and what fragmentation costs
+
+Frame: `main` at `0baf660`, merged and rebuilt. DLL `E00C7F8B…` -> `47F66833…`.
+
+**Task 1 refused.** Gate withheld the timing: CONTENDED, 7.73 foreign busy cores, 100% of samples
+over threshold. No new device-clock figure. `12.1847 ms` stands as the last quotable one, and I now
+always quote it with its context length (zero context, one token) because the roofline is not a
+constant.
+
+**The idle-clock specimen is the best one we have, and it is ours.** That refused run's device-clock
+series is STEADY at 245.9149 ms with RSD 0.0717% — tighter than all 28 census traces — under
+SOLE_TENANT with zero foreign GPU work, and it is 20.18x wrong. Both instruments that sound like a
+pass, pass. Only the SM-clock record refuses it: 210.0 MHz min/median/mean AND max of 160 samples
+against 3105 MHz boost. Every earlier specimen had foreign GPU work so tenancy could plausibly have
+caught it; this one has none. That settles the companion's status. Also learned something new about
+the causal chain: host contention showed up on the device axis as an idle clock, not as GPU
+contention — a host problem with a device symptom the tenancy verdict cannot see.
+
+**I got Task 2 wrong first and the shape is worth remembering.** I divided
+`session_staging_upload_bytes` by inference count in two records and reported fragmentation had
+*reduced* staging traffic 1.78x. That counter is cumulative and dominated by a one-time ~2185 MiB
+weight upload; the records had 28 and 51 iterations; 51/28 = 1.82. The finding was the denominator.
+The giveaway was that the "improvement" equalled the iteration ratio. R11 again, and it closed
+beautifully with a believable mechanism while being backwards.
+
+Fixed it with a slope instead of a quotient — two iteration counts per configuration, fixed cost
+cancels, recovered constant becomes a check (agrees to 0.034%). Both arms on ONE binary, the fused
+arm forced by handing the EP the DIVERGENT GQA proof key. That restores 355/363 in 1 island, exactly
+the historical record, so the 33-way split is mechanically confirmed as the 32 declined GQA
+instances. (Setting that env var to `1` is rejected — it takes keys, not booleans — and produces two
+identical arms. ERROR(instrument), caught by the EP's own WARN, not by me.)
+
+**Answer:** 33 islands is worse in exactly two currencies — host round-trips 2 -> 66 (33x) and
+staging bytes 1.92x — and NOT worse in allocations, dispatches or high-water, which falsifies the
+allocator/descriptor hypotheses rather than leaving them unmeasured. The marginal traffic is exactly
+one extra host round-trip of the 64 KV tensors (+393,208 B out, +393,216 B back vs 393,216 B of KV),
+and the fused readback slope lands on the model's declared outputs to the byte — the closure is a
+measurement because that number comes from ONNX shapes, not from our counters. 786,424 B is 0.0376%
+of the weight read, so in bytes it is negligible and Switch's shape holds.
+
+Unpriced: 32 extra submissions/fence waits/drains per inference. My host-minus-GPU bound came out
+vacuous (10.48 s) and was computed under an idle clock inflating the GPU term 20x — reported as
+vacuous, not quoted. And the probably-dominant cost is in neither column: the 32 declined GQA nodes
+now run on CPU. Execution-location, not boundary. Next thing to measure.
+
+Open: `phase_containment` FAIL (one sub-record span outside every `vulkan.record` span) blocks any
+phase-share reading from this run. New and unexplained.
+
+Also accepted ownership of `rust/src/trace.rs`.
+
+Shipped: `bench/results/probe_island_boundary_cost.py`, four `islandab_*` counter records,
+`bench/test_island_boundary_cost.py` (13 tests), `docs/PERF.md` §19, decision to main's inbox.
+## 2026-08-02 (later) — Contention is the baseline; counts become the primary instrument
+
+Frame: `main` at `c1522e2`, merged and rebuilt. DLL hash UNCHANGED at `47F66833…` — the merge
+carried no Rust change, so §19's figures stay in frame. Worth checking rather than assuming.
+
+The box is shared with another team indefinitely. Wrote that into PERF.md §20 as policy: wall-clock
+is STEADY_UNCERTIFIED by default, the companion refusing is the instrument working, and no plan may
+contain "take the measurement when the box settles" because that step never completes.
+
+**Promoted the byte model to a first-class instrument (`bench/ceiling.py`) — and found something
+while wiring it.** The coordinator asked it to say UNOBSERVABLE about a context nobody measured.
+But `kv_bytes(past_len)` is analytic, so "unmeasured context" was never the real refusal condition.
+The real one is sharper: GroupQueryAttention is DECLINED on this build and runs on CPU, and **GQA is
+the op that reads the KV cache**. So `island_bytes_phi35.json` charges KV bytes to a GPU roofline
+that the GPU never incurs — 48 MiB at past_len 128 up to 3072 MiB at 8192, where they are 60.5% of
+the modelled stream. That is a bound on a machine we are not running.
+
+So the extent is `[0]`, and it reports UNOBSERVABLE — never a number, and pointedly never 0, since 0
+would claim the traffic is free when it is merely elsewhere. The refusal still discloses the figure
+it declined to publish so it stays auditable.
+
+The satisfying part: at past_len 0 the KV term is exactly zero, so the bound IS admissible there —
+and zero context is the only context we have ever run, and 12.1847 ms is the only quotable figure we
+hold. **The one admissible bound and the one quotable figure sit at the same context.** That is why
+the 67% comparison survives, and it is the reason rather than luck. Said so explicitly.
+
+Also noticed and disclosed a harmless divergence: Switch quotes 67.1% (weights+scales, 8.179 ms), my
+ceiling quotes 67.4% (by-context total including 9.52 MiB intermediates, 8.218 ms). Two floors 0.5%
+apart, both correct about their own quantity. Flagged it so nobody reads it as a figure moving.
+
+**`bench/clock_log.py`** — continuous tenancy+clock recorder reusing probe_gpustate's sampler (not a
+second dialect for the same channel), with `window()` returning the shape certify() already
+consumes. Inverts the workflow: record always, certify retrospectively when a run happens to land in
+a quiet minute. Two refusals that must hold: <40 usable samples is UNOBSERVABLE because an
+unrecorded window is not a quiet one; and a retrospective window declares itself weaker than an
+in-run companion and may not upgrade a figure an in-run companion refused. While testing I found it
+would raise on a truncated log line — fixed to refuse instead, since a harness that dies on its own
+error path cannot report the error it found. Smoke test showed the board currently at 54.3% of boost
+with zero foreign GPU work, which is exactly the opportunistic window this exists to catch.
+
+**Screen, not a rule, for the cumulative-counter quotient.** On a permanently contended box run
+lengths vary with whatever else is running, so denominators will differ between records by default
+and my 51/28 = 1.82 artifact would reappear without anyone doing anything unusual. Text-decidable
+screen over all of bench/, positive control built from the exact bad line, negative control on the
+correct two-point construction. No offenders.
+
+Shipped: `bench/ceiling.py`, `bench/clock_log.py`, `bench/test_ceiling.py` (21 tests),
+`docs/PERF.md` §20, decision to main's inbox.
