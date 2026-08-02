@@ -1,0 +1,690 @@
+{
+  "device_selector": "1",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "model_sha256_head": "3dbdd4b5f4d487da",
+  "reconciliation": {
+    "graph_nodes": 366,
+    "offered_to_ep": 363,
+    "never_offered": {
+      "count": 3,
+      "by_op": {
+        "Constant": 3
+      },
+      "note": "ORT folds these before GetCapability; they are absent from the frame, not declined in it."
+    },
+    "claimed": 323,
+    "declined": 40,
+    "declined_by_op": {
+      "GroupQueryAttention": 32,
+      "Cast": 2,
+      "Gather": 1,
+      "ReduceSum": 1,
+      "Shape": 1,
+      "Sub": 1,
+      "Greater": 1,
+      "If": 1
+    },
+    "cpu_node_events_in_profile": 40,
+    "vulkan_node_events_in_profile": 33,
+    "vulkan_node_events_are_fused_partitions": "Each Vulkan profile event is one fused partition, not one original node. 33 of them means the claimed work is split into 33 islands.",
+    "claim_log_names_absent_from_graph": []
+  },
+  "executed_by": {
+    "VulkanExecutionProvider": 33,
+    "CPUExecutionProvider": 40
+  },
+  "denominator_source": "Every total is a sum over the 366 nodes of the ONNX graph, read from the file. The EP contributes only the claimed/declined membership, read from the CLAIM_LOG. Two sources, so the fractions can be wrong in a way that shows.",
+  "no_duration_quoted": "Every figure here is a FLOP count, a byte count or a ratio of two of them. Nothing was timed; the machine is contended and stays that way.",
+  "rows": [
+    {
+      "ctx": 0,
+      "step": "one decode step: sequence_length=1, past_sequence_length=ctx",
+      "total_flops": 7445941254,
+      "total_bytes": 2302010418,
+      "cpu_flops": 6,
+      "cpu_bytes": 1579434,
+      "cpu_flops_frac": 8.058081302718803e-10,
+      "cpu_bytes_frac": 0.0006861107089915872,
+      "cpu_nodes": 43,
+      "vulkan_nodes": 323,
+      "ep_estimator_cpu_flops_frac": 0.16575211521373415,
+      "fabricated_extent_nodes_flops": 0,
+      "fabricated_extent_nodes_bytes": 0,
+      "fabricated_bytes_frac": 0.0,
+      "by_op": {
+        "Constant": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 3,
+          "cpu_nodes": 3,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Greater": {
+          "flops": 1,
+          "bytes": 17,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 17
+        },
+        "If": {
+          "flops": 0,
+          "bytes": 786433,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 786433
+        },
+        "ReduceSum": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Sub": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Cast": {
+          "flops": 2,
+          "bytes": 24,
+          "nodes": 2,
+          "cpu_nodes": 2,
+          "cpu_flops": 2,
+          "cpu_bytes": 24
+        },
+        "Shape": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Gather": {
+          "flops": 3073,
+          "bytes": 197007400,
+          "nodes": 2,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 32
+        },
+        "SimplifiedLayerNormalization": {
+          "flops": 3072,
+          "bytes": 18432,
+          "nodes": 1,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "MatMulNBits": {
+          "flops": 7444758528,
+          "bytes": 2097250944,
+          "nodes": 161,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "GroupQueryAttention": {
+          "flops": 0,
+          "bytes": 792832,
+          "nodes": 32,
+          "cpu_nodes": 32,
+          "cpu_flops": 0,
+          "cpu_bytes": 792832
+        },
+        "SkipSimplifiedLayerNormalization": {
+          "flops": 390144,
+          "bytes": 1959936,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Sigmoid": {
+          "flops": 262144,
+          "bytes": 1048576,
+          "nodes": 32,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Mul": {
+          "flops": 524288,
+          "bytes": 3145728,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        }
+      }
+    },
+    {
+      "ctx": 128,
+      "step": "one decode step: sequence_length=1, past_sequence_length=ctx",
+      "total_flops": 7496272902,
+      "total_bytes": 2402675762,
+      "cpu_flops": 50331654,
+      "cpu_bytes": 102244778,
+      "cpu_flops_frac": 0.006714223809350851,
+      "cpu_bytes_frac": 0.04255454673371779,
+      "cpu_nodes": 43,
+      "vulkan_nodes": 323,
+      "ep_estimator_cpu_flops_frac": 0.16575211521373415,
+      "fabricated_extent_nodes_flops": 0,
+      "fabricated_extent_nodes_bytes": 0,
+      "fabricated_bytes_frac": 0.0,
+      "by_op": {
+        "Constant": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 3,
+          "cpu_nodes": 3,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Greater": {
+          "flops": 1,
+          "bytes": 17,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 17
+        },
+        "If": {
+          "flops": 0,
+          "bytes": 786433,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 786433
+        },
+        "ReduceSum": {
+          "flops": 1,
+          "bytes": 1048,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 1048
+        },
+        "Sub": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Cast": {
+          "flops": 2,
+          "bytes": 24,
+          "nodes": 2,
+          "cpu_nodes": 2,
+          "cpu_flops": 2,
+          "cpu_bytes": 24
+        },
+        "Shape": {
+          "flops": 0,
+          "bytes": 1048,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 1048
+        },
+        "Gather": {
+          "flops": 3073,
+          "bytes": 197007400,
+          "nodes": 2,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 32
+        },
+        "SimplifiedLayerNormalization": {
+          "flops": 3072,
+          "bytes": 18432,
+          "nodes": 1,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "MatMulNBits": {
+          "flops": 7444758528,
+          "bytes": 2097250944,
+          "nodes": 161,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "GroupQueryAttention": {
+          "flops": 50331648,
+          "bytes": 101456128,
+          "nodes": 32,
+          "cpu_nodes": 32,
+          "cpu_flops": 50331648,
+          "cpu_bytes": 101456128
+        },
+        "SkipSimplifiedLayerNormalization": {
+          "flops": 390144,
+          "bytes": 1959936,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Sigmoid": {
+          "flops": 262144,
+          "bytes": 1048576,
+          "nodes": 32,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Mul": {
+          "flops": 524288,
+          "bytes": 3145728,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        }
+      }
+    },
+    {
+      "ctx": 512,
+      "step": "one decode step: sequence_length=1, past_sequence_length=ctx",
+      "total_flops": 7647267846,
+      "total_bytes": 2704671794,
+      "cpu_flops": 201326598,
+      "cpu_bytes": 404240810,
+      "cpu_flops_frac": 0.026326604750127384,
+      "cpu_bytes_frac": 0.14946020840560442,
+      "cpu_nodes": 43,
+      "vulkan_nodes": 323,
+      "ep_estimator_cpu_flops_frac": 0.16575211521373415,
+      "fabricated_extent_nodes_flops": 0,
+      "fabricated_extent_nodes_bytes": 0,
+      "fabricated_bytes_frac": 0.0,
+      "by_op": {
+        "Constant": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 3,
+          "cpu_nodes": 3,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Greater": {
+          "flops": 1,
+          "bytes": 17,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 17
+        },
+        "If": {
+          "flops": 0,
+          "bytes": 786433,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 786433
+        },
+        "ReduceSum": {
+          "flops": 1,
+          "bytes": 4120,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 4120
+        },
+        "Sub": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Cast": {
+          "flops": 2,
+          "bytes": 24,
+          "nodes": 2,
+          "cpu_nodes": 2,
+          "cpu_flops": 2,
+          "cpu_bytes": 24
+        },
+        "Shape": {
+          "flops": 0,
+          "bytes": 4120,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 4120
+        },
+        "Gather": {
+          "flops": 3073,
+          "bytes": 197007400,
+          "nodes": 2,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 32
+        },
+        "SimplifiedLayerNormalization": {
+          "flops": 3072,
+          "bytes": 18432,
+          "nodes": 1,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "MatMulNBits": {
+          "flops": 7444758528,
+          "bytes": 2097250944,
+          "nodes": 161,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "GroupQueryAttention": {
+          "flops": 201326592,
+          "bytes": 403446016,
+          "nodes": 32,
+          "cpu_nodes": 32,
+          "cpu_flops": 201326592,
+          "cpu_bytes": 403446016
+        },
+        "SkipSimplifiedLayerNormalization": {
+          "flops": 390144,
+          "bytes": 1959936,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Sigmoid": {
+          "flops": 262144,
+          "bytes": 1048576,
+          "nodes": 32,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Mul": {
+          "flops": 524288,
+          "bytes": 3145728,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        }
+      }
+    },
+    {
+      "ctx": 2048,
+      "step": "one decode step: sequence_length=1, past_sequence_length=ctx",
+      "total_flops": 8251247622,
+      "total_bytes": 3912655922,
+      "cpu_flops": 805306374,
+      "cpu_bytes": 1612224938,
+      "cpu_flops_frac": 0.09759813435399042,
+      "cpu_bytes_frac": 0.41205385041266096,
+      "cpu_nodes": 43,
+      "vulkan_nodes": 323,
+      "ep_estimator_cpu_flops_frac": 0.16575211521373415,
+      "fabricated_extent_nodes_flops": 0,
+      "fabricated_extent_nodes_bytes": 0,
+      "fabricated_bytes_frac": 0.0,
+      "by_op": {
+        "Constant": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 3,
+          "cpu_nodes": 3,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Greater": {
+          "flops": 1,
+          "bytes": 17,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 17
+        },
+        "If": {
+          "flops": 0,
+          "bytes": 786433,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 786433
+        },
+        "ReduceSum": {
+          "flops": 1,
+          "bytes": 16408,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 16408
+        },
+        "Sub": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Cast": {
+          "flops": 2,
+          "bytes": 24,
+          "nodes": 2,
+          "cpu_nodes": 2,
+          "cpu_flops": 2,
+          "cpu_bytes": 24
+        },
+        "Shape": {
+          "flops": 0,
+          "bytes": 16408,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 16408
+        },
+        "Gather": {
+          "flops": 3073,
+          "bytes": 197007400,
+          "nodes": 2,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 32
+        },
+        "SimplifiedLayerNormalization": {
+          "flops": 3072,
+          "bytes": 18432,
+          "nodes": 1,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "MatMulNBits": {
+          "flops": 7444758528,
+          "bytes": 2097250944,
+          "nodes": 161,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "GroupQueryAttention": {
+          "flops": 805306368,
+          "bytes": 1611405568,
+          "nodes": 32,
+          "cpu_nodes": 32,
+          "cpu_flops": 805306368,
+          "cpu_bytes": 1611405568
+        },
+        "SkipSimplifiedLayerNormalization": {
+          "flops": 390144,
+          "bytes": 1959936,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Sigmoid": {
+          "flops": 262144,
+          "bytes": 1048576,
+          "nodes": 32,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Mul": {
+          "flops": 524288,
+          "bytes": 3145728,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        }
+      }
+    },
+    {
+      "ctx": 8192,
+      "step": "one decode step: sequence_length=1, past_sequence_length=ctx",
+      "total_flops": 10667166726,
+      "total_bytes": 8768971826,
+      "cpu_flops": 3221225478,
+      "cpu_bytes": 6468540842,
+      "cpu_flops_frac": 0.30197573177033327,
+      "cpu_bytes_frac": 0.7376624044817635,
+      "cpu_nodes": 43,
+      "vulkan_nodes": 323,
+      "ep_estimator_cpu_flops_frac": 0.16575211521373415,
+      "fabricated_extent_nodes_flops": 0,
+      "fabricated_extent_nodes_bytes": 0,
+      "fabricated_bytes_frac": 0.0,
+      "by_op": {
+        "Constant": {
+          "flops": 0,
+          "bytes": 24,
+          "nodes": 3,
+          "cpu_nodes": 3,
+          "cpu_flops": 0,
+          "cpu_bytes": 24
+        },
+        "Greater": {
+          "flops": 1,
+          "bytes": 17,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 17
+        },
+        "If": {
+          "flops": 0,
+          "bytes": 25165825,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 25165825
+        },
+        "ReduceSum": {
+          "flops": 1,
+          "bytes": 65560,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 65560
+        },
+        "Sub": {
+          "flops": 1,
+          "bytes": 24,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 24
+        },
+        "Cast": {
+          "flops": 2,
+          "bytes": 24,
+          "nodes": 2,
+          "cpu_nodes": 2,
+          "cpu_flops": 2,
+          "cpu_bytes": 24
+        },
+        "Shape": {
+          "flops": 0,
+          "bytes": 65560,
+          "nodes": 1,
+          "cpu_nodes": 1,
+          "cpu_flops": 0,
+          "cpu_bytes": 65560
+        },
+        "Gather": {
+          "flops": 3073,
+          "bytes": 197007400,
+          "nodes": 2,
+          "cpu_nodes": 1,
+          "cpu_flops": 1,
+          "cpu_bytes": 32
+        },
+        "SimplifiedLayerNormalization": {
+          "flops": 3072,
+          "bytes": 18432,
+          "nodes": 1,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "MatMulNBits": {
+          "flops": 7444758528,
+          "bytes": 2097250944,
+          "nodes": 161,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "GroupQueryAttention": {
+          "flops": 3221225472,
+          "bytes": 6443243776,
+          "nodes": 32,
+          "cpu_nodes": 32,
+          "cpu_flops": 3221225472,
+          "cpu_bytes": 6443243776
+        },
+        "SkipSimplifiedLayerNormalization": {
+          "flops": 390144,
+          "bytes": 1959936,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Sigmoid": {
+          "flops": 262144,
+          "bytes": 1048576,
+          "nodes": 32,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        },
+        "Mul": {
+          "flops": 524288,
+          "bytes": 3145728,
+          "nodes": 64,
+          "cpu_nodes": 0,
+          "cpu_flops": 0,
+          "cpu_bytes": 0
+        }
+      }
+    }
+  ]
+}
