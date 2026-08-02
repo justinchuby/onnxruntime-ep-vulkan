@@ -3373,3 +3373,136 @@ is valid for counters and **not** for correctness.
 
 Reproduce: `python bench/results/probe_island_boundary_cost.py`. Locked by
 `bench/test_island_boundary_cost.py` (13 tests).
+
+---
+
+## 20. Standing policy: this box is contended, and that is now the baseline
+
+Frame: `main` at `c1522e2`, merged into `squad/niobe` and rebuilt. The DLL hash is **unchanged**
+at `47F668336A7BF6A9…` — the merge carried no Rust change — so §19's figures remain in frame.
+
+The GPU is shared with another team for the foreseeable future. Everything below follows from that
+one fact, and it is written as policy rather than as this session's circumstance because the
+circumstance is not going to end.
+
+### 20.1 A wall-clock figure is `STEADY_UNCERTIFIED` by default
+
+7.73 foreign busy cores against a 0.5 threshold is the **normal state of this machine**, not an
+anomaly. Consequences:
+
+- **`STEADY_UNCERTIFIED` is the expected verdict** for a wall-clock figure on this hardware. The
+  companion refusing is the instrument working. It is not a blocked task and it does not need
+  escalating.
+- **No plan may contain the step "take the measurement when the box settles."** That step never
+  completes. A plan that depends on it is not a plan.
+- A quotable figure requires the companion **and** a device-state record showing the board was at
+  boost. That combination is now rare and **must not be waited for** — see §20.4 for how to catch
+  one opportunistically instead.
+- **`12.1847 ms` — zero context, one token — remains the only quotable figure this project holds,
+  and is likely to remain so.** It is not withdrawn: R13 withdrew the wall-clock *ratios*, taken
+  during CPU fallback, which compared the CPU EP against itself. Different instrument, different
+  quantity, its own companion attached.
+
+### 20.2 The idle-clock specimen is the argument for obligation 8, not an illustration of it
+
+§19.2 records it; this is why it is load-bearing. On the current binary, sole tenant, **zero**
+foreign GPU work:
+
+| | |
+|---|---|
+| device-clock tail | **STEADY**, median **245.9149 ms**, RSD **0.0717%** — tighter than all 28 census traces |
+| tenancy | **SOLE_TENANT**, `foreign_sample_fraction` 0.0 |
+| SM clock | **210.0 MHz across min, median, mean *and max*** of 160 samples, boost 3105 MHz |
+| truth | **20.18× wrong** |
+
+**Both instruments that sound like a pass, pass.** Only the SM-clock record refuses.
+
+The mechanism generalises to exactly the regime we are now permanently in: **host contention
+arrives on the device axis as an idle clock, not as GPU contention.** Foreign cores starve
+submission, the board sees too little work to ramp, and it sits at idle — which is *perfectly
+steady*, so it yields the gate's most confident possible verdict. Every future reader of a timing
+on this project is in that regime. A low clock does not raise RSD; it lowers it.
+
+### 20.3 Performance work runs on counts, and the ceiling is now first-class
+
+Counts do not care whether the box is busy. §10.0.4 already prefers the count and Morpheus added
+*prefer the bound you can sign*; on this machine those stop being preferences and become the only
+instruments that work.
+
+Switch's byte model needs no clock and produced more usable direction in one round than every
+timing attempt of this session. It is therefore promoted from probe output to **`bench/ceiling.py`**,
+with the three things the certification apparatus already has:
+
+- **a frame** — model, device, spec source, byte-model provenance, and the **DLL hash**, because
+  for a test result the frame is the binary that ran it;
+- **an extent** — the contexts at which the bound may be quoted;
+- **a refusal** — `UNOBSERVABLE`, never a number, and pointedly never `0`.
+
+**The extent is `[0]`, and the reason is not the one expected.** The obvious refusal would be a
+context nobody ran. The real one is that **`GroupQueryAttention` is declined on this build and
+executes on CPU** — proof verdict `DIVERGENT`, all 32 instances, which is why the graph carries 33
+islands and 323 of 363 claimed nodes (§19.3). **GQA is the op that reads the KV cache.** So on this
+build the KV-cache bytes are not GPU DRAM traffic at all, and `island_bytes_phi35.json` charges them
+to the GPU roofline anyway — 48 MiB at past_len 128, rising to 3072 MiB at 8192 where they become
+60.5% of the modelled stream. Against this build that is a bound on a machine we are not running.
+
+R12: a term whose event cannot occur in the frame reports `UNOBSERVABLE`. **Not `0`** — `0` would
+claim the traffic is free, and it is not free, it is elsewhere. The refusal still discloses the
+number it declined to publish, so it is auditable rather than merely opaque.
+
+The consequence cuts the right way:
+
+> **At `past_len = 0` the KV term is exactly zero, the question does not arise, and the bound is
+> admissible. That is the only context this project has ever run, and `12.1847 ms` — zero context,
+> one token — is the only quotable figure we hold. The one admissible bound and the one quotable
+> figure sit at the same context.**
+
+That is why the comparison survives, and it should be read as the reason rather than as luck.
+
+`Ceiling.compare()` refuses a comparison whose contexts differ, and a quotable one carries
+`past_sequence_length` forward in its own output. The roofline is **not a constant** — 8.22 ms at
+zero context against 20.80 ms at 8192 — so a fraction-of-roofline quoted without a context is the
+same defect as a timing quoted without its device state.
+
+**One number moved and it is not a result.** Switch quotes 67.1% of roofline against the
+weights-and-scales stream (8.179 ms). `ceiling.py` quotes **67.4%** against the by-context total,
+which also carries the 9.52 MiB of intermediates (8.218 ms). Same figure, two floors differing by
+0.5%; both are correct about their own quantity and neither supersedes the other.
+
+Falsifier for the extent: a staging measurement at `past_len > 0` showing KV-scale bytes crossing
+to the device. We run at zero context, so no such measurement exists. If GQA is ever claimed, the
+extent widens — and that is a code change, not a judgement call.
+
+### 20.4 The clock record keeps running when nothing is being certified
+
+**`bench/clock_log.py`** samples tenancy and SM clock continuously and appends to a JSONL, reusing
+`probe_gpustate`'s sampler rather than adding a second dialect for the same channel. `window()`
+assembles a past interval into the shape `device_companion.certify()` already consumes.
+
+This inverts the workflow. The old one — notice the machine is quiet, start a run, sample alongside
+it — has a step that never completes. The new one records continuously, so when a run happens to
+land in a genuinely quiet minute **the companion for it already exists and the figure can be
+certified retrospectively.**
+
+Two refusals it must keep: a window with fewer than 40 usable samples is `UNOBSERVABLE`, because
+**an unrecorded window is not a quiet one**; and a retrospective window declares in its own silence
+set that it is weaker than an in-run companion — it is sampled over wall time and cannot know which
+samples overlapped a submission, so **it may not be used to upgrade a figure an in-run companion
+refused.**
+
+### 20.5 Slopes, not quotients — and a screen rather than a rule
+
+§19.4 records the error: a cumulative counter dominated by a one-time ~2185 MiB weight upload,
+divided by two different iteration counts, 51/28 = 1.82, published as a 1.78× improvement.
+
+**On a permanently contended box this becomes the most likely error in the repository**, because run
+lengths will now vary with whatever else is on the machine — so the denominator will differ between
+any two records almost by default, and the artifact will appear without anyone doing anything
+unusual.
+
+A rule would decay. `bench/test_ceiling.py::TestCumulativeCounterScreen` is a text-decidable screen
+over every file under `bench/`, with a positive control built from the exact line that produced the
+false finding and a negative control asserting it does not fire on the correct two-point
+construction. It currently reports no offenders.
+
+Reproduce: `python bench/ceiling.py`. Locked by `bench/test_ceiling.py` (21 tests).
