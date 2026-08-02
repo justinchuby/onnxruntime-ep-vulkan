@@ -66,6 +66,53 @@ MatMulNBits structure is current.
 
 ---
 
+## Devil's Advocate Audit: M0 criterion 10 closure — 2026-08-02
+
+**Task:** Try to break the claim that criterion 10 closed on three consecutive attributed `MATCH`
+runs, with special attention to CPU fallback, one-session provenance, witness independence, and
+the previously unwritten KV outputs.
+
+**Finding:** ❌ **The closure is not supported by the criterion's written scope.** The artifacts
+truthfully report the harness's derived `MATCH`, and the constructor correctly makes `MATCH`
+unrepresentable when ORT reports zero Vulkan executions. But `_compare_run_to_cpu` compares only
+output 0 (logits). Outputs 1–64 are compared only between Vulkan runs. A deterministic stale,
+zeroed, or consistently wrong KV cache therefore passes all three runs and is labeled
+`model_output_equivalence = MATCH` without ever being compared to the CPU oracle.
+
+**Verification details:**
+
+1. ✅ `verdict = MATCH` is the same canonical verdict vocabulary written under
+   `model_output_equivalence`; it is not a coincidentally named lane field.
+2. ❌ `outputs_compared = 65` means `len(run)`, not 65 Vulkan-vs-CPU comparisons. CPU agreement is
+   argmax equality, top-10 overlap ≥5, and non-zero Vulkan logits; `max_abs_diff` is recorded but
+   does not gate the verdict.
+3. ⚠️ The three ORT Vulkan node events are session-aggregate. They are compatible with one island
+   per run but carry no run IDs. The general `uniformly_attributed` test cannot distinguish
+   distributions such as `[2,1,0]`.
+4. ✅ Current test source creates one `InferenceSession` and calls it three times. ⚠️ The persisted
+   artifact does not bind source commit, binary digest, session identity, or raw profile, so that
+   provenance is trusted rather than independently recoverable.
+5. ✅ A zero-attribution forged CPU-only profile cannot reach `MATCH`; existing adversarial tests
+   enforce `UNATTRIBUTED`.
+6. ⚠️ ORT's provider-tagged node profile event is emitted by `KernelScope` destruction before
+   `ExecuteKernel` checks the returned status. It can record an attempted failed kernel. EP
+   counters count successfully completed dispatch calls, but are process-global, are not reset by
+   this criterion test, and do not prove that a complete island supplied the returned outputs.
+7. Two devices are useful against device-specific defects but are not independent against the
+   shared comparison scope, harness, parser, model, or constructor.
+8. The fixed-in-advance condition blocks post-hoc hardening, but cannot convert a narrow
+   measurement into discharge of broader criterion words.
+
+**Settlement evidence:** Independently regenerate from a rebuilt binary; CPU-compare all 65
+outputs on every run with declared per-output tolerances; record per-run completed-island
+attribution; retain the raw profile; reset/snapshot counters around the series; and bind model,
+source commit, ORT/EP binaries, and session identity into the artifact. Add a longer persistent
+session as a standing cache-exhaustion falsifier, not as a retroactive replacement criterion.
+
+**Output:** `.squad/decisions/inbox/fact-checker-criterion10-devils-advocate.md`
+
+---
+
 ## Audit: OQ-12 figure currency, legacy-path justification, opset-26 reality, ORT 1.28 ceiling, no-bump class — 2026-07-30T07:05:09-07:00
 
 **Task:** Verify two load-bearing claims: (1) the 31.43% Android figure behind the OQ-12 legacy barrier path decision; (2) the ONNX opset-26 claim and associated no-bump errata.
