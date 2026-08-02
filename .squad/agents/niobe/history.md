@@ -146,3 +146,202 @@ measurement, and I withdrew every "at most" argument I had used to put a floor u
 **two upper bounds do not bound a difference from below.**
 
 ---
+
+## 2026-08-01 (later) — Intel has no clock producer, and half a companion is not one
+
+The task: obligation 8's only producer is `nvidia-smi`, so **every Intel figure is permanently
+`UNCERTIFIED`** — and Intel is where the open question lives, because the 4.39× residual of the
+13.52× kernel gap that memory bandwidth does not explain is a claim about Intel. The coordinator
+handed me a lead, explicitly as a lead and not a solution: Windows' vendor-neutral
+`\GPU Engine(*)\Running Time` / `Utilization Percentage`.
+
+### What I built
+
+- **`bench/win_gpu_counters.py`** — an in-process PDH sampler over the WDDM `\GPU Engine` counter
+  set: LUID join from the Vulkan device name through `HKLM\SOFTWARE\Microsoft\DirectX`, per-PID
+  cumulative-tick differencing, ancestry via Switch's `_is_ours`. **Tenancy only. It emits
+  `clock: UNOBSERVABLE` in every record it will ever produce**, and its docstring says so before it
+  says anything else.
+- **`bench/results/probe_wingpu.py`** — the capability experiment. Samples the target adapter *and
+  every other live adapter* as a negative control while a real Phi-3.5 pass runs.
+- **`bench/test_win_gpu_counters.py`** — 22 tests. 38 with `test_device_state.py`; 237 in `bench/`.
+- **`bench/device_state.py`** — the record is now **two independent axes**, tenancy and clock, each
+  with its own producer, verdict and silence set. New states `TENANCY_ONLY`, `NO_PRODUCER`,
+  `UNCERTIFIED_PARTIAL`; `compose()`, `empty_axis()`, `from_nvidia_record()`.
+- **`docs/PERF.md` §16**, and the §15.2/§15.3 tables updated.
+
+### The capability, measured rather than hoped
+
+Intel arm, 8 inferences, `MATCH`, 71.7 s, 46 enumerations: our worker accrued **1.4292 s on
+`engtype_3d` on the Intel LUID and 0 s on each of the three other live LUIDs**. `Code.exe` held
+0.1296 s (0.18%, under the 1% bar) → `SOLE_TENANT`, clock `UNOBSERVABLE`.
+
+The negative control is the load-bearing half. Our process holds counter *instances* on both
+adapters, so "our PID is in the set" proves nothing; that engine time accrues **only** on the
+adapter we ran on is what checks a registry-string join that would otherwise be silently wrong.
+
+Second-order facts that came out of it: there is **no `engtype_Compute` node on either adapter** —
+compute is scheduled on `3d`; **PID 4 (`System`) accrues Copy-engine paging time** on behalf of
+whoever faulted (2.03 s on the NVIDIA arm), so counting it foreign would make the detector a
+constant and it gets its own class; and on this hybrid laptop the panel hangs off the iGPU, so the
+compositor's hold is `FOREIGN_GPU_WORK(display)` — **permanent, named as such rather than looking
+like bad luck.**
+
+### The verdict, and why it is not a pass
+
+`TENANCY_ONLY` → **`UNCERTIFIED(partial_companion)`**, its own state at both levels, because
+*bypassed / all-rejected / unobservable* sharing one `0` is Tank's lesson and this is the same
+shape. **The failure the clock record exists to catch is a sole-tenant failure**: `base_b` was
+verified sole tenant, 21.4× wrong, at the project's second-best RSD, because the board never left
+210 MHz. A tenancy-only companion says `SOLE_TENANT` about that run and is *correct*.
+
+And engine `Running Time` cannot be pressed into the clock role: it is a **duration**, so at a
+lower clock the same kernel occupies the engine *longer* — it moves the same way as the figure it
+would certify. A second copy of the quantity under certification, not a second quantity from
+outside the series. That is the same-source falsifier that put 246.735 ms into the record.
+
+The asymmetry that makes it safe to have at all: **it may subtract confidence and may never add
+it.** `FOREIGN_GPU_WORK` without a clock is still a detection → `WITHHELD`. `SOLE_TENANT` without a
+clock is not a pass. Implemented in `compose`, not merely stated.
+
+### The reads-clean shape — three bugs, all of which made the record *cleaner*
+
+1. `devices.by_index(1)` gave me **NVIDIA**: `vulkaninfo` enumerates 0=Intel, the EP's best-first
+   order is 0=NVIDIA. `bench/devices.py` documents this trap and I walked into it. The sampler
+   watched an untouched adapter → clean `SOLE_TENANT`.
+2. Ancestry for all 204 instances cost **21.2 s/round**: 3 samples in 62 s → clean again. Cached
+   per-PID and classified only PIDs with nonzero in-window ticks (21.2 s → 0.40 s).
+3. **PDH caches its instance list per process** — my own worker was invisible for a whole 60 s run.
+   Proved it with a poller using `PdhEnumObjectsW(..., bRefresh=TRUE)`, which sees the instances
+   appear ~14 s in. Clean a third time.
+
+R9 amendment 5 says ask which way a check moves when its subject is wrong; all three moved **with**
+the reader's confidence, so none was fixable by tightening a threshold. Fixed at source and
+backstopped by two interlocks that make the clean reading *unavailable*: `UNOBSERVABLE(self_not_witnessed)`
+(a record must carry positive evidence it watched the right device) and a **blind-gap limit**
+(>10× interval → `ERROR(instrument)`). The blind-gap interlock fired for real on the first NVIDIA
+corroboration run — four samplers each re-enumerating, 12.6 s gap — and the fix was one shared
+enumeration cache, not a looser limit.
+
+### The ruling
+
+**An Intel device-clock figure cannot be certified on this hardware. Permanent, not pending.**
+Unlike Link's lavapipe `none_structural` there *is* a subject — the Iris Xe has a real clock that
+really varies — so it gets its own classification, **`none_available`**: no `GPU *` counter set
+carries MHz, no `root\wmi` GPU class exists here, `Win32_VideoController` has no core clock,
+`nvidia-smi` exits 6, Vulkan has no clock query, and engine time is inadmissible as a proxy.
+Reopening it needs a **producer**, not a better analysis — a Link/platform question, not on M0's
+path.
+
+**For Switch:** the 4.39× residual must be attacked with **counts and shapes, not clocks** —
+which is §10.0.4's preference anyway, and now there is no alternative on Intel.
+
+**The uncomfortable direction:** Morpheus's amendment 2 notes the iGPU shares its power budget with
+loaded CPU cores, so it is *more* exposed to the clock failure than the discrete board — and it is
+the device where we can never see it. The Iris Xe's `NO_STEADY_TAIL` refusals are **consistent
+with** a wandering clock and are **not evidence of one**.
+
+### Portability
+
+Morpheus required a **record, not a tool**, and WDDM counters are as Windows-locked as `nvidia-smi`
+is NVIDIA-locked. So the record is emitted **in full on every platform**, with `NO_PRODUCER` in the
+axes nothing can fill — a missing key is indistinguishable from a key nobody thought to write; a
+`NO_PRODUCER` axis is a statement. `winreg` is imported under a guard, `available()` is False
+off-Windows, the Windows tests skip rather than fail, and
+`test_the_record_is_emitted_in_full_where_no_producer_exists_at_all` holds the line.
+
+### Corroboration, since one existed for once
+
+On the 4060 both producers ran over the same window and both said `SOLE_TENANT` (`agree: true`,
+peak 2010/3105 MHz). Obligation 7's shape, with the agreement **in the artifact**. It licenses
+nothing about the clock axis and does not move Intel any closer to quotable.
+
+### State
+
+38 targeted tests pass; **237 in `bench/`, 0 failed**. Scratch prototypes deleted; the
+`wingpu-idle-intel-dev1.json` artifact from the mis-joined run deleted rather than kept. Three
+decision records filed. Committed on `squad/niobe`, not pushed.
+
+**Still blocked on Justin:** `nvidia-smi --lock-gpu-clocks` + an elevated shell, which would close
+the duty-cycle mechanism on the NVIDIA side. Not designed around, not blocked on.
+
+📌 Team update (2026-08-01T17:16:56-07:00): Intel device-clock figures are permanently uncertifiable on this hardware (`none_available`, no producer exists and none of the available proxies are the right kind of quantity) — attack the Intel/NVIDIA residual with counts and shapes, not clocks — decided by Niobe
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): All wall-clock figures remain withdrawn; only counts, bytes and certified-companion device-clock figures are quotable — decided by Switch, Morpheus, Niobe, Link
+
+
+📌 Team update (2026-08-01T17:16:56-07:00): `ledger_lookup` is the last `UNWIRED` mechanism in the instrument census (criterion 11); Mouse is building it — decided by Trinity, Mouse
+
+
+## 2026-08-01 (evening) — R11 in a *selection*: the probe misled by omission while every field it printed was true
+
+Small fix, and the size of the fix is not the size of the finding. Two `KEYS` lists and a print
+line; the shape is new and worth carrying.
+
+**The question.** Was `alloc_device_authoritative_spans = 0` in `bench/results/indexspace.json` a
+real zero or R12 (a counter reporting `0` for an event that cannot occur in its frame)? Morpheus
+ruled it **a real zero and he was right**: it is an `int`, not the string `"UNOBSERVABLE"`/
+`"UNWIRED"`, so the type discipline had already answered; `alloc_device_residency_evaluations = 9`
+from the same call site says the question was *asked* nine times and answered no; and
+`ceiling = backed 9 − staged 9 = 0`, so zero is the only correct value. `UNOBSERVABLE` would have
+been a **stronger and false** claim.
+
+**The defect is the probe, not the counter.** `probe_indexspace.py`'s `KEYS` took
+`alloc_device_backed_spans` and `alloc_device_authoritative_spans` and did **not** take
+`alloc_staged_spans` or `alloc_device_authoritative_ceiling` — both emitted by `counters.rs`
+(L934, L945) and simply not selected. So the artifact **genuinely did not contain** what a reader
+needs to tell a measured zero from a pinned one. The coordinator's failure to interpret it was not
+ignorance, and anyone who *had* interpreted it confidently would have been guessing.
+
+**The shape, which is the part to keep.** R11 usually appears in a *name* that claims more than
+the value supports. Here it appeared in a **selection**: a probe can mislead through what it omits
+while every field it prints is individually true. Rule adopted in the file:
+
+> a counter whose value is only interpretable against a companion key is not admissible without
+> that companion key on the face of the same output.
+
+### What I changed
+
+- `probe_indexspace.py` `KEYS` gains `alloc_staged_spans`, `alloc_device_authoritative_ceiling`
+  and — from the audit below — `alloc_allocations`. The printed line now shows
+  `ceiling=0 (= backed 9 - staged 9)` and `authoritative_spans=0 over 9 residency evaluation(s)`,
+  so the arithmetic is on the face of the output rather than reconstructable by someone who
+  already knows to look.
+- A `span_accounting()` note that **names which kind of zero it is**:
+  `MEASURED_ZERO_AT_A_ZERO_CEILING` / `MEASURED_ZERO_BELOW_A_NONZERO_CEILING` / `UNWIRED_ZERO` /
+  `NOT_A_NUMBER`. The middle one is the interesting state and it must never hide inside the same
+  `0` as the first — same discipline as Tank's five states sharing one zero.
+- **It reports; it does not judge.** Nothing in it feeds `checks`, so it cannot withhold
+  `ONE_INDEX_SPACE`. An accounting note that could move the verdict would be a different
+  instrument wearing this one's name.
+
+### Re-run: the verdict did not move, and it should not have
+
+`ONE_INDEX_SPACE`, both arms intact, all seven checks ok — allocator index `'1' → '0'` as the
+selector moved `0 → 1`, matching the offered index on each arm, both `SHARED`, binds non-zero on
+both. Identical values to the previous artifact (binds 6, allocations 9, staged 9, backed 9,
+ceiling 0, authoritative 0, evaluations 9). **This changed what is reported, not what is
+measured** — which is exactly what should be true of a reporting fix, and the confirmation is the
+point of re-running rather than reasoning.
+
+Worth noting what the newly-visible arithmetic actually says: **staged 9 of 9 spans, so every
+device-backed span is a mirror and the ceiling is 0.** The §6.5 frame is shared and the residency
+screen runs, but nothing is device-authoritative yet — visible now, invisible before.
+
+### Audit: one instance of a shape is usually not one instance
+
+| consumer | verdict |
+|---|---|
+| `probe_indexspace.py` | **two** instances — the reported `authoritative_spans` (fixed), and `alloc_device_backed_spans = 9` as a **bare numerator** with no `alloc_allocations` denominator: 9 of 9 and 9 of 900 are different findings and the extract could not tell them apart (fixed) |
+| `probe_sec65.py` | **two more.** It printed `alloc_device_spans` — **a key that exists nowhere in the source**, so it printed `'<absent>'` on every run since it was written, and an always-absent key reads like a measurement that came back empty. Real name: `alloc_device_backed_spans`. And it printed `authoritative_spans` with no ceiling and no residency evaluations — the same uninterpretable zero. Both fixed |
+| `probe_residency_screen.py` | clean — its `KEYS` already carries ceiling, evaluations, binds, backed and staged |
+| `bench/phi35.py` `staging_label()` | clean — it reads staged **and** backed as a pair, and treats absent as its own `"unknown"` state that is explicitly *not* the same as device-backed |
+
+`phi35.py` would classify this configuration as `mixed` ("both staged and device-backed spans
+observed; attribution is ambiguous"), which is the correct reading of 9/9 and agrees with the
+ceiling of 0.
+
+242 tests pass in `bench/`. Committed on `squad/niobe`, not pushed. Scoped small on purpose: the
+`MARGINAL_TAIL` census cross-check remains the more important of the two and did not collide with
+this.
