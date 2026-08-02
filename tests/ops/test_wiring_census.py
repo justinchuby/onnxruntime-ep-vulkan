@@ -142,6 +142,12 @@ _BUDGET_UNITS = {
     "counters_child_clean": 6_000,
     "counters_child_inject": 6_000,
     "counters_child_ledger": 6_000,
+    # The two flag-frame arms (round 29).  Both run the same six-node chain as the clean
+    # arm; `flags_a` additionally raises the child's log severity, which makes it noisier
+    # and therefore *harder* to starve of beats, so the clean arm's budget is the
+    # conservative choice rather than a guess.
+    "counters_child_flags_a": 6_000,
+    "counters_child_flags_b": 6_000,
     "add_session_profiling": 4_000,
     "validation_probe": 2_000,
     "layering_lint": 12_000,
@@ -176,6 +182,19 @@ _MECHANISMS = [
     "broken_commitment_warn",
     "device_state_guard",
     "instrument_census",
+    # Added round 29 (criterion 12).  Neither is a new instrument: both observe surfaces
+    # that already existed in production Rust and that no census mechanism read.
+    #
+    #   ep_entrypoints — the three uncensused C ABI counters (`compile_calls`,
+    #                    `compute_calls`, `subgraphs_stub`).  Their absence is why
+    #                    "Compute() entered and dispatched nothing" was not a state the
+    #                    census could report, and why a `compute_calls` reading quoted in
+    #                    conversation was a number no census mechanism watched.
+    #   flag_frame     — the nine uncensused environment switches, including the two that
+    #                    select a different code path.  Frame disclosure for all nine,
+    #                    plus a discrimination arm wherever one can exist in this frame.
+    "ep_entrypoints",
+    "flag_frame",
 ]
 
 # Mechanisms that MUST be wired for M0 to be complete.  Others are informational.
@@ -194,6 +213,14 @@ _MANDATORY_WIRED = {
     # being consulted could not fail this lane — the exact state R10 calls
     # indistinguishable from never having been written.
     "ledger_lookup",
+    # Added round 29.  `ep_entrypoints` reads three C ABI counters the EP publishes
+    # unconditionally; a counters artifact that does not carry them means the ABI moved
+    # under the census, which is a finding about wiring and not about this run's model.
+    # `flag_frame`'s frame disclosure cannot fail for environmental reasons — it reads
+    # this process's own environment — so making it mandatory adds a red that only a real
+    # regression can produce.
+    "ep_entrypoints",
+    "flag_frame",
 }
 
 # Mechanisms known to be UNWIRED at M0.
@@ -211,6 +238,8 @@ _KNOWN_UNWIRED_M0: set[str] = set()
 _STEP_MECHANISMS = {
     "counters_child_clean": ("net_benefit_gate", "broken_commitment_warn", "retain_viable"),
     "counters_child_inject": ("net_benefit_gate", "broken_commitment_warn", "retain_viable"),
+    "counters_child_flags_a": ("flag_frame",),
+    "counters_child_flags_b": ("flag_frame",),
     "add_session_profiling": ("partitioner", "partition_identity_check", "gpu_tracer",
                               "model_output_equivalence"),
     "validation_probe": ("validation_messenger",),
@@ -433,9 +462,138 @@ _ENV_LEDGER_FILE = "ONNXRUNTIME_EP_VULKAN_LEDGER_FILE"
 _EVIDENCE_CASES = Path(__file__).parent.parent.parent / "evidence" / "cases"
 _EVIDENCE_LEDGER = Path(__file__).parent.parent.parent / "evidence" / "proof_ledger.jsonl"
 
+# ---------------------------------------------------------------------------
+# Criterion 12, round 29 — the twelve surfaces the census did not observe
+# ---------------------------------------------------------------------------
+#
+# Link's independent whole (`ci/check_census_completeness.py`, denominator enumerated from
+# production Rust that this file does not write) found 50 instrumented surfaces, of which
+# 33 routed to a census mechanism and TWELVE were instrumented and observed by no census
+# mechanism at all.  `unwired: []` was therefore true against a denominator the census
+# supplied itself — R11's shape, and the reason the answer to criterion 12 is not 12/12.
+#
+# Two of the twelve are worse than the other ten and are handled first, because they
+# SELECT A DIFFERENT CODE PATH:
+#
+#   ONNXRUNTIME_EP_VULKAN_GEMV_PACKED   picks a different kernel (`ops/quant.rs`)
+#   ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY picks device-local allocation (`factory.rs`)
+#
+# A census line that cannot say which of those paths was in force is reporting a value
+# from a world it has not identified — which is `executed_by`'s own argument (§10.0 third
+# metric amendment) applied one level up, to the census rather than to the verdict.
+#
+# TWO THINGS ARE BEING REPORTED PER SWITCH AND THEY ARE NOT THE SAME STRENGTH:
+#
+#   FRAME DISCLOSURE   — was this switch in force in the frame the census observed in?
+#                        Always available, costs nothing, and is the weaker of the two.
+#                        It makes every other line in the census non-silent about which
+#                        world produced it.  It is NOT evidence the switch does anything.
+#   DISCRIMINATION     — does an artifact this run produced MOVE when the switch is armed?
+#                        That is R10's falsifier, and it is the only one of the two that
+#                        can fail.  Where the census can afford an arm, it takes one.
+#
+# A switch whose discriminator cannot exist in the census's frame reads UNOBSERVABLE with
+# the reason, never INVARIANT and never 0 (R12).  `GEMV_PACKED` is exactly that case here:
+# the census graph is an elementwise chain with no GEMV node, so the kernel the switch
+# selects is not reachable in this frame and "no difference" would be a fabricated
+# observation.  Recording it as UNOBSERVABLE-with-a-reason is what §10 asks for when a
+# surface is deliberately out of a mechanism's scope.
+_ENV_DEVICE_MEMORY = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"
+_ENV_QUARANTINE_SPANS = "ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS"
+_ENV_VA_RESERVE_MIB = "ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB"
+_ENV_GEMV_PACKED = "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED"
+_ENV_BACKEND_PROBE = "ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE"
+_ENV_CLAIM_LOG = "ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"
+_ENV_CLAIM_DEBUG = "ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG"
+_ENV_VERBOSE = "ONNXRUNTIME_EP_VULKAN_VERBOSE"
+_ENV_DUMP_OUTPUT_BYTES = "ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES"
+
+#: Deliberately NOT in the `ONNXRUNTIME_EP_VULKAN_` namespace.  This is a parameter of the
+#: census's own child process, read in Python, and naming it in the EP's namespace would
+#: put a switch into the independent whole's regex that no line of Rust reads — growing
+#: Link's denominator with a harness variable and making the census's coverage of the EP
+#: look worse by an amount that has nothing to do with the EP.
+_ENV_CHILD_LOG_SEVERITY = "CENSUS_CHILD_LOG_SEVERITY"
+
+#: The six env switches that parameterise the net-benefit gate's cost model
+#: (`rust/src/partition.rs`).  Named here so the gate's census line can state which of its
+#: inputs were in force: a gate observed at its defaults and a gate observed under an
+#: overridden cost model are two different observations, and a line that does not say
+#: which one it is cannot be replayed.
+_ENV_PARTITION = (
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN",
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES",
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS",
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS",
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS",
+    "ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION",
+)
+
+#: The three env switches that parameterise the validation messenger (`rust/src/vk/`).
+_ENV_VALIDATION = (
+    "ONNXRUNTIME_EP_VULKAN_VALIDATE",
+    "ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION",
+    "ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION",
+)
+
+#: Niobe's ten `Phase` variants (`rust/src/trace.rs::enum Phase`), listed here so the
+#: tracer's census line can say WHICH of them the trace file carried and which it did not.
+#:
+#: This list is the census's own, and it is meant to be: Link's screen enumerates the same
+#: enum straight out of `trace.rs` with a regex, so if a variant is added, renamed or
+#: removed in Rust his denominator moves and this constant does not, and his extent line
+#: reports the difference.  Two authors, two files, two languages — a shared constant would
+#: put numerator and denominator back under one pen, which is the defect criterion 12 is
+#: about.
+#:
+#: `Record` is on this list on purpose.  It is the standing MISNAMED specimen: wired,
+#: invoked, correct, input-varying, and wrong by 50x in what it was called.  A tracer line
+#: that reports "N events" and never says whether `Record` was among them would certify it
+#: again, which is the whole of Link's third question.
+_TRACE_PHASES = (
+    "Compile", "Prepack", "Upload", "Record", "DescAlloc",
+    "PipelineLookup", "CmdUpload", "Submit", "FenceWait", "Readback",
+)
+
+
+def _phase_event_name(variant: str) -> str:
+    """`Phase::CmdUpload` -> `vulkan.cmd_upload`, mirroring `trace.rs::Phase::as_str`.
+
+    THE FIRST VERSION OF THIS MATCHER LOOKED FOR THE RUST IDENTIFIER and reported
+    `0/10 Phase variants emitted` — a spectacular finding, entirely fabricated by the
+    instrument.  The trace file spells them `vulkan.record`, `vulkan.fence_wait` and so on;
+    six of the ten were right there in the artifact I was reading.
+
+    R13's second corollary is the reason this is called out rather than quietly fixed: a
+    result that CONFIRMS a prediction deserves more scrutiny than one that contradicts it.
+    I went looking for a tracer coverage gap, got the largest gap available on the first
+    try, and the number was my own bug.  A `0/N` is the single most suspicious reading an
+    instrument can produce, because it is what a broken instrument produces too.
+    """
+    out = []
+    for i, ch in enumerate(variant):
+        if ch.isupper() and i:
+            out.append("_")
+        out.append(ch.lower())
+    return "vulkan." + "".join(out)
+
+#: Niobe's device-span switch.  The census does NOT arm it (device timestamps are Switch's
+#: exclusive claim and Niobe's admissibility frame; a census that armed them would be
+#: taking a device-clock reading under four-agent contention).  It is named on the tracer
+#: line with its in-force state so that a reader knows which phases could not have been
+#: emitted in this frame — R12 again: the host-side phases are observed, the device-side
+#: ones are UNOBSERVABLE here, and neither is 0.
+_ENV_TRACE_GPU = "ONNXRUNTIME_EP_VULKAN_TRACE_GPU"
+
 _CENSUS_OUT = Path(__file__).parent.parent.parent / "bench" / "results" / "census"
 _CENSUS_TRACE_PATH = _CENSUS_OUT / (
     f"census-trace-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
+)
+_CENSUS_BACKEND_PROBE_PATH = _CENSUS_OUT / (
+    f"census-backend-probe-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.txt"
+)
+_CENSUS_CLAIM_LOG_PATH = _CENSUS_OUT / (
+    f"census-claim-log-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.jsonl"
 )
 
 
@@ -519,7 +677,14 @@ def _counters_child_main(counters_path: str) -> int:
             print(f"[census-child] registration failed: {exc}", file=sys.stderr)
             return 3
     opts = ort.SessionOptions()
-    opts.log_severity_level = 2
+    # Default WARNING.  The flag-frame arms lower it, because three of the switches they
+    # arm (CLAIM_DEBUG, DUMP_OUTPUT_BYTES, VERBOSE) publish through the log and nothing
+    # else: at severity 2 ORT drops those records before they reach this process's stderr,
+    # and the census would then read "the switch changed nothing" from a frame in which
+    # its only observable could not appear.  That is R12's error exactly — a 0 reported
+    # where the event cannot occur — so the severity is an explicit arm parameter rather
+    # than a constant, and the observation says which severity it read at.
+    opts.log_severity_level = int(os.environ.get(_ENV_CHILD_LOG_SEVERITY, "2"))
     phase("build_model")
     model_path = os.environ.get(_ENV_CENSUS_MODEL, "")
     if model_path:
@@ -808,6 +973,401 @@ def _observe_instrument_census() -> str:
     return f"exit={code} {verdict.strip()} | " + "; ".join(counts[:6])
 
 
+# ---------------------------------------------------------------------------
+# Criterion 12, round 29 — the twelve uncensused surfaces
+# ---------------------------------------------------------------------------
+
+#: Frame-disclosure / discrimination tokens.  Deliberately distinct from the census's
+#: mechanism tokens: `IN-FORCE` says which world the run happened in, `MOVED` says an
+#: artifact responded to the switch, and `UNOBSERVABLE` says the discriminator could not
+#: exist in this frame.  None of the three is `UNWIRED`, and `UNOBSERVABLE` is never `0`.
+_FLAG_MOVED = "MOVED"
+_FLAG_CONSTANT = "CONSTANT"
+_FLAG_UNOBSERVABLE = "UNOBSERVABLE"
+
+
+def _in_force(name: str, env: "dict[str, str] | None" = None) -> str:
+    """What this switch was set to in the frame named by *env* (default: this process).
+
+    `unset` and `''` are different: a switch set to the empty string is in the environment
+    and several of the readers below treat presence, not value, as arming.  Collapsing
+    them would make the disclosure line lie about exactly the case that is hardest to
+    reproduce from a log.
+    """
+    src = os.environ if env is None else env
+    return "unset" if name not in src else repr(src[name])
+
+
+def _flag_segment(name: str, state: str, detail: str, *, env=None) -> str:
+    """One switch's line: what it was set to, and what moved when it was.
+
+    The switch is spelled in full, never abbreviated.  Link's extent screen asks whether
+    the observation NAMES the surface, and it asks that against the identifier as
+    production Rust spells it; a census that prints `GEMV_PACKED` has not named
+    `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED`, and a reader grepping the artifact for the
+    variable they are about to set would not find it either.
+    """
+    return f"{name}[census_frame={_in_force(name, env)}] {state}({detail})"
+
+
+def _pair_state(clean, armed) -> str:
+    return _FLAG_MOVED if clean != armed else _FLAG_CONSTANT
+
+
+def _observe_flag_frame(
+    clean_doc: dict,
+    clean_log: str,
+    a_doc: "dict | None",
+    a_log: str,
+    b_doc: "dict | None",
+    b_log: str,
+    a_env: dict,
+    b_env: dict,
+) -> str:
+    """The nine instrumented-but-uncensused environment switches, one segment each.
+
+    Every segment carries TWO facts and they are not the same strength (see the block
+    comment at `_ENV_DEVICE_MEMORY`): `census_frame=` is frame disclosure and cannot fail;
+    the state token is discrimination and can.  A reader who takes the first for the
+    second has read a presence check as a wiring check, which is the error criterion 12
+    exists to make visible.
+    """
+    if a_doc is None or b_doc is None:
+        # Frame disclosure survives an arm outage — it reads this process's environment —
+        # so the census still says which world it observed in, and says plainly that the
+        # discriminators were not reached.  R13: an arm that did not run is not a finding
+        # that the switches do nothing.
+        return (
+            "PARTIAL — discrimination arms did not run; frame disclosure only: "
+            + " | ".join(
+                _flag_segment(
+                    n,
+                    _FLAG_UNOBSERVABLE,
+                    "the discrimination arm did not run, so this run says nothing about "
+                    "whether the switch moves anything (R13: not a detection)",
+                )
+                for n in (
+                    _ENV_GEMV_PACKED, _ENV_DEVICE_MEMORY, _ENV_QUARANTINE_SPANS,
+                    _ENV_VA_RESERVE_MIB, _ENV_BACKEND_PROBE, _ENV_CLAIM_LOG,
+                    _ENV_CLAIM_DEBUG, _ENV_DUMP_OUTPUT_BYTES, _ENV_VERBOSE,
+                )
+            )
+        )
+
+    segments: list[str] = []
+
+    # ── GEMV_PACKED — a different KERNEL, and not reachable from this graph ──────────
+    #
+    # The strongest of the twelve and the one that stays UNOBSERVABLE, which is the point.
+    # `ops/quant.rs::gemv_packed()` selects the packed batch-1 GEMV kernel.  The census
+    # graph is a six-node elementwise chain: it contains no MatMulNBits, so no GEMV kernel
+    # is reachable, so the switch cannot move anything here.  Reporting `CONSTANT` would
+    # be reporting a 0 for an event that cannot occur in the frame (R12) and would read as
+    # evidence that the switch is inert.
+    #
+    # What this line DOES buy: every other observation in this census now states which
+    # side of the switch it was taken on, so no kernel reading in this artifact is silent
+    # about which kernel it observed.
+    segments.append(
+        _flag_segment(
+            _ENV_GEMV_PACKED,
+            _FLAG_UNOBSERVABLE,
+            "armed in arm A and no discriminator exists in this frame: the census graph "
+            "is a six-node elementwise chain with no MatMulNBits, so the packed GEMV "
+            "kernel is not reachable and a 'no difference' reading would be a 0 for an "
+            "event that cannot occur (R12). The kernel-identity observation needs either "
+            "a GEMV case in the census lane or a counter naming the selected kernel — "
+            "requested from Mouse/Switch as `gemv_packed_dispatches`",
+            env=a_env,
+        )
+    )
+
+    # ── DEVICE_MEMORY — a different ALLOCATION PATH, and this one IS reachable ───────
+    #
+    # `factory.rs` switches allocations to device-local memory.  Tank's allocator counters
+    # publish the resulting frame, so the pair of arms is a real R10 falsifier rather than
+    # a disclosure: `alloc_device_frame` is a token the production path computes, and it
+    # is typed ('OFF'/'ON'/...), which an increment cannot forge.
+    dm_clean = tuple(
+        clean_doc.get(k) for k in
+        ("alloc_device_frame", "alloc_device_frames_declared", "alloc_device_backed_spans")
+    )
+    dm_armed = tuple(
+        a_doc.get(k) for k in
+        ("alloc_device_frame", "alloc_device_frames_declared", "alloc_device_backed_spans")
+    )
+    if dm_clean == (None, None, None):
+        segments.append(
+            _flag_segment(
+                _ENV_DEVICE_MEMORY, _FLAG_UNOBSERVABLE,
+                "the counters artifact carries no alloc_device_frame fields, so this "
+                "frame cannot see the allocation path at all",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_DEVICE_MEMORY, _pair_state(dm_clean, dm_armed),
+                f"alloc_device_frame/frames_declared/device_backed_spans "
+                f"unset={dm_clean!r} armed={dm_armed!r} "
+                f"(device={a_doc.get('alloc_device_frame_device')!r})",
+                env=a_env,
+            )
+        )
+
+    # ── QUARANTINE_SPANS — allocator.rs, observable through Tank's counters ─────────
+    q_clean = tuple(
+        clean_doc.get(k) for k in
+        ("alloc_quarantine_peak_spans", "alloc_quarantine_retired")
+    )
+    q_armed = tuple(
+        a_doc.get(k) for k in
+        ("alloc_quarantine_peak_spans", "alloc_quarantine_retired")
+    )
+    if q_clean == (None, None):
+        segments.append(
+            _flag_segment(
+                _ENV_QUARANTINE_SPANS, _FLAG_UNOBSERVABLE,
+                "no alloc_quarantine_* fields in the counters artifact",
+                env=a_env,
+            )
+        )
+    elif q_clean == q_armed == (0, 0):
+        # An honest CONSTANT would be a lie here: with no allocator traffic at all the
+        # quarantine has nothing to hold either way, so the pair is uninformative rather
+        # than negative.
+        segments.append(
+            _flag_segment(
+                _ENV_QUARANTINE_SPANS, _FLAG_UNOBSERVABLE,
+                "both arms recorded alloc_quarantine_peak_spans=0 alloc_quarantine_"
+                "retired=0 with alloc_allocations="
+                f"{clean_doc.get('alloc_allocations')!r}: no span was freed in either "
+                "arm, so the quarantine had nothing to hold and the pair says nothing "
+                "about the switch (R12 — not a 0, an event that did not occur)",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_QUARANTINE_SPANS, _pair_state(q_clean, q_armed),
+                f"alloc_quarantine_peak_spans/retired unset={q_clean!r} armed={q_armed!r}",
+                env=a_env,
+            )
+        )
+
+    # ── VA_RESERVE_MIB — armed, and nothing publishes the reservation ──────────────
+    #
+    # The honest answer, and the one §10 asks for when a surface cannot be censused: say
+    # so, name what would make it observable, and name the owner.  A surface deliberately
+    # left out of scope with a reason is a fine answer; a surface nobody looked at is not.
+    segments.append(
+        _flag_segment(
+            _ENV_VA_RESERVE_MIB, _FLAG_UNOBSERVABLE,
+            f"armed at {a_env.get(_ENV_VA_RESERVE_MIB)!r} in arm A and no counter "
+            "publishes the reservation size, so no artifact this run produced could "
+            "differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which "
+            "this segment becomes a two-arm discriminator like DEVICE_MEMORY's",
+            env=a_env,
+        )
+    )
+
+    # ── BACKEND_PROBE — writes a FILE naming the selected barrier backend ──────────
+    #
+    # `vk/barrier.rs` writes "sync2" or "legacy" to the named path.  This is the strongest
+    # kind of observation available to a census: an artifact the mechanism itself produced,
+    # whose CONTENT names the thing it selected.
+    if _CENSUS_BACKEND_PROBE_PATH.is_file():
+        token = _CENSUS_BACKEND_PROBE_PATH.read_text(encoding="utf-8", errors="replace").strip()
+        segments.append(
+            _flag_segment(
+                _ENV_BACKEND_PROBE,
+                _FLAG_MOVED if token else _FLAG_CONSTANT,
+                f"the probe file the EP wrote names backend={token!r} "
+                "(an artifact the mechanism produced, whose content names its selection)",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_BACKEND_PROBE, _FLAG_CONSTANT,
+                f"armed at {a_env.get(_ENV_BACKEND_PROBE)!r} and no probe file was "
+                "written — the backend selection did not disclose itself in this run",
+                env=a_env,
+            )
+        )
+
+    # ── CLAIM_LOG — writes JSON Lines, one object per claim decision ───────────────
+    if _CENSUS_CLAIM_LOG_PATH.is_file():
+        lines = [
+            ln for ln in
+            _CENSUS_CLAIM_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
+        ops = sorted({
+            (json.loads(ln).get("op") if ln.lstrip().startswith("{") else "?")
+            for ln in lines[:200]
+        }) if lines else []
+        segments.append(
+            _flag_segment(
+                _ENV_CLAIM_LOG,
+                _FLAG_MOVED if lines else _FLAG_CONSTANT,
+                f"{len(lines)} claim-decision record(s), ops={ops} "
+                "(the count is of DECISIONS, not of graph nodes and not of claimed nodes)",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_CLAIM_LOG, _FLAG_CONSTANT,
+                f"armed at {a_env.get(_ENV_CLAIM_LOG)!r} and no claim log was written",
+                env=a_env,
+            )
+        )
+
+    # ── CLAIM_DEBUG and DUMP_OUTPUT_BYTES — both publish through the LOG, and both
+    #    are armed in the same arm, so each needs a MARKER of its own ───────────────
+    #
+    # They are separable inside one arm because their markers are distinct: the claim
+    # debug path prints per-node claim/decline text, the dump path prints
+    # `dispatch kernel[...] shader=...`.  Sharing an arm without distinct markers would be
+    # a confound, and a confounded discriminator that reads MOVED is worth nothing.
+    a_scrub = a_log.replace("\x00", "")
+    clean_scrub = clean_log.replace("\x00", "")
+    dump_armed = a_scrub.count("dispatch kernel[")
+    dump_clean = clean_scrub.count("dispatch kernel[")
+    if dump_armed == dump_clean == 0:
+        segments.append(
+            _flag_segment(
+                _ENV_DUMP_OUTPUT_BYTES, _FLAG_UNOBSERVABLE,
+                f"armed in arm A at child log severity "
+                f"{a_env.get(_ENV_CHILD_LOG_SEVERITY)!r} and its marker "
+                "('dispatch kernel[') appears in neither arm's log. Its only observable "
+                "is a log::debug! record; if ORT's severity filter or its sink dropped it "
+                "the census did not look, and 'did not look' is not 'found nothing' (R12)",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_DUMP_OUTPUT_BYTES, _pair_state(dump_clean, dump_armed),
+                f"'dispatch kernel[' marker lines unset={dump_clean} armed={dump_armed} "
+                "— each names the shader the dispatch used, so this is the one line in "
+                "the census that observes kernel IDENTITY rather than kernel count",
+                env=a_env,
+            )
+        )
+
+    claim_markers = ("unclaimed ", "GetCapability: declining", "[not-registered]")
+    cd_armed = sum(a_scrub.count(mk) for mk in claim_markers)
+    cd_clean = sum(clean_scrub.count(mk) for mk in claim_markers)
+    if cd_armed == cd_clean == 0:
+        segments.append(
+            _flag_segment(
+                _ENV_CLAIM_DEBUG, _FLAG_UNOBSERVABLE,
+                f"armed in arm A at child log severity "
+                f"{a_env.get(_ENV_CHILD_LOG_SEVERITY)!r} and its only output is a "
+                "DECLINE report (`ep.rs:605`, \"unclaimed {op} x{n} ({why})\"). The census "
+                "graph is a six-node Add/Mul chain that the EP claims in full — the "
+                f"claim log for this arm recorded every decision as claimed — so the "
+                "switch has nothing to report in this frame. That is an event that "
+                "cannot occur here, not a switch that does nothing (R12). Making it "
+                "discriminable needs a census graph carrying at least one declined op",
+                env=a_env,
+            )
+        )
+    else:
+        segments.append(
+            _flag_segment(
+                _ENV_CLAIM_DEBUG, _pair_state(cd_clean, cd_armed),
+                f"claim-decision marker lines unset={cd_clean} armed={cd_armed}",
+                env=a_env,
+            )
+        )
+
+    # ── VERBOSE — its own arm, because a log level shared with CLAIM_DEBUG in one arm
+    #    would make either one's reading unattributable ──────────────────────────────
+    b_scrub = b_log.replace("\x00", "")
+    v_armed = len(b_scrub.splitlines())
+    v_clean = len(clean_scrub.splitlines())
+    segments.append(
+        _flag_segment(
+            _ENV_VERBOSE, _pair_state(v_clean, v_armed),
+            f"child log lines unset={v_clean} armed={v_armed} at child log severity "
+            f"{b_env.get(_ENV_CHILD_LOG_SEVERITY)!r} (arm B arms VERBOSE and nothing "
+            "else, so a difference here is attributable to it alone)",
+            env=b_env,
+        )
+    )
+
+    moved = sum(1 for s in segments if f"] {_FLAG_MOVED}(" in s)
+    unobs = sum(1 for s in segments if f"] {_FLAG_UNOBSERVABLE}(" in s)
+    header = (
+        f"{len(segments)} switch(es) disclosed; {moved} discriminated by an artifact this "
+        f"run produced, {unobs} UNOBSERVABLE in this frame with a reason. "
+        "Disclosure is not discrimination: the first says which world the census observed "
+        "in, only the second can fail."
+    )
+    return header + " || " + " | ".join(segments)
+
+
+def _observe_ep_entrypoints(clean_doc: dict, inject_doc: dict) -> str:
+    """`compile_calls`, `compute_calls`, `subgraphs_stub` — three C ABI counters no
+    census mechanism read.
+
+    The state this buys that the census did not have: the census inferred "the EP ran"
+    from `dispatches_executed`, so a `Compute()` that ENTERED and dispatched nothing was
+    indistinguishable from a `Compute()` that never happened.  Those are opposite
+    findings — the first is a broken kernel path, the second is a partitioner that claimed
+    nothing — and one number was reporting both.
+    """
+    keys = ("compile_calls", "compute_calls", "subgraphs_stub")
+    missing = [k for k in keys if k not in clean_doc]
+    if missing:
+        return (
+            f"UNWIRED (the counters artifact carries no {', '.join(missing)} field(s) — "
+            "the C ABI moved under the census)"
+        )
+    compile_calls = clean_doc["compile_calls"]
+    compute_calls = clean_doc["compute_calls"]
+    stubs = clean_doc["subgraphs_stub"]
+    dispatches = clean_doc.get("dispatches_executed", 0)
+
+    if compile_calls == 0:
+        state = "NOT-COMPILED (ORT never called Compile — nothing was claimed)"
+    elif compute_calls == 0:
+        state = (
+            "COMPILED-NOT-COMPUTED (Compile() entered and Compute() never did — the EP "
+            "was asked to compile and the graph never ran)"
+        )
+    elif isinstance(dispatches, int) and dispatches == 0:
+        state = (
+            "ENTERED-NO-DISPATCH (Compute() entered and dispatched nothing — the state "
+            "the census could not previously name, because it inferred execution from "
+            "dispatches_executed alone)"
+        )
+    else:
+        state = "COMPILED-AND-DISPATCHED"
+
+    moved = (
+        "MOVED" if (clean_doc.get("compute_calls"), clean_doc.get("compile_calls"))
+        != (inject_doc.get("compute_calls"), inject_doc.get("compile_calls"))
+        else "CONSTANT-ACROSS-POLARITIES"
+    )
+    return (
+        f"{state} compile_calls={compile_calls!r} compute_calls={compute_calls!r} "
+        f"subgraphs_stub={stubs!r} dispatches_executed={dispatches!r} "
+        f"(counts are ENTRIES to the ORT entry points, not graph nodes and not islands; "
+        f"planted-failure polarity: compile_calls={inject_doc.get('compile_calls')!r} "
+        f"compute_calls={inject_doc.get('compute_calls')!r} "
+        f"subgraphs_stub={inject_doc.get('subgraphs_stub')!r} — {moved})"
+    )
+
+
 def _print_census(observations: dict, guard) -> "Path":
     """Emit the census lines and write the artifact.  Called on every exit path.
 
@@ -873,6 +1433,51 @@ def _print_census(observations: dict, guard) -> "Path":
                     ),
                 },
                 "observations": {mm: observations.get(mm, "UNWIRED") for mm in _MECHANISMS},
+                "criterion_12": {
+                    "closes_row": False,
+                    "why_not": (
+                        "Row 12's tally is Trinity's and the artifact is Trinity's, and "
+                        "Morpheus's ruling on criterion 11 is that supplying the evidence "
+                        "and closing the row must not be the same act. Link declined to "
+                        "close it from ci/check_census_completeness.py for the same "
+                        "reason; a census that closed its own row would be the identity "
+                        "defect one level up."
+                    ),
+                    "the_answer_is_not_12_of_12": (
+                        "The census's twelve was twelve of a denominator the census "
+                        "supplied itself. The independent whole is "
+                        "ci/check_census_completeness.py's, enumerated from production "
+                        "Rust this file does not write: 50 surfaces, of which 12 were "
+                        "instrumented and observed by no census mechanism. Those twelve "
+                        "are what round 29 addresses."
+                    ),
+                    "what_moved": (
+                        "Two things, and they are different: (a) the GAP COUNT — the "
+                        "three uncensused C ABI counters are read by `ep_entrypoints` and "
+                        "the nine uncensused env switches by `flag_frame`; (b) EXTENT — "
+                        "gpu_tracer, retain_viable, net_benefit_gate, validation_"
+                        "messenger, broken_commitment_warn, ledger_lookup and partitioner "
+                        "now name their own surfaces in their own observation text, which "
+                        "is what Link's extent numerator counts. Closing (a) while (b) "
+                        "stayed at gpu_tracer 1/12 would have moved the gap count and not "
+                        "the coverage — R11's shape."
+                    ),
+                    "disclosure_is_not_discrimination": (
+                        "Every `flag_frame` segment carries `census_frame=`, which says "
+                        "which world the census observed in and CANNOT FAIL, and a state "
+                        "token, which says whether an artifact this run produced moved "
+                        "with the switch and CAN. Reading the first as the second is "
+                        "reading a presence check as a wiring check."
+                    ),
+                    "still_unobservable_with_a_reason": (
+                        "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED selects a different kernel and "
+                        "the census graph is an elementwise chain with no GEMV node, so "
+                        "the kernel it selects is not reachable in this frame; "
+                        "ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB is armed and no counter "
+                        "publishes the reservation size. Both read UNOBSERVABLE with the "
+                        "reason and the request, never CONSTANT and never 0 (R12)."
+                    ),
+                },
                 "unwired": [
                     mm for mm in _MECHANISMS
                     if observations.get(mm, "UNWIRED").startswith("UNWIRED")
@@ -915,6 +1520,12 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     """
     observations: dict[str, str] = {}
     stalls: list[Stalled] = []
+    flags_a_env: dict[str, str] = {}
+    flags_b_env: dict[str, str] = {}
+    flags_a_doc: "dict | None" = None
+    flags_b_doc: "dict | None" = None
+    flags_a_log = ""
+    flags_b_log = ""
 
     def _fatal_stall(step: str, exc: Stalled):
         """A stall in a step the rest of the census reads from ends the census.
@@ -958,6 +1569,66 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     except Stalled as exc:
         _fatal_stall(exc.report.last_beat.split(":")[0], exc)
 
+    # ── The two flag-frame arms (criterion 12, round 29) ─────────────────────
+    #
+    # In a try of their OWN, and after everything else has been observed.  These two arms
+    # are read by one mechanism; the clean and planted arms are read by three each and the
+    # profiling session by four, so an outage here must cost exactly `flag_frame` and
+    # nothing else.  R13: an arm that did not run is ERROR(instrument) against the
+    # mechanism it was the observation for, never a finding that the switches are inert,
+    # and never a reason to discard readings the run did reach.
+    #
+    # `trace=False` on both, and that is load-bearing rather than tidiness: arming the
+    # tracer unlinks the shared witness path, so an arm that runs after the clean arm and
+    # dispatches nothing would delete the only evidence the tracer ever ran and turn a
+    # passing tracer lane into a false UNWIRED purely by running later.
+    #
+    # Arm A arms everything whose observable is an artifact of its own (a counters field, a
+    # probe file, a claim log) plus the two log-marker switches, which are separable
+    # because their markers differ.  Arm B arms VERBOSE and nothing else, because VERBOSE's
+    # only observable is the log level itself — sharing an arm with CLAIM_DEBUG would make
+    # either one's reading unattributable, and a confounded discriminator that reads MOVED
+    # is worth nothing.
+    _CENSUS_BACKEND_PROBE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CENSUS_BACKEND_PROBE_PATH.unlink(missing_ok=True)
+    _CENSUS_CLAIM_LOG_PATH.unlink(missing_ok=True)
+    flags_a_env = {
+        _ENV_DEVICE_MEMORY: "1",
+        _ENV_QUARANTINE_SPANS: "8",
+        # 1024, not 64, and the number is a finding rather than a preference.
+        # `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` together with
+        # `ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB=64` crashes the EP with an access violation
+        # (0xC0000005) on this six-node elementwise chain, deterministically; either switch
+        # alone is clean and 1024 is clean.  Pinned by
+        # `test_device_memory_with_small_va_reservation` below and reported to Tank.  The
+        # census arms the working value because a census that takes its own process down
+        # observes nothing: the crash is a finding and belongs in a test, not in the
+        # instrument.
+        _ENV_VA_RESERVE_MIB: "1024",
+        _ENV_GEMV_PACKED: "1",
+        _ENV_BACKEND_PROBE: str(_CENSUS_BACKEND_PROBE_PATH),
+        _ENV_CLAIM_LOG: str(_CENSUS_CLAIM_LOG_PATH),
+        _ENV_CLAIM_DEBUG: "1",
+        _ENV_DUMP_OUTPUT_BYTES: "1",
+        _ENV_CHILD_LOG_SEVERITY: "0",
+    }
+    flags_b_env = {_ENV_VERBOSE: "1", _ENV_CHILD_LOG_SEVERITY: "0"}
+    try:
+        flags_a_doc, flags_a_log = _run_counters_child(
+            inject=False, tag="flags_a", guard=census_guard,
+            extra_env=flags_a_env, trace=False,
+        )
+        flags_b_doc, flags_b_log = _run_counters_child(
+            inject=False, tag="flags_b", guard=census_guard,
+            extra_env=flags_b_env, trace=False,
+        )
+    except Stalled as exc:
+        _record_stall(observations, "counters_child_flags_a", exc)
+        stalls.append(exc)
+    except _verdict.InstrumentError as exc:
+        flags_a_doc = flags_b_doc = None
+        observations["flag_frame"] = f"INSTRUMENT-ERROR ({str(exc).splitlines()[0]})"
+
     # ── Mechanism 1: partitioner ─────────────────────────────────────────
     # Observable: dispatches_executed delta > 0 (EP ran) + subgraphs_live delta > 0 (partitioned)
     dispatches_delta = (
@@ -977,8 +1648,11 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
         observations["partitioner"] = "UNWIRED (subgraphs_live delta = 0 — partitioner produced no live subgraph)"
     else:
         observations["partitioner"] = (
-            f"dispatches={dispatches_delta}, subgraphs_live={subgraphs_delta}, "
-            f"claimed_from_profiling={claimed}, islands_from_profiling={islands}"
+            f"dispatches_executed={dispatches_delta}, subgraphs_live={subgraphs_delta}, "
+            f"claimed_from_profiling={claimed}, islands_from_profiling={islands} "
+            f"(both numbers are DELTAS across this session; claimed counts graph nodes "
+            f"and islands counts fused subgraphs, so one island over many claimed nodes "
+            f"is a success and not a catastrophe)"
         )
 
     # ── Mechanism 2: partition_identity_check ────────────────────────────
@@ -1021,6 +1695,23 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
             )
             phases = sorted({e.get("ph") for e in events if isinstance(e, dict)})
             names = sorted({e.get("name") for e in events if isinstance(e, dict)})
+            # WHICH of Niobe's ten `Phase` variants did this trace carry?
+            #
+            # The line used to report `distinct_names=<n>` and no names at all, so its
+            # extent against the tracer's own surface was 1/12: it named the switch that
+            # armed it and not one of the phases it was supposed to have traced.  A count
+            # of distinct names would certify `Phase::Record` — wired, invoked, correct,
+            # input-varying, and wrong by 50x in what it was called — exactly as it stood.
+            #
+            # The absent variants are reported as NOT-EMITTED, not as 0, and the device
+            # switch's in-force state is printed beside them so a reader can tell "this
+            # phase did not occur" from "this phase could not occur in this frame" (R12).
+            blob = json.dumps(events)[:2_000_000]
+            emitted = [
+                p for p in _TRACE_PHASES
+                if _phase_event_name(p) in names or f'"{_phase_event_name(p)}"' in blob
+            ]
+            absent = [p for p in _TRACE_PHASES if p not in emitted]
             if not events:
                 observations["gpu_tracer"] = (
                     f"UNWIRED (armed via {_ENV_TRACE}={_CENSUS_TRACE_PATH.name} and the "
@@ -1028,9 +1719,25 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
                 )
             else:
                 observations["gpu_tracer"] = (
-                    f"{len(events)} trace event(s), phases={phases}, "
-                    f"distinct_names={len(names)} (armed by this census via {_ENV_TRACE}; "
-                    "no duration from this file is quoted — §10.0 obligation 8)"
+                    f"{len(events)} trace event(s), ph_types={phases}, "
+                    f"distinct_names={len(names)}; "
+                    f"Phase variants emitted ({len(emitted)}/{len(_TRACE_PHASES)}): "
+                    f"{emitted or 'none'}; NOT-EMITTED: {absent or 'none'} "
+                    f"(matched as {[_phase_event_name(p) for p in _TRACE_PHASES[:2]]}… — "
+                    "the trace spells the variants snake_case under a `vulkan.` prefix, "
+                    "per trace.rs::Phase::as_str; a matcher that looked for the Rust "
+                    "identifier reported 0/10 and was wrong, which is why R13 says a "
+                    "result confirming a prediction earns more scrutiny than one "
+                    "contradicting it); "
+                    f"(armed by this census via {_ENV_TRACE}={_CENSUS_TRACE_PATH.name}; "
+                    f"{_ENV_TRACE_GPU}={_in_force(_ENV_TRACE_GPU)} — the census does not "
+                    "arm device spans, because a device-clock reading under four-agent "
+                    "contention is Switch's exclusive claim and Niobe's admissibility "
+                    "frame, so any device-side phase above is UNOBSERVABLE in this frame "
+                    "rather than absent. No duration from this file is quoted — §10.0 "
+                    "obligation 8. A variant present in Rust and missing from this list "
+                    "is a name this census has never seen emitted, which is what "
+                    "Phase::Record was for fifty runs)"
                 )
         except Exception as exc:  # noqa: BLE001
             observations["gpu_tracer"] = f"INSTRUMENT-ERROR (trace file unreadable: {exc})"
@@ -1106,9 +1813,14 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     # Present even at 0 — an always-0 result is distinguishable from UNWIRED (key absent)
     # because the key is emitted by the production path.  Owner: Mouse.
     if "viable_islands_retained" in counters_after:
-        observations["retain_viable"] = str(counters_after["viable_islands_retained"])
+        observations["retain_viable"] = (
+            f"viable_islands_retained={counters_after['viable_islands_retained']!r} "
+            "(the mechanism's own namesake counter, named here because a line that "
+            "reports a bare number does not say which counter it read — this mechanism's "
+            "extent against the independent whole was 0/1 for exactly that reason)"
+        )
     else:
-        observations["retain_viable"] = "UNWIRED"
+        observations["retain_viable"] = "UNWIRED (no viable_islands_retained field)"
 
     # ── Mechanism 5b: net_benefit_gate (RAI-011, closed 2026-08-01) ──────
     #
@@ -1125,15 +1837,22 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     # computed by `counters.rs::net_benefit_gate_state()` from three atomics that this run
     # incremented.  It is not a flag anyone set.
     gate_token = clean_doc.get("net_benefit_gate")
+    # The gate's cost model is parameterised by six env switches.  A gate observed at its
+    # defaults and a gate observed under an overridden cost model are different
+    # observations, and a line that does not say which one it is cannot be replayed —
+    # which is why the census's extent against this mechanism's own surface was 0/6.
+    gate_inputs = " ".join(f"{n}={_in_force(n)}" for n in _ENV_PARTITION)
     if gate_token is None:
         observations["net_benefit_gate"] = (
             "UNWIRED (no net_benefit_gate field in the counters artifact — the gate did "
-            "not publish, which is not the same as the gate rejecting everything)"
+            "not publish, which is not the same as the gate rejecting everything) "
+            f"cost_model_inputs: {gate_inputs}"
         )
     elif gate_token == "UNWIRED":
         observations["net_benefit_gate"] = (
             f"UNWIRED (clusters_seen={clean_doc.get('net_benefit_gate_clusters_seen')!r} "
-            "— no cluster reached the decision point in this run)"
+            "— no cluster reached the decision point in this run) "
+            f"cost_model_inputs: {gate_inputs}"
         )
     else:
         observations["net_benefit_gate"] = (
@@ -1143,7 +1862,7 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
             f"sole_island_overrides={clean_doc.get('net_benefit_sole_island_overrides')!r} "
             f"viable_islands_retained={clean_doc.get('viable_islands_retained')!r} "
             f"(retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int — a type cannot be forged "
-            f"by an increment)"
+            f"by an increment) cost_model_inputs: {gate_inputs}"
         )
 
     # ── Mechanism 6: ledger_lookup ───────────────────────────────────────
@@ -1183,8 +1902,15 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
             f"ledger_hits={clean_doc.get('ledger_hits')!r} "
             f"ledger_entries={clean_doc.get('ledger_entries')!r} "
             f"unproven_declines={clean_doc.get('unproven_declines')!r} "
+            f"unproven_forms_claimed={clean_doc.get('unproven_forms_claimed')!r} "
             f"unproven_forms_enabled={clean_doc.get('unproven_forms_enabled')!r} "
-            f"(hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)"
+            f"(hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: "
+            f"{_ENV_LEDGER_FILE}={_in_force(_ENV_LEDGER_FILE)} "
+            f"ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN="
+            f"{_in_force('ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN')} "
+            "(the ledger the lookup consulted is named by the first; the second is what "
+            "would let an unproven form be claimed anyway, and a lookup reading observed "
+            "without both is not replayable)"
         )
 
     # ── Mechanism 7: validation_messenger ───────────────────────────────
@@ -1223,12 +1949,20 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
             state, reason = _verdict.classify_validation_probe(
                 result.returncode, (result.stdout or "") + (result.stderr or "")
             )
+            # The probe's three parameters, disclosed.  A messenger observed with
+            # VALIDATE unset is a different observation from one observed with it armed,
+            # and the census line could not previously tell them apart — extent 0/3.
+            probe_frame = " ".join(f"{n}={_in_force(n)}" for n in _ENV_VALIDATION)
             if state == _verdict.VALIDATION_ARMED:
-                observations["validation_messenger"] = "ARMED"
+                observations["validation_messenger"] = f"ARMED probe_frame: {probe_frame}"
             elif state == _verdict.VALIDATION_PROBE_ERROR:
-                observations["validation_messenger"] = f"INSTRUMENT-ERROR ({reason})"
+                observations["validation_messenger"] = (
+                    f"INSTRUMENT-ERROR ({reason}) probe_frame: {probe_frame}"
+                )
             else:
-                observations["validation_messenger"] = f"OPTIONAL-UNWIRED ({reason})"
+                observations["validation_messenger"] = (
+                    f"OPTIONAL-UNWIRED ({reason}) probe_frame: {probe_frame}"
+                )
 
     # ── Mechanism 8: layering_lint ───────────────────────────────────────
     # The layering lint runs as a cargo integration test (rust/tests/layering.rs).
@@ -1317,10 +2051,15 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
         ort_warn_lines = _ort_sink_warn_lines(inject_log)
         observations["broken_commitment_warn"] = (
             f"planted: channel={inject_channel!r} broken_commitments={inject_broken!r} "
+            f"compute_failures={inject_doc.get('compute_failures')!r} "
             f"fault_injection={inject_doc.get('fault_injection')!r} "
             f"ort_sink_warn_lines={len(ort_warn_lines)} | "
             f"clean: channel={clean_channel!r} broken_commitments={clean_broken!r} "
-            f"fault_injection={clean_doc.get('fault_injection')!r}"
+            f"compute_failures={clean_doc.get('compute_failures')!r} "
+            f"fault_injection={clean_doc.get('fault_injection')!r} | "
+            f"armed by {_ENV_INJECT}={_in_force(_ENV_INJECT)} in this process, set to '1' "
+            "in the planted arm's child environment only (the EP caches its environment "
+            "at DLL load on Windows, so an in-process set would be read by nothing)"
         )
 
     # ── Mechanism 10: device_state_guard (Link, 2026-08-01) ─────────────
@@ -1348,6 +2087,22 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     # (absent → uninvoked → unfalsified → unreachable → out-of-frame → misnamed, ordered by
     # how late the failure is discoverable) are the vocabulary used throughout this file.
     observations["instrument_census"] = _observe_instrument_census()
+
+    # ── Mechanism 12: ep_entrypoints (criterion 12, round 29) ───────────
+    observations["ep_entrypoints"] = _observe_ep_entrypoints(clean_doc, inject_doc)
+
+    # ── Mechanism 13: flag_frame (criterion 12, round 29) ───────────────
+    #
+    # Nine environment switches that production Rust reads and that no census mechanism
+    # observed.  Two of them select a different code path, which is why they are first in
+    # the line: a census that cannot say which path ran is reporting a value from a world
+    # it has not identified, and that is the `executed_by` argument (§10.0 third metric
+    # amendment) applied to the census instead of to the verdict.
+    if "flag_frame" not in observations:
+        observations["flag_frame"] = _observe_flag_frame(
+            clean_doc, clean_log, flags_a_doc, flags_a_log, flags_b_doc, flags_b_log,
+            flags_a_env, flags_b_env,
+        )
 
     # ── Emit census ──────────────────────────────────────────────────────
     _print_census(observations, census_guard)
@@ -1828,6 +2583,98 @@ def test_ledger_digest_refusal_is_in_the_lane(require_vulkan, tmp_path) -> None:
 
     assert _reading(same) != _reading(drifted), (
         f"arms_must_differ FAILED: identical={_reading(same)} drifted={_reading(drifted)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The first finding the flag frame produced (criterion 12, round 29)
+# ---------------------------------------------------------------------------
+#
+# Arming two of the twelve uncensused switches together crashed the EP.  It was found on
+# the first run of the flag-frame arm, which is the whole argument for censusing surfaces
+# nobody watches: neither switch has a test, their interaction had never been exercised,
+# and `unwired: []` was true throughout.
+#
+# THE SPECIMEN.  `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` with
+# `ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB=64` terminates the process with STATUS_ACCESS_
+# VIOLATION (0xC0000005, exit code -1073741819) during session creation on a six-node
+# elementwise chain.  Bisected on selector 0:
+#
+#   DEVICE_MEMORY=1                         → exit 0, counters written
+#   VA_RESERVE_MIB=64                       → exit 0, counters written
+#   DEVICE_MEMORY=1 VA_RESERVE_MIB=1024     → exit 0, counters written
+#   DEVICE_MEMORY=1 VA_RESERVE_MIB=64       → exit -1073741819, no counters
+#
+# The last log line before the crash is `factory.rs:897` — "could not reserve handle
+# address space for device #1; reporting no device allocator. The EP still works with host
+# memory."  A 64 MiB reservation is too small, the EP correctly declines to publish a
+# device allocator and says so, and then the device-memory path is taken anyway.
+#
+# WHY THIS IS `xfail(strict=True)` AND NOT A RED.  `allocator.rs` and `factory.rs` are
+# Tank's and Switch's; the fix is not mine to write and a permanent red in my lane is a
+# broken window for four other agents.  Strict xfail is the form that cannot rot: when the
+# crash is fixed this reports XPASS(stale expect) — a distinct terminal token in this
+# suite's summary — and someone has to come back and delete it.  A skip would report
+# nothing forever.
+#
+# NOTE ON WHAT IS ASSERTED.  The assertion is on the child's EXIT CODE, not on a duration
+# and not on a message.  A crash is the one lane observation that survives contention
+# unchanged: a loaded machine makes a process slower, not dead.
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
+)
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1 with ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB=64 "
+        "crashes the EP with STATUS_ACCESS_VIOLATION during session creation: the VA "
+        "reservation fails, factory.rs:897 declines to publish a device allocator and says "
+        "so, and the device-memory path is taken regardless. Owners: Tank (allocator.rs), "
+        "Switch (factory.rs). Found by the criterion-12 flag frame on its first run — "
+        "neither switch was censused and their interaction had never been exercised."
+    ),
+)
+def test_device_memory_with_small_va_reservation(require_vulkan) -> None:
+    """Two uncensused behaviour-selecting switches, armed together, kill the process."""
+    out_dir = _REPO_ROOT / "bench" / "results" / "census"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
+    counters = out_dir / f"census-counters-dev{selector}-va_crash.json"
+    counters.unlink(missing_ok=True)
+
+    env = dict(os.environ)
+    env["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(counters)
+    env[_ENV_DEVICE_MEMORY] = "1"
+    env[_ENV_VA_RESERVE_MIB] = "64"
+    env.pop(_ENV_TRACE, None)
+    env.pop(_ENV_INJECT, None)
+    env.pop(_ENV_CENSUS_MODEL, None)
+    env.pop(_ENV_LEDGER_FILE, None)
+
+    with _ambient_guard("device-memory / small-VA crash probe") as guard:
+        result = _watchdog.guarded_run(
+            [sys.executable, "-X", "importtime",
+             str(Path(__file__).resolve()), _CHILD_FLAG, str(counters)],
+            guard=guard,
+            what="device-memory / small-VA crash probe",
+            label="counters_child_va_crash",
+            budget_units=_budget_for("counters_child_clean"),
+            kind=KIND_MECHANISM,
+            env=env,
+            cwd=str(HERE),
+        )
+
+    # R13: quote the text, never the count.  The exit code IS the text here.
+    assert result.returncode == 0, (
+        f"{_ENV_DEVICE_MEMORY}=1 with {_ENV_VA_RESERVE_MIB}=64 ended the child with "
+        f"exit {result.returncode} "
+        f"({'STATUS_ACCESS_VIOLATION' if result.returncode == -1073741819 else 'non-zero'})"
+        f" and wrote counters={counters.is_file()}.\n"
+        "Either switch alone is clean and VA_RESERVE_MIB=1024 with DEVICE_MEMORY=1 is "
+        "clean, so this is the interaction and not either flag.\n"
+        f"child log (last 1500 chars):\n"
+        f"{((result.stdout or '') + (result.stderr or '')).replace(chr(0), '')[-1500:]}"
     )
 
 

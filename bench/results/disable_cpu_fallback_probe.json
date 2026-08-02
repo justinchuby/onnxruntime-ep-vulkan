@@ -1,0 +1,125 @@
+{
+  "cases": {
+    "claimed_single_add": {
+      "cpu_only_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_only_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_only_flag_on": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      }
+    },
+    "declined_single_erf": {
+      "cpu_only_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_only_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_only_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "Fail",
+        "text": "[ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user."
+      }
+    },
+    "partially_claimed": {
+      "cpu_only_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "InvalidArgument",
+        "text": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Conflicting session configuration: explicitly added the CPU EP to the session, but also disabled fallback to the CPU EP via session configuration options."
+      },
+      "ep_only_flag_off": {
+        "created": true,
+        "providers": [
+          "VulkanExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "ran": true,
+        "run_error": ""
+      },
+      "ep_only_flag_on": {
+        "created": false,
+        "exc_module": "onnxruntime.capi.onnxruntime_pybind11_state",
+        "exc_type": "Fail",
+        "text": "[ONNXRuntimeError] : 1 : FAIL : This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user."
+      }
+    }
+  },
+  "device_index": "0",
+  "key": "session.disable_cpu_ep_fallback",
+  "ort_version": "1.28.0",
+  "unknown_key_accepted_silently": true
+}

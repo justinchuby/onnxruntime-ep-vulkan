@@ -1,0 +1,514 @@
+{
+  "device_index": "0",
+  "graph": {
+    "node_count": 5,
+    "node_ops": {
+      "claimed_add": "Add",
+      "claimed_mul": "Mul",
+      "declined_cos": "Cos",
+      "declined_erf": "Erf",
+      "declined_sin": "Sin"
+    },
+    "outputs": [
+      "out_claimed",
+      "out_declined"
+    ]
+  },
+  "profile": {
+    "arg_keys_seen": [
+      "activation_size",
+      "input_type_shape",
+      "mem_arena_held",
+      "mem_arena_held_delta",
+      "mem_bytes_in_use",
+      "mem_bytes_requested_in_use",
+      "mem_in_use_delta",
+      "mem_in_use_peak",
+      "mem_requested_in_use_delta",
+      "node_index",
+      "op_name",
+      "output_size",
+      "output_type_shape",
+      "parameter_size",
+      "provider",
+      "thread_scheduling_stats"
+    ],
+    "events_by_provider": {
+      "CPUExecutionProvider": [
+        "declined_cos_kernel_time",
+        "declined_erf_kernel_time",
+        "declined_sin_kernel_time"
+      ],
+      "VulkanExecutionProvider": [
+        "VulkanExecutionProvider_VulkanExecutionProvider_4062756368045600604_0_0_kernel_time"
+      ]
+    },
+    "node_event_count": 4,
+    "sample_events": [
+      {
+        "args": {
+          "activation_size": "128",
+          "input_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            },
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "mem_arena_held": "1048576",
+          "mem_arena_held_delta": "1048576",
+          "mem_bytes_in_use": "256",
+          "mem_bytes_requested_in_use": "64",
+          "mem_in_use_delta": "256",
+          "mem_in_use_peak": "256",
+          "mem_requested_in_use_delta": "64",
+          "node_index": "5",
+          "op_name": "VulkanExecutionProvider_4062756368045600604_0",
+          "output_size": "64",
+          "output_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "parameter_size": "0",
+          "provider": "VulkanExecutionProvider",
+          "thread_scheduling_stats": {
+            "main_thread": {
+              "Distribution": 0,
+              "DistributionEnqueue": 0,
+              "Run": 0,
+              "Wait": 0,
+              "WaitRevoke": 0,
+              "block_size": [],
+              "core": -1,
+              "thread_id": "20220",
+              "thread_pool_name": "session-1-intra-op"
+            },
+            "sub_threads": {
+              "14760": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18676": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18780": {
+                "core": -1,
+                "num_run": 0
+              },
+              "26700": {
+                "core": -1,
+                "num_run": 0
+              },
+              "29120": {
+                "core": -1,
+                "num_run": 0
+              },
+              "32696": {
+                "core": -1,
+                "num_run": 0
+              },
+              "33900": {
+                "core": -1,
+                "num_run": 0
+              },
+              "34292": {
+                "core": -1,
+                "num_run": 0
+              },
+              "36964": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37264": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37420": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37812": {
+                "core": -1,
+                "num_run": 0
+              },
+              "4008": {
+                "core": -1,
+                "num_run": 0
+              }
+            }
+          }
+        },
+        "name": "VulkanExecutionProvider_VulkanExecutionProvider_4062756368045600604_0_0_kernel_time"
+      },
+      {
+        "args": {
+          "activation_size": "64",
+          "input_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "mem_arena_held": "1048576",
+          "mem_arena_held_delta": "0",
+          "mem_bytes_in_use": "512",
+          "mem_bytes_requested_in_use": "128",
+          "mem_in_use_delta": "256",
+          "mem_in_use_peak": "512",
+          "mem_requested_in_use_delta": "64",
+          "node_index": "2",
+          "op_name": "Sin",
+          "output_size": "64",
+          "output_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "parameter_size": "0",
+          "provider": "CPUExecutionProvider",
+          "thread_scheduling_stats": {
+            "main_thread": {
+              "Distribution": 0,
+              "DistributionEnqueue": 0,
+              "Run": 0,
+              "Wait": 0,
+              "WaitRevoke": 0,
+              "block_size": [],
+              "core": -1,
+              "thread_id": "20220",
+              "thread_pool_name": "session-1-intra-op"
+            },
+            "sub_threads": {
+              "14760": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18676": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18780": {
+                "core": -1,
+                "num_run": 0
+              },
+              "26700": {
+                "core": -1,
+                "num_run": 0
+              },
+              "29120": {
+                "core": -1,
+                "num_run": 0
+              },
+              "32696": {
+                "core": -1,
+                "num_run": 0
+              },
+              "33900": {
+                "core": -1,
+                "num_run": 0
+              },
+              "34292": {
+                "core": -1,
+                "num_run": 0
+              },
+              "36964": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37264": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37420": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37812": {
+                "core": -1,
+                "num_run": 0
+              },
+              "4008": {
+                "core": -1,
+                "num_run": 0
+              }
+            }
+          }
+        },
+        "name": "declined_sin_kernel_time"
+      },
+      {
+        "args": {
+          "activation_size": "64",
+          "input_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "mem_arena_held": "1048576",
+          "mem_arena_held_delta": "0",
+          "mem_bytes_in_use": "768",
+          "mem_bytes_requested_in_use": "192",
+          "mem_in_use_delta": "256",
+          "mem_in_use_peak": "768",
+          "mem_requested_in_use_delta": "64",
+          "node_index": "3",
+          "op_name": "Cos",
+          "output_size": "64",
+          "output_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "parameter_size": "0",
+          "provider": "CPUExecutionProvider",
+          "thread_scheduling_stats": {
+            "main_thread": {
+              "Distribution": 0,
+              "DistributionEnqueue": 0,
+              "Run": 0,
+              "Wait": 0,
+              "WaitRevoke": 0,
+              "block_size": [],
+              "core": -1,
+              "thread_id": "20220",
+              "thread_pool_name": "session-1-intra-op"
+            },
+            "sub_threads": {
+              "14760": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18676": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18780": {
+                "core": -1,
+                "num_run": 0
+              },
+              "26700": {
+                "core": -1,
+                "num_run": 0
+              },
+              "29120": {
+                "core": -1,
+                "num_run": 0
+              },
+              "32696": {
+                "core": -1,
+                "num_run": 0
+              },
+              "33900": {
+                "core": -1,
+                "num_run": 0
+              },
+              "34292": {
+                "core": -1,
+                "num_run": 0
+              },
+              "36964": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37264": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37420": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37812": {
+                "core": -1,
+                "num_run": 0
+              },
+              "4008": {
+                "core": -1,
+                "num_run": 0
+              }
+            }
+          }
+        },
+        "name": "declined_cos_kernel_time"
+      },
+      {
+        "args": {
+          "activation_size": "64",
+          "input_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "mem_arena_held": "1048576",
+          "mem_arena_held_delta": "0",
+          "mem_bytes_in_use": "768",
+          "mem_bytes_requested_in_use": "192",
+          "mem_in_use_delta": "256",
+          "mem_in_use_peak": "768",
+          "mem_requested_in_use_delta": "64",
+          "node_index": "4",
+          "op_name": "Erf",
+          "output_size": "64",
+          "output_type_shape": [
+            {
+              "float": [
+                4,
+                4
+              ]
+            }
+          ],
+          "parameter_size": "0",
+          "provider": "CPUExecutionProvider",
+          "thread_scheduling_stats": {
+            "main_thread": {
+              "Distribution": 0,
+              "DistributionEnqueue": 0,
+              "Run": 0,
+              "Wait": 0,
+              "WaitRevoke": 0,
+              "block_size": [],
+              "core": -1,
+              "thread_id": "20220",
+              "thread_pool_name": "session-1-intra-op"
+            },
+            "sub_threads": {
+              "14760": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18676": {
+                "core": -1,
+                "num_run": 0
+              },
+              "18780": {
+                "core": -1,
+                "num_run": 0
+              },
+              "26700": {
+                "core": -1,
+                "num_run": 0
+              },
+              "29120": {
+                "core": -1,
+                "num_run": 0
+              },
+              "32696": {
+                "core": -1,
+                "num_run": 0
+              },
+              "33900": {
+                "core": -1,
+                "num_run": 0
+              },
+              "34292": {
+                "core": -1,
+                "num_run": 0
+              },
+              "36964": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37264": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37420": {
+                "core": -1,
+                "num_run": 0
+              },
+              "37812": {
+                "core": -1,
+                "num_run": 0
+              },
+              "4008": {
+                "core": -1,
+                "num_run": 0
+              }
+            }
+          }
+        },
+        "name": "declined_erf_kernel_time"
+      }
+    ]
+  },
+  "providers_in_session": [
+    "VulkanExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "question_2_cpu_names_are_graph_names": [
+    "declined_cos",
+    "declined_erf",
+    "declined_sin"
+  ],
+  "question_2_cpu_names_that_are_not_graph_nodes": [],
+  "question_3_ep_event_names": [
+    "VulkanExecutionProvider_VulkanExecutionProvider_4062756368045600604_0_0"
+  ],
+  "question_3_graph_nodes_no_cpu_event_names": [
+    "claimed_add",
+    "claimed_mul"
+  ],
+  "question_4_per_output": {
+    "out_claimed": {
+      "ancestor_nodes": [
+        "claimed_add",
+        "claimed_mul"
+      ],
+      "ancestor_ops": [
+        "Add",
+        "Mul"
+      ],
+      "ancestors_named_by_cpu": [],
+      "ancestors_named_by_ep_directly": [],
+      "ancestors_not_named_by_cpu": [
+        "claimed_add",
+        "claimed_mul"
+      ]
+    },
+    "out_declined": {
+      "ancestor_nodes": [
+        "declined_cos",
+        "declined_erf",
+        "declined_sin"
+      ],
+      "ancestor_ops": [
+        "Cos",
+        "Erf",
+        "Sin"
+      ],
+      "ancestors_named_by_cpu": [
+        "declined_cos",
+        "declined_erf",
+        "declined_sin"
+      ],
+      "ancestors_named_by_ep_directly": [],
+      "ancestors_not_named_by_cpu": []
+    }
+  }
+}

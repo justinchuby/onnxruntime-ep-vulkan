@@ -1,0 +1,44 @@
+{
+  "artifact": "no_cpu_fallback_migration",
+  "produced_by": "trinity",
+  "produced_at": "2026-08-02T07:45:00-07:00",
+  "ort_version": "1.28.0",
+  "key": "session.disable_cpu_ep_fallback",
+  "credit": "Found by the user. Not by the team.",
+  "probe": "bench/results/disable_cpu_fallback_probe.json",
+  "measured_behaviour": {
+    "providers_include_cpu_ep": "INVALID_ARGUMENT on EVERY graph including fully-claimed ones - configuration conflict, ERROR(instrument), never a finding",
+    "providers_ep_only_claimed_single_op": "session created",
+    "providers_ep_only_declined_single_op": "FAIL - fallback to CPU EP has been explicitly disabled",
+    "providers_ep_only_partially_claimed": "FAIL - same text",
+    "unknown_config_key_accepted_silently": true
+  },
+  "extents": {
+    "no_cpu_fallback_precondition": "graphs the EP must claim entirely: single-op tests, probes, negative controls. Fires at session creation, before any number exists.",
+    "guard_d": "any graph, including whole models with legitimate declines (Phi-3.5 declines ten edge ops when healthy). Fires after the run, from ORT profile.",
+    "composition_note": "two gates whose extents differ compose to the weaker extent and the stronger name; stated separately so neither borrows the other reach"
+  },
+  "red_text_migration": {
+    "slice": "tests/ops/test_elementwise.py",
+    "devices": {
+      "0": {
+        "failed_off": 25,
+        "failed_on": 25,
+        "passed": 11,
+        "failing_set_identical": true
+      },
+      "1": {
+        "failed_off": 25,
+        "failed_on": 25,
+        "passed": 11,
+        "failing_set_identical": true
+      }
+    },
+    "failure_text_off": "AssertionError: Vulkan EP claimed 0 nodes ... (ours)",
+    "failure_text_on": "_models.CpuFallbackRefused carrying ORT text: This session contains graph nodes that are assigned to the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user",
+    "reading": "the count does not improve and was never expected to. The failing SET is identical on both devices, which is the falsifier that the precondition does not fire on a healthy single-op test. What moves is which instrument the reader is quoted (R13)."
+  },
+  "default": "off. ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK=1 opts in.",
+  "closes_row": false,
+  "closes_row_reason": "this is a mechanism, not a criterion tally. Supplying an artifact and closing a row must not be the same act."
+}

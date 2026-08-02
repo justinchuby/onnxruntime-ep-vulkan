@@ -1,0 +1,14 @@
+
+=== cell healthy_quiet ===
+  verdict=PASS detector_fired=False units/s=83.2
+
+=== cell healthy_loaded ===
+  verdict=PASS detector_fired=False units/s=63.0
+
+=== cell hung_quiet ===
+  verdict=FAIL detector_fired=True units/s=65.2
+
+=== cell hung_loaded ===
+  verdict=FAIL detector_fired=True units/s=57.5
+
+wrote C:\Users\justinchu\dev\ep-vulkan-trinity\bench\results\stall_guard_arms-dev0.json

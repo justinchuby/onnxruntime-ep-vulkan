@@ -10,41 +10,57 @@
       "counters_child_clean": 6000,
       "counters_child_inject": 6000,
       "counters_child_ledger": 6000,
+      "counters_child_flags_a": 6000,
+      "counters_child_flags_b": 6000,
       "add_session_profiling": 4000,
       "validation_probe": 2000,
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 339,
-      "counters_child_inject": 299,
-      "add_session_profiling": 8,
-      "validation_probe": 73,
-      "layering_lint": 74
+      "counters_child_clean": 362,
+      "counters_child_inject": 364,
+      "add_session_profiling": 7,
+      "counters_child_flags_a": 387,
+      "counters_child_flags_b": 257,
+      "validation_probe": 94,
+      "layering_lint": 1278
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 106,
-      "counters_child_inject": 80,
-      "add_session_profiling": 8,
-      "validation_probe": 48,
-      "layering_lint": 25
+      "counters_child_clean": 96,
+      "counters_child_inject": 95,
+      "add_session_profiling": 7,
+      "counters_child_flags_a": 102,
+      "counters_child_flags_b": 35,
+      "validation_probe": 64,
+      "layering_lint": 944
     },
-    "clock_units_total": 866,
+    "clock_units_total": 3236,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
   "observations": {
-    "partitioner": "dispatches=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1",
+    "partitioner": "dispatches_executed=1, subgraphs_live=1, claimed_from_profiling=1, islands_from_profiling=1 (both numbers are DELTAS across this session; claimed counts graph nodes and islands counts fused subgraphs, so one island over many claimed nodes is a success and not a catastrophe)",
     "partition_identity_check": "VACUOUS (claimed=1, islands=1; single-node graph is expected)",
-    "net_benefit_gate": "EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int \u2014 a type cannot be forged by an increment)",
-    "gpu_tracer": "28 trace event(s), phases=['C', 'M', 'X', 'i'], distinct_names=16 (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; no duration from this file is quoted \u2014 \u00a710.0 obligation 8)",
+    "net_benefit_gate": "EVALUATED clusters_seen=1 evaluations=1 bypasses=0 sole_island_overrides=1 viable_islands_retained=0 (retained is typed: 'UNWIRED'/'UNOBSERVABLE'/int \u2014 a type cannot be forged by an increment) cost_model_inputs: ONNXRUNTIME_EP_VULKAN_PARTITION_MARGIN=unset ONNXRUNTIME_EP_VULKAN_PARTITION_MIN_NODES=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FLOPS_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_FIXED_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_BYTES_PER_NS=unset ONNXRUNTIME_EP_VULKAN_PARTITION_ANCHOR_EXEMPTION=unset",
+    "gpu_tracer": "28 trace event(s), ph_types=['C', 'M', 'X', 'i'], distinct_names=16; Phase variants emitted (6/10): ['Record', 'DescAlloc', 'PipelineLookup', 'CmdUpload', 'Submit', 'FenceWait']; NOT-EMITTED: ['Compile', 'Prepack', 'Upload', 'Readback'] (matched as ['vulkan.compile', 'vulkan.prepack']\u2026 \u2014 the trace spells the variants snake_case under a `vulkan.` prefix, per trace.rs::Phase::as_str; a matcher that looked for the Rust identifier reported 0/10 and was wrong, which is why R13 says a result confirming a prediction earns more scrutiny than one contradicting it); (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE=census-trace-dev1.json; ONNXRUNTIME_EP_VULKAN_TRACE_GPU=unset \u2014 the census does not arm device spans, because a device-clock reading under four-agent contention is Switch's exclusive claim and Niobe's admissibility frame, so any device-side phase above is UNOBSERVABLE in this frame rather than absent. No duration from this file is quoted \u2014 \u00a710.0 obligation 8. A variant present in Rust and missing from this list is a name this census has never seen emitted, which is what Phase::Record was for fifty runs)",
     "model_output_equivalence": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)",
-    "retain_viable": "1",
-    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=73 unproven_declines=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)",
-    "validation_messenger": "ARMED",
+    "retain_viable": "viable_islands_retained=1 (the mechanism's own namesake counter, named here because a line that reports a bare number does not say which counter it read \u2014 this mechanism's extent against the independent whole was 0/1 for exactly that reason)",
+    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0 unproven_forms_claimed=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int) | ledger frame: ONNXRUNTIME_EP_VULKAN_LEDGER_FILE=unset ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=unset (the ledger the lookup consulted is named by the first; the second is what would let an unproven form be claimed anyway, and a lookup reading observed without both is not replayable)",
+    "validation_messenger": "ARMED probe_frame: ONNXRUNTIME_EP_VULKAN_VALIDATE=unset ONNXRUNTIME_EP_VULKAN_REQUIRE_VALIDATION=unset ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION=unset",
     "layering_lint": "PASS",
-    "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
-    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
-    "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
+    "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 compute_failures=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 compute_failures=0 fault_injection='NONE' | armed by ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE=unset in this process, set to '1' in the planted arm's child environment only (the EP caches its environment at DLL load on Windows, so an in-process set would be read by nothing)",
+    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
+    "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified).",
+    "ep_entrypoints": "COMPILED-AND-DISPATCHED compile_calls=1 compute_calls=1 subgraphs_stub=0 dispatches_executed=6 (counts are ENTRIES to the ORT entry points, not graph nodes and not islands; planted-failure polarity: compile_calls=1 compute_calls=1 subgraphs_stub=0 \u2014 CONSTANT-ACROSS-POLARITIES)",
+    "flag_frame": "9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel \u2014 requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='Intel(R) Iris(R) Xe Graphics')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-backend-probe-dev1.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-claim-log-dev1.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 \u2014 each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, \"unclaimed {op} x{n} ({why})\"). The census graph is a six-node Add/Mul chain that the EP claims in full \u2014 the claim log for this arm recorded every decision as claimed \u2014 so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1021 armed=1031 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))"
+  },
+  "criterion_12": {
+    "closes_row": false,
+    "why_not": "Row 12's tally is Trinity's and the artifact is Trinity's, and Morpheus's ruling on criterion 11 is that supplying the evidence and closing the row must not be the same act. Link declined to close it from ci/check_census_completeness.py for the same reason; a census that closed its own row would be the identity defect one level up.",
+    "the_answer_is_not_12_of_12": "The census's twelve was twelve of a denominator the census supplied itself. The independent whole is ci/check_census_completeness.py's, enumerated from production Rust this file does not write: 50 surfaces, of which 12 were instrumented and observed by no census mechanism. Those twelve are what round 29 addresses.",
+    "what_moved": "Two things, and they are different: (a) the GAP COUNT \u2014 the three uncensused C ABI counters are read by `ep_entrypoints` and the nine uncensused env switches by `flag_frame`; (b) EXTENT \u2014 gpu_tracer, retain_viable, net_benefit_gate, validation_messenger, broken_commitment_warn, ledger_lookup and partitioner now name their own surfaces in their own observation text, which is what Link's extent numerator counts. Closing (a) while (b) stayed at gpu_tracer 1/12 would have moved the gap count and not the coverage \u2014 R11's shape.",
+    "disclosure_is_not_discrimination": "Every `flag_frame` segment carries `census_frame=`, which says which world the census observed in and CANNOT FAIL, and a state token, which says whether an artifact this run produced moved with the switch and CAN. Reading the first as the second is reading a presence check as a wiring check.",
+    "still_unobservable_with_a_reason": "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED selects a different kernel and the census graph is an elementwise chain with no GEMV node, so the kernel it selects is not reachable in this frame; ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB is armed and no counter publishes the reservation size. Both read UNOBSERVABLE with the reason and the request, never CONSTANT and never 0 (R12)."
   },
   "unwired": [],
   "stalled": []

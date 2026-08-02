@@ -1,0 +1,2997 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+.......ssssssssssssssssss.......................ssss.................... [ 16%]
+.........ssss.ss...................FF..........................F.......x [ 32%]
+xxFxxx.......................x....................................FFFFFF [ 48%]
+FFFFFFFFFFFF.......................FFFF...............................FF [ 64%]
+F.F.FF...........s............................................x......... [ 80%]
+.....s.................................................................. [ 96%]
+................x                                                        [100%]
+================================== FAILURES ===================================
+______________________ test_binary_elementwise[Min-fp32] ______________________
+
+op = 'Min', dtype = FLOAT, np_dtype = <class 'numpy.float32'>
+shapes = ([3, 4], [3, 4]), tol = {'atol': 1e-05, 'rtol': 1e-05}
+require_vulkan = None
+
+    @pytest.mark.parametrize("op,dtype,np_dtype,shapes,tol", _BINARY_CASES,
+                             ids=[f"{op}-fp32" for op, *_ in _BINARY_CASES])
+    def test_binary_elementwise(op, dtype, np_dtype, shapes, tol, require_vulkan) -> None:
+        """fp32 binary elementwise: equal shapes, seeded random inputs."""
+        a_shape, b_shape = shapes
+        feeds = {
+            "a": _fp32(tuple(a_shape)) if op not in ("Pow",) else _fp32_positive(tuple(a_shape)),
+            "b": (_fp32_positive(tuple(b_shape)) if op == "Pow" else
+                  _fp32_positive(tuple(b_shape)) if op == "Div" else  # avoid div-by-zero
+                  _fp32(tuple(b_shape))),
+        }
+        model = m.make_model(
+            op,
+            [m.tensor("a", dtype, a_shape), m.tensor("b", dtype, b_shape)],
+            [m.tensor("out", dtype, a_shape)],
+        )
+>       m.check(model, feeds, **tol)
+
+tests\ops\test_elementwise.py:85: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Min_0"\x03Min\x12\nvulkan_MinZ\x13\n\x01a\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-1.0234975 ,  0.17927563,  0.21999669,  1.3591876 ],
+       [ 0.83511126,  0.35687107,  1.4633029 , -1.1...3812654,  1.9967309 ,  2.9138625 ],
+       [ 0.41440943, -0.98953813, -2.1320462 ,  0.26771146]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+______________________ test_binary_elementwise[Max-fp32] ______________________
+
+op = 'Max', dtype = FLOAT, np_dtype = <class 'numpy.float32'>
+shapes = ([3, 4], [3, 4]), tol = {'atol': 1e-05, 'rtol': 1e-05}
+require_vulkan = None
+
+    @pytest.mark.parametrize("op,dtype,np_dtype,shapes,tol", _BINARY_CASES,
+                             ids=[f"{op}-fp32" for op, *_ in _BINARY_CASES])
+    def test_binary_elementwise(op, dtype, np_dtype, shapes, tol, require_vulkan) -> None:
+        """fp32 binary elementwise: equal shapes, seeded random inputs."""
+        a_shape, b_shape = shapes
+        feeds = {
+            "a": _fp32(tuple(a_shape)) if op not in ("Pow",) else _fp32_positive(tuple(a_shape)),
+            "b": (_fp32_positive(tuple(b_shape)) if op == "Pow" else
+                  _fp32_positive(tuple(b_shape)) if op == "Div" else  # avoid div-by-zero
+                  _fp32(tuple(b_shape))),
+        }
+        model = m.make_model(
+            op,
+            [m.tensor("a", dtype, a_shape), m.tensor("b", dtype, b_shape)],
+            [m.tensor("out", dtype, a_shape)],
+        )
+>       m.check(model, feeds, **tol)
+
+tests\ops\test_elementwise.py:85: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Max_0"\x03Max\x12\nvulkan_MaxZ\x13\n\x01a\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-0.8129411 , -0.41535726, -0.6120968 , -0.14079088],
+       [ 1.0659802 ,  0.15704857, -0.15863484, -1.0...2522604,  2.1284697 , -0.8213867 ],
+       [ 0.8384892 , -0.90292716,  0.93157303,  0.38495097]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_____________________________ test_clip_no_bounds _____________________________
+
+require_vulkan = None
+
+    def test_clip_no_bounds(require_vulkan) -> None:
+        """Clip with no min or max — should be identity."""
+        model = m.make_model(
+            "Clip",
+            [m.tensor("x", DT.FLOAT, [2, 3])],
+            [m.tensor("out", DT.FLOAT, [2, 3])],
+        )
+>       m.check(model, {"x": _ACT_X}, **m.FP32_ACTIVATION)
+
+tests\ops\test_elementwise.py:223: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:V\n\x1b\n\x01x\x12\x03out\x1a\x0bnode_Clip_0"\x04Clip\x12\x0bvulkan_ClipZ\x13\n\x01x\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x02\n\x02\x08\x03b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x02\n\x02\x08\x03B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-3. , -0.5,  0. ],
+       [ 0.5,  2. ,  4. ]], dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_gqa_present_kv_shape[0] _________________________
+[XPASS(strict)] GQA Compute path: absent optional inputs (packed-QKV slots 1/2) produce size=0 alloc requests; EP falls back to CPU at inference time. Owner: Switch (alloc.rs / ops/gqa.rs). Remove when alloc handles absent optional inputs and these tests produce MATCH.
+___________________________ test_op_table[Min-fp32] ___________________________
+
+case = CaseSpec(id='Min-fp32', op='Min', feeds={'a': array([[-1.0234975 ,  0.17927563,  0.21999669,  1.3591876 ],
+       [ 0....uts=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 1e-05, 'atol': 1e-05})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Min_0"\x03Min\x12\nvulkan_MinZ\x13\n\x01a\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-1.0234975 ,  0.17927563,  0.21999669,  1.3591876 ],
+       [ 0.83511126,  0.35687107,  1.4633029 , -1.1...3812654,  1.9967309 ,  2.9138625 ],
+       [ 0.41440943, -0.98953813, -2.1320462 ,  0.26771146]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Max-fp32] ___________________________
+
+case = CaseSpec(id='Max-fp32', op='Max', feeds={'a': array([[-0.8129411 , -0.41535726, -0.6120968 , -0.14079088],
+       [ 1....uts=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 1e-05, 'atol': 1e-05})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Max_0"\x03Max\x12\nvulkan_MaxZ\x13\n\x01a\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-0.8129411 , -0.41535726, -0.6120968 , -0.14079088],
+       [ 1.0659802 ,  0.15704857, -0.15863484, -1.0...2522604,  2.1284697 , -0.8213867 ],
+       [ 0.8384892 , -0.90292716,  0.93157303,  0.38495097]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[PRelu-fp32] __________________________
+
+case = CaseSpec(id='PRelu-fp32', op='PRelu', feeds={'a': array([[-0.15663789, -0.04076253, -0.6547877 ,  0.4460722 ],
+       ...inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 1e-05, 'atol': 1e-05})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:m\n \n\x01a\n\x01b\x12\x03out\x1a\x0cnode_PRelu_0"\x05PRelu\x12\x0cvulkan_PReluZ\x13\n\x01a\x12\x0e\n\x0c\x08...8\x01\x12\x04\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-0.15663789, -0.04076253, -0.6547877 ,  0.4460722 ],
+       [-0.45498347, -1.2256057 , -1.2779375 ,  0.1...3833,  0.28582615]],
+      dtype=float32), 'b': array([1.3070017 , 0.2203825 , 0.41192722, 1.1072887 ], dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[Sum-fp32-2inp] _________________________
+
+case = CaseSpec(id='Sum-fp32-2inp', op='Sum', feeds={'a': array([[ 0.42875645,  1.535756  ,  0.18323444, -1.2244691 ],
+      ...uts=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 1e-05, 'atol': 1e-05})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Sum_0"\x03Sum\x12\nvulkan_SumZ\x13\n\x01a\x12\x0e\n\x0c\x08\x01\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 0.42875645,  1.535756  ,  0.18323444, -1.2244691 ],
+       [-1.3681592 ,  1.6509279 ,  1.7236657 , -0.1...074819 ,  0.0905849 ,  0.6439388 ],
+       [-2.050172  , -0.0487184 , -0.84323025, -1.2188131 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[Mean-fp32-2inp] ________________________
+
+case = CaseSpec(id='Mean-fp32-2inp', op='Mean', feeds={'a': array([[-0.8781524 , -0.33412343,  0.91590255, -1.3263928 ],
+    ...uts=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 1e-05, 'atol': 1e-05})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:n\n\x1e\n\x01a\n\x01b\x12\x03out\x1a\x0bnode_Mean_0"\x04Mean\x12\x0bvulkan_MeanZ\x13\n\x01a\x12\x0e\n\x0c\x08...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-0.8781524 , -0.33412343,  0.91590255, -1.3263928 ],
+       [ 0.03063149, -0.48416942, -0.3276731 ,  1.0...2822833,  2.517474  ,  1.8768446 ],
+       [-0.85324335, -0.28738335, -1.463442  , -0.590707  ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[Equal-fp32] __________________________
+
+case = CaseSpec(id='Equal-fp32', op='Equal', feeds={'a': array([[ 0.315605  ,  1.2058536 , -0.72908384, -0.65414643],
+       ...s={}, inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:q\n \n\x01a\n\x01b\x12\x03out\x1a\x0cnode_Equal_0"\x05Equal\x12\x0cvulkan_EqualZ\x13\n\x01a\x12\x0e\n\x0c\x08...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 0.315605  ,  1.2058536 , -0.72908384, -0.65414643],
+       [-2.147289  , -0.16266592, -1.0624144 , -0.5...715666 , -0.36824897,  0.34155557],
+       [ 1.7286977 , -0.98685706, -0.24527785,  0.77733755]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_________________________ test_op_table[Greater-fp32] _________________________
+
+case = CaseSpec(id='Greater-fp32', op='Greater', feeds={'a': array([[ 0.43476608, -0.37615606, -0.13382296, -1.3748958 ],
+   ...s={}, inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:w\n$\n\x01a\n\x01b\x12\x03out\x1a\x0enode_Greater_0"\x07Greater\x12\x0evulkan_GreaterZ\x13\n\x01a\x12\x0e\n\x...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 0.43476608, -0.37615606, -0.13382296, -1.3748958 ],
+       [-0.23817374, -0.2663875 ,  0.2321699 , -0.5...0e+00,  3.8584656e-01],
+       [-7.6305723e-01, -1.1124115e+00,  1.1911429e+00,  2.6274922e-01]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[Less-fp32] ___________________________
+
+case = CaseSpec(id='Less-fp32', op='Less', feeds={'a': array([[ 0.4801434 , -1.744586  ,  0.9274385 ,  0.45442033],
+       [-...s={}, inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:n\n\x1e\n\x01a\n\x01b\x12\x03out\x1a\x0bnode_Less_0"\x04Less\x12\x0bvulkan_LessZ\x13\n\x01a\x12\x0e\n\x0c\x08...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 0.4801434 , -1.744586  ,  0.9274385 ,  0.45442033],
+       [-1.1104307 , -0.4715248 ,  0.2637172 ,  0.0...719146 , -1.7567217 ,  0.32799548],
+       [ 1.7273502 , -1.5338614 ,  0.863828  , -0.32852522]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_____________________ test_op_table[GreaterOrEqual-fp32] ______________________
+
+case = CaseSpec(id='GreaterOrEqual-fp32', op='GreaterOrEqual', feeds={'a': array([[-0.06132435, -1.0528985 , -0.33445618,  1....s={}, inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:\x8c\x01\n2\n\x01a\n\x01b\x12\x03out\x1a\x15node_GreaterOrEqual_0"\x0eGreaterOrEqual\x12\x15vulkan_GreaterOrE...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-0.06132435, -1.0528985 , -0.33445618,  1.3000445 ],
+       [ 0.58265525,  1.7323116 ,  1.1774119 ,  0.4...9065106,  1.1712471 ,  0.750869  ],
+       [ 1.8206462 ,  0.7307747 , -1.5720402 , -0.06695317]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_______________________ test_op_table[LessOrEqual-fp32] _______________________
+
+case = CaseSpec(id='LessOrEqual-fp32', op='LessOrEqual', feeds={'a': array([[-1.1720072 , -0.51827985,  1.5112284 ,  0.637533...s={}, inputs=[('a', FLOAT, [3, 4]), ('b', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:\x83\x01\n,\n\x01a\n\x01b\x12\x03out\x1a\x12node_LessOrEqual_0"\x0bLessOrEqual\x12\x12vulkan_LessOrEqualZ\x13...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-1.1720072 , -0.51827985,  1.5112284 ,  0.6375338 ],
+       [-0.69893044, -1.0137174 ,  0.03278209, -1.2...632384 , -0.59110343,  0.5909063 ],
+       [-1.5815943 ,  1.475949  ,  0.36835662,  0.84658396]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Add-i32] ____________________________
+
+case = CaseSpec(id='Add-i32', op='Add', feeds={'a': array([[ 84,  54, -59,  34],
+       [ 46, -34,  47,  79],
+       [ 63,  5...={}, inputs=[('a', INT32, [3, 4]), ('b', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Add_0"\x03Add\x12\nvulkan_AddZ\x13\n\x01a\x12\x0e\n\x0c\x08\x06\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 84,  54, -59,  34],
+       [ 46, -34,  47,  79],
+       [ 63,  52,  26, -46]]), 'b': array([[ 59, -28,   6, -38],
+       [-38, -69,  92, -71],
+       [-83,  87,  11, -13]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Mul-i32] ____________________________
+
+case = CaseSpec(id='Mul-i32', op='Mul', feeds={'a': array([[ 47, -24, -75,  45],
+       [-65,  10,  89,  87],
+       [-28,  5...={}, inputs=[('a', INT32, [3, 4]), ('b', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Mul_0"\x03Mul\x12\nvulkan_MulZ\x13\n\x01a\x12\x0e\n\x0c\x08\x06\x1...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 47, -24, -75,  45],
+       [-65,  10,  89,  87],
+       [-28,  56,  22,  -5]]), 'b': array([[ -73,  -25,   30,   97],
+       [-100,   43,   69,   90],
+       [ -16,  -77,  -46,   70]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[And-bool] ___________________________
+
+case = CaseSpec(id='And-bool', op='And', feeds={'a': array([[ True,  True, False, False],
+       [False,  True, False,  True]...trs={}, inputs=[('a', BOOL, [3, 4]), ('b', BOOL, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_And_0"\x03And\x12\nvulkan_AndZ\x13\n\x01a\x12\x0e\n\x0c\x08\t\x12\...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ True,  True, False, False],
+       [False,  True, False,  True],
+       [ True, False, False, False]]), 'b': array([[ True,  True, False, False],
+       [ True, False, False, False],
+       [False, False,  True,  True]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Or-bool] ____________________________
+
+case = CaseSpec(id='Or-bool', op='Or', feeds={'a': array([[ True,  True,  True, False],
+       [False,  True, False,  True],
+...trs={}, inputs=[('a', BOOL, [3, 4]), ('b', BOOL, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:h\n\x1a\n\x01a\n\x01b\x12\x03out\x1a\tnode_Or_0"\x02Or\x12\tvulkan_OrZ\x13\n\x01a\x12\x0e\n\x0c\x08\t\x12\x08...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ True,  True,  True, False],
+       [False,  True, False,  True],
+       [ True, False,  True,  True]]), 'b': array([[False, False,  True,  True],
+       [False,  True, False,  True],
+       [ True, False,  True,  True]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Xor-bool] ___________________________
+
+case = CaseSpec(id='Xor-bool', op='Xor', feeds={'a': array([[ True, False, False, False],
+       [False, False,  True,  True]...trs={}, inputs=[('a', BOOL, [3, 4]), ('b', BOOL, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:k\n\x1c\n\x01a\n\x01b\x12\x03out\x1a\nnode_Xor_0"\x03Xor\x12\nvulkan_XorZ\x13\n\x01a\x12\x0e\n\x0c\x08\t\x12\...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ True, False, False, False],
+       [False, False,  True,  True],
+       [ True, False, False,  True]]), 'b': array([[False,  True,  True, False],
+       [False, False, False, False],
+       [ True,  True,  True,  True]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[BitwiseAnd-i32] ________________________
+
+case = CaseSpec(id='BitwiseAnd-i32', op='BitwiseAnd', feeds={'a': array([[ 92, -53, -43,  69],
+       [-52, -89,  33,  60],
+ ...={}, inputs=[('a', INT32, [3, 4]), ('b', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:\x80\x01\n*\n\x01a\n\x01b\x12\x03out\x1a\x11node_BitwiseAnd_0"\nBitwiseAnd\x12\x11vulkan_BitwiseAndZ\x13\n\x0...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[ 92, -53, -43,  69],
+       [-52, -89,  33,  60],
+       [ 93,  85, -76,  54]]), 'b': array([[ 69,  39,  63,  67],
+       [-11, -92,  -9, -60],
+       [-78, -76,  39,   0]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[BitwiseOr-i32] _________________________
+
+case = CaseSpec(id='BitwiseOr-i32', op='BitwiseOr', feeds={'a': array([[  7,  49,   9,  26],
+       [-83,  70, -11, -69],
+   ...={}, inputs=[('a', INT32, [3, 4]), ('b', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:}\n(\n\x01a\n\x01b\x12\x03out\x1a\x10node_BitwiseOr_0"\tBitwiseOr\x12\x10vulkan_BitwiseOrZ\x13\n\x01a\x12\x0e...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[  7,  49,   9,  26],
+       [-83,  70, -11, -69],
+       [ 62,  46, -90, -62]]), 'b': array([[-97, -46, -81,  41],
+       [  4,  96,  49,  22],
+       [  1, -90, -86,  23]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[BitwiseXor-i32] ________________________
+
+case = CaseSpec(id='BitwiseXor-i32', op='BitwiseXor', feeds={'a': array([[-100,  -92,  -57,   76],
+       [  -9,   41,  -18, ...={}, inputs=[('a', INT32, [3, 4]), ('b', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:\x80\x01\n*\n\x01a\n\x01b\x12\x03out\x1a\x11node_BitwiseXor_0"\nBitwiseXor\x12\x11vulkan_BitwiseXorZ\x13\n\x0...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'a': array([[-100,  -92,  -57,   76],
+       [  -9,   41,  -18,  -66],
+       [ -26,  -82,   54,  -64]]), 'b': array([[-25,  96,  18,  -9],
+       [  8,  56, -50,  27],
+       [ 74,  14, -11, -71]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+___________________________ test_op_table[Not-bool] ___________________________
+
+case = CaseSpec(id='Not-bool', op='Not', feeds={'x': array([[False,  True,  True, False],
+       [False, False,  True, False]...=False, domain='', attrs={}, inputs=[('x', BOOL, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:S\n\x19\n\x01x\x12\x03out\x1a\nnode_Not_0"\x03Not\x12\nvulkan_NotZ\x13\n\x01x\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[False,  True,  True, False],
+       [False, False,  True, False],
+       [ True, False,  True,  True]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+________________________ test_op_table[BitwiseNot-i32] ________________________
+
+case = CaseSpec(id='BitwiseNot-i32', op='BitwiseNot', feeds={'x': array([[-34, -55,  48, -34],
+       [-51,  86,  -4, -91],
+ ...alse, domain='', attrs={}, inputs=[('x', INT32, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:h\n\'\n\x01x\x12\x03out\x1a\x11node_BitwiseNot_0"\nBitwiseNot\x12\x11vulkan_BitwiseNotZ\x13\n\x01x\x12\x0e\n\...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-34, -55,  48, -34],
+       [-51,  86,  -4, -91],
+       [ -2,  -8,  72,  42]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[IsNaN-fp32] __________________________
+
+case = CaseSpec(id='IsNaN-fp32', op='IsNaN', feeds={'x': array([[ 0.05827433,  0.54873884, -0.18767099,  0.27814373],
+       ...False, domain='', attrs={}, inputs=[('x', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:Y\n\x1d\n\x01x\x12\x03out\x1a\x0cnode_IsNaN_0"\x05IsNaN\x12\x0cvulkan_IsNaNZ\x13\n\x01x\x12\x0e\n\x0c\x08\x01...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[ 0.05827433,  0.54873884, -0.18767099,  0.27814373],
+       [ 0.15811908,  0.77776736,  0.80700827, -1.619872  ],
+       [-2.2472684 ,  1.0017453 ,  1.1877251 , -1.020623  ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[IsInf-fp32] __________________________
+
+case = CaseSpec(id='IsInf-fp32', op='IsInf', feeds={'x': array([[-1.8598354 ,  0.09903482,  0.9308382 ,  1.7975945 ],
+       ...False, domain='', attrs={}, inputs=[('x', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:Y\n\x1d\n\x01x\x12\x03out\x1a\x0cnode_IsInf_0"\x05IsInf\x12\x0cvulkan_IsInfZ\x13\n\x01x\x12\x0e\n\x0c\x08\x01...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-1.8598354 ,  0.09903482,  0.9308382 ,  1.7975945 ],
+       [ 0.5162976 , -0.3717167 , -0.8931306 ,  0.01145129],
+       [-0.2992647 , -1.0150679 ,  2.0487556 ,  1.7851684 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_______________________ test_op_table[Cast-fp32-to-i32] _______________________
+
+case = CaseSpec(id='Cast-fp32-to-i32', op='Cast', feeds={'x': array([[-1.3763875 , -0.3161977 ,  0.36536375,  0.6129654 ],
+  ...omain='', attrs={'to': 6}, inputs=[('x', FLOAT, [3, 4])], outputs=[('out', INT32, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:a\n&\n\x01x\x12\x03out\x1a\x0bnode_Cast_0"\x04Cast*\t\n\x02to\x18\x06\xa0\x01\x02\x12\x0bvulkan_CastZ\x13\n\x...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x06\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-1.3763875 , -0.3161977 ,  0.36536375,  0.6129654 ],
+       [-0.1409879 ,  1.5317789 ,  1.0075108 , -0.2566541 ],
+       [ 0.75012183,  1.9337935 ,  1.9604846 , -1.2279999 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_______________________ test_op_table[Cast-i32-to-fp32] _______________________
+
+case = CaseSpec(id='Cast-i32-to-fp32', op='Cast', feeds={'x': array([[-40,  35, -95, -58],
+       [ 78, -81, -18, -59],
+     ...omain='', attrs={'to': 1}, inputs=[('x', INT32, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:a\n&\n\x01x\x12\x03out\x1a\x0bnode_Cast_0"\x04Cast*\t\n\x02to\x18\x01\xa0\x01\x02\x12\x0bvulkan_CastZ\x13\n\x...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-40,  35, -95, -58],
+       [ 78, -81, -18, -59],
+       [-80, -16,   4, -65]])}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+______________________ test_op_table[Cast-fp32-to-bool] _______________________
+
+case = CaseSpec(id='Cast-fp32-to-bool', op='Cast', feeds={'x': array([[-0.1023967 , -0.6505636 , -0.67421246, -0.7123371 ],
+ ...domain='', attrs={'to': 9}, inputs=[('x', FLOAT, [3, 4])], outputs=[('out', BOOL, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:a\n&\n\x01x\x12\x03out\x1a\x0bnode_Cast_0"\x04Cast*\t\n\x02to\x18\t\xa0\x01\x02\x12\x0bvulkan_CastZ\x13\n\x01...8\n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\t\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[-0.1023967 , -0.6505636 , -0.67421246, -0.7123371 ],
+       [-0.8795096 ,  2.281633  ,  0.29751107,  0.88675904],
+       [-0.48907748, -0.18595667, -0.71355397, -2.6517084 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+__________________________ test_op_table[Where-fp32] __________________________
+
+case = CaseSpec(id='Where-fp32', op='Where', feeds={'cond': array([[False,  True, False,  True],
+       [ True,  True,  True,...OL, [3, 4]), ('x', FLOAT, [3, 4]), ('y', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:\x8f\x01\n&\n\x04cond\n\x01x\n\x01y\x12\x03out\x1a\x0cnode_Where_0"\x05Where\x12\x0cvulkan_WhereZ\x16\n\x04co...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'cond': array([[False,  True, False,  True],
+       [ True,  True,  True, False],
+       [ True,  True, False, False]...672992 ,  1.5167927 , -0.796911  ],
+       [ 0.30197075, -0.7253915 , -0.6284847 ,  0.7744947 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+______________________ test_op_table[Flatten-fp32-axis1] ______________________
+
+case = CaseSpec(id='Flatten-fp32-axis1', op='Flatten', feeds={'x': array([[ 0.5935547 ,  1.5369656 ,  1.4493448 , -0.3749447 ...ain='', attrs={'axis': 1}, inputs=[('x', FLOAT, [3, 4])], outputs=[('out', FLOAT, [3, 4])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:l\n.\n\x01x\x12\x03out\x1a\x0enode_Flatten_0"\x07Flatten*\x0b\n\x04axis\x18\x01\xa0\x01\x02\x12\x0evulkan_Fla...n\x02\x08\x03\n\x02\x08\x04b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x03\n\x02\x08\x04B\x04\n\x00\x10\x15'
+feeds = {'x': array([[ 0.5935547 ,  1.5369656 ,  1.4493448 , -0.3749447 ],
+       [ 0.37305233, -0.62360066,  0.02335532, -0.59974945],
+       [ 1.6200703 ,  0.36369815, -0.21802913,  1.1936185 ]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+_____________________ test_op_table[Reshape-fp32-static] ______________________
+
+case = CaseSpec(id='Reshape-fp32-static', op='Reshape', feeds={'x': array([[-2.1706154 , -2.0141027 ,  0.79583865,  0.0604684...{}, inputs=[('x', FLOAT, [3, 4]), ('shape', INT64, [2])], outputs=[('out', FLOAT, [4, 3])], tol={'rtol': 0, 'atol': 0})
+require_vulkan = None
+
+    @pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+    def test_op_table(case: CaseSpec, require_vulkan) -> None:
+        """Unified op-table dispatch: claim assertion + CPU oracle comparison."""
+        inputs  = [m.tensor(n, dt, s) for n, dt, s in case.inputs]
+        outputs = [m.tensor(n, dt, s) for n, dt, s in case.outputs]
+        model   = m.make_model(
+            case.op, inputs, outputs,
+            domain=case.domain,
+            attributes=case.attrs,
+        )
+        if case.claim:
+>           m.check(model, case.feeds, **case.tol)
+
+tests\ops\test_op_table.py:509: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\ops\_models.py:720: in check
+    assert_vulkan_claims(model, feeds)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+model = b'\x08\n:{\n(\n\x01x\n\x05shape\x12\x03out\x1a\x0enode_Reshape_0"\x07Reshape\x12\x0evulkan_ReshapeZ\x13\n\x01x\x12\x0e...8\x07\x12\x04\n\x02\x08\x02b\x15\n\x03out\x12\x0e\n\x0c\x08\x01\x12\x08\n\x02\x08\x04\n\x02\x08\x03B\x04\n\x00\x10\x15'
+feeds = {'shape': array([4, 3], dtype=int64), 'x': array([[-2.1706154 , -2.0141027 ,  0.79583865,  0.06046845],
+       [ 0.250...263961 , -0.02323371,  2.0035095 ],
+       [ 0.8241996 ,  0.16970654, -0.43905392, -0.39457285]],
+      dtype=float32)}
+
+    def assert_vulkan_claims(model: bytes, feeds: dict[str, np.ndarray]) -> None:
+        """Assert the Vulkan EP actually executed at least one node of *model*.
+    
+        Mechanism: ORT built-in profiling JSON (structured, not text parsing).
+        - SessionOptions.enable_profiling = True
+        - sess.end_profiling() → path to the trace JSON
+        - Parse events where cat=="Node" and check args.provider for VulkanExecutionProvider.
+    
+        A test that passes *without* calling this function is vacuously correct: because CPU
+        fallback is always correct, the output comparison will pass whether or not the EP ran
+        anything. This function is the guard against that failure mode (DESIGN.md §9.1).
+        """
+        opts = _make_session_options(profiling=True, prefix="_vulkan_claim_probe")
+        try:
+            sess = ort.InferenceSession(model, opts, providers=EP_PROVIDERS)
+            sess.run(None, feeds)
+            profile_path = sess.end_profiling()
+        except Exception as exc:
+            raise AssertionError(
+                f"Vulkan EP session failed — the EP may not be built or registered: {exc}"
+            ) from exc
+    
+        try:
+            with open(profile_path) as fh:
+                events = json.load(fh)
+        finally:
+            try:
+                os.remove(profile_path)
+            except OSError:
+                pass
+    
+        providers_seen = {
+            e["args"]["provider"]
+            for e in events
+            if e.get("cat") == "Node"
+            and isinstance(e.get("args"), dict)
+            and "provider" in e["args"]
+        }
+>       assert EP_NAME in providers_seen, (
+            f"{EP_NAME} did not execute any node of this model — the CPU-match check would be "
+            f"a vacuous pass. Providers seen: {sorted(providers_seen) or 'none'}.\n"
+            "Possible causes:\n"
+            "  • No Vulkan device passed the capability gate (no ICD, or device below baseline).\n"
+            "  • The claim predicate for this op rejected the node form — check "
+            "    ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.\n"
+            "  • The crate was not built yet (run cargo build --release first)."
+        )
+E       AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E       Possible causes:
+E         • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+E         • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+E         • The crate was not built yet (run cargo build --release first).
+
+tests\ops\_models.py:604: AssertionError
+============================== warnings summary ===============================
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Add-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sub-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Div-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Pow-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Pow-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Neg-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Neg-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Abs-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Abs-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sign-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Floor-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Floor-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Ceil-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Ceil-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Round-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Round-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sqrt-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Reciprocal-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Reciprocal-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Exp-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Log-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Log-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Erf-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sin-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cos-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Cos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tan-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asin-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Asin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acos-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Acos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atan-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Atan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sinh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cosh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Cosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asinh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Asinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acosh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Acosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atanh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Atanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Relu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sigmoid-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-act-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-act-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [LeakyRelu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-alpha0.1]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [LeakyRelu-alpha0.1] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Elu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-alpha1.5]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Elu-alpha1.5] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Selu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Selu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Celu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Celu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSigmoid-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-custom]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSigmoid-custom] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSwish-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSwish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softplus-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Softplus-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softsign-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Softsign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Gelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mish-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[ThresholdedRelu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [ThresholdedRelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Add-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sub-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Div-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16-bcast]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp16-bcast] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Relu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sigmoid-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sqrt-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Exp-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Erf-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Gelu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Identity-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Identity-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 378
+FAIL(condition)    : 31
+ERROR(instrument)  : 0
+XPASS(stale expect): 1
+  FAIL(condition)   tests/ops/test_elementwise.py::test_binary_elementwise[Min-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_elementwise.py::test_binary_elementwise[Max-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_elementwise.py::test_clip_no_bounds
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Min-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Max-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[PRelu-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Sum-fp32-2inp]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Mean-fp32-2inp]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Equal-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Greater-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Less-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[GreaterOrEqual-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[LessOrEqual-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Add-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Mul-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[And-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Or-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Xor-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[BitwiseAnd-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[BitwiseOr-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[BitwiseXor-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Not-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[BitwiseNot-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[IsNaN-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[IsInf-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-i32-to-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Where-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Flatten-fp32-axis1]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Reshape-fp32-static]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  XPASS(stale)      tests/ops/test_gqa.py::test_gqa_present_kv_shape[0]
+                    [XPASS(strict)] GQA Compute path: absent optional inputs (packed-QKV slots 1/2) produce size=0 alloc requests; EP falls back to CPU at inference time. Owner: Switch (alloc.rs / ops/gqa.rs). Remove whe
+An xfail(strict) that PASSED is neither a detection nor an outage: the recorded expectation is now wrong, usually because somebody fixed it. It is the state most likely to be discarded, because nobody investigates a red that is somebody else's good news — so it is named rather than counted.
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+FAILED tests/ops/test_elementwise.py::test_binary_elementwise[Min-fp32] - Ass...
+FAILED tests/ops/test_elementwise.py::test_binary_elementwise[Max-fp32] - Ass...
+FAILED tests/ops/test_elementwise.py::test_clip_no_bounds - AssertionError: V...
+FAILED tests/ops/test_gqa.py::test_gqa_present_kv_shape[0]
+FAILED tests/ops/test_op_table.py::test_op_table[Min-fp32] - AssertionError: ...
+FAILED tests/ops/test_op_table.py::test_op_table[Max-fp32] - AssertionError: ...
+FAILED tests/ops/test_op_table.py::test_op_table[PRelu-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[Sum-fp32-2inp] - AssertionEr...
+FAILED tests/ops/test_op_table.py::test_op_table[Mean-fp32-2inp] - AssertionE...
+FAILED tests/ops/test_op_table.py::test_op_table[Equal-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[Greater-fp32] - AssertionErr...
+FAILED tests/ops/test_op_table.py::test_op_table[Less-fp32] - AssertionError:...
+FAILED tests/ops/test_op_table.py::test_op_table[GreaterOrEqual-fp32] - Asser...
+FAILED tests/ops/test_op_table.py::test_op_table[LessOrEqual-fp32] - Assertio...
+FAILED tests/ops/test_op_table.py::test_op_table[Add-i32] - AssertionError: V...
+FAILED tests/ops/test_op_table.py::test_op_table[Mul-i32] - AssertionError: V...
+FAILED tests/ops/test_op_table.py::test_op_table[And-bool] - AssertionError: ...
+FAILED tests/ops/test_op_table.py::test_op_table[Or-bool] - AssertionError: V...
+FAILED tests/ops/test_op_table.py::test_op_table[Xor-bool] - AssertionError: ...
+FAILED tests/ops/test_op_table.py::test_op_table[BitwiseAnd-i32] - AssertionE...
+FAILED tests/ops/test_op_table.py::test_op_table[BitwiseOr-i32] - AssertionEr...
+FAILED tests/ops/test_op_table.py::test_op_table[BitwiseXor-i32] - AssertionE...
+FAILED tests/ops/test_op_table.py::test_op_table[Not-bool] - AssertionError: ...
+FAILED tests/ops/test_op_table.py::test_op_table[BitwiseNot-i32] - AssertionE...
+FAILED tests/ops/test_op_table.py::test_op_table[IsNaN-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[IsInf-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-i32] - Assertio...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-i32-to-fp32] - Assertio...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-bool] - Asserti...
+FAILED tests/ops/test_op_table.py::test_op_table[Where-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[Flatten-fp32-axis1] - Assert...
+FAILED tests/ops/test_op_table.py::test_op_table[Reshape-fp32-static] - Asser...
+32 failed, 378 passed, 30 skipped, 9 xfailed, 58 warnings in 1230.57s (0:20:30)

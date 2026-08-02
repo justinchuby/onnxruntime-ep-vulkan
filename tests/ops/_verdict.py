@@ -77,9 +77,11 @@ Mirrored, deliberately and by the project's existing convention, in three places
 +-----------------+------------------------------------------------------+---------------+
 | ``UNMEASURED``  | No CPU-only comparison was performed                 | nothing       |
 +-----------------+------------------------------------------------------+---------------+
-| ``UNATTRIBUTED``| The comparison was performed; this EP executed zero  | nothing       |
-|                 | nodes.  The comparison is correct and about another  |               |
-|                 | world.  **Not** ``DIVERGENT``                        |               |
+| ``UNATTRIBUTED``| The comparison was performed and this EP produced none  | nothing     |
+|                 | of the numbers compared — either it executed zero       |             |
+|                 | nodes, or nothing it executed reaches any compared      |             |
+|                 | output.  The comparison is correct and about another    |             |
+|                 | world.  **Not** ``DIVERGENT``                           |             |
 +-----------------+------------------------------------------------------+---------------+
 | ``SPLIT-FRAME`` | The two witnesses disagree about whether this EP ran | nothing       |
 +-----------------+------------------------------------------------------+---------------+
@@ -89,11 +91,30 @@ Precedence when several apply, in the order the checks run:
   1. ``SPLIT-FRAME`` — the witnesses disagree, so nothing downstream can be trusted,
      including the statement that no comparison happened.
   2. ``UNMEASURED``  — no comparison was performed; there is nothing to attribute.
-  3. ``UNATTRIBUTED``— a comparison happened at ``own_count == 0``.  This holds whether
-     the outputs agreed **or** disagreed: a CPU-vs-CPU disagreement is a statement about
-     nondeterminism in the oracle, not about our kernels.  The comparison outcome is
-     preserved in the record's ``comparison`` field so nothing is lost.
+  3. ``UNATTRIBUTED``— a comparison happened and none of it is about us.  This holds
+     whether the outputs agreed **or** disagreed: a CPU-vs-CPU disagreement is a
+     statement about nondeterminism in the oracle, not about our kernels.  The comparison
+     outcome is preserved in the record's ``comparison`` field so nothing is lost.
   4. ``MATCH`` / ``DIVERGENT`` — attributed, so the arithmetic is about us.
+
+THE FIFTH COSTUME (2026-08-02)
+==============================
+Clause 3 made ``MATCH`` unrepresentable at ``own_count == 0``.  ``own_count`` is a
+property of the **session**; the oracle comparison is a property of each **output**.  At
+zero they compose safely.  They stop composing the moment the proof ledger fills
+part-way: the EP claims some nodes, attribution says yes, ``MATCH`` becomes
+representable, and the outputs whose producing nodes still decline are compared
+CPU-against-CPU under a verdict that says the EP ran.
+
+Morpheus's discharge condition (c) is a non-triviality guard on both sides — "64 pairs of
+zeros satisfy (a) perfectly, which is ``0.0 == 0.0`` in a fourth costume".  A guard on
+constancy cannot see a comparison whose two sides are the **same computation**: those are
+real, varying, input-dependent values on both sides.  :class:`OutputAttribution` is what
+names that state, and :attr:`ExecutionAttribution.attributed` now carries two conditions
+rather than one.  It adds **no sixth verdict token**: a comparison that cannot be
+attributed to this EP is exactly what ``UNATTRIBUTED`` already meant, so Link's
+``ci/check_verdict.py`` and Niobe's ``bench/admissible.py`` keep their exhaustive
+branches.
 
 R13 (§10.0.1) — THREE TERMINAL STATES
 =====================================
@@ -176,6 +197,52 @@ EQUIVALENCE_RECORD_KEY: str = "model_output_equivalence_record"
 ATTRIBUTION_SOURCE_PROFILE: str = "ort_profile"
 #: No attribution was taken (only ever paired with UNMEASURED).
 ATTRIBUTION_SOURCE_NONE: str = "none"
+
+# ---------------------------------------------------------------------------
+# Per-output coverage — the fifth costume (2026-08-02)
+# ---------------------------------------------------------------------------
+# Attribution as built above is a property of the **session**: did this EP execute
+# anything.  The oracle comparison is a property of each **output**.  At
+# ``own_count == 0`` the two compose safely, because nothing is attributed and no MATCH
+# is representable.  They stop composing the moment the ledger fills part-way:
+#
+#   The EP claims some nodes.  Attribution says yes.  MATCH becomes representable.  The
+#   nodes producing outputs 1..64 are still declining, so those 64 comparisons are
+#   CPU-against-CPU while the verdict says the EP ran.
+#
+# That is the same vacuity, passing through an attribution check that has already said
+# yes, and it does not look like a defect: it looks like partial acceleration with a
+# clean oracle, which is exactly what a filling ledger is supposed to look like.
+#
+# Morpheus's discharge condition (c) for criterion 10 is a non-triviality guard on both
+# sides — "64 pairs of zeros satisfy (a) perfectly, which is 0.0 == 0.0 in a fourth
+# costume".  A degeneracy guard tests each side for constancy.  It cannot see a
+# comparison whose two sides are the *same computation*: those are real, varying,
+# input-dependent CPU values on both sides.  This is the fifth costume, and the tokens
+# below are what names it.
+
+#: At least one node upstream of this output was not executed by any other provider —
+#: it was absorbed into one of this EP's fused islands.  Qualified, not sound: see
+#: :meth:`OutputAttribution.from_topology`.
+OUTPUT_EP_COVERED: str = "EP-COVERED"
+#: **Every** node upstream of this output was executed by some other provider.  This
+#: output's oracle comparison is our-CPU against ORT's-CPU: vacuous by construction.
+#: Sound in this direction — an optimiser can delete a node's event, never invent one.
+OUTPUT_CPU_ONLY: str = "CPU-ONLY"
+#: The question could not be put to this output in this frame (R12: never a bare 0 and
+#: never a default of EP-COVERED, which would be the pass-by-absence this whole module
+#: exists to make unrepresentable).
+OUTPUT_UNOBSERVABLE: str = "UNOBSERVABLE"
+
+OUTPUT_COVERAGE_TOKENS: tuple[str, ...] = (
+    OUTPUT_EP_COVERED,
+    OUTPUT_CPU_ONLY,
+    OUTPUT_UNOBSERVABLE,
+)
+
+#: Per-output coverage was never computed on this run.  Distinct from "computed and
+#: found nothing": the first is an instrument that was not run, the second is a reading.
+OUTPUT_COVERAGE_NOT_COMPUTED: str = "not-computed"
 
 # ---------------------------------------------------------------------------
 # The second witness, and the three things it can say (R12)
@@ -303,6 +370,7 @@ class ExecutionAttribution:
         "_profile_mtime_ns",
         "_counters_dispatches",
         "_counters_reason",
+        "_output_coverage",
     )
 
     def __init__(
@@ -317,6 +385,7 @@ class ExecutionAttribution:
         profile_mtime_ns: int,
         counters_dispatches: int | None = None,
         counters_reason: str = WITNESS_REASON_NOT_REQUESTED,
+        output_coverage: "OutputAttribution | None" = None,
     ) -> None:
         if _token is not _PARSED:
             raise TypeError(
@@ -335,6 +404,7 @@ class ExecutionAttribution:
         self._counters_reason = (
             "" if counters_dispatches is not None else (counters_reason or WITNESS_REASON_UNKNOWN)
         )
+        self._output_coverage = output_coverage
 
     # -- construction --------------------------------------------------------
 
@@ -442,7 +512,59 @@ class ExecutionAttribution:
             profile_mtime_ns=self._profile_mtime_ns,
             counters_dispatches=(None if dispatches_executed is None else int(dispatches_executed)),
             counters_reason=(reason or WITNESS_REASON_UNKNOWN),
+            output_coverage=self._output_coverage,
         )
+
+    def with_output_coverage(self, coverage: "OutputAttribution") -> "ExecutionAttribution":
+        """Return a copy carrying the per-output coverage reading.
+
+        Attribution as parsed is a property of the session; this attaches the property of
+        each output.  Without it, ``attributed`` answers "did this EP execute anything"
+        and the verdict silently reads that as "did this EP produce the numbers we
+        compared" — the same sentence at two different scopes, which is how the fifth
+        costume gets through.
+        """
+        if not isinstance(coverage, OutputAttribution):
+            raise TypeError(
+                "with_output_coverage() requires an OutputAttribution computed by "
+                f"OutputAttribution.from_topology(), not {type(coverage).__name__}."
+            )
+        return ExecutionAttribution(
+            _token=_PARSED,
+            executed_by=self._executed_by,
+            node_events=self._node_events,
+            source=self._source,
+            profile_path=self._profile_path,
+            profile_digest=self._profile_digest,
+            profile_mtime_ns=self._profile_mtime_ns,
+            counters_dispatches=self._counters_dispatches,
+            counters_reason=self._counters_reason or WITNESS_REASON_NOT_REQUESTED,
+            output_coverage=coverage,
+        )
+
+    @property
+    def output_coverage(self) -> "OutputAttribution | None":
+        return self._output_coverage
+
+    @property
+    def coverage_state(self) -> str:
+        """What the per-output instrument did on this run — a reading or an absence (R12)."""
+        if self._output_coverage is None:
+            return OUTPUT_COVERAGE_NOT_COMPUTED
+        return self._output_coverage.describe()
+
+    @property
+    def reaches_compared_outputs(self) -> bool:
+        """Does anything this EP executed reach a graph output?
+
+        ``True`` when coverage was not computed: this property may only ever *withhold*
+        MATCH on a positive reading, never grant it on a missing one.  An instrument that
+        was not run is not a clearance — the record says ``not-computed`` so a reader can
+        see which of the two they are looking at.
+        """
+        if self._output_coverage is None:
+            return True
+        return self._output_coverage.any_output_reaches_ep
 
     # -- reading -------------------------------------------------------------
 
@@ -461,8 +583,20 @@ class ExecutionAttribution:
 
     @property
     def attributed(self) -> bool:
-        """True iff an instrument we do not own says this EP executed at least one node."""
-        return self.own_count > 0
+        """True iff an instrument we do not own says this EP produced numbers we compared.
+
+        Two conditions, not one, since 2026-08-02:
+
+          1. this EP executed at least one node (session scope), **and**
+          2. at least one graph output is downstream of something it executed (output
+             scope), when the per-output instrument ran at all.
+
+        Condition 2 is what stops a partially-claiming session from certifying a
+        comparison whose two sides are the same computation.  It can only ever remove an
+        attribution: when coverage was not computed, it is vacuously satisfied and the
+        record says ``not-computed`` rather than implying a check that did not happen.
+        """
+        return self.own_count > 0 and self.reaches_compared_outputs
 
     @property
     def source(self) -> str:
@@ -591,6 +725,351 @@ class ExecutionAttribution:
             f"ExecutionAttribution(own_count={self.own_count}, "
             f"executed_by={self._executed_by!r}, source={self._source!r})"
         )
+
+
+_PROFILE_NAME_SUFFIXES = ("_kernel_time", "_fence_before", "_fence_after")
+
+
+def strip_profile_suffix(name: str) -> str:
+    """``"claimed_add_kernel_time"`` -> ``"claimed_add"``.
+
+    ORT decorates a node's profiling event name with the phase it timed.  The undecorated
+    remainder is the **graph node name**, verified empirically on 2026-08-02 against a
+    five-node mixed graph: every CPU-executed node's event name stripped back to exactly
+    its graph node name, on both selectors.
+    """
+    for suffix in _PROFILE_NAME_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def node_providers(events: list[dict]) -> dict[str, str]:
+    """``{graph_node_name: provider}`` from ORT's trace.
+
+    Malformed events are skipped, for the same reason :func:`tally_providers` skips them.
+    A node this EP fused does **not** appear here under its own name: the fused island
+    arrives as one event named ``VulkanExecutionProvider_VulkanExecutionProvider_<hash>_0_0``,
+    which names no constituent.  That asymmetry is the whole reason the coverage below is
+    derived by complement and is sound only in one direction.
+    """
+    out: dict[str, str] = {}
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("cat") != "Node":
+            continue
+        args = ev.get("args")
+        if not isinstance(args, dict):
+            continue
+        provider = args.get("provider")
+        name = ev.get("name")
+        if isinstance(provider, str) and provider and isinstance(name, str) and name:
+            out[strip_profile_suffix(name)] = provider
+    return out
+
+
+class OutputAttribution:
+    """Which provider's work reaches each **graph output**.  The fifth costume's instrument.
+
+    Built by :meth:`from_topology` from two things, *neither of which this project owns*:
+
+      * the ONNX artifact's own topology — producer edges read out of the model file;
+      * ORT's profiling trace — which node names ran on which provider.
+
+    Our claim log is deliberately not consulted.  It lives inside the frame whose
+    existence is in question, and two witnesses that can only ever agree are one witness.
+
+    **Soundness is one-directional, and the direction is the safe one.**
+    ``CPU-ONLY`` is a *refusal*: it is returned only when every node upstream of the
+    output carries an explicit other-provider event, and an optimiser can delete an
+    event but cannot invent one, so a wrongly-``CPU-ONLY`` output is not reachable by
+    node elimination.  ``EP-COVERED`` is the weaker inference — "some ancestor has no
+    other-provider event, so it was absorbed into a fused island *or* eliminated before
+    execution" — and it is therefore never on its own sufficient for anything.  It is
+    used only to *withhold* MATCH, never to grant it beyond what the session-level
+    attribution already granted.
+    """
+
+    __slots__ = ("_per_output", "_reasons", "_ep_name", "_node_provider_count", "_claim_log_join")
+
+    def __init__(
+        self,
+        *,
+        _token: object = None,
+        per_output: Mapping[str, str],
+        reasons: Mapping[str, str],
+        ep_name: str,
+        node_provider_count: int,
+        claim_log_join: int = -1,
+    ) -> None:
+        if _token is not _PARSED:
+            raise TypeError(
+                "OutputAttribution() is private.  R10 amendment 1: a coverage reading must "
+                "be a value a mechanism computed on this run, never a literal its author "
+                "set.  Use OutputAttribution.from_topology(topology=..., "
+                "node_providers=node_providers(events))."
+            )
+        self._per_output = dict(per_output)
+        self._reasons = dict(reasons)
+        self._ep_name = ep_name
+        self._node_provider_count = int(node_provider_count)
+        self._claim_log_join = int(claim_log_join)
+
+    @classmethod
+    def from_topology(
+        cls,
+        *,
+        topology: Mapping[str, Any],
+        node_providers: Mapping[str, str],
+        claimed_nodes: "set[str] | frozenset[str] | None" = None,
+        ep_name: str = EP_NAME,
+    ) -> "OutputAttribution":
+        """Label every graph output from the artifact's edges and ORT's trace.
+
+        *topology* is the pure-data shape produced by ``_models.graph_topology()``::
+
+            {"outputs": [name, ...],
+             "producer": {value_name: node_name},
+             "node_inputs": {node_name: [value_name, ...]}}
+
+        *claimed_nodes* is optional and, when given, is the set of graph node names **this
+        EP claimed**, read out of our own claim log.  It is our instrument, living inside
+        the frame whose existence is in question — which would disqualify it from granting
+        anything.  It is used only in the direction where it *accuses us*: an ancestor we
+        did not claim is not ours, whatever the trace omits.  That can only move outputs
+        from ``EP-COVERED`` to ``CPU-ONLY``, i.e. only ever withhold ``MATCH``, so a
+        lying claim log cannot manufacture a pass.  Measured on Phi-3.5 (dev0,
+        2026-08-02) the trace alone labelled 65/65 outputs ``EP-COVERED`` at an own-count
+        of **zero**, because ORT's own graph optimisers delete node events wholesale; the
+        complement is nearly uninformative on a real model without this second source.
+
+        Raises
+        ------
+        InstrumentError
+            *topology* is not that shape, the trace named no nodes at all, or
+            *claimed_nodes* was supplied and joins against no node in the graph.  All
+            three are ``ERROR(instrument)``: the reading was never reached, so there is
+            nothing to report about the EP (R13).  The last matters most — a claim log
+            whose node names do not join (ORT renames nodes before ``GetCapability``)
+            would otherwise mark every output ``CPU-ONLY`` and manufacture a false red.
+        """
+        try:
+            outputs = list(topology["outputs"])
+            producer = dict(topology["producer"])
+            node_inputs = {k: list(v) for k, v in dict(topology["node_inputs"]).items()}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InstrumentError(
+                "[coverage instrument failure] topology is not "
+                "{'outputs': [...], 'producer': {...}, 'node_inputs': {...}}: "
+                f"{type(exc).__name__}: {exc}.  This is an instrument outage, NOT a "
+                "finding about the EP (R13)."
+            ) from exc
+
+        if not node_providers:
+            raise InstrumentError(
+                "[coverage instrument failure] ORT's trace named zero nodes, so no output "
+                "can be labelled.  Profiling may not have been enabled before session "
+                "creation.  UNOBSERVABLE for every output would read as a coverage "
+                "finding; it is an outage (R13)."
+            )
+
+        all_nodes = set(node_inputs)
+        join = -1
+        if claimed_nodes is not None:
+            join = len(set(claimed_nodes) & all_nodes)
+            if claimed_nodes and join == 0:
+                raise InstrumentError(
+                    "[coverage instrument failure] the claim log named "
+                    f"{len(set(claimed_nodes))} claimed node(s), none of which is a node "
+                    f"name in this graph ({len(all_nodes)} nodes).  ORT may rename nodes "
+                    "before GetCapability, so the join is broken and every output would "
+                    "be labelled CPU-ONLY — a manufactured red.  ERROR(instrument) (R13)."
+                )
+
+        other = {n for n, p in node_providers.items() if p != ep_name}
+        per_output: dict[str, str] = {}
+        reasons: dict[str, str] = {}
+        for out_name in outputs:
+            ancestors = _ancestor_nodes(out_name, producer, node_inputs)
+            if not ancestors:
+                per_output[out_name] = OUTPUT_UNOBSERVABLE
+                reasons[out_name] = (
+                    "no node in this graph produces this output (it is a graph input, an "
+                    "initializer, or passed through); there is no upstream to attribute"
+                )
+                continue
+            ours = ancestors - other
+            if claimed_nodes is not None:
+                ours = ours & set(claimed_nodes)
+            unnamed = sorted(ours)
+            if not unnamed:
+                per_output[out_name] = OUTPUT_CPU_ONLY
+                reasons[out_name] = (
+                    f"none of the {len(ancestors)} upstream node(s) is ours — each either "
+                    "carries an explicit other-provider event"
+                    + (
+                        " or was not claimed by this EP"
+                        if claimed_nodes is not None
+                        else ""
+                    )
+                    + "; nothing this EP ran reaches this output, so its oracle comparison "
+                    "is CPU-against-CPU"
+                )
+            else:
+                per_output[out_name] = OUTPUT_EP_COVERED
+                reasons[out_name] = (
+                    f"{len(unnamed)} of {len(ancestors)} upstream node(s) may be ours "
+                    f"({', '.join(unnamed[:6])}{', ...' if len(unnamed) > 6 else ''}): no "
+                    "other-provider event"
+                    + (
+                        " and claimed by this EP"
+                        if claimed_nodes is not None
+                        else ", so absorbed into a fused island or eliminated before "
+                        "execution"
+                    )
+                    + " — this label withholds MATCH, it does not grant it"
+                )
+        return cls(
+            _token=_PARSED,
+            per_output=per_output,
+            reasons=reasons,
+            ep_name=ep_name,
+            node_provider_count=len(node_providers),
+            claim_log_join=join,
+        )
+
+    # -- reading -------------------------------------------------------------
+
+    @property
+    def per_output(self) -> dict[str, str]:
+        return dict(self._per_output)
+
+    @property
+    def output_names(self) -> tuple[str, ...]:
+        return tuple(self._per_output)
+
+    def token_for(self, name_or_index: "str | int") -> str:
+        if isinstance(name_or_index, int):
+            names = self.output_names
+            if not 0 <= name_or_index < len(names):
+                return OUTPUT_UNOBSERVABLE
+            return self._per_output[names[name_or_index]]
+        return self._per_output.get(name_or_index, OUTPUT_UNOBSERVABLE)
+
+    def reason_for(self, name: str) -> str:
+        return self._reasons.get(name, "not labelled")
+
+    def count(self, token: str) -> int:
+        return sum(1 for v in self._per_output.values() if v == token)
+
+    @property
+    def ep_covered_count(self) -> int:
+        return self.count(OUTPUT_EP_COVERED)
+
+    @property
+    def cpu_only_count(self) -> int:
+        return self.count(OUTPUT_CPU_ONLY)
+
+    @property
+    def unobservable_count(self) -> int:
+        return self.count(OUTPUT_UNOBSERVABLE)
+
+    @property
+    def cpu_only_names(self) -> tuple[str, ...]:
+        return tuple(n for n, v in self._per_output.items() if v == OUTPUT_CPU_ONLY)
+
+    @property
+    def any_output_reaches_ep(self) -> bool:
+        """Does *any* graph output depend on work this EP did?
+
+        ``False`` beside a positive own-count is the state this class was written for:
+        the EP ran, and every compared output is CPU-against-CPU anyway.
+        """
+        return self.ep_covered_count > 0
+
+    @property
+    def partial(self) -> bool:
+        """Some outputs reach this EP and some do not — the intermediate-ledger state."""
+        return self.ep_covered_count > 0 and self.cpu_only_count > 0
+
+    def refuted_by(self, disagreeing_output_names: "list[str] | tuple[str, ...]") -> list[str]:
+        """The falsifier for *this instrument* (R9, R10).
+
+        A ``CPU-ONLY`` output has the same computation on both sides of the oracle, so it
+        must agree bit-for-bit.  If the oracle says it disagreed, then this labelling is
+        wrong — the output was not CPU-only after all, or the topology was misread.  The
+        returned names are a finding about the **coverage instrument**, never about the
+        EP, and the caller is expected to say so.
+        """
+        return [
+            n for n in disagreeing_output_names
+            if self._per_output.get(n) == OUTPUT_CPU_ONLY
+        ]
+
+    def describe(self) -> str:
+        return (
+            f"{self.ep_covered_count} output(s) reach {self._ep_name}, "
+            f"{self.cpu_only_count} are CPU-only (their oracle comparison is vacuous), "
+            f"{self.unobservable_count} unobservable; over "
+            f"{len(self._per_output)} graph output(s), from {self._node_provider_count} "
+            f"named node event(s) and {self.claim_log_state}"
+        )
+
+    @property
+    def claim_log_join(self) -> int:
+        """How many claimed node names joined the graph.  ``-1`` = no claim log used."""
+        return self._claim_log_join
+
+    @property
+    def claim_log_state(self) -> str:
+        if self._claim_log_join < 0:
+            return "no claim log (trace complement only — weak on real models)"
+        return f"a claim log joining {self._claim_log_join} node(s)"
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "per_output": dict(self._per_output),
+            "reasons": dict(self._reasons),
+            "ep_covered": self.ep_covered_count,
+            "cpu_only": self.cpu_only_count,
+            "unobservable": self.unobservable_count,
+            "outputs_total": len(self._per_output),
+            "partial": self.partial,
+            "claim_log_join": (
+                OUTPUT_COVERAGE_NOT_COMPUTED
+                if self._claim_log_join < 0
+                else self._claim_log_join
+            ),
+            "means": (
+                "CPU-ONLY is a refusal and is sound: no upstream node is ours. EP-COVERED "
+                "is the weaker inference and only ever withholds MATCH, never grants it. "
+                "Without a claim log the EP-COVERED side is nearly uninformative on a real "
+                "model, because ORT's own optimisers delete node events wholesale."
+            ),
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"OutputAttribution(ep_covered={self.ep_covered_count}, "
+            f"cpu_only={self.cpu_only_count}, unobservable={self.unobservable_count})"
+        )
+
+
+def _ancestor_nodes(
+    output_name: str,
+    producer: Mapping[str, str],
+    node_inputs: Mapping[str, list[str]],
+) -> set[str]:
+    """Every graph node upstream of *output_name*, inclusive of its producer."""
+    seen: set[str] = set()
+    stack = [output_name]
+    while stack:
+        value = stack.pop()
+        node = producer.get(value)
+        if node is None or node in seen:
+            continue
+        seen.add(node)
+        stack.extend(node_inputs.get(node, ()))
+    return seen
 
 
 def tally_providers(events: list[dict]) -> dict[str, int]:
@@ -805,6 +1284,21 @@ class EquivalenceVerdict:
                 "fused-island executions by this EP, NOT graph nodes; one island can cover "
                 "hundreds of graph nodes"
             ),
+            "output_coverage": (
+                OUTPUT_COVERAGE_NOT_COMPUTED
+                if att is None or att.output_coverage is None
+                else att.output_coverage.to_record()
+            ),
+            "outputs_reaching_this_ep": (
+                OUTPUT_COVERAGE_NOT_COMPUTED
+                if att is None or att.output_coverage is None
+                else att.output_coverage.ep_covered_count
+            ),
+            "outputs_cpu_only": (
+                OUTPUT_COVERAGE_NOT_COMPUTED
+                if att is None or att.output_coverage is None
+                else att.output_coverage.cpu_only_count
+            ),
             "artifact": self._artifact,
             "device_index": self._device_index,
             "device_name": self._device_name,
@@ -839,6 +1333,18 @@ class EquivalenceVerdict:
                 "The triple and the wall-clock ratio may not be reported. Owner: Mouse/Switch."
             )
         if v == VERDICT_UNATTRIBUTED:
+            if att is not None and att.own_count > 0:
+                cov = att.output_coverage
+                return (
+                    f"{head} — this EP executed "
+                    f"{att.own_count} fused island(s) and **not one graph output is "
+                    "downstream of anything it executed**. Every comparison in this run "
+                    "was our-CPU against ORT's-CPU: two sides of one computation, which "
+                    "no degeneracy guard can see because both sides are real, varying, "
+                    f"input-dependent values. {'' if cov is None else cov.describe() + '. '}"
+                    "This is NOT DIVERGENT and NOT a partial success. Owner: whoever owns "
+                    "the claim predicates for the ops upstream of the outputs (Mouse)."
+                )
             return (
                 f"{head} — the comparison ran and this EP did not run. This is NOT "
                 "DIVERGENT: the model was not wrong, the subject was absent, and the "

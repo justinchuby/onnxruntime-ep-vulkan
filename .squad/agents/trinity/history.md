@@ -197,3 +197,154 @@ enforcing against a 9-entry ledger — and that is Mouse's ground, reported not 
 R13: quote the failure text, and an inherited condition is not a detection about my branch.
 
 Commit `e39bdd6` on `squad/trinity`, not pushed.
+
+---
+
+## Round 29 — criterion 12: the twelve surfaces no census mechanism watched (2026-08-02)
+
+`unwired: []` was measured against a denominator the census supplied itself. Link's
+independent whole enumerates 50 surfaces from production Rust; twelve were instrumented and
+observed by nothing. Two new mechanisms in `tests/ops/test_wiring_census.py`:
+
+* `ep_entrypoints` — `compile_calls` / `compute_calls` / `subgraphs_stub`. New state
+  `ENTERED-NO-DISPATCH`: a `Compute()` that entered and dispatched nothing. The census
+  inferred execution from `dispatches_executed`, so a broken kernel path and a partitioner
+  that claimed nothing were the same number.
+* `flag_frame` — the nine uncensused env switches, two arms (`flags_a`, `flags_b`).
+  6 MOVED / 3 UNOBSERVABLE-with-a-reason on **both** selectors. Every segment carries
+  `census_frame=` (disclosure, cannot fail) beside a state token (discrimination, can).
+
+Extent moved, which is the criterion's real content: `gpu_tracer` 1/12 -> 12/12,
+`ledger_lookup` 4/7 -> 7/7, `net_benefit_gate` 0/6 -> 6/6, `validation_messenger` 0/3 -> 3/3,
+`broken_commitment_warn` 0/2 -> 2/2, `partitioner` 1/2 -> 2/2, `retain_viable` 0/1 -> 1/1.
+The tracer now names WHICH of the ten `Phase` variants the trace carried (6/10) rather than
+a count of distinct names — the reading that would have certified `Phase::Record` again.
+
+**A crash.** `DEVICE_MEMORY=1` + `VA_RESERVE_MIB=64` = STATUS_ACCESS_VIOLATION on a six-node
+chain, deterministic, both devices; either flag alone is clean, 1024 is clean.
+`factory.rs:897` declines to publish a device allocator, says so, and the device-memory path
+runs anyway. Pinned as `test_device_memory_with_small_va_reservation`, xfail(strict).
+Found on the flag frame's first run — the whole argument for censusing what nobody watches.
+
+**Two findings against myself.**
+
+1. The first tracer matcher looked for the Rust identifier and reported `0/10 Phase variants
+   emitted`. The trace spells them `vulkan.record` etc. per `Phase::as_str`; six were in the
+   artifact I was reading. I went looking for a gap and got the biggest one available on the
+   first try, and it was my bug. R13's second corollary, earned again.
+2. `probe_stall_guard.py` wrote its four cells as `wiring_census-dev0-<cell>.json`, matching
+   Link's arm glob. His screen counted frozen snapshots as census arms, so any text
+   improvement read as `VARIES`. Renamed to `stall_guard_census-*`. The honest number over
+   the two real arms is **2 VARIES / 12 INVARIANT**, worse than the 3/9 reported. Moving it
+   needs arms designed to vary each mechanism — named, not faked.
+
+Verified: `tests/ops/test_wiring_census.py` 6 passed + 1 xfailed on dev0 (56 s) and dev1
+(95 s), DLL rebuilt after merging `origin/main` (hash 8D07173F -> 1A802D09).
+`test_r13_lane.py` + `test_verdict.py` 83 passed. `audit_instruments.py --check` PASS.
+
+Row 12 **not closed**; `closes_row: false` written into the census artifact with the reason.
+Link's screen now reports `FAIL(condition=unclaimed_mechanism_name)` for the two new
+mechanisms, which is his screen working — the two `mechanism_names` claims and the twelve
+re-dispositions are his file and are spelled out in
+`.squad/decisions/inbox/trinity-criterion12-flag-frame.md`.
+
+---
+
+## Round 30 — per-output attribution: the fifth costume (2026-08-02)
+
+The coordinator's concern, and it was right. `attributed` was a property of the SESSION;
+the oracle comparison is a property of each OUTPUT. At `own_count == 0` they compose.
+They stop composing as the ledger fills: EP claims some nodes, attribution says yes,
+`MATCH` becomes representable, and the outputs whose producers still decline are compared
+CPU-against-CPU under a verdict that says the EP ran. Morpheus's condition (c) is a
+non-triviality guard on both sides; a guard on constancy cannot see a comparison whose two
+sides are the SAME COMPUTATION. Fifth costume.
+
+**Probed the data before designing anything** (`bench/results/probe_per_output_attribution.py`).
+ORT names every CPU-executed node with its graph node name; a fused island arrives as ONE
+event naming no constituent. So the derivation is a complement, sound in one direction:
+`CPU-ONLY` (every ancestor is not ours) is a refusal and holds — an optimiser can delete
+an event, never invent one. `EP-COVERED` is the weak side and only ever WITHHOLDS `MATCH`.
+
+**The reading that made it real.** Trace-only, against Phi-3.5 on dev0: **65/65 outputs
+`EP-COVERED` at an own-count of ZERO.** 459 named events against 363 graph nodes — ORT's
+optimisers delete node events wholesale, and the complement is nearly uninformative on a
+real model. I would have shipped a mechanism that moved the gap count and not the
+coverage; my own criterion-12 lesson, one week old.
+
+Fixed with a second source used only where it accuses us: the claim log's `node`/`claimed`
+pairs. Inside the frame, so it may not grant anything — but "we did not claim the node
+producing output k" is a self-accusation, and a lying claim log can only make us withhold.
+Same run now reads `oracle_outputs_attributed = 0`, `oracle_outputs_vacuous = 65`,
+`verdict = UNATTRIBUTED`. Identical on dev1. First time the artifact names its own vacuity
+per output.
+
+No sixth verdict token. A comparison that cannot be attributed to this EP is what
+`UNATTRIBUTED` already meant, so Link's and Niobe's exhaustive branches stand.
+`UNATTRIBUTED` now has two causes with two owners and `explain()` separates them.
+`MATCH` is NOT refused for every partial session — Phi-3.5 declines 8 nodes and
+"all outputs or nothing" never closes — but the record carries `outputs_reaching_this_ep`
+and `outputs_cpu_only` so 65 agreements are never quoted as 65 pieces of evidence.
+
+Falsifiers, because a refusal can be manufactured too: a `CPU-ONLY` output that disagrees
+refutes THIS instrument (`refuted_by`, raises `InstrumentError` in the lane, 0 refuted on
+both devices); a claim log joining zero graph nodes is `ERROR(instrument)`, because
+"every output is vacuous" is exactly the result I went looking for and R13's second
+corollary applies; a missing coverage reading is `not-computed`, never clearance.
+
+Verified: 25 GPU-free arms + 2 hardware arms pass on both selectors; 126 passed +
+1 xfailed across `test_r13_lane` / `test_verdict` / `test_criterion10_oracle` /
+`test_wiring_census` / both new modules on dev0. Criterion 10 still FAIL(condition)
+`UNATTRIBUTED` on both devices — inherited, correct, and the bar moved UP not down.
+Criterion 10 not closed.
+
+## Round 31 — ORT refuses the session we spent the session learning to detect (2026-08-02)
+
+**Handed to me:** the user asked whether ORT has a flag preventing EP fallback. It does:
+`session.disable_cpu_ep_fallback`. Never used here; the string appeared nowhere in `tests/`,
+`bench/` or `rust/src/`.
+
+**Probed before designing** (`bench/results/probe_disable_cpu_fallback.py`, both selectors,
+ORT 1.28.0). Two things the brief did not have, either of which would have made a naive
+wiring actively harmful:
+
+1. With `CPUExecutionProvider` in the providers list — which `EP_PROVIDERS` has — the flag
+   is a **configuration conflict**, `INVALID_ARGUMENT`, on **every** graph including one the
+   EP claims in full. That refusal looks like a detection and is not. Wiring it into
+   `EP_PROVIDERS` sessions would have made a working EP read as broken on every test.
+2. A **misspelled config key is accepted silently**. A precondition on a typo is inert and
+   green — the specimen shape of this entire session, one level up. Hence
+   `assert_no_cpu_fallback_is_live()`: an fp64 `Add` ORT must refuse, run once per process
+   **before** first use, not after.
+
+With `providers=[EP_NAME]`: claimed single-op -> created; declined -> refused; partially
+claimed -> refused. The first row is load-bearing — ORT plants no CPU nodes of its own at
+single-op scale, so the precondition is exact where it is proposed and useless nowhere.
+
+**Built:** `ORT_DISABLE_CPU_FALLBACK_KEY`, `CpuFallbackRefused` (an `AssertionError` —
+FAIL(condition), asserted not assumed), `ep_only_session_or_refusal`,
+`assert_ep_owns_whole_graph`, `assert_no_cpu_fallback_is_live` in `_models.py`;
+`tests/ops/test_no_cpu_fallback.py`, 9 arms, **9 passed on dev0 and dev1**. `check()` gains
+an opt-in precondition behind `ONNXRUNTIME_EP_VULKAN_STRICT_NO_CPU_FALLBACK`, off by default.
+
+**Both mechanisms kept, extents written down.** This precondition reaches only graphs the EP
+must claim entirely and fires before any number exists; Guard D reaches any graph and fires
+after the run. The flag is wrong for Phi-3.5 — ten legitimate declines — which is exactly
+where Guard D is indispensable. Two gates whose extents differ compose to the weaker extent
+and the stronger name, so I stated them separately in code and artifact rather than letting
+a reader infer one gate reaching everything.
+
+**Red-text migration measured**, `test_elementwise.py`, both selectors:
+`25 failed / 11 passed` -> `25 failed / 11 passed`, **failing set identical on both devices**.
+The count does not improve and was never meant to; the text moves from our
+`AssertionError: Vulkan EP claimed 0 nodes` to ORT's own refusal (R13). The identical set is
+the better result — it is the falsifier for over-firing, and not one healthy test went red.
+
+**Regression:** verdict + output-attribution + hw + r13 + no-cpu-fallback lanes,
+116 passed / 0 FAIL / 0 ERROR on dev0.
+
+**The lesson, and it is not about fallback.** We spent a session building detectors for a
+state the runtime would have refused to enter. The user found it. Next time "does the
+runtime already refuse this?" comes before "how do we detect this?".
+
+Closes no row.
