@@ -2016,3 +2016,79 @@ where fewer agents are measuring:
    needs a window.
 4. Consider promoting the same-ordinal-across-inferences RSD (finding 1 above) into `phases.py` or
    a probe as a first-class disturbance check. It is cheap, in-band, and discriminates 400x.
+
+---
+
+## Session 44 — 2026-08-01 — the load guard, built on same-ordinal RSD
+
+Coordinator merged session 43 as `c6cc0f3` and reproduced `probe_frames.py` independently. New
+task: build the long-pending "refuse benchmarks on a contended machine" guard, using the
+same-ordinal RSD I stumbled onto while reconciling the frames.
+
+Landed: `bench/run_disturbance.py`, `ci/check_run_disturbance.py`,
+`bench/test_run_disturbance.py` (14 tests), `bench/results/run_disturbance_dev0.json`.
+
+### The threshold, and where it does NOT separate
+
+Bimodal across all 28 dev0 traces with an EMPTY gap: 19 traces 0.624%..10.507%, then nothing, then
+9 traces 35.313%..137.352%. `DISTURBANCE_RSD_MAX = 0.20` sits in the gap (1.90x above the highest
+clean, 1.77x below the lowest dirty). A test pins that both arms hold for any threshold in
+0.11..0.35, so no verdict rests on the constant.
+
+**But it does NOT separate the STEADY/refused populations** — publishing 0.624%..10.507%, refused
+3.694%..137.352%, substantial overlap. It predicts *stationarity*, not whether the tail publishes.
+Said so in the docstring and the record rather than letting the bimodality imply more than it does.
+
+### It adds ZERO refusals today, and I measured that rather than assuming it
+
+`--corroborate`: 9 flagged, 9 already refused by the tail's floors, **0 that the tail would
+publish**. So it corroborates, it does not protect — today. Value is elsewhere: it refuses
+independently of suffix selection; it is the check that survives if a MARGINAL_TAIL's withheld
+median is ever published; and two statistics over two frames agreeing on nine runs is evidence.
+
+The coordinator's catch, worse than he put it: `contended` is the dirtiest run in the census
+(137.35%) and its **tail RSD is 0.1067%, third tightest of all 28, tighter than
+`baseline_certified` at 0.1163%**. This statistic is 6.9x over its bar on that run. R9 amendment 5,
+third independent appearance.
+
+It also refuses **my own** `packed`/`packed2` A/B traces at 53.4%/53.2%. Correct outcome.
+
+### The frame — the one I was asked for does not work, and that is pinned
+
+Asked for an in-band measurement *of the run being certified*. Tried the tail's own suffix first
+because a companion ought to cover the same inferences. **No discriminating power there:**
+`contended` restricted to its suffix reads **3.07%**, inside the publishing range (0.62%..3.97%).
+The tail's selection has already found a quiet window. So the guard measures the WHOLE run and its
+claim is scoped: *a statement about the run, not the suffix cut from it.* That is exactly its value
+— it can say the suffix was carved out of a violent run, which nothing computed inside the suffix
+can say. Negative result pinned by `test_the_tail_suffix_frame_would_NOT_work_...`.
+
+### The hole is real and is now a passing test, not a caveat
+
+A uniformly slow run PASSES. `synthetic_uniform_slowdown()` builds it and
+`test_a_uniformly_slow_run_PASSES_and_that_is_the_documented_hole` asserts the pass (plus that the
+run really is 2x slower, so the pass is not empty-input). **PASS means "repetitions agreed", never
+"the machine was quiet"** — the CLI prints that on every pass.
+
+### Obligation 8: complements, does not subsume
+
+Orthogonal halves, and the hole is why. Obligation 8 catches a wrong *level* (board pinned at
+210 MHz, uniform inflation) — exactly what this is blind to. This catches a non-stationary *run* at
+whatever clock. We have observed a run perfectly stationary at 21.4x wrong with better RSD than the
+correct one. Coverage floor is a third question again (how representative the suffix is). Three
+instruments, three failure modes; no two collapse.
+
+### Drift vs jitter — the reason this is not just whole-series RSD
+
+`baseline` (whole 10.36%, ord 10.51%) vs `ab_p0_r2` (whole 10.97%, ord 3.82%): same drift, 2.75x
+different jitter. Per-inference spread conflates them; same-ordinal RSD isolates jitter.
+
+### Next step for a fresh session
+
+1. Guard is landed and self-contained; no GPU needed to re-run it.
+2. Consider wiring `check_run_disturbance` into whatever lane first publishes a duration — it is
+   built for it (`--scan`, exit 0/1/4) but is not wired to any lane, deliberately: no lane
+   publishes a timing figure today. Same rationale as `check_device_state` living in `ci/`.
+3. Still open and GPU-bound: the certified NVIDIA A/B for packed loads (3 attempts, never
+   obtained — tenancy is necessary but not sufficient); `gpu_steady_tail` under foreign GPU work.
+4. The packed-loads claim stands in counts (`7a1d12f`) and needs no clock.
