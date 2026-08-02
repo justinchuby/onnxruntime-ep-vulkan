@@ -188,3 +188,156 @@ def test_cli_reports_instrument_error_rather_than_passing_on_junk(tmp_path):
 
 def test_cli_usage_error_without_a_target():
     assert _run().returncode == 2
+
+
+# ---------------------------------------------------- the correction: this is NOT an independent check
+
+@pytest.mark.skipif(not RESULTS.exists(), reason="committed traces absent")
+def test_same_ordinal_rsd_is_REDUNDANT_with_whole_series_rsd_and_that_must_stay_recorded():
+    """The claim this module was originally sold on, pinned as false so it cannot come back.
+
+    An earlier docstring said same-ordinal RSD and the whole-series per-inference spread were
+    "two different statistics over two different frames ... neither derived from the other". They
+    are strongly rank-correlated: a disturbance that scales a whole submission moves every dispatch
+    inside it together. Niobe falsified it over the census; this recomputes it here so the
+    refutation lives in the test suite and not only in prose someone may trim.
+
+    The assertion is deliberately loose (rho > 0.8): the point is that these are NOT independent,
+    not that rho has a particular value on a particular trace set.
+    """
+    xs, ys = [], []
+    for p in sorted(RESULTS.glob("trace_*_dev0.json")):
+        try:
+            infs = rd.per_inference_kernel_us(p)
+            m = rd.measure(infs)
+        except Exception:  # noqa: BLE001
+            continue
+        totals = [sum(f) for f in infs if len(f) == m["dispatches_per_inference"]]
+        if len(totals) < 3:
+            continue
+        mean = sum(totals) / len(totals)
+        var = sum((t - mean) ** 2 for t in totals) / (len(totals) - 1)
+        xs.append((var ** 0.5) / mean)
+        ys.append(m["same_ordinal_rsd_median"])
+
+    if len(xs) < 10:
+        pytest.skip(f"only {len(xs)} usable traces; the correlation is not a statistic here")
+
+    def _rank(v):
+        order = sorted(range(len(v)), key=lambda i: v[i])
+        r = [0.0] * len(v)
+        for pos, i in enumerate(order):
+            r[i] = pos + 1
+        return r
+
+    rx, ry = _rank(xs), _rank(ys)
+    mx, my = sum(rx) / len(rx), sum(ry) / len(ry)
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    den = (sum((a - mx) ** 2 for a in rx) ** 0.5) * (sum((b - my) ** 2 for b in ry) ** 0.5)
+    rho = num / den
+
+    assert rho > 0.8, (
+        f"Spearman rho = {rho:.3f}. If this ever drops, the redundancy documented at the top of "
+        "run_disturbance.py has changed and the module's scoping must be re-derived -- do not "
+        "simply relax this bound.")
+
+
+# ------------------------------------------------------------------- localisation, the part that is new
+
+@pytest.mark.skipif(not DISTURBED.exists(), reason="committed trace absent")
+def test_localise_explains_most_of_the_dispersion_on_a_submission_level_disturbance():
+    """`contended`: removing per-inference level collapses same-ordinal RSD 137% -> ~19%.
+
+    This is Niobe's mechanism measured rather than accepted. If it ever stops holding, her
+    explanation for the correlation is wrong and the scoping above rests on it.
+    """
+    loc = rd.localise(rd.per_inference_kernel_us(DISTURBED))
+    assert loc["explained_by_level"] > 0.6, loc
+    assert loc["level_normalised_ordinal_rsd"] < loc["same_ordinal_rsd_median"] / 3
+    assert loc["character"].startswith("SUBMISSION_LEVEL")
+
+
+PER_DISPATCH = RESULTS / "trace_gemv_contended3_dev0.json"
+
+
+@pytest.mark.skipif(not PER_DISPATCH.exists(), reason="committed trace absent")
+def test_localise_separates_two_runs_that_whole_series_rsd_calls_neighbours():
+    """THE reason this module still exists after the redundancy finding.
+
+    `ab_p1_long` (whole-series 37.8%) and `contended3` (34.4%) are neighbours to whole-series RSD
+    and are different conditions. The decomposition must say so, in opposite directions -- if it
+    ever agrees on both, it has stopped localising and is just another spread measure.
+    """
+    other = RESULTS / "trace_gemv_ab_p1_long_dev0.json"
+    if not other.exists():
+        pytest.skip("committed trace absent")
+    a = rd.localise(rd.per_inference_kernel_us(other))
+    b = rd.localise(rd.per_inference_kernel_us(PER_DISPATCH))
+    assert a["character"].startswith("SUBMISSION_LEVEL"), a
+    assert b["character"].startswith("PER_DISPATCH"), b
+    assert a["explained_by_level"] > b["explained_by_level"] + 0.5
+
+
+@pytest.mark.skipif(not CLEAN.exists(), reason="committed trace absent")
+def test_localise_inherits_the_level_blindness_hole_rather_than_escaping_it():
+    """The normalised statistic removes level ON PURPOSE, so it is *more* blind, not less.
+
+    Asserted rather than described, because the temptation with any refinement is to believe it
+    fixed the thing it was not aimed at. `baseline_certified` is the worked example: cleanest on
+    every dispersion measure this project owns, and 21.4x wrong.
+    """
+    slow = rd.localise(rd.synthetic_uniform_slowdown(factor=2.0))
+    fast = rd.localise(rd.synthetic_clean())
+    assert rd.classify(rd.measure(rd.synthetic_uniform_slowdown(factor=2.0)))["verdict"] == "PASS"
+
+    # Establish that the two inputs REALLY differ before asserting the statistic cannot tell.
+    # Both normalised values are 0.0, so the equality below passes for free; without this the
+    # test would be an assertion that can only succeed, which is not a check.
+    a = rd.synthetic_uniform_slowdown(factor=2.0)
+    b = rd.synthetic_clean()
+    level_ratio = sum(sum(x) for x in a) / sum(sum(x) for x in b)
+    assert abs(level_ratio - 2.0) < 1e-9, (
+        f"the 'slow' control is only {level_ratio:.3f}x the clean one; the hole is not being "
+        "demonstrated because the two inputs are not actually different")
+
+    assert abs(slow["level_normalised_ordinal_rsd"] - fast["level_normalised_ordinal_rsd"]) < 1e-9, (
+        "a 2x-uniformly-slow run must be INDISTINGUISHABLE from a clean one here; if it is not, "
+        "this statistic has acquired level sensitivity and the scoping needs revisiting")
+    assert abs(slow["same_ordinal_rsd_median"] - fast["same_ordinal_rsd_median"]) < 1e-9, (
+        "the raw statistic is equally blind, which is the general result: no dispersion measure "
+        "computed inside a series can see a bias that scales the series")
+
+    # And the real trace that makes the point: certified-clean on both, and 21.4x wrong.
+    cert = rd.localise(rd.per_inference_kernel_us(CLEAN))
+    assert cert["same_ordinal_rsd_median"] < 0.01
+    assert cert["level_normalised_ordinal_rsd"] < 0.01
+
+
+@pytest.mark.skipif(not DISTURBED.exists(), reason="committed trace absent")
+def test_localise_names_which_inferences_moved_not_merely_that_some_did():
+    """Localisation's other half: whole-series RSD cannot point at a repetition. This must."""
+    loc = rd.localise(rd.per_inference_kernel_us(DISTURBED))
+    assert loc["inference_inflation_max"] > 2.0
+    assert 0 < loc["inferences_over_1_10x"] < 46
+    assert loc["worst_inferences"][0]["inflation_x"] == loc["inference_inflation_max"]
+    assert all("index" in w for w in loc["worst_inferences"])
+
+
+@pytest.mark.skipif(not RESULTS.exists(), reason="committed traces absent")
+def test_the_threshold_band_narrowed_when_a_trace_landed_in_the_former_empty_gap():
+    """The census falsified its own headline, and that must not be quietly re-smoothed.
+
+    The original claim was an EMPTY gap from 10.507% to 35.313% with the threshold in it. With one
+    further trace (`switch_resid`, 20.787%) the gap is populated and the disturbed-side margin
+    collapsed from 1.77x to ~1.04x. This pins the fact that the separation is now a judgement on
+    that trace, so nobody re-quotes the clean-separation figure.
+    """
+    resid = RESULTS / "trace_switch_resid_dev0.json"
+    if not resid.exists():
+        pytest.skip("committed trace absent")
+    med = rd.measure(rd.per_inference_kernel_us(resid))["same_ordinal_rsd_median"]
+    assert rd.DISTURBANCE_RSD_MAX < med < 0.35, (
+        f"{med:.3%} — this trace sits inside what was reported as an empty gap")
+    assert med / rd.DISTURBANCE_RSD_MAX < 1.2, (
+        "its margin over the bar is small, so its verdict is a judgement rather than a separation "
+        "and must be reported as one")

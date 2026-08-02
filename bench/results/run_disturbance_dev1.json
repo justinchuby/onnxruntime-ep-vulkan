@@ -271,5 +271,459 @@
       "trace": "trace_gemv_tiled_dev1.json",
       "path": "bench\\results\\trace_gemv_tiled_dev1.json"
     }
+  ],
+  "sensitivity": {
+    "n_traces": 12,
+    "table": [
+      {
+        "threshold": 0.05,
+        "flagged": 11
+      },
+      {
+        "threshold": 0.1,
+        "flagged": 7
+      },
+      {
+        "threshold": 0.11,
+        "flagged": 5
+      },
+      {
+        "threshold": 0.15,
+        "flagged": 4
+      },
+      {
+        "threshold": 0.2,
+        "flagged": 1
+      },
+      {
+        "threshold": 0.25,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.3,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.35,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.36,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.4,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.5,
+        "flagged": 0
+      },
+      {
+        "threshold": 0.75,
+        "flagged": 0
+      },
+      {
+        "threshold": 1.0,
+        "flagged": 0
+      }
+    ],
+    "flagged_at_default": 1,
+    "default": 0.2,
+    "unchanged_over": [
+      0.2,
+      0.2
+    ],
+    "reading": "The flagged count is 1 for every threshold from 20% to 20%. Flatness around the boundary is the argument for it; if this band is ever narrow, the threshold is doing the deciding and should be reported as a judgement."
+  },
+  "localisation": [
+    {
+      "trace": "trace_gemv_abi_p0_r1_dev1.json",
+      "same_ordinal_rsd_median": 0.0462624730865858,
+      "level_normalised_ordinal_rsd": 0.05708562130096745,
+      "explained_by_level": -0.23395092160604603,
+      "inference_inflation_max": 1.051327692739467,
+      "inference_inflation_min": 0.9284194553654966,
+      "inferences_over_1_10x": 0,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.051327692739467
+        },
+        {
+          "index": 7,
+          "inflation_x": 1.0165231771652739
+        },
+        {
+          "index": 6,
+          "inflation_x": 1.010993364571802
+        },
+        {
+          "index": 10,
+          "inflation_x": 1.0109649176061393
+        },
+        {
+          "index": 11,
+          "inflation_x": 1.0066812208743832
+        }
+      ],
+      "character": "PER_DISPATCH: removing per-inference level barely reduces the dispersion \u2014 individual dispatches disagree on their own. Consistent with foreign work interleaved between dispatches.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_abi_p0_r2_dev1.json",
+      "same_ordinal_rsd_median": 0.08436798743268858,
+      "level_normalised_ordinal_rsd": 0.0554446416891312,
+      "explained_by_level": 0.34282370154477526,
+      "inference_inflation_max": 1.1430522896798465,
+      "inference_inflation_min": 0.8949481188866377,
+      "inferences_over_1_10x": 1,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.1430522896798465
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.0994163956860843
+        },
+        {
+          "index": 5,
+          "inflation_x": 1.0748396935378814
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.074568350751222
+        },
+        {
+          "index": 4,
+          "inflation_x": 1.0623933178889406
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_abi_p1_r1_dev1.json",
+      "same_ordinal_rsd_median": 0.11342548891724569,
+      "level_normalised_ordinal_rsd": 0.05877213045513616,
+      "explained_by_level": 0.481843710649413,
+      "inference_inflation_max": 1.343964356404088,
+      "inference_inflation_min": 0.9284245584975772,
+      "inferences_over_1_10x": 1,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.343964356404088
+        },
+        {
+          "index": 11,
+          "inflation_x": 1.0609528550076
+        },
+        {
+          "index": 10,
+          "inflation_x": 1.0310920631974532
+        },
+        {
+          "index": 4,
+          "inflation_x": 1.026439760270008
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.0262110353225373
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_abi_p1_r2_dev1.json",
+      "same_ordinal_rsd_median": 0.09847985938055454,
+      "level_normalised_ordinal_rsd": 0.08630612352558092,
+      "explained_by_level": 0.12361650322763751,
+      "inference_inflation_max": 1.137586822583132,
+      "inference_inflation_min": 0.9062192933396711,
+      "inferences_over_1_10x": 1,
+      "worst_inferences": [
+        {
+          "index": 5,
+          "inflation_x": 1.137586822583132
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.0592715524831282
+        },
+        {
+          "index": 0,
+          "inflation_x": 1.0466244000083937
+        },
+        {
+          "index": 7,
+          "inflation_x": 1.0397680047661755
+        },
+        {
+          "index": 4,
+          "inflation_x": 1.0258563195162296
+        }
+      ],
+      "character": "PER_DISPATCH: removing per-inference level barely reduces the dispersion \u2014 individual dispatches disagree on their own. Consistent with foreign work interleaved between dispatches.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_baseline_dev1.json",
+      "same_ordinal_rsd_median": 0.10357969675649499,
+      "level_normalised_ordinal_rsd": 0.08245467624965712,
+      "explained_by_level": 0.20394943380168973,
+      "inference_inflation_max": 1.1529218089966835,
+      "inference_inflation_min": 0.9313839399886441,
+      "inferences_over_1_10x": 2,
+      "worst_inferences": [
+        {
+          "index": 0,
+          "inflation_x": 1.1529218089966835
+        },
+        {
+          "index": 1,
+          "inflation_x": 1.1460436422790259
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.0869914172581492
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.0789412809396244
+        },
+        {
+          "index": 12,
+          "inflation_x": 1.0572490317958974
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_final_dev1.json",
+      "same_ordinal_rsd_median": 0.16919267334904767,
+      "level_normalised_ordinal_rsd": 0.12019680306090084,
+      "explained_by_level": 0.2895862410487918,
+      "inference_inflation_max": 2.3288215439721234,
+      "inference_inflation_min": 0.859418250219932,
+      "inferences_over_1_10x": 6,
+      "worst_inferences": [
+        {
+          "index": 2,
+          "inflation_x": 2.3288215439721234
+        },
+        {
+          "index": 0,
+          "inflation_x": 1.4588057817200095
+        },
+        {
+          "index": 24,
+          "inflation_x": 1.1679547757139002
+        },
+        {
+          "index": 16,
+          "inflation_x": 1.1421402429102132
+        },
+        {
+          "index": 8,
+          "inflation_x": 1.1276737596198048
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_gb_intel_dev1.json",
+      "same_ordinal_rsd_median": 0.1066647848103038,
+      "level_normalised_ordinal_rsd": 0.05636317770598431,
+      "explained_by_level": 0.4715858865114436,
+      "inference_inflation_max": 1.2187170170727073,
+      "inference_inflation_min": 0.9095244963700178,
+      "inferences_over_1_10x": 7,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.2187170170727073
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.1853253018116714
+        },
+        {
+          "index": 5,
+          "inflation_x": 1.1744832054654641
+        },
+        {
+          "index": 7,
+          "inflation_x": 1.167097319239249
+        },
+        {
+          "index": 6,
+          "inflation_x": 1.1605219115387873
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_idxnopin_dev1.json",
+      "same_ordinal_rsd_median": 0.15413813400503715,
+      "level_normalised_ordinal_rsd": 0.19120873131527175,
+      "explained_by_level": -0.24050243990253017,
+      "inference_inflation_max": 1.138019031475132,
+      "inference_inflation_min": 0.8855175867781331,
+      "inferences_over_1_10x": 1,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.138019031475132
+        },
+        {
+          "index": 0,
+          "inflation_x": 1.0
+        },
+        {
+          "index": 2,
+          "inflation_x": 0.8855175867781331
+        }
+      ],
+      "character": "PER_DISPATCH: removing per-inference level barely reduces the dispersion \u2014 individual dispatches disagree on their own. Consistent with foreign work interleaved between dispatches.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_notile_dev1.json",
+      "same_ordinal_rsd_median": 0.07101376170735364,
+      "level_normalised_ordinal_rsd": 0.058739859633032375,
+      "explained_by_level": 0.17283835948448678,
+      "inference_inflation_max": 1.0245355220291974,
+      "inference_inflation_min": 0.8388378715373163,
+      "inferences_over_1_10x": 0,
+      "worst_inferences": [
+        {
+          "index": 12,
+          "inflation_x": 1.0245355220291974
+        },
+        {
+          "index": 4,
+          "inflation_x": 1.01478815658313
+        },
+        {
+          "index": 11,
+          "inflation_x": 1.0145762893797778
+        },
+        {
+          "index": 8,
+          "inflation_x": 1.0129139157823175
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.0115054880105072
+        }
+      ],
+      "character": "PER_DISPATCH: removing per-inference level barely reduces the dispersion \u2014 individual dispatches disagree on their own. Consistent with foreign work interleaved between dispatches.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_packed_final_dev1.json",
+      "same_ordinal_rsd_median": 0.15905392753757816,
+      "level_normalised_ordinal_rsd": 0.07447016762302856,
+      "explained_by_level": 0.5317929662225147,
+      "inference_inflation_max": 1.4680109523011071,
+      "inference_inflation_min": 0.9125824324648021,
+      "inferences_over_1_10x": 2,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.4680109523011071
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.2076257054781776
+        },
+        {
+          "index": 15,
+          "inflation_x": 1.0235435779605209
+        },
+        {
+          "index": 7,
+          "inflation_x": 1.01216656194665
+        },
+        {
+          "index": 5,
+          "inflation_x": 1.0079802180510284
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_tiled_atomic_store_dev1.json",
+      "same_ordinal_rsd_median": 0.21360129527832195,
+      "level_normalised_ordinal_rsd": 0.05800005729627828,
+      "explained_by_level": 0.7284657978281248,
+      "inference_inflation_max": 1.6324652918270304,
+      "inference_inflation_min": 0.9219914997750321,
+      "inferences_over_1_10x": 4,
+      "worst_inferences": [
+        {
+          "index": 1,
+          "inflation_x": 1.6324652918270304
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.475264215865576
+        },
+        {
+          "index": 4,
+          "inflation_x": 1.1178281374925956
+        },
+        {
+          "index": 3,
+          "inflation_x": 1.1016686465997483
+        },
+        {
+          "index": 12,
+          "inflation_x": 1.0410477352694598
+        }
+      ],
+      "character": "SUBMISSION_LEVEL: most of the dispersion is whole-inference scaling \u2014 the dispatches inside an inference agreed with each other. Consistent with a clock/power excursion or queueing delay ahead of the submission.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    },
+    {
+      "trace": "trace_gemv_tiled_dev1.json",
+      "same_ordinal_rsd_median": 0.09421389420376616,
+      "level_normalised_ordinal_rsd": 0.05154814179045553,
+      "explained_by_level": 0.45286051249546044,
+      "inference_inflation_max": 1.1390514487617083,
+      "inference_inflation_min": 0.8314686022230462,
+      "inferences_over_1_10x": 2,
+      "worst_inferences": [
+        {
+          "index": 10,
+          "inflation_x": 1.1390514487617083
+        },
+        {
+          "index": 8,
+          "inflation_x": 1.1079077991276192
+        },
+        {
+          "index": 9,
+          "inflation_x": 1.0987179180851632
+        },
+        {
+          "index": 1,
+          "inflation_x": 1.039509054926604
+        },
+        {
+          "index": 2,
+          "inflation_x": 1.0367692585883383
+        }
+      ],
+      "character": "MIXED: both whole-inference scaling and per-dispatch disagreement are present in comparable measure.",
+      "caveat": "A decomposition of the dispersion, not an independent opinion: the normalised statistic still correlates with whole-series RSD at Spearman 0.710. And like every dispersion measure it is blind to a bias that scales the whole series."
+    }
   ]
 }

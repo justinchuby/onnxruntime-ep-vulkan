@@ -1,11 +1,93 @@
 """``run_disturbance`` — was this run disturbed, measured in-band, without a clock comparison.
 
-What this detects, stated before anything else
------------------------------------------------
+READ THIS FIRST: what this is NOT
+----------------------------------
+**It is not a second, independent opinion about whether a run is usable.** An earlier version of
+this docstring said the nine traces it flags and the nine carrying a large per-inference spread were
+"two different statistics over two different frames agreeing on the same nine runs, neither derived
+from the other." **That was false, and it was my error rather than an inherited one** — I had the
+agreement in front of me and read it as independence, when agreement between two statistics is
+evidence *for* redundancy, not against it.
+
+Niobe computed the correlation over the whole census and falsified it. I recomputed it at my own
+commit rather than quote hers (R13): over 29 device-0 traces, same-ordinal RSD against whole-series
+per-inference RSD gives **Spearman rho = 0.919**, **log-log Pearson r = 0.970**, median ratio
+**1.170**. (Hers: 0.903 / 0.964 / 1.128 over 28; the small difference is one extra trace.)
+
+The mechanism is hers and this module now measures it directly: a disturbance that scales a whole
+submission moves every dispatch inside it together, so the two statistics are nearly the same
+quantity **by construction**. :func:`localise` divides out per-inference level and finds that doing
+so explains **84–87%** of the same-ordinal dispersion on the disturbed traces (``contended``
+137.35% → 18.70%; ``notile`` 55.84% → 7.25%; ``ab_p0_r1`` 109.23% → 17.39%).
+
+So: **"the guard and the tail agree" is close to tautological and must not be reported as
+corroboration.**
+
+What survives, and it is worth having
+---------------------------------------
+Whole-series RSD says *that* something moved. :func:`localise` says *what* moved and *where*, by
+dividing out per-inference level and reporting how much of the dispersion that removes. Two
+device-0 traces that whole-series RSD ranks as neighbours are different conditions:
+
+* ``ab_p1_long`` — same-ordinal 35.31%, level-normalised **3.90%** (88.9% explained).
+  ``SUBMISSION_LEVEL``: the dispatches inside each inference agreed with each other; the whole
+  submission moved. A clock/power excursion or a queueing delay ahead of the submit.
+* ``contended3`` — same-ordinal 41.11%, level-normalised **50.43%** (-22.7% explained).
+  ``PER_DISPATCH``: the dispatches disagree *more* than the totals do. Foreign work interleaved
+  between dispatches.
+
+Nothing else in this project distinguishes those, and after the rho = 0.919 correction it is the
+only novelty this module claims. Note the classification is derived from the measurement, not
+attached to a trace by name.
+
+Two results from that decomposition worth carrying forward:
+
+* my own ``notile`` — the "70% kernel-time spread" from session 43 — is **87.0% SUBMISSION_LEVEL**.
+  The spread was whole-inference scaling, which is consistent with, and independent evidence for,
+  the ``SAME_FRAME_ORDERED_SELECTION`` reconciliation.
+* my ``packed`` A/B trace is the only badly disturbed trace classified ``MIXED`` (44.2%), so it
+  carries genuine per-dispatch disagreement on top of submission scaling. A guard whose author is
+  exempt from it is not a guard.
+
+What this detects
+------------------
 **Non-stationarity across repetitions of identical work.** Nothing more. It is a dispersion
-statistic, so it sees *variation* and is blind to *level*. Read the "What it cannot see" section
-before quoting it, because the obvious misreading -- "the guard passed, so the machine was quiet"
--- is wrong and the module ships a control that proves it wrong.
+statistic, so it sees *variation* and is blind to *level*. Read "The hole every dispersion
+instrument shares" below before quoting it, because the obvious misreading -- "the guard passed, so
+the machine was quiet" -- is wrong and the module ships a control that proves it wrong.
+
+The hole every dispersion instrument shares, and it is the one that has cost us most
+--------------------------------------------------------------------------------------
+**No statistic computed from inside a series can detect a bias that scales the whole series.**
+
+This is not a limitation of this module's design; it is a property of dispersion. Any measure of
+spread is invariant under multiplying every sample by a constant, so a run that is uniformly wrong
+is indistinguishable from a run that is uniformly right.
+
+The project has a worked example and it is the most instructive artifact we own.
+``trace_gemv_baseline_certified_dev0.json`` is:
+
+* the cleanest whole-series RSD of all 29 traces (**0.118%**),
+* the cleanest same-ordinal RSD (**0.624%**),
+* unchanged by level normalisation (**0.632%**, -1.2% "explained" — there was nothing to explain),
+* ``STEADY`` at n=46, 100% coverage, zero discarded,
+
+**and it is 21.4x wrong.** Every dispersion measure this project owns certifies it. Only
+``ci/check_device_state.py`` refuses it, because its evidence comes from **outside** the series.
+
+Consequences, which this module is built to respect rather than to work around:
+
+1. ``PASS`` here means *"repetitions agreed"*. It never means the machine was quiet, the clock was
+   correct, or the figure is right.
+2. A dispersion guard cannot replace the §10.0 obligation 8 device-state record, and no future one
+   can either. That is structural, not a gap to be filled by a better statistic.
+3. :func:`synthetic_uniform_slowdown` constructs a 2x-inflated run with perfect repetition, and
+   this module's own test asserts the guard **passes** it. The hole is demonstrated, not described.
+
+Niobe's formulation of the neighbouring trap, which belongs next to this one: *the tightness of a
+short tail is evidence about the length of the window, not the state of the device. Any series that
+moves contains a stretch that does not, and the more disturbed the series, the flatter its flattest
+stretch.*
 
 The quantity
 ------------
@@ -25,6 +107,9 @@ the reader's confidence rather than with the condition. Same-ordinal RSD does no
 It is dimensionless, it is internal to a single run, and it does not move when the model gets
 bigger, the machine gets slower, or the kernel gets faster -- only when repetitions stop agreeing.
 
+**This is a real property and it is still not independence.** Whole-series RSD is dimensionless and
+internal too. Being well-shaped and being new are different virtues and only the first was earned.
+
 Why it is not the same statistic as the per-inference spread
 --------------------------------------------------------------
 Per-inference GPU-busy RSD (what ``gpu_steady_tail`` operates on) is a **sum** over ~355 kernels,
@@ -34,10 +119,12 @@ and it conflates two different conditions:
   tail discards a prefix.
 * **jitter** — repetitions of one dispatch disagreeing. Not legitimate.
 
-Same-ordinal RSD isolates the second. Two committed traces make the distinction concrete: at
-essentially the same per-inference spread (``baseline`` 10.36%, ``ab_p0_r2`` 10.97%) their
-same-ordinal RSD differs by 2.75x (10.51% vs 3.82%). One drifted; the other jittered. A guard built
-on the per-inference spread could not tell them apart.
+Same-ordinal RSD partially isolates the second — **partially**, at rho = 0.919, which is the whole
+correction above. Two committed traces show the residual is real: at essentially the same
+per-inference spread (``baseline`` 10.36%, ``ab_p0_r2`` 10.97%) their same-ordinal RSD differs by
+2.75x (10.51% vs 3.82%). One drifted; the other jittered. A guard built on the per-inference spread
+could not tell those two apart. But it would rank the other 27 traces almost identically, and that
+is the part I previously did not say.
 
 What it cannot see, and this is the load-bearing caveat
 --------------------------------------------------------
@@ -77,18 +164,56 @@ finds a quiet window. So the honest scope is:
 Its value against a published figure is exactly that: it can say *"the suffix you are quoting was
 carved out of a violent run"*, which no statistic computed inside the suffix can say.
 
-Threshold, and how honestly it separates
-------------------------------------------
-Placed by census over all 28 committed device-0 traces, not by fitting the two traces the
-investigation started from. As a population the statistic is sharply bimodal, with a gap that
-contains no trace at all:
+Threshold, and how honestly it separates -- WHICH IS LESS WELL THAN FIRST CLAIMED
+----------------------------------------------------------------------------------
+Placed by census over the committed device-0 traces, not by fitting the two the investigation
+started from. **But the census has since falsified its own headline, and running
+``--sensitivity`` is what caught it.**
 
-* 19 traces from 0.624% to **10.507%**
-* a gap
-* 9 traces from **35.313%** to 137.352%
+The original claim, over 28 traces, was that the statistic is sharply bimodal with a gap
+containing no trace at all: 19 traces from 0.624% to 10.507%, then nothing, then 9 traces from
+35.313% to 137.352%, with 20% sitting in an empty gap 1.90x above the highest clean trace and
+1.77x below the lowest disturbed one.
 
-``DISTURBANCE_RSD_MAX = 0.20`` sits in that gap, near its geometric centre (19.3%), 1.90x above the
-highest undisturbed trace and 1.77x below the lowest disturbed one.
+**With 29 traces the gap is no longer empty.** ``switch_resid`` reads **20.787%** — inside the
+former gap and barely 1.04x over the bar. So:
+
+* the separation on the clean side is unchanged: 1.98x above the highest undisturbed trace;
+* on the disturbed side it has collapsed from 1.77x to **1.04x**;
+* the verdict on ``switch_resid`` is therefore a **judgement, not a separation**, and must be
+  reported as one.
+
+That is the outcome the brief explicitly asked for over a picked number: *if the two populations
+turn out not to separate cleanly, say that*. One additional trace was enough. An "empty gap" is a
+statement about the traces you happen to have, and it decays as you collect more — which makes it
+exactly the kind of claim that should be recomputed rather than quoted. **Re-run
+``--sensitivity`` before relying on any of these numbers.**
+
+**Publish the sensitivity, do not defend the number.** Niobe set a 5% flag threshold, got 7 flagged
+traces, noticed her own instinct was to move it until the count reached zero, named that *choosing
+the answer*, and published the whole table instead. Over the 29-trace device-0 census:
+
+===========  =======
+ threshold    flagged
+===========  =======
+ 5%             20
+ 10%            11
+ 11%            10
+ 15%            10
+ 20%            10   <- DISTURBANCE_RSD_MAX
+ 25%             9
+ 30%             9
+ 35%             9
+ 36%             8
+ 50%             7
+ 75%             3
+===========  =======
+
+The answer is unchanged only from **11% to 20%** — a band that used to run to 35% and no longer
+does, because ``switch_resid`` drops out at 25%. The threshold has started doing some of the
+deciding. It is left at 20% because moving it to keep the old flat band would be choosing the
+answer, which is the failure being avoided; but the narrowing is the honest headline and it should
+be re-read whenever the trace set grows.
 
 **The empty gap is a device-0 property and does not reproduce on device 1.** Over the 12 committed
 Intel traces the distribution is continuous through the boundary: the single flagged trace
@@ -106,13 +231,24 @@ Consequence: **quote the 1.90x/1.77x separation for device 0 only.** On device 1
 a real measurement and still fires, but its margin near the threshold is thin and a borderline
 Intel verdict should be treated as such rather than as the clean call the NVIDIA census supports.
 
+**The sensitivity table settles this more sharply than the gap argument did.** On device 1 the
+flagged count is 11 at 5%, 7 at 10%, 5 at 11%, 4 at 15%, **1 at 20%**, and **0 at 25%** — the band
+over which the answer is unchanged is a single point. The threshold is doing all of the deciding
+there. On device 0 the band is 11%–20%. So:
+
+    **device 0: a judgement at the boundary. device 1: a judgement, full stop.**
+
+An Intel verdict from this check should be read as "this is where we drew the line", not as a
+separation the data supports.
+
 **And here is where it does not separate, which matters more than where it does.** The two
 populations above are *not* the STEADY/refused populations. Against the tail's verdict there is
 substantial overlap: publishing traces run 0.624%–10.507% and refused traces run 3.694%–137.352%.
 Same-ordinal RSD does not predict whether the tail will publish, and must not be read as doing so.
 What it predicts is whether the run was stationary, and the nine it flags are exactly the nine
-traces carrying a >=30% per-inference spread -- two different statistics over two different frames
-agreeing on the same nine runs, neither derived from the other.
+traces carrying a >=30% per-inference spread. **That agreement is redundancy, not corroboration**
+(rho = 0.919 — see the correction at the top of this module). It was previously written here as
+"neither derived from the other", which was exactly backwards.
 
 What it adds today: nothing, and that is measured
 ---------------------------------------------------
@@ -131,8 +267,15 @@ not have. Its actual value is three things, none of which is extra coverage:
    its *tail* RSD is 0.1067% — the third tightest of all 28, tighter than the certified baseline's
    0.1163%. If that median were ever quoted, our dirtiest run would read as our cleanest. This
    statistic is 6.9x over its bar on that run.
-3. Two statistics computed over two frames, neither derived from the other, agreeing on the same
-   nine runs is itself evidence about the nine runs.
+3. It **localises**. Whole-series RSD says the run moved; :func:`localise` says which inferences
+   moved and how much of the movement was whole-submission scaling rather than dispatches
+   disagreeing. That is the one thing here that is genuinely not available elsewhere, and after the
+   rho = 0.919 correction it is the only claim of novelty this module makes.
+
+Point 3 previously read *"two statistics computed over two frames, neither derived from the other,
+agreeing on the same nine runs is itself evidence about the nine runs."* It is struck. Agreement
+between two statistics that correlate at rho = 0.919 is evidence about the statistics, not about
+the runs.
 
 It also refuses **my own** ``packed`` and ``packed2`` A/B traces at 53.4% and 53.2%, which is the
 right outcome and a reminder that a guard whose author is exempt from it is not a guard.
@@ -204,7 +347,12 @@ def per_inference_kernel_us(trace: Path) -> "list[list[float]]":
 
 
 def measure(inferences: "list[list[float]]") -> dict:
-    """Same-ordinal dispersion over a run. Takes durations, not a path, so it is testable."""
+    """Same-ordinal dispersion over a run. Takes durations, not a path, so it is testable.
+
+    **This is correlated with whole-series per-inference RSD at rho = 0.919** and is not a second
+    opinion about the run. See the module docstring, and use :func:`localise` for the part that is
+    not redundant.
+    """
     if len(inferences) < MIN_REPETITIONS:
         raise InstrumentError(
             f"{len(inferences)} inferences; need >= {MIN_REPETITIONS} repetitions before the "
@@ -277,6 +425,94 @@ def classify(measurement: dict, threshold: float = DISTURBANCE_RSD_MAX) -> dict:
             "device."),
         **common,
     }
+
+
+# --------------------------------------------------------------------------------------------
+# Localisation. The part that is NOT redundant with whole-series RSD.
+# --------------------------------------------------------------------------------------------
+
+def localise(inferences: "list[list[float]]") -> dict:
+    """Decompose a run's dispersion into *between-inference* and *within-inference* parts.
+
+    Whole-series RSD says the run moved. This says **what** moved:
+
+    * ``inference_inflation`` — each inference's total against the run's median total, so a reader
+      can see *which repetitions* were hit rather than only that some were.
+    * ``level_normalised_ordinal_rsd`` — same-ordinal RSD recomputed after dividing each inference
+      by its own mean dispatch duration, i.e. after removing whole-submission scaling.
+    * ``explained_by_level`` — how much of the raw same-ordinal dispersion that removal accounts
+      for. This is Niobe's mechanism as a number: on the disturbed traces it runs 84–87%.
+
+    **This is a decomposition, not a second opinion, and I checked before saying otherwise.**
+    ``level_normalised_ordinal_rsd`` still correlates with whole-series RSD at Spearman **0.710**
+    (log-log r = 0.885) over the 29-trace device-0 census — lower than the raw statistic's 0.919,
+    but nowhere near independent. It is reported because it *separates two mechanisms*, not because
+    it is new evidence:
+
+    * ``ab_p1_long``  — whole 37.8%, normalised **3.9%** (88.9% explained). Entirely
+      submission-level: the dispatches inside each inference agreed. A power/clock or queueing
+      event, not a per-kernel one.
+    * ``contended3``  — whole 34.4%, normalised **50.4%** (-22.7% explained). The dispatches
+      disagree *more* than the totals do. Foreign work interleaved between dispatches.
+
+    Those two look almost identical to whole-series RSD and are not the same condition. Telling
+    them apart is the whole remaining value of this module.
+
+    It inherits the level-blindness hole in full: normalising by per-inference level *removes* level
+    on purpose, so a uniformly slow run is if anything even more invisible here. Nothing in this
+    function can see a bias that scales the series.
+    """
+    m = measure(inferences)  # reuse every instrument gate, so failures stay ERROR not silence
+    modal = m["dispatches_per_inference"]
+    full = [x for x in inferences if len(x) == modal]
+
+    totals = [sum(f) for f in full]
+    med_total = statistics.median(totals)
+    inflation = [(t / med_total) if med_total else float("nan") for t in totals]
+
+    normalised = []
+    for f in full:
+        mean_k = statistics.fmean(f)
+        normalised.append([v / mean_k for v in f] if mean_k else list(f))
+
+    norm_ord = [r for r in (_rsd([f[k] for f in normalised]) for k in range(modal))
+                if r is not None]
+    if not norm_ord:
+        raise InstrumentError("no ordinal yielded a level-normalised dispersion value")
+    norm_med = statistics.median(norm_ord)
+    raw_med = m["same_ordinal_rsd_median"]
+    explained = (1.0 - norm_med / raw_med) if raw_med else None
+
+    worst = sorted(range(len(inflation)), key=lambda i: inflation[i], reverse=True)[:5]
+    return {
+        "same_ordinal_rsd_median": raw_med,
+        "level_normalised_ordinal_rsd": norm_med,
+        "explained_by_level": explained,
+        "inference_inflation_max": max(inflation),
+        "inference_inflation_min": min(inflation),
+        "inferences_over_1_10x": sum(1 for r in inflation if r > 1.10),
+        "worst_inferences": [{"index": i, "inflation_x": inflation[i]} for i in worst],
+        "character": _character(explained),
+        "caveat": ("A decomposition of the dispersion, not an independent opinion: the normalised "
+                   "statistic still correlates with whole-series RSD at Spearman 0.710. And like "
+                   "every dispersion measure it is blind to a bias that scales the whole series."),
+    }
+
+
+def _character(explained: "float | None") -> str:
+    """Name the mechanism the decomposition points at, derived rather than asserted."""
+    if explained is None:
+        return "UNDETERMINED(no raw dispersion to decompose)"
+    if explained >= 0.60:
+        return ("SUBMISSION_LEVEL: most of the dispersion is whole-inference scaling — the "
+                "dispatches inside an inference agreed with each other. Consistent with a "
+                "clock/power excursion or queueing delay ahead of the submission.")
+    if explained <= 0.20:
+        return ("PER_DISPATCH: removing per-inference level barely reduces the dispersion — "
+                "individual dispatches disagree on their own. Consistent with foreign work "
+                "interleaved between dispatches.")
+    return ("MIXED: both whole-inference scaling and per-dispatch disagreement are present in "
+            "comparable measure.")
 
 
 # --------------------------------------------------------------------------------------------

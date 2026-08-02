@@ -137,14 +137,46 @@ def corroborate(results: "list[dict]") -> dict:
             tail_only += 1
     reading = (
         "Every run this check refuses is already refused by the tail's own floors, so on this "
-        "evidence it ADDS NO REFUSALS. Its value is not extra coverage: it refuses for a reason "
-        "that does not depend on suffix selection, it is the check that still holds if a "
-        "MARGINAL_TAIL's withheld median is ever published, and two statistics over two frames "
-        "agreeing on the same runs is itself evidence." if new == 0 else
+        "evidence it ADDS NO REFUSALS. And the reason is now known rather than puzzling: "
+        "same-ordinal RSD correlates with whole-series per-inference RSD at Spearman 0.919 "
+        "(log-log r 0.970), because a disturbance that scales a whole submission moves every "
+        "dispatch inside it together. The agreement is REDUNDANCY, NOT CORROBORATION. What this "
+        "module still offers that nothing else does is localisation -- see --localise -- and the "
+        "fact that it refuses for a reason independent of suffix selection, which matters if a "
+        "MARGINAL_TAIL's withheld median is ever published." if new == 0 else
         f"{new} run(s) would be published by the tail and are refused here. This check is "
         "protecting, not merely corroborating, and those runs need attention.")
     return {"compared": compared, "both_refuse": both, "new_refusals": new,
             "new_refusal_traces": new_traces, "tail_only": tail_only, "reading": reading}
+
+
+def sensitivity(results: "list[dict]", grid=None) -> dict:
+    """Flagged count against threshold, published whole rather than reduced to one number.
+
+    Niobe's discipline: she set a threshold, saw the flagged count, noticed her instinct was to
+    move it until the count reached zero, named that *choosing the answer*, and published the
+    table. A boundary is defensible when the answer is flat around it, and that flatness is
+    something a reader must be able to see rather than take on trust.
+    """
+    grid = grid or [0.05, 0.10, 0.11, 0.15, 0.20, 0.25, 0.30, 0.35, 0.36, 0.40, 0.50, 0.75, 1.00]
+    meds = [r["measurement"]["same_ordinal_rsd_median"] for r in results
+            if r.get("measurement")]
+    table = [{"threshold": t, "flagged": sum(1 for m in meds if m > t)} for t in grid]
+    # The widest run of thresholds giving the answer at the shipped default.
+    at_default = sum(1 for m in meds if m > rd.DISTURBANCE_RSD_MAX)
+    stable = [row["threshold"] for row in table if row["flagged"] == at_default]
+    return {
+        "n_traces": len(meds),
+        "table": table,
+        "flagged_at_default": at_default,
+        "default": rd.DISTURBANCE_RSD_MAX,
+        "unchanged_over": [min(stable), max(stable)] if stable else None,
+        "reading": (
+            f"The flagged count is {at_default} for every threshold from {min(stable):.0%} to "
+            f"{max(stable):.0%}." if stable else "No threshold on the grid reproduces the default."
+        ) + " Flatness around the boundary is the argument for it; if this band is ever narrow, "
+            "the threshold is doing the deciding and should be reported as a judgement.",
+    }
 
 
 def main(argv=None) -> int:
@@ -157,6 +189,13 @@ def main(argv=None) -> int:
                     help="also report agreement with gpu_steady_tail's verdict, including how "
                          "many refusals this check adds that the tail's own floors do not")
     ap.add_argument("--explain", action="store_true", help="print what the check does and stop")
+    ap.add_argument("--localise", action="store_true",
+                    help="decompose each run's dispersion into whole-submission scaling versus "
+                         "per-dispatch disagreement -- the part that is NOT redundant with "
+                         "whole-series RSD")
+    ap.add_argument("--sensitivity", action="store_true",
+                    help="print the flagged-count-against-threshold table instead of defending "
+                         "a single boundary")
     args = ap.parse_args(argv)
 
     if args.explain:
@@ -197,6 +236,17 @@ def main(argv=None) -> int:
     }
     if args.corroborate:
         summary["corroboration"] = corroborate(results)
+    if args.sensitivity:
+        summary["sensitivity"] = sensitivity(results)
+    if args.localise:
+        loc = []
+        for r in results:
+            p = Path(r.get("path") or "")
+            try:
+                loc.append({"trace": r["trace"], **rd.localise(rd.per_inference_kernel_us(p))})
+            except Exception as e:  # noqa: BLE001
+                loc.append({"trace": r["trace"], "instrument_error": f"{type(e).__name__}: {e}"})
+        summary["localisation"] = loc
     if args.summary:
         args.summary.parent.mkdir(parents=True, exist_ok=True)
         args.summary.write_text(json.dumps(summary, indent=2))
@@ -213,6 +263,29 @@ def main(argv=None) -> int:
               f"   {c['new_refusal_traces'] or ''}")
         print(f"    tail refuses but this check passes           : {c['tail_only']}")
         print(f"  {c['reading']}")
+
+    if args.sensitivity and "sensitivity" in summary:
+        s = summary["sensitivity"]
+        print(f"\n  threshold sensitivity over {s['n_traces']} trace(s):")
+        for row in s["table"]:
+            mark = "  <- default" if row["threshold"] == s["default"] else ""
+            print(f"    {row['threshold']:>6.0%}   {row['flagged']:>3d} flagged{mark}")
+        print(f"  {s['reading']}")
+
+    if args.localise and "localisation" in summary:
+        print("\n  localisation -- a DECOMPOSITION, not a second opinion "
+              "(normalised statistic still correlates with whole-series RSD at rho 0.710):")
+        print(f"    {'trace':34s} {'ordinal':>9s} {'norm':>9s} {'expl':>7s}  character")
+        for e in sorted(summary["localisation"],
+                        key=lambda x: -(x.get("same_ordinal_rsd_median") or 0)):
+            if "instrument_error" in e:
+                print(f"    {e['trace']:34s}  ERROR(instrument): {e['instrument_error']}")
+                continue
+            ex = e["explained_by_level"]
+            print(f"    {e['trace']:34s} {e['same_ordinal_rsd_median']:>8.2%} "
+                  f"{e['level_normalised_ordinal_rsd']:>8.2%} "
+                  f"{(ex if ex is not None else float('nan')):>6.1%}  "
+                  f"{e['character'].split(':')[0]}")
 
     if errors and not results:
         return report_instrument_error(
