@@ -412,8 +412,7 @@ baked push constants at Compile time.
    DynKernelRecipe { node_desc, spec } is stored on CompiledKernel.
 
 2. dispatch_ort pre-pass (Steps 1.5/1.6): reads GetTensorSizeInBytes for 0-size inputs,
-   then 
-ead_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
+   then read_tensor_desc_from_ort (GetTensorTypeAndShape + GetTensorElementType + GetDimensions)
    for each dynamic kernel input slot, re-runs translate via ShapeOnlyRecorder to capture
    push_constants, workgroups, spec_constants, shader, and output TensorDescs.
 
