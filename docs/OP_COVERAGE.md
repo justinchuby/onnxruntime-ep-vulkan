@@ -3328,6 +3328,159 @@ why its `TransferDominated` assertion is consistent with `overrides 1 → 0` shi
 the coordinator three steps to establish that, and **a reader who stopped at the test name would
 have concluded the opposite of what ships.**
 
+### 7.17 What fraction of the model's work runs on the CPU EP — and why the answer is a curve (2026-08-02)
+
+**The question was asked because a node count could not answer it.** The standing reading was
+`executed_by = {'CPUExecutionProvider': 120, 'VulkanExecutionProvider': 99}`, and a large count of
+small things is not a large thing. `rust/tools/roofline_split.py` replaces it with the two
+quantities that are actually spent — **FLOPs** and **bytes moved** — split by execution provider,
+and reports both as a **function of context length** rather than as a scalar.
+
+Artifacts: `bench/results/roofline_split-dev{0,1}.json`,
+`bench/results/roofline_split-dev0-cf-GroupQueryAttention.json`, prediction in
+`bench/results/roofline_split-prediction.md`. **Not one figure in this section is a duration.**
+
+#### (a) The answer
+
+One decode step (`sequence_length = 1`, `past_sequence_length = ctx`), Phi-3.5-mini int4:
+
+| ctx | CPU share of FLOPs | CPU share of bytes | model bytes/step | EP's own estimator says |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.00% | **0.07%** | 2.302 GB | 16.58% |
+| 128 | 0.67% | 4.26% | 2.403 GB | 16.58% |
+| 512 | 2.63% | 14.95% | 2.705 GB | 16.58% |
+| 2048 | 9.76% | **41.21%** | 3.913 GB | 16.58% |
+| 8192 | 30.20% | **73.77%** | 8.769 GB | 16.58% |
+
+**Neither 3% nor 30%. It is a curve spanning three orders of magnitude over the operating range,
+and which end you stand at decides whether the GQA fix is a rounding error or the largest
+performance item in the project.** At ctx=0 the declined work is 0.07% of bytes; at ctx=8192 it is
+73.77%. The one regime in which the CPU EP looks free is exactly the regime our quotable figures
+were taken in.
+
+Identical on both devices (dev0 RTX 4060, dev1 Iris Xe) to every digit. The split is decided by op
+type and shape, not by device, so this is one fact and not two.
+
+#### (b) What the fix is worth, as a counterfactual on the same instrument
+
+`--counterfactual GroupQueryAttention` moves the 32 declined nodes to the Vulkan side and re-runs
+the same arithmetic against the same graph. Claimed goes 323 → **355** — the 355-node island we
+already quote.
+
+| ctx | CPU bytes, today | CPU bytes, GQA claimed |
+| ---: | ---: | ---: |
+| 0 | 0.07% | 0.03% |
+| 2048 | 41.21% | 0.02% |
+| 8192 | 73.77% | 0.29% |
+
+**So the GQA fix is not a correctness fix with a rounding-error performance effect.** It is worth
+**41.2 points of byte traffic at ctx=2048 and 73.5 points at ctx=8192**, and approximately nothing
+at ctx=0. It also collapses **33 fused islands into 1** — see (d).
+
+The residual 0.29% at ctx=8192 is not noise: it is the `If` at
+`/model/rotemb_caches_subgraph/If` materialising the **131072 × 48** rotary cache (25.2 MB) instead
+of the 4096-row one. That is a step function at `total_sequence_length > 4096`, read out of the
+graph's own `Greater` predicate, and it is the only remaining context-dependent CPU cost once GQA
+lands.
+
+#### (c) The EP's own estimator cannot answer this question, and the artifact shows why
+
+The last column of (a) is the split computed with `ep.rs`'s model reproduced exactly. **It is
+16.58% at every context and does not move at all.** 16.58% is `32 / 193` — the declined anchors
+over the total anchors. The estimator scores every anchor with the constant `2 * 3072 * 3072` and
+everything else with `out_bytes / 2` under a substituted dim, so **its FLOP number is the anchor
+count wearing a FLOP's clothes**, and it is blind to the one axis on which this model's cost
+actually varies.
+
+That is not a call to tighten it. Per R9 amendment 5, a verdict that moves with a constant nobody
+measured is a fabricated input, not an over-broad one. The estimator is adequate for the job it has
+(a coarse gate at `GetCapability`, where no shape inference is available) and inadequate for this
+one, and the honest response is to use a different instrument, which is what this is.
+
+#### (d) Reconciliation — three node counts that do not match, reported rather than smoothed
+
+```
+graph 366 = offered 363 + never-offered 3 {Constant: 3}
+offered 363 = claimed 323 + declined 40
+declined 40 = GroupQueryAttention 32 + the eight permanent declines
+profile   = {VulkanExecutionProvider: 33, CPUExecutionProvider: 40}
+```
+
+- The **3 `Constant` nodes are never offered to `GetCapability`** — ORT folds them first. Per R12
+  they are absent from the frame, not declined in it; counting them as declines would be a zero
+  where `UNOBSERVABLE` belongs.
+- **CPU profile events (40) match the declined set 1:1.** The eight are exactly the eight of §7.13,
+  all inside `attn_mask_reformat` and `rotemb_caches_subgraph`.
+- **The 33 Vulkan profile events are fused partitions, not nodes.** 323 claimed nodes in 33 islands:
+  the 32 GQA declines cut the per-layer chain 32 times. **The island count is a consequence of the
+  GQA decline, not an independent problem** — which is why the fragmentation lever measured 0.0376%
+  on its own and why it should not be worked separately.
+- **The standing `{CPU: 120, Vulkan: 99}` reading matches none of these numbers.** It sums to 219,
+  not 366, not 363, not 73. I am not able to reproduce it from this build and I am not going to
+  reconcile it by guessing; it should be re-taken or withdrawn.
+
+#### (e) The denominator does not come from us (R11)
+
+The whole model is enumerated straight from the ONNX file — all 366 nodes, their shapes, their
+initializers' real stored byte lengths from `external_data[].length`. The **only** thing taken from
+the EP is which nodes it claimed, read from the `CLAIM_LOG`. Two sources: the graph says how much
+work exists, the EP says which part of it it took. Had the split been re-derived from
+`registry.rs`'s predicates, both sides would come from one source and the identity could not fail.
+
+Two independent checks that the totals are not self-consistent nonsense:
+`MatMulNBits` moves **2.097 GB** of weights per step, which is the int4 file's own size; and its
+**7.445 GFLOP** at one row implies 3.72 G weights, against a 3.8 B-parameter model.
+
+#### (f) Fabricated-extent disclosure — and an instrument error I made getting here
+
+**Zero.** Every extent resolves from the graph once a context length is stated:
+`make_dim_param_fixed` on the four dim params plus ORT's symbolic shape inference leaves nothing
+open. The EP's `128`-for-unknown-dim substitution is a property of the estimator at
+`GetCapability`, where no shape inference is available — **it is not inherited by this
+measurement.** So the answer in (a) is not `UNOBSERVABLE`; it is measured.
+
+The one extent symbolic inference genuinely could not fold is `cos_cache` / `sin_cache`, left as
+`[None, 48]` because they are produced by an `If`. That extent is **conditional, not unknown**: the
+predicate is `total_sequence_length > 4096` and the two branches are Constants of `[4096, 48]` and
+`[131072, 48]`. Reading it out of the graph is the difference between a resolved extent and a
+fabricated one, and it is exactly the move `slot_bytes` does not make.
+
+**R13, on myself.** The first run of this tool printed
+`VERDICT: UNOBSERVABLE(fabricated extents carry 73.69% of the bytes)`. That was **ERROR(instrument),
+not a detection**: I was flagging fabrication per *node* rather than per *tensor*, so one unresolved
+48-wide operand condemned the whole 50 MB GQA node. The suspicious part was that the fabricated
+fraction equalled the CPU fraction to two decimals at every context — an identity that had no reason
+to hold. Fixed at the tensor level; the figure is now 0.00% at every context. **The number I would
+have shipped was 73.69 percentage points wrong and it carried the more alarming verdict.**
+
+#### (g) Predictions, scored
+
+Written to `bench/results/roofline_split-prediction.md` before the tool ran.
+
+| # | Prediction | Outcome |
+| --- | --- | --- |
+| 1 | monotone climb with ctx, near-flat FLOPs at ctx=0 | **held** |
+| 2 | CPU bytes under 5% at ctx=0 | **held** (0.07%) |
+| 3 | CPU bytes over 40% at ctx=8192 | **held, but I under-predicted** — 73.77% |
+| 4 | the node count (32.8%) predicts neither end | **held** — byte share crosses it between ctx 512 and 2048 |
+| 5 | the EP estimator is flat in ctx | **held** — 16.58% at every ctx, and it is `32/193` exactly |
+| 6 | fabricated extents contribute nothing | **held, after I fixed my own instrument** — see (f) |
+
+#### (h) Disagreement with the 60.5% KV figure, left standing
+
+Switch's KV-traffic figure at ctx=8192 is **60.5%** of bytes; the GQA share here is **73.5%**. The
+two are not the same quantity — mine charges GQA for Q, the output and the rotary indexing as well
+as the cache — but that does not obviously account for 13 points. **Two independent estimates that
+disagree are worth more than one that has been reconciled**, so both are recorded and neither is
+adjusted. Anyone quoting either must state ctx alongside it, the way a timing states its device
+state.
+
+#### (i) The rule this establishes
+
+**Any figure quoted against the roofline states its context length, or it is not a figure.** The
+0.07% and the 73.77% are the same system, the same build and the same claim set. A reader given
+either one alone would size Switch's work wrong by three orders of magnitude.
+
 
 ## 8. Quantization
 
