@@ -75,6 +75,8 @@ def is_provisioning(step_name: str) -> tuple[bool, str | None]:
 #: that change more often than the thing the step does.
 STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Two-polarity tests", "hostfree.lane_check_tests"),
+    ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
+    ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),
     ("cargo test --lib", "build.rust_unit_tests"),
     ("Rust unit tests", "build.rust_unit_tests"),

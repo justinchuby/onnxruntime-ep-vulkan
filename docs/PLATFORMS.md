@@ -1357,7 +1357,7 @@ The same argument covers `timestampValidBits`: lavapipe and NVIDIA report 64, Ir
 | `device_clock_state` — a figure taken at idle clock | **nothing.** No GPU in any lane, therefore no clock | `IMPOSSIBLE_HERE` |
 | `concurrency_and_barriers` — a missing barrier | barrier-count parity (structural) + real hardware (not reproducible) | `UNDEMONSTRATED` |
 | `vendor_driver_behaviour` — UMA/discrete, subgroup width, fp16/int8, ReBAR | local-dev observation; a GPU runner the project does not have | `IMPOSSIBLE_HERE` |
-| `conversion_call_sites` — correct arithmetic, never invoked | **nothing** | `IMPOSSIBLE_HERE` |
+| `conversion_call_sites` — correct arithmetic, never invoked | **`ci/check_tick_conversions.py`**, a static source screen (§7.13) | `DEMONSTRATED` (2026-08-01) |
 
 The CI matrix has **one device in it wearing two operating systems**. That is a portability result about our code and not a hardware-coverage result, and it is why OQ-12's **~32.67% as of 2026-07-30** is simultaneously a ceiling and a floor.
 
@@ -1389,6 +1389,83 @@ Reading the real `main` run rather than my own YAML (R10) turned up two, both mi
 * `cargo fmt --check` is red on `rust/src/allocator.rs` (×2), `rust/src/ops/indexing.rs`, `rust/src/ops/norm.rs`, `rust/src/ops/partition.rs` (×3). Not touched — those files are being edited by concurrently-running agents.
 * The clippy and portability failures in §7.12.1.
 * Closing the duty-cycle mechanism still needs `nvidia-smi --lock-gpu-clocks` and an elevated shell.
+
+---
+
+## 7.13 `conversion_call_sites`: a third instrument family, because neither of the first two can see this — added 2026-08-01T21:30-07:00
+
+### 7.13.1 The residual, stated as it was stated against me
+
+§7.12.3 listed `conversion_call_sites` as a blind spot with substitute **nothing**. The reason was in my own report and was not papered over:
+
+> those tests prove the conversion is correct *where called*; they cannot prove every call site calls it.
+
+That is the 52× defect class one layer up. `build.rust_unit_tests` closes **"is the arithmetic right"** — it constructs a synthetic calibration with a non-unit period and four tests go red if the period multiply is dropped. It says nothing whatever about **"does every path use it"**, because a path that skips the conversion never appears in a test *of* the conversion.
+
+And no device lane can close it either, for the reason that makes this class nasty:
+
+> `timestampPeriod` is **1.0** on lavapipe, on SwiftShader and on NVIDIA. At a period of 1.0 the conversion is the **identity**. A build that skips it is byte-identical to a build that performs it on every device this CI can reach.
+
+So the defect is invisible to **both** instrument families the project runs. That is rare. Almost every other gap here is "we lack a runner"; this one would survive having every runner, because the runners we would buy are the ones where the bug does not manifest. Only Intel Iris Xe (**52.0833 ns/tick, 36 valid bits**) exposes it, and it is a laptop on a desk, not a lane.
+
+**A defect class invisible to every existing instrument is R9's argument for a new one**, not for more runs of the old ones.
+
+### 7.13.2 The instrument: static, because the period's value is what blinds the others
+
+`ci/check_tick_conversions.py` decides the question from **source text**, where `timestampPeriod` has no value at all and therefore cannot be 1.0. It needs no GPU, no Vulkan loader, no ORT, and — deliberately — **no `tests/ops/_verdict.py`**: it emits no *verdict* about the EP, only a finding about source, so a vocabulary outage that stops every other lane check leaves this one running.
+
+Three rules, each decidable from the text:
+
+| Rule | Claim | Condition token when red |
+|---|---|---|
+| **R-A** arithmetic monopoly | A tick may be moved, stored, compared and logged anywhere; it may be **scaled** only inside `GpuTimestampCalibration`'s converters. A by-hand `ticks * period` is a bypass *even though it uses the period*, because it skips the mask and the wrap recovery — on Intel that is a 36-bit counter read as if it were 64. | `tick_conversion_bypassed` |
+| **R-B** single producer | Raw, unmasked ticks enter the program at exactly one site — `TimestampPool::read_results` — and that site's enclosing function constructs the calibration. **This is the arm that addresses "does every path use it."** A second reader anywhere in the tree has to justify itself. | `raw_tick_producer_not_unique` |
+| **R-C** allowlist integrity | Every exemption still matches a live line. An exemption that has lost its site does not expire quietly; it becomes a blanket over whatever moved into its place. | `allowlist_entry_without_a_site` |
+
+Result on the tree as it stands: **41 `.rs` files, 33 tick-bearing production lines, and exactly three sites in the whole codebase that scale a tick** — `ticks_to_ns`, `ticks_to_axis_us`, `mask_ticks`, all inside `GpuTimestampCalibration`. Each is recorded in `ci/tick_conversion_allowlist.json` with a reason and an owner. `trace.rs` **has no roster owner**; the allowlist says so rather than inventing one.
+
+### 7.13.3 It is conservative on purpose, and the allowlist is the design
+
+A lane script cannot do sound Rust semantic analysis, and one that *looked* like it could would be **R11 exactly** — a decomposition that appears to close is the hardest kind of wrong. So the screen over-reports, and every over-report must be either fixed or entered in the allowlist **with a recorded reason and an owner**. Adding a bypass then requires a visible edit to an allowlist file *in the same diff as the bypass*. That is a thing a reviewer can see; a missing function call is not.
+
+Two rules were tightened rather than allowlisted, because they were decidably wrong rather than debatable: `->` in a signature is not arithmetic, and `timestamp_period_ns` propagating from the driver limits into the calibration **under its own name** is a move, not a scale. Filling the allowlist with entries like those would teach reviewers the file is noise, which is the failure mode that matters most for a file whose whole value is that someone reads it.
+
+### 7.13.4 Both arms, demonstrated — `ci/negative_control_tick_conversions.py`
+
+A screen that has only ever been observed passing is one step from a screen that cannot fail. Each defect is injected into a **scratch copy** of `rust/src` under `bench/results/`; the checked-out source is never written to.
+
+| Injection | Result |
+|---|---|
+| baseline, unmodified copy | `PASS` — without this, no red below is attributable to its injection |
+| `let bypass_ns = end_ticks - begin_ticks;` — the 52× defect itself | `FAIL(condition=tick_conversion_bypassed)`, line quoted |
+| `let raw_span = end_ticks;` — the same defect laundered through a rename | `FAIL(condition=tick_conversion_bypassed)`, line quoted |
+| `let hand_ns = iv.begin_ticks as f64 * 1.0;` — period applied by hand, mask skipped | `FAIL(condition=tick_conversion_bypassed)`, line quoted |
+| a second `read_results()` caller | `FAIL(condition=raw_tick_producer_not_unique)` |
+| an allowlist entry whose pinned text no longer exists | `FAIL(condition=allowlist_entry_without_a_site)` |
+| allowlist deleted | `ERROR(instrument=allowlist_unreadable)`, exit 4 |
+| source tree emptied | `ERROR(instrument=no_tick_sites_found)`, exit 4 — R12: finding nothing is `UNOBSERVABLE`, never a clean tree |
+
+The rename case is not decoration. A name-based screen is defeated by `let raw = end_ticks;` followed by arithmetic on `raw`, which carries no tick token. Rebinding a tick to a non-tick name is therefore **itself** the finding, caught at the boundary where it is still visible.
+
+**Two defects in the screen were found by its own controls, not by review:**
+
+1. The first draft's injection anchor did not exist in `session.rs`. The control reported `ERROR(instrument=anchor_not_found)` and refused to report a pass — a negative control that cannot inject its defect is asserting nothing, and it said so instead of going green.
+2. Producer detection skipped any line containing `fn `, to avoid matching the declaration. A one-line `fn other() { p.read_results(); }` was therefore **invisible** — a real evasion, found by the test that injects exactly that. Now scoped to `\bfn\s+read_results\b`.
+
+### 7.13.5 What it claims, and what it does not — the column that has to stay honest
+
+**Claims:** no source path in `rust/src` scales a device tick without the period and the valid-bit mask.
+
+**Does not claim, and these are named rather than closed:**
+
+* **That the conversion is arithmetically correct.** A wrong formula inside a sanctioned converter passes this screen untouched. That is `trace.rs`'s unit tests' question. The two arms are complementary and **neither substitutes for the other** — which is the same mistake, in reverse, that created this blind spot.
+* **That a value cannot escape.** The screen decides from names. It catches the *first hop* out of a tick-named binding, which is where laundering must start; it does not follow the value further.
+* **That an exemption is right.** It guarantees the judgement is written down and pinned to a line, not that the judgement is sound.
+* **`#[cfg(test)]` bodies.** Out of frame by design (a test ships nothing), and reported as held out with a line count rather than silently dropped — R12 applied to the screen's own frame.
+
+### 7.13.6 Lane status after this
+
+`lane-checks` remains **`green`**: both new checks have a demonstrated failing arm, executed on every run rather than imagined. `device.op_correctness` and `build.integration_targets` remain **`UNDEMONSTRATED`** and both device lanes therefore remain **`operational`**. They have now run clean for a while, and **running a while is not the falsifier** — a check that has never been red is not yet known to be a check. They stay named, not claimed, until someone produces the mutation.
 
 ---
 

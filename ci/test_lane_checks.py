@@ -917,3 +917,174 @@ def test_the_real_workflow_has_no_unclassified_gate_steps():
         str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
     )
     assert r.returncode == EXIT_PASS, r.stdout
+
+
+# ---------------------------------------------------------------------------
+# check_tick_conversions.py — the static screen for the tick->duration defect class.
+#
+# This is the only check here that decides its question from SOURCE TEXT rather than
+# from a run, because the defect class it attacks is invisible to both of the other
+# families: unit tests prove the conversion correct where it is called and say nothing
+# about whether every path calls it, and no device lane can see a skipped conversion
+# because timestampPeriod is 1.0 on every device CI can reach, which makes the
+# conversion the identity there.
+# ---------------------------------------------------------------------------
+
+TICK_SANCTIONED = """\
+pub struct GpuTimestampCalibration {
+    pub timestamp_period_ns: f32,
+    pub valid_bits: u32,
+}
+impl GpuTimestampCalibration {
+    pub fn ticks_to_ns(&self, begin_ticks: u64, end_ticks: u64) -> Option<f64> {
+        let span = mask_ticks(end_ticks, self.valid_bits);
+        Some(span as f64 * f64::from(self.timestamp_period_ns))
+    }
+}
+fn mask_ticks(raw_ticks: u64, valid_bits: u32) -> u64 {
+    raw_ticks & ((1u64 << valid_bits) - 1)
+}
+fn consume(cal: &GpuTimestampCalibration, pool: &Pool) {
+    let results = unsafe { pool.read_results() };
+    let cal2 = GpuTimestampCalibration { timestamp_period_ns: 1.0, valid_bits: 64 };
+    let _ns = cal.ticks_to_ns(0, 1);
+}
+"""
+
+TICK_ALLOWLIST = {
+    "sanctioned_sites": [
+        {
+            "file": "rust/src/trace.rs",
+            "function": "ticks_to_ns",
+            "contains": "Some(span as f64 * f64::from(self.timestamp_period_ns))",
+            "reason": "the conversion itself",
+            "owner": "test",
+        },
+        {
+            "file": "rust/src/trace.rs",
+            "function": "mask_ticks",
+            "contains": "raw_ticks & ((1u64 << valid_bits) - 1)",
+            "reason": "arithmetic is on the mask, not on the tick",
+            "owner": "test",
+        },
+    ]
+}
+
+
+def _tick_tree(tmp_path: Path, body: str, allowlist=None) -> tuple[Path, Path]:
+    """A minimal source tree the screen can be pointed at, plus its allowlist."""
+    src = tmp_path / "rust" / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "trace.rs").write_text(body, encoding="utf-8")
+    al = tmp_path / "allowlist.json"
+    al.write_text(
+        json.dumps(TICK_ALLOWLIST if allowlist is None else allowlist), encoding="utf-8"
+    )
+    return tmp_path, al
+
+
+def _run_tick(root: Path, al: Path) -> subprocess.CompletedProcess:
+    return run_check("check_tick_conversions.py", "--root", str(root), "--allowlist", str(al))
+
+
+def test_tick_screen_passes_when_every_scale_is_sanctioned(tmp_path):
+    root, al = _tick_tree(tmp_path, TICK_SANCTIONED)
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "TICK-SCREEN: PASS" in r.stdout
+    # A pass that does not say what it did not check is a pass nobody can size.
+    assert "What it does not claim" in r.stdout
+
+
+@pytest.mark.parametrize(
+    "bypass",
+    [
+        "fn bad(begin_ticks: u64, end_ticks: u64) -> u64 { let d = end_ticks - begin_ticks; d }",
+        "fn bad(end_ticks: u64) -> f64 { let elapsed_ns = end_ticks as f64; elapsed_ns }",
+        "fn bad(end_ticks: u64) -> u64 { let launder = end_ticks; launder }",
+    ],
+)
+def test_tick_screen_reds_on_an_injected_bypass_and_quotes_the_line(tmp_path, bypass):
+    """R10 for the screen itself: an artifact whose content varies with its input.
+
+    Three shapes of the same defect — a raw delta, a raw cast, and the rename that
+    defeats a naive name-based screen.
+    """
+    root, al = _tick_tree(tmp_path, TICK_SANCTIONED + "\n" + bypass + "\n")
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=tick_conversion_bypassed)" in r.stdout
+    # R13: quote the failure text, never the failure count.
+    assert "fn bad" in r.stdout
+
+
+def test_tick_screen_reds_on_a_second_reader_of_raw_ticks(tmp_path):
+    """The arm that addresses 'does every path use it' rather than 'is it right'."""
+    root, al = _tick_tree(
+        tmp_path,
+        TICK_SANCTIONED + "\nfn other(p: &Pool) { let _r = unsafe { p.read_results() }; }\n",
+    )
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=raw_tick_producer_not_unique)" in r.stdout
+    assert "is called from 2 sites" in r.stdout
+
+
+def test_tick_screen_reds_when_an_allowlist_entry_has_lost_its_site(tmp_path):
+    """An exemption that no longer matches anything is a blanket, not an exemption."""
+    rotted = json.loads(json.dumps(TICK_ALLOWLIST))
+    rotted["sanctioned_sites"].append(
+        {
+            "file": "rust/src/trace.rs",
+            "function": "gone",
+            "contains": "a line that no longer exists",
+            "reason": "stale",
+            "owner": "test",
+        }
+    )
+    root, al = _tick_tree(tmp_path, TICK_SANCTIONED, allowlist=rotted)
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=allowlist_entry_without_a_site)" in r.stdout
+    assert "lost its site" in r.stdout
+
+
+def test_tick_screen_holds_test_modules_out_of_frame_and_says_so(tmp_path):
+    """R12: the frame's exclusions are reported, not silently applied.
+
+    A #[cfg(test)] module may build ticks freely; it ships nothing. But a screen that
+    quietly drops lines is a screen whose green covers an unknown amount of code.
+    """
+    body = TICK_SANCTIONED + (
+        "\n#[cfg(test)]\nmod tests {\n"
+        "    fn t() { let d = end_ticks - begin_ticks; }\n"
+        "}\n"
+    )
+    root, al = _tick_tree(tmp_path, body)
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "held out as #[cfg(test)]" in r.stdout
+    assert "UNOBSERVABLE by frame, not zero findings" in r.stdout
+
+
+def test_tick_screen_missing_allowlist_is_an_instrument_error_not_a_detection(tmp_path):
+    root, _ = _tick_tree(tmp_path, TICK_SANCTIONED)
+    r = _run_tick(root, tmp_path / "no-such-file.json")
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "ERROR(instrument=allowlist_unreadable)" in r.stdout
+    assert "NOT a detection" in r.stdout
+
+
+def test_tick_screen_empty_frame_is_unobservable_not_a_pass(tmp_path):
+    """A screen pointed at the wrong tree finds nothing, and finding nothing is not clean."""
+    root, al = _tick_tree(tmp_path, "fn unrelated() -> u32 { 1 + 1 }\n")
+    r = _run_tick(root, al)
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "ERROR(instrument=no_tick_sites_found)" in r.stdout
+
+
+def test_the_real_source_tree_has_no_unsanctioned_tick_arithmetic():
+    """The screen against the tree it ships with. This is the one that can regress."""
+    r = run_check("check_tick_conversions.py")
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "TICK-SCREEN: PASS" in r.stdout

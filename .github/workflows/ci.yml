@@ -132,6 +132,38 @@ jobs:
       - name: Two-polarity tests for ci/ lane checks
         run: python -m pytest ci/test_lane_checks.py -q -p no:randomly
 
+      - name: Tick-conversion screen (static, no GPU, no vocabulary)
+        # The 52x defect class: a code path that reads a device tick as a nanosecond.
+        # Neither of our other instrument families can see it. Unit tests prove the
+        # conversion correct WHERE CALLED and say nothing about whether every path calls
+        # it; and no device lane on earth that this CI can reach will show it, because
+        # timestampPeriod is 1.0 on lavapipe, on SwiftShader and on NVIDIA, which makes
+        # the conversion the identity and a skipped conversion byte-identical to a
+        # performed one. It shows up only on parts like Intel Iris Xe (52.0833 ns/tick),
+        # which we do not have a runner for. So this is decided from the source text,
+        # where the period's value is irrelevant.
+        #
+        # It imports nothing from tests/ops/_verdict.py — it emits no verdict about the
+        # EP, only a finding about source — so it still runs during a vocabulary outage.
+        run: python ci/check_tick_conversions.py --github-summary --json tick-screen-inventory.json
+
+      - name: Tick-conversion screen negative control (inject the defect, demand red)
+        # R10, applied to the screen itself: a screen that has only ever been observed
+        # passing is one step from a screen that cannot fail. This injects each defect
+        # the screen claims to detect into a scratch COPY of rust/src and fails the job
+        # if the screen stays green. It never writes to the checked-out source.
+        run: python ci/negative_control_tick_conversions.py
+
+      - name: Upload tick-screen inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tick-screen-inventory
+          path: |
+            tick-screen-inventory.json
+            bench/results/tick-screen-negative-control.json
+          if-no-files-found: warn
+
   # ----------------------------------------------------------------
   # 3. Linux: build + clippy + op tests (lavapipe GPU-less lane)
   #    + criterion 10 gate artifact + negative control
