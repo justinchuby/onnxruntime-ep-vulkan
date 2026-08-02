@@ -15,20 +15,20 @@
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 1037,
-      "counters_child_inject": 1060,
-      "add_session_profiling": 26,
-      "validation_probe": 96,
-      "layering_lint": 140
+      "counters_child_clean": 533,
+      "counters_child_inject": 524,
+      "add_session_profiling": 20,
+      "validation_probe": 64,
+      "layering_lint": 167
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 104,
-      "counters_child_inject": 97,
-      "add_session_profiling": 26,
-      "validation_probe": 83,
-      "layering_lint": 75
+      "counters_child_clean": 62,
+      "counters_child_inject": 39,
+      "add_session_profiling": 20,
+      "validation_probe": 16,
+      "layering_lint": 52
     },
-    "clock_units_total": 2614,
+    "clock_units_total": 1452,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
@@ -39,11 +39,11 @@
     "gpu_tracer": "28 trace event(s), phases=['C', 'M', 'X', 'i'], distinct_names=16 (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; no duration from this file is quoted \u2014 \u00a710.0 obligation 8)",
     "model_output_equivalence": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)",
     "retain_viable": "1",
-    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)",
+    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=73 unproven_declines=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)",
     "validation_messenger": "ARMED",
     "layering_lint": "PASS",
     "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
-    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\onnxruntime-ep-vulkan\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
+    "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
     "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
   },
   "unwired": [],

@@ -98,8 +98,264 @@ def _matmulnbits(
     return model
 
 
+
+# ---------------------------------------------------------------------------
+# 2026-08-02 — populating the ledger for the op suite.
+#
+# The 153 op-suite reds were Guard D refusing to report a vacuous CPU-vs-CPU pass on forms the
+# gate declines for want of a proof. The remedy is proofs, not a softer guard. The forms were
+# enumerated **mechanically** — one gated run of `pytest tests/ops` with
+# `ONNXRUNTIME_EP_VULKAN_CLAIM_LOG` set, taking every record whose decline codes were exactly
+# `{unproven}` — never from the claim table, because a ledger derived from the enumeration that
+# produces the claims makes criterion 11 true by construction (Morpheus, RAI-008).
+#
+# Each builder below is still one node of one form. The list is longer; the unit did not change.
+# ---------------------------------------------------------------------------
+
+_DYN = "N"
+
+
+def _unary_dyn(op: str, elem: int, opset: int = 21, **attrs) -> onnx.ModelProto:
+    """A one-node unary whose shape is *symbolic*, so it classifies `runtime-extent`.
+
+    `shape_class` is a component of the proof key, so a static proof is not a proof of the
+    dynamic form and this builder is not a convenience — the key would differ.
+    """
+    x = helper.make_tensor_value_info("X", elem, [_DYN, 8])
+    y = helper.make_tensor_value_info("Y", elem, [_DYN, 8])
+    node = helper.make_node(op, ["X"], ["Y"], name=f"{op.lower()}0", **attrs)
+    graph = helper.make_graph([node], f"{op}_dyn_graph", [x], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _binary_dyn(op: str, elem: int, opset: int = 21) -> onnx.ModelProto:
+    a = helper.make_tensor_value_info("A", elem, [_DYN, 8])
+    b = helper.make_tensor_value_info("B", elem, [_DYN, 8])
+    c = helper.make_tensor_value_info("C", elem, [_DYN, 8])
+    node = helper.make_node(op, ["A", "B"], ["C"], name=f"{op.lower()}0")
+    graph = helper.make_graph([node], f"{op}_dyn_graph", [a, b], [c])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _clip(elem: int, opset: int = 21) -> onnx.ModelProto:
+    """`Clip` with **both** optional inputs populated.
+
+    The suite's own failing case declines with `[arity] Clip has 1 inputs; this handler takes
+    exactly 3` — a *different* finding from `[unproven]`, and it is not fixed by a ledger entry.
+    This case is the three-input form, which is the one the claim log reports as unproven.
+    """
+    x = helper.make_tensor_value_info("X", elem, [4, 8])
+    y = helper.make_tensor_value_info("Y", elem, [4, 8])
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    inits = [
+        onnx.numpy_helper.from_array(np.array(-0.5, dtype=np_dt), name="lo"),
+        onnx.numpy_helper.from_array(np.array(0.5, dtype=np_dt), name="hi"),
+    ]
+    node = helper.make_node("Clip", ["X", "lo", "hi"], ["Y"], name="clip0")
+    graph = helper.make_graph([node], "clip_graph", [x], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _matmulnbits_typed(
+    elem: int, with_zero_points: bool, dynamic: bool = False,
+    K: int = 32, N: int = 32, bits: int = 4, block_size: int = 32,
+) -> onnx.ModelProto:
+    """`MatMulNBits` at either activation dtype, static or runtime-extent.
+
+    Generalises `_matmulnbits`, which stays as it is because the f16 static pair is the pair
+    §8.9 was written around and renaming it would break the ledger entries that name it.
+    """
+    rng = np.random.default_rng(20260802)
+    np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
+    blocks_per_col = (K + block_size - 1) // block_size
+    packed_bytes = block_size * bits // 8
+
+    packed = rng.integers(0, 256, size=[N, blocks_per_col, packed_bytes], dtype=np.uint8)
+    scale = rng.uniform(0.001, 0.1, size=[N * blocks_per_col]).astype(np_dt)
+
+    inputs = ["X", "B", "scale"]
+    inits = [
+        onnx.numpy_helper.from_array(packed, name="B"),
+        onnx.numpy_helper.from_array(scale, name="scale"),
+    ]
+    if with_zero_points:
+        zp_len = N * ((blocks_per_col + 1) // 2)
+        inputs.append("zero_points")
+        inits.append(
+            onnx.numpy_helper.from_array(
+                rng.integers(0, 256, size=[zp_len], dtype=np.uint8), name="zero_points"
+            )
+        )
+
+    node = helper.make_node(
+        "MatMulNBits", inputs=inputs, outputs=["Y"], name="mmnb0", domain="com.microsoft",
+        K=K, N=N, bits=bits, block_size=block_size, accuracy_level=1,
+    )
+    lead = _DYN if dynamic else 1
+    x = helper.make_tensor_value_info("X", elem, [lead, K])
+    y = helper.make_tensor_value_info("Y", elem, [lead, N])
+    graph = helper.make_graph([node], "mmnb_graph", [x], [y], initializer=inits)
+    model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 21), helper.make_opsetid("com.microsoft", 1)],
+    )
+    model.ir_version = 10
+    return model
+
+
+def _gather_dyn(elem: int) -> onnx.ModelProto:
+    data = helper.make_tensor_value_info("data", elem, [_DYN, 8])
+    idx = helper.make_tensor_value_info("indices", TensorProto.INT64, [2])
+    out = helper.make_tensor_value_info("Y", elem, [2, 8])
+    node = helper.make_node("Gather", ["data", "indices"], ["Y"], name="gather0", axis=0)
+    graph = helper.make_graph([node], "gather_graph", [data, idx], [out])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 21)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _simplified_layer_norm(elem: int) -> onnx.ModelProto:
+    h = 32
+    x = helper.make_tensor_value_info("X", elem, [_DYN, h])
+    scale = helper.make_tensor_value_info("scale", elem, [h])
+    y = helper.make_tensor_value_info("Y", elem, [_DYN, h])
+    node = helper.make_node(
+        "SimplifiedLayerNormalization", ["X", "scale"], ["Y"],
+        name="sln0", axis=-1, epsilon=1e-5, stash_type=1,
+    )
+    graph = helper.make_graph([node], "sln_graph", [x, scale], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 21)])
+    model.ir_version = 10
+    return model
+
+
+def _skip_simplified_layer_norm(
+    elem: int, with_extra_outputs: bool, static: bool = False
+) -> onnx.ModelProto:
+    """The output arities and shape classes the claim log reports as distinct forms.
+
+    `f16,f16,f16>f16` and `f16,f16,f16>f16,-,-,f16` differ only in whether slot 3 (the
+    input-skip sum) is requested. That is a **path** difference under §8.7 — a different set of
+    bindings is written — so the keys differ and one is not a proof of the other. Slot 3 is
+    exactly where the 2026-07-31 residual defect lived, which is why both are built.
+
+    `static` selects a concrete leading dim rather than a symbolic one, which moves
+    `shape_class` from `runtime-extent` to `static` — a fourth axis of the same key. The
+    op-suite's SkipSLN tests all use concrete shapes; Phi-3.5 uses symbolic ones. Proving one
+    has never been a proof of the other and the residual triage of 2026-08-02 showed exactly
+    that: the runtime-extent forms were proven and the static forms still declined.
+    """
+    h = 32
+    lead = 4 if static else _DYN
+    x = helper.make_tensor_value_info("X", elem, [lead, h])
+    skip = helper.make_tensor_value_info("skip", elem, [lead, h])
+    gamma = helper.make_tensor_value_info("gamma", elem, [h])
+    y = helper.make_tensor_value_info("Y", elem, [lead, h])
+    outs = ["Y"]
+    vis = [y]
+    if with_extra_outputs:
+        # Slots 1 and 2 stay unnamed — "" is how ONNX spells an unrequested optional output,
+        # and it is what makes the dtype signature read `f16,f16,f16>f16,-,-,f16`.
+        outs = ["Y", "", "", "S"]
+        vis.append(helper.make_tensor_value_info("S", elem, [lead, h]))
+    node = helper.make_node(
+        "SkipSimplifiedLayerNormalization", ["X", "skip", "gamma"], outs,
+        name="ssln0", domain="com.microsoft", epsilon=1e-5,
+    )
+    graph = helper.make_graph([node], "ssln_graph", [x, skip, gamma], vis)
+    model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 21), helper.make_opsetid("com.microsoft", 1)],
+    )
+    model.ir_version = 10
+    return model
+
+_GQA_NUM_HEADS = 8
+_GQA_KV_HEADS = 2
+_GQA_HEAD_DIM = 32
+_GQA_ROTARY_DIM = 16
+_GQA_MAX_SEQ = 64
+_GQA_PAST_SEQ = 4
+
+
+def _group_query_attention() -> onnx.ModelProto:
+    """`GroupQueryAttention` in the one form the kernel implements.
+
+    Packed QKV (inputs 1 and 2 empty), `do_rotary=1`, `rotary_interleaved=0`,
+    `local_window_size=-1`, `softcap=0` — every one of those is a positive requirement in
+    `ops/attention.rs`, so any other combination declines on `[attribute]` and the ledger has
+    no say in it. The batch and sequence extents stay symbolic, which is what puts this form in
+    the `runtime-extent` shape class rather than `static`; the concrete values are bound at run
+    time by the feed plan, because `seqlens_k` and `total_sequence_length` are indices into the
+    KV cache and not free variables.
+
+    The recipe is the one `tests/ops/test_gqa.py` already exercises. It is duplicated rather
+    than imported because a case model that changes when a test file changes is a case model
+    whose ledger entries silently stop describing what was proven.
+    """
+    packed = (_GQA_NUM_HEADS + 2 * _GQA_KV_HEADS) * _GQA_HEAD_DIM
+    f16 = TensorProto.FLOAT16
+    past_kv = ["B", _GQA_KV_HEADS, _GQA_PAST_SEQ, _GQA_HEAD_DIM]
+    ins = [
+        helper.make_tensor_value_info("packed_qkv", f16, ["B", "S", packed]),
+        helper.make_tensor_value_info("past_key", f16, past_kv),
+        helper.make_tensor_value_info("past_value", f16, past_kv),
+        helper.make_tensor_value_info("seqlens_k", TensorProto.INT32, ["B"]),
+        helper.make_tensor_value_info("total_seq", TensorProto.INT32, []),
+        helper.make_tensor_value_info(
+            "cos_cache", f16, [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+        ),
+        helper.make_tensor_value_info(
+            "sin_cache", f16, [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+        ),
+    ]
+    pres_kv = ["B", _GQA_KV_HEADS, _GQA_PAST_SEQ + 1, _GQA_HEAD_DIM]
+    outs = [
+        helper.make_tensor_value_info(
+            "attn_out", f16, ["B", "S", _GQA_NUM_HEADS * _GQA_HEAD_DIM]
+        ),
+        helper.make_tensor_value_info("present_key", f16, pres_kv),
+        helper.make_tensor_value_info("present_value", f16, pres_kv),
+    ]
+    node = helper.make_node(
+        "GroupQueryAttention",
+        inputs=[
+            "packed_qkv", "", "", "past_key", "past_value", "seqlens_k", "total_seq",
+            "cos_cache", "sin_cache",
+        ],
+        outputs=["attn_out", "present_key", "present_value"],
+        domain="com.microsoft",
+        name="gqa0",
+        num_heads=_GQA_NUM_HEADS,
+        kv_num_heads=_GQA_KV_HEADS,
+        scale=float(_GQA_HEAD_DIM ** -0.5),
+        local_window_size=-1,
+        do_rotary=1,
+        rotary_interleaved=0,
+        smooth_softmax=0,
+    )
+    graph = helper.make_graph([node], "gqa_graph", ins, outs)
+    model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 17), helper.make_opsetid("com.microsoft", 1)],
+    )
+    model.ir_version = 10
+    return model
+
+
 BUILDERS = {
     "add_f32": lambda: _binary("Add", TensorProto.FLOAT),
+    "group_query_attention_f16": _group_query_attention,
     "matmulnbits_f16_scales": lambda: _matmulnbits(with_zero_points=False),
     "matmulnbits_f16_scales_zp": lambda: _matmulnbits(with_zero_points=True),
     "add_f16": lambda: _binary("Add", TensorProto.FLOAT16),
@@ -111,18 +367,107 @@ BUILDERS = {
     # ------------------------------------------------------------------
     # THE PLANTED CONTROL — deliberately never proven.
     #
-    # Rai's RAI-008(a) requires that criterion 11 be verified by a planted `[unproven]` decline,
-    # not by reading the gate's source. `mul_f16` is a form the EP has a kernel for and the
-    # ledger has no entry for, and the generator must never be pointed at it.
+    # RAI-008(a) requires criterion 11 be verified by a planted `[unproven]` decline, not by
+    # reading the gate's source. This is a form the EP has a kernel for and the ledger has no
+    # entry for. If it is ever claimed, the gate is not gating.
     #
-    # It is the falsifier for the whole mechanism: if this case is ever claimed, the gate is
-    # not gating. Its sibling `mul_f32` IS proven, so the pair also shows the gate discriminating
-    # rather than declining everything — a gate that declined unconditionally would pass a
-    # one-armed test and be useless.
+    # IT MOVED ON 2026-08-02, AND WHY IT MOVED IS THE POINT.
+    # ------------------------------------------------------
+    # The control used to be `Mul` at f16, static. Populating the ledger for the op suite added a
+    # `mul_f16` case — the *same form* — and the control fired on its own author, in the lane,
+    # with "the gate is not gating". It was right, and it was the only thing that noticed.
+    #
+    # The lesson is not "never touch the control". A form kept permanently unprovable to protect
+    # one file name is real coverage traded for a name, and the suite needs `Mul` at f16. The
+    # lesson is that *nothing cheap* was checking the invariant, so it had to be discovered by a
+    # three-minute lane test after a forty-minute generation run. `PLANTED_CONTROL_KEY` below
+    # closes that: the generator now refuses to write this key and `--check` fails if it appears,
+    # so the collision is caught in the tool that would cause it.
+    #
+    # The pair is now `Sub` at f16, static (PROVEN) against `Sub` at f16, runtime-extent
+    # (NEVER PROVEN). They differ in exactly one key component — `shape_class` — which makes the
+    # arms a sharper control than the old dtype pair: it shows the gate discriminating on the
+    # component that separates decode from prefill, where §8.7 says a path difference lives.
     # ------------------------------------------------------------------
-    "mul_f16_unproven": lambda: _binary("Mul", TensorProto.FLOAT16),
+    "sub_f16_dyn_unproven": lambda: _binary_dyn("Sub", TensorProto.FLOAT16),
 }
 
+
+
+# ---------------------------------------------------------------------------
+# The op-suite forms, enumerated from a gated `pytest tests/ops` run (2026-08-02).
+#
+# Order is deliberate: unary f32 first because that is where the reds are concentrated.
+# ---------------------------------------------------------------------------
+
+# (case name, op type) for the plain one-in one-out activations at f32.
+_UNARY_F32 = [
+    "Abs", "Neg", "Sign", "Floor", "Ceil", "Round", "Exp", "Erf", "Sigmoid", "Tanh",
+    "HardSigmoid", "HardSwish", "LeakyRelu", "Elu", "Selu", "Celu", "Softplus", "Softsign",
+    "ThresholdedRelu", "Gelu", "Mish", "Identity",
+    "Sin", "Cos", "Tan", "Sinh", "Cosh", "Atan", "Asinh",
+    # Partial functions — see INPUT_DOMAIN. They are in the list, not excluded: an op whose
+    # domain must be constrained is still an op the suite tests.
+    "Reciprocal", "Log", "Asin", "Acos", "Acosh", "Atanh",
+]
+
+_UNARY_F16 = ["Relu", "Sigmoid", "Sqrt", "Exp", "Tanh", "Gelu", "Erf"]
+_BINARY_F16 = ["Mul", "Sub", "Div"]
+
+_OP_CASE = {op: f"{op.lower()}_f32" for op in _UNARY_F32}
+
+for _op in _UNARY_F32:
+    BUILDERS[f"{_op.lower()}_f32"] = (lambda o=_op: _unary(o, TensorProto.FLOAT, opset=21))
+for _op in _UNARY_F16:
+    BUILDERS[f"{_op.lower()}_f16"] = (lambda o=_op: _unary(o, TensorProto.FLOAT16, opset=21))
+for _op in _BINARY_F16:
+    BUILDERS[f"{_op.lower()}_f16"] = (lambda o=_op: _binary(o, TensorProto.FLOAT16, opset=21))
+
+BUILDERS.update({
+    # runtime-extent forms. A static proof is not a proof of these: `shape_class` is a key
+    # component, and it is the component that separates decode from prefill.
+    "mul_f16_dyn": lambda: _binary_dyn("Mul", TensorProto.FLOAT16),
+    "sigmoid_f16_dyn": lambda: _unary_dyn("Sigmoid", TensorProto.FLOAT16),
+    "exp_f32_dyn": lambda: _unary_dyn("Exp", TensorProto.FLOAT),
+    "log_f32_dyn": lambda: _unary_dyn("Log", TensorProto.FLOAT),
+    "sigmoid_f32_dyn": lambda: _unary_dyn("Sigmoid", TensorProto.FLOAT),
+    "tanh_f32_dyn": lambda: _unary_dyn("Tanh", TensorProto.FLOAT),
+
+    "clip_f32": lambda: _clip(TensorProto.FLOAT),
+    # Pow is a partial function in its *first* argument: a negative base with a non-integral
+    # exponent has no real value, and standard_normal supplies both. Sampled positive.
+    "pow_f32": lambda: _binary("Pow", TensorProto.FLOAT, opset=21),
+
+    "matmulnbits_f32_scales": lambda: _matmulnbits_typed(TensorProto.FLOAT, False),
+    "matmulnbits_f32_scales_zp": lambda: _matmulnbits_typed(TensorProto.FLOAT, True),
+    "matmulnbits_f16_scales_dyn": lambda: _matmulnbits_typed(
+        TensorProto.FLOAT16, False, dynamic=True
+    ),
+
+    "gather_f16_dyn": lambda: _gather_dyn(TensorProto.FLOAT16),
+    "simplified_layer_norm_f16": lambda: _simplified_layer_norm(TensorProto.FLOAT16),
+    "skip_simplified_layer_norm_f16": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT16, with_extra_outputs=False
+    ),
+    "skip_simplified_layer_norm_f16_slot3": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT16, with_extra_outputs=True
+    ),
+    # The four static-shape / f32 SkipSLN forms the op-suite actually exercises. The
+    # runtime-extent f16 pair above does not prove any of them: `shape_class` and the dtype
+    # tuple are both key components, so these are four separate obligations.
+    "skip_simplified_layer_norm_f16_static": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT16, with_extra_outputs=False, static=True
+    ),
+    "skip_simplified_layer_norm_f16_static_slot3": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT16, with_extra_outputs=True, static=True
+    ),
+    "skip_simplified_layer_norm_f32_static": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT, with_extra_outputs=False, static=True
+    ),
+    "skip_simplified_layer_norm_f32_static_slot3": lambda: _skip_simplified_layer_norm(
+        TensorProto.FLOAT, with_extra_outputs=True, static=True
+    ),
+})
 
 # The domain each case must sample from.
 #
@@ -141,9 +486,88 @@ INPUT_DOMAIN: dict[str, str] = {
 }
 
 
+# Added 2026-08-02 with the op-suite cases. Every one of these is an op that is a *partial
+# function*: fed `standard_normal` it returns NaN or Inf on a large fraction of elements, on
+# both EPs, so the comparison would be NaN-against-NaN and would prove nothing there while
+# looking like a full case. Naming the constraint is not making the test easier — an op tested
+# outside its domain is not tested.
+INPUT_DOMAIN.update({
+    "log_f32": "positive",
+    "log_f32_dyn": "positive",
+    "sqrt_f16": "positive",
+    "reciprocal_f32": "nonzero",
+    "div_f16": "nonzero",
+    # |x| <= 1 for the inverse circular functions; Atanh additionally diverges at |x| = 1.
+    "asin_f32": "unit",
+    "acos_f32": "unit",
+    "atanh_f32": "unit",
+    # Acosh is real only for x >= 1.
+    "acosh_f32": "ge_one",
+    "pow_f32": "positive",
+})
+
 def input_domain(name: str) -> str:
     """The sampling domain for a case, defaulting to unconstrained."""
     return INPUT_DOMAIN.get(name, "any")
+
+
+# ---------------------------------------------------------------------------
+# Feed plans — inputs that are not free variables.
+#
+# `input_domain` constrains a *distribution*. A feed plan pins an actual value, for inputs
+# where no distribution is valid. `GroupQueryAttention` has three: `seqlens_k` and
+# `total_sequence_length` are indices into the KV cache whose only correct values are
+# determined by the cache extent, and the rotary caches are a table the kernel indexes by
+# position. A random int32 in `total_sequence_length` is not a harsher test; it is an invalid
+# model, and the CPU arm raises rather than producing an oracle — ERROR(instrument), not a
+# verdict.
+#
+# `symbolic_dims` pins the symbolic extents so that the pinned indices and the tensor shapes
+# agree. The dims stay symbolic *in the model*, which is what keeps `shape_class` at
+# `runtime-extent`; only the run binds them.
+# ---------------------------------------------------------------------------
+
+def _rope_cache(max_seq: int, rot_dim: int) -> tuple[list, list]:
+    import math
+
+    cos, sin = [], []
+    for p in range(max_seq):
+        for i in range(0, rot_dim, 2):
+            a = p / (10000 ** (i / rot_dim))
+            cos.append(math.cos(a))
+            sin.append(math.sin(a))
+    return cos, sin
+
+
+def _gqa_feed_plan() -> dict:
+    cos, sin = _rope_cache(_GQA_MAX_SEQ, _GQA_ROTARY_DIM)
+    half = [_GQA_MAX_SEQ, _GQA_ROTARY_DIM // 2]
+    return {
+        # B=1, S=1: the decode step, which is the shape every Phi-3.5 GQA node runs at after
+        # prefill. `past` is the concrete cache extent baked into the model.
+        "symbolic_dims": {"B": 1, "S": 1},
+        # f16 attention over standard normals saturates the exponent range before the softmax
+        # and both arms then agree on inf, which is a vacuous match. 0.1 keeps the logits in
+        # the range the kernel actually sees.
+        "float_scale": 0.1,
+        "fixed_inputs": {
+            "seqlens_k": {"dtype": "int32", "shape": [1], "values": [_GQA_PAST_SEQ]},
+            "total_seq": {"dtype": "int32", "shape": [], "values": _GQA_PAST_SEQ + 1},
+            "cos_cache": {"dtype": "float16", "shape": half, "values": cos},
+            "sin_cache": {"dtype": "float16", "shape": half, "values": sin},
+        },
+    }
+
+
+FEED_PLAN = {
+    "group_query_attention_f16": _gqa_feed_plan,
+}
+
+
+def feed_plan(name: str) -> dict:
+    """The pinned-value plan for a case, empty when every input is a free variable."""
+    fn = FEED_PLAN.get(name)
+    return fn() if fn else {}
 
 
 def build(name: str, out_dir: pathlib.Path) -> pathlib.Path:
@@ -162,3 +586,17 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------------------
+# The planted control, declared once so that tools can refuse it.
+#
+# `gen_proof_ledger.py` refuses to write this key and fails `--check` if it is present. Without
+# that, the only thing standing between a populated ledger and a disarmed control is whoever
+# happens to read the case list — and on 2026-08-02 that was not enough.
+# ---------------------------------------------------------------------------
+
+PLANTED_CONTROL_CASE = "sub_f16_dyn_unproven"
+PLANTED_CONTROL_KEY = "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2"
+#: The proven sibling. The pair differs in exactly one key component: `shape_class`.
+PLANTED_CONTROL_SIBLING_KEY = "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/static/n2"

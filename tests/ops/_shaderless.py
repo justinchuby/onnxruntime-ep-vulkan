@@ -67,6 +67,8 @@ import _verdict
 _HERE = Path(__file__).resolve().parent
 REPO = _HERE.parents[1]
 RUST = REPO / "rust"
+#: A compile input of the crate that does not live under ``rust/`` — see ``_sync_sources``.
+_LEDGER = REPO / "evidence" / "proof_ledger.jsonl"
 
 #: Outside the repository on purpose: a second `target/` inside it would be picked up by
 #: every glob in the tree and would double the size of a `git status`.
@@ -103,6 +105,11 @@ def _newest_source_mtime() -> float:
     for path in (RUST / "Cargo.toml", RUST / "build.rs", RUST / "Cargo.lock"):
         if path.is_file():
             newest = max(newest, path.stat().st_mtime)
+    # The crate `include_str!`s the proof ledger from outside `rust/`. It is a compile input
+    # like any other, so a ledger newer than the scratch tree must force a re-sync — otherwise
+    # this witness builds the previous ledger and reports on a binary nobody shipped.
+    if _LEDGER.is_file():
+        newest = max(newest, _LEDGER.stat().st_mtime)
     return newest
 
 
@@ -121,6 +128,18 @@ def _sync_sources() -> Path:
             shutil.copytree(entry, target, ignore=ignore)
         else:
             shutil.copy2(entry, target)
+
+    # §8.9 bakes the proof ledger with `include_str!("../../evidence/proof_ledger.jsonl")`,
+    # which resolves *outside* the crate directory. Copying only `rust/` therefore produced
+    #     error: couldn't read `src\../../evidence/proof_ledger.jsonl`
+    #     error: could not compile `onnxruntime-ep-vulkan` (lib) due to 1 previous error
+    # and the witness reported ERROR(instrument) — correctly, since a build that failed for an
+    # unrelated reason is not a criterion-5 result. The scratch tree has to carry every compile
+    # input, not just the ones under `rust/`.
+    if _LEDGER.is_file():
+        led_dst = SCRATCH / _LEDGER.relative_to(REPO)
+        led_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_LEDGER, led_dst)
 
     glsl = dst / "shaders" / "glsl"
     if glsl.is_dir():

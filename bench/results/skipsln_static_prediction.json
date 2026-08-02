@@ -1,0 +1,37 @@
+{
+  "written_at": "2026-08-02T05:40:00-07:00",
+  "rule": "R10 - state what the ledger will decline before running it",
+  "context": "Residual triage of the 45 remaining op-suite failures found five pure-[unproven] keys. Four are SkipSimplifiedLayerNormalization forms that differ from the two already-proven forms only in shape_class (static vs runtime-extent) and dtype (f32 vs f16). This file is written before the generator runs.",
+  "predictions": [
+    {
+      "id": "S1",
+      "claim": "All four static SkipSLN cases will prove MATCH. The kernel is the same code path as the runtime-extent form already proven; only the descriptor differs.",
+      "falsifier": "any of the four returns DIVERGENT or UNMEASURED"
+    },
+    {
+      "id": "S2",
+      "claim": "Each case writes exactly one entry, and the two slot3 cases write a key ending `>f16,-,-,f16` / `>f32,-,-,f32` while the two non-slot3 cases write `>f16` / `>f32`. Four distinct keys, no collisions with the 69 already present.",
+      "falsifier": "fewer than four new entries, or any key already in the ledger"
+    },
+    {
+      "id": "S3",
+      "claim": "test_skipnorm goes 7 failed to 1 failed. Six of the seven fail with Guard D (`did not execute any node`); those six are the four keys. The seventh, test_skip_norm_f16_phi35_shape, fails differently -- a run-time INVALID_ARGUMENT `input is expected to have 3 or 2 dimensions, got 1` -- and a ledger entry cannot fix a shape rejection.",
+      "falsifier": "test_skipnorm does not reach exactly 1 failure"
+    },
+    {
+      "id": "S4",
+      "claim": "GroupQueryAttention stays unproven this round and test_phi35 stays red. Its key carries seven dtypes and four populated optional inputs with in-place KV-cache updates; no single-node case model in this generator can produce it honestly.",
+      "falsifier": "a GQA entry appears in the ledger"
+    },
+    {
+      "id": "S5",
+      "claim": "The 28 test_op_table failures do not move at all. Every one of them declines with a code other than `unproven` present -- `staged`, `not-registered`, `dtype`, `attribute`, `opset` -- and the ledger has no authority over any of those.",
+      "falsifier": "test_op_table failure count changes"
+    }
+  ],
+  "will_not_do": [
+    "Will not relax Guard D to reduce the failure count.",
+    "Will not write an entry for any form whose proof run is not MATCH.",
+    "Will not derive any entry from the claim table's enumeration."
+  ]
+}

@@ -3653,6 +3653,73 @@ is gated on Trinity's first harness run producing a non-empty ledger.
 computes its proof key, and asserts it appears in the merged (ledger ∪ CLAIM_UNPROVEN) set. Must go
 red if a row is marked `Live` and its key is in neither source.
 
+### 8.9.8 Populating the ledger — the 154 reds and what they cost to clear (2026-08-02)
+
+Landing the gate took `pytest tests/ops` to **154 failed / 276 passed**. Not one of those was a
+regression: Guard D refuses to report a CPU-vs-CPU comparison as a pass, and a form the gate
+declines runs on the CPU EP in both arms. The remedy is proofs, never a softer guard.
+
+**Enumeration is mechanical, and the instrument that enumerates has a defect worth naming.** Every
+claim-log line carries `proof_key`, so the set of forms a red suite needs is a parse away. But the
+claim log is **truncated by whichever process opens it**, and several tests spawn a child that
+loads the DLL. A whole-suite run therefore reports only the records written after the last such
+child — 786 records, where the same tests enumerated **per file** produce 3,140. The first triage
+built on the whole-suite log concluded the residual was one form; the per-file triage found five.
+Enumerate per file. A census that under-counts silently is worse than one that refuses.
+
+**The residual, triaged by decline code rather than by count (R13).** Of the 45 forms still
+declining after the first population round:
+
+| population | ledger authority | what it is |
+|---|---|---|
+| `unproven` alone | yes | a form nothing has proven — 5 keys |
+| `unproven` + `dtype`/`arity` | no | the handler declines it on another axis too |
+| `staged` / `not-registered` / `attribute` / `opset` | no | coverage gaps; §8.9 has no say |
+
+Four of the five pure-`unproven` keys were `SkipSimplifiedLayerNormalization` forms differing from
+the already-proven pair **only in `shape_class` (static vs runtime-extent) and dtype (f32 vs f16)**
+— which is the key doing its job. Proving them took four case models and cleared **seven** tests.
+
+**The fifth is `GroupQueryAttention`, and it is a finding, not an obstacle.** Its proof run returns
+
+    DIVERGENT {'reason': 'output o0 outside tolerance', 'worst_rel': 16.72642029784887}
+
+reproducibly, to the digit, on two runs. So GQA stays out of the ledger, Phi-3.5's five tests stay
+red, and they stay red **for the correct reason**: the fused attention kernel does not reproduce the
+CPU oracle on the decode form. This corroborates the pre-existing strict-`xfail` `_GQA_COMPUTE_BUG`
+in `tests/ops/test_gqa.py` from a second, independent instrument.
+
+A non-`MATCH` verdict **cannot** be recorded in `proof_ledger.jsonl`: `parse_ledger` pushes it to
+`Ledger::faults`, and a ledger with faults refuses *every* claim, not just the bad one. So attempts
+are appended to **`evidence/proof_attempts.jsonl`**, which grants nothing and is not baked into the
+binary. It exists so that *"we measured GQA and it disagreed by 16.7×"* cannot decay into *"GQA has
+no entry"* — the same distinction `Ledger::demoted` draws at session disclosure.
+
+**Feed plans.** Some inputs are not free variables. GQA's `total_sequence_length` must equal past +
+current and `seqlens_k` must agree with the cache extent; a random `int32` there is not a harsher
+test, it is an invalid model, and the CPU arm raises rather than producing an oracle — an
+`ERROR(instrument)`, not a verdict. `ledger_case_models.feed_plan()` pins those values and the
+symbolic extents beside the case that needs them. The dims stay symbolic *in the model*, which is
+what keeps the form in the `runtime-extent` shape class; only the run binds them.
+
+**A compile input that lives outside `rust/`.** The ledger is baked with
+`include_str!("../../evidence/proof_ledger.jsonl")`, and the criterion-5 shader-less witness builds
+from a copy of `rust/` alone. It therefore failed with
+
+    error: couldn't read `src\../../evidence/proof_ledger.jsonl`: The system cannot find the path specified.
+    error: could not compile `onnxruntime-ep-vulkan` (lib) due to 1 previous error
+
+and reported `ERROR(instrument)` — correctly, because a build that failed for an unrelated reason is
+not a criterion-5 result. The scratch tree now carries the ledger, and the ledger's mtime now
+participates in the witness's staleness check, so a re-generated ledger cannot be witnessed against
+the previous binary.
+
+**Result:** `154 failed / 276 passed` → **`37 failed / 393 passed`**; ledger **9 → 73 entries**;
+census `ledger_lookup: ALL-PROVEN … ledger_entries=73`, byte-identical on device 0 and device 1.
+Of the 37, **26** are `test_op_table` coverage gaps, **5** are Phi-3.5 behind the GQA divergence,
+**3** are `Min`/`Max`/`Clip`-no-bounds (`[staged]`, `[arity]`), **1** is criterion 10 behind the same
+GQA divergence, and **0** are instrument errors.
+
 ---
 
 ## 9. Op module layout

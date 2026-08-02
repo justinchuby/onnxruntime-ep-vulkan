@@ -9,12 +9,29 @@ content varies with its input.* This file supplies the input variation.
 
 THE PLANT
 ---------
-`evidence/cases/mul_f16_unproven.onnx` is a form the EP has a kernel for and the ledger has no
-entry for. Its sibling `evidence/cases/mul_f32.onnx` is the same op, same shape, same everything
-except dtype — and it **is** proven. The pair is the control:
+`evidence/cases/sub_f16_dyn_unproven.onnx` is a form the EP has a kernel for and the ledger has
+no entry for. Its sibling `evidence/cases/sub_f16.onnx` is the same op, same dtype, same graph —
+differing in exactly one key component, `shape_class` — and it **is** proven. The pair is the
+control:
 
-  * if the f16 arm is claimed, the gate is not gating;
-  * if the f32 arm is declined, the gate is declining unconditionally and is equally useless.
+  * if the runtime-extent arm is claimed, the gate is not gating;
+  * if the static arm is declined, the gate is declining unconditionally and is equally useless.
+
+THE CONTROL MOVED ON 2026-08-02, AND IT MOVED BECAUSE IT FIRED
+--------------------------------------------------------------
+It was `mul_f16_unproven` against `mul_f32`, differing in dtype. Populating the ledger for the op
+suite added a `mul_f16` case — the same form as the control — and this file went red in the lane
+with *"the gate is not gating"*. It was right, and it was the only thing that noticed.
+
+The control was moved rather than the proof withdrawn, because keeping a whole dtype of a core op
+permanently unclaimable to protect one file name trades real coverage for a name. What was added
+instead is the cheap check that was missing: `ledger_case_models.PLANTED_CONTROL_KEY` is declared
+once, `gen_proof_ledger.py` **refuses** to write an entry for it, and `--check` fails if it
+appears. A control whose only guard is that somebody reads the case list is a control that will be
+disarmed again.
+
+`shape_class` is a better discriminator than dtype for this pair, incidentally: it is the
+component that separates decode from prefill, which is where §8.7 says a path difference lives.
 
 A one-armed version of this test would pass against a gate that returned `false` for everything.
 This is Switch's `arms_must_differ` applied to claiming: two arms, and they must disagree.
@@ -164,7 +181,7 @@ def test_planted_unproven_form_declines(require_vulkan, _ledger_keys):
     `unproven` and nothing else, and the model still computes correctly because ORT falls back
     to the CPU EP.
     """
-    model = CASES / "mul_f16_unproven.onnx"
+    model = CASES / "sub_f16_dyn_unproven.onnx"
     assert model.is_file(), f"the planted control model is missing: {model}"
 
     unlockable, census = _discover(model)
@@ -182,8 +199,10 @@ def test_planted_unproven_form_declines(require_vulkan, _ledger_keys):
             f"key {key!r} is in the ledger yet was reported as needing a proof — the lookup and "
             f"the artifact disagree"
         )
-    assert any("f16" in k and "Mul" in k for k in unlockable), (
-        f"expected the planted f16 Mul form among the declines, got {unlockable}"
+    assert any(
+        "f16" in k and "Sub" in k and "/runtime-extent/" in k for k in unlockable
+    ), (
+        f"expected the planted runtime-extent f16 Sub form among the declines, got {unlockable}"
     )
 
 
@@ -196,7 +215,7 @@ def test_proven_form_is_claimed(require_vulkan, _ledger_keys):
     if not _ledger_keys:
         pytest.skip("ledger is empty; there is no proven form to test the other arm with")
 
-    model = CASES / "mul_f32.onnx"
+    model = CASES / "sub_f16.onnx"
     assert model.is_file(), f"the proven-arm model is missing: {model}"
 
     unlockable, census = _discover(model)
@@ -221,20 +240,24 @@ def test_the_two_arms_disagree(require_vulkan, _ledger_keys):
     if not _ledger_keys:
         pytest.skip("ledger is empty; both arms would decline for the same reason")
 
-    unproven, unproven_census = _discover(CASES / "mul_f16_unproven.onnx")
-    proven, proven_census = _discover(CASES / "mul_f32.onnx")
+    unproven, unproven_census = _discover(CASES / "sub_f16_dyn_unproven.onnx")
+    proven, proven_census = _discover(CASES / "sub_f16.onnx")
 
     assert (len(unproven) > 0) != (len(proven) > 0), (
         f"both arms produced the same claiming outcome — unproven={unproven_census}, "
         f"proven={proven_census}. A gate whose answer does not move with its input is not a gate."
     )
 
-    # And the keys themselves must differ: an f32 proof can never be returned for an f16 node.
-    key_f16 = unproven[0]
-    key_f32 = next(iter(k for k in _ledger_keys if "Mul" in k and "f32" in k))
-    assert key_f16 != key_f32, (
-        f"the f16 and f32 forms of Mul produced the same proof key {key_f16!r} — a proof of one "
-        f"would be returned for the other, which is the 2026-07-30 all-zero-logits defect"
+    # And the keys themselves must differ: a static proof can never be returned for a
+    # runtime-extent node. Same op, same dtype, same graph — one component apart.
+    key_dyn = unproven[0]
+    key_static = next(
+        iter(k for k in _ledger_keys if "Sub" in k and "f16" in k and "/static/" in k)
+    )
+    assert key_dyn != key_static, (
+        f"the static and runtime-extent forms of Sub f16 produced the same proof key "
+        f"{key_dyn!r} — a proof of one would be returned for the other, which is the shape of "
+        f"the 2026-07-30 all-zero-logits defect"
     )
 
 
