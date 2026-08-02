@@ -2267,3 +2267,95 @@ surface readiness off this desk) before M2 entry.
    move `gpu_steady_tail()`?*. Do not quote the uncertified 11.5673 ms archive.
 3. The packed-loads claim stands **in counts** (`7a1d12f`: 465,297,408 -> 116,324,352 InB load
    instructions) and needs no clock, so it is quotable as-is.
+
+---
+
+## Session 44d — 2026-08-01 — the disturbance guard was not independent, and I was the one who said it was (`4ab6813`)
+
+### The correction
+
+`run_disturbance.py` claimed same-ordinal RSD and whole-series per-inference RSD were *"two
+different statistics over two different frames agreeing on the same nine runs, **neither derived
+from the other**."* **False.** Niobe computed the correlation over the census; I recomputed it at my
+own commit rather than quote her (R13):
+
+| | Spearman | log-log r | median ratio |
+|---|---|---|---|
+| mine, 29 dev0 traces | **0.919** | **0.970** | 1.170 |
+| Niobe, 28 | 0.903 | 0.964 | 1.128 |
+
+Confirmed. And **the false sentence was mine, not the coordinator's** — I had the agreement in front
+of me (the same nine runs) and read it as independence. Agreement between two statistics is evidence
+*for* redundancy. The coordinator offered to take the blame; it isn't his.
+
+Mechanism (hers), now **measured** by `localise()`: dividing out per-inference level explains
+**84–87%** of the same-ordinal dispersion on disturbed traces — `contended` 137.35% → 18.70%,
+`ab_p0_r1` 109.23% → 17.39%, `notile` 55.84% → 7.25%. A disturbance that scales a submission moves
+every dispatch inside it together.
+
+### The rescope — localisation is what survives
+
+Whole-series RSD says *that* the run moved. `localise()` says *what* moved. Two traces whole-series
+ranks as neighbours are different conditions:
+
+```
+ab_p1_long   ordinal 35.31% -> norm  3.90%  ( 88.9% explained)  SUBMISSION_LEVEL
+contended3   ordinal 41.11% -> norm 50.43%  (-22.7%)            PER_DISPATCH
+```
+
+Submission-level ⇒ clock/power excursion or queueing ahead of the submit. Per-dispatch ⇒ foreign
+work interleaved *between* dispatches. Nothing else in the project separates those.
+
+**And I checked the new quantity before claiming it** — the discipline I failed at last time. The
+level-normalised statistic still correlates with whole-series at Spearman **0.710**. So it is a
+**decomposition**, not a second opinion, and the docstring, the JSON and the CLI all say so.
+
+Two by-products: my `notile` — the "70% spread" — is **87.0% SUBMISSION_LEVEL**, independent support
+for session 43's `SAME_FRAME_ORDERED_SELECTION`; and my own `packed` A/B trace is the only badly
+disturbed trace classified `MIXED` (44.2%), i.e. it carries real per-dispatch disagreement.
+
+### The threshold's headline is falsified by its own sensitivity table
+
+I claimed an **empty gap** 10.507% → 35.313%. **One further trace populated it**: `switch_resid`
+reads **20.787%**, inside the gap, **1.04×** over the bar (was 1.77×). The flat band narrowed from
+11%–35% to **11%–20%**. On **Intel it is 20%–20% — a single point**, so there the threshold does
+*all* the deciding.
+
+Left at 20% and published as a table (Niobe's discipline: she caught her own instinct to move a
+threshold until the flagged count reached zero and called it *choosing the answer*). Moving it to
+restore the old band would be exactly that. **An "empty gap" is a statement about the traces you
+happen to have and it decays as you collect more** — `--sensitivity` recomputes it; do not quote
+this paragraph.
+
+### The result worth carrying beyond this module
+
+**No statistic computed from inside a series can detect a bias that scales the whole series.**
+Dispersion is invariant under multiplying every sample by a constant, so a uniformly wrong run is
+indistinguishable from a uniformly right one.
+
+`baseline_certified`: cleanest whole-series (0.118%), cleanest same-ordinal (0.624%), unchanged by
+normalisation (0.632%), `STEADY` at n=46 / 100% coverage / zero discarded — **and 21.4× wrong**.
+Every dispersion measure we own certifies it. Only `check_device_state.py` refuses it, **because its
+evidence comes from outside the series**. A dispersion guard cannot replace obligation 8 and no
+future one can either. That is structural, not a gap awaiting a better statistic.
+
+### And one of my own new tests passed for free
+
+`test_localise_inherits_the_level_blindness_hole` compared two normalised values that are **both
+exactly 0.0** — an assertion that can only succeed. Added the ground-truth arm asserting the two
+inputs really differ by 2×. Same failure mode as the `fn_addr_eq` tests I fixed this morning; twice
+in one day, so it is a habit to watch rather than an incident.
+
+### Worktree
+
+Checked before staging, per the warning that worktrees are allocated per agent *name*: tree was
+clean, `git worktree list` shows `ep-vulkan-switch` on `squad/switch` alone, nothing foreign swept
+up by `git add -A`.
+
+### Next
+
+- Localisation is built but **not wired to any lane**, deliberately — no lane publishes a duration.
+- Open question for the quiet window, unchanged: does foreign GPU work move `gpu_steady_tail()`?
+  Note `contended3` is `PER_DISPATCH`, which is the signature foreign GPU work should produce, so
+  that trace may already be a partial answer — worth checking against what was running.
+- Still owed and GPU-bound: the certified NVIDIA packed-loads A/B.
