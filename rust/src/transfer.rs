@@ -1100,7 +1100,6 @@ mod tests {
     /// that survives a smoke test.
     #[test]
     fn an_engine_write_to_staging_is_pushed_to_the_device_mirror() {
-        use crate::engine::DeviceMemoryProvider as _;
         let provider = Arc::new(RecordingProvider::default());
         crate::engine::register_device_memory_provider(4243, provider.clone());
 
