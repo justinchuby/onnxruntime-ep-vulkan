@@ -2359,3 +2359,77 @@ up by `git add -A`.
   Note `contended3` is `PER_DISPATCH`, which is the signature foreign GPU work should produce, so
   that trace may already be a partial answer — worth checking against what was running.
 - Still owed and GPU-bound: the certified NVIDIA packed-loads A/B.
+
+---
+
+## Session 44e — 2026-08-01 — a screen for assertions that pass without reading their subject (`49a4a47`)
+
+### Standing items first: all three were already landed
+
+The relay listed three open items. Verified rather than asserted, at `8505d43`:
+
+1. **Index fix** — landed `1d2a663`. Artifact `bench/results/provider_key_selects_probe.txt`;
+   Tank's detector goes `SPLIT-DEVICE`/`SPLIT-DEVICE` → `SPLIT-DEVICE`/**`MIXED`, 2 declared**.
+2. **Clippy** — landed `9b2a916`. Re-ran `cargo clippy --release --all-targets -- -D warnings`
+   at this commit: **green**.
+3. **Device-memory default** — re-justified, record filed. Tank's half (counter-surface
+   readiness) is still off this desk; joint by M2 entry.
+
+`origin/main` is still `ca283a9` and already merged. Worktree checked: `squad/switch` alone,
+nothing foreign staged.
+
+### The mechanical screen — and it found nothing, which is the honest headline
+
+Built `ci/check_tautological_assertions.py`. Census: **1,056 comparison assertions
+(rs=614, py=442) across 139 files, 0 detections.**
+
+**Neither of the two assertions that prompted it is detectable by it**, and that is the first
+paragraph of the docstring rather than a footnote:
+
+- `test_localise_inherits_the_level_blindness_hole` compared two *different expressions* that
+  both evaluated to exactly `0.0`. A runtime property.
+- The `fn_addr_eq` tests had no negative polarity. A property of the *set*, not of a line.
+
+So the covered class is strictly and substantially smaller than "an assertion that cannot
+fail", and every output path — `PASS`, `FAIL` and `ERROR` — prints what it does not cover.
+Scoped to **regression**, not discovery. All of its evidence that it is a screen is
+**planted** (10 tests in `ci/test_lane_checks.py`), because a check observed only to pass is
+not known to be a check.
+
+### Its own development produced three instances of the failure it hunts
+
+This is the part worth keeping.
+
+1. **It reported `PASS` over a language it had not read.** A leading-whitespace bug in
+   `PY_ASSERT` meant 89 Python files yielded **zero** assertions; the total was non-zero only
+   because Rust carried it. **A total another language paid for is not coverage.** Coverage is
+   now asserted per language → `ERROR(instrument=language_scanned_nothing)`.
+2. **Blanking string literals invented three false positives.** `frame["a"] == frame["b"]`
+   blanks to a term compared to itself. Three of the first four detections were this shape and
+   **all three were correct code.** Replaced with a length- and newline-preserving digest
+   placeholder: distinct strings stay distinct, while an assertion written *inside* a string
+   stays hidden (`layering.rs` has one as lint fixture text). The two requirements pull
+   opposite ways; both have a test.
+3. **Polarity was missing**, so `assert empty.median != empty.median` — the NaN idiom in
+   `bench/test_harness.py` — was reported as a defect. Forced the definition to sharpen: **the
+   hazard is *passing without reading the subject*, not sameness.** Identical operands are
+   reported under equality only (under inequality they either always fail — safe, a
+   permanently red assertion is fixed on its first run — or are a NaN probe). Two literals are
+   reported at either polarity, since `assert_ne!(1, 2)` also passes touching nothing.
+
+**Four confident detections, four wrong. An unscoped screen does not merely miss things — it
+asserts things.** Same shape as D-T85, arrived at independently and within an hour of reading
+it.
+
+### Wiring
+
+Added to the existing no-GPU `Lane-check self-test` job, after the two-polarity pytest step.
+`PASS / FAIL(condition) / ERROR(instrument)`, exits 0/1/4, matching `check_device_state.py`.
+51 lane-check tests pass (10 new). YAML validated.
+
+### What this does *not* close
+
+The class that actually bit me twice remains undetected and I do not currently see a cheap
+mechanical form for it. A runtime screen would need to know that an assertion's reading cannot
+move when its subject does — that is mutation testing, and it is not cheap. **Recorded as open
+rather than closed by a screen that does not reach it.**
