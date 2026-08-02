@@ -1,0 +1,61 @@
+{
+  "any_pre_existing_gate_red": false,
+  "clean_arm": {
+    "all_output_oracle_outcome": "AGREE",
+    "comparisons": [
+      "AGREE",
+      "AGREE",
+      "AGREE"
+    ],
+    "cross_run_identical": [
+      true,
+      true,
+      true
+    ],
+    "guard1_logit_range": 56.93545341491699,
+    "guard1_passes": true,
+    "kv_outputs_all_zero": false,
+    "kv_outputs_count": 64,
+    "oracle_max_abs_diff": 0.0,
+    "outputs_compared_key": 65,
+    "series_verdict": "MATCH"
+  },
+  "gates_that_went_red": {
+    "cpu_oracle_comparison": false,
+    "cross_run_identity": false,
+    "phi35_guard1_logit_range": false,
+    "series_verdict": false
+  },
+  "generated_utc": "2026-08-02T13:00:48.843311+00:00",
+  "model_artifact_present_on_this_box": false,
+  "new_all_output_oracle_red": true,
+  "plant": {
+    "corrupted": "1..64 (all KV), set to zero",
+    "logits_output_0": "unmodified, identical to the oracle",
+    "outputs": 65,
+    "stable_across_runs": true,
+    "why_stable": "an unstable plant is caught by cross-run identity and would prove nothing about this gap"
+  },
+  "planted_arm": {
+    "all_output_oracle_outcome": "NOT_PERFORMED",
+    "comparisons": [
+      "AGREE",
+      "AGREE",
+      "AGREE"
+    ],
+    "cross_run_identical": [
+      true,
+      true,
+      true
+    ],
+    "guard1_logit_range": 56.93545341491699,
+    "guard1_passes": true,
+    "kv_outputs_all_zero": true,
+    "kv_outputs_count": 64,
+    "oracle_max_abs_diff": 0.0,
+    "outputs_compared_key": 65,
+    "series_verdict": "MATCH"
+  },
+  "probe": "planted_kv_all_zero",
+  "question": "Does any gate that exists today go red when 64 of 65 outputs are stably all-zero?"
+}

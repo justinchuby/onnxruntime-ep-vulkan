@@ -130,7 +130,12 @@ def _compare_run_to_cpu(
         "argmax_cpu": argmax_cpu,
         "top10_overlap": overlap,
         "vk_max_abs_logit": max_abs,
-        "max_abs_diff": float(np.abs(logits_vk - logits_cpu).max()),
+        # Named for its extent, not for its quantity. This was `max_abs_diff`, sitting in a
+        # dict beside `outputs_compared: 65`, and it was read into the criteria table as a
+        # diff over sixty-five outputs when it covers exactly one. Renaming is the fix that
+        # makes the misreading impossible rather than merely corrected (R11: a
+        # measurement's name is not its definition, so the name had better carry it).
+        "logits_max_abs_diff": float(np.abs(logits_vk - logits_cpu).max()),
     }
     agree = argmax_vk == argmax_cpu and overlap >= 5 and max_abs > 0.1
     return (m.COMPARISON_AGREE if agree else m.COMPARISON_DISAGREE), facts
@@ -205,23 +210,45 @@ def test_criterion_10_three_consecutive_attributed_match(
 
     # Cross-run identity across all outputs. A run that differs from run 1 contains an
     # output nobody wrote; that run did not agree with anything and is DISAGREE.
+    #
+    # And, since 2026-08-02, the CPU oracle over **all** outputs rather than the logits
+    # alone. Cross-run identity proves determinism; only the oracle proves correctness, and
+    # a deterministically wrong KV write passes the first while failing nothing. The two
+    # counts are recorded under two names because they were once read off one:
+    # `outputs_compared: 65` counted cross-run comparisons and was quoted as sixty-five
+    # oracle comparisons.
     comparisons: list[str] = []
     per_run_facts: list[dict] = []
     cross_run_report: list[str] = []
     for i, run in enumerate(vk_runs):
         identical, differing = m.outputs_bit_equal(vk_runs[0], run)
         outcome, facts = _compare_run_to_cpu(run, cpu_out)
+        oracle_outcome, oracle_facts = m.compare_all_outputs_to_cpu(run, cpu_out)
+        facts.update(oracle_facts)
+        facts["logits_oracle_outcome"] = outcome
+        facts["all_output_oracle_outcome"] = oracle_outcome
+
+        # The all-output oracle can only make the outcome stricter, never laxer: a logits
+        # AGREE with a KV DISAGREE is a DISAGREE.
+        if oracle_outcome != m.COMPARISON_AGREE:
+            outcome = oracle_outcome
         if not identical:
             outcome = m.COMPARISON_DISAGREE
             facts["cross_run_differing_outputs"] = differing[:10]
         facts["cross_run_identical_to_run1"] = identical
-        facts["outputs_compared"] = len(run)
+        facts["cross_run_outputs_compared"] = len(run)
         comparisons.append(outcome)
         per_run_facts.append(facts)
         cross_run_report.append(
             f"    run {i + 1}: {outcome}  argmax={facts['argmax_vk']} "
             f"(cpu {facts['argmax_cpu']})  top10={facts['top10_overlap']}/10  "
-            f"cross-run identical (all {len(run)}): {identical}"
+            f"cross-run identical (all {len(run)}): {identical}\n"
+            f"             oracle: {oracle_outcome} over "
+            f"{oracle_facts['oracle_outputs_compared']}/{oracle_facts['oracle_outputs_total']} "
+            f"outputs, {oracle_facts['oracle_outputs_degenerate']} degenerate, "
+            f"worst max_abs_diff="
+            f"{oracle_facts['oracle_max_abs_diff_over_all_outputs']:.6g} "
+            f"at output {oracle_facts['oracle_worst_output_index']}"
         )
 
     series = m.AttributedRunSeries.from_runs(
@@ -298,3 +325,31 @@ def test_criterion_10_record_names_what_it_counts(
         "the record carries no executed_by; §10.0 clause 3 — a verdict without its "
         "executor is a verdict from a world it has not identified"
     )
+
+    # The reopened row's proximate cause, pinned. `outputs_compared: 65` counted cross-run
+    # comparisons, sat among the oracle facts, and was quoted into the criteria table as
+    # sixty-five oracle comparisons beside a max_abs_diff covering one tensor. Two counts,
+    # two names, and the bare form must not come back.
+    per_run = record.get("per_run") or []
+    assert per_run, "the record carries no per_run facts to check the counts against"
+    for i, facts in enumerate(per_run):
+        assert "oracle_outputs_compared" in facts, (
+            f"run {i + 1} does not say how many outputs the CPU oracle covered; that is "
+            "the fact whose absence reopened criterion 10"
+        )
+        assert "cross_run_outputs_compared" in facts, (
+            f"run {i + 1} does not separately name its cross-run count"
+        )
+        assert "outputs_compared" not in facts, (
+            f"run {i + 1} carries the bare `outputs_compared` key again; it is the one "
+            "that was read as an oracle count while holding a determinism count"
+        )
+        assert facts["oracle_outputs_compared"] == facts["oracle_outputs_total"], (
+            f"run {i + 1} compared {facts['oracle_outputs_compared']} of "
+            f"{facts['oracle_outputs_total']} outputs against CPU; a partial oracle is "
+            "how one-of-sixty-five passed for a month"
+        )
+        assert facts.get("oracle_outputs_degenerate") == 0, (
+            f"run {i + 1} has {facts.get('oracle_outputs_degenerate')} degenerate output "
+            "pairs; those comparisons are vacuous and cannot close the criterion"
+        )

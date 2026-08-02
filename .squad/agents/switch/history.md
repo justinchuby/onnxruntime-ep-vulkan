@@ -540,3 +540,108 @@ rather than closed by a screen that does not reach it.**
 
 📌 Team update (2026-08-02T02:03:46-07:00): Mouse checked rather than accepted the coordinator's claim that clippy's manual_contains was "the fourth union defect today," and found cargo clippy -D warnings produced five errors of which four were already present on origin/main verbatim, independent of any merge — only 
 egistry.rs:2261 was a genuine union defect. This clears your "green at my commit" report: the clippy-red state at the time was mostly pre-existing, not introduced by your commit. The coordinator's own over-attribution is recorded in this session's log and ruled on by Morpheus as R13's second clause applied to a classifier (a newly named pattern attracting cases that don't belong to it), not a new rule. — decided by Scribe
+
+---
+
+## Session 45 — 2026-08-02 — criterion 10's oracle covered one output out of sixty-five (`8c43918`)
+
+### The cheapest experiment came back negative, which is the load-bearing result
+
+Morpheus asked for the plant *before* anything was built, and he was right to: a positive
+result would have re-closed the row on existing evidence. I planted a **stable all-zero KV
+write** — logits untouched, outputs 1..64 zero, byte-identical across three runs — and ran it
+through every gate criterion 10 applied:
+
+```
+cross_run_identity          green
+cpu_oracle_comparison       green
+series_verdict              green     <- MATCH, with 64/65 outputs zero
+phi35_guard1_logit_range    green
+```
+
+**Nothing goes red.** `bench/results/planted_kv_probe.json`; regenerate with
+`bench/results/probe_planted_kv.py`.
+
+Two decisions about that probe worth keeping:
+
+- **It runs against the real gate functions, imported not copied.** A copy would let the
+  gates drift away from their own falsifier.
+- **The Phi-3.5 artifact is not on this machine** (`~/.foundry/cache/models/Microsoft/...`
+  does not exist), so both `test_criterion10` and `test_phi35` skip before their first
+  assertion. A GPU plant was not available at any price. But the question — *does any gate
+  read KV* — is a question about the gate code, and the harness frame answers it for every
+  device rather than for whichever one was free.
+- Attribution is **held identical across both arms** so it cannot be the discriminator. Its
+  trace is fabricated and the probe says so out loud rather than letting the artifact imply
+  a real run.
+
+### The arm
+
+`m.compare_all_outputs_to_cpu` — three-way, because two-way is what broke:
+
+| outcome | meaning |
+|---|---|
+| `AGREE` | all outputs compared, all within tolerance, all informative on **both** sides |
+| `DISAGREE` | some output outside tolerance, or arity/shape/dtype mismatch |
+| `NOT_PERFORMED` | some pair degenerate — **absence of evidence, not agreement** |
+
+`NOT_PERFORMED` is the whole point. **64 pairs of zeros satisfy an all-output allclose
+perfectly.** Morpheus called it *`0.0 == 0.0` in a fourth costume* and he is right — it is the
+same shape I caught in my own tests twice last week. So absence of evidence gets its own
+token instead of borrowing the passing one, the guard runs on **both** sides (a degenerate
+*oracle* is just as vacuous), and it is written on **constancy rather than on zero** so a
+buffer holding one repeated residue value is caught too.
+
+**Tolerances are not chosen for this gate.** fp16 KV outputs get `MATMULNBITS_FP16` —
+already derived from measured data in `_models.py`'s header — because MatMulNBits is the
+arithmetic that produces them. Each tolerance carries its justification string into the
+per-output record. Reusing a justified number is the justification; picking one that makes
+this gate green would not be.
+
+### Two counts, two names
+
+`oracle_outputs_compared` and `cross_run_outputs_compared` are separate keys and the bare
+`outputs_compared` is **asserted absent**. That key counted cross-run comparisons, sat among
+the oracle facts, and was read as sixty-five oracle comparisons — with a `max_abs_diff` over
+one tensor quoted beside it. `max_abs_diff` → `logits_max_abs_diff` for the same reason.
+**Make the misreading impossible, not merely corrected.**
+
+### And the mutation caught a tautology in my own test
+
+13 falsifiers, deliberately needing **no device and no model** — a falsifier that requires an
+absent artifact skips green on exactly the machines where nobody is watching.
+
+I verified them by mutation rather than by watching them pass:
+
+- neutering `_is_degenerate` → **4 red**
+- widening `KV_CACHE_FP16` to 1e9 → the numeric arm red
+
+The second mutation caught **my own assertion that could not fail**.
+`test_every_tolerance_carries_its_justification` parametrised `expected` with
+`m.KV_CACHE_FP16` and then asserted `tol == expected` — the constant compared to itself. It
+now asserts against `MATMULNBITS_FP16`, the thing the tolerance *claims to derive from*, so
+picking a number for this gate fails it.
+
+**Third instance of that shape in three days**, and it is precisely the form
+`ci/check_tautological_assertions.py` does not reach — the two sides are different text. The
+screen I shipped yesterday passed this file cleanly. **The screen's stated hole is real and I
+have now walked into it myself.** Mutation caught what the static screen structurally cannot;
+that is the honest division of labour between them and it should be written down as such.
+
+There is also a **ground-truth arm** — the old one-output comparison is asserted to `AGREE`
+with the same plant. Without it the new refusal proves nothing about the gap.
+
+### Not mine to claim
+
+`(d)` attribution is untouched: still re-emitted per run from `end_profiling()` via
+`ExecutionAttribution.from_profile`, which is private by R10 amendment 1. I did not re-argue
+it and did not need to.
+
+### Open
+
+- **The arm has never run on the real artifact**, because the model is absent here. Its
+  reading is pinned by construction and by mutation; its *value* on Phi-3.5 is unmeasured.
+  Whoever has the model should run `test_criterion_10_three_consecutive_attributed_match` and
+  read `oracle_outputs_degenerate` first — if the KV outputs come back degenerate on real
+  data, that is the reopened defect still live, not a harness problem.
+- No timing measurement taken. Nothing with a time term is certifiable on this box.
