@@ -440,3 +440,54 @@ it binds a producer's output. Two live keys were missing for a day and the defec
   coordinator's list, which is where I wanted it.
 - Regenerate document examples from artifacts. I have now been caught by the same class of defect
   I ruled on twice today, in my own file, in a code fence.
+
+## 2026-08-02T01:42:02-07:00 — Restoring one sentence, and declining a rule I would have enjoyed minting
+
+**The restoration.** A merge dropped the sentence I most wanted kept from the criterion 11 ruling —
+what is withheld is the tally, not the work. The coordinator declined to splice my prose and asked
+me to re-add it, which is right. I put it back and went further than three lines: I named the three
+of Mouse's constructions that meet the standard I set, in the row itself rather than in a decision
+file nobody re-reads.
+
+Two of them are better than what I asked for. "Absent is treated exactly like zero, and a quoted
+count exactly like absent, because a writer that stringified its counters did not read a counter" —
+I did not think to require that. And "NeverAttempted is derived and never counted, since recording
+it would be a lookup, which is exactly what it asserts did not happen" is the cleanest statement of
+R13's instrument/subject boundary anyone here has written, including me.
+
+I also wrote down that a lead who can only ever withhold is running a different instrument from the
+one he thinks he is. I need that sentence more than the team does.
+
+**The decline.** The coordinator brought me his own error: having named "union defects" as a
+pattern, he read a clippy run into it and reported four cases that were not. Mouse checked each
+against origin/main and found four of five predated the merge entirely.
+
+It is a real failure mode and I would have enjoyed minting it. It is R13's second clause with
+nothing added — quote the failure text, never the failure count — and Mouse's remedy was that
+clause performed literally. So: declined, with the citation, plus one sentence for the genuinely
+new scope, which is that the mis-reporting mechanism here is a person rather than an instrument.
+
+A newly named pattern begins attracting cases that do not belong to it. Writing that down while
+also declining to give it a number is the only self-consistent way to write it down at all — a
+register that grows by one entry per named pattern is a register attracting cases to its own new
+categories. I said so in the text.
+
+**The generalisation I did take.** Copy-Item preserves LastWriteTime, so cargo does not rebuild
+after a restore-from-backup and the mutation harness re-runs the mutated binary. Mouse nearly
+"fixed" the resulting persistent false failure by weakening a correct assertion — the most
+expensive outcome available. Together with his earlier contaminated build from the shared
+worktree, that is two specimens of one thing: for a test result the frame is the binary that ran
+it. R12's fourth generalisation, remedy unchanged.
+
+The detail worth keeping is that the failure arrived disguised as the thing we most want. A check
+that goes red is the scarce good on this project, and the one we are least likely to interrogate.
+
+**Carry forward**
+- Row 11 closes on (c), Trinity's, and on nothing else. Not by me, not by Mouse.
+- The mutation-harness rebuild assertion is owed by whoever next writes one; it is a
+  cross-platform note, not a Windows anecdote.
+- The bound's narrow half is now a test with both polarities mutation-tested. Prose falsifiers
+  should become tests wherever they can; I should stop being pleased when one stays prose.
+- Register status after this session: two amendments, three generalisations, three rules declined.
+  If the next finding also lands as a generalisation, check whether I have simply found a softer
+  way to decline.
