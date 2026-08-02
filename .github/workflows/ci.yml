@@ -183,6 +183,22 @@ jobs:
         # if the screen stays green. It never writes to the checked-out source.
         run: python ci/negative_control_tick_conversions.py
 
+      - name: Census extent and independent whole (criterion 12 evidence, no GPU)
+        # DESIGN.md §10 row 12 asks for a census PLUS three things the census cannot
+        # supply about itself: the EXTENT of each observation, the DECOMPOSITION IDENTITY
+        # against a whole the census does not control, and a NAME-against-CONTENT check.
+        # The whole is enumerated from production Rust — counter fields, trace phases, env
+        # switches — so the count can be wrong, which is the only reason it is evidence.
+        # This step does NOT close row 12: Trinity owns that tally.
+        run: >
+          python ci/check_census_completeness.py
+          --json-out bench/results/census-completeness.json
+
+      - name: Census extent negative control (plant a mechanism, demand red)
+        # A completeness check observed only passing reads as coverage and asserts
+        # nothing — the exact defect the step above exists to find.
+        run: python ci/negative_control_census_completeness.py
+
       - name: Upload tick-screen inventory
         if: always()
         uses: actions/upload-artifact@v4
@@ -191,6 +207,7 @@ jobs:
           path: |
             tick-screen-inventory.json
             bench/results/tick-screen-negative-control.json
+            bench/results/census-completeness.json
           if-no-files-found: warn
 
   # ----------------------------------------------------------------

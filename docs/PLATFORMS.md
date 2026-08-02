@@ -1519,6 +1519,7 @@ The same argument covers `timestampValidBits`: lavapipe and NVIDIA report 64, Ir
 | `vendor_driver_behaviour` — UMA/discrete, subgroup width, fp16/int8, ReBAR | local-dev observation; a GPU runner the project does not have | `IMPOSSIBLE_HERE` |
 | `conversion_call_sites` — correct arithmetic, never invoked | **`ci/check_tick_conversions.py`**, a static source screen (§7.13) | `DEMONSTRATED` (2026-08-01) |
 | `composed_workflow` — two correct branches, a broken union | **`--union-with`** on the lane inventory (§7.14) — one shape, one file | `DEMONSTRATED` (2026-08-02, replayed) |
+| `census_denominator` — a census complete by construction, 12 out of its own 12 | **`ci/check_census_completeness.py`** (§7.15) — the whole enumerated from production Rust | `DEMONSTRATED` (2026-08-02) |
 
 The CI matrix has **one device in it wearing two operating systems**. That is a portability result about our code and not a hardware-coverage result, and it is why OQ-12's **~32.67% as of 2026-07-30** is simultaneously a ceiling and a floor.
 
@@ -1698,6 +1699,104 @@ A planted falsifier does **not** demote a check to `UNDEMONSTRATED` — "somebod
 ### 7.14.3 `rust/src/trace.rs` has an owner
 
 Assigned to **Niobe** on 2026-08-02: it is timestamp calibration and trace-event arithmetic — measurement — and she owns the certification instruments that consume it. Tank has the stronger claim on counters and FFI, and the coordinator will move it if either of them thinks it is backwards. Recorded in `.squad/team.md`; `ci/tick_conversion_allowlist.json` now names her instead of `unassigned`.
+
+---
+
+## 7.15 Criterion 12: the three things the census cannot supply about itself — added 2026-08-02T03:30-07:00
+
+Morpheus's ruling is the one to keep in front of you:
+
+> The census answers whether a mechanism ran; a criterion answers whether a claim is false-able. **A census line can never discharge a criterion.**
+
+`unwired: []` on both devices is a true sentence about a mechanism list. Row 12 asks for three further things, and none of them can be answered from inside the census, because each one needs a fact the census does not own. `ci/check_census_completeness.py` supplies them, with `ci/census_surface_map.json` as its map and `ci/negative_control_census_completeness.py` as its falsifier. **It does not close row 12.** Trinity owns that tally, as she owns criterion 11's, and supplying the artifact and closing the row must not be the same act.
+
+### 7.15.1 The whole: twelve out of *what*
+
+If the denominator comes from the same list that produced the numerator, `12/12` is true by construction, can never fail, and reads as coverage while asserting nothing — R11's hardest kind of wrong, and the shape criterion 11 was refused on. So the whole is enumerated from **production Rust that the census does not write**:
+
+| Source | Owner | Surfaces |
+|---|---|---|
+| `rust/src/counters.rs` — C ABI counter fields | Tank | 14 |
+| `rust/src/trace.rs` — `Phase` variants | Niobe | 10 |
+| `rust/src/**` — `ONNXRUNTIME_EP_VULKAN_*` switches | Switch / Mouse / Tank | 26 |
+| **total** | | **50** |
+
+Frame, stated rather than assumed: 29,269 production lines read, **11,376 lines held out as `#[cfg(test)]` — UNOBSERVABLE by frame, not zero findings.** One switch (`ALLOW_MISSING_GLSLC`) is named only in prose and never in a line of production code, which the report says out loud.
+
+Against those 50 surfaces the census's twelve mechanisms account for:
+
+| Disposition | Count | Meaning |
+|---|---|---|
+| `censused` | 33 | a census mechanism observes it |
+| **`uncensused`** | **12** | instrumented, and **no** census mechanism observes it |
+| `out_of_frame` | 3 | the census's own transport or lane parameter |
+| `not_a_mechanism` | 2 | ABI header fields; nothing runs |
+
+**The answer is not 12/12.** The twelve gaps are recorded with owners — `compile_calls`, `compute_calls`, `subgraphs_stub` (Mouse); `DEVICE_MEMORY`, `VA_RESERVE_MIB`, `QUARANTINE_SPANS` (Tank); `GEMV_PACKED`, `CLAIM_LOG`, `CLAIM_DEBUG` (Mouse); `DUMP_OUTPUT_BYTES`, `BACKEND_PROBE`, `VERBOSE` (Switch). `GEMV_PACKED` is the one to look at first: it selects a *different kernel*, and no census line reports whether it was in force.
+
+Numerator and denominator now have different authors, in different files, in a different language. That is the property that lets the count be wrong — and a count that cannot be wrong is not a measurement.
+
+### 7.15.2 Extent: how much of each mechanism the observation covers
+
+| Mechanism | Extent | Not named by the observation |
+|---|---|---|
+| `partitioner` | 1/2 | `dispatches_executed` |
+| `net_benefit_gate` | 0/6 | all six cost-model switches |
+| `gpu_tracer` | **1/12** | ten of ten `Phase` variants, and `TRACE_GPU` |
+| `retain_viable` | 0/1 | `viable_islands_retained` — its own namesake counter |
+| `ledger_lookup` | 4/7 | `unproven_forms_claimed`, `LEDGER_FILE`, `CLAIM_UNPROVEN` |
+| `validation_messenger` | 0/3 | `VALIDATE`, `REQUIRE_VALIDATION`, `PLANT_VALIDATION_VIOLATION` |
+| `broken_commitment_warn` | 0/2 | `compute_failures`, `FORCE_COMPUTE_FAILURE` |
+| `partition_identity_check`, `model_output_equivalence`, `layering_lint`, `device_state_guard`, `instrument_census` | `UNOBSERVABLE` | no surface in the independent whole — the denominator would have to be self-supplied |
+
+Two disciplines here. First, an extent is an **upper bound**: the numerator counts identifiers the observation happens to mention, which is the weakest evidence of coverage that can be checked at all, so 6/6 would mean "named six strings", never "covered six things". Second, the last row reports `UNOBSERVABLE`, **never 0/0** — a ratio of zero over zero presented as coverage is exactly the identity defect this screen exists to refuse (R12).
+
+`gpu_tracer` at 1/12 is the headline. The tracer line reports event counts, one-character event *types* and a distinct-name count; it names none of the ten phases. A phase that never fires is not distinguishable from one that does — and one of those ten is `Record`.
+
+### 7.15.3 Name against content, and why `Phase::Record` would pass
+
+Tank's vocabulary already has the terminal state: `misnamed`. The standing specimen is `Phase::Record` — wired, invoked, correct, input-varying, and **wrong by 50× in what it was called**. A census that verifies a mechanism ran and never asks whether its name describes what it did will certify that specimen.
+
+The decidable form is R10 turned on the census's own output: across the six census artifacts on record, did the observation's *content* ever move?
+
+| State | Mechanisms |
+|---|---|
+| `VARIES` | `ledger_lookup`, `validation_messenger`, `device_state_guard` |
+| `INVARIANT` — certified on presence alone | the other **nine**, including `gpu_tracer`, `partitioner` and `broken_commitment_warn` |
+| `UNOBSERVABLE` — fewer than two arms | none in this set |
+
+The third state is the point: with one arm a mechanism is *unmeasured*, not invariant, and calling that invariant would be reporting 0 where the event could not occur. And the honest limit on the second: the arms are the census runs that exist, not arms designed to vary each mechanism, so `INVARIANT` means *no arm on record distinguished it* — weaker than "no arm could", stronger than nothing.
+
+Every mechanism now carries a **name claim** in `census_surface_map.json`: what the name asserts, and the discriminator — the observation that would differ if the name were wrong. All twelve are recorded `name_verified: false`, because none has been. The screen goes red if anyone records one as verified while the arms never varied, and red if a mechanism joins the census with no claim at all.
+
+### 7.15.4 Both arms, demonstrated — `ci/negative_control_census_completeness.py`
+
+Twelve arms, all fired 2026-08-02, every mutation against a **scratch copy**; nothing in the repository is modified.
+
+| Arm | Expected |
+|---|---|
+| baseline, the real tree | `PASS` |
+| a counter field planted in `counters.rs` | `FAIL(unmapped_surface)`, naming it |
+| a `Phase` variant planted in `trace.rs` | `FAIL(unmapped_surface)`, naming it |
+| an env switch planted in `allocator.rs` | `FAIL(unmapped_surface)`, naming it |
+| the map claims a surface that no longer exists | `FAIL(surface_map_rot)` |
+| **the census drops a mechanism whose surfaces are still instrumented** | `FAIL(mechanism_not_enumerated)` |
+| a mechanism joins the census with no name claim | `FAIL(unclaimed_mechanism_name)` |
+| a name recorded verified against arms that never varied | `FAIL(name_claim_contradicted)` |
+| map absent / artifacts absent / extractor anchor moved / empty tree | `ERROR(instrument=…)`, exit 4 |
+
+The sixth is the arm the criterion actually needs: **a census that misses a mechanism, caught by the independent whole.** The last row is the one that keeps the screen honest in the other direction — a denominator that silently shrinks is worse than no denominator, so a moved extractor anchor is an outage, never a smaller whole.
+
+### 7.15.5 What this does not claim
+
+- It does not close row 12, and a `PASS` from it does not mean the census covers the tree. A `PASS` means every surface is **accounted for** — 33 observed, 12 recorded as gaps. The gaps are the evidence that criterion 12 is **not met**.
+- Its whole is the *instrumented* surface of the EP, not the EP. A mechanism touching no counter, no phase and no switch is as invisible to the denominator as to the census.
+- It never decides a name is wrong. `Phase::Record` reads `INVARIANT` here, which is the flag, not the verdict.
+- Its own falsifier is `PLANTED` (§7.14.2). Every arm above is a mutation I wrote. Nobody has yet added a mechanism to the Rust tree and been caught by this screen in the field.
+
+### 7.15.6 Lane status after this
+
+`lane-checks` stays **`operational`**, not `green`: `hostfree.tautological_assertions` is still `UNDEMONSTRATED` and one undemonstrated check holds the lane. The two new checks — `hostfree.census_completeness` and `hostfree.census_completeness_negative_control` — are `DEMONSTRATED` / `PLANTED`. The blind-spot table gains `census_denominator`, substitute `DEMONSTRATED`.
 
 ---
 
