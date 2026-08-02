@@ -1701,6 +1701,68 @@ Assigned to **Niobe** on 2026-08-02: it is timestamp calibration and trace-event
 
 ---
 
+## 7.15 Criterion 11(c): showing `ledger_hits` moves with its input — added 2026-08-02T03:10-07:00
+
+Morpheus's discharge condition (c) is not "show the counter is non-zero." `ledger_hits=6 proven_key_lookups=6` reads identically whether the ledger was genuinely consulted or **derived from the same enumeration that produced the claims**. An identity whose two sides come from one source is a falsifier that cannot fire. (c) is therefore: *show the reading changes when the input changes*, arms asserted to differ, in the census lane rather than behind `#[ignore]`.
+
+### 7.15.1 The arm table (measured, Intel Iris Xe device 1; re-run on RTX 4060 device 0)
+
+The census child was parameterised by model (`ONNXRUNTIME_EP_VULKAN_CENSUS_MODEL`) and by on-disk ledger (`ONNXRUNTIME_EP_VULKAN_LEDGER_FILE`). Nine arms were **probed before anything was asserted** — an assertion written ahead of the reading is a test of the author's guess, not of the mechanism.
+
+| arm | input varied | `proven_key_lookups` | `ledger_hits` | `ledger_gate` | `ledger_miss` | `claimed_nodes` |
+|---|---|---|---|---|---|---|
+| chain (default) | — | 6 | 6 | ALL-PROVEN | HIT | 6 |
+| dtype proven | `mul_f32` | 1 | 1 | ALL-PROVEN | HIT | 1 |
+| dtype unproven | `mul_f16_unproven` | 1 | **0** | ALL-DECLINED | KEY-ABSENT | 0 |
+| **shape runtime** | dynamic-extent `Mul` f32 | 1 | **0** | ALL-DECLINED | KEY-ABSENT | 0 |
+| optin zp | `matmulnbits_f16_scales_zp` | 1 | 1 | ALL-PROVEN | HIT | 1 |
+| optin no-zp | `matmulnbits_f16_scales` | 1 | 1 | ALL-PROVEN | HIT | 1 |
+| digest identical | `LEDGER_FILE` = real | 1 | 1 | ALL-PROVEN | HIT | 1 |
+| digest drifted | `LEDGER_FILE` = truncated | 1 | **0** | **FAULTED** | LEDGER-FAULTED | 0 |
+| digest absent | `LEDGER_FILE` = missing | 1 | **0** | **FAULTED** | LEDGER-FAULTED | 0 |
+
+### 7.15.2 Which arm is load-bearing, and one that is not
+
+The **shape-class** arm is the strongest, and it is not the one that was suggested. Same op, same dtype, same optional-input set, same one-node enumeration — the only thing that changes is one component of the proof key (`static` → `runtime-extent`). Because the enumeration is *byte-for-byte the same work* in both arms, a counter derived from the enumeration could not move; this one does, `1 → 0`.
+
+The **MatMulNBits `scales` / `scales+zero_points` pair does not move `ledger_hits`** — both forms are proven, so both read `HIT`. Reporting that pair as an 11(c) mover would be R11's "decomposition that appears to close." What the pair actually establishes is that the two forms are **two distinct keys**, which is asserted on the artifact rather than on the counter: over the six `/`-separated key components (`domain::op / opset / dtypes / variant / shape_class / opt_inputs`), `differing == [2, 5]`. Index 5 is the populated-optional-input set, whose absence produced the 2026-07-30 all-zero-logits defect, so this doubles as that regression's guard.
+
+The **digest-identical arm is the control that makes the other two digest arms detections** rather than a check that rejects everything. It is asserted separately, and its failure is classified `ERROR(instrument)`, not a detection.
+
+### 7.15.3 Both arms of the demonstration
+
+`tests/ops/probe_ledger_mutations.py` breaks exactly one property per mutation and requires each to be caught. All three CAUGHT on **both** devices:
+
+- **M1** — the two dtype arms fed the same model: `arms_must_differ FAILED (control 1, dtype)`.
+- **M2** — the identical-file control pointed at a drifted ledger: `the CONTROL arm faulted … so this arm failing makes the whole test ERROR(instrument) rather than a detection`.
+- **M3** — the optional-input key component dropped: `the two MatMulNBits ledger keys are identical … One entry would answer for both forms.`
+
+`ledger_lookup` is now in `_MANDATORY_WIRED` and `_KNOWN_UNWIRED_M0` is empty. A ledger that stops being consulted now fails the census lane instead of being excused by a baseline.
+
+### 7.15.4 A defect the 11(c) arms introduced, found by their own witness artifacts
+
+The tracer witness path is **shared across census arms**: each non-injected arm unlinks it and re-arms the tracer. A faulted-ledger arm dispatches nothing *by construction*, so it deletes the previous arm's tracer file and writes none. Because the tracer check reads that path, an arm with no business exercising the tracer could have turned a passing lane into a **false `UNWIRED` purely by running later**. It was invisible in the lane result — every test passed — and visible only as a tracked artifact missing from `git status` after a green run.
+
+Fixed with `_run_counters_child(..., trace=None)`, defaulting to the historical behaviour so no caller on another branch changes meaning (the round-27 `guard` lesson: a required keyword-only argument breaks callers it cannot see). The 11(c) arms pass `trace=False`. Both arms of the demonstration: before, the witness was absent after a green dev1 census; after, it survives on both devices.
+
+## 7.16 Which `model_output_equivalence` is of record — added 2026-08-02T03:10-07:00
+
+`bench/results/phi35-certified-dev0.json` carries `results[0].model_output_equivalence = MATCH` beside `results[0].counters.model_output_equivalence = UNMEASURED`. **These are not two sources disagreeing.** `rust/src/counters.rs` states that the EP has no access to a CPU oracle and that the verdict is written by the Python harness; `to_json()` defaults the field to `UNMEASURED`. The nested value is *a field nobody set*.
+
+**The mechanical tell, requiring no judgement:** `write_equivalence_record` writes the token and `model_output_equivalence_record` **in one call**. A counters document carrying the token with no record beside it was never written by a comparison. In the phi35 artifacts the record key is absent.
+
+The rule therefore keys off **the record's presence, not the token's value**. Keying off `token == "UNMEASURED"` would answer the question by reading the very field whose trustworthiness is in doubt, and would mislabel a genuine comparison that legitimately concluded `UNMEASURED`. Both polarities are asserted in `tests/ops/test_equivalence_authority.py`.
+
+`agreement` is **`UNOBSERVABLE` with a reason**, not `AGREE`/`DISAGREE` (R12): two values one of which nobody wrote have not agreed about anything. The tempting `agreement = (outer == inner)` yields `DISAGREE` here and sends a reader hunting a contradiction that does not exist.
+
+**Why it "went null" between two runs: it did not go anywhere.** The phi35 bench path never calls `write_equivalence_verdict`, so the counters copy has always been the default. The outer verdict is computed by `bench/phi35.py` from the sibling `outputs` evidence. The profile side stayed intact because it has a different writer — which is the informative part: the two attribution sources can differ about whether they observed anything, so the record must say **which witnesses it actually had**.
+
+**Scope (R9 amendment 5 applied to my own check).** Gating every historical bench artifact would leave ~20 frozen, unowned, non-regenerable records permanently red, and a permanently red gate gets loosened or ignored. The **gate** is the certified set only (4 files); the other 13 records print `PRECONDITION(equivalence authority): … Not a gate`. The one thing asserted everywhere: two *genuine* readings that contradict each other is a finding wherever it appears.
+
+Routed to Niobe (owner of `bench/`): `bench/phi35.py` should stamp `model_output_equivalence_authority` at write time so it survives regeneration. The four existing certified artifacts were stamped by hand; her code was not edited.
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---

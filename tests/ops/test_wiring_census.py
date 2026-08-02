@@ -188,13 +188,21 @@ _MANDATORY_WIRED = {
     "broken_commitment_warn",
     "device_state_guard",
     "instrument_census",
+    # Promoted 2026-08-02 (round 28).  Criterion 11 landed: the ledger has entries, the
+    # lookup runs, and `test_ledger_hits_moves_with_its_input` shows the reading changes
+    # with the key presented.  Leaving it informational would mean a ledger that stopped
+    # being consulted could not fail this lane — the exact state R10 calls
+    # indistinguishable from never having been written.
+    "ledger_lookup",
 }
 
-# Mechanisms known to be UNWIRED at M0 (criterion 11 not yet met).
-# These are xfail(strict=True) rather than hard failures.
-_KNOWN_UNWIRED_M0 = {
-    "ledger_lookup",   # Mouse/Trinity — criterion 11 not met; no ledger entries exist
-}
+# Mechanisms known to be UNWIRED at M0.
+#
+# Emptied 2026-08-02 (round 28) when `ledger_lookup` was promoted.  Kept as an empty set
+# rather than deleted: the subtraction below is the place a future known-unwired mechanism
+# is declared, and removing the seam would mean the next one is declared by deleting an
+# assertion instead.
+_KNOWN_UNWIRED_M0: set[str] = set()
 
 
 # Which mechanisms a stalled step makes unobservable.  A stall is recorded against the
@@ -410,6 +418,21 @@ _ENV_INJECT = "ONNXRUNTIME_EP_VULKAN_FORCE_COMPUTE_FAILURE"
 #: previously looked for `ONNXRUNTIME_EP_VULKAN_TRACE_FILE`, which nothing sets.
 _ENV_TRACE = "ONNXRUNTIME_EP_VULKAN_TRACE"
 
+#: Criterion 11(c).  Names the model the counters child runs instead of `_chain_model()`.
+#: `ledger_hits` is only a reading if it is *given something to vary with*, and the input
+#: it must vary with is the proof key the graph presents — which is a property of the
+#: model, not of the harness.  A census that only ever runs one graph can report
+#: `ledger_hits=6 proven_key_lookups=6` forever and cannot tell a consulted ledger from
+#: one derived from the same enumeration that produced the claims.
+_ENV_CENSUS_MODEL = "ONNXRUNTIME_EP_VULKAN_CENSUS_MODEL"
+
+#: Mouse's digest-refusal switch (rust/src/registry.rs::ENV_LEDGER_FILE).  Named here so
+#: the census can put the refusal *in the lane* rather than behind a Rust unit test.
+_ENV_LEDGER_FILE = "ONNXRUNTIME_EP_VULKAN_LEDGER_FILE"
+
+_EVIDENCE_CASES = Path(__file__).parent.parent.parent / "evidence" / "cases"
+_EVIDENCE_LEDGER = Path(__file__).parent.parent.parent / "evidence" / "proof_ledger.jsonl"
+
 _CENSUS_OUT = Path(__file__).parent.parent.parent / "bench" / "results" / "census"
 _CENSUS_TRACE_PATH = _CENSUS_OUT / (
     f"census-trace-dev{os.environ.get('ONNXRUNTIME_EP_VULKAN_DEVICE', 'unset')}.json"
@@ -439,6 +462,33 @@ def _chain_model(n_nodes: int = 6) -> bytes:
         [a, b], [cur], nodes=nodes, name="census_chain", opset_imports={"": 21}
     )
     return ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
+
+
+def _feeds_for(sess) -> dict:
+    """Inputs for an arbitrary evidence-case model.
+
+    Deliberately the *same* construction `rust/tools/gen_proof_ledger.py::_child_main`
+    uses, so the graph the census runs is fed the way the graph the ledger was generated
+    from was fed.  Two feed builders would be two definitions of the case.
+    """
+    rng = np.random.default_rng(20260801)
+    feeds = {}
+    for inp in sess.get_inputs():
+        shape = [d if isinstance(d, int) and d > 0 else 2 for d in inp.shape]
+        dt = inp.type
+        if "float16" in dt:
+            feeds[inp.name] = rng.standard_normal(shape).astype(np.float16)
+        elif "uint8" in dt:
+            feeds[inp.name] = rng.integers(0, 4, shape).astype(np.uint8)
+        elif "int64" in dt:
+            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int64)
+        elif "int32" in dt:
+            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int32)
+        elif "bool" in dt:
+            feeds[inp.name] = rng.integers(0, 2, shape).astype(bool)
+        else:
+            feeds[inp.name] = rng.standard_normal(shape).astype(np.float32)
+    return feeds
 
 
 def _counters_child_main(counters_path: str) -> int:
@@ -471,13 +521,19 @@ def _counters_child_main(counters_path: str) -> int:
     opts = ort.SessionOptions()
     opts.log_severity_level = 2
     phase("build_model")
-    model_bytes = _chain_model()
-    phase("create_session")
-    sess = ort.InferenceSession(model_bytes, opts, providers=m.EP_PROVIDERS)
-    feeds = {
-        "a": np.ones((4, 4), dtype=np.float32),
-        "b": np.full((4, 4), 2.0, dtype=np.float32),
-    }
+    model_path = os.environ.get(_ENV_CENSUS_MODEL, "")
+    if model_path:
+        phase("create_session")
+        sess = ort.InferenceSession(model_path, opts, providers=m.EP_PROVIDERS)
+        feeds = _feeds_for(sess)
+    else:
+        model_bytes = _chain_model()
+        phase("create_session")
+        sess = ort.InferenceSession(model_bytes, opts, providers=m.EP_PROVIDERS)
+        feeds = {
+            "a": np.ones((4, 4), dtype=np.float32),
+            "b": np.full((4, 4), 2.0, dtype=np.float32),
+        }
     try:
         phase("run")
         sess.run(None, feeds)
@@ -518,17 +574,36 @@ def _ambient_guard(what: str):
         clock.stop()
 
 
-def _run_counters_child(*, inject: bool, tag: str, guard: "StallGuard | None" = None) -> tuple[dict, str]:
+def _run_counters_child(
+    *, inject: bool, tag: str, guard: "StallGuard | None" = None,
+    extra_env: "dict[str, str] | None" = None, trace: "bool | None" = None,
+) -> tuple[dict, str]:
     """Run one polarity in a fresh process; return (counters doc, combined child log).
 
     *guard* is optional: a caller that does not have one gets a private clock and guard
     for the duration of the call (see :func:`_ambient_guard`).  It is optional so that a
     caller added on another branch cannot fail to construct, and it is never absent so
     that such a caller cannot fail to be watched.
+
+    *extra_env* is how criterion 11(c) gives the ledger lookup an input to vary with.  It
+    must be applied in the **child's** environment and not this process's: on Windows the
+    EP DLL caches its environment at load time, so a variable set after `onnxruntime` has
+    imported the EP is read by nothing.  A test that set it in-process would observe no
+    change and conclude the mechanism is insensitive to it — a false UNWIRED.
+
+    *trace* defaults to the historical behaviour (armed on every non-injected arm) so that
+    no caller on another branch changes meaning.  It exists because the tracer witness path
+    is **shared across arms**: arming it unlinks the previous arm's file, and an arm that
+    then dispatches nothing — every faulted-ledger arm, by construction — leaves no file
+    behind.  The tracer check reads that path, so an arm that has no business exercising
+    the tracer could delete the only evidence it ever ran and turn a passing lane into a
+    false UNWIRED purely by running later.  Criterion 11(c)'s arms pass ``trace=False``.
     """
     if guard is None:
         with _ambient_guard(f"census counters child ({tag})") as own:
-            return _run_counters_child(inject=inject, tag=tag, guard=own)
+            return _run_counters_child(
+                inject=inject, tag=tag, guard=own, extra_env=extra_env, trace=trace
+            )
     out_dir = _REPO_ROOT / "bench" / "results" / "census"
     out_dir.mkdir(parents=True, exist_ok=True)
     selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
@@ -537,7 +612,9 @@ def _run_counters_child(*, inject: bool, tag: str, guard: "StallGuard | None" = 
 
     env = dict(os.environ)
     env["ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"] = str(counters)
-    if not inject:
+    if trace is None:
+        trace = not inject
+    if trace and not inject:
         # Arm the tracer on the clean polarity only: the injected run's teardown path is
         # exactly the one Tank's ruling says may not be reached.
         _CENSUS_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -548,6 +625,12 @@ def _run_counters_child(*, inject: bool, tag: str, guard: "StallGuard | None" = 
     env.pop(_ENV_INJECT, None)
     if inject:
         env[_ENV_INJECT] = "1"
+    # Never inherited: an arm that forgot to name its model would silently run the
+    # previous arm's, and two arms that ran the same input cannot differ.
+    env.pop(_ENV_CENSUS_MODEL, None)
+    env.pop(_ENV_LEDGER_FILE, None)
+    for k, v in (extra_env or {}).items():
+        env[k] = v
 
     result = _watchdog.guarded_run(
         [
@@ -1433,6 +1516,282 @@ def test_ledger_lookup_wired(require_vulkan) -> None:
         "ledger_gate did not report a computed token; a FAULTED or absent gate is "
         "ERROR(instrument) and never a detection (R13). "
         f"ledger_gate={doc.get('ledger_gate')!r} ledger_faults={doc.get('ledger_faults')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 11(c) — `ledger_hits` shown to move with its input, and the three
+# planted controls given lane membership.
+#
+# The shape being guarded against: `ledger_hits=6 proven_key_lookups=6` reads
+# identically whether the ledger was genuinely consulted or derived from the same
+# enumeration that produced the claims.  **An identity whose two sides come from one
+# source is a falsifier that cannot fire.**  So none of what follows asserts that a
+# counter is non-zero.  Each pair holds every component of the proof key fixed but one,
+# and asserts the two readings DIFFER.
+# ---------------------------------------------------------------------------
+
+#: Fields read from every arm.  `ledger_miss` and `ledger_gate` are the tokens; the
+#: counts are what an author could have set by hand, which is why the tokens are read too.
+_LEDGER_ARM_FIELDS = (
+    "proven_key_lookups", "ledger_hits", "ledger_gate", "ledger_miss",
+    "ledger_entries", "ledger_faults", "unproven_declines", "claimed_nodes",
+    "dispatches_executed",
+)
+
+
+def _ledger_arm(tag: str, *, model=None, ledger_file=None) -> dict:
+    """One census child run, reduced to its ledger reading.
+
+    ``trace=False``: these arms have no business exercising the tracer, and a faulted-ledger
+    arm dispatches nothing, so arming the shared tracer path here would delete the clean
+    arm's tracer witness and make the tracer read UNWIRED depending only on test order.
+    """
+    extra = {}
+    if model is not None:
+        extra[_ENV_CENSUS_MODEL] = str(model)
+    if ledger_file is not None:
+        extra[_ENV_LEDGER_FILE] = str(ledger_file)
+    doc, _log = _run_counters_child(inject=False, tag=tag, extra_env=extra, trace=False)
+    return {"arm": tag, **{k: doc.get(k) for k in _LEDGER_ARM_FIELDS}}
+
+
+def _reading(arm: dict) -> tuple:
+    """The tuple two arms must differ in.  Named so the failure text can quote it."""
+    return (arm["ledger_hits"], arm["ledger_miss"], arm["ledger_gate"], arm["claimed_nodes"])
+
+
+def _write_ledger_witness(name: str, arms: list[dict], note: str) -> Path:
+    out = _CENSUS_OUT
+    out.mkdir(parents=True, exist_ok=True)
+    selector = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "unset")
+    path = out / f"criterion11c-{name}-dev{selector}.json"
+    path.write_text(
+        json.dumps({"note": note, "device_selector": selector, "arms": arms}, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _dynamic_mul_f32(path: Path) -> Path:
+    """`mul_f32` with symbolic extents.
+
+    Same op, same dtype, same optional-input set, same node count.  The only component of
+    the proof key that changes is the shape class (`static` -> `runtime-extent`), which is
+    a *path* distinction and must therefore be a different key.
+    """
+    import onnx_ir as ir  # noqa: PLC0415
+
+    a = ir.Value(name="a", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
+    b = ir.Value(name="b", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
+    out = ir.Value(name="out", type=ir.TensorType(DT.FLOAT), shape=ir.Shape(["M", "N"]))
+    node = ir.node("Mul", [a, b], outputs=[out])
+    graph = ir.Graph([a, b], [out], nodes=[node], name="dyn_mul", opset_imports={"": 21})
+    path.write_bytes(ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString())
+    return path
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
+)
+def test_ledger_hits_moves_with_its_input(require_vulkan, tmp_path) -> None:
+    """Criterion 11(c), control 1 and control 2 — `arms_must_differ`, twice.
+
+    Control 1 (dtype): `mul_f32` is in the ledger, `mul_f16_unproven` is not.  Same op,
+    same shape, same graph; only the dtype component of the key differs.
+
+    Control 2 (shape class): the same `Mul` on f32 with symbolic extents.  Same op, same
+    dtype, same optional inputs; only the shape-class component differs.  This is the
+    control that matters most for the derived-from-enumeration hypothesis, because the
+    *enumeration is identical in both arms* — one node, one lookup, one claimable op — and
+    the reading still moves.  A `ledger_hits` computed from the claim enumeration could
+    not tell these two apart.
+
+    Nothing here asserts a count is non-zero.  It asserts two readings differ, which is
+    the only assertion a derived counter cannot satisfy.
+    """
+    proven = _ledger_arm("ledger_dtype_proven", model=_EVIDENCE_CASES / "mul_f32.onnx")
+    unproven = _ledger_arm(
+        "ledger_dtype_unproven", model=_EVIDENCE_CASES / "mul_f16_unproven.onnx"
+    )
+    dynamic = _ledger_arm(
+        "ledger_shape_runtime", model=_dynamic_mul_f32(tmp_path / "dyn_mul_f32.onnx")
+    )
+    witness = _write_ledger_witness(
+        "ledger-arms",
+        [proven, unproven, dynamic],
+        "criterion 11(c): ledger_hits read under three inputs differing in exactly one "
+        "proof-key component each",
+    )
+
+    for arm in (proven, unproven, dynamic):
+        assert arm["ledger_faults"] == 0, (
+            f"ERROR(instrument): the ledger faulted during arm {arm['arm']!r}, so this run "
+            "produced no reading about any form and is not evidence about the gate (R13). "
+            f"ledger_gate={arm['ledger_gate']!r} arm={arm}"
+        )
+        assert arm["proven_key_lookups"] > 0, (
+            f"ERROR(instrument): arm {arm['arm']!r} never reached the ledger check, so its "
+            "reading is NEVER-ATTEMPTED and not a statement about the key. "
+            f"arm={arm}  witness={witness}"
+        )
+
+    assert _reading(proven) != _reading(unproven), (
+        "arms_must_differ FAILED (control 1, dtype). The proven and unproven forms of the "
+        "same op produced the SAME ledger reading, so `ledger_hits` does not vary with the "
+        "key presented to it — which is what a counter derived from the claim enumeration "
+        f"would look like. proven={_reading(proven)} unproven={_reading(unproven)}  "
+        f"witness={witness}"
+    )
+    assert _reading(proven) != _reading(dynamic), (
+        "arms_must_differ FAILED (control 2, shape class). Same op, same dtype, same "
+        "optional inputs, same one-node enumeration — only the extents are symbolic — and "
+        "the ledger reading did not move. A proof written for the static form would be "
+        "returned for the runtime-extent form, which is the class of defect the key's "
+        f"shape-class component exists to prevent. static={_reading(proven)} "
+        f"runtime-extent={_reading(dynamic)}  witness={witness}"
+    )
+
+    # The direction is asserted too: differing is necessary, but two arms could differ with
+    # the signs swapped and that would be a gate reading its input backwards.
+    assert proven["ledger_miss"] == "HIT" and proven["ledger_hits"] > 0, (
+        f"the form WITH a ledger entry did not read HIT: {proven}  witness={witness}"
+    )
+    for arm in (unproven, dynamic):
+        assert arm["ledger_miss"] == "KEY-ABSENT" and arm["ledger_hits"] == 0, (
+            f"a form with no ledger entry did not read KEY-ABSENT: {arm}  witness={witness}"
+        )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
+)
+def test_ledger_key_discriminates_optional_inputs(require_vulkan) -> None:
+    """Criterion 11(c), the `MatMulNBits` pair — the 2026-07-30 all-zero-logits regression.
+
+    Both forms are proven, so this pair does **not** move `ledger_hits`; saying otherwise
+    would be the decomposition that appears to close (R11).  What it pins is the thing that
+    defect turned on: the two forms must be *two keys*.  If `populated_optional_input_set`
+    were dropped from the key, one ledger entry would answer for both, the ledger would
+    hold a duplicate, and a proof of the `scales` form would be returned for the
+    `scales+zero_points` form.
+
+    So the assertion is on the artifact, not on a counter: the ledger holds two entries
+    whose keys differ **only** in that component, and both forms are claimed on device.
+    """
+    zp = _ledger_arm(
+        "ledger_optin_zp", model=_EVIDENCE_CASES / "matmulnbits_f16_scales_zp.onnx"
+    )
+    noz = _ledger_arm(
+        "ledger_optin_noz", model=_EVIDENCE_CASES / "matmulnbits_f16_scales.onnx"
+    )
+    witness = _write_ledger_witness(
+        "optional-inputs", [zp, noz],
+        "criterion 11(c): both MatMulNBits forms are proven; the discriminator is that "
+        "they are two keys, not one",
+    )
+
+    keys = [
+        json.loads(line)["key"]
+        for line in _EVIDENCE_LEDGER.read_text(encoding="utf-8").splitlines()[1:]
+        if line.strip()
+    ]
+    nbits = sorted(k for k in keys if "MatMulNBits" in k)
+    assert len(nbits) == 2, (
+        "expected exactly the two MatMulNBits forms in the ledger — the pair is the "
+        f"regression control for the 2026-07-30 defect. Found: {nbits}"
+    )
+    a, b = (k.split("/") for k in nbits)
+    differing = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+    assert differing, (
+        f"the two MatMulNBits ledger keys are identical: {nbits}. One entry would answer "
+        "for both forms."
+    )
+    # Components: domain::op / opset / dtypes / variant / shape_class / opt_inputs.
+    assert 5 in differing, (
+        "the two MatMulNBits keys do not differ in their populated-optional-input "
+        f"component (index 5). Differing components: {differing}; keys: {nbits}. That "
+        "component is the one whose absence produced the 2026-07-30 all-zero logits."
+    )
+    assert differing == [2, 5], (
+        "the pair is meant to differ in the optional-input set and the dtype signature it "
+        f"implies, and nothing else. Differing components: {differing}; keys: {nbits}"
+    )
+
+    for arm in (zp, noz):
+        assert arm["ledger_faults"] == 0, (
+            f"ERROR(instrument): ledger faulted during {arm['arm']!r}: {arm}"
+        )
+        assert arm["ledger_miss"] == "HIT" and arm["claimed_nodes"] > 0, (
+            "a proven MatMulNBits form was not claimed, so this run cannot say the two "
+            f"keys are separately honoured: {arm}  witness={witness}"
+        )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
+    reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
+)
+def test_ledger_digest_refusal_is_in_the_lane(require_vulkan, tmp_path) -> None:
+    """Criterion 11(c), control 3 — Mouse's RAI-008(b)(iii) refusal, run in the lane.
+
+    Three arms, and the **identical-file arm is what makes the other two detections**
+    rather than a check that fails on everything.  Without it, a `check_baked_against_disk`
+    that returned `Some(...)` unconditionally would pass the drift and absent arms and be
+    completely broken.
+
+    The two failing arms must reach `LEDGER-FAULTED` and not `KEY-ABSENT`: a faulted
+    ledger has produced no reading about any form, and reporting a statement about the form
+    would spell an instrument outage exactly like a detection (R13).
+    """
+    same = _ledger_arm(
+        "ledger_digest_same",
+        model=_EVIDENCE_CASES / "mul_f32.onnx", ledger_file=_EVIDENCE_LEDGER,
+    )
+    drifted_path = tmp_path / "drifted_ledger.jsonl"
+    lines = _EVIDENCE_LEDGER.read_text(encoding="utf-8").splitlines()
+    drifted_path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    drifted = _ledger_arm(
+        "ledger_digest_drift",
+        model=_EVIDENCE_CASES / "mul_f32.onnx", ledger_file=drifted_path,
+    )
+    absent = _ledger_arm(
+        "ledger_digest_absent",
+        model=_EVIDENCE_CASES / "mul_f32.onnx",
+        ledger_file=tmp_path / "there_is_no_ledger_here.jsonl",
+    )
+    witness = _write_ledger_witness(
+        "digest-refusal", [same, drifted, absent],
+        "criterion 11(c): digest refusal, three arms; the identical-file arm is the "
+        "control that makes the other two detections",
+    )
+
+    assert same["ledger_faults"] == 0 and same["ledger_miss"] == "HIT", (
+        "the CONTROL arm faulted: the on-disk ledger is byte-identical to the baked one "
+        "and the run still refused to claim. Every other assertion in this test would pass "
+        "against a check that rejects everything, so this arm failing makes the whole test "
+        f"ERROR(instrument) rather than a detection. arm={same}  witness={witness}"
+    )
+    for arm in (drifted, absent):
+        assert arm["ledger_faults"] > 0, (
+            f"the {arm['arm']!r} arm did not fault. A ledger that was asked for and "
+            "disagrees, or was asked for and is absent, must refuse to claim rather than "
+            f"warn. arm={arm}  witness={witness}"
+        )
+        assert arm["ledger_miss"] == "LEDGER-FAULTED", (
+            "a faulted ledger reported a statement about the FORM rather than about the "
+            "instrument. LEDGER-FAULTED outranks KEY-ABSENT because a faulted run has no "
+            f"reading about any form (R13). arm={arm}  witness={witness}"
+        )
+        assert arm["claimed_nodes"] == 0, (
+            "a run whose ledger faulted still claimed nodes — it claimed from evidence "
+            f"nobody can read. arm={arm}  witness={witness}"
+        )
+
+    assert _reading(same) != _reading(drifted), (
+        f"arms_must_differ FAILED: identical={_reading(same)} drifted={_reading(drifted)}"
     )
 
 

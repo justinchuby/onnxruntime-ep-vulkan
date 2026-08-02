@@ -1600,3 +1600,119 @@ def classify_plant_run(returncode: "int | None", output: str) -> "tuple[str, str
         count,
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Which `model_output_equivalence` is of record — round 28
+# ---------------------------------------------------------------------------
+# `bench/results/phi35-certified-dev0.json` — the artifact behind the only quotable
+# figure — carries, adjacent to one another:
+#
+#     results[0].model_output_equivalence          = MATCH
+#     results[0].counters.model_output_equivalence = UNMEASURED
+#
+# Same name, two places, disagreeing. That reads as two instruments contradicting each
+# other. It is not. `rust/src/counters.rs::to_json()` emits `UNMEASURED` as its *default*
+# and says so in its own header comment: "The EP has no access to the CPU oracle. The
+# verdict is set by Trinity's Python harness after running a VulkanEP-vs-CPU comparison."
+# So the counters copy is not a measurement that came back negative; it is a field that
+# nobody in that frame ever set.
+#
+# The tell is mechanical and needs no judgement: `write_equivalence_record` writes the
+# token and the `model_output_equivalence_record` object **together**, in one call. A
+# counters document carrying the token with no record beside it was never written by a
+# comparison. In the phi35 artifact the record key is absent.
+#
+# R12 — that state is UNOBSERVABLE, with a reason, and never a token a reader can mistake
+# for a verdict. R11 — "the two sources disagree" is the decomposition that appears to
+# close: it sends the reader hunting for a disagreement, and there is none to find.
+
+#: A `model_output_equivalence` that no comparison in this frame wrote.
+EQUIVALENCE_AUTHORITY_UNSET: str = "UNOBSERVABLE"
+#: A `model_output_equivalence` written together with its record by a comparison.
+EQUIVALENCE_AUTHORITY_MEASURED: str = "MEASURED"
+
+
+def equivalence_authority(counters: "dict[str, Any] | None") -> "tuple[str, str, str]":
+    """Say whether a counters document's equivalence token is a reading or a default.
+
+    Returns ``(authority, token, reason)``.
+
+    ``authority`` is :data:`EQUIVALENCE_AUTHORITY_MEASURED` only when the token is
+    accompanied by the record object that :func:`write_equivalence_record` writes with it.
+    Otherwise it is :data:`EQUIVALENCE_AUTHORITY_UNSET`: the field is the emitter's default
+    and carries no information about correctness.
+
+    The test is on the *record's presence*, not on the token's value, deliberately. Keying
+    off ``token == UNMEASURED`` would answer the question by reading the very field whose
+    trustworthiness is in question, and would also mislabel a genuine comparison that
+    legitimately concluded ``UNMEASURED``.
+    """
+    if not isinstance(counters, dict):
+        return (
+            EQUIVALENCE_AUTHORITY_UNSET,
+            VERDICT_UNMEASURED,
+            "no counters document was recorded in this frame",
+        )
+    token = counters.get(EQUIVALENCE_KEY)
+    record = counters.get(EQUIVALENCE_RECORD_KEY)
+    if isinstance(record, dict) and record:
+        return (
+            EQUIVALENCE_AUTHORITY_MEASURED,
+            str(token),
+            f"written with its {EQUIVALENCE_RECORD_KEY} by a CPU-vs-EP comparison",
+        )
+    if token is None:
+        return (
+            EQUIVALENCE_AUTHORITY_UNSET,
+            VERDICT_UNMEASURED,
+            f"the counters document carries no {EQUIVALENCE_KEY} at all",
+        )
+    return (
+        EQUIVALENCE_AUTHORITY_UNSET,
+        str(token),
+        f"{EQUIVALENCE_KEY}={token!r} stands alone with no {EQUIVALENCE_RECORD_KEY} "
+        "beside it, so it is the emitter's default rather than a comparison's verdict "
+        "(rust/src/counters.rs::to_json)",
+    )
+
+
+def reconcile_equivalence(record: "dict[str, Any]") -> "dict[str, Any]":
+    """Reconcile the two `model_output_equivalence` values inside one bench result.
+
+    *record* is one element of a bench artifact's ``results`` list: an outer
+    ``model_output_equivalence`` written by the comparison harness, and a nested
+    ``counters`` document whose copy may be the emitter's default.
+
+    Returns the stamp an artifact should carry so a reader never has to guess which value
+    is of record. ``agreement`` is ``AGREE``/``DISAGREE`` only when **both** sides are
+    readings; when one side is a default the answer is ``UNOBSERVABLE`` and not ``AGREE``,
+    because two values one of which nobody wrote have not agreed about anything.
+    """
+    outer = record.get(EQUIVALENCE_KEY)
+    authority, counters_token, reason = equivalence_authority(record.get("counters"))
+    if authority == EQUIVALENCE_AUTHORITY_MEASURED:
+        agreement = (
+            WITNESS_AGREEMENT_AGREE
+            if counters_token == outer
+            else WITNESS_AGREEMENT_DISAGREE
+        )
+    else:
+        agreement = WITNESS_AGREEMENT_UNOBSERVABLE
+    return {
+        "of_record": EQUIVALENCE_KEY,
+        "of_record_value": outer,
+        "of_record_source": (
+            "bench/phi35.py::compare — the CPU-vs-EP output comparison, whose evidence is "
+            "the sibling `outputs` list (argmax, top-k overlap, max_rel_diff)"
+        ),
+        "counters_copy_value": counters_token,
+        "counters_copy_authority": authority,
+        "counters_copy_reason": reason,
+        "agreement": agreement,
+        "note": (
+            "Two same-named fields, one verdict. The nested copy is NOT a second "
+            "measurement disagreeing with the first; it is the EP's default for a field "
+            "that only the Python comparison harness writes. Read the outer value."
+        ),
+    }
