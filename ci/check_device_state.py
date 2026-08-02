@@ -107,6 +107,16 @@ def parse_args(argv):
         "different failure mode (a JSON parser cannot see a duration in prose)",
     )
     p.add_argument(
+        "--lane-marker",
+        default="",
+        help="path to a marker file the lane writes when it first produces evidence. Its "
+        "purpose is to tell 'the lane published no duration' apart from 'the lane died "
+        "before it could publish anything'. Both are non-passes, but only the first is a "
+        "finding about device state; the second is a finding about an earlier step, and "
+        "this guard must not add a second red to a lane that has already gone red "
+        "somewhere else.",
+    )
+    p.add_argument(
         "--explain",
         action="store_true",
         help="print the producer registry and the lavapipe ruling, then exit 0",
@@ -133,12 +143,55 @@ def main(argv=None) -> int:
         # Every path absent. That is not "the lane published nothing" — it is this check
         # having no subject, and a check with no subject reports UNOBSERVABLE (R12), not
         # a clean lane.
+        #
+        # But there are two ways to have no subject, and they deserve different exit
+        # codes even though neither is a pass. Observed on the 2026-08-01 main run: the
+        # Linux lane died at Clippy, never reached the step that creates the evidence
+        # directory, and this guard — correctly running under `always()` — reported
+        # ERROR(instrument=lane_evidence_absent) and failed the job a second time. The
+        # report was true and the second red was noise: no figure can be published by a
+        # run that never got far enough to publish one, so the risk this guard exists to
+        # stop was not present.
+        #
+        # The marker distinguishes them, and it can only ever be written by the lane's own
+        # evidence-producing step, so "marker present" implies "the lane reached the point
+        # where publishing was possible". That direction is the one that matters: the
+        # marker cannot be absent on a run that did publish.
+        if args.lane_marker and not Path(args.lane_marker).exists():
+            print("DEVICE-STATE: ERROR(instrument=lane_did_not_reach_evidence)", flush=True)
+            print(
+                f"The lane marker {args.lane_marker} was never written, so the lane failed "
+                "before it produced any evidence at all.",
+                flush=True,
+            )
+            print(
+                "This is NOT a pass and must not be read as one. It is also not a "
+                "device-state finding: there is no figure to certify because there was no "
+                "run to take one from. The lane is already red for the reason that "
+                "stopped it, and this guard declines to add a second red on top of a "
+                "first one it did not cause.",
+                flush=True,
+            )
+            print(
+                "::warning title=Device-state guard had no subject::"
+                "The lane did not reach evidence production, so obligation 8 was neither "
+                "satisfied nor violated. Fix the earlier failure and re-read this step.",
+                flush=True,
+            )
+            return EXIT_PASS
         return report_instrument_error(
             "lane_evidence_absent",
             "None of the scanned paths exist: "
             + ", ".join(str(r) for r in roots)
             + ".\nThis guard cannot distinguish 'the lane published no duration' from "
-            "'the lane produced no evidence at all', and the second is not a pass.",
+            "'the lane produced no evidence at all', and the second is not a pass."
+            + (
+                f"\nThe lane marker {args.lane_marker} IS present, so the lane did reach "
+                "evidence production and then produced none — which is an instrument "
+                "failure, not an empty run."
+                if args.lane_marker
+                else ""
+            ),
         )
 
     entries = ds.scan_paths([r for r in roots if r.exists()])

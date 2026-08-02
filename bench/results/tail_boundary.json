@@ -1,0 +1,913 @@
+{
+  "instrument": "probe_tail_boundary",
+  "traces": 28,
+  "same_ordinal_disturbed_threshold": 0.05,
+  "census": [
+    {
+      "trace": "trace_gemv_ab_p0_r1_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 1.10170722859245,
+      "whole_series_spread_x": 13.413721026750325,
+      "whole_series_min_ms": 12.722079999999993,
+      "whole_series_max_ms": 170.65043199999968,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 8,
+      "tail_coverage": 0.1739,
+      "tail_rsd": 0.015136,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 1.7315768047244497,
+      "within_one_inference_rsd": 0.32836259832308917,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_ab_p0_r2_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.10967435146507981,
+      "whole_series_spread_x": 1.5457096670549046,
+      "whole_series_min_ms": 12.748287999999997,
+      "whole_series_max_ms": 19.70515200000003,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.03523602764459845,
+      "within_one_inference_rsd": 0.34360211806365776,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "REFUSED_BUT_CLEAN"
+    },
+    {
+      "trace": "trace_gemv_ab_p0_r3_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.03608524952958381,
+      "whole_series_spread_x": 1.0917440668273868,
+      "whole_series_min_ms": 12.702816,
+      "whole_series_max_ms": 13.868223999999998,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.046599200427353195,
+      "within_one_inference_rsd": 0.34323876334511894,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "REFUSED_BUT_CLEAN"
+    },
+    {
+      "trace": "trace_gemv_ab_p1_long_dev0.json",
+      "n_inferences": 142,
+      "whole_series_rsd": 0.3784748175407465,
+      "whole_series_spread_x": 6.108949457030371,
+      "whole_series_min_ms": 12.240832000000006,
+      "whole_series_max_ms": 74.77862400000002,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 5,
+      "tail_coverage": 0.0352,
+      "tail_rsd": 0.017644,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.39604887919301585,
+      "within_one_inference_rsd": 0.3174472828955187,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 142,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_ab_p1_r1_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 1.1229856492451953,
+      "whole_series_spread_x": 10.121310394970136,
+      "whole_series_min_ms": 12.235456000000017,
+      "whole_series_max_ms": 123.83884799999989,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 8,
+      "tail_coverage": 0.1739,
+      "tail_rsd": 0.004593,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 1.2998021926280259,
+      "within_one_inference_rsd": 0.3122732754960769,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_ab_p1_r2_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.04628889431512334,
+      "whole_series_spread_x": 1.1008726940309215,
+      "whole_series_min_ms": 12.041792000000004,
+      "whole_series_max_ms": 13.256480000000003,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 6,
+      "tail_coverage": 0.375,
+      "tail_rsd": 0.003753,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.05607126765021213,
+      "within_one_inference_rsd": 0.3559118856642425,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_ab_p1_r3_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.03956169543667452,
+      "whole_series_spread_x": 1.0999823706015308,
+      "whole_series_min_ms": 12.161504000000008,
+      "whole_series_max_ms": 13.377440000000007,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.04853395734902128,
+      "within_one_inference_rsd": 0.35323380287145834,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "REFUSED_BUT_CLEAN"
+    },
+    {
+      "trace": "trace_gemv_after_coldboard_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.06616599114340362,
+      "whole_series_spread_x": 1.171698523023458,
+      "whole_series_min_ms": 11.491584000000005,
+      "whole_series_max_ms": 13.464672000000007,
+      "tail_verdict": "STEADY",
+      "tail_n": 31,
+      "tail_coverage": 0.6739,
+      "tail_rsd": 0.008058,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.0649575054624676,
+      "within_one_inference_rsd": 0.3530458513954083,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_base_b_dev0.json",
+      "n_inferences": 92,
+      "whole_series_rsd": 0.028127310679400965,
+      "whole_series_spread_x": 1.2200636516996448,
+      "whole_series_min_ms": 246.35068799999982,
+      "whole_series_max_ms": 300.56351999999964,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 39,
+      "tail_coverage": 0.4239,
+      "tail_rsd": 0.014532,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.03600371066022213,
+      "within_one_inference_rsd": 0.3797785887931977,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 92,
+      "cross_check": "REFUSED_BUT_CLEAN"
+    },
+    {
+      "trace": "trace_gemv_base_boosted_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.4436001280024361,
+      "whole_series_spread_x": 4.7561465556806315,
+      "whole_series_min_ms": 78.99708800000005,
+      "whole_series_max_ms": 375.721728,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 2.211987625268474,
+      "within_one_inference_rsd": 2.091526269960626,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_baseline24_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.07318133746260923,
+      "whole_series_spread_x": 1.2348964412768868,
+      "whole_series_min_ms": 40.16272,
+      "whole_series_max_ms": 49.596800000000044,
+      "tail_verdict": "STEADY",
+      "tail_n": 23,
+      "tail_coverage": 0.8846,
+      "tail_rsd": 0.002939,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.0740645890174128,
+      "within_one_inference_rsd": 0.38628409298312283,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_baseline_certified_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.0011759212659502069,
+      "whole_series_spread_x": 1.0086559963050825,
+      "whole_series_min_ms": 246.23670400000006,
+      "whole_series_max_ms": 248.36812799999976,
+      "tail_verdict": "STEADY",
+      "tail_n": 46,
+      "tail_coverage": 1.0,
+      "tail_rsd": 0.001163,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.0035848475951502988,
+      "within_one_inference_rsd": 0.37904933140236957,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "AGREE_PUBLISHED"
+    },
+    {
+      "trace": "trace_gemv_baseline_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.1035862423300905,
+      "whole_series_spread_x": 1.2360597107263414,
+      "whole_series_min_ms": 40.138048000000026,
+      "whole_series_max_ms": 49.61302400000004,
+      "tail_verdict": "STEADY",
+      "tail_n": 11,
+      "tail_coverage": 0.6875,
+      "tail_rsd": 0.00244,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.1048339447366138,
+      "within_one_inference_rsd": 0.38610629912980066,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_bindseam_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.037492279876841075,
+      "whole_series_spread_x": 1.0991431391905222,
+      "whole_series_min_ms": 12.156000000000013,
+      "whole_series_max_ms": 13.361184000000002,
+      "tail_verdict": "STEADY",
+      "tail_n": 20,
+      "tail_coverage": 0.7692,
+      "tail_rsd": 0.001032,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.04613787694630139,
+      "within_one_inference_rsd": 0.34798712908197516,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "AGREE_PUBLISHED"
+    },
+    {
+      "trace": "trace_gemv_contended3_dev0.json",
+      "n_inferences": 62,
+      "whole_series_rsd": 0.34392162313604396,
+      "whole_series_spread_x": 5.485986101400376,
+      "whole_series_min_ms": 34.69241599999998,
+      "whole_series_max_ms": 190.32211199999992,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.4518444177302851,
+      "within_one_inference_rsd": 1.49814732872117,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 62,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_contended_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 1.29514659132797,
+      "whole_series_spread_x": 10.562995556330064,
+      "whole_series_min_ms": 11.752447999999992,
+      "whole_series_max_ms": 124.14105600000006,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 8,
+      "tail_coverage": 0.1739,
+      "tail_rsd": 0.001067,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 1.4240511183048157,
+      "within_one_inference_rsd": 0.35228563509120364,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 44,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_final_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.04965046876903866,
+      "whole_series_spread_x": 1.111655382946941,
+      "whole_series_min_ms": 12.274912000000002,
+      "whole_series_max_ms": 13.645472000000005,
+      "tail_verdict": "STEADY",
+      "tail_n": 13,
+      "tail_coverage": 0.5,
+      "tail_rsd": 0.000989,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.05790587771187871,
+      "within_one_inference_rsd": 0.3363322683768585,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_gb2_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.06036887458300652,
+      "whole_series_spread_x": 1.1650982008118909,
+      "whole_series_min_ms": 11.493183999999992,
+      "whole_series_max_ms": 13.390688,
+      "tail_verdict": "STEADY",
+      "tail_n": 25,
+      "tail_coverage": 0.5435,
+      "tail_rsd": 0.012325,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.06382489782462394,
+      "within_one_inference_rsd": 0.3536454200648413,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_globalbarrier_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.03803787045190669,
+      "whole_series_spread_x": 1.1496409808086907,
+      "whole_series_min_ms": 11.493536000000004,
+      "whole_series_max_ms": 13.21344,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.038969122899617965,
+      "within_one_inference_rsd": 0.35460537790924346,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "REFUSED_BUT_CLEAN"
+    },
+    {
+      "trace": "trace_gemv_hog_dev0.json",
+      "n_inferences": 602,
+      "whole_series_rsd": 0.04078010586492305,
+      "whole_series_spread_x": 1.731472607319576,
+      "whole_series_min_ms": 11.48569599999999,
+      "whole_series_max_ms": 19.88716800000001,
+      "tail_verdict": "STEADY",
+      "tail_n": 427,
+      "tail_coverage": 0.7093,
+      "tail_rsd": 0.019245,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.0255029266328794,
+      "within_one_inference_rsd": 0.3551467902929641,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 602,
+      "cross_check": "AGREE_PUBLISHED"
+    },
+    {
+      "trace": "trace_gemv_notile_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.7321917207341214,
+      "whole_series_spread_x": 5.400843454684082,
+      "whole_series_min_ms": 20.22918400000003,
+      "whole_series_max_ms": 109.2546560000001,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.7569977745094686,
+      "within_one_inference_rsd": 0.37481543050250443,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_packed2_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.8149863306648013,
+      "whole_series_spread_x": 16.230586302204,
+      "whole_series_min_ms": 12.191392000000013,
+      "whole_series_max_ms": 197.87343999999962,
+      "tail_verdict": "NO_STEADY_TAIL",
+      "tail_n": null,
+      "tail_coverage": null,
+      "tail_rsd": null,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 1.09418586790383,
+      "within_one_inference_rsd": 0.32299947677893,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_packed_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.9255879067470959,
+      "whole_series_spread_x": 10.161676787770913,
+      "whole_series_min_ms": 12.22528,
+      "whole_series_max_ms": 124.22934399999998,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 6,
+      "tail_coverage": 0.2308,
+      "tail_rsd": 0.019561,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 1.017274583599323,
+      "within_one_inference_rsd": 0.31482155675064727,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_packed_final_dev0.json",
+      "n_inferences": 26,
+      "whole_series_rsd": 0.059735202030240235,
+      "whole_series_spread_x": 1.159874329493402,
+      "whole_series_min_ms": 11.519647999999993,
+      "whole_series_max_ms": 13.361344,
+      "tail_verdict": "MARGINAL_TAIL",
+      "tail_n": 7,
+      "tail_coverage": 0.2692,
+      "tail_rsd": 0.002244,
+      "tail_publishes_a_number": false,
+      "same_ordinal_rsd": 0.06028670641441129,
+      "within_one_inference_rsd": 0.3557279283015898,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 26,
+      "cross_check": "AGREE_REFUSED"
+    },
+    {
+      "trace": "trace_gemv_solo_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.06789836317566826,
+      "whole_series_spread_x": 1.167051021344899,
+      "whole_series_min_ms": 11.503263999999996,
+      "whole_series_max_ms": 13.424896000000004,
+      "tail_verdict": "STEADY",
+      "tail_n": 31,
+      "tail_coverage": 0.6739,
+      "tail_rsd": 0.001628,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.06578481256680585,
+      "within_one_inference_rsd": 0.3547875914051833,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_soloA_dev0.json",
+      "n_inferences": 46,
+      "whole_series_rsd": 0.06662719468857033,
+      "whole_series_spread_x": 1.1636350984621813,
+      "whole_series_min_ms": 11.496799999999997,
+      "whole_series_max_ms": 13.378080000000002,
+      "tail_verdict": "STEADY",
+      "tail_n": 33,
+      "tail_coverage": 0.7174,
+      "tail_rsd": 0.008096,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.06500636590375447,
+      "within_one_inference_rsd": 0.3553746122072517,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 46,
+      "cross_check": "HOLE"
+    },
+    {
+      "trace": "trace_gemv_tiled_dev0.json",
+      "n_inferences": 16,
+      "whole_series_rsd": 0.02677080741182403,
+      "whole_series_spread_x": 1.0897492627254999,
+      "whole_series_min_ms": 12.510943999999983,
+      "whole_series_max_ms": 13.633791999999996,
+      "tail_verdict": "STEADY",
+      "tail_n": 15,
+      "tail_coverage": 0.9375,
+      "tail_rsd": 0.018608,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.03595505000397927,
+      "within_one_inference_rsd": 0.3422879020376119,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 16,
+      "cross_check": "AGREE_PUBLISHED"
+    },
+    {
+      "trace": "trace_gemv_warmup_dev0.json",
+      "n_inferences": 27,
+      "whole_series_rsd": 0.0015025357008075439,
+      "whole_series_spread_x": 1.0089421235389637,
+      "whole_series_min_ms": 246.2663359999998,
+      "whole_series_max_ms": 248.46847999999977,
+      "tail_verdict": "STEADY",
+      "tail_n": 27,
+      "tail_coverage": 1.0,
+      "tail_rsd": 0.001474,
+      "tail_publishes_a_number": true,
+      "same_ordinal_rsd": 0.003718872555692304,
+      "within_one_inference_rsd": 0.3786205180330776,
+      "dispatches_per_inference": 161,
+      "inferences_compared": 27,
+      "cross_check": "AGREE_PUBLISHED"
+    }
+  ],
+  "holes": [
+    "trace_gemv_after_coldboard_dev0.json",
+    "trace_gemv_baseline24_dev0.json",
+    "trace_gemv_baseline_dev0.json",
+    "trace_gemv_final_dev0.json",
+    "trace_gemv_gb2_dev0.json",
+    "trace_gemv_solo_dev0.json",
+    "trace_gemv_soloA_dev0.json"
+  ],
+  "unchecked": [],
+  "refused_but_clean": [
+    "trace_gemv_ab_p0_r2_dev0.json",
+    "trace_gemv_ab_p0_r3_dev0.json",
+    "trace_gemv_ab_p1_r3_dev0.json",
+    "trace_gemv_base_b_dev0.json",
+    "trace_gemv_globalbarrier_dev0.json"
+  ],
+  "tail_rsd_ranking": [
+    {
+      "trace": "trace_gemv_final_dev0.json",
+      "tail_rsd": 0.000989
+    },
+    {
+      "trace": "trace_gemv_bindseam_dev0.json",
+      "tail_rsd": 0.001032
+    },
+    {
+      "trace": "trace_gemv_contended_dev0.json",
+      "tail_rsd": 0.001067
+    },
+    {
+      "trace": "trace_gemv_baseline_certified_dev0.json",
+      "tail_rsd": 0.001163
+    },
+    {
+      "trace": "trace_gemv_warmup_dev0.json",
+      "tail_rsd": 0.001474
+    },
+    {
+      "trace": "trace_gemv_solo_dev0.json",
+      "tail_rsd": 0.001628
+    },
+    {
+      "trace": "trace_gemv_packed_final_dev0.json",
+      "tail_rsd": 0.002244
+    },
+    {
+      "trace": "trace_gemv_baseline_dev0.json",
+      "tail_rsd": 0.00244
+    },
+    {
+      "trace": "trace_gemv_baseline24_dev0.json",
+      "tail_rsd": 0.002939
+    },
+    {
+      "trace": "trace_gemv_ab_p1_r2_dev0.json",
+      "tail_rsd": 0.003753
+    },
+    {
+      "trace": "trace_gemv_ab_p1_r1_dev0.json",
+      "tail_rsd": 0.004593
+    },
+    {
+      "trace": "trace_gemv_after_coldboard_dev0.json",
+      "tail_rsd": 0.008058
+    },
+    {
+      "trace": "trace_gemv_soloA_dev0.json",
+      "tail_rsd": 0.008096
+    },
+    {
+      "trace": "trace_gemv_gb2_dev0.json",
+      "tail_rsd": 0.012325
+    },
+    {
+      "trace": "trace_gemv_base_b_dev0.json",
+      "tail_rsd": 0.014532
+    },
+    {
+      "trace": "trace_gemv_ab_p0_r1_dev0.json",
+      "tail_rsd": 0.015136
+    },
+    {
+      "trace": "trace_gemv_ab_p1_long_dev0.json",
+      "tail_rsd": 0.017644
+    },
+    {
+      "trace": "trace_gemv_tiled_dev0.json",
+      "tail_rsd": 0.018608
+    },
+    {
+      "trace": "trace_gemv_hog_dev0.json",
+      "tail_rsd": 0.019245
+    },
+    {
+      "trace": "trace_gemv_packed_dev0.json",
+      "tail_rsd": 0.019561
+    }
+  ],
+  "instrument_errors": [],
+  "threshold_sensitivity": {
+    "table": [
+      {
+        "threshold": 0.02,
+        "holes": 10,
+        "traces": [
+          "trace_gemv_after_coldboard_dev0.json",
+          "trace_gemv_baseline24_dev0.json",
+          "trace_gemv_baseline_dev0.json",
+          "trace_gemv_bindseam_dev0.json",
+          "trace_gemv_final_dev0.json",
+          "trace_gemv_gb2_dev0.json",
+          "trace_gemv_hog_dev0.json",
+          "trace_gemv_solo_dev0.json",
+          "trace_gemv_soloA_dev0.json",
+          "trace_gemv_tiled_dev0.json"
+        ]
+      },
+      {
+        "threshold": 0.05,
+        "holes": 7,
+        "traces": [
+          "trace_gemv_after_coldboard_dev0.json",
+          "trace_gemv_baseline24_dev0.json",
+          "trace_gemv_baseline_dev0.json",
+          "trace_gemv_final_dev0.json",
+          "trace_gemv_gb2_dev0.json",
+          "trace_gemv_solo_dev0.json",
+          "trace_gemv_soloA_dev0.json"
+        ]
+      },
+      {
+        "threshold": 0.08,
+        "holes": 1,
+        "traces": [
+          "trace_gemv_baseline_dev0.json"
+        ]
+      },
+      {
+        "threshold": 0.105,
+        "holes": 0,
+        "traces": []
+      },
+      {
+        "threshold": 0.2,
+        "holes": 0,
+        "traces": []
+      },
+      {
+        "threshold": 0.3,
+        "holes": 0,
+        "traces": []
+      },
+      {
+        "threshold": 0.396,
+        "holes": 0,
+        "traces": []
+      },
+      {
+        "threshold": 0.5,
+        "holes": 0,
+        "traces": []
+      }
+    ],
+    "note": "holes fall to zero for every threshold at or above 10.5%, and the census's only gap is 10.48% -> 39.60%. So 'no holes' is true for any placement inside the gap and false below it. Below the gap the flagged traces are not a separate population -- they are the top of a continuum, and calling them holes is a statement about the threshold, not about the traces."
+  },
+  "independence": {
+    "n": 28,
+    "spearman_rho": 0.9031,
+    "pearson_r_on_logs": 0.9639,
+    "median_same_ordinal_over_whole_series": 1.128,
+    "verdict": "NOT_INDEPENDENT",
+    "detail": "The same-ordinal-across-inferences RSD is very nearly the whole-series RSD: Spearman 0.90, r=0.96 on logs, and the median trace has a same-ordinal RSD 1.13x its whole-series RSD. That is mechanical rather than coincidental -- a disturbance that scales a whole submission moves every dispatch in it together, so the k-th dispatch's spread across inferences reproduces the inference sums' spread. **It is therefore a re-selection of the same measurement, not a second opinion**, and a 'no holes' result from it is much weaker evidence about the tail test than it looks. The decisive evidence is that it agrees with every other dispersion measure on trace_gemv_baseline_certified_dev0.json -- rating it the CLEANEST trace in the census at 0.36% -- while that run is 21.4x wrong."
+  },
+  "verdict": "THRESHOLD_DEPENDENT",
+  "detail": "at the 5% threshold, 7 publishing trace(s) sit on 'disturbed' per-dispatch structure; at any threshold inside the census's only gap (10.48%-39.60%) there are none. **No dispersion hole in the tail test is demonstrable from this census** -- and no clean bill of health is either, because the signal is not independent of the one it is checking. See `independence` and `certification_crosstab`.",
+  "scope": "Every signal compared here -- whole-series RSD, tail RSD, same-ordinal RSD -- is a dispersion measure over the same durations, differing in selection and not in kind. A uniformly displaced run is quiet in all of them at once. trace_gemv_baseline_certified_dev0.json is that run and it is inside this census: the steadiest trace of the 28 on all three measures (whole 0.12%, tail 0.1163%, same-ordinal 0.36%), STEADY at 100% coverage with n=46, and its paired figure is 246.72 ms against a true ~11.5 ms. **21.4x wrong, and the most confident verdict in the census.** A clean result here is not evidence of a correctly clocked sole-tenant run and must never be read as one. Only bench/device_state.py, whose evidence comes from outside the series, refuses it.",
+  "certification_crosstab": {
+    "rows": [
+      {
+        "trace": "trace_gemv_ab_p0_r1_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": "FOREIGN_GPU_WORK",
+        "peak_sm_mhz": 2010.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "WITHHELD",
+        "why": "another process held the GPU in 50% of samples (15376 (?), 26524 (?), 29028 (?)). A steady figure taken then is a precise measurement of a contended device: `contended3` truncated read STEADY at 126.647 ms, 10.99x wrong, RSD 0.79%."
+      },
+      {
+        "trace": "trace_gemv_ab_p0_r2_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_ab_p0_r3_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_ab_p1_long_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 2010.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "UNCERTIFIED",
+        "why": "the device state is clean (sole tenant, peak 2010 of 3105 MHz) but the tail itself is MARGINAL_TAIL. The companion cannot make a number out of a run that produced none."
+      },
+      {
+        "trace": "trace_gemv_ab_p1_r1_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 2010.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "UNCERTIFIED",
+        "why": "the device state is clean (sole tenant, peak 2010 of 3105 MHz) but the tail itself is MARGINAL_TAIL. The companion cannot make a number out of a run that produced none."
+      },
+      {
+        "trace": "trace_gemv_ab_p1_r2_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_ab_p1_r3_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_after_coldboard_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 2490.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "QUOTABLE",
+        "why": "sole tenant over 53 samples across 24.9 s, and the board reached 2490 MHz of its 3105 MHz maximum (80%). The tail is STEADY at None ms over n=31 (0.6739 coverage). Quotable **with its companion attached** \u2014 the two travel together or neither does."
+      },
+      {
+        "trace": "trace_gemv_base_b_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 210.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "WITHHELD",
+        "why": "the board never left its idle clock: peak SM 210 MHz against a 3105 MHz maximum (7%, floor 50%). A run held at idle clock is perfectly steady and produces the gate's most confident verdict: `base_b` read STEADY at 246.735 ms, 21.4x wrong, RSD 0.12%."
+      },
+      {
+        "trace": "trace_gemv_base_boosted_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_baseline24_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_baseline_certified_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 210.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "WITHHELD",
+        "why": "the board never left its idle clock: peak SM 210 MHz against a 3105 MHz maximum (7%, floor 50%). A run held at idle clock is perfectly steady and produces the gate's most confident verdict: `base_b` read STEADY at 246.735 ms, 21.4x wrong, RSD 0.12%."
+      },
+      {
+        "trace": "trace_gemv_baseline_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_bindseam_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_contended3_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": "FOREIGN_GPU_WORK",
+        "peak_sm_mhz": 2475.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "WITHHELD",
+        "why": "another process held the GPU in 100% of samples (25368 (?), 26260 (?)). A steady figure taken then is a precise measurement of a contended device: `contended3` truncated read STEADY at 126.647 ms, 10.99x wrong, RSD 0.79%."
+      },
+      {
+        "trace": "trace_gemv_contended_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": "FOREIGN_GPU_WORK",
+        "peak_sm_mhz": 2280.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "WITHHELD",
+        "why": "another process held the GPU in 100% of samples (18252 (?), 21924 (?)). A steady figure taken then is a precise measurement of a contended device: `contended3` truncated read STEADY at 126.647 ms, 10.99x wrong, RSD 0.79%."
+      },
+      {
+        "trace": "trace_gemv_final_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_gb2_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_globalbarrier_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_hog_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_notile_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_packed2_dev0.json",
+        "tail_verdict": "NO_STEADY_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_packed_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_packed_final_dev0.json",
+        "tail_verdict": "MARGINAL_TAIL",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_solo_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_soloA_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": "SOLE_TENANT",
+        "peak_sm_mhz": 2490.0,
+        "sm_max_mhz": 3105.0,
+        "certification": "QUOTABLE",
+        "why": "sole tenant over 50 samples across 23.6 s, and the board reached 2490 MHz of its 3105 MHz maximum (80%). The tail is STEADY at None ms over n=33 (0.7174 coverage). Quotable **with its companion attached** \u2014 the two travel together or neither does."
+      },
+      {
+        "trace": "trace_gemv_tiled_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      },
+      {
+        "trace": "trace_gemv_warmup_dev0.json",
+        "tail_verdict": "STEADY",
+        "companion": null,
+        "certification": "UNCERTIFIED",
+        "why": "no device-state companion exists for this run"
+      }
+    ],
+    "publishing_traces": 12,
+    "of_which_quotable": 2,
+    "of_which_withheld_by_the_companion": [
+      "trace_gemv_baseline_certified_dev0.json"
+    ],
+    "of_which_uncertified_for_want_of_a_companion": 9,
+    "answer": "1 trace(s) grade a publishing tail verdict AND are refused by out-of-series evidence: ['trace_gemv_baseline_certified_dev0.json']. **That is a run that grades STEADY and should not have.** It is not a misplaced boundary -- no n or coverage floor could reach it, since it publishes at n=46 and 100% coverage -- it is the bias blindness, and the companion is the fix already in place."
+  }
+}

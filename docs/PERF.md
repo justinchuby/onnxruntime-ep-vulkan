@@ -2980,3 +2980,101 @@ instruments does not make a tenancy-only record on Intel any closer to quotable.
 | the record exists without producers | `test_the_record_is_emitted_in_full_where_no_producer_exists_at_all` | an axis key goes missing instead of `NO_PRODUCER` |
 | the sampler watched the window | `win_gpu_counters` blind-gap limit | a >10× interval gap is reported as tenancy |
 | the sampler watched the right device | `UNOBSERVABLE(self_not_witnessed)` | a clean record is emitted for an adapter we were not seen on |
+
+---
+
+## 16. The census is good news about one failure mode and contains a counterexample to itself (2026-08-01 evening)
+
+Switch's `bench/results/probe_frames.py` (merged at `c6cc0f3`) reconciled his ~70% kernel-time
+spread against my `STEADY` verdicts and returned `SAME_FRAME_ORDERED_SELECTION`: same series,
+different selection. My tail is a **suffix** of the per-inference GPU-busy series; his spread was
+the **whole** of it. **No conflict was ever constructible.** His probe calls `phases.gpu_steady_tail`
+and `phases.attribute_gpu_ordinally` directly rather than reimplementing my frame, which is why
+this is a reconciliation and not a third opinion.
+
+I reproduced the 28-trace census off the committed artifact rather than accepting the summary:
+**9 traces carry whole-series RSD >= 30% and not one publishes a tail figure; the 12 that publish
+top out at 10.36%.** Disjoint, with a gap from 10.36% to 34.39%.
+
+### 16.1 The line worth sitting with
+
+In that table, `trace_gemv_contended_dev0.json` — **129.51% whole-series RSD, a 10.56x spread, the
+most disturbed run of all 28** — has a tail RSD of **0.1067%. That is the third tightest of the
+twenty-eight.** Tighter than `baseline_certified` at 0.1163%. Tighter than `solo`. Tighter than
+`warmup`, a run that stayed within 1.01x of itself end to end.
+
+It did not publish, because it graded `MARGINAL_TAIL` at 17.39% coverage and **`MARGINAL_TAIL`
+withholds its median**. Had it published, **we would have certified our dirtiest run on the
+strength of the tightest-looking number this project has ever produced.**
+
+That withholding now has `bench/test_marginal_tail_withholds.py` behind it, carrying this artifact
+in its docstring, because it looks like ordinary conservatism and is not. **The tightness of a
+short tail is evidence about the length of the window, not the state of the device.** Any series
+that moves contains a short stretch that does not, and the more disturbed the series the flatter
+its flattest stretch will be. **Selecting the flattest 17% of a 10x-spread run and reporting its
+RSD is a search, and the RSD of a search result is not the RSD of a measurement.**
+
+### 16.2 Is the boundary in the right place? Two answers, and the second is the one that matters
+
+**The dispersion answer: no hole is demonstrable, and no clean bill of health is either.**
+
+`bench/results/probe_tail_boundary.py` computes Switch's same-ordinal-across-inferences RSD for
+**all 28** traces (he had it for two) and cross-tabulates it against every tail verdict. At a 5%
+threshold, 7 publishing traces flag; at any threshold inside the census's only gap
+(10.48%–39.60%), zero do. **I have published the whole sensitivity table rather than a threshold,
+because I set it at 5%, got 7, and my instinct was to move it until the number was 0.** That is
+choosing the answer, and it is the same instinct that cost us the day.
+
+But the signal is **not independent of the thing it is checking**: Spearman **0.903** against
+whole-series RSD, r=0.964 on logs, median ratio 1.128, and both series gap in the same place. That
+is mechanical — **a disturbance that scales a whole submission moves every dispatch inside it
+together**, so the *k*-th dispatch's spread across inferences reproduces the inference sums'
+spread. Same-ordinal RSD is a *re-selection* of the quantity it was meant to audit. *(Consequence
+for Switch's load guard: it will fire on roughly what whole-series RSD already fires on. Not
+useless — being per-dispatch it can localise where the sum cannot — but "tail and guard agree" is
+close to a tautology and must not be reported as independent confirmation.)*
+
+**The answer that matters: yes, there is a run that grades `STEADY` and should not have, and it is
+in this census.**
+
+`trace_gemv_baseline_certified_dev0.json`:
+
+| measure | value | rank among 28 |
+|---|---|---|
+| whole-series RSD | **0.12%** | **cleanest** |
+| tail RSD | **0.1163%** | 4th tightest |
+| same-ordinal RSD | **0.36%** | **cleanest** |
+| tail verdict | `STEADY`, n=46, **coverage 100%**, zero discarded | — |
+| its paired figure | **246.72 ms** against a true ~11.5 ms | **21.4x wrong** |
+
+**The steadiest trace in the census on all three dispersion measures, wrong by a factor of
+twenty-one.** No boundary placement reaches it — it publishes at n=46 and 100% coverage, so no `n`
+floor, no coverage floor and no RSD bar can touch it. **This is not a misplaced boundary. It is the
+bias blindness, and every dispersion measure we own certifies it.** The only instrument in the set
+that refuses it is `bench/device_state.py`, peak SM 210 MHz against a 3105 MHz board maximum,
+because its evidence comes from **outside the series**.
+
+So the census's headline — *"the instrument refuses precisely under the condition that would have
+made it wrong"* — is true **of dispersion** and contains its own counterexample for bias. Both
+belong in the record.
+
+### 16.3 How thin the certified base is
+
+Of the 28 traces, **12 publish a tail figure. Of those 12 my certification gate admits 2**
+(`soloA`, `after_coldboard`), **withholds 1** (`baseline_certified`), and leaves **9 `UNCERTIFIED`
+for want of any companion at all.** The disjointness of §16 is a statement about dispersion; the
+certified base beneath it is two traces. That is the honest size of what we currently know.
+
+### 16.4 Nothing is withdrawn, and the reason is a correction rather than a defence
+
+The coordinator asked whether the **12.1847 ms/inference** NVIDIA figure needed retracting, on the
+belief that it came from `baseline_certified`. **It did not.** Two artifacts were conflated:
+
+- **12.1847 ms** is from `bench/results/phi35-certified-dev0.json` — `kind: phi35`, the
+  **Phi-3.5-mini** model, 355 nodes in one island, `model_output_equivalence MATCH`, companion
+  `SOLE_TENANT`, peak SM **2010 of 3105 MHz**, certification **`QUOTABLE`** (§15.3).
+- **`baseline_certified`** is a **gemv microbenchmark** trace whose figure is **246.7195 ms** — the
+  idle-clock run, `WITHHELD` by the companion.
+
+Different model, different probe, different number. The standing caveat on 12.1847 ms is unchanged
+and is not this one: **it is comparable to nothing yet.**

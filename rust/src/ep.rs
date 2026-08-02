@@ -618,6 +618,12 @@ unsafe fn get_capability_impl(
     // SAFETY: `api` live; all nodes in `nodes` are live graph nodes for the duration of this call.
     let mut all_fwd: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut all_node_by_output: HashMap<String, usize> = HashMap::new();
+    // Whole-graph consumer map, keyed by VALUE name rather than by producing node.
+    //
+    // This is what makes the boundary-bytes estimate a measurement of the boundary instead of a
+    // measurement of the island's total output volume — see the loop below for the defect it
+    // repairs.
+    let mut all_consumers_by_value: HashMap<String, Vec<usize>> = HashMap::new();
     for &node in &nodes {
         if node.is_null() {
             continue;
@@ -642,6 +648,15 @@ unsafe fn get_capability_impl(
             let name = unsafe { value_info_name(api, slot) };
             if let Some(&prod) = all_node_by_output.get(&name) {
                 all_fwd.entry(prod).or_default().push(node as usize);
+            }
+            // Per-VALUE consumers, which `all_fwd` cannot express: it is keyed by producing
+            // node, so for a node with two outputs it cannot say which output an edge carried.
+            // The boundary-bytes estimate needs exactly that distinction.
+            if !name.is_empty() {
+                all_consumers_by_value
+                    .entry(name)
+                    .or_default()
+                    .push(node as usize);
             }
         }
     }
@@ -937,6 +952,69 @@ unsafe fn get_capability_impl(
         elems.saturating_mul(dtype_bytes(et))
     };
 
+    // Whether a slot's byte count required inventing at least one dimension.
+    //
+    // Split out from `slot_bytes` rather than folded into it because the two answers have
+    // different epistemic status and merging them is how the 104,116x defect stayed invisible:
+    // a fabricated byte count and a read one are the same type and print the same way. The
+    // caller adds this to `Island::symbolic_boundary_slots` so the fabrication travels with the
+    // number instead of being lost at the first assignment.
+    // SAFETY: `api` live, slot borrowed from ORT graph.
+    let slot_is_symbolic = |slot: *const ort::OrtValueInfo| -> bool {
+        if slot.is_null() {
+            return false;
+        }
+        // SAFETY: `api` is live; reading fn pointers from the api table are plain field reads.
+        let (Some(get_type), Some(get_tensor_info), Some(get_ndim), Some(get_dims)) = (unsafe {
+            (
+                (*api).GetValueInfoTypeInfo,
+                (*api).CastTypeInfoToTensorInfo,
+                (*api).GetDimensionsCount,
+                (*api).GetDimensions,
+            )
+        }) else {
+            // The shape could not be read at all, so every dimension in the 4096-byte fallback
+            // was invented. That is the most fabricated case, not the least.
+            return true;
+        };
+        let mut type_info: *const ort::OrtTypeInfo = ptr::null();
+        // SAFETY: slot is live; type_info is an out-pointer.
+        let st = unsafe { get_type(slot, &mut type_info) };
+        if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
+            unsafe { crate::sys::release_status(api, st) };
+            return true;
+        }
+        if type_info.is_null() {
+            return true;
+        }
+        let mut tensor_info: *const ort::OrtTensorTypeAndShapeInfo = ptr::null();
+        // SAFETY: type_info is live.
+        let st = unsafe { get_tensor_info(type_info, &mut tensor_info) };
+        if !st.is_null() {
+            // SAFETY: `api` is live; st is non-null and owned by this call.
+            unsafe { crate::sys::release_status(api, st) };
+            return true;
+        }
+        if tensor_info.is_null() {
+            return true;
+        }
+        let mut ndim: usize = 0;
+        // SAFETY: tensor_info is live.
+        if !unsafe { get_ndim(tensor_info, &mut ndim) }.is_null() {
+            return true;
+        }
+        if ndim == 0 {
+            return false; // scalar: exact
+        }
+        let mut dims = vec![0i64; ndim];
+        // SAFETY: tensor_info is live; dims has ndim elements.
+        if !unsafe { get_dims(tensor_info, dims.as_mut_ptr(), ndim) }.is_null() {
+            return true;
+        }
+        dims.iter().any(|&d| d <= 0)
+    };
+
     // Build Island structs, then hand **all** of them to the one gate.
     //
     // RAI-011 (2026-08-01, Mouse). This used to read:
@@ -976,6 +1054,9 @@ unsafe fn get_capability_impl(
         // Value names produced within this cluster — used to distinguish internal edges from
         // boundary edges when computing output boundary bytes.
         let mut internal_outputs: HashMap<String, ()> = HashMap::new();
+        // The cluster's node identities, for the same question asked from the consumer side.
+        let cluster_set: std::collections::HashSet<usize> =
+            cluster_nodes.iter().map(|&n| n as usize).collect();
         for &node in cluster_nodes {
             // SAFETY: `api` is live; node is a live graph node for this call.
             for slot in unsafe { node_slots(api, node, Slots::Outputs) } {
@@ -1028,17 +1109,54 @@ unsafe fn get_capability_impl(
                     continue;
                 }
                 island.input_bytes = island.input_bytes.saturating_add(slot_bytes(slot));
+                if slot_is_symbolic(slot) {
+                    island.symbolic_boundary_slots += 1;
+                }
             }
 
-            // Output boundary bytes: conservatively count all node outputs as boundary bytes.
-            // Some of these will be consumed by other cluster members (internal edges), so this
-            // over-counts. Over-counting is safe — it makes islands harder to claim, never easier.
-            // Under-counting output bytes (missing actual boundary transfers) would cause us to
-            // claim islands that cost more than they earn, which is the worse failure mode.
+            // Output boundary bytes: an output crosses the boundary iff something OUTSIDE this
+            // island reads it, or nothing reads it at all (in which case it is a graph output
+            // and must be copied back to the host).
+            //
+            // ── THE 104,116x DEFECT, AND WHY "CONSERVATIVE" WAS THE WRONG WORD ──────────────
+            //
+            // This loop used to count *every* output of *every* node in the island, and called
+            // that conservative. For a chain of N nodes it counted N tensors when the boundary
+            // carries one: on Phi-3.5 the estimate was 89,199,100,032 B against a measured
+            // boundary of 856,720 B (399,376 up + 457,344 down) — a factor of 104,116.
+            //
+            // R11 on my own model: the net-benefit gate divides an estimated byte count by a
+            // measured bandwidth, so it compares two quantities from different sources, and
+            // the comparison was decided almost entirely by the error. "Over-counting is safe
+            // because it only makes islands harder to claim" is true about the DIRECTION and
+            // silent about the MAGNITUDE — at 10^5 the gate is not conservative, it is
+            // constant, and a gate whose answer does not depend on its input is not a gate.
+            // That is the same shape as `net_benefit_gate` reporting a token nobody computed.
+            //
+            // The fix does not make the estimate optimistic. Internal edges never cross the
+            // boundary, so declining to count them removes error, not caution. Real boundary
+            // edges — outputs consumed outside, and graph outputs — are all still counted, at
+            // full size, and a value with no recorded consumer is still counted (an unknown
+            // consumer is treated as external, which keeps the remaining bias in the safe
+            // direction).
             // SAFETY: `api` is live; node is a live graph node for this call.
             let out_slots = unsafe { node_slots(api, node, Slots::Outputs) };
             for slot in out_slots {
-                island.output_bytes = island.output_bytes.saturating_add(slot_bytes(slot));
+                // SAFETY: slot is from node_slots and is valid for this call.
+                let name = unsafe { value_info_name(api, slot) };
+                let crosses = match all_consumers_by_value.get(&name) {
+                    // No consumer anywhere in the graph: it is a graph output, and it is copied
+                    // back to the host. Also the safe reading for an unnamed slot.
+                    None => true,
+                    // Crosses iff at least one consumer is outside this island.
+                    Some(consumers) => consumers.iter().any(|c| !cluster_set.contains(c)),
+                };
+                if crosses {
+                    island.output_bytes = island.output_bytes.saturating_add(slot_bytes(slot));
+                    if slot_is_symbolic(slot) {
+                        island.symbolic_boundary_slots += 1;
+                    }
+                }
             }
         }
 
@@ -1058,15 +1176,32 @@ unsafe fn get_capability_impl(
         // ever non-zero again, a second bypass has been reintroduced somewhere.
         counters::record_net_benefit_decision(true);
         if outcome.is_override() {
-            counters::record_sole_island_override();
+            // Map the verdict the override suppressed onto a counter token. The mapping is
+            // exhaustive on purpose: a new `RejectReason` must be given a token here or the build
+            // breaks, rather than quietly falling into a default that reads like a measurement.
+            let overridden = match outcome.evaluated() {
+                partition::Verdict::Reject(partition::RejectReason::TooSmall { .. }) => {
+                    Some(counters::OverriddenVerdict::TooSmall)
+                }
+                partition::Verdict::Reject(partition::RejectReason::TransferDominated {
+                    ..
+                }) => Some(counters::OverriddenVerdict::TransferDominated),
+                // Unreachable: `is_override()` is only true for `SoleIslandOverride`, which is
+                // only constructed from a rejection. Left as a branch rather than an unwrap so
+                // that if it ever happens the artifact says `UNRECORDED` instead of panicking in
+                // GetCapability.
+                partition::Verdict::Claim => None,
+            };
+            counters::record_sole_island_override(overridden);
             log::warn!(
                 "GetCapability: sole-island override — the net-benefit gate REJECTED the graph's \
-                 only island ({} nodes, {} anchors, {} boundary bytes, {} est. FLOPs) and the \
-                 rejection was overridden because there is no alternative partition. Gate's own \
-                 verdict: {:?}",
+                 only island ({} nodes, {} anchors, {} boundary bytes across {} fabricated-extent \
+                 slots, {} est. FLOPs) and the rejection was overridden because there is no \
+                 alternative partition. Gate's own verdict: {:?}",
                 island.nodes,
                 island.anchors,
                 island.boundary_bytes(),
+                island.symbolic_boundary_slots,
                 island.flops,
                 outcome.evaluated(),
             );

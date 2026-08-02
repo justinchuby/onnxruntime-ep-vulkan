@@ -264,6 +264,12 @@ class _EpCounters(ctypes.Structure):
         ("dispatches_executed", ctypes.c_uint64),
         # ABI version 2: viable_islands_retained — R10 wiring observable for net-benefit gate.
         ("viable_islands_retained", ctypes.c_uint64),
+        # ABI version 3: the §8.9 proof ledger — R10 wiring observable for criterion 11.
+        ("proven_key_lookups", ctypes.c_uint64),
+        ("ledger_hits", ctypes.c_uint64),
+        ("unproven_declines", ctypes.c_uint64),
+        ("ledger_entries", ctypes.c_uint64),
+        ("unproven_forms_claimed", ctypes.c_uint64),
     ]
 
 
@@ -290,6 +296,11 @@ def _read_ep_counters_via_ctypes() -> dict[str, int]:
             "compute_failures": c.compute_failures,
             "dispatches_executed": c.dispatches_executed,
             "viable_islands_retained": c.viable_islands_retained,
+            "proven_key_lookups": c.proven_key_lookups,
+            "ledger_hits": c.ledger_hits,
+            "unproven_declines": c.unproven_declines,
+            "ledger_entries": c.ledger_entries,
+            "unproven_forms_claimed": c.unproven_forms_claimed,
         }
     except Exception:
         return {}
@@ -1004,8 +1015,45 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
         )
 
     # ── Mechanism 6: ledger_lookup ───────────────────────────────────────
-    # §8.9 criterion 11 not met.  No ledger entries exist.
-    observations["ledger_lookup"] = "UNWIRED"
+    # §8.9 criterion 11.  Landed 2026-08-01 (Mouse).  This was the last `UNWIRED` mechanism.
+    #
+    # R12: three states, and they must be distinguishable.
+    #   UNOBSERVABLE — the counters artifact has no ledger fields at all: this frame cannot
+    #                  see the ledger, so nothing below is a reading.
+    #   UNWIRED      — the fields exist but `proven_key_lookups` is 0: a ledger is compiled in
+    #                  and nothing consulted it.
+    #   FAULTED      — the ledger parsed with faults; R13 says an instrument error is never a
+    #                  detection, so this is not reported as "declined everything".
+    #   <token>      — ALL-PROVEN / ALL-DECLINED / MIXED, computed by
+    #                  `counters.rs::ledger_gate_state()` from counts this run incremented.
+    #
+    # `ledger_hits` is itself typed ('UNWIRED'/'UNOBSERVABLE'/int) for the same reason
+    # `viable_islands_retained` is: an increment can forge a number, not a type.
+    if "proven_key_lookups" not in clean_doc:
+        observations["ledger_lookup"] = (
+            "UNOBSERVABLE (the counters artifact carries no ledger fields — no ledger exists "
+            "in this frame, which is not the same as a ledger nothing consulted)"
+        )
+    elif clean_doc.get("ledger_faults", 0):
+        observations["ledger_lookup"] = (
+            f"FAULTED (ledger_faults={clean_doc.get('ledger_faults')!r} — the ledger did not "
+            "parse; every form declines, and that decline is an instrument error, not a finding)"
+        )
+    elif clean_doc.get("proven_key_lookups", 0) == 0:
+        observations["ledger_lookup"] = (
+            f"UNWIRED (ledger_entries={clean_doc.get('ledger_entries')!r} but "
+            "proven_key_lookups=0 — a ledger is compiled in and nothing consulted it)"
+        )
+    else:
+        observations["ledger_lookup"] = (
+            f"{clean_doc.get('ledger_gate')} proven_key_lookups="
+            f"{clean_doc.get('proven_key_lookups')!r} "
+            f"ledger_hits={clean_doc.get('ledger_hits')!r} "
+            f"ledger_entries={clean_doc.get('ledger_entries')!r} "
+            f"unproven_declines={clean_doc.get('unproven_declines')!r} "
+            f"unproven_forms_enabled={clean_doc.get('unproven_forms_enabled')!r} "
+            f"(hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)"
+        )
 
     # ── Mechanism 7: validation_messenger ───────────────────────────────
     # R13: this mechanism shells out.  A child that fails to start is an ERROR(instrument)
@@ -1303,16 +1351,6 @@ def test_retain_viable_wired(require_vulkan) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "§8.9 ledger does not exist (M0 criterion 11 not met). "
-        "The claim-unproven gate (DeclineCode::Unproven) declines all unproven forms "
-        "once the ledger is populated.  Until then, the gate cannot fire. "
-        "Owner: Mouse (ledger entries) / Trinity (census query). "
-        "Remove this xfail when criterion 11 is met and the gate fires on a real session."
-    ),
-)
 @pytest.mark.skipif(
     not os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB"),
     reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
@@ -1320,19 +1358,32 @@ def test_retain_viable_wired(require_vulkan) -> None:
 def test_ledger_lookup_wired(require_vulkan) -> None:
     """Criterion 12 sub-item: §8.9 ledger lookup must produce a computed observation.
 
-    Currently xfail because criterion 11 (no form claimed without a ledger entry) is not
-    met — there are no ledger entries. The gate exists in registry.rs as DeclineCode::Unproven
-    but the ledger has nothing to look up. This test will XPASS when Mouse populates the
-    ledger and the gate fires on a real GetCapability call.
+    The `xfail(strict=True)` was removed on 2026-08-01 when criterion 11 landed. It is
+    replaced by assertions rather than deleted: an expectation that is merely dropped leaves
+    no record that the thing it expected has actually happened.
 
-    Observable proxy: a 'proven_key_lookups' or 'unproven_declines' counter in the EP
-    counters JSON. Owner: Mouse to add the counter; Trinity to update the census query.
+    R10 — this asserts an artifact whose content varies with its input, not that a field
+    exists. `proven_key_lookups` must be non-zero (something consulted the ledger) and
+    `ledger_gate` must be one of the computed tokens. A field that was always present and
+    always `0` would satisfy a presence check and prove nothing.
     """
     _, counters_after, _ = _run_add_session_with_profiling()
-    # When criterion 11 is met, counters should contain 'proven_key_lookups' or similar.
     assert "proven_key_lookups" in counters_after, (
-        "§8.9 ledger lookup counter not present — mechanism is UNWIRED (criterion 11 not met). "
-        f"Current counter keys: {sorted(counters_after.keys())}"
+        "§8.9 ledger lookup counter not present — mechanism is UNOBSERVABLE in this frame "
+        f"(no ledger fields at all). Current counter keys: {sorted(counters_after.keys())}"
+    )
+    assert counters_after["proven_key_lookups"] > 0, (
+        "the ledger fields are published but nothing consulted the ledger — UNWIRED, which "
+        "is a distinct state from UNOBSERVABLE and from a real count (R12). "
+        f"ledger_entries={counters_after.get('ledger_entries')!r}"
+    )
+    # The three-state string tokens live on the JSON surface only; the C ABI carries
+    # counts.  Both surfaces must agree that the gate ran, which is why both are read.
+    doc, _log = _run_counters_child(inject=False, tag="ledger")
+    assert doc.get("ledger_gate") in {"ALL-PROVEN", "ALL-DECLINED", "MIXED"}, (
+        "ledger_gate did not report a computed token; a FAULTED or absent gate is "
+        "ERROR(instrument) and never a detection (R13). "
+        f"ledger_gate={doc.get('ledger_gate')!r} ledger_faults={doc.get('ledger_faults')!r}"
     )
 
 

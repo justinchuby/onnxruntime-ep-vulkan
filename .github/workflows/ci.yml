@@ -313,6 +313,59 @@ jobs:
             cargo test --test layering --manifest-path rust/Cargo.toml
 
       # -------------------------------------------------------
+      # Rust unit tests — 440 of them, and until 2026-08-01 NONE of
+      # them had ever run in CI. The only cargo test in either lane
+      # was --test layering, one integration target out of six.
+      #
+      # This is not a completeness gesture. lavapipe reports
+      # timestampPeriod = 1.0, exactly as NVIDIA does, so a build
+      # that drops the period conversion is NUMERICALLY IDENTICAL on
+      # every device CI can reach while under-reporting Intel Iris Xe
+      # by 52.0833x. No execution on the CI device can see that. The
+      # trace.rs unit tests can, because they construct a SYNTHETIC
+      # calibration with a non-unit period and never touch a device.
+      #
+      # Falsified 2026-08-01: dropping both period multiplies in
+      # trace.rs turns four of these red, including
+      #   treating_intel_ticks_as_nanoseconds_is_wrong_by_fifty_two_times
+      #   'period scaling not applied: 100000 ns for 100000 ticks'
+      # See ci/lane_inventory.py :: BLIND_SPOTS['timestamp_period_52x'].
+      #
+      # Default parallelism deliberately. Running with --test-threads=1
+      # would hide cross-test state leakage, which is a defect and not
+      # a test-runner setting.
+      # -------------------------------------------------------
+      - name: Rust unit tests (cargo test --lib)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo test --lib --release --manifest-path rust/Cargo.toml
+
+      # -------------------------------------------------------
+      # Portability lint — rule P1: a platform-conditional binding
+      # named without a cfg gate. In the lint's own words, "the class
+      # of bug that only shows up on a CI lane for another OS, hours
+      # later, while blocking everything behind it". It has existed in
+      # rust/tests/portability.rs and had never been run by CI.
+      # -------------------------------------------------------
+      - name: Portability lint (cargo test --test portability)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo test --test portability --release --manifest-path rust/Cargo.toml
+
+      # -------------------------------------------------------
+      # The remaining integration targets, also never run in CI.
+      # -------------------------------------------------------
+      - name: Remaining integration targets (cdylib_load, dump_capabilities, host_registration, validation_control)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo test --release --manifest-path rust/Cargo.toml \
+            --test cdylib_load --test dump_capabilities \
+            --test host_registration --test validation_control
+
+      # -------------------------------------------------------
       # Probe Vulkan loader — hard failure if no capable device.
       # Switch built epctl for exactly this purpose: a standalone
       # Vulkan probe that needs no ONNX Runtime and exits non-zero
@@ -341,6 +394,13 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p bench/results/ci-lane
+          # The lane marker: written the moment this lane can produce evidence at all.
+          # ci/check_device_state.py and ci/check_fatal_log.py both run under always(),
+          # so on a lane that died earlier they would otherwise report an instrument
+          # error about a subject that never existed and add a second red on top of a
+          # failure they did not cause. The marker can only be written by the step that
+          # produces the evidence, so it is never absent on a run that did publish.
+          touch bench/results/ci-lane/.lane-reached
           # 2>&1: ORT writes `EP_FAIL ... Falling back` from C++ to fd 2. A tee of
           # stdout alone captures a log in which that line cannot appear, and the
           # grep below would then agree with everything (R12: a counter whose event
@@ -415,6 +475,7 @@ jobs:
         if: env.BUILD_SKIPPED != '1' && always()
         run: |
           python ci/check_fatal_log.py \
+            --lane-marker=bench/results/ci-lane/.lane-reached \
             bench/results/ci-lane/pytest-linux.log \
             bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
 
@@ -546,6 +607,29 @@ jobs:
         run: |
           python ci/check_device_state.py \
             --scan bench/results/ci-lane \
+            --lane-marker bench/results/ci-lane/.lane-reached \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # -------------------------------------------------------
+      # The lane's own classification, published as an artifact.
+      # `operational` and `green` are different claims: an operational
+      # lane runs, a green lane would go RED if the thing it watches
+      # broke. Only the second is worth having, and the only evidence
+      # that separates them is two arms that differ.
+      #
+      # This step also refuses to let the inventory rot: every gate
+      # step in this workflow must have an entry, because an
+      # unclassified step is exactly the state the ICD negative
+      # control lived in for weeks — running, reported, never once
+      # falsified.
+      # -------------------------------------------------------
+      - name: Lane inventory - operational vs green
+        if: always()
+        run: |
+          mkdir -p bench/results/ci-lane
+          python ci/check_lane_inventory.py \
+            --workflow .github/workflows/ci.yml \
+            --out bench/results/ci-lane/lane-inventory.json \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload lane evidence
@@ -650,6 +734,46 @@ jobs:
             --all-targets -- -D warnings
 
       # -------------------------------------------------------
+      # Rust unit tests and the four integration targets CI never ran.
+      # Before 2026-08-01 this lane ran NO cargo test at all — not even
+      # the layering lint. The 440 unit tests include the only
+      # host-independent falsifier for the timestampPeriod defect
+      # class: lavapipe reports period 1.0 exactly as NVIDIA does, so
+      # a build that drops the conversion is invisible to every device
+      # CI can reach and under-reports Intel Iris Xe by 52.0833x.
+      # See ci/lane_inventory.py :: BLIND_SPOTS['timestamp_period_52x'].
+      # -------------------------------------------------------
+      - name: Rust unit tests (cargo test --lib)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo test --lib --release --manifest-path rust\Cargo.toml
+          exit $LASTEXITCODE
+
+      - name: Portability lint (cargo test --test portability)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo test --test portability --release --manifest-path rust\Cargo.toml
+          exit $LASTEXITCODE
+
+      - name: Layering lint (cargo test --test layering)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo test --test layering --release --manifest-path rust\Cargo.toml
+          exit $LASTEXITCODE
+
+      - name: Remaining integration targets (cdylib_load, dump_capabilities, host_registration, validation_control)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo test --release --manifest-path rust\Cargo.toml `
+            --test cdylib_load --test dump_capabilities `
+            --test host_registration --test validation_control
+          exit $LASTEXITCODE
+
+      # -------------------------------------------------------
       # Mesa lavapipe ICD (Windows, mesa-dist-win).
       # Installs the CPU-only Vulkan 1.3 software rasterizer so
       # correctness tests can run without a real GPU on windows-latest.
@@ -751,6 +875,11 @@ jobs:
         run: |
           $env:PATH = "$env:ORT_HOME\lib;$env:PATH"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          # The lane marker: written the moment this lane can produce evidence at all,
+          # so the always() checks downstream can tell "the lane published no duration"
+          # from "the lane died before it could publish anything". Only the marker's
+          # producer can write it, so it is never absent on a run that did publish.
+          New-Item -ItemType File -Force -Path bench\results\ci-lane\.lane-reached | Out-Null
           # 2>&1 merges ORT's native stderr, where `EP_FAIL ... Falling back` is
           # written. Without it the grep step scans a log in which its own subject
           # cannot appear.
@@ -804,6 +933,7 @@ jobs:
         if: env.BUILD_SKIPPED != '1' && always()
         run: |
           python ci\check_fatal_log.py `
+            --lane-marker=bench\results\ci-lane\.lane-reached `
             bench\results\ci-lane\pytest-windows.log `
             bench\results\ci-lane\gate_chain_fp32_ort_stderr.log
           exit $LASTEXITCODE
@@ -959,7 +1089,18 @@ jobs:
         run: |
           python ci\check_device_state.py `
             --scan bench\results\ci-lane `
+            --lane-marker bench\results\ci-lane\.lane-reached `
             --summary "$env:GITHUB_STEP_SUMMARY"
+
+      - name: Lane inventory - operational vs green
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          python ci\check_lane_inventory.py `
+            --workflow .github/workflows/ci.yml `
+            --out bench\results\ci-lane\lane-inventory.json `
+            --summary "$env:GITHUB_STEP_SUMMARY"
+          exit $LASTEXITCODE
 
       - name: Upload lane evidence
         if: always()

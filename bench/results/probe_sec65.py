@@ -82,12 +82,26 @@ def main() -> int:
         print(f"ERROR(instrument): no counters artifact at {counters}", file=sys.stderr)
         return 3
     data = json.loads(counters.read_text(encoding="utf-8"))
+    # Every key here must (a) exist in the emitter and (b) carry the companion a reader needs to
+    # interpret it. `alloc_device_spans` was neither: no such key is emitted anywhere in the
+    # source, so this block printed `'<absent>'` on every run since it was written — a key that is
+    # always absent reads like a measurement that came back empty. The real name is
+    # `alloc_device_backed_spans`.
+    #
+    # And `alloc_device_authoritative_spans` was printed without `alloc_device_authoritative_ceiling`
+    # (= backed - staged) or `alloc_device_residency_evaluations`, which are the two keys that
+    # separate a measured zero from a pinned one. See `probe_indexspace.py`'s docstring: R11's
+    # shape can appear in a *selection* while every field printed is individually true.
     keys = [
         "alloc_device_frame",
         "alloc_device_frame_device",
-        "alloc_device_authoritative_spans",
-        "alloc_device_spans",
+        "alloc_allocations",
         "alloc_staged_spans",
+        "alloc_device_backed_spans",
+        "alloc_device_buffer_binds",
+        "alloc_device_authoritative_ceiling",
+        "alloc_device_residency_evaluations",
+        "alloc_device_authoritative_spans",
     ]
     for k in keys:
         print(f"{k} = {data.get(k, '<absent>')!r}")
