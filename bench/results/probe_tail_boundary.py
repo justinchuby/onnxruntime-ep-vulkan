@@ -35,7 +35,7 @@ confident verdict in the census.**
 
 So this probe can find a `STEADY` verdict sitting on *disturbed* structure. It cannot find one
 sitting on *uniformly displaced* structure, and no rearrangement of these three numbers ever will.
-That is R9 amendment 5 and the answer stays `bench/device_state.py`.
+That is R9 amendment 5 and the answer stays `bench/device_companion.py`.
 """
 
 from __future__ import annotations
@@ -222,7 +222,7 @@ def census(trace_dir: Path) -> dict:
         "0.36%), STEADY at 100% coverage with n=46, and its paired figure is 246.72 ms against a "
         "true ~11.5 ms. **21.4x wrong, and the most confident verdict in the census.** A clean "
         "result here is not evidence of a correctly clocked sole-tenant run and must never be "
-        "read as one. Only bench/device_state.py, whose evidence comes from outside the series, "
+        "read as one. Only bench/device_companion.py, whose evidence comes from outside the series, "
         "refuses it.")
     out["certification_crosstab"] = _crosstab(rows, trace_dir)
     return out
@@ -235,7 +235,7 @@ def _crosstab(rows: "list[dict]", trace_dir: Path) -> dict:
     "is there a run that grades STEADY and should not have?"
     """
     sys.path.insert(0, str(HERE.parent))
-    import device_state  # noqa: E402
+    import device_companion as device_state  # noqa: E402
 
     seen = []
     for r in rows:

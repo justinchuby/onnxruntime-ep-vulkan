@@ -56,13 +56,20 @@ from pathlib import Path
 import numpy as np
 
 # The op-test model builders are the single source of graph truth.
+# The path entry is scoped to the import and then removed: `sys.path` is process-global, and a
+# leaked `tests/ops` entry silently decides every later flat import in the process. See
+# `bench/test_import_isolation.py` for the screen that found this.
 _TESTS_OPS = Path(__file__).resolve().parents[1] / "tests" / "ops"
+_SYS_PATH_BEFORE = list(sys.path)
 if str(_TESTS_OPS) not in sys.path:
     sys.path.insert(0, str(_TESTS_OPS))
 
-import onnx_ir as ir  # noqa: E402  (import after sys.path fix-up)
+try:
+    import onnx_ir as ir  # noqa: E402  (import after sys.path fix-up)
 
-import _models  # noqa: E402
+    import _models  # noqa: E402
+finally:
+    sys.path[:] = _SYS_PATH_BEFORE
 
 import producers  # noqa: E402
 

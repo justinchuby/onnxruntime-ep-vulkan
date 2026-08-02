@@ -59,9 +59,12 @@ from pathlib import Path
 
 import pytest
 
+_ORIGINAL_SYS_PATH = list(sys.path)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import phases  # noqa: E402
+try:
+    import phases  # noqa: E402
+finally:
+    sys.path[:] = _ORIGINAL_SYS_PATH
 
 CENSUS = Path(__file__).resolve().parent / "results" / "frames.json"
 
@@ -112,13 +115,13 @@ def test_marginal_tail_never_exposes_a_median():
     assert tail["withheld_median_ms"] is not None, "but it must retain it for diagnosis"
 
 
-def test_no_publishing_verdict_is_reachable_from_a_marginal_tail():
+def test_no_publishing_verdict_is_reachable_from_a_marginal_tail(monkeypatch):
     """Guards the downstream contract, not just the field.
 
     Every consumer gates on `verdict == "STEADY"`. If someone adds `MARGINAL_TAIL` to a publishing
     set to recover data points, this fails rather than quietly releasing `contended`.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "results"))
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent / "results"))
     try:
         import probe_frames
     except Exception:  # pragma: no cover
@@ -134,7 +137,7 @@ def test_a_marginal_tail_is_uncertified_even_when_the_board_is_perfect():
     must not *depend* on that: nine of the twelve publishing traces have no companion at all, and a
     MARGINAL_TAIL on a verified-clean board is still not a number.
     """
-    import device_state
+    import device_companion as device_state
     perfect = {"verdict": "SOLE_TENANT", "sm_mhz": {"max": 2490.0}, "sm_max_mhz": 3105.0,
                "n": 40, "seconds": 20.0}
     out = device_state.certify({"verdict": "MARGINAL_TAIL", "median_ms": None,

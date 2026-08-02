@@ -91,7 +91,7 @@ if str(_HERE) not in sys.path:
 import devices as device_mod  # noqa: E402
 import admissible  # noqa: E402
 import contention  # noqa: E402
-import device_state  # noqa: E402
+import device_companion as device_state  # noqa: E402
 import environment  # noqa: E402
 import phases as phases_mod  # noqa: E402
 import producers  # noqa: E402
@@ -900,7 +900,7 @@ def _run_trace_pass(device_index: int, iters: int, warmup: int, scratch: Path,
                               "required companion, not a diagnostic: `gpu_steady_tail` is a "
                               "variance test over a suffix and cannot see a bias, and it has "
                               "reported STEADY at 10.99x and 21.4x wrong -- both times with a "
-                              "BETTER RSD than the correct run. See bench/device_state.py."),
+                              "BETTER RSD than the correct run. See bench/device_companion.py."),
         "note": ("a separate instrumented process. Proportions are the product; the absolute "
                  "totals here are inflated by the tracer and the query pool and are not the "
                  "benchmark's numbers."),
