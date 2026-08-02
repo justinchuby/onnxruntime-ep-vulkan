@@ -20,6 +20,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1376,3 +1377,150 @@ def test_switchs_tautological_screen_is_not_admitted_as_green():
     # One UNDEMONSTRATED check holds the whole lane at `operational`.
     cls, _ = inv.lane_classification(inv.LANE_HOSTFREE)
     assert cls == "operational"
+
+
+# ---------------------------------------------------------------------------
+# Criterion 12: the three things a census line cannot supply about itself.
+# ci/check_census_completeness.py + ci/census_surface_map.json.
+# ---------------------------------------------------------------------------
+
+
+def _census_map() -> dict:
+    return json.loads((CI_DIR / "census_surface_map.json").read_text(encoding="utf-8"))
+
+
+def test_the_whole_is_not_derived_from_the_census():
+    """R11's falsifier-that-cannot-fire, stated as a test.
+
+    If the denominator came from the same list as the numerator, 12/12 would be true by
+    construction. The whole is enumerated from production Rust -- counters.rs fields,
+    trace.rs Phase variants, ONNXRUNTIME_EP_VULKAN_* switches -- none of which the census
+    writes. The check that this stays true is that the screen's own source never reads
+    the census's mechanism list from anywhere but the artifact the census PRODUCED.
+    """
+    src = (CI_DIR / "check_census_completeness.py").read_text(encoding="utf-8")
+    assert "_MECHANISMS" not in src, (
+        "the screen must not read the census's own mechanism list; R10 says the "
+        "falsifier is an artifact the mechanism produced, never a reading of its code"
+    )
+    assert '"tests"' not in src and "'tests'" not in src, (
+        "the screen must not open anything under tests/ — its numerator is the artifact "
+        "the census wrote, and its denominator is production Rust"
+    )
+    r = run_check("check_census_completeness.py")
+    assert r.returncode == EXIT_PASS, r.stdout
+    assert "the census's twelve is twelve OF" in r.stdout
+    # The denominator is bigger than the numerator, and by a lot. That is the finding.
+    assert "50 instrumented surfaces" in r.stdout or "instrumented surfaces" in r.stdout
+
+
+def test_a_new_instrumented_surface_the_census_does_not_know_about_goes_red():
+    """The arm that makes the completeness claim falsifiable at all."""
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "src"
+        shutil.copytree(REPO_ROOT / "rust" / "src", src)
+        counters = src / "counters.rs"
+        text = counters.read_text(encoding="utf-8")
+        anchor = "    pub abi_version: u32,"
+        assert anchor in text, "anchor moved; this test would silently stop testing"
+        counters.write_text(
+            text.replace(anchor, anchor + "\n    pub planted_by_a_test: u64,", 1),
+            encoding="utf-8",
+        )
+        r = run_check("check_census_completeness.py", "--rust-src", str(src))
+    assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+    assert "FAIL(condition=unmapped_surface)" in r.stdout
+    assert "planted_by_a_test" in r.stdout
+
+
+def test_extent_reports_unobservable_rather_than_zero_over_zero():
+    """R12 applied to the screen's own coverage.
+
+    A host-side mechanism has no surface in the independent whole. Reporting it as 0/0 --
+    or worse, as complete -- is the identity defect the screen exists to refuse.
+    """
+    import importlib
+
+    mod = importlib.import_module("check_census_completeness")
+    rows = mod.extent_table(
+        {"has_surfaces": [{"id": "a_counter"}]},
+        ["has_surfaces", "host_side_only"],
+        [{"name": "x.json", "observations": {"has_surfaces": "", "host_side_only": "PASS"}}],
+    )
+    by_mech = {r["mechanism"]: r for r in rows}
+    assert by_mech["host_side_only"]["extent"] == "UNOBSERVABLE"
+    assert by_mech["has_surfaces"]["extent"] == "0/1"
+    assert not any(r["extent"] == "0/0" for r in rows)
+
+    r = run_check("check_census_completeness.py")
+    assert r.returncode == EXIT_PASS, r.stdout
+    line = next(
+        ln for ln in r.stdout.splitlines() if ln.strip().startswith("layering_lint")
+    )
+    assert "UNOBSERVABLE" in line
+
+
+def test_name_content_has_three_states_and_never_calls_one_arm_invariant():
+    import importlib
+
+    mod = importlib.import_module("check_census_completeness")
+    arts = [
+        {"name": "a.json", "observations": {"m": "ARMED"}},
+    ]
+    rows = mod.name_content(["m"], arts)
+    assert rows[0]["state"] == mod.NAME_UNOBSERVABLE, (
+        "one arm is unmeasured, not invariant -- reporting it invariant is reporting 0 "
+        "where the event could not occur"
+    )
+    arts.append({"name": "b.json", "observations": {"m": "ARMED"}})
+    assert mod.name_content(["m"], arts)[0]["state"] == mod.NAME_INVARIANT
+    arts.append({"name": "c.json", "observations": {"m": "DISARMED"}})
+    assert mod.name_content(["m"], arts)[0]["state"] == mod.NAME_VARIES
+
+
+def test_every_censused_mechanism_has_a_name_claim_and_none_claims_verified():
+    """The Phase::Record guard: a name is a claim, and no name here is yet verified."""
+    doc = _census_map()
+    names = doc["mechanism_names"]
+    assert names, "no name claims on record"
+    for entry in names:
+        assert entry["discriminator"], entry["mechanism"]
+        assert entry["name_verified"] is False, (
+            f"{entry['mechanism']} records its name as verified; the screen requires the "
+            "observation to have varied across arms before that is admissible"
+        )
+    rec = next(e for e in names if e["mechanism"] == "gpu_tracer")
+    assert "TRACE_GPU" in rec["discriminator"] or "phases" in rec["discriminator"]
+
+
+def test_the_surface_map_records_the_standing_gaps_rather_than_hiding_them():
+    """`uncensused` exists so an unmapped surface can stay red without the standing
+    gaps making the screen permanently red and therefore unread."""
+    doc = _census_map()
+    gaps = [s for s in doc["surfaces"] if s["disposition"] == "uncensused"]
+    assert gaps, "the census covers every instrumented surface -- verify before believing"
+    for gap in gaps:
+        assert gap["owner"] not in ("", "unassigned"), gap["id"]
+        assert len(gap["reason"]) > 20, gap["id"]
+    assert doc["not_a_closure"]
+
+
+def test_the_screen_will_not_narrow_to_source_only_silently():
+    """The --union-required lesson, applied again: a check that quietly drops half its
+    input when the input is missing returns to the view it was written to replace."""
+    with tempfile.TemporaryDirectory() as td:
+        r = run_check("check_census_completeness.py", "--artifacts", td)
+        assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+        assert "census_artifacts_unavailable" in r.stdout
+        r2 = run_check("check_census_completeness.py", "--artifacts", td, "--no-artifacts")
+        assert r2.returncode == EXIT_PASS, r2.stdout
+        assert "UNOBSERVABLE in this frame" in r2.stdout
+
+
+def test_census_completeness_is_registered_and_does_not_close_row_12():
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    c = next(x for x in inv.CHECKS if x.id == "hostfree.census_completeness")
+    assert c.falsifier == inv.FALSIFIER_PLANTED
+    assert any("row 12" in m or "Trinity" in m for m in c.misses)

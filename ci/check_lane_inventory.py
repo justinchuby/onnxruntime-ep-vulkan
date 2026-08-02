@@ -81,6 +81,8 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Tautological-assertion screen", "hostfree.tautological_assertions"),
     ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
+    ("Census extent negative control", "hostfree.census_completeness_negative_control"),
+    ("Census extent and independent whole", "hostfree.census_completeness"),
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),
     ("cargo test --lib", "build.rust_unit_tests"),
     ("Rust unit tests", "build.rust_unit_tests"),
