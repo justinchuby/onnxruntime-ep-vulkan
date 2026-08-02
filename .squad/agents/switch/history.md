@@ -794,3 +794,42 @@ before carrying it forward a second time.
 **Still open:** GQA is DIVERGENT (`worst_rel` 16.726) and it produces the KV outputs
 criterion 10 reopened over, so the KV bandwidth work -- 60.5% of the byte floor at
 past_len 8192 -- stays blocked behind that correctness defect. Correctness before bandwidth.
+
+## Session 46d — the flagged layer was the clean one, and the gate moves with the prompt
+
+Criterion 10 flagged `present.31.key/value` OUTSIDE_TOLERANCE, layers 0..30 WITHIN. The
+coordinator offered an island-shape hypothesis (layer 31 as an island output consumed by
+nothing, a third case for my `session.rs` fix) and asked me to attack it. Four measurements:
+
+1. **All 32 GQA nodes are DECLINED.** `present.*` is CPU-computed in *both* sessions.
+   There is no Vulkan GQA path in the comparison, so this is neither a GQA kernel defect
+   nor the same defect as GQA's standalone 16.726. The island hypothesis is refuted too:
+   layer 31 takes no path, because it is not claimed.
+2. **Layer 31 is the third-cleanest of 32.** max_abs_diff 0.015625 at layer 31 == max over
+   0..30. At each tensor's own fp16 scale: layer 31 = 1.000 ULP, rank 30/32; worst is
+   layer 3 at 2.000 ULP, reported WITHIN.
+3. **Mechanism, predicted then measured.** `atol=0.001` was justified against max_abs
+   3.6e-3 and applied to tensors of max_abs 25.25, where one fp16 ULP is 0.0156 — it asks
+   for 1/16 ULP, unsatisfiable at that magnitude. Elementwise `atol+rtol*|b|` budgets by
+   the *element*; a reduction's error is set by the *tensor*. Prediction: failures are the
+   small elements. Measured median |b| 0.0396 failing vs 0.5732 overall.
+4. **Feed sensitivity: 2/65 to 60/65** on one binary and one tolerance, varying only
+   `input_ids`. Union 60, intersection 1.
+
+**The part I want to remember is the one I did not do.** The obvious move was to propose a
+scale-set tolerance and call the flag spurious — a conclusion that happens to clear my own
+subsystem. So I wrote the plants first (all-zero, head zeroed, row zeroed, sign flip, 1%
+and 0.1% scale error, gaussian noise, two true negatives) and a margin bar of 10x, then
+scored incumbent against proposal. **My proposal lost**: it misses "1 ULP added everywhere",
+and the margin came in at 9.3x. Rejected on its own suite; threshold unchanged.
+
+*"The error is only rounding" sounds exactly the same whether it is true or false.* The
+only thing that separates the two is whether the replacement was made to fail first.
+
+**Blind spot recorded:** a systematic 0.1% scale error on a KV output is invisible to the
+incumbent *and* to my proposal. Pre-existing; neither introduced it.
+
+**Method note for the next tolerance:** a per-output tolerance justified against a tensor
+four orders of magnitude smaller is R11 in the tolerance. And since the flagged set moves
+with the prompt, a count of diverging outputs must carry its feed the way a timing carries
+its device state.

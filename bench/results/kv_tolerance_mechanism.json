@@ -1,0 +1,127 @@
+{
+  "dll_sha256": "bd08debc949c2e32d7c0246e12586ff52fdf754cf3c52e64300ac72bc95329a6",
+  "incumbent": {
+    "atol": 0.001,
+    "rtol": 0.02,
+    "justified_for_max_abs": 0.0036,
+    "applied_to_max_abs": 14.5078125,
+    "atol_in_ulp_at_applied_scale": 0.128
+  },
+  "proposal": {
+    "k_ulp_of_tensor_scale": 6.0,
+    "absolute_at_this_scale": 0.046875
+  },
+  "mechanism_prediction": "held",
+  "mechanism_detail": [
+    {
+      "index": 63,
+      "name": "present.31.key",
+      "scale": 14.5078125,
+      "fp16_grid_at_scale": 0.0078125,
+      "n_fail": 224,
+      "n_elems": 12288,
+      "median_abs_failing": 0.0395965576171875,
+      "median_abs_all": 0.5732421875,
+      "incumbent_passes": false
+    },
+    {
+      "index": 64,
+      "name": "present.31.value",
+      "scale": 25.25,
+      "fp16_grid_at_scale": 0.015625,
+      "n_fail": 423,
+      "n_elems": 12288,
+      "median_abs_failing": 0.04681396484375,
+      "median_abs_all": 0.384521484375,
+      "incumbent_passes": false
+    },
+    {
+      "index": 3,
+      "name": "present.1.key",
+      "scale": 11.578125,
+      "fp16_grid_at_scale": 0.0078125,
+      "n_fail": 0,
+      "n_elems": 12288,
+      "median_abs_failing": NaN,
+      "median_abs_all": 1.0625,
+      "incumbent_passes": true
+    },
+    {
+      "index": 56,
+      "name": "present.27.value",
+      "scale": 3.880859375,
+      "fp16_grid_at_scale": 0.001953125,
+      "n_fail": 370,
+      "n_elems": 12288,
+      "median_abs_failing": 0.0468292236328125,
+      "median_abs_all": 0.359130859375,
+      "incumbent_passes": false
+    }
+  ],
+  "plants": [
+    {
+      "case": "TRUE NEGATIVE: observed Vulkan output",
+      "incumbent_passes": false,
+      "proposal_passes": true,
+      "should_pass": true
+    },
+    {
+      "case": "TRUE NEGATIVE: fp16 requantise (no-op)",
+      "incumbent_passes": true,
+      "proposal_passes": true,
+      "should_pass": true
+    },
+    {
+      "case": "DEFECT: all_zero",
+      "incumbent_passes": false,
+      "proposal_passes": false,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: head 0 zeroed",
+      "incumbent_passes": false,
+      "proposal_passes": false,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: last row zeroed",
+      "incumbent_passes": false,
+      "proposal_passes": false,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: scale error 1%",
+      "incumbent_passes": true,
+      "proposal_passes": false,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: scale error 0.1%",
+      "incumbent_passes": true,
+      "proposal_passes": true,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: single sign flip",
+      "incumbent_passes": false,
+      "proposal_passes": false,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: 1 ULP added everywhere",
+      "incumbent_passes": false,
+      "proposal_passes": true,
+      "should_pass": false
+    },
+    {
+      "case": "DEFECT: gaussian noise 1% of scale",
+      "incumbent_passes": false,
+      "proposal_passes": false,
+      "should_pass": false
+    }
+  ],
+  "defects_missed_by_proposal_but_caught_by_incumbent": [
+    "DEFECT: 1 ULP added everywhere"
+  ],
+  "verdict": "REJECT the proposal: it loses detections the incumbent has. Report the mis-scoping; do not change the threshold."
+}
