@@ -37,31 +37,57 @@ pytestmark = pytest.mark.skipif(
 
 
 def _mixed_model() -> bytes:
-    """Two *independent* branches to two outputs.
+    """Two *independent* branches to two outputs, partial **permanently**.
 
-    ``out_claimed``  <- Add, Mul       — proven forms; the EP is expected to claim these.
-    ``out_declined`` <- Sin, Cos, Erf  — expected to decline.
+    ``out_claimed``  <- Add, Mul, Sub, Mul (fp32) — a four-node island the EP claims.
+    ``out_declined`` <- Cast->fp64, Add, Mul (fp64) — declined by **capability**.
 
     The branches share only the graph inputs on purpose.  A shared intermediate would put
     every node upstream of every output and make the question unanswerable by topology —
     which is a real limit of this instrument and is asserted below rather than hidden.
+
+    TWO PROPERTIES THIS FIXTURE HAD TO EARN (2026-08-02, at ``a0bd22d``)
+    ===================================================================
+    The original was ``Add, Mul`` against ``Sin, Cos, Erf`` and it stopped being partial
+    the moment Mouse's proof ledger landed — in two separate ways, which is why both are
+    now pinned:
+
+    1. **The declined branch must be declined by capability, not by policy.**  ``Erf``
+       became a proven form and the "declined" branch acquired a claimable node.  fp64 has
+       no path in this EP at all, so no ledger entry can claim it.
+    2. **The claimed island must be large enough to survive the net-benefit gate.**  This
+       is the subtler one.  ``Add, Mul`` is a two-node island against ``min_nodes: 4``.  It
+       used to be claimed only because it was the graph's *sole* island and the gate's
+       rejection was overridden for want of an alternative partition.  Once ``Erf`` became
+       claimable that override stopped applying and the EP declined the whole graph — so
+       the arm reported *"the EP executed NOTHING"*, which reads as a damning finding about
+       execution and was actually a fixture that had stopped posing its own question.
+
+    Neither failure was a detection.  Both are now structural.
     """
-    x = m.tensor("x", ir.DataType.FLOAT, [4, 4])
-    y = m.tensor("y", ir.DataType.FLOAT, [4, 4])
-    a = m.tensor("a", ir.DataType.FLOAT, [4, 4])
-    b = m.tensor("out_claimed", ir.DataType.FLOAT, [4, 4])
-    s = m.tensor("s", ir.DataType.FLOAT, [4, 4])
-    c = m.tensor("c", ir.DataType.FLOAT, [4, 4])
-    e = m.tensor("out_declined", ir.DataType.FLOAT, [4, 4])
+    _F32 = ir.DataType.FLOAT
+    _F64 = ir.DataType.DOUBLE
+    x = m.tensor("x", _F32, [4, 4])
+    y = m.tensor("y", _F32, [4, 4])
+    a = m.tensor("a", _F32, [4, 4])
+    b = m.tensor("b", _F32, [4, 4])
+    c = m.tensor("c", _F32, [4, 4])
+    out_claimed = m.tensor("out_claimed", _F32, [4, 4])
+    xd = m.tensor("xd", _F64, [4, 4])
+    dsum = m.tensor("dsum", _F64, [4, 4])
+    out_declined = m.tensor("out_declined", _F64, [4, 4])
     nodes = [
-        ir.Node("", "Add", inputs=[x, y], outputs=[a], name="claimed_add"),
-        ir.Node("", "Mul", inputs=[a, y], outputs=[b], name="claimed_mul"),
-        ir.Node("", "Sin", inputs=[x], outputs=[s], name="declined_sin"),
-        ir.Node("", "Cos", inputs=[s], outputs=[c], name="declined_cos"),
-        ir.Node("", "Erf", inputs=[c], outputs=[e], name="declined_erf"),
+        ir.node("Add", [x, y], outputs=[a], name="claimed_add"),
+        ir.node("Mul", [a, y], outputs=[b], name="claimed_mul"),
+        ir.node("Sub", [b, x], outputs=[c], name="claimed_sub"),
+        ir.node("Mul", [c, y], outputs=[out_claimed], name="claimed_mul2"),
+        ir.node("Cast", [x], attributes={"to": int(_F64)}, outputs=[xd], name="declined_cast64"),
+        ir.node("Add", [xd, xd], outputs=[dsum], name="declined_add64"),
+        ir.node("Mul", [dsum, xd], outputs=[out_declined], name="declined_mul64"),
     ]
     graph = ir.Graph(
-        inputs=[x, y], outputs=[b, e], nodes=nodes, name="mixed", opset_imports={"": 17}
+        inputs=[x, y], outputs=[out_claimed, out_declined], nodes=nodes, name="mixed",
+        opset_imports={"": 17},
     )
     return ir.to_proto(ir.Model(graph, ir_version=10)).SerializeToString()
 

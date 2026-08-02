@@ -15,7 +15,7 @@
       "out_declined": "CPU-ONLY"
     },
     "reasons": {
-      "out_claimed": "2 of 2 upstream node(s) may be ours (claimed_add, claimed_mul): no other-provider event, so absorbed into a fused island or eliminated before execution \u2014 this label withholds MATCH, it does not grant it",
+      "out_claimed": "4 of 4 upstream node(s) may be ours (claimed_add, claimed_mul, claimed_mul2, claimed_sub): no other-provider event, so absorbed into a fused island or eliminated before execution \u2014 this label withholds MATCH, it does not grant it",
       "out_declined": "none of the 3 upstream node(s) is ours \u2014 each either carries an explicit other-provider event; nothing this EP ran reaches this output, so its oracle comparison is CPU-against-CPU"
     },
     "unobservable": 0

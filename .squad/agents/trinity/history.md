@@ -348,3 +348,64 @@ state the runtime would have refused to enter. The user found it. Next time "doe
 runtime already refuse this?" comes before "how do we detect this?".
 
 Closes no row.
+
+## Round 32 — the specimen stopped being a specimen (2026-08-02, merged `a0bd22d`)
+
+Merged `origin/main` (18 artifact conflicts, all regenerable — took main's), **rebuilt**:
+DLL `1A802D09…` -> `D45B3A8C…`. The hash moved, so the ledger story is the new one.
+
+**Reproduced both reds.** Cause is the coordinator's: Mouse's 73-entry ledger landed and
+`Erf` became a *proven* form. My declined fixture was declined **by policy**, and the policy
+changed. Both branches correct, union not. Sixth green-alone/red-in-union today and the
+first where the defect is a success.
+
+**The worse half nobody reported.** A third arm —
+`test_a_misspelled_key_is_accepted_silently…` — did **not** go red. It went **vacuous**. It
+proved a typo'd config key is swallowed by showing a session gets created anyway; once `Erf`
+was claimed, that session would be created with a correct key too. A red arm announces
+itself; a vacuous one does not. I found it only because I re-read every use of the fixture
+rather than the two the report named.
+
+**Fix, both files, same medicine.** Declined fixtures are now declined by **capability**:
+fp64, for which this EP has no path — its own words, `[dtype] Add output 0 has no element
+type this EP recognises`. Measured on the merged binary, both selectors: fp64 `Add`
+declined, `Cast` fp32->fp64 declined, fp32 `Add` claimed, `Erf` **claimed**. I took fp64
+over Mouse's `mul_f16_unproven`: the planted control is contractual but it is still policy,
+and policy can be changed by someone with no reason to know this file exists. Capability
+cannot be changed by accident.
+
+**The premise is now checked, not assumed.** `_require_structurally_declined` reads the EP's
+own claim report — independent of the refusal being asserted, so the premise is not
+established by the conclusion — and raises `InstrumentError`. A future capability addition
+arrives as **ERROR(instrument) naming the premise**, not `Failed: DID NOT RAISE`, which
+reads as a finding about ORT's refusal and is nothing of the sort. Falsified the guard by
+feeding it a claimed graph: it fires. Added
+`test_every_declined_fixture_is_declined_by_capability_not_by_policy`, a static check on the
+serialized graph, so a future edit swapping in a convenient fp32 op fails there and not
+three arms later.
+
+**A third arm was broken the same way and was not in the report.**
+`test_output_attribution_hw::test_a_partially_claimed_graph_labels_each_output_by_who_produced_it`
+failed with *"the EP executed NOTHING"* — which looks like item 2 of the brief, the 323
+claimed nodes that execute zero times. **It is not.** `is_vulkan_claimed` says `False` on
+both devices: the graph is declined at GetCapability. `Add, Mul` is a two-node island
+against `min_nodes: 4`; it was only ever claimed because it was the *sole* island and the
+gate's rejection was overridden for want of an alternative partition. `Erf` becoming
+claimable removed that override. So a fixture that had stopped posing its own question
+reported as a damning execution finding — the exact misclassification R13 exists for, and
+I nearly filed it as corroboration of Switch's defect. Rebuilt as four claimed fp32 nodes
+against an fp64 branch: partial by capability *and* above the gate's floor.
+
+**Re-measured the migration**, because the ledger moved under my committed numbers:
+`test_elementwise.py` is now **3 failed / 33 passed** either way, failing set identical on
+both devices (was 25/11). Stronger than the pre-ledger reading — 33 claimed single-op tests
+now pass with the precondition armed, three times the previous sample, and it fires on none
+of them. Kept the superseded number in the artifact under its own key; a stale reading that
+quietly disappears is how a stale reading becomes an escalation.
+
+**Regression:** 117 passed / 0 FAIL / 0 ERROR on **both** selectors.
+
+**What I would say to the team.** Three arms in two files rested on "this op is unproven
+today" without saying so. The rule is not "use fp64" — it is that a negative fixture must be
+negative for a reason nobody else can change, and if it cannot be, the premise must be
+asserted so its failure is an instrument error rather than a finding.
