@@ -30,12 +30,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lane_inventory as inv  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -75,6 +78,7 @@ def is_provisioning(step_name: str) -> tuple[bool, str | None]:
 #: that change more often than the thing the step does.
 STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Two-polarity tests", "hostfree.lane_check_tests"),
+    ("Tautological-assertion screen", "hostfree.tautological_assertions"),
     ("Tick-conversion screen negative control", "hostfree.tick_screen_negative_control"),
     ("Tick-conversion screen", "hostfree.tick_conversion_screen"),
     ("Verdict vocabulary preflight", "hostfree.verdict_vocabulary"),
@@ -100,6 +104,15 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
 STEP_NAME_RE = re.compile(r"^\s*-\s+name:\s*(.+?)\s*$")
 
 
+def workflow_step_names_from_text(text: str) -> list[str]:
+    names = []
+    for line in text.splitlines():
+        m = STEP_NAME_RE.match(line)
+        if m:
+            names.append(m.group(1).strip().strip("\"'"))
+    return names
+
+
 def workflow_step_names(path: Path) -> list[str]:
     """Step names from a workflow file, without a YAML parser.
 
@@ -107,18 +120,61 @@ def workflow_step_names(path: Path) -> list[str]:
     the names are a flat regex over `- name:` lines, which is sufficient because this
     checker only ever asks whether a name is classified, never what the step does.
     """
-    names = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        m = STEP_NAME_RE.match(line)
-        if m:
-            names.append(m.group(1).strip().strip("\"'"))
-    return names
+    return workflow_step_names_from_text(path.read_text(encoding="utf-8"))
 
 
-def unclassified_steps(path: Path) -> list[str]:
+class UnionUnavailable(Exception):
+    """The reference side could not be read. An outage, never a pass."""
+
+
+def repo_root_for(path: Path) -> Path:
+    """The git root containing `path`.
+
+    Derived from the file, not from this script's location: the checker must be able to
+    classify a workflow in any tree, and hardcoding its own repo root is how a check
+    quietly starts reading the wrong file — found by the two-branch test on 2026-08-02.
+    """
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        cwd=str(path.parent),
+    )
+    if proc.returncode != 0:
+        raise UnionUnavailable(
+            f"{path} is not inside a git repository, so there is no other side to read: "
+            f"{proc.stderr.strip() or 'no output'}"
+        )
+    return Path(proc.stdout.strip())
+
+
+def step_names_at_ref(ref: str, rel_path: str, repo: Path) -> list[str]:
+    """Step names for `rel_path` as it exists at `ref`.
+
+    Deliberately NOT a merge. A three-way merge can conflict, and a conflict is a
+    different conversation; the question here is only "does a step exist on either side
+    that nobody has classified", and the union of the two name lists answers it without
+    needing the merge to succeed. It is also correct in the case that actually bit us,
+    where the two sides touched different regions of the file and merged cleanly.
+    """
+    proc = subprocess.run(
+        ["git", "show", f"{ref}:{rel_path}"],
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
+    )
+    if proc.returncode != 0:
+        raise UnionUnavailable(
+            f"`git show {ref}:{rel_path}` failed: {proc.stderr.strip() or 'no output'}"
+        )
+    return workflow_step_names_from_text(proc.stdout)
+
+
+def classify_names(names: list[str]) -> list[str]:
+    """Names that are neither provisioning nor mapped to a known inventory entry."""
     known_ids = {c.id for c in inv.CHECKS} | {"SELF"}
     out = []
-    for name in workflow_step_names(path):
+    for name in names:
         prov, _ = is_provisioning(name)
         if prov:
             continue
@@ -134,6 +190,10 @@ def unclassified_steps(path: Path) -> list[str]:
     return out
 
 
+def unclassified_steps(path: Path) -> list[str]:
+    return classify_names(workflow_step_names(path))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -145,6 +205,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", help="write lane-inventory.json here")
     ap.add_argument("--summary", help="append a human summary to this file ($GITHUB_STEP_SUMMARY)")
     ap.add_argument("--render", action="store_true", help="print the inventory and exit 0")
+    ap.add_argument(
+        "--union-with",
+        default="",
+        help=(
+            "also classify the step names of each --workflow as it exists at this git ref "
+            "(e.g. origin/main). Catches the step that is classified on neither side of a "
+            "merge that neither author could have seen alone."
+        ),
+    )
+    ap.add_argument(
+        "--union-required",
+        action="store_true",
+        help=(
+            "treat an unreadable reference side as ERROR(instrument) instead of a warning. "
+            "Use in CI, where a missing ref means the check silently degraded to the "
+            "branch-only view it exists to replace."
+        ),
+    )
     args = ap.parse_args(argv)
 
     if args.render:
@@ -163,25 +241,56 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_ERROR
 
     unclassified: dict[str, list[str]] = {}
+    union_note = ""
     for wf in args.workflow:
         p = Path(wf)
         if not p.is_file():
             print(f"ERROR(instrument=workflow_absent): {wf} does not exist")
             return EXIT_ERROR
         try:
-            bad = unclassified_steps(p)
+            names = workflow_step_names(p)
         except OSError as e:
             print(f"ERROR(instrument=workflow_unreadable): {wf}: {e}")
             return EXIT_ERROR
+        side = "this tree"
+        if args.union_with:
+            try:
+                root = repo_root_for(p.resolve())
+                rel_path = p.resolve().relative_to(root).as_posix()
+                other = step_names_at_ref(args.union_with, rel_path, root)
+            except (UnionUnavailable, ValueError) as e:
+                msg = (
+                    f"the reference side `{args.union_with}` could not be read, so this "
+                    f"run classified only the branch's own view of {wf} — which is exactly "
+                    f"the blind spot --union-with exists to close. {e}"
+                )
+                if args.union_required:
+                    print(f"ERROR(instrument=union_reference_unreadable): {msg}")
+                    return EXIT_ERROR
+                print(f"::warning title=union side unread::{msg}")
+                union_note = f" (union with {args.union_with} UNAVAILABLE — branch view only)"
+            else:
+                only_there = [n for n in other if n not in names]
+                names = names + only_there
+                side = f"union of this tree and {args.union_with}"
+                union_note = (
+                    f" (union with {args.union_with}: {len(only_there)} step(s) present "
+                    f"only there)"
+                )
+        bad = classify_names(names)
         if bad:
-            unclassified[wf] = bad
+            unclassified[f"{wf} [{side}]"] = bad
 
     lines: list[str] = ["### Lane inventory — operational vs green", ""]
     for lane in inv.LANES:
         cls, why = inv.lane_classification(lane)
         lines.append(f"* **{lane}** — `{cls}`")
         lines.append(f"  * {why}")
+        lines.append(f"  * {inv.falsifier_census(lane)[2]}")
     lines.append("")
+    if args.workflow:
+        lines.append(f"Workflow steps classified from: {side if args.workflow else 'n/a'}{union_note}")
+        lines.append("")
     lines.append("Blind spots no lane catches:")
     for b in inv.BLIND_SPOTS:
         sub = b.substitute_status

@@ -38,6 +38,35 @@ The status vocabulary is deliberately four-valued, and three of the four are not
     check is not merely capable of failing, it *is* failing — and it must never be read as
     a problem with the check.
 
+THE SECOND AXIS: WHERE THE FAILING ARM CAME FROM
+------------------------------------------------
+Status alone conflates two things that are not the same, and the conflation was found on
+2026-08-02 while classifying Switch's tautological-assertion screen. Every ``DEMONSTRATED``
+check carries a second, orthogonal field:
+
+``FALSIFIER_PLANTED``
+    The failing arm exists because somebody *wrote a defect on purpose* and checked the
+    screen caught it. This proves the scanner works **on the shape it was written for**.
+    It proves nothing whatever about whether that shape occurs in real code — that is, it
+    does not show the check is load-bearing. A planted falsifier is real evidence and it
+    is the weaker kind.
+
+``FALSIFIER_OBSERVED``
+    The failing arm was produced by a defect that actually happened, or by the tree as it
+    stands. The check has caught something nobody planted for it.
+
+This axis was added because the honest answer indicts my own work as much as anyone's:
+``hostfree.tick_conversion_screen`` is ``PLANTED``. So are the layering lint and the
+fatal-log check. Only the portability lint and clippy are ``OBSERVED``, and they are
+``OBSERVED`` because they are currently red. **Most of what this lane calls green rests on
+planted falsifiers**, and a table that did not say so was letting the word `green` carry
+more than it earned. Applying a stricter standard to another agent's screen than to my own
+would have been the same failure in a different direction.
+
+A ``PLANTED`` falsifier does *not* demote a check to ``UNDEMONSTRATED``: the distinction
+between "somebody performed the mutation" and "nobody ever has" is real and worth keeping.
+It is recorded, surfaced in the render, and left for the reader to weigh.
+
 Nothing here is inferred from the workflow YAML. Classifying a lane from my own YAML is
 what R10 forbids: the falsifier for "X is wired" is an artifact it produced whose content
 varies with its input, and a YAML file produces no artifact at all.
@@ -65,6 +94,11 @@ GREEN_STATUSES = frozenset({DEMONSTRATED, RED_NOW})
 RECORDED_GAP_STATUSES = frozenset({IMPOSSIBLE_HERE})
 
 ALL_STATUSES = frozenset({DEMONSTRATED, UNDEMONSTRATED, IMPOSSIBLE_HERE, RED_NOW})
+
+#: Orthogonal to status: where the failing arm came from. See the module docstring.
+FALSIFIER_PLANTED = "PLANTED"
+FALSIFIER_OBSERVED = "OBSERVED"
+ALL_FALSIFIERS = frozenset({FALSIFIER_PLANTED, FALSIFIER_OBSERVED})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Lanes
@@ -122,6 +156,10 @@ class Check:
     status: str
     #: The mutation that produces the failing arm. Required for DEMONSTRATED/RED_NOW.
     mutation: str | None = None
+    #: PLANTED or OBSERVED. Required for DEMONSTRATED/RED_NOW. A planted falsifier proves
+    #: the scanner works on the shape it was written for and says nothing about whether
+    #: that shape occurs in real code.
+    falsifier: str | None = None
     #: What was observed on a healthy input.
     arm_healthy: str | None = None
     #: What was observed on a broken input. Quote the failure TEXT, never a count (R13).
@@ -140,6 +178,7 @@ CHECKS: tuple[Check, ...] = (
     # ── host-free lane ────────────────────────────────────────────────────────
     Check(
         id="hostfree.lane_check_tests",
+        falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,
         step="Two-polarity tests for ci/ lane checks",
         watches="The lane checks in ci/ themselves — every one has a passing and a failing case.",
@@ -163,6 +202,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="hostfree.tick_conversion_screen",
+        falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,
         step="Tick-conversion screen (static, no GPU, no vocabulary)",
         watches=(
@@ -201,6 +241,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="hostfree.tick_screen_negative_control",
+        falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,
         step="Tick-conversion screen negative control (inject the defect, demand red)",
         watches=(
@@ -226,7 +267,44 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.tautological_assertions",
+        lane=LANE_HOSTFREE,
+        step="Tautological-assertion screen (no GPU, whole tree)",
+        watches=(
+            "Assertions whose two compared sides are the same source text, or are both "
+            "literal constants — across Rust and Python, whole tree."
+        ),
+        status=UNDEMONSTRATED,
+        mutation=(
+            "Not performed on real input. Its falsifier is entirely PLANTED: "
+            "ci/test_lane_checks.py runs it over deliberately-written tautologies. That "
+            "shows the scanner catches the shape it was written for; it does not show the "
+            "shape occurs in this tree, and 1,056 assertions scanned with 0 detections is "
+            "the evidence that it currently does not."
+        ),
+        arm_healthy="1,056 comparison assertions scanned (rs=614, py=442), 0 detections",
+        arm_broken=None,
+        observed="2026-08-01 (Switch)",
+        misses=(
+            "Switch's own first paragraph, and the reason this is UNDEMONSTRATED rather "
+            "than green: NEITHER of the two assertion defects that actually occurred here "
+            "is within its reach. `test_localise_inherits_the_level_blindness_hole` "
+            "compared two DIFFERENT expressions that both evaluated to 0.0 — textually the "
+            "sides differ. The `fn_addr_eq` tests asserted a predicate true repeatedly and "
+            "never once false — a property of a test FUNCTION, not of a line.",
+            "It is scoped by its author to REGRESSION, not discovery. It found nothing; it "
+            "exists so the form cannot arrive later unnoticed. A future run reporting zero "
+            "is the expected state and is not evidence of health.",
+            "Its own development produced three instances of the failure it hunts, "
+            "including reporting PASS over a language it had not read (89 Python files "
+            "yielded zero assertions and the Rust total covered for it). Fixed with a "
+            "per-language coverage outage — but it is the third screen on this project to "
+            "have been green while blind, so the class is not hypothetical.",
+        ),
+    ),
+    Check(
         id="hostfree.verdict_vocabulary",
+        falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,
         step="Verdict vocabulary preflight",
         watches="Divergence between the verdict words the EP emits and the words readers accept.",
@@ -243,6 +321,7 @@ CHECKS: tuple[Check, ...] = (
     # ── build-level, both device lanes ────────────────────────────────────────
     Check(
         id="build.rust_unit_tests",
+        falsifier=FALSIFIER_PLANTED,
         lane="both",
         step="cargo test --lib (440 unit tests)",
         watches=(
@@ -276,6 +355,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="build.portability_lint",
+        falsifier=FALSIFIER_OBSERVED,
         lane="both",
         step="cargo test --test portability",
         watches=(
@@ -322,6 +402,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="build.layering_lint",
+        falsifier=FALSIFIER_PLANTED,
         lane="both",
         step="cargo test --test layering",
         watches="ash types leaking out of rust/src/vk/ into modules that must stay portable.",
@@ -347,6 +428,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="build.clippy",
+        falsifier=FALSIFIER_OBSERVED,
         lane="both",
         step="cargo clippy --release -D warnings",
         watches="Lint regressions.",
@@ -399,6 +481,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="device.criterion10_gate",
+        falsifier=FALSIFIER_PLANTED,
         lane="both",
         step="Criterion 10 gate artifact + independent reader + epctl --check-counters",
         watches=(
@@ -422,6 +505,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="device.icd_negative_control",
+        falsifier=FALSIFIER_PLANTED,
         lane=LANE_LINUX,
         step="Gate negative control - no ICD must produce UNATTRIBUTED",
         watches="That the criterion-10 gate can fail at all: with no ICD there is nothing to attribute.",
@@ -459,6 +543,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="device.fatal_log_line",
+        falsifier=FALSIFIER_PLANTED,
         lane="both",
         step="Known-fatal log line is a lane failure (R13 second witness)",
         watches="A fatal EP log line that a green exit code would otherwise swallow.",
@@ -487,6 +572,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         id="device.device_state_guard",
+        falsifier=FALSIFIER_PLANTED,
         lane="all",
         step="No duration without a device-state record (10.0 obligation 8)",
         watches=(
@@ -659,6 +745,45 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
         ),
         substitute_status=DEMONSTRATED,
     ),
+    BlindSpot(
+        id="composed_workflow",
+        defect=(
+            "A defect that exists in no branch and only in their union: two correct "
+            "merges composing into a broken whole."
+        ),
+        why_ci_is_blind=(
+            "Every lane verifies the branch it is handed. On 2026-08-02 this shape "
+            "occurred FIVE times in one day, across four subsystems and three languages — "
+            "a lock that was correct until wiring an instrument grew the population "
+            "needing it; two device_state.py fighting over sys.modules, each file correct; "
+            "a signature and its caller correct on their own branches; new code "
+            "reintroducing a class clippy had just cleared; and my own lane inventory, "
+            "complete for the workflow I could see, meeting Switch's step, complete on the "
+            "branch he could see. Nobody did anything wrong locally in any of the five, "
+            "and NO COMMAND ANY OF THOSE AUTHORS COULD HAVE RUN would have shown it. That "
+            "is not five mistakes; it is one property of verifying branches instead of "
+            "unions."
+        ),
+        substitute=(
+            "Partial, and it covers my file only. ci/check_lane_inventory.py now takes "
+            "--union-with <ref>: it classifies the UNION of step names from the working "
+            "tree and from a reference, so a step that exists on either side and is "
+            "classified on neither goes red BEFORE the merge rather than after. Wired into "
+            "lane-checks with --union-required, because a reference it cannot read leaves "
+            "it silently back in the branch-only view it exists to replace. "
+            "FALSIFIED ON THE REAL EVENT, replayed: the two actual pre-merge blobs "
+            "(.github/workflows/ci.yml at 0cd6c99 and at main) with the tautological entry "
+            "removed from the inventory to reconstruct what I knew at the time — "
+            "branch-only view GREEN, union view ['Tautological-assertion screen (no GPU, "
+            "whole tree)'], exactly the step that broke at f4ed9ce. The inputs are the real "
+            "ones; only the clock is wrong, so it is a replay rather than a live catch. "
+            "Both polarities also hold on a synthesised two-branch repository, including "
+            "the outage arm. It covers exactly one shape, workflow step names, in exactly "
+            "one file. The other four instances of 2026-08-02 remain uncovered; a general "
+            "union check is with Trinity."
+        ),
+        substitute_status=DEMONSTRATED,
+    ),
 )
 
 
@@ -710,6 +835,38 @@ def lane_classification(lane: str) -> tuple[str, str]:
     return ("green", f"{lane}: every check has a demonstrated failing arm.")
 
 
+def falsifier_census(lane: str) -> tuple[int, int, str]:
+    """How many of a lane's failing arms were planted, and how many actually happened.
+
+    Surfaced next to the lane verdict because it is the thing most likely to be
+    over-read. `green` says somebody performed the mutation; it does not say the check
+    has ever caught anything nobody wrote for it.
+    """
+    cs = [c for c in checks_for_lane(lane) if c.is_green()]
+    planted = [c for c in cs if c.falsifier == FALSIFIER_PLANTED]
+    observed = [c for c in cs if c.falsifier == FALSIFIER_OBSERVED]
+    if not cs:
+        return (0, 0, f"{lane} has no check with a failing arm at all.")
+    note = (
+        f"{lane}: {len(planted)} of {len(cs)} failing arms are PLANTED — the mutation was "
+        f"written on purpose to make the check go red. That proves each check works on the "
+        f"shape it was written for; it does not show the check is load-bearing."
+    )
+    if observed:
+        note += (
+            f" {len(observed)} {'is' if len(observed) == 1 else 'are'} OBSERVED (arm "
+            f"produced by a defect nobody planted): "
+            + ", ".join(c.id for c in observed)
+            + "."
+        )
+    else:
+        note += (
+            " NONE are OBSERVED: no check in this lane has ever caught a defect nobody "
+            "planted for it."
+        )
+    return (len(planted), len(observed), note)
+
+
 def validate() -> list[str]:
     """Structural problems with the inventory itself. Empty list means well-formed."""
     problems: list[str] = []
@@ -730,6 +887,14 @@ def validate() -> list[str]:
                 f"{c.id}: DEMONSTRATED without a mutation. If the mutation is not written "
                 f"down the demonstration cannot be repeated, and an unrepeatable "
                 f"demonstration is a memory."
+            )
+        if c.status in GREEN_STATUSES and c.falsifier not in ALL_FALSIFIERS:
+            problems.append(
+                f"{c.id}: status {c.status} claims a failing arm but does not say whether "
+                f"that arm was PLANTED or OBSERVED. A planted falsifier proves the check "
+                f"works on the shape somebody wrote for it; it does not show the check is "
+                f"load-bearing. Leaving the reader to guess which one they are reading is "
+                f"how `green` comes to mean more than it earned."
             )
         if c.status == IMPOSSIBLE_HERE and not c.reason:
             problems.append(
@@ -770,6 +935,7 @@ def as_dict() -> dict:
                 "step": c.step,
                 "watches": c.watches,
                 "status": c.status,
+                "falsifier": c.falsifier,
                 "mutation": c.mutation,
                 "arm_healthy": c.arm_healthy,
                 "arm_broken": c.arm_broken,
@@ -804,6 +970,7 @@ def render(lanes: Iterable[str] | None = None) -> str:
         lines.append(f"   device: {meta['device']}")
         lines.append(f"   {meta['governing_fact']}")
         lines.append(f"   {why}")
+        lines.append(f"   {falsifier_census(lane)[2]}")
         lines.append("")
         for c in checks_for_lane(lane):
             lines.append(f"   - {c.id}  [{c.status}]")

@@ -121,6 +121,29 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pytest onnx numpy
 
+      - name: Lane inventory against the COMPOSED workflow, not this branch's view
+        # On 2026-08-02 the same shape occurred five times in one day, in four subsystems
+        # and three languages: two correct branches composing into a broken whole. Mine
+        # was this file -- my inventory was complete for the workflow I could see, and
+        # Switch's step was complete on the branch he could see. No command either of us
+        # could have run on our own branch would have shown it, because each branch was
+        # genuinely fine. Our discipline verifies branches; the defects live in unions.
+        #
+        # This classifies the UNION of step names on both sides. On a pull_request event
+        # the checkout is already the merge commit and this is belt-and-braces; on a push
+        # to a branch it is the only thing that looks at the other side at all.
+        #
+        # --union-required, deliberately: if the reference cannot be read, the check
+        # silently degrades to the branch-only view it exists to replace, which would be
+        # green for exactly the reason it was written to stop being green for.
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          python ci/check_lane_inventory.py \
+            --workflow .github/workflows/ci.yml \
+            --union-with FETCH_HEAD \
+            --union-required \
+            --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Verdict vocabulary preflight (which kind of instrument outage?)
         # This job's tests fail COLLECTION when tests/ops/_verdict.py is missing, which
         # is correct (a skip reports the same green as a pass) and unreadable on its own:
@@ -154,8 +177,7 @@ jobs:
         # EP, only a finding about source — so it still runs during a vocabulary outage.
         run: python ci/check_tick_conversions.py --github-summary --json tick-screen-inventory.json
 
-      - name: Tick-conversion screen negative control (inject the defect, demand red)
-        # R10, applied to the screen itself: a screen that has only ever been observed
+      - name: Tick-conversion screen negative control (inject the defect, demand red)        # R10, applied to the screen itself: a screen that has only ever been observed
         # passing is one step from a screen that cannot fail. This injects each defect
         # the screen claims to detect into a scratch COPY of rust/src and fails the job
         # if the screen stays green. It never writes to the checked-out source.
