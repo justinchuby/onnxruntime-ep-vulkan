@@ -4,29 +4,31 @@
   "vocabulary": "Tank's six states, ordered by how late the failure is discoverable: absent -> uninvoked -> unfalsified -> unreachable -> out-of-frame -> misnamed; plus R13's three terminal states PASS / FAIL(condition) / ERROR(instrument).  One census (rust/tools/audit_instruments.py), not two.  A step that never returned reads STALLED, which is not UNWIRED: 'ran and produced nothing' and 'never came back' are different facts.",
   "no_duration_quoted": "\u00a710.0 obligation 8 \u2014 every line above is a count, a token or a byte volume.  The tracer line reports how many events it wrote and quotes none of their durations.  The stall budgets below are counts of reference computations this machine completed during this run, not seconds; that is what makes them contention-invariant.",
   "stall_detector": {
-    "fault_injection": "validation_probe",
+    "fault_injection": "INACTIVE",
     "unit": "one SHA-256 over a fixed 256 KiB block, completed by this machine on a background thread during this run",
     "budget_units": {
       "counters_child_clean": 6000,
       "counters_child_inject": 6000,
+      "counters_child_ledger": 6000,
       "add_session_profiling": 4000,
       "validation_probe": 2000,
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 1737,
-      "counters_child_inject": 2040,
-      "add_session_profiling": 2,
-      "layering_lint": 960
+      "counters_child_clean": 861,
+      "counters_child_inject": 836,
+      "add_session_profiling": 13,
+      "validation_probe": 147,
+      "layering_lint": 177
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 31,
-      "counters_child_inject": 91,
-      "add_session_profiling": 2,
-      "validation_probe": 2002,
-      "layering_lint": 908
+      "counters_child_clean": 79,
+      "counters_child_inject": 100,
+      "add_session_profiling": 13,
+      "validation_probe": 128,
+      "layering_lint": 111
     },
-    "clock_units_total": 7042,
+    "clock_units_total": 2226,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
@@ -37,17 +39,13 @@
     "gpu_tracer": "28 trace event(s), phases=['C', 'M', 'X', 'i'], distinct_names=16 (armed by this census via ONNXRUNTIME_EP_VULKAN_TRACE; no duration from this file is quoted \u2014 \u00a710.0 obligation 8)",
     "model_output_equivalence": "census-child verdict='UNMEASURED' executed_by=None (this lane runs an elementwise chain, not the criterion-10 model; the attributed MATCH belongs to test_criterion10.py and is not claimed here)",
     "retain_viable": "1",
-    "ledger_lookup": "UNWIRED",
-    "validation_messenger": "STALLED (validation_probe: [wiring census] FAIL(condition=NO_PROGRESS): no forward progress for 2002 work units (budget 2000); this machine completed 5823 reference units in total during the watch, so it was not idle and it was not merely slow \u2014 it was doing everything except this.)",
+    "ledger_lookup": "ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0 unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)",
+    "validation_messenger": "ARMED",
     "layering_lint": "PASS",
     "broken_commitment_warn": "planted: channel='ORT_SINK' broken_commitments=1 fault_injection='ACTIVE' ort_sink_warn_lines=1 | clean: channel='UNOBSERVABLE' broken_commitments=0 fault_injection='NONE'",
     "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-trinity\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
     "instrument_census": "exit=0 CENSUS VERDICT: PASS | OK: uninvoked set matches the baseline (8 known).; OK: harness screen matches the baseline (1 uninvoked, 12 unfalsified)."
   },
-  "unwired": [
-    "ledger_lookup"
-  ],
-  "stalled": [
-    "validation_messenger"
-  ]
+  "unwired": [],
+  "stalled": []
 }

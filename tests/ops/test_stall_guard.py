@@ -312,3 +312,81 @@ def test_real_work_clock_ticks_and_stops():
 def test_fault_injection_is_off_by_default():
     """A planted stall must never be mistakable for a suffered one, and must be opt-in."""
     assert injected_stall_target() == ""
+
+
+# ---------------------------------------------------------------------------
+# Round 27 — the cross-branch break, as a standing falsifier
+# ---------------------------------------------------------------------------
+# `_run_counters_child(*, inject, tag, guard)` had `guard` as a REQUIRED keyword-only
+# argument.  `test_ledger_lookup_wired` landed in the same file from `squad/mouse` and
+# called it without one.  Each branch was green alone; the union raised
+# `TypeError: missing 1 required keyword-only argument: 'guard'`, which the R13 summary
+# correctly refused to read as evidence about the EP.
+#
+# The repair is a default that PROVISIONS a guard rather than one that omits it.  Both
+# halves need a falsifier, because each alone is satisfiable by the wrong fix:
+#   - callable without a guard      -> satisfied by deleting the guard entirely
+#   - the call is guarded           -> satisfied by keeping the argument required
+# Only the pair pins the intended behaviour.
+
+def _census_module():
+    import importlib
+    return importlib.import_module("test_wiring_census")
+
+
+def test_counters_child_is_callable_without_a_guard():
+    """Arm 1: a caller that does not know about the guard can still construct the call."""
+    import inspect
+
+    census = _census_module()
+    sig = inspect.signature(census._run_counters_child)
+    param = sig.parameters["guard"]
+    assert param.default is None, (
+        "guard must have a default, or a caller added on another branch breaks on a "
+        "TypeError that no command either author could have run would have shown"
+    )
+    # Binding is the real property; the signature is how it is achieved.
+    sig.bind(inject=False, tag="ledger")
+
+
+def test_counters_child_without_a_guard_is_still_guarded(monkeypatch):
+    """Arm 2: the default provisions a live guard; it never runs unguarded.
+
+    `guard=None` meaning "run unguarded" would satisfy arm 1 and silently undo round 25 —
+    every future caller opting out of stall detection with nothing to notice.
+    """
+    census = _census_module()
+    seen = {}
+
+    def _fake_guarded_run(cmd, *, guard, what, budget_units, **kw):
+        seen["guard"] = guard
+        seen["budget_units"] = budget_units
+        # Liveness must be read HERE, inside the call: the ambient guard's clock is
+        # stopped when the call returns, which is the point of it being ambient.
+        seen["alive"] = guard.clock.alive
+        guard.raise_if_stalled(budget_units=budget_units, kind=KIND_MECHANISM)
+        raise RuntimeError("stop here: the child itself is not under test")
+
+    monkeypatch.setattr(census._watchdog, "guarded_run", _fake_guarded_run)
+    with pytest.raises(RuntimeError, match="stop here"):
+        census._run_counters_child(inject=False, tag="ledger")
+
+    guard = seen["guard"]
+    assert isinstance(guard, StallGuard), "the default must build a guard, not omit one"
+    assert seen["alive"], "the ambient guard's clock must be running, or it cannot fire"
+    assert not guard.clock.alive, "and it must be stopped again, or the census leaks threads"
+    assert seen["budget_units"] > 0, "an unbudgeted step is an unguarded step"
+
+
+def test_unknown_step_gets_a_budget_rather_than_a_keyerror():
+    """A label nobody put in the table must still be watched.
+
+    `_BUDGET_UNITS[label]` raised `KeyError` for a tag added elsewhere — the same
+    cross-branch shape one line down from the one that fired.  Generous is safe here
+    because the unit is work: a loose budget detects a hang later in work, never not at
+    all, and contention cannot stretch it.
+    """
+    census = _census_module()
+    assert census._budget_for("counters_child_clean") == census._BUDGET_UNITS["counters_child_clean"]
+    assert census._budget_for("a_step_from_some_other_branch") == census._DEFAULT_BUDGET_UNITS
+    assert census._DEFAULT_BUDGET_UNITS > 0
