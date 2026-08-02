@@ -67,12 +67,17 @@ from bench import EP_NAME, DeviceSelectionError, _session, register_ep, select_d
 from stats import Sample  # noqa: E402
 
 _TESTS_OPS = Path(__file__).resolve().parents[1] / "tests" / "ops"
+_SYS_PATH_BEFORE = list(sys.path)
 if str(_TESTS_OPS) not in sys.path:
     sys.path.insert(0, str(_TESTS_OPS))
 
-import onnx_ir as ir  # noqa: E402
+try:
+    import onnx_ir as ir  # noqa: E402
 
-import _models  # noqa: E402
+    import _models  # noqa: E402
+finally:
+    # Scoped: a leaked `tests/ops` entry decides every later flat import process-wide.
+    sys.path[:] = _SYS_PATH_BEFORE
 
 
 def _staircase_model(n_elements: int):

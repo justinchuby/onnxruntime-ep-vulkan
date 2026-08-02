@@ -5,7 +5,7 @@ WHAT THIS IS FOR
 
 `DESIGN.md` §10.0 obligation 8 makes a device-clock figure quotable only when a device-state record
 covers the statistic's own window, and it names two contents: **a tenancy verdict and a clock
-record**. `bench/device_state.py`'s only producer is `nvidia-smi`, which supplies both — on NVIDIA.
+record**. `bench/device_companion.py`'s only producer is `nvidia-smi`, which supplies both — on NVIDIA.
 On the Iris Xe the record is `UNOBSERVABLE`, so **no Intel device-clock figure has ever been
 quotable**, and the open question on this project (the 4.39× of the Intel/NVIDIA kernel gap that
 memory bandwidth does not explain) lives entirely on the device we cannot instrument.
@@ -46,7 +46,7 @@ amendment 5 requires. Feeding it into the clock half of obligation 8 would repro
 same-source falsifier one level up, which is the error that put 246.735 ms into the record with an
 RSD of 0.12%.
 
-So this module produces **one half of a companion, and says so in the record.** `device_state.py`
+So this module produces **one half of a companion, and says so in the record.** `device_companion.py`
 gives that half its own verdict (`TENANCY_ONLY`) and its own certification outcome
 (`UNCERTIFIED(partial_companion)`); it never becomes `SOLE_TENANT` and never releases a figure.
 

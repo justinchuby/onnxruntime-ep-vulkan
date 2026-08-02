@@ -28,15 +28,12 @@ import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _ROOT = _HERE.parent
-_TESTS = _ROOT / "tests" / "ops"
 # Probe output belongs under bench/results/, never the repo root. An earlier version wrote
 # island_attribution.json and claim_log_attribution.jsonl into the working directory, which put
 # them in front of `git add` and got them committed.
 _RESULTS = _HERE / "results"
 _RESULTS.mkdir(parents=True, exist_ok=True)
 
-if str(_TESTS) not in sys.path:
-    sys.path.insert(0, str(_TESTS))
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 

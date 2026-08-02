@@ -1,7 +1,7 @@
 """What can the Windows GPU counters actually witness on the Intel adapter? — measured, with a
 negative control on the other adapter.
 
-The question this answers is a **capability** question, not a performance one. `bench/device_state.py`
+The question this answers is a **capability** question, not a performance one. `bench/device_companion.py`
 requires a tenancy verdict and a clock record before a device-clock figure may be quoted, and its
 only producer is `nvidia-smi`, so every Intel figure this project has ever taken is `UNCERTIFIED`.
 Windows' `\\GPU Engine(*)` counters are produced by the WDDM scheduler rather than by a vendor tool,
@@ -148,7 +148,7 @@ def main() -> int:
     samplers = start_all(luid, args.interval)
     nv = None
     if args.nvsmi is not None:
-        import device_state
+        import device_companion as device_state
         nv = device_state.Companion(board_index=args.nvsmi, vendor_is_nvidia=True,
                                     allow_windows_tenancy=False).start()
     started = time.time()
@@ -185,7 +185,7 @@ def main() -> int:
         "capability": _capability(target, controls),
     }
     if nv_record is not None:
-        import device_state
+        import device_companion as device_state
         report["nvidia_companion"] = nv_record
         report["corroboration"] = {
             "instrument_a": "nvidia-smi (bench/results/probe_gpustate.py, Switch)",
