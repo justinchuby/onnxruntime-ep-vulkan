@@ -169,7 +169,17 @@ def test_criterion_10_three_consecutive_attributed_match(
     opts.enable_profiling = True
     opts.profile_file_prefix = str(tmp_path / f"criterion10_dev{device_index}")
 
-    vk_sess = ort.InferenceSession(str(phi35_model_path), opts, providers=m.EP_PROVIDERS)
+    # The claim log is armed before session creation because it is written during
+    # GetCapability.  It is the second source for per-output coverage, used only where it
+    # accuses us: an ancestor we did not claim is not ours.  The DLL caches env vars at
+    # load on Windows, but CLAIM_LOG is read per session, so setting it here is enough —
+    # and the join count is asserted downstream rather than assumed.
+    claim_log_path = tmp_path / f"criterion10_claims_dev{device_index}.jsonl"
+    os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(claim_log_path)
+    try:
+        vk_sess = ort.InferenceSession(str(phi35_model_path), opts, providers=m.EP_PROVIDERS)
+    finally:
+        os.environ.pop("ONNXRUNTIME_EP_VULKAN_CLAIM_LOG", None)
     counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
 
     if m.EP_NAME not in vk_sess.get_providers():
@@ -189,7 +199,9 @@ def test_criterion_10_three_consecutive_attributed_match(
     # Attribution first, and unconditionally: the verdict below cannot be built without it.
     profile_path = vk_sess.end_profiling()
     try:
-        attribution = m.attribution_from_profile(profile_path)
+        attribution = m.attribution_with_coverage_from_profile(
+            profile_path, str(phi35_model_path), claim_log=claim_log_path
+        )
     except m.InstrumentError as exc:
         # ERROR(instrument), R13. No verdict is written: an instrument outage is not a
         # detection and must not be recorded as one.
@@ -237,6 +249,31 @@ def test_criterion_10_three_consecutive_attributed_match(
             facts["cross_run_differing_outputs"] = differing[:10]
         facts["cross_run_identical_to_run1"] = identical
         facts["cross_run_outputs_compared"] = len(run)
+
+        # The fifth costume, per run.  `oracle_outputs_within_tolerance = 65` counts
+        # agreements; it does not count *evidence*.  An output no claimed node reaches was
+        # compared against itself, and 65 of those is 0.0 == 0.0 in a fifth costume: not
+        # zeros, not constants, but two sides of one computation, which no degeneracy
+        # guard can see.  These two numbers are recorded under two names because they were
+        # once read off one.
+        _cov = attribution.output_coverage
+        if _cov is None:
+            facts["oracle_outputs_attributed"] = m.OUTPUT_COVERAGE_NOT_COMPUTED
+            facts["oracle_outputs_vacuous"] = m.OUTPUT_COVERAGE_NOT_COMPUTED
+        else:
+            names = [o.name for o in vk_sess.get_outputs()]
+            tokens = [_cov.token_for(n) for n in names[: len(run)]]
+            facts["oracle_outputs_attributed"] = tokens.count(m.OUTPUT_EP_COVERED)
+            facts["oracle_outputs_vacuous"] = tokens.count(m.OUTPUT_CPU_ONLY)
+            facts["oracle_outputs_coverage_unobservable"] = tokens.count(
+                m.OUTPUT_UNOBSERVABLE
+            )
+            failing = [
+                names[j] for j in oracle_facts.get("oracle_failing_indices", [])
+                if j < len(names)
+            ]
+            facts["coverage_instrument_refuted_by"] = _cov.refuted_by(failing)
+
         comparisons.append(outcome)
         per_run_facts.append(facts)
         cross_run_report.append(
@@ -262,6 +299,14 @@ def test_criterion_10_three_consecutive_attributed_match(
     print("\n".join(cross_run_report))
     print(f"    attribution: {series.describe()}")
     print(f"    executed_by: {attribution.executed_by}")
+    print(f"    output coverage: {attribution.coverage_state}")
+    _cov = attribution.output_coverage
+    if _cov is not None and _cov.cpu_only_count:
+        print(
+            f"    WARNING: {_cov.cpu_only_count} of {len(_cov.output_names)} outputs are "
+            "CPU-ONLY — their oracle comparison is our-CPU against ORT's-CPU and is not "
+            "evidence.  First few: " + ", ".join(_cov.cpu_only_names[:5])
+        )
     print(f"    series verdict: {series.verdict}")
 
     # The verdict travels with the artifact it was measured on, into the counters JSON
@@ -286,8 +331,21 @@ def test_criterion_10_three_consecutive_attributed_match(
     except OSError as exc:
         print(f"    WARNING: could not write criterion-10 record: {exc}")
 
-    series.assert_closes_criterion_10(required_runs=REQUIRED_RUNS)
+    # The coverage instrument's own falsifier, checked before anything is read off it
+    # (R9).  Both sides of a CPU-ONLY output are the same computation, so a disagreement
+    # there refutes the labelling — a finding about the harness, never about the EP.
+    _refuted = sorted(
+        {n for f in per_run_facts for n in f.get("coverage_instrument_refuted_by", [])}
+    )
+    if _refuted:
+        raise m.InstrumentError(
+            f"[Device {device_index}] outputs {_refuted} were labelled CPU-ONLY yet "
+            "disagree with the CPU oracle.  The per-output coverage instrument is wrong "
+            "(topology/trace join, or ORT eliminated a node whose event we relied on).  "
+            "ERROR(instrument): nothing about the EP may be read off this run (R13)."
+        )
 
+    series.assert_closes_criterion_10(required_runs=REQUIRED_RUNS)
 
 @pytest.mark.slow
 def test_criterion_10_record_names_what_it_counts(

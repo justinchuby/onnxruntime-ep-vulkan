@@ -242,6 +242,39 @@ def make_model_dynamic_output(
 # ---------------------------------------------------------------------------
 
 
+def claimed_nodes_from_claim_log(log_path: "Path | str") -> "set[str] | None":
+    """The set of graph node names this EP **claimed**, from its own claim log.
+
+    ``None`` when the log is absent or empty — the caller must then fall back to the
+    trace complement and say so, rather than treat "no claims recorded" as "claimed
+    nothing", which would mark every output ``CPU-ONLY`` and manufacture a false red.
+
+    This is our instrument and it is used in one direction only: an ancestor we did not
+    claim is not ours.  A lying claim log can only make us withhold ``MATCH``.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(log_path)
+    if not p.exists():
+        return None
+    claimed: set[str] = set()
+    saw_record = False
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        saw_record = True
+        if rec.get("claimed") and isinstance(rec.get("node"), str) and rec["node"]:
+            claimed.add(rec["node"])
+    return claimed if saw_record else None
+
+
 def read_claim_log(log_path: "Path | str") -> dict[str, dict]:
     """Parse a CLAIM_LOG JSON Lines file into a dict keyed by qualified op name.
 
@@ -1197,6 +1230,133 @@ WITNESS_AGREEMENT_AGREE: str = _verdict.WITNESS_AGREEMENT_AGREE
 WITNESS_AGREEMENT_DISAGREE: str = _verdict.WITNESS_AGREEMENT_DISAGREE
 WITNESS_AGREEMENT_UNOBSERVABLE: str = _verdict.WITNESS_AGREEMENT_UNOBSERVABLE
 find_fatal_log_lines = _verdict.find_fatal_log_lines
+
+# --- per-output coverage (2026-08-02, the fifth costume) ---
+OutputAttribution = _verdict.OutputAttribution
+OUTPUT_EP_COVERED: str = _verdict.OUTPUT_EP_COVERED
+OUTPUT_CPU_ONLY: str = _verdict.OUTPUT_CPU_ONLY
+OUTPUT_UNOBSERVABLE: str = _verdict.OUTPUT_UNOBSERVABLE
+OUTPUT_COVERAGE_TOKENS: tuple[str, ...] = _verdict.OUTPUT_COVERAGE_TOKENS
+OUTPUT_COVERAGE_NOT_COMPUTED: str = _verdict.OUTPUT_COVERAGE_NOT_COMPUTED
+node_providers = _verdict.node_providers
+strip_profile_suffix = _verdict.strip_profile_suffix
+
+
+def graph_topology(model: "bytes | str | os.PathLike[str]") -> dict:
+    """Producer edges of an ONNX artifact, as pure data.
+
+    ``{"outputs": [name, ...], "producer": {value: node}, "node_inputs": {node: [value]}}``
+    — the shape :meth:`_verdict.OutputAttribution.from_topology` consumes.  Read from the
+    **artifact**, not from anything this project computed, which is half of why the
+    coverage reading has two independent authors.
+
+    Nodes with no name are given a synthetic ``_unnamed_<i>`` identifier.  An unnamed node
+    can never match a profiling event, so it always lands in "carries no other-provider
+    event", which pushes its outputs to ``EP-COVERED`` — the label that *withholds*
+    MATCH.  Erring toward the strict side is deliberate.
+
+    Raises
+    ------
+    _verdict.InstrumentError
+        The artifact could not be read or parsed.  ``ERROR(instrument)`` (R13).
+    """
+    try:
+        import onnx
+
+        if isinstance(model, (bytes, bytearray)):
+            proto = onnx.load_model_from_string(bytes(model))
+        else:
+            proto = onnx.load(str(model), load_external_data=False)
+        graph = ir.from_proto(proto).graph
+    except Exception as exc:  # noqa: BLE001
+        raise _verdict.InstrumentError(
+            f"[coverage instrument failure] could not read graph topology from "
+            f"{'<bytes>' if isinstance(model, (bytes, bytearray)) else model}: "
+            f"{type(exc).__name__}: {exc}.  This is an instrument outage, NOT a finding "
+            "about the EP (R13)."
+        ) from exc
+
+    producer: dict[str, str] = {}
+    node_inputs: dict[str, list[str]] = {}
+    for i, node in enumerate(graph):
+        name = node.name or f"_unnamed_{i}"
+        node_inputs[name] = [v.name for v in node.inputs if v is not None and v.name]
+        for out in node.outputs:
+            if out is not None and out.name:
+                producer[out.name] = name
+    return {
+        "outputs": [o.name for o in graph.outputs if o is not None],
+        "producer": producer,
+        "node_inputs": node_inputs,
+    }
+
+
+def output_coverage_from_profile(
+    model: "bytes | str | os.PathLike[str]",
+    events: list,
+    *,
+    claim_log: "str | os.PathLike[str] | None" = None,
+) -> "_verdict.OutputAttribution":
+    """Label every graph output by the provider whose work reaches it.
+
+    *events* is the parsed ORT profiling trace — the same list
+    :meth:`_verdict.ExecutionAttribution.from_profile` tallies.  Both readings come out
+    of one trace so they cannot disagree about which run they describe.
+
+    *claim_log* is the path this session's ``ONNXRUNTIME_EP_VULKAN_CLAIM_LOG`` wrote, if
+    it was armed.  Supplying it strengthens the reading in the withholding direction
+    only; omitting it leaves the trace complement, which on a real model is nearly
+    uninformative (Phi-3.5: 65/65 ``EP-COVERED`` at an own-count of zero).
+    """
+    claimed = claimed_nodes_from_claim_log(claim_log) if claim_log else None
+    return _verdict.OutputAttribution.from_topology(
+        topology=graph_topology(model),
+        node_providers=_verdict.node_providers(events),
+        claimed_nodes=claimed,
+    )
+
+
+def attribution_with_coverage_from_profile(
+    profile_path: "str | os.PathLike[str]",
+    model: "bytes | str | os.PathLike[str]",
+    *,
+    claim_log: "str | os.PathLike[str] | None" = None,
+) -> "_verdict.ExecutionAttribution":
+    """Session attribution **and** per-output coverage, from one trace, in one call.
+
+    Reads the trace once (so the two readings describe the same run by construction),
+    attaches the coverage, and lets ``from_profile`` delete the file as it always has.
+
+    Raises
+    ------
+    _verdict.InstrumentError
+        The trace or the artifact could not be read.  ``ERROR(instrument)`` (R13) — this
+        is never a finding about the EP.
+    """
+    path = Path(str(profile_path))
+    try:
+        events = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except FileNotFoundError:
+        raise _verdict.InstrumentError(
+            f"[attribution instrument failure] Profiling trace not found: {path}\n"
+            "This is an instrument outage, NOT a finding about the EP (R13)."
+        ) from None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _verdict.InstrumentError(
+            f"[attribution instrument failure] Could not read profiling trace {path}: "
+            f"{type(exc).__name__}: {exc}\n"
+            "This is an instrument outage, NOT a finding about the EP (R13)."
+        ) from exc
+    if not isinstance(events, list):
+        raise _verdict.InstrumentError(
+            f"[attribution instrument failure] Profiling trace at {path} is JSON but not a "
+            f"list of events (got {type(events).__name__}).\n"
+            "This is an instrument outage, NOT a finding about the EP (R13)."
+        )
+    attribution = _verdict.ExecutionAttribution.from_profile(path)
+    return attribution.with_output_coverage(
+        output_coverage_from_profile(model, events, claim_log=claim_log)
+    )
 
 
 def write_unmeasured_verdict(

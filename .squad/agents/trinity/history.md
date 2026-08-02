@@ -247,3 +247,53 @@ Link's screen now reports `FAIL(condition=unclaimed_mechanism_name)` for the two
 mechanisms, which is his screen working — the two `mechanism_names` claims and the twelve
 re-dispositions are his file and are spelled out in
 `.squad/decisions/inbox/trinity-criterion12-flag-frame.md`.
+
+---
+
+## Round 30 — per-output attribution: the fifth costume (2026-08-02)
+
+The coordinator's concern, and it was right. `attributed` was a property of the SESSION;
+the oracle comparison is a property of each OUTPUT. At `own_count == 0` they compose.
+They stop composing as the ledger fills: EP claims some nodes, attribution says yes,
+`MATCH` becomes representable, and the outputs whose producers still decline are compared
+CPU-against-CPU under a verdict that says the EP ran. Morpheus's condition (c) is a
+non-triviality guard on both sides; a guard on constancy cannot see a comparison whose two
+sides are the SAME COMPUTATION. Fifth costume.
+
+**Probed the data before designing anything** (`bench/results/probe_per_output_attribution.py`).
+ORT names every CPU-executed node with its graph node name; a fused island arrives as ONE
+event naming no constituent. So the derivation is a complement, sound in one direction:
+`CPU-ONLY` (every ancestor is not ours) is a refusal and holds — an optimiser can delete
+an event, never invent one. `EP-COVERED` is the weak side and only ever WITHHOLDS `MATCH`.
+
+**The reading that made it real.** Trace-only, against Phi-3.5 on dev0: **65/65 outputs
+`EP-COVERED` at an own-count of ZERO.** 459 named events against 363 graph nodes — ORT's
+optimisers delete node events wholesale, and the complement is nearly uninformative on a
+real model. I would have shipped a mechanism that moved the gap count and not the
+coverage; my own criterion-12 lesson, one week old.
+
+Fixed with a second source used only where it accuses us: the claim log's `node`/`claimed`
+pairs. Inside the frame, so it may not grant anything — but "we did not claim the node
+producing output k" is a self-accusation, and a lying claim log can only make us withhold.
+Same run now reads `oracle_outputs_attributed = 0`, `oracle_outputs_vacuous = 65`,
+`verdict = UNATTRIBUTED`. Identical on dev1. First time the artifact names its own vacuity
+per output.
+
+No sixth verdict token. A comparison that cannot be attributed to this EP is what
+`UNATTRIBUTED` already meant, so Link's and Niobe's exhaustive branches stand.
+`UNATTRIBUTED` now has two causes with two owners and `explain()` separates them.
+`MATCH` is NOT refused for every partial session — Phi-3.5 declines 8 nodes and
+"all outputs or nothing" never closes — but the record carries `outputs_reaching_this_ep`
+and `outputs_cpu_only` so 65 agreements are never quoted as 65 pieces of evidence.
+
+Falsifiers, because a refusal can be manufactured too: a `CPU-ONLY` output that disagrees
+refutes THIS instrument (`refuted_by`, raises `InstrumentError` in the lane, 0 refuted on
+both devices); a claim log joining zero graph nodes is `ERROR(instrument)`, because
+"every output is vacuous" is exactly the result I went looking for and R13's second
+corollary applies; a missing coverage reading is `not-computed`, never clearance.
+
+Verified: 25 GPU-free arms + 2 hardware arms pass on both selectors; 126 passed +
+1 xfailed across `test_r13_lane` / `test_verdict` / `test_criterion10_oracle` /
+`test_wiring_census` / both new modules on dev0. Criterion 10 still FAIL(condition)
+`UNATTRIBUTED` on both devices — inherited, correct, and the bar moved UP not down.
+Criterion 10 not closed.
