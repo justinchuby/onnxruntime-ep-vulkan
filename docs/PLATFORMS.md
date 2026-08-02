@@ -669,8 +669,60 @@ toolchain step such as a `cargo` compile is `ERROR(instrument)`. `STALLED` is a 
 census token from `UNWIRED` — "ran and produced nothing" and "never came back" are
 different facts.
 
-##### How a lane fails when the EP executes nothing — the actual mechanism
+##### The second attribution witness — recorded, not required (2026-08-01, round 26)
 
+A re-run of `bench/results/criterion10-dev1.json` recorded
+`"counters_dispatches_executed": null` inside a passing `AGREE` / `MATCH`. Reading the
+code back, the witness **did not participate in the verdict at all**:
+`read_counters_dispatches()` collapsed five distinct causes into one bare `None`,
+`split_frame` returned `False` for `None`, and the verdict consulted nothing else. So
+`split_frame == False` meant both *"two witnesses were read and they agree"* and *"there
+was only one witness"*, and `MATCH` emerged either way. Under R10 that witness could have
+been absent on every run ever taken and no verdict would have moved — which is
+indistinguishable from never having wired it.
+
+The repair is **not** to make `MATCH` require the counters. The counters live inside the
+frame whose existence is in question; making the correctness verdict depend on them would
+move the check with the reader's confidence rather than with its subject (R9 A5). What was
+silently skipped is the **split-frame check**, so that is what gains a state:
+
+- `witness_agreement` ∈ {`AGREE`, `DISAGREE`, `UNOBSERVABLE`} replaces the boolean.
+  `split_frame` survives as `witness_agreement == DISAGREE` so `ci/gate_chain_fp32.py` and
+  `epctl` are unaffected.
+- `counters_dispatches_executed` is an int or the string `"UNOBSERVABLE"` — **never
+  `null`** (R12) — beside a `counters_witness_reason` naming which of the five absences it
+  was.
+- Every verdict record now says which witnesses actually spoke:
+  `attribution_witnesses_present` is `["ort_profile"]` or
+  `["ort_profile", "ep_counters"]`, and `explain()` on the one-witness form says the MATCH
+  *"rests on ONE instrument … must not be quoted as one"*.
+- `assert_closes_criterion_10(require_second_witness=True)` — default on — raises
+  `InstrumentError` when the check was never performable. The canonical M0 record may not
+  come from a run in which the split-frame check could not run. The requirement is
+  evaluated **last**, after run count, verdict and uniformity, so that a genuine CPU
+  fallback is never masked by an instrument complaint; there is a falsifier pinning that
+  ordering.
+
+A one-witness run still reads `MATCH` — the comparison agreed and the primary witness
+attributed it — but it is now a *labelled* one-witness MATCH. The downgrade is in the
+weight of the witness list, not in the verdict.
+
+Both arms, live on Intel Iris Xe, same binary and same test, differing only in whether
+`ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE` was set before the process started:
+
+| arm | lane | `counters_dispatches_executed` | `witness_agreement` | `witnesses_present` |
+|---|---|---|---|---|
+| armed | `PASS` | `1066` | `AGREE` | `ort_profile`, `ep_counters` |
+| unarmed | `ERROR(instrument)` | `"UNOBSERVABLE"` | `UNOBSERVABLE` | `ort_profile` |
+
+`bench/results/criterion10_witness_arms-dev1-{armed,unarmed}.json`. The unarmed arm
+reproduces the artifact under investigation exactly, which is also the answer to why it
+went null: that run was invoked without the counters variable. On Windows the DLL caches
+the variable at load time, so it cannot be armed from inside a test that has already
+imported `onnxruntime` — the arming is a property of how the process was started, and
+nothing in the old record said so.
+
+##### How a lane fails when the EP executes nothing — the actual mechanism
 Seven steps per lane, five processes, five different failure modes, no `continue-on-error`
 on any of them:
 

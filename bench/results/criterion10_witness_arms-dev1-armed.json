@@ -5,11 +5,11 @@
   "attribution_witnesses": {
     "counters_dispatches_executed": 1066,
     "counters_witness_reason": "",
-    "profile_digest": "sha256:ae0bceb4d92e31a1",
-    "profile_mtime_ns": 1785649701800655300,
+    "profile_digest": "sha256:450627eea129798e",
+    "profile_mtime_ns": 1785649327887125800,
     "profile_node_events": 3,
     "profile_node_events_total": 27,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-66\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-01_22-48-12_523.json",
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-62\\test_criterion_10_three_consec0\\criterion10_dev1_2026-08-01_22-41-57_629.json",
     "witness_agreement": "AGREE",
     "witnesses_present": [
       "ort_profile",
@@ -22,7 +22,7 @@
   ],
   "comparison": "AGREE",
   "detail": "3-run series, per-run comparisons ['AGREE', 'AGREE', 'AGREE'], 3 VulkanExecutionProvider fused-island execution(s) across 3 consecutive run(s) of one session = 1 island(s) per run. This counts ISLAND EXECUTIONS, not graph nodes: Phi-3.5 fuses 355 of 363 graph nodes into one island, so 3 run(s) of a healthy session report exactly 3. A reader who takes this for a graph-node count will read a catastrophe where the record says success.",
-  "device_index": "0",
+  "device_index": "1",
   "device_name": "",
   "executed_by": {
     "CPUExecutionProvider": 24,

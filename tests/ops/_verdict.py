@@ -177,6 +177,63 @@ ATTRIBUTION_SOURCE_PROFILE: str = "ort_profile"
 #: No attribution was taken (only ever paired with UNMEASURED).
 ATTRIBUTION_SOURCE_NONE: str = "none"
 
+# ---------------------------------------------------------------------------
+# The second witness, and the three things it can say (R12)
+# ---------------------------------------------------------------------------
+# 2026-08-01, round 26.  An uncommitted re-run of criterion 10 on dev1 recorded
+# ``"counters_dispatches_executed": null`` inside a passing ``AGREE``.  Reading the
+# code back: ``split_frame`` returned ``False`` for a missing witness, and the verdict
+# consults nothing else, so the witness was **recorded, never required**.  A witness
+# that does not participate in the verdict is indistinguishable from one that was never
+# wired (R10), and the artifact could not even say *why* it was absent — five distinct
+# causes collapsed into one bare ``null`` (R12: UNOBSERVABLE with a reason, never a
+# bare hole a reader fills in themselves).
+#
+# The fix is deliberately NOT "make MATCH depend on the counters witness".  The counters
+# live inside the frame whose existence is in question; promoting them to a gate would
+# move the check with the reader's confidence rather than with its subject (R9 A5).
+# What the witness is *for* is the split-frame check — so the split-frame check gains a
+# third state, and the criterion-10 lane (the canonical M0 record) requires that the
+# check was performable at all, raising ERROR(instrument) when it was not (R13).
+
+#: The two witnesses were both read and both say the same thing about *presence*.
+WITNESS_AGREEMENT_AGREE: str = "AGREE"
+#: Both read, and they disagree about presence.  This is the ``SPLIT-FRAME`` finding.
+WITNESS_AGREEMENT_DISAGREE: str = "DISAGREE"
+#: The second witness could not be read, so the check could not be performed.  R12: this
+#: is *not* agreement, and the record must never let it read as agreement.
+WITNESS_AGREEMENT_UNOBSERVABLE: str = "UNOBSERVABLE"
+
+#: What ``counters_dispatches_executed`` says when there is no number.  A string token,
+#: never ``null`` — the whole complaint is that ``null`` looks like a value that was not
+#: interesting rather than an observation that did not happen.
+WITNESS_UNOBSERVABLE: str = WITNESS_AGREEMENT_UNOBSERVABLE
+
+#: Names of the witnesses, for ``attribution_witnesses_present``.
+WITNESS_ORT_PROFILE: str = "ort_profile"
+WITNESS_EP_COUNTERS: str = "ep_counters"
+
+# The five distinct causes ``read_counters_dispatches`` used to collapse into one None,
+# plus the two the caller can create.  Each is a sentence a reader can act on.
+WITNESS_REASON_NOT_REQUESTED: str = (
+    "the caller never attached a second witness (with_counters_witness was not called)"
+)
+WITNESS_REASON_NOT_ARMED: str = (
+    "counters not armed: ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE was unset in this process. "
+    "On Windows the DLL caches this variable at load time, so it CANNOT be armed from "
+    "inside a test that has already imported onnxruntime -- it must be set before the "
+    "process starts"
+)
+WITNESS_REASON_FILE_ABSENT: str = (
+    "counters file was configured but does not exist: the EP never wrote a snapshot"
+)
+WITNESS_REASON_FILE_UNREADABLE: str = "counters file exists but could not be opened"
+WITNESS_REASON_NOT_JSON: str = "counters file exists but is not parseable JSON"
+WITNESS_REASON_FIELD_MISSING: str = (
+    "counters file parsed, but has no numeric 'dispatches_executed' field"
+)
+WITNESS_REASON_UNKNOWN: str = "second witness absent for an unrecorded reason"
+
 
 # ---------------------------------------------------------------------------
 # R13 — instrument failure is a distinct terminal state, by construction
@@ -245,6 +302,7 @@ class ExecutionAttribution:
         "_profile_digest",
         "_profile_mtime_ns",
         "_counters_dispatches",
+        "_counters_reason",
     )
 
     def __init__(
@@ -258,6 +316,7 @@ class ExecutionAttribution:
         profile_digest: str,
         profile_mtime_ns: int,
         counters_dispatches: int | None = None,
+        counters_reason: str = WITNESS_REASON_NOT_REQUESTED,
     ) -> None:
         if _token is not _PARSED:
             raise TypeError(
@@ -273,6 +332,9 @@ class ExecutionAttribution:
         self._profile_digest = profile_digest
         self._profile_mtime_ns = int(profile_mtime_ns)
         self._counters_dispatches = counters_dispatches
+        self._counters_reason = (
+            "" if counters_dispatches is not None else (counters_reason or WITNESS_REASON_UNKNOWN)
+        )
 
     # -- construction --------------------------------------------------------
 
@@ -350,7 +412,12 @@ class ExecutionAttribution:
             profile_mtime_ns=getattr(stat, "st_mtime_ns", 0),
         )
 
-    def with_counters_witness(self, dispatches_executed: int | None) -> "ExecutionAttribution":
+    def with_counters_witness(
+        self,
+        dispatches_executed: int | None,
+        *,
+        reason: str = "",
+    ) -> "ExecutionAttribution":
         """Return a copy carrying the second witness (clause 2).
 
         ``dispatches_executed`` comes from **our** counters JSON.  It may not be the
@@ -358,8 +425,12 @@ class ExecutionAttribution:
         recording it is what makes ``SPLIT-FRAME`` detectable.  *Two witnesses that can
         only ever agree are one witness.*
 
-        ``None`` means the counters file was absent or unreadable: no second witness, so
-        no split-frame check.  That is honest; a missing witness is not an agreeing one.
+        ``None`` means the second witness could not be read, so the split-frame check
+        **could not be performed**.  That is a third state, not a pass: it surfaces as
+        ``witness_agreement == UNOBSERVABLE`` and as the string ``"UNOBSERVABLE"`` in the
+        record, never as a bare ``null`` (R12).  Pass *reason* — one of the
+        ``WITNESS_REASON_*`` constants, or whatever :func:`read_counters_witness`
+        returned — so the artifact says *which* absence this was.
         """
         return ExecutionAttribution(
             _token=_PARSED,
@@ -370,6 +441,7 @@ class ExecutionAttribution:
             profile_digest=self._profile_digest,
             profile_mtime_ns=self._profile_mtime_ns,
             counters_dispatches=(None if dispatches_executed is None else int(dispatches_executed)),
+            counters_reason=(reason or WITNESS_REASON_UNKNOWN),
         )
 
     # -- reading -------------------------------------------------------------
@@ -401,23 +473,68 @@ class ExecutionAttribution:
         return self._counters_dispatches
 
     @property
+    def counters_witness_reason(self) -> str:
+        """Why there is no second witness.  ``""`` when there is one."""
+        return self._counters_reason
+
+    @property
+    def second_witness_observed(self) -> bool:
+        """Did the second witness produce a reading on **this** run?
+
+        This is the falsifier for "the counters witness is wired" (R10): a value it
+        computed on this run, not a flag anyone set.
+        """
+        return self._counters_dispatches is not None
+
+    @property
+    def witnesses_present(self) -> tuple[str, ...]:
+        """The witnesses that actually spoke.  A verdict may not imply more than this."""
+        names = [WITNESS_ORT_PROFILE]
+        if self.second_witness_observed:
+            names.append(WITNESS_EP_COUNTERS)
+        return tuple(names)
+
+    @property
+    def witness_agreement(self) -> str:
+        """``AGREE`` / ``DISAGREE`` / ``UNOBSERVABLE`` — the split-frame check's own state.
+
+        Three states, three tokens (R13 applied to the check rather than to the lane).
+        The boolean this replaced could not distinguish "two witnesses checked and
+        agreed" from "there was only one witness", and both produced ``False``, and the
+        verdict read ``False`` as clearance.
+        """
+        if self._counters_dispatches is None:
+            return WITNESS_AGREEMENT_UNOBSERVABLE
+        if (self.own_count > 0) != (self._counters_dispatches > 0):
+            return WITNESS_AGREEMENT_DISAGREE
+        return WITNESS_AGREEMENT_AGREE
+
+    @property
     def split_frame(self) -> bool:
         """True iff the two witnesses disagree about whether this EP ran (clause 2).
 
         Disagreement is *about presence*, not about magnitude: the profile counts fused
         islands and the counters count dispatches, so ``1`` and ``354`` agree perfectly.
         What may not happen is one witness saying "ran" while the other says "did not".
+
+        Note what this predicate deliberately does **not** say: ``False`` covers both
+        ``AGREE`` and ``UNOBSERVABLE``.  Read :attr:`witness_agreement` when the
+        difference matters — which is any time the answer is being reported.
         """
-        if self._counters_dispatches is None:
-            return False
-        return (self.own_count > 0) != (self._counters_dispatches > 0)
+        return self.witness_agreement == WITNESS_AGREEMENT_DISAGREE
 
     @property
     def witnesses(self) -> dict[str, Any]:
+        observed = self.second_witness_observed
         return {
             "profile_node_events": self.own_count,
             "profile_node_events_total": self._node_events,
-            "counters_dispatches_executed": self._counters_dispatches,
+            "counters_dispatches_executed": (
+                self._counters_dispatches if observed else WITNESS_UNOBSERVABLE
+            ),
+            "counters_witness_reason": self._counters_reason,
+            "witness_agreement": self.witness_agreement,
+            "witnesses_present": list(self.witnesses_present),
             "profile_path": self._profile_path,
             "profile_digest": self._profile_digest,
             "profile_mtime_ns": self._profile_mtime_ns,
@@ -677,6 +794,12 @@ class EquivalenceVerdict:
             "executed_by": self.executed_by,
             "attribution_source": ATTRIBUTION_SOURCE_NONE if att is None else att.source,
             "attribution_witnesses": {} if att is None else att.witnesses,
+            "attribution_witnesses_present": (
+                [] if att is None else list(att.witnesses_present)
+            ),
+            "attribution_witness_agreement": (
+                WITNESS_AGREEMENT_UNOBSERVABLE if att is None else att.witness_agreement
+            ),
             "own_provider_execution_count": 0 if att is None else att.own_count,
             "own_provider_count_means": (
                 "fused-island executions by this EP, NOT graph nodes; one island can cover "
@@ -696,7 +819,19 @@ class EquivalenceVerdict:
         att = self._attribution
         frame = "no attribution taken" if att is None else att.describe()
         if v == VERDICT_MATCH:
-            return f"{head} — outputs agree and the run is attributed. {frame}"
+            witnessed = "no attribution taken" if att is None else ", ".join(att.witnesses_present)
+            if att is not None and not att.second_witness_observed:
+                return (
+                    f"{head} — outputs agree and the run is attributed. {frame} "
+                    f"Witnesses that spoke: {witnessed}. The split-frame check is "
+                    f"UNOBSERVABLE on this run ({att.counters_witness_reason}), so this "
+                    "MATCH rests on ONE instrument. It is not a two-witness MATCH and "
+                    "must not be quoted as one."
+                )
+            return (
+                f"{head} — outputs agree and the run is attributed. {frame} "
+                f"Witnesses that spoke: {witnessed}; they agree about presence."
+            )
         if v == VERDICT_DIVERGENT:
             return (
                 f"{head} — this EP executed and an output disagrees with the CPU oracle. "
@@ -732,22 +867,49 @@ class EquivalenceVerdict:
 # Writing the record into the counters artifact
 # ---------------------------------------------------------------------------
 
+def read_counters_witness(
+    counters_path: "str | os.PathLike[str] | None",
+) -> tuple[int | None, str]:
+    """Read the second witness, returning ``(dispatches_executed, reason)``.
+
+    ``reason`` is ``""`` on success and one of the ``WITNESS_REASON_*`` sentences
+    otherwise.  This exists because :func:`read_counters_dispatches` collapsed five
+    distinct causes — never armed, file absent, unopenable, not JSON, field missing —
+    into one bare ``None``, and an artifact carrying that ``None`` could not tell a
+    reader which of the five had happened, nor whether anyone had ever intended the
+    witness to be read at all.
+    """
+    if not counters_path:
+        return None, WITNESS_REASON_NOT_ARMED
+    if not os.path.exists(str(counters_path)):
+        return None, f"{WITNESS_REASON_FILE_ABSENT} (path: {counters_path})"
+    try:
+        with open(counters_path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        return None, f"{WITNESS_REASON_FILE_UNREADABLE} (path: {counters_path}, {exc})"
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"{WITNESS_REASON_NOT_JSON} (path: {counters_path}, {exc})"
+    value = doc.get("dispatches_executed") if isinstance(doc, dict) else None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None, f"{WITNESS_REASON_FIELD_MISSING} (path: {counters_path})"
+    return int(value), ""
+
+
 def read_counters_dispatches(counters_path: "str | os.PathLike[str] | None") -> int | None:
     """Read ``dispatches_executed`` from the counters JSON — the second witness.
 
-    Returns ``None`` when the file is absent or unreadable: **a missing witness is not an
-    agreeing witness**, and ``None`` disables the split-frame check rather than silently
-    passing it.
+    Returns ``None`` when the witness could not be read.  **A missing witness is not an
+    agreeing witness** — but note that this function cannot tell a caller *why* it is
+    missing, which is precisely how a ``null`` came to sit inside a passing artifact.
+    Prefer :func:`read_counters_witness`, which returns the reason alongside the value,
+    and pass that reason to :meth:`ExecutionAttribution.with_counters_witness`.
+
+    Kept for callers outside ``tests/`` that only want the number.
     """
-    if not counters_path:
-        return None
-    try:
-        with open(counters_path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return None
-    value = doc.get("dispatches_executed")
-    return int(value) if isinstance(value, (int, float)) else None
+    return read_counters_witness(counters_path)[0]
 
 
 def write_equivalence_record(
@@ -1015,19 +1177,30 @@ class AttributedRunSeries:
         }
         return rec
 
-    def assert_closes_criterion_10(self, *, required_runs: int = 3) -> None:
+    def assert_closes_criterion_10(
+        self,
+        *,
+        required_runs: int = 3,
+        require_second_witness: bool = True,
+    ) -> None:
         """Assert the M0 criterion-10 condition, quoting what was observed either way.
 
         ``AssertionError`` here is a **finding**; every path that could fail without an
         observation raises :class:`InstrumentError` upstream instead (R13).
+
+        ``require_second_witness`` (default **True**, round 26): the canonical M0 record
+        may not be produced by a run in which the split-frame check was never performable.
+        Failing to arm the counters is a harness outage, so it raises
+        :class:`InstrumentError` — ``ERROR(instrument)``, never a detection about the EP.
         """
+        v = self.as_verdict()
+        att = self._attribution
         assert self._runs >= required_runs, (
             f"[criterion 10] series has {self._runs} run(s), needs {required_runs}. "
             f"Observed: {self.describe()}"
         )
         # Verdict before uniformity: UNATTRIBUTED is the more informative red and must not
         # be reported as a uniformity complaint.  Clause 4 — the two are never folded.
-        v = self.as_verdict()
         assert v.verdict == VERDICT_MATCH, (
             f"[criterion 10] series verdict is {v.verdict}, not MATCH.\n{v.explain()}\n"
             f"Per-run comparisons: {self._comparisons}"
@@ -1038,6 +1211,29 @@ class AttributedRunSeries:
             f"{self._runs}. A run that fell back to CPU mid-series shows up here as a "
             "non-multiple or as a count below the run count."
         )
+        # LAST, deliberately.  A genuine red above is a finding and must never be masked by
+        # an instrument complaint (R13); but a *green* may not be reported by a run in which
+        # the split-frame check was never performable.  This is the only ordering in which
+        # both hold.
+        if require_second_witness and (att is None or not att.second_witness_observed):
+            reason = WITNESS_REASON_NOT_REQUESTED if att is None else att.counters_witness_reason
+            spoke = "none" if att is None else ", ".join(att.witnesses_present)
+            raise InstrumentError(
+                "[criterion 10 instrument outage] the second attribution witness was never "
+                "read, so the split-frame check was UNOBSERVABLE on this run.\n"
+                f"Reason: {reason}\n"
+                f"Witnesses that spoke: {spoke}\n"
+                "\n"
+                "The comparison outcome is NOT in question and this is NOT a finding about "
+                "the EP (R13).  What is missing is the check that the profile and the "
+                "counters agree the EP ran -- with only one witness, an artifact recording "
+                "MATCH is indistinguishable from one in which the counters witness was "
+                "never wired at all (R10).\n"
+                "\n"
+                "Arm it by exporting ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE BEFORE the process "
+                "starts (the DLL caches the value at load time on Windows), then re-run.",
+                observed=None if att is None else att.witnesses,
+            )
 
 
 # ---------------------------------------------------------------------------

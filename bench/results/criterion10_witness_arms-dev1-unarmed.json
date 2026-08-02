@@ -1,28 +1,26 @@
 {
   "artifact": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
   "attribution_source": "ort_profile",
-  "attribution_witness_agreement": "AGREE",
+  "attribution_witness_agreement": "UNOBSERVABLE",
   "attribution_witnesses": {
-    "counters_dispatches_executed": 1066,
-    "counters_witness_reason": "",
-    "profile_digest": "sha256:ae0bceb4d92e31a1",
-    "profile_mtime_ns": 1785649701800655300,
+    "counters_dispatches_executed": "UNOBSERVABLE",
+    "counters_witness_reason": "counters not armed: ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE was unset in this process. On Windows the DLL caches this variable at load time, so it CANNOT be armed from inside a test that has already imported onnxruntime -- it must be set before the process starts",
+    "profile_digest": "sha256:a03df5be699c71a1",
+    "profile_mtime_ns": 1785649561904867100,
     "profile_node_events": 3,
     "profile_node_events_total": 27,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-66\\test_criterion_10_three_consec0\\criterion10_dev0_2026-08-01_22-48-12_523.json",
-    "witness_agreement": "AGREE",
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-63\\test_criterion_10_three_consec0\\criterion10_dev1_2026-08-01_22-45-51_945.json",
+    "witness_agreement": "UNOBSERVABLE",
     "witnesses_present": [
-      "ort_profile",
-      "ep_counters"
+      "ort_profile"
     ]
   },
   "attribution_witnesses_present": [
-    "ort_profile",
-    "ep_counters"
+    "ort_profile"
   ],
   "comparison": "AGREE",
   "detail": "3-run series, per-run comparisons ['AGREE', 'AGREE', 'AGREE'], 3 VulkanExecutionProvider fused-island execution(s) across 3 consecutive run(s) of one session = 1 island(s) per run. This counts ISLAND EXECUTIONS, not graph nodes: Phi-3.5 fuses 355 of 363 graph nodes into one island, so 3 run(s) of a healthy session report exactly 3. A reader who takes this for a graph-node count will read a catastrophe where the record says success.",
-  "device_index": "0",
+  "device_index": "1",
   "device_name": "",
   "executed_by": {
     "CPUExecutionProvider": 24,

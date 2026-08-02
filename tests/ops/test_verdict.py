@@ -264,9 +264,116 @@ def test_witnesses_of_different_magnitude_agree(tmp_path: Path) -> None:
 
 
 def test_missing_second_witness_is_not_an_agreeing_one(tmp_path: Path) -> None:
-    attribution = _attr_ran(tmp_path).with_counters_witness(None)
+    """The name of this test used to overstate what it proved.
+
+    It asserted ``not split_frame`` and a ``None`` witness, and called that "not an
+    agreeing one" — but ``not split_frame`` was exactly what the verdict consulted, so
+    the verdict *did* treat it as agreeing.  The distinction now lives in
+    :attr:`witness_agreement`, which is what this asserts.
+    """
+    attribution = _attr_ran(tmp_path).with_counters_witness(
+        None, reason=v.WITNESS_REASON_NOT_ARMED
+    )
     assert not attribution.split_frame
-    assert attribution.witnesses["counters_dispatches_executed"] is None
+    assert attribution.witness_agreement == v.WITNESS_AGREEMENT_UNOBSERVABLE
+    assert attribution.witness_agreement != v.WITNESS_AGREEMENT_AGREE
+
+
+# ---------------------------------------------------------------------------
+# Round 26 — the second witness must be distinguishable from an agreeing one.
+# Both polarities in the same lane: a two-witness MATCH and a one-witness MATCH
+# must produce records a reader can tell apart (R10).
+# ---------------------------------------------------------------------------
+
+def test_absent_second_witness_is_never_a_bare_null(tmp_path: Path) -> None:
+    """R12: UNOBSERVABLE with a reason, never a hole the reader fills in themselves.
+
+    The artifact that prompted this carried ``"counters_dispatches_executed": null``
+    inside a passing AGREE, and nothing in it said whether the witness had been read and
+    found empty, or never read at all.
+    """
+    attribution = _attr_ran(tmp_path).with_counters_witness(
+        None, reason=v.WITNESS_REASON_NOT_ARMED
+    )
+    w = attribution.witnesses
+    assert w["counters_dispatches_executed"] == v.WITNESS_UNOBSERVABLE
+    assert w["counters_dispatches_executed"] is not None
+    assert v.WITNESS_REASON_NOT_ARMED in w["counters_witness_reason"]
+    assert w["witnesses_present"] == [v.WITNESS_ORT_PROFILE]
+
+
+def test_two_witness_and_one_witness_records_differ(tmp_path: Path) -> None:
+    """``arms_must_differ`` for the witness list itself.
+
+    Both arms reach MATCH — that is the finding, not a bug — but the records must not be
+    interchangeable, or the witness is decoration.
+    """
+    both = v.EquivalenceVerdict.from_comparison(
+        comparison=v.COMPARISON_AGREE,
+        attribution=_attr_ran(tmp_path, islands=1).with_counters_witness(354, reason=""),
+        artifact=ARTIFACT,
+    )
+    one = v.EquivalenceVerdict.from_comparison(
+        comparison=v.COMPARISON_AGREE,
+        attribution=_attr_ran(tmp_path, islands=1).with_counters_witness(
+            None, reason=v.WITNESS_REASON_FILE_ABSENT
+        ),
+        artifact=ARTIFACT,
+    )
+    assert both.verdict == v.VERDICT_MATCH
+    assert one.verdict == v.VERDICT_MATCH  # the honest answer: one witness still matches
+    b, o = both.to_record(), one.to_record()
+    assert b["attribution_witness_agreement"] == v.WITNESS_AGREEMENT_AGREE
+    assert o["attribution_witness_agreement"] == v.WITNESS_AGREEMENT_UNOBSERVABLE
+    assert b["attribution_witnesses_present"] == [v.WITNESS_ORT_PROFILE, v.WITNESS_EP_COUNTERS]
+    assert o["attribution_witnesses_present"] == [v.WITNESS_ORT_PROFILE]
+    assert b != o
+    # And the prose a human reads must differ too, or the caveat never reaches them.
+    assert "ONE instrument" in one.explain()
+    assert "ONE instrument" not in both.explain()
+
+
+def test_read_counters_witness_names_each_distinct_absence(tmp_path: Path) -> None:
+    """Five causes that used to collapse into one ``None`` now say which they were."""
+    good = tmp_path / "good.json"
+    good.write_text('{"dispatches_executed": 354}', encoding="utf-8")
+    assert v.read_counters_witness(good) == (354, "")
+
+    value, reason = v.read_counters_witness(None)
+    assert value is None and v.WITNESS_REASON_NOT_ARMED in reason
+
+    value, reason = v.read_counters_witness(tmp_path / "absent.json")
+    assert value is None and v.WITNESS_REASON_FILE_ABSENT in reason
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    value, reason = v.read_counters_witness(bad)
+    assert value is None and v.WITNESS_REASON_NOT_JSON in reason
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    value, reason = v.read_counters_witness(empty)
+    assert value is None and v.WITNESS_REASON_FIELD_MISSING in reason
+
+    # Distinctness is the property under test: no two reasons may be the same string.
+    reasons = {
+        v.read_counters_witness(p)[1]
+        for p in (None, tmp_path / "absent.json", bad, empty)
+    }
+    assert len(reasons) == 4
+
+
+def test_zero_dispatches_is_a_reading_not_an_absence(tmp_path: Path) -> None:
+    """``0`` and UNOBSERVABLE must never be folded (R12).
+
+    ``0`` dispatches beside a profile that says the EP ran is the SPLIT-FRAME finding;
+    UNOBSERVABLE is the absence of the check.  A truthiness test on the witness would
+    turn the loudest red state in the vocabulary into silence.
+    """
+    zero = _attr_ran(tmp_path).with_counters_witness(0, reason="")
+    assert zero.second_witness_observed
+    assert zero.witnesses["counters_dispatches_executed"] == 0
+    assert zero.witness_agreement == v.WITNESS_AGREEMENT_DISAGREE
 
 
 # ===========================================================================
@@ -409,7 +516,9 @@ def test_read_counters_dispatches_missing_file_is_none(tmp_path: Path) -> None:
 def test_three_attributed_agreeing_runs_close_criterion_10(tmp_path: Path) -> None:
     series = v.AttributedRunSeries.from_runs(
         comparisons=[v.COMPARISON_AGREE] * 3,
-        attribution=_attr_ran(tmp_path, islands=3, cpu_nodes=30),
+        attribution=_attr_ran(tmp_path, islands=3, cpu_nodes=30).with_counters_witness(
+            1186, reason=""
+        ),
         artifact=ARTIFACT,
         device_index="0",
     )
@@ -418,6 +527,63 @@ def test_three_attributed_agreeing_runs_close_criterion_10(tmp_path: Path) -> No
     assert series.islands_per_run == 1
     assert series.uniformly_attributed
     series.assert_closes_criterion_10()
+
+
+def test_criterion_10_will_not_close_on_one_witness(tmp_path: Path) -> None:
+    """The Round-26 falsifier, positive arm.
+
+    A series that is green in every other respect — three runs, all AGREE, uniformly
+    attributed — must still not produce the canonical M0 record when the split-frame
+    check could not be performed.  ERROR(instrument), never a detection (R13).
+    """
+    series = v.AttributedRunSeries.from_runs(
+        comparisons=[v.COMPARISON_AGREE] * 3,
+        attribution=_attr_ran(tmp_path, islands=3).with_counters_witness(
+            None, reason=v.WITNESS_REASON_NOT_ARMED
+        ),
+        artifact=ARTIFACT,
+    )
+    assert series.verdict == v.VERDICT_MATCH  # the comparison is not what is wrong
+    with pytest.raises(v.InstrumentError) as exc:
+        series.assert_closes_criterion_10()
+    text = str(exc.value)
+    assert "UNOBSERVABLE" in text
+    assert "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE" in text
+    assert not isinstance(exc.value, AssertionError)
+
+
+def test_criterion_10_witness_requirement_has_a_negative_arm(tmp_path: Path) -> None:
+    """arms_must_differ: the same series closes once the witness is present.
+
+    Without this, the test above would also pass if ``assert_closes_criterion_10`` had
+    been broken to raise unconditionally.
+    """
+    armed = v.AttributedRunSeries.from_runs(
+        comparisons=[v.COMPARISON_AGREE] * 3,
+        attribution=_attr_ran(tmp_path, islands=3).with_counters_witness(354, reason=""),
+        artifact=ARTIFACT,
+    )
+    armed.assert_closes_criterion_10()  # no raise
+    assert armed.to_record()["attribution_witness_agreement"] == v.WITNESS_AGREEMENT_AGREE
+
+
+def test_criterion_10_instrument_outage_does_not_mask_a_finding(tmp_path: Path) -> None:
+    """A real red outranks the instrument complaint.
+
+    The EP fell back AND the counters were unarmed.  The lane must report the fallback —
+    an ``AssertionError`` about UNATTRIBUTED — not an instrument gripe that sends the
+    reader to fix their environment while the EP is silently not running.
+    """
+    series = v.AttributedRunSeries.from_runs(
+        comparisons=[v.COMPARISON_AGREE] * 3,
+        attribution=_attr_fellback(tmp_path).with_counters_witness(
+            None, reason=v.WITNESS_REASON_NOT_ARMED
+        ),
+        artifact=ARTIFACT,
+    )
+    with pytest.raises(AssertionError) as exc:
+        series.assert_closes_criterion_10()
+    assert "UNATTRIBUTED" in str(exc.value)
 
 
 def test_series_record_denies_the_graph_node_reading(tmp_path: Path) -> None:
