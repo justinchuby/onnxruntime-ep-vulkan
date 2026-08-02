@@ -497,6 +497,28 @@ static SUBGRAPHS_STUB: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
+/// Successful and failed writes of the JSON snapshot, reported *by the next successful write*.
+///
+/// **Why this exists (Tank, 2026-08-02, measured).** The snapshot is rewritten on the dispatch
+/// path and again at teardown, and the write is best-effort: a failure is logged at `warn` and
+/// ignored, because a diagnostic that can fail the run it was only supposed to observe is a
+/// liability. That is still the right policy — but it has a consequence nobody had written down.
+/// **A failed write leaves the previous snapshot on disk, and the previous snapshot is a
+/// well-formed document that looks complete.** A reader cannot tell it from the final one.
+///
+/// Specimen: a two-lane KV run on a contended box produced `session_staging_uploads = 3,
+/// session_staging_readbacks = 2` for a 5-iteration loop — an inference caught in flight, with
+/// upload counted and readback not. Differencing those byte totals measured *where the observation
+/// stopped*, not what the run did, and the resulting slope looked like a 6.7% KV saving. Re-running
+/// the same point produced the complete document and the byte-exact expected value.
+///
+/// So the pair is emitted into the document: `counters_snapshot_writes` is how many snapshots
+/// preceded this one, and `counters_snapshot_write_failures` is how many of those did not reach
+/// the disk. A stale file is now self-announcing unless *every* subsequent write fails, and a
+/// reader who sees a non-zero failure count knows the file may be a prefix. This is R13 in the
+/// artifact rather than in the harness: an instrument that could not record is not a measurement.
+static SNAPSHOT_WRITES: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_WRITE_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Total nodes that passed the claim predicate across all `GetCapability` calls.
 ///
 /// JSON-only (not in the C ABI struct). Together with `islands_offered`, this is the
@@ -1425,7 +1447,9 @@ pub fn dump_observations_if_requested() {
              \"weight_cache_release_calls\": {},\n  \
              \"weight_cache_release_buffers\": {},\n  \
              \"weight_cache_release_bytes\": {},\n  \
-             \"weight_cache_bytes_resident\": {}\n}}\n",
+             \"weight_cache_bytes_resident\": {},\n  \
+             \"counters_snapshot_writes\": {},\n  \
+             \"counters_snapshot_write_failures\": {}\n}}\n",
             o.observed,
             o.host,
             o.at_base,
@@ -1479,6 +1503,8 @@ pub fn dump_observations_if_requested() {
             wc.5,
             wc.6,
             wc.7,
+            SNAPSHOT_WRITES.load(ORD),
+            SNAPSHOT_WRITE_FAILURES.load(ORD),
         ));
     }
     // Splice the preserved record back in, same technique, so the token and the frame that
@@ -1493,10 +1519,15 @@ pub fn dump_observations_if_requested() {
         }
     }
     if let Err(e) = std::fs::write(&path, doc) {
+        SNAPSHOT_WRITE_FAILURES.fetch_add(1, ORD);
         log::warn!(
-            "could not write EP observations to {}: {e}",
+            "could not write EP observations to {}: {e}. The file on disk is now the PREVIOUS \
+             snapshot, which is well-formed and is a prefix of this run; \
+             counters_snapshot_write_failures says so in the next document that reaches the disk.",
             path.to_string_lossy()
         );
+    } else {
+        SNAPSHOT_WRITES.fetch_add(1, ORD);
     }
     // The trace is prose, so it goes beside the JSON rather than into it. It is written for the
     // same reason the JSON is: by the time these lines exist, ORT's logger has usually already

@@ -1,0 +1,299 @@
+{
+  "kind": "device_memory_kv_lanes",
+  "question": "does arming ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY remove the host round-trip for past_key_values/present?",
+  "arithmetic_owner": "bench/results/probe_kv_bytes_earned.py (Niobe) -- this file runs it once per lane and compares; it does not recompute the slope",
+  "dll": {
+    "path": "<reused>",
+    "sha256": "<reused>"
+  },
+  "device": "<unset>",
+  "predicted_bytes_per_past_token": 393216,
+  "lanes": {
+    "default": {
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "<unset>",
+      "admissible_segments": [
+        [
+          0,
+          128
+        ]
+      ],
+      "readback_bytes_per_past_token": [
+        393216.0
+      ],
+      "readback_ratio": [
+        1.0
+      ],
+      "upload_bytes_per_past_token": [
+        0.0
+      ],
+      "upload_bytes_per_inference": [
+        399376.0,
+        399376.0,
+        79875.2
+      ],
+      "readback_bytes_per_inference": [
+        457344.0,
+        50788992.0,
+        30267590.4
+      ],
+      "session_staging_upload_bytes_total": [
+        2293622864,
+        2301610384,
+        2343954512,
+        2351942032,
+        2494949456,
+        2496546960
+      ],
+      "upload_state": "MEASURED",
+      "frames": [
+        {
+          "point": "default-kvbytes_p0_n25.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        },
+        {
+          "point": "default-kvbytes_p0_n5.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        },
+        {
+          "point": "default-kvbytes_p128_n25.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        },
+        {
+          "point": "default-kvbytes_p128_n5.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        },
+        {
+          "point": "default-kvbytes_p512_n25.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        },
+        {
+          "point": "default-kvbytes_p512_n5.counters",
+          "alloc_device_frame": "OFF",
+          "alloc_device_frame_device": "",
+          "alloc_device_frame_allocator_index": "unset",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 0,
+          "alloc_device_authoritative_spans": "UNOBSERVABLE",
+          "alloc_device_residency_evaluations": 0,
+          "alloc_device_backed_spans": 0,
+          "alloc_staged_spans": 0,
+          "alloc_allocations": 0
+        }
+      ]
+    },
+    "armed": {
+      "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY": "1",
+      "admissible_segments": [
+        [
+          0,
+          128
+        ]
+      ],
+      "readback_bytes_per_past_token": [
+        393216.0
+      ],
+      "readback_ratio": [
+        1.0
+      ],
+      "upload_bytes_per_past_token": [
+        0.0
+      ],
+      "upload_bytes_per_inference": [
+        8.0,
+        8.0,
+        0.8
+      ],
+      "readback_bytes_per_inference": [
+        457344.0,
+        50788992.0,
+        20178393.6
+      ],
+      "session_staging_upload_bytes_total": [
+        1572904,
+        1573064,
+        1572904,
+        1573064,
+        1572888,
+        1572904
+      ],
+      "upload_state": "MEASURED",
+      "frames": [
+        {
+          "point": "armed-kvbytes_p0_n25.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 9725,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 2038,
+          "alloc_device_backed_spans": 2038,
+          "alloc_staged_spans": 2038,
+          "alloc_allocations": 2038
+        },
+        {
+          "point": "armed-kvbytes_p0_n5.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 1945,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 718,
+          "alloc_device_backed_spans": 718,
+          "alloc_staged_spans": 718,
+          "alloc_allocations": 718
+        },
+        {
+          "point": "armed-kvbytes_p128_n25.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 11325,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 3638,
+          "alloc_device_backed_spans": 3638,
+          "alloc_staged_spans": 3638,
+          "alloc_allocations": 3638
+        },
+        {
+          "point": "armed-kvbytes_p128_n5.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 2265,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 1038,
+          "alloc_device_backed_spans": 1038,
+          "alloc_staged_spans": 1038,
+          "alloc_allocations": 1038
+        },
+        {
+          "point": "armed-kvbytes_p512_n25.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 2265,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 973,
+          "alloc_device_backed_spans": 973,
+          "alloc_staged_spans": 973,
+          "alloc_allocations": 973
+        },
+        {
+          "point": "armed-kvbytes_p512_n5.counters",
+          "alloc_device_frame": "SHARED",
+          "alloc_device_frame_device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_frame_allocator_index": "1",
+          "alloc_device_frame_session_devices": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+          "alloc_device_buffer_binds": 1359,
+          "alloc_device_authoritative_spans": 0,
+          "alloc_device_residency_evaluations": 713,
+          "alloc_device_backed_spans": 713,
+          "alloc_staged_spans": 713,
+          "alloc_allocations": 713
+        }
+      ]
+    }
+  },
+  "rejected_points": {
+    "default": [
+      {
+        "past_len": 512,
+        "iters": 25,
+        "compute_calls": 9,
+        "session_staging_uploads": 9,
+        "session_staging_readbacks": 8,
+        "classification": "ERROR(instrument): truncated snapshot, not a measurement"
+      }
+    ],
+    "armed": [
+      {
+        "past_len": 512,
+        "iters": 5,
+        "compute_calls": 3,
+        "session_staging_uploads": 3,
+        "session_staging_readbacks": 2,
+        "classification": "ERROR(instrument): truncated snapshot, not a measurement"
+      },
+      {
+        "past_len": 512,
+        "iters": 25,
+        "compute_calls": 5,
+        "session_staging_uploads": 5,
+        "session_staging_readbacks": 4,
+        "classification": "ERROR(instrument): truncated snapshot, not a measurement"
+      }
+    ]
+  },
+  "admissible_segments_in_both_lanes": [
+    [
+      0,
+      128
+    ]
+  ],
+  "readback_slope_delta_armed_minus_default": [
+    0.0
+  ],
+  "armed_lane_alloc_device_buffer_binds": [
+    1359,
+    1945,
+    2265,
+    9725,
+    11325
+  ],
+  "armed_lane_alloc_device_frame": [
+    "SHARED"
+  ],
+  "verdict": "UNCHANGED",
+  "why": "On every segment admissible in BOTH lanes the readback slope is byte-identical with the device-memory provider armed. Arming the allocator does NOT remove the host round-trip for present/past KV. The mechanism agrees: vk::host_device_memory::bind_target_for is called on INPUTS only (vk/session.rs step 1a); the readback is an unconditional sum over actual_output_byte_sizes, with no output-side bind to decline it.",
+  "no_clock": "counts only; no duration is quoted anywhere in this record"
+}
