@@ -1,0 +1,85 @@
+runs=30 failed=1
+failures:
+
+---- counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero stdout ----
+
+thread 'counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero' (12964) panicked at 
+src\counters.rs:1271:9:
+the measured zero must carry the evaluation count that earns it; got:
+{
+  "abi_version": 2,
+  "compile_calls": 0,
+  "subgraphs_live": 0,
+  "subgraphs_stub": 0,
+  "compute_calls": 0,
+  "compute_failures": 0,
+  "dispatches_executed": 0,
+  "claimed_nodes": 0,
+  "islands_offered": 0,
+  "viable_islands_retained": "UNWIRED",
+  "net_benefit_gate": "UNWIRED",
+  "net_benefit_gate_clusters_seen": 0,
+  "net_benefit_gate_evaluations": 0,
+  "net_benefit_gate_bypasses": 0,
+  "broken_commitments": "UNOBSERVABLE",
+  "broken_commitment_warns_to_ort_sink": 0,
+  "broken_commitment_warn_channel": "UNOBSERVABLE",
+  "compute_failures_injected": 0,
+  "fault_injection": "NONE",
+  "model_output_equivalence": "UNMEASURED",
+  "pointers_observed": 8,
+  "pointers_host": 1,
+  "pointers_at_base": 2,
+  "pointers_interior": 4,
+  "pointers_in_guard_band": 0,
+  "pointers_use_after_free": 1,
+  "pointer_max_offset": 200,
+  "alloc_allocations": 7,
+  "alloc_frees": 3,
+  "alloc_bytes": 17024,
+  "alloc_high_water_bytes": 8192,
+  "alloc_device_backed_spans": 1,
+  "alloc_staged_spans": 5,
+  "alloc_staged_bytes": 24576,
+  "alloc_allocators_released": 0,
+  "alloc_allocators_live": 0,
+  "alloc_frees_after_release": 0,
+  "alloc_live_at_release_spans": 0,
+  "alloc_live_at_release_bytes": 0,
+  "alloc_device_uploads": 0,
+  "alloc_device_upload_bytes": 0,
+  "alloc_device_downloads": 0,
+  "alloc_device_download_bytes": 0,
+  "alloc_unified_memory": 0,
+  "alloc_quarantine_peak_spans": 1,
+  "alloc_quarantine_retired": 0,
+  "alloc_device_buffer_binds": 0,
+  "alloc_failed_lookups": 0,
+  "alloc_device_authoritative_ceiling": 0,
+  "alloc_device_residency_evaluations": 2,
+  "alloc_device_authoritative_spans": 0,
+  "alloc_device_frame": "SHARED",
+  "alloc_device_frame_device": "The Session's Device",
+  "alloc_device_frame_allocator_index": "0",
+  "alloc_device_frame_session_devices": "1=The Session's Device",
+  "alloc_device_frame_sides": "alloc_device_frame=SHARED — BOTH sides are on the same VkDevice: 'The Session's Device' 
+(factory device index 0). Sessions have offered: 1=The Session's Device.",
+  "session_staging_uploads": 1,
+  "session_staging_upload_bytes": 1024,
+  "session_staging_upload_us": 10,
+  "session_staging_readbacks": 0,
+  "session_staging_readback_bytes": 0,
+  "session_staging_readback_us": 0,
+  "session_device_allocs": 0,
+  "session_device_frees": 0,
+  "session_device_bytes_in_use": 0,
+  "session_device_high_water_bytes": 0,
+  "weight_cache_release_calls": 0,
+  "weight_cache_release_buffers": 0,
+  "weight_cache_release_bytes": 0,
+  "weight_cache_bytes_resident": 0
+}
+
+
+
+failures:

@@ -749,6 +749,9 @@ mod tests {
 
     #[test]
     fn a_host_pointer_is_not_mistaken_for_a_handle() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let regs = registries();
         let mut buf = [0u8; 32];
         match classify(&regs, buf.as_mut_ptr()) {
@@ -759,6 +762,9 @@ mod tests {
 
     #[test]
     fn an_interior_handle_pointer_classifies_to_its_span_and_offset() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let regs = registries();
         let reg = regs.values().next().expect("one registry").clone();
         let h = reg.alloc(4096).expect("alloc");
@@ -779,6 +785,9 @@ mod tests {
 
     #[test]
     fn a_copy_past_the_end_of_a_span_is_refused_rather_than_clamped() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let regs = registries();
         let reg = regs.values().next().expect("one registry").clone();
         let h = reg.alloc(256).expect("alloc");
@@ -791,6 +800,9 @@ mod tests {
 
     #[test]
     fn staging_is_reused_so_a_second_copy_sees_the_first_ones_bytes() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let regs = registries();
         let reg = regs.values().next().expect("one registry").clone();
         let h = reg.alloc(64).expect("alloc");
@@ -806,6 +818,9 @@ mod tests {
 
     #[test]
     fn a_copy_into_an_interior_offset_lands_at_that_offset_and_disturbs_nothing_before_it() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         // The planner-arithmetic property, proven locally because a real ORT session
         // has so far refused to exercise it: every run to date reports 0 interior
         // copies. If ORT ever does hand us `base + n`, this is the behaviour it gets.
@@ -887,6 +902,9 @@ mod tests {
 
     #[test]
     fn a_freed_handle_is_refused_by_the_transfer_path_not_silently_copied_into() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         let regs = registries();
         let reg = regs.values().next().expect("one registry").clone();
         let h = reg.alloc(64).expect("alloc");
@@ -901,6 +919,9 @@ mod tests {
 
     #[test]
     fn freeing_a_handle_releases_its_staging_but_keeps_the_address_quarantined() {
+        // The ledger and the tally are process-global; this test moves them, so it runs
+        // under the same lock as every test that asserts on them.
+        let _g = ledger::test_lock();
         let reg = HandleRegistry::new().expect("reservation");
         let h = reg.alloc(8192).expect("alloc");
         assert!(reg.staging_ptr(h).is_some());
@@ -965,6 +986,9 @@ mod tests {
     /// same planner-subdivided span — this fails.
     #[test]
     fn a_copy_into_a_device_backed_handle_mirrors_the_bytes_at_the_right_offset() {
+        // `registries()` builds real HandleRegistrys, so every alloc, staging_ptr and free
+        // below moves the process-global tally. Same lock as everything that asserts on it.
+        let _g = ledger::test_lock();
         use std::sync::Mutex as M;
         let _ = M::new(()); // keep the import used on all cfgs
         use crate::engine::DeviceMemoryProvider as _;

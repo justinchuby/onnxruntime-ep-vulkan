@@ -1,0 +1,35 @@
+warning: direct cast of function item into an integer
+   --> src\ops\norm.rs:270:66
+    |
+270 |                 r.translate as usize, templates::simplified_norm as usize,
+    |                                                                  ^^^^^^^^
+    |
+    = note: `#[warn(function_casts_as_integer)]` on by default
+help: first cast to a pointer `as *const ()`
+    |
+270 |                 r.translate as usize, templates::simplified_norm as *const () as usize,
+    |                                                                  ++++++++++++
+
+warning: direct cast of function item into an integer
+   --> src\ops\indexing.rs:118:55
+    |
+118 |             row.translate as usize, templates::gather as usize,
+    |                                                       ^^^^^^^^
+    |
+help: first cast to a pointer `as *const ()`
+    |
+118 |             row.translate as usize, templates::gather as *const () as usize,
+    |                                                       ++++++++++++
+
+warning: `onnxruntime-ep-vulkan` (lib test) generated 2 warnings (run `cargo fix --lib -p onnxruntime-ep-vulkan --tests` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 4.90s
+     Running unittests src\lib.rs (target\release\deps\onnxruntime_vulkan_ep-a779f106f0f3d142.exe)
+
+running 1 test
+device_index 0: frame now "SPLIT-DEVICE", 1 declared
+device_index 1: frame now "SPLIT-DEVICE", 1 declared
+This box stood up only one provider for indices 0 and 1 (SPLIT-DEVICE on 'NVIDIA GeForce RTX 4060 Laptop GPU'), so it cannot exhibit the mixed frame. That is a fact about this box, not about the mechanism.
+test allocator::tests::two_allocators_on_two_devices_declare_two_frames_through_production_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 428 filtered out; finished in 8.10s
+
