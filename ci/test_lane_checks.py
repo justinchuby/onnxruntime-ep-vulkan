@@ -2430,11 +2430,18 @@ def _entry(**over):
     return e
 
 
-def _open_reds(tmp_path, entries, extra=None, env=None):
+def _open_reds(tmp_path, entries, extra=None, env=None, doc_over=None):
     reg = tmp_path / "reg.json"
-    reg.write_text(
-        json.dumps({"schema": 1, "purpose": "t", "checks": entries}), encoding="utf-8"
-    )
+    doc = {
+        "schema": 1,
+        "purpose": "t",
+        "checks": entries,
+        "subjects": [e["id"] for e in entries if "id" in e],
+        "retired": {},
+    }
+    if doc_over:
+        doc.update(doc_over)
+    reg.write_text(json.dumps(doc), encoding="utf-8")
     e = dict(os.environ)
     e.pop("OPEN_REDS_TODAY", None)
     e.pop("OPEN_REDS_FORCE_ANNOTATE", None)
@@ -2599,3 +2606,99 @@ def test_the_register_says_what_it_did_not_look_at():
     assert doc["not_declared_here"], "the register must state its own exclusions"
     for subject, why in doc["not_declared_here"].items():
         assert len(why) > 60, f"{subject}: an exclusion needs a reason, not a shrug"
+
+
+def test_open_reds_refuses_a_subject_that_left_the_register(tmp_path):
+    """THE DEFECT THIS SCREEN'S FIRST REAL USER FOUND IN IT.
+
+    Mouse repaired three of five accepted reds and deleted their entries, which the file
+    told him to do. One of the three was not actually green -- seven of eight uninvoked
+    accessors had been wired and an eighth had not -- so deleting the entry removed the
+    CHECK, not just the acceptance. The denominator went 8 -> 5 and the screen printed
+    PASS with a red check in the tree it had stopped looking at.
+
+    Same shape as check_suite_productivity's target_ran_nothing: a sum cannot see one of
+    its terms go silent.
+    """
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="still_here")],
+        doc_over={"subjects": ["still_here", "quietly_deleted"]},
+    )
+    assert rc == 2, out
+    assert "quietly_deleted" in out
+    assert "does not leave this register by being deleted" in out
+
+
+def test_open_reds_accepts_a_subject_that_was_retired_on_purpose(tmp_path):
+    """The other polarity: a deliberate retirement must not be a failure, or the rule
+    above would just forbid ever removing anything."""
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="still_here")],
+        doc_over={
+            "subjects": ["still_here", "gone_on_purpose"],
+            "retired": {"gone_on_purpose": {
+                "owner": "mouse", "date": "2026-08-03", "reason": "fixed at 2832526",
+            }},
+        },
+    )
+    assert rc == 0, out
+    assert "RETIRED gone_on_purpose" in out
+
+
+def test_open_reds_refuses_a_retirement_with_no_reason(tmp_path):
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="still_here")],
+        doc_over={
+            "subjects": ["still_here", "gone"],
+            "retired": {"gone": {"owner": "mouse", "date": "2026-08-03"}},
+        },
+    )
+    assert rc == 2, out
+    assert "reason" in out
+
+
+def test_open_reds_refuses_a_check_missing_from_subjects(tmp_path):
+    """Append-only in the other direction: a check may not be added without being
+    recorded, or `subjects` stops being the record of what this screen is responsible
+    for and the arithmetic above becomes decorative."""
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="declared"), _entry(id="sneaked_in")],
+        doc_over={"subjects": ["declared"]},
+    )
+    assert rc == 2, out
+    assert "sneaked_in" in out
+
+
+def test_open_reds_refuses_a_subject_that_is_both_live_and_retired(tmp_path):
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="both")],
+        doc_over={
+            "subjects": ["both"],
+            "retired": {"both": {"owner": "x", "date": "2026-08-03", "reason": "y"}},
+        },
+    )
+    assert rc == 2, out
+    assert "both live and retired" in out
+
+
+def test_open_reds_frame_states_the_arithmetic_it_is_checking(tmp_path):
+    rc, out = _open_reds(
+        tmp_path, [_entry(id="a"), _entry(id="b")],
+        doc_over={
+            "subjects": ["a", "b", "c"],
+            "retired": {"c": {"owner": "x", "date": "2026-08-03", "reason": "y"}},
+        },
+    )
+    assert rc == 0, out
+    assert "3 subject(s) ever declared = 2 ruled on now" in out
+    assert "1 retired" in out
+
+
+def test_the_shipped_register_tells_you_to_flip_not_delete():
+    """The instruction that produced the defect is now the instruction that prevents it."""
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    assert "DO NOT DELETE" in doc["how_to_remove_an_entry"]
+    live = {c["id"] for c in doc["checks"]}
+    assert set(doc["subjects"]) == live | set(doc.get("retired", {})), (
+        "every subject must be live or retired"
+    )

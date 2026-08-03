@@ -3033,6 +3033,192 @@ verdict about a measurement.
 
 ---
 
+## 7.25 A subject cannot leave the register, and the ledger is Windows-shaped
+
+Session 18b. §7.24 shipped `ci/check_open_reds.py`. Within one day it had its first real user
+— Mouse, at `2832526` — and that first use found a defect in it that is the same defect it was
+written to prevent. Separately, re-running the Linux device lane after Mouse's two-digest schema
+landed produced the sharpest reading of the session, and it is not the one anybody expected.
+
+### 7.25.1 The register's own denominator could shrink silently
+
+Mouse repaired three of the five accepted reds and **deleted their entries**. That is exactly what
+`how_to_remove_an_entry` told him to do, and it was my instruction, and it was wrong.
+
+`audit_instruments --check` was **not** green when its entry was deleted. Seven of the eight
+uninvoked accessors had been wired; the eighth had not. Deleting the entry did not remove an
+*acceptance*, it removed a **check**. The screen went from ruling on 8 subjects to ruling on 5 and
+printed `PASS` — over a tree containing a red it had stopped looking at.
+
+The frame line said `8 declared checks` on one run and `5 declared checks` on the next, and
+**nothing compared them**. That is `BUILD_SKIPPED=1; exit 0` reproduced inside the tool written to
+make `BUILD_SKIPPED` impossible, and it is the same defect as `check_suite_productivity.py`'s
+`target_ran_nothing`:
+
+> **A sum cannot see one of its terms go silent.** Every screen I have written this session
+> reports over a set it derives from its own inputs, so the set shrinking is indistinguishable
+> from the set being clean.
+
+**The repair — `subjects` and `retired`.** `open_reds.json` now carries an **append-only** list of
+every check id ever declared. `load_register()` refuses unless every one of them is either in
+`checks` (still ruled on, in either colour) or in `retired` (with `owner`, `date`, `reason`).
+Closing a red means **flipping `expect` to `green`**, not deleting the entry — which keeps the
+check running, so the next regression is an `unaccounted_red` rather than a silence. `retired` is
+**not** a suppression list: nothing in it stops a check running. It exists so that "we decided to
+stop watching this" is structurally distinguishable from "this fell out of the register", which is
+the distinction the deletion path destroyed.
+
+The frame line now prints the arithmetic rather than a single count:
+
+```
+9 subject(s) ever declared = 8 ruled on now (4 green, 4 accepted red) + 1 retired
+```
+
+A reader who sees that line cannot be told a smaller number without also being told it is smaller.
+
+### 7.25.2 The eighth accessor
+
+`counters.rs::unprovable_decline_forms` was the one Mouse's seven-accessor repair missed. It still
+returns `Vec<String>` where its seven repaired siblings return `Option` — the repair that matters,
+because `unwrap_or_default()` made a **poisoned lock read as "nothing recorded"**. Its emitter
+`unprovable_decline_forms_json()` reads the static directly rather than through it. Its only
+callers are `#[cfg(test)]`.
+
+Its name is one letter-cluster from a repaired sibling (`unproven_decline_forms`), which is the
+likeliest reason a by-hand sweep skipped it.
+
+**The screen behaved correctly here and that is worth recording.** The acceptance signature was
+`9 NEW uninvoked instrument(s)`; the observed signature became `1 NEW uninvoked instrument(s)`. The
+screen reported **`signature_changed`**, not a quiet re-acceptance. An acceptance granted for nine
+instances did not stretch to cover a different one.
+
+### 7.25.3 A check that arrived wired to nothing
+
+`ci/check_verification_subjects.py` landed at `2832526` — Mouse's sweep for checks that verify
+themselves, CHECKED 22, classified 22, **FOUND 0 SELF** (13 ARTIFACT, 9 EXTERNAL). It is in **no
+workflow step**.
+
+`ci/check_lane_inventory.py` structurally cannot see this. It asks *"does every workflow step have
+a Check?"* — not *"does every check have a step?"* **An unwired tool is invisible to the coverage
+census by construction.** It is now declared in the register (`expect: green`), because the
+register is the one mechanism in `ci/` that *runs* things rather than reading the workflow, so a
+check with no step still gets executed.
+
+That is the class arriving in the same commit as the fix for the previous instance of the class.
+
+### 7.25.4 The Linux lane after the two-digest schema: the ledger is Windows-shaped
+
+The Linux device lane was re-run against `2f9322d`. Headline counts, against session 17:
+
+| reading | session 17 | session 18b |
+|---|---|---|
+| pytest | 23 failed / 592 passed / 45 skipped / 3 xfailed | **22 failed / 593 passed / 45 skipped / 3 xfailed** |
+| lane summary | — | `FAIL(condition): 9`, `ERROR(instrument): 13`, `XPASS(stale expect): 0` |
+| `no proof ledger entry for` | 3 (all `Cast`) | **3 (all `Cast`)** |
+
+So the 42 ledger failures stayed repaired and did not regress. **That is not the finding.**
+
+`gen_proof_ledger.py --check`, run on Linux against a **fresh** release `.so` — built by the lane
+run itself, exporting both `OrtEpVulkanGetShaderSubject` and `OrtEpVulkanGetLedgerIdentity`, so
+none of the staleness caveats apply — reports:
+
+```
+SUBJECT SUMMARY: 103 entr(ies) describe moved kernels, 0 name shaders this build has no
+                 module for, 0 agree
+(the file is internally consistent: 103 entr(ies), digest 94d994ba54821056 — that was
+ never the question)
+```
+
+**Zero of 103.** On Windows, the same file against the same checkout gives **102 agree / 1 moved**.
+
+A scratch probe (`ci/link-linux-repro/probe_subject_frame.py`) asked the further question, because
+"103 moved kernels" and "one moved kernel" cannot both be readings of the same source tree:
+
+```
+build toolchain: ['UNKNOWN']
+ledger toolchn : ['shaderc v2026.2 v2026.2']
+
+spirv_same  source_digest   count
+  False     MOVED            103
+```
+
+Both digests move, on every entry, and the Linux build **does not know its own toolchain**. So
+this is neither one moved kernel nor 103 moved kernels: it is a **frame difference the check has
+no state for**. `SUBJECT-CHANGED` is the verdict it renders — *"the ledger describes a kernel this
+binary does not contain"* — and at run time every form on Linux would decline under it.
+
+`PROVEN-ELSEWHERE{toolchain}` exists for precisely this and **cannot be reached here**. Its
+condition, stated in `check_against_build`'s own docstring, is *"toolchain differs, SPIR-V
+identical"*. But the classifier tests `spirv_digest` **first and unconditionally** and `continue`s
+on mismatch, so no entry whose SPIR-V moved is ever examined for a toolchain cause — and a
+toolchain difference that leaves the SPIR-V bytes identical is a toolchain difference that changed
+nothing. **The state is reachable only in the case where it does not matter.**
+
+I am not calling the digests wrong. It is entirely possible the Linux `.so` genuinely contains
+different kernels. What I am saying is that **the check cannot tell me which**, and it renders the
+accusatory reading by default.
+
+### 7.25.5 The explanation is computed and then discarded
+
+`check_against_build` returns `(failures, notes)`, and it appends a note naming the toolchain
+difference whenever the build's toolchain differs from the entries'. `cmd_check` prints the notes
+**only after the PASS line** (`gen_proof_ledger.py:1105`) and `return 1`s out of the failure branch
+(`:1099`) before reaching them.
+
+Grepping a live Linux `--check` run for `toolchain`: **zero hits**, in a run where all 103 failures
+have a toolchain cause sitting in a list four lines out of reach.
+
+> On PASS, where nothing needs explaining, the explanation is printed in full. On FAIL, it is
+> computed and thrown away.
+
+That is the session's shape one final time, in the newest code in the tree. The repair is to move
+the `for n in notes` loop above the `if build_failures:` block. Both findings are `not_declared_here`
+in `ci/open_reds.json` with owner `mouse`, because their colour requires a build and this register
+runs host-free — a green produced by the build step is not a green produced by the check.
+
+### 7.25.6 The 13 Linux instrument errors are one cause, and it is not 13 defects
+
+`ERROR(instrument): 13` across `test_wiring_census.py` (5), `test_proof_ledger.py` (4),
+`test_validation.py` (3), `test_criterion_4_5_witness.py` (1). Two distinct messages behind them:
+
+- *"the clean counters child exited 3 and wrote no counters file, so the census reached no
+  observation"*
+- *"claim log `bench/results/_ledger_claimlog.jsonl` was never written"*
+
+Both are downstream of `epctl --check-counters` exiting 3 with `counters ABI 4, but this epctl
+understands 8`. **Do not let a big cause absorb small ones** is my own rule, so: this is one cause
+with two symptoms and thirteen reporters, and it is *not* evidence of thirteen defects — but it is
+also not yet evidence that all thirteen would go green if it were fixed. Nobody has demonstrated
+that, including me.
+
+### 7.25.7 What this section established, and what it did not
+
+**Established.** Windows `cargo test --lib`: **540 passed, 0 failed, 4 ignored**; `clippy
+--all-targets -- -D warnings` clean. `ci/check_open_reds.py`: **PASS over 8 checks — 4 green, 4
+accepted red**, each named with an owner, a closing condition and a signature. `ci/test_lane_checks.py`:
+**157 passed, 3 failed**, and those 3 are the declared `lane_checks_census_extent` reds and nothing
+else. `ci/negative_control_open_reds.py`: **48/48 arms** (2 LIVE, 6 REPLAYED, 40 PLANTED).
+`check_lane_inventory.py` and `check_build_precondition.py`: PASS. The Linux readings above were
+taken on a fresh Linux build that exports both new symbols, verified by `nm -D`.
+
+**Not established.** That the Linux 103/103 disagreement is a toolchain artefact rather than a real
+kernel difference — the probe shows only that *both* digests moved and that the build reports its
+toolchain as `UNKNOWN`; distinguishing the two requires someone who owns the shader build, and that
+is Mouse. That the 13 instrument errors share one repair. Anything about `spec_digest` — all 103
+entries remain `SPEC-UNRECORDED`. Anything about any device other than lavapipe under WSL. Whether
+the lane's `FAIL(condition=UNATTRIBUTED)` / `claimed_nothing` is new: the graph under test is
+`Cast`-only and `Cast` is genuinely absent from the ledger, so that result is consistent with the
+long-standing gap and I did not separate them.
+
+**And the caveat that applies to the whole section:** the `PASS` I am quoting from
+`check_open_reds.py` is produced by code I wrote in this same session, and its only independent
+corroboration is `negative_control_open_reds.py` — which I also wrote. Its LIVE arms run the real
+shipped register rather than a synthesised one, which is the most I can say for it. The one thing
+here that is not self-corroborating is the denominator defect itself: **that was found by another
+agent using the tool normally, not by a test I designed.**
+
+---
+
 ## 8. OQ-1: Extension Coverage Data and the Frozen Decision
 
 

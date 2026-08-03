@@ -456,3 +456,68 @@ PLANTED, ratio printed); REPLAYED takes the real `ci.yml` at `133b9fe` and
 requires an unaccounted red while today's bytes stay green. 18 new two-polarity
 tests (150 passed, 3 accounted red). Windows `cargo test --lib` 527 passed 0
 failed, clippy clean. All four negative controls green. Lane inventory PASS.
+
+## Session 18b (2026-08-03) - the register's first real user found its defect
+
+Merged `origin/main` (fast-forward to `2f9322d`, Mouse's `2832526`/`8ca9be4`;
+my `9cff913` was already an ancestor).
+
+THE FINDING IS ABOUT MY OWN TOOL. Mouse closed three accepted reds and DELETED
+their entries -- which `how_to_remove_an_entry` told him to do. But
+`audit_instruments --check` was not green: seven of eight uninvoked accessors
+were wired and an eighth was missed. Deleting the entry removed the CHECK, not
+the acceptance. The screen went from ruling on 8 subjects to 5 and printed PASS
+over a red it had stopped looking at. `BUILD_SKIPPED=1; exit 0` reproduced
+inside the tool written to prevent it. A sum cannot see one of its terms go
+silent.
+
+Repair: `subjects` is append-only; every id must be in `checks` (either colour)
+or in `retired` (owner + date + reason). Closing a red means flipping `expect`
+to green, NOT deleting -- the check keeps running, so the next regression is an
+`unaccounted_red` rather than a silence. `retired` is not a suppression list.
+The frame line now prints the arithmetic:
+`N ever declared = M ruled on now + K retired`.
+
+The eighth accessor: `counters.rs::unprovable_decline_forms`, still
+`Vec<String>` where its siblings now return `Option`, emitter reads the static
+directly, only `#[cfg(test)]` callers. One letter-cluster from a repaired
+sibling. The screen did the right thing: signature moved `9 NEW` -> `1 NEW` and
+it reported `signature_changed`, so the old acceptance did not stretch.
+
+`ci/check_verification_subjects.py` arrived in `ci/` wired to NO workflow step.
+`check_lane_inventory.py` structurally cannot see this -- it asks whether every
+step has a check, not whether every check has a step. Now declared in the
+register (expect green), because the register is the one mechanism that RUNS
+things.
+
+LINUX LANE, and this is the sharpest reading of the session. 22 failed / 593
+passed / 45 skipped / 3 xfailed (was 23/592/45/3); `no proof ledger entry for`
+still 3, all Cast -- the 42 stayed repaired. But `gen_proof_ledger.py --check`
+on a FRESH Linux `.so` (nm -D confirms both new exports): 103 describe moved
+kernels, 0 agree. Windows on the same file: 102 agree / 1 moved. Probe
+(`ci/link-linux-repro/probe_subject_frame.py`): 103/103 have BOTH digests moved
+and the Linux build reports its toolchain as UNKNOWN.
+
+Two defects behind it, both Mouse's, both filed:
+ 1. `PROVEN-ELSEWHERE{toolchain}` is unreachable in the case it was built for.
+    Its condition is "toolchain differs, SPIR-V identical", but the classifier
+    tests spirv_digest first and unconditionally. A toolchain difference that
+    leaves the bytes identical changed nothing -- the state is reachable only
+    where it does not matter.
+ 2. `cmd_check` prints notes ONLY after the PASS line and returns 1 from the
+    failure branch before reaching them. Grep a live Linux --check for
+    "toolchain": zero hits, in a run where all 103 failures have a toolchain
+    cause sitting four lines out of reach. On PASS, where nothing needs
+    explaining, the explanation is printed in full.
+
+13 Linux ERROR(instrument), all downstream of `epctl --check-counters` exit 3
+(`counters ABI 4, but this epctl understands 8`). One cause, two messages,
+thirteen reporters -- and NOT yet evidence that one fix greens all thirteen.
+Recorded that way deliberately: a big cause must not absorb small ones.
+
+Evidence: Windows `cargo test --lib` 540 passed 0 failed 4 ignored, clippy
+clean. `check_open_reds.py` PASS over 8 (4 green, 4 accepted red).
+`ci/test_lane_checks.py` 157 passed, 3 failed and the 3 are the declared
+census-extent reds. `negative_control_open_reds.py` 48/48 (2 LIVE, 6 REPLAYED,
+40 PLANTED). Lane inventory PASS, build-precondition PASS.
+

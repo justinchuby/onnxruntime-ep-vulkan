@@ -2,19 +2,33 @@
   "schema": 1,
   "purpose": "The colour every declared guard is expected to be, and — for the ones expected to be red — who owns that red, why it is there, and what would close it. Read ci/check_open_reds.py for the argument; the short form is that an accepted red and a new red must not look the same, and before this file the only record of an acceptance was a number somebody remembered.",
   "how_to_add_an_entry": "An entry with expect=red is a LEASE, not a grant. It needs an owner who can actually close it, a `closes_when` that names the observable event, a `signature` that is the exact red being accepted (not a wildcard), and a `review_by` after which the lane fails until somebody re-reads it. If you cannot write `closes_when`, you do not have an accepted red, you have an unowned one, and the honest thing is to leave the lane failing.",
-  "how_to_remove_an_entry": "Delete it. The screen will tell you when: an expect=red entry whose check has gone green is FAIL(condition=stale_acceptance). You do not have to remember to come back; the mechanism asks.",
+  "how_to_remove_an_entry": "DO NOT DELETE IT. Set `expect` to \"green\" and leave it running: that is what turns the next regression in that check into an unaccounted_red instead of a silence. The screen tells you when: an expect=red entry whose check has gone green is FAIL(condition=stale_acceptance). Deleting an entry outright removes the CHECK from the register, not just the acceptance, and on 2026-08-03 that is exactly what happened -- three entries were deleted, the denominator went from 8 to 5, and the screen printed PASS with a red check in the tree it had stopped looking at. If a subject really should stop being watched, move its id to `retired` with an owner, a date and a reason; `subjects` is append-only and every name in it must be in one list or the other.",
   "not_declared_here": {
     "tests/union_check.py --run": "Its five reds are declared here INDIVIDUALLY (harness_census_drift, kv_caller_bind_reading, proof_ledger_writer_refuses x2, and the device-only matmulnbits one below) rather than as one entry, because `FAIL(condition=union_red)` is a returncode, and that returncode sums 3 FAIL(condition) with 2 ERROR(instrument). That is the same incommensurable-sum defect as the '48 failures' headline I carried for three sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing behind one number. An entry for the sum would accept all five as one red and go on accepting a sixth. Tiers 1-2 of union_check are PRECONDITIONS and never render a colour at all, so there is nothing there for this screen to rule on.",
     "tests/ops/test_matmulnbits.py::test_layer_capture_mechanism": "Its colour depends on a device: it is red on a lane with a GPU (the run falls back to CPUExecutionProvider) and green-by-skip on a host-free runner. This screen runs host-free, so it cannot observe that check's colour, and a colour this screen cannot observe must not be declared here — UNOBSERVABLE is not green, and an entry that is satisfied by a skip is an acceptance granted by an absence. It belongs in a device-lane register when one exists. Named here so that its omission is a statement rather than a gap.",
-    "the 12 Windows-only failures": "Collapsed to 1 after Mouse's two-digest schema landed, and the survivor is a device-only fp16 depth drift routed to Mouse/Switch. Same reason as above: not host-free."
+    "the 12 Windows-only failures": "Collapsed to 1 after Mouse's two-digest schema landed, and the survivor is a device-only fp16 depth drift routed to Mouse/Switch. Same reason as above: not host-free.",
+    "rust/tools/gen_proof_ledger.py --check": "Since 2832526 it asks the built artifact via OrtEpVulkanGetLedgerIdentity instead of comparing the file against itself, which is the right repair and makes its colour depend on a FRESH BUILD. On a host-free runner there is no DLL and it returns ERROR(instrument); against a stale one it returns FAIL(condition=LEDGER_DOES_NOT_DESCRIBE_THE_BUILD) -- which it did on this box today, correctly, naming one moved gqa_f16 kernel while noting 'the file is internally consistent: 103 entries, digest 94d994ba54821056 -- that was never the question'. A check whose colour needs a build cannot be declared in a host-free register: the green would be an artifact of the build step, not of the check. It belongs to the device lanes, which build before they test, and it is reached there through tests/ops/test_proof_ledger.py and tests/ops/test_wiring_census.py.",
+    "the proof ledger is Windows-shaped (Linux: 0 of 103 agree)": "OBSERVED 2026-08-03 on a FRESH Linux release build (libonnxruntime_vulkan_ep.so, built by the lane run itself, exporting both OrtEpVulkanGetShaderSubject and OrtEpVulkanGetLedgerIdentity): `gen_proof_ledger.py --check` reports 103 entries describe moved kernels, 0 name shaders this build has no module for, 0 AGREE. On Windows the same file and the same checkout give 102 agree / 1 moved. Both digests move: a scratch probe (ci/link-linux-repro/probe_subject_frame.py) says 103/103 have BOTH a different spirv_digest AND a different source_digest, and the Linux build reports its own toolchain as 'UNKNOWN' against the ledger's 'shaderc v2026.2 v2026.2'. So this is not one moved kernel and it is not 103 moved kernels either -- it is a FRAME difference that the check has no state for. Not declared here for the same reason as the entry above (host-free register cannot see a colour that needs a build), and named here so the omission is a statement. Owner: mouse. Two separate defects are behind it, both filed in .squad/decisions/inbox/link-the-ledger-is-windows-shaped.md.",
+    "gen_proof_ledger.py --check discards its notes on the FAIL path": "The same run computes the note that would explain itself and then does not print it. `check_against_build` returns (failures, notes) and appends a note naming the toolchain difference whenever the build's toolchain differs from the entries'; `cmd_check` prints notes ONLY after the PASS line and returns 1 from the failure branch before reaching them (gen_proof_ledger.py:1088-1100 vs :1105). On PASS, where nothing needs explaining, the notes are printed in full. That is the session's shape one more time: the explanation exists, is computed, and reaches nobody. Verified by grepping a live Linux --check run for 'toolchain' -- zero hits, in a run where all 103 failures have a toolchain cause. Owner: mouse. One-line repair: move the `for n in notes` loop above the `if build_failures:` block."
   },
   "checks": [
     {
       "id": "lane_checks_suite",
-      "cmd": ["python", "-m", "pytest", "ci/test_lane_checks.py", "-q", "-p", "no:cacheprovider",
-              "--deselect", "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
-              "--deselect", "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
-              "--deselect", "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"],
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "ci/test_lane_checks.py",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--deselect",
+        "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
+        "--deselect",
+        "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
+        "--deselect",
+        "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"
+      ],
       "expect": "green",
       "owner": "link",
       "opened": "2026-08-03",
@@ -25,10 +39,17 @@
     },
     {
       "id": "lane_checks_census_extent",
-      "cmd": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-              "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
-              "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
-              "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"],
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
+        "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
+        "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"
+      ],
       "expect": "red",
       "signature": "CENSUS-EXTENT",
       "owner": "mouse (counters + ops/), switch (vk/ env switches), tank (allocator env switches)",
@@ -40,7 +61,12 @@
     },
     {
       "id": "build_precondition",
-      "cmd": ["python", "ci/check_build_precondition.py", ".github/workflows/ci.yml", ".github/workflows/conformance.yml"],
+      "cmd": [
+        "python",
+        "ci/check_build_precondition.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/conformance.yml"
+      ],
       "expect": "green",
       "owner": "link",
       "opened": "2026-08-03",
@@ -51,7 +77,12 @@
     },
     {
       "id": "lane_inventory",
-      "cmd": ["python", "ci/check_lane_inventory.py", "--workflow", ".github/workflows/ci.yml"],
+      "cmd": [
+        "python",
+        "ci/check_lane_inventory.py",
+        "--workflow",
+        ".github/workflows/ci.yml"
+      ],
       "expect": "green",
       "owner": "link",
       "opened": "2026-08-03",
@@ -62,7 +93,15 @@
     },
     {
       "id": "kv_caller_bind_reading",
-      "cmd": ["python", "-m", "pytest", "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda", "-q", "-p", "no:cacheprovider"],
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
       "expect": "red",
       "signature": "assert 'CUDA' in 'OK'",
       "owner": "switch",
@@ -71,6 +110,74 @@
       "reason": "A test whose subject is a TRACKED ARTIFACT, `bench/results/kv_device_residency-callerbind.json`. The test asserts the reading contains 'CUDA' — i.e. that `device_type='gpu'` is routed to CUDA regardless of vendor and a plugin EP is therefore unaddressable by the documented spelling. The artifact was re-taken at 872d739 and now records `by_device_type_and_vendor: 'OK'`. So either the obstacle went away and the assertion is stale, or the re-take was made under conditions that do not answer the same question. Exactly one of the two readings is right and I cannot tell which from the artifact alone — which is why this is an owned red and not a fix.",
       "closes_when": "Switch re-takes the caller-bind reading and either updates the assertion (the obstacle is gone) or restores the reading (the re-take answered a different question). Either way the entry is deleted and the screen reports stale_acceptance until it is.",
       "timeout": 900
+    },
+    {
+      "id": "audit_instruments_census",
+      "cmd": [
+        "python",
+        "rust/tools/audit_instruments.py",
+        "--check"
+      ],
+      "expect": "red",
+      "signature": "1 NEW uninvoked instrument(s)",
+      "owner": "mouse",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "RE-OPENED the same day it was closed, and the re-opening is the finding. Mouse's 2832526 wired SEVEN of the *_forms() accessors (they now return Option, because unwrap_or_default() made a poisoned lock read as 'nothing recorded') and fixed a genuine false positive in the screen itself, where clear_session_devices was mis-scored in the DEAD direction by a positional production/test split. But counters.rs::unprovable_decline_forms was missed: it still returns Vec<String>, its emitter unprovable_decline_forms_json() still reads the static directly rather than going through it, and its only callers are #[cfg(test)]. It is the eighth instance of the exact defect the other seven were repaired for, including the poisoned-lock-reads-as-empty half, and its name is one letter-cluster away from a repaired sibling (unproven_decline_forms), which is the most likely reason a by-hand sweep skipped it. The count in the signature moved 9 -> 1, so the old acceptance did NOT stretch: the screen reported signature_changed rather than quietly accepting a different red.",
+      "closes_when": "Mouse gives unprovable_decline_forms the same treatment as its seven siblings (Option return, emitter reads through the accessor) and runs `python rust/tools/audit_instruments.py --write-baseline`. Then set expect=green -- do not delete this entry.",
+      "timeout": 900
+    },
+    {
+      "id": "harness_census_drift",
+      "cmd": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/ops/test_harness_census.py::test_census_baseline_has_no_drift",
+        "-q",
+        "-p",
+        "no:cacheprovider"
+      ],
+      "expect": "red",
+      "signature": "FAIL(drift)",
+      "owner": "mouse",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "The same condition as audit_instruments_census read by a second gate. Registered separately rather than folded in, because folding them would hide the day one of them stops reading it.",
+      "closes_when": "Closes with audit_instruments_census, same event, same commit.",
+      "timeout": 900
+    },
+    {
+      "id": "verification_subjects",
+      "cmd": [
+        "python",
+        "ci/check_verification_subjects.py"
+      ],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Mouse's sweep for checks that verify themselves -- CHECKED 22, classified 22, FOUND 0 SELF (13 ARTIFACT, 9 EXTERNAL). It arrived at 2832526 in ci/ and IS IN NO WORKFLOW STEP. ci/check_lane_inventory.py could not see that, because it asks whether every workflow step has a Check, not whether every check has a step -- so an unwired tool is invisible to the coverage census by construction. That is one more instance of the class, arriving with the fix for the previous instance, and the register is the right home for it because the register runs things.",
+      "closes_when": "n/a -- expected green.",
+      "timeout": 600
     }
-  ]
+  ],
+  "subjects": [
+    "lane_checks_suite",
+    "lane_checks_census_extent",
+    "build_precondition",
+    "lane_inventory",
+    "audit_instruments_census",
+    "harness_census_drift",
+    "kv_caller_bind_reading",
+    "proof_ledger_writer_refuses",
+    "verification_subjects"
+  ],
+  "retired": {
+    "proof_ledger_writer_refuses": {
+      "owner": "mouse",
+      "date": "2026-08-03",
+      "reason": "Closed for real at 2832526. Both tests now pass: the writer no longer raises SystemExit on a synthetic run with no source_digest. Retired rather than kept as expect=green because the two node ids it named are a subset of the device lanes' own pytest run, which already rules on them -- keeping it would be a second census over one subject, which is the failure rust/tools/audit_instruments.py names."
+    }
+  }
 }
