@@ -1,0 +1,583 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+..ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 11%]
+ssssssssssssssssss....ssss............................FF..ssssssssssssss [ 23%]
+ssssssssssssssssssssss...
+PRECONDITION(equivalence authority): 19 uncertified record(s) carry both values; 19 are unreconciled. Not a gate — see _is_certified().
+.ssss.FFFFFFF.................F....s........... [ 35%]
+..........FFxFF.F.FFFFFFFFFFFFFFFFFFFFFFFFF.sssssss...........ssssssssss [ 46%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 58%]
+sssssssss......................sssssssssssss.....ssss...............s... [ 70%]
+.....................................ssssssssssssssssssssssssssssssFFFFF [ 81%]
+FF................sFFF.......ssss....................................... [ 93%]
+...............................ssssssss                                  [100%]
+=================================== FAILURES ===================================
+E   AssertionError: Criterion 4 positive FAILS: with the ICD present ORT's profile shows zero VulkanExecutionProvider node events, so 'ran on CPU' is not distinguishable from 'ran on CPU because the EP never works'.
+      artifact: /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/criterion4_icd_witness-devunset.json
+    assert 0 > 0
+----------------------------- Captured stderr call -----------------------------
+
+[WITNESS] wrote /mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/criterion4_icd_witness-devunset.json
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_criterion_4_5_witness.py:349: AssertionError: Criterion 4 positive FAILS: with the ICD present ORT's profile shows zero VulkanExecutionProvider node events, so 'ran on CPU' is not distinguishable from 'ran on CPU because the EP never works'.
+E   _verdict.InstrumentError: [criterion 5 instrument failure] ERROR(instrument): cargo exited 0 but /mnt/c/Users/justinchu/dev/ep-vulkan-link-shaderless/rust/target/release/libonnxruntime_vulkan_ep.so does not exist.
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_shaderless.py:207: _verdict.InstrumentError: [criterion 5 instrument failure] ERROR(instrument): cargo exited 0 but /mnt/c/Users/justinchu/dev/ep-vulkan-link-shaderless/rust/target/release/libonnxruntime_vulkan_ep.so does not exist.
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::GroupQueryAttention x1 ([unproven] no proof ledger entry for `com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+                        calls=6 reject_polarity=0 accept_polarity=5
+        UNFALSIFIED bench/timestamp_audit.py::wrap_period_seconds              calls=4 reject_polarity=0 accept_polarity=2
+      
+        SCREENED   bench/clock_log.py::load                                   calls=31 reject_polarity=4 accept_polarity=21
+        SCREENED   bench/win_gpu_counters.py::luid_for_adapter                calls=6 reject_polarity=1 accept_polarity=1
+        SCREENED   bench/run_disturbance.py::measure                          calls=15 reject_polarity=2 accept_polarity=8
+        SCREENED   bench/run_disturbance.py::per_inference_kernel_us          calls=13 reject_polarity=1 accept_polarity=4
+        SCREENED   bench/run_disturbance.py::synthetic_clean                  calls=8 reject_polarity=1 accept_polarity=3
+      
+        UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+        nothing in the always-on lane has ever watched this instrument disagree, so a
+        broken one and a working one would look the same. Guard D lived here for its
+        whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+      
+        READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON
+        bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench
+        instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,
+        `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches
+        `gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the
+        same limit already recorded for `classify_` in the harness domain. `unfalsified`
+        here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says
+        it should say, and not that no test watches one. Crediting a polarity this screen
+        did not observe would be the Guard D shape with the sign flipped.
+        Handed to Niobe: a value-polarity model for total instruments, or a note per row.
+      
+      CENSUS VERDICT: FAIL(drift)
+      
+      FAIL: 1 NEW uninvoked instrument(s):
+        + counters.rs::output_residency
+      
+    assert 1 == 0
+     +  where 0 = <module 'audit_instruments' from '/mnt/c/Users/justinchu/dev/ep-vulkan-link/rust/tools/audit_instruments.py'>.EXIT_PASS
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_harness_census.py:199: AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+E   AssertionError: assert 'CUDA' in 'OK'
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_kv_device_residency.py:166: AssertionError: assert 'CUDA' in 'OK'
+E   AssertionError: {
+        "probe": "can the KV cache stay device-resident across run() calls?",
+        "ort_version": "1.28.0",
+        "verdict": "ERROR(instrument)",
+        "why": [
+          "the Vulkan EP is not among ORT's EP devices; nothing below is about it"
+        ]
+      }
+      
+    assert 2 == 0
+     +  where 2 = CompletedProcess(args=['/usr/bin/python3', '/mnt/c/Users/justinchu/dev/ep-vulkan-link/bench/results/probe_kv_device_re...evice satisfies the capability gate on this machine; advertising zero devices. Models will run on the CPU EP.\x1b[m\n').returncode
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_kv_device_residency.py:189: AssertionError: {
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::MatMulNBits x1 ([unproven] no proof ledger entry for `com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32,-,-,f32/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32,-,-,f32/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32,-,-,f32/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f32,f32,f32>f32,-,-,f32/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+    Possible causes:
+      • No Vulkan device passed the capability gate (no ICD, or device below baseline).
+      • The claim predicate for this op rejected the node form — check     ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1 for decline reasons.
+      • The crate was not built yet (run cargo build --release first).
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/static/none)
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+E   onnxruntime.capi.onnxruntime_pybind11_state.InvalidArgument: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'' Status Message: input is expected to have 3 or 2 dimensions, got 1
+
+The above exception was the direct cause of the following exception:
+E   AssertionError: Vulkan EP session failed — the EP may not be built or registered: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'' Status Message: input is expected to have 3 or 2 dimensions, got 1
+----------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP. Leading reasons: com.microsoft::SkipSimplifiedLayerNormalization x1 ([unproven] no proof ledger entry for `com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none`. The kernel exists; nothing has proven it correct on this form, so it runs on the CPU EP, which is always right. Prove it with rust/tools/gen_proof_ledger.py, or enable it for development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN=com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none)
+[1;31m2026-08-02 23:45:18.828692170 [E:onnxruntime:, sequential_executor.cc:671 ExecuteKernel] Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'' Status Message: input is expected to have 3 or 2 dimensions, got 1[m
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_models.py:946: AssertionError: Vulkan EP session failed — the EP may not be built or registered: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Non-zero status code returned while running SkipSimplifiedLayerNormalization node. Name:'' Status Message: input is expected to have 3 or 2 dimensions, got 1
+E   _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+    R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE, never 0.  With no VkDebugUtilsMessengerEXT receiving the layer's output, EP_VALIDATION_ERROR_COUNT cannot become non-zero for any state of the EP, so the planted-fence-leak control has no observation to make.
+    THIS IS NOT A FINDING ABOUT THE MESSENGER, and it is NOT A PASS.  It is the third terminal state.  Install the Vulkan SDK validation layers to make this machine able to answer.
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_verdict.py:2183: _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+E   _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+    R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE, never 0.  With no VkDebugUtilsMessengerEXT receiving the layer's output, EP_VALIDATION_ERROR_COUNT cannot become non-zero for any state of the EP, so the planted-fence-leak control has no observation to make.
+    THIS IS NOT A FINDING ABOUT THE MESSENGER, and it is NOT A PASS.  It is the third terminal state.  Install the Vulkan SDK validation layers to make this machine able to answer.
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_verdict.py:2183: _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+E   _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+    R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE, never 0.  With no VkDebugUtilsMessengerEXT receiving the layer's output, EP_VALIDATION_ERROR_COUNT cannot become non-zero for any state of the EP, so the planted-fence-leak control has no observation to make.
+    THIS IS NOT A FINDING ABOUT THE MESSENGER, and it is NOT A PASS.  It is the third terminal state.  Install the Vulkan SDK validation layers to make this machine able to answer.
+----------------------------- Captured stderr call -----------------------------
+
+[CRITERION 3d] real frame: LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed
+[CRITERION 3d] frame with VK_LAYER_PATH stripped: LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/_verdict.py:2183: _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 272
+FAIL(condition)    : 46
+ERROR(instrument)  : 4
+XPASS(stale expect): 0
+  FAIL(condition)   tests/ops/test_criterion_4_5_witness.py::test_criterion4_icd_polarity_witness
+                    AssertionError: Criterion 4 positive FAILS: with the ICD present ORT's profile shows zero VulkanExecutionProvider node events, so 'ran on CPU' is not distinguishable from 'ran on CPU because the EP ne
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[0]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[16]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_present_kv_shape[0]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_present_kv_shape[4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_present_kv_matches_cpu[0]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_gqa.py::test_gqa_present_kv_matches_cpu[4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_harness_census.py::test_census_baseline_has_no_drift
+                    AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+                    AssertionError: assert 'CUDA' in 'OK'
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_live_caller_bound_kv_stays_device_resident
+                    AssertionError: {
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp32_basic
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp32_larger
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_oracle_status
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-16-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-16-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-32-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-32-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-64-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-64-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-128-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-128-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-16-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-16-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-32-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-32-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-64-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-64-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-128-4]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-128-8]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[1]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[2]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[7]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[1-True]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[1-False]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[3-True]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[3-False]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_dynamic_batch
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f32_slot0_matches_cpu
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f32_slot3_residual
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f32_nonzero_output_slot0
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f16_nonzero_output_slot0
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f16_slot3_nonzero
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f16_slot0_matches_cpu
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_skipnorm.py::test_skip_norm_f16_phi35_shape
+                    AssertionError: Vulkan EP session failed — the EP may not be built or registered: [ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Non-zero status code returned while running SkipSimplifiedLayerNormalizati
+  ERROR(instrument) tests/ops/test_criterion_4_5_witness.py::test_criterion5_shaderless_polarity_witness
+                    _verdict.InstrumentError: [criterion 5 instrument failure] ERROR(instrument): cargo exited 0 but /mnt/c/Users/justinchu/dev/ep-vulkan-link-shaderless/rust/target/release/libonnxruntime_vulkan_ep.so do
+  ERROR(instrument) tests/ops/test_validation.py::test_ep_messenger_plant_fires_in_lane
+                    _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+  ERROR(instrument) tests/ops/test_validation.py::test_validation_clean_after_binding_arity_fix
+                    _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+  ERROR(instrument) tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed
+                    _verdict.InstrumentError: [criterion 3 messenger control instrument failure] ERROR(instrument): validation is not armed on this machine (LAYER-ABSENT — VK_LAYER_KHRONOS_validation is not installed).
+A lane with any instrument error is not a lane that ran, whatever else it reports.  An instrument error NEVER counts as a detection: none of the ERROR(instrument) lines above is evidence about the EP.
+=== end R13 lane summary ===
+=========================== short test summary info ============================
+FAILED tests/ops/test_criterion_4_5_witness.py::test_criterion4_icd_polarity_witness
+FAILED tests/ops/test_criterion_4_5_witness.py::test_criterion5_shaderless_polarity_witness
+FAILED tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[0] - Assertion...
+FAILED tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[4] - Assertion...
+FAILED tests/ops/test_gqa.py::test_gqa_attn_output_matches_cpu[16] - Assertio...
+FAILED tests/ops/test_gqa.py::test_gqa_present_kv_shape[0] - AssertionError: ...
+FAILED tests/ops/test_gqa.py::test_gqa_present_kv_shape[4] - AssertionError: ...
+FAILED tests/ops/test_gqa.py::test_gqa_present_kv_matches_cpu[0] - AssertionE...
+FAILED tests/ops/test_gqa.py::test_gqa_present_kv_matches_cpu[4] - AssertionE...
+FAILED tests/ops/test_harness_census.py::test_census_baseline_has_no_drift - ...
+FAILED tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+FAILED tests/ops/test_kv_device_residency.py::test_live_caller_bound_kv_stays_device_resident
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp32_basic - Assertion...
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp32_larger - Assertio...
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_oracle_status - A...
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-16-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-16-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-32-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-32-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-64-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-64-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-128-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[True-128-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-16-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-16-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-32-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-32-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-64-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-64-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-128-4]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_form_matrix_fp32[False-128-8]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[1]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[2]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[7]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_prefill_rows_fp32[32]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[1-True] - ...
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[1-False]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[3-True] - ...
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_matrix[3-False]
+FAILED tests/ops/test_matmulnbits.py::test_matmulnbits_fp16_dynamic_batch - A...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f32_slot0_matches_cpu - Ass...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f32_slot3_residual - Assert...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f32_nonzero_output_slot0 - ...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f16_nonzero_output_slot0 - ...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f16_slot3_nonzero - Asserti...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f16_slot0_matches_cpu - Ass...
+FAILED tests/ops/test_skipnorm.py::test_skip_norm_f16_phi35_shape - Assertion...
+FAILED tests/ops/test_validation.py::test_ep_messenger_plant_fires_in_lane - ...
+FAILED tests/ops/test_validation.py::test_validation_clean_after_binding_arity_fix
+FAILED tests/ops/test_validation.py::test_the_armed_gate_changes_its_answer_when_the_layer_is_removed
+50 failed, 272 passed, 292 skipped, 1 xfailed in 99.70s (0:01:39)
