@@ -3482,6 +3482,139 @@ state.
 either one alone would size Switch's work wrong by three orders of magnitude.
 
 
+### 7.18 Which kernel produced the reading — `GEMV_PACKED` becomes observable, and a second ABI insertion falls out (2026-08-02)
+
+Link's independent-whole work found twelve instrumented Rust surfaces no census mechanism
+observes, and named this one first because it is different in kind: **`ONNXRUNTIME_EP_VULKAN_GEMV_PACKED`
+selects a different kernel.** Every kernel measurement this project holds — the amplification
+result, the packed-loads work, the `q_gemv` figures — is a reading of *a* kernel, and the artifact
+could not say which. **A reading whose subject is unidentified is not a reading of that subject.**
+
+Artifacts: `bench/results/gemv_kernel_identity-dev{0,1}.json`,
+`bench/results/counters_abi_drift.json`. Tools: `rust/tools/probe_gemv_kernel_identity.py`,
+`rust/tools/counters_abi.py`. **No timing figure.**
+
+#### (a) Why the obvious closure is wrong
+
+The switch does not change the shader stem. It moves **specialization constant 5** of
+`q_gemv.comp`, and `vk/pipeline.rs` keys the pipeline cache on `(shader_stem, spec_constants)` — so
+the two settings are two different pipelines wearing one stem. `shaders_dispatched`, the field this
+project already had, reports `["q_gemv_matmul_nbits_f32"]` in **both** worlds.
+
+And a host-side record of `GEMV_PACKED=1` would not close it either. That says what was *asked
+for*, which is the distinction Trinity drew when `DEVICE=0` ran on `1=NVIDIA`: **the selector is a
+request, not an identity.**
+
+#### (b) The emission
+
+`counters.rs` gains two **JSON-only** fields — no `abi_version` bump, no C-struct change, for the
+reason (d) makes concrete:
+
+- **`pipeline_variants`** — `["{stem}:{c0},{c1},…"]`, the distinct `(shader, spec_constants)` pairs
+  the run actually built. Recorded from `vk/session.rs` at the `PipelineKey` construction site,
+  from `eff_shader` and `eff_spec_constants` — the **effective** pair handed to `get_or_create`,
+  after any substitution.
+- **`gemv_packed_spec_constant`** — a **string**, five states:
+  `"1"` / `"0"` / `"MIXED"` / `"UNRECORDED"` / **`"UNOBSERVABLE"`**. The last is the important one:
+  no GEMV pipeline was built, so the constant was never resolved, and R12 forbids spelling that
+  `0`. The census graph is a six-node elementwise chain with no `MatMulNBits`, so `UNOBSERVABLE` is
+  the *common* case, and a `0` there would have quietly told the census that the unpacked kernel
+  ran. A string rather than an int for the same reason `net_benefit_override_reason` is one: a
+  reader who does arithmetic on it fails loudly.
+
+#### (c) The falsifier — five arms, all predicted before the first run
+
+| arm | env | graph | predicted | observed | `pipeline_variants` |
+| --- | --- | --- | --- | --- | --- |
+| A1 | unset | 4-bit / block 32 | `1` | **`1`** | `q_gemv_matmul_nbits_f32:32,4,32,0,8,1` |
+| A2 | `=0` | 4-bit / block 32 | `0` | **`0`** | `q_gemv_matmul_nbits_f32:32,4,32,0,8,0` |
+| A3 | `=1` | 4-bit / block 32 | `1` | **`1`** | `q_gemv_matmul_nbits_f32:32,4,32,0,8,1` |
+| B | **unset** | 4-bit / **block 16** | `0` | **`0`** | `q_gemv_matmul_nbits_f32:32,4,16,0,8,0` |
+| C | `=1` | elementwise `Add` | `UNOBSERVABLE` | **`UNOBSERVABLE`** | `ew_binary_add_f32:256,1` |
+
+All five held on both devices. **Arm B is the one that makes this R10 evidence rather than an env
+echo:** the environment is untouched in both A1 and B, and the recorded token still moves, because
+the packed path is off *by shape* at an 8-byte blob. A field that read the env var would print the
+same token for both.
+
+Arm C is the R12 arm, and arm A3 is the control that would catch a field that merely echoed the
+switch's presence.
+
+**`shaders_dispatched` is byte-identical across A1 and A2.** That is the finding stated as a
+disagreement between two instruments on the same run: the old field cannot tell the two kernels
+apart, the new one can.
+
+#### (d) What fell out — `a52024f` has happened again, and it is not mine
+
+Adding a counter meant re-running the ABI guard, and it is red:
+
+```
+the DLL's VulkanEpCounters is 136 bytes, this mirror is 112.
+A mirror that is the wrong size does not read smaller numbers, it reads different fields.
+```
+
+`898a2ba` inserted `outputs_device_resident`, `outputs_host_resident` and `outputs_device_bound`
+**between `device_losses` and `dispatches_executed`** — mid-struct, same place, three fields where
+`a52024f` inserted one. All three hand-maintained ctypes mirrors kept the old layout.
+
+`rust/tools/counters_abi.py --compare` names what each stale field actually reads, which a size
+mismatch does not:
+
+```
+tests/ops/test_wiring_census.py [mirror 0]: 15 fields, 112 bytes (struct is 18 fields, 136 bytes)
+    dispatches_executed        reads  outputs_device_resident
+    viable_islands_retained    reads  outputs_host_resident
+    proven_key_lookups         reads  outputs_device_bound
+    ledger_hits                reads  dispatches_executed
+    unproven_declines          reads  viable_islands_retained
+    ledger_entries             reads  proven_key_lookups
+    unproven_forms_claimed     reads  ledger_hits
+tests/ops/test_phi35.py [mirror 0]: dispatches_executed reads outputs_device_resident
+tests/ops/test_phi35.py [mirror 1]: dispatches_executed reads outputs_device_resident
+```
+
+**One defect, three red tests.** `test_the_counters_mirror_matches_the_running_dll`,
+`test_ledger_lookup_wired` and `test_wiring_census` are all the same shift: on the same DLL in the
+same process, `ledger_entries` reads **0** through the stale mirror and **97** through a correct
+one, which is why the ledger lane reports "published but nothing consulted".
+
+And again the misread is the *plausible* one — `dispatches_executed` lands on
+`outputs_device_resident`, which is 0 on any run whose outputs are host-resident. **Stable,
+plausible, invisible.** That is the third time this exact signature has appeared.
+
+**This change is not the cause and could not have been.** The two new fields are JSON-only; the
+diff adds no `pub …: u64` line; the three fields arrived in `main` via `898a2ba`. The guard that
+caught it is the `struct_size` **equality** check filed at `a52024f` — which is the one thing that
+worked here, and it worked because equality was chosen over `<=`: an append is safe to read short,
+an insertion is not, and the size alone cannot tell them apart.
+
+#### (e) The real fix, built but not yet installed
+
+The filed-not-done item was *three hand-maintained mirrors of one ABI*. `rust/tools/counters_abi.py`
+removes the thing that drifts: it **parses the field list out of `counters.rs`** and builds the
+`ctypes.Structure` from it, so there is no second list to forget. Verified against the running DLL:
+18 fields, 136 bytes, exact size match, offsets printed.
+
+It is not yet wired into the three call sites, which live in Trinity's `tests/`. The replacement is
+one line each (`_fields_ = …` → `counters_abi.make_mirror()`); routed to her rather than done here
+because four agents are live in this tree. Recorded in
+`.squad/decisions/inbox/mouse-gemv-kernel-identity.md`.
+
+**One instrument error of my own, disclosed.** The first `--compare` run exited
+`STATUS_ACCESS_VIOLATION`. `OrtEpVulkanGetExecutionCounters(out, out_bytes)` takes a length and I
+passed only the pointer, so `fill` clamped against whatever was in the register. That is
+ERROR(instrument) in my probe, not a defect in the export — the EP clamps correctly, which is
+exactly why a short mirror gets a truncated *prefix* and the positional misattribution above is the
+right reading.
+
+#### (f) Does this generalise to the other eleven?
+
+**To the three counters, no; to kernel identity, much further than one switch.** `pipeline_variants`
+records *every* pipeline the run built, so any future kernel reading can name its own subject
+without a new field — which is the durable part. But the remaining env switches do not enter as
+specialization constants, so each needs its own EP-side observable and none of them gets one for
+free here. They stay with Link.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.

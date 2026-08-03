@@ -1,0 +1,161 @@
+{
+  "device_selector": "1",
+  "subject": "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED -> q_gemv.comp specialization constant 5",
+  "emission": "counters.rs::record_pipeline_variant, called from vk/session.rs at the PipelineKey construction site with the effective (shader, spec_constants) pair",
+  "no_duration_quoted": "Every reading here is a token or a set of strings.",
+  "verdict": "PASS",
+  "predictions": [
+    {
+      "case": "A1_unset_block32",
+      "predicted": "1",
+      "observed": "1",
+      "held": true
+    },
+    {
+      "case": "A2_forced_off",
+      "predicted": "0",
+      "observed": "0",
+      "held": true
+    },
+    {
+      "case": "A3_forced_on",
+      "predicted": "1",
+      "observed": "1",
+      "held": true
+    },
+    {
+      "case": "B_unset_block16",
+      "predicted": "0",
+      "observed": "0",
+      "held": true
+    },
+    {
+      "case": "C_elementwise_armed",
+      "predicted": "UNOBSERVABLE",
+      "observed": "UNOBSERVABLE",
+      "held": true
+    }
+  ],
+  "checks": [
+    {
+      "check": "the switch changes the recorded value",
+      "result": true,
+      "detail": "A1='1' vs A2='0' \u2014 if these were equal the flag would be inert or the emission would not be reading it"
+    },
+    {
+      "check": "arming a switch that was already on changes nothing",
+      "result": true,
+      "detail": "A1='1' vs A3='1'"
+    },
+    {
+      "check": "the record follows the resolved constant, not the environment",
+      "result": true,
+      "detail": "the environment is untouched in both A1 and B; only the block size differs. A1='1' B='0'. A record that read the env var would give the same token for both."
+    },
+    {
+      "check": "an unresolvable constant is UNOBSERVABLE, never 0",
+      "result": true,
+      "detail": "C='UNOBSERVABLE' with the switch armed at '1' on a graph with no MatMulNBits"
+    },
+    {
+      "check": "shaders_dispatched cannot tell A1 from A2",
+      "result": true,
+      "detail": "A1=['q_gemv_matmul_nbits_f32'] A2=['q_gemv_matmul_nbits_f32'] \u2014 the field this project already had is identical across the two kernels, which is why the new one exists"
+    },
+    {
+      "check": "pipeline_variants can",
+      "result": true,
+      "detail": "A1=['q_gemv_matmul_nbits_f32:32,4,32,0,8,1'] A2=['q_gemv_matmul_nbits_f32:32,4,32,0,8,0']"
+    }
+  ],
+  "observations": [
+    {
+      "case": "A1_unset_block32",
+      "env": null,
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "predicted": "1",
+      "observed": "1",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,1"
+      ],
+      "shaders_dispatched": [
+        "q_gemv_matmul_nbits_f32"
+      ],
+      "dispatches_executed": 1
+    },
+    {
+      "case": "A2_forced_off",
+      "env": "0",
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "predicted": "0",
+      "observed": "0",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,0"
+      ],
+      "shaders_dispatched": [
+        "q_gemv_matmul_nbits_f32"
+      ],
+      "dispatches_executed": 1
+    },
+    {
+      "case": "A3_forced_on",
+      "env": "1",
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "predicted": "1",
+      "observed": "1",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,1"
+      ],
+      "shaders_dispatched": [
+        "q_gemv_matmul_nbits_f32"
+      ],
+      "dispatches_executed": 1
+    },
+    {
+      "case": "B_unset_block16",
+      "env": null,
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 16
+      },
+      "predicted": "0",
+      "observed": "0",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,16,0,8,0"
+      ],
+      "shaders_dispatched": [
+        "q_gemv_matmul_nbits_f32"
+      ],
+      "dispatches_executed": 1
+    },
+    {
+      "case": "C_elementwise_armed",
+      "env": "1",
+      "graph": {
+        "kind": "elementwise"
+      },
+      "predicted": "UNOBSERVABLE",
+      "observed": "UNOBSERVABLE",
+      "pipeline_variants": [
+        "ew_binary_add_f32:256,1"
+      ],
+      "shaders_dispatched": [
+        "ew_binary_add_f32"
+      ],
+      "dispatches_executed": 1
+    }
+  ]
+}

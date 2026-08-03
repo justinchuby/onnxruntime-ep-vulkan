@@ -1,0 +1,36 @@
+{
+  "dll": "C:\\Users\\justinchu\\dev\\ep-vulkan-mouse\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "struct_fields": [
+    "struct_size",
+    "abi_version",
+    "compile_calls",
+    "subgraphs_live",
+    "subgraphs_stub",
+    "compute_calls",
+    "compute_failures",
+    "device_losses",
+    "outputs_device_resident",
+    "outputs_host_resident",
+    "outputs_device_bound",
+    "dispatches_executed",
+    "viable_islands_retained",
+    "proven_key_lookups",
+    "ledger_hits",
+    "unproven_declines",
+    "ledger_entries",
+    "unproven_forms_claimed"
+  ],
+  "struct_bytes": 136,
+  "no_duration_quoted": "Every value here is a counter read twice.",
+  "misattribution": "tests\\ops\\test_wiring_census.py [mirror 0]: 15 fields, 112 bytes (struct is 18 fields, 136 bytes)\n    dispatches_executed        reads  outputs_device_resident\n    viable_islands_retained    reads  outputs_host_resident\n    proven_key_lookups         reads  outputs_device_bound\n    ledger_hits                reads  dispatches_executed\n    unproven_declines          reads  viable_islands_retained\n    ledger_entries             reads  proven_key_lookups\n    unproven_forms_claimed     reads  ledger_hits\ntests\\ops\\test_phi35.py [mirror 0]: 9 fields, 64 bytes (struct is 18 fields, 136 bytes)\n    dispatches_executed        reads  outputs_device_resident\ntests\\ops\\test_phi35.py [mirror 1]: 9 fields, 64 bytes (struct is 18 fields, 136 bytes)\n    dispatches_executed        reads  outputs_device_resident",
+  "disagreements": {
+    "tests\\ops\\test_wiring_census.py[0]": {
+      "ledger_entries": {
+        "stale_reads": 0,
+        "true_value": 97
+      }
+    },
+    "tests\\ops\\test_phi35.py[0]": {},
+    "tests\\ops\\test_phi35.py[1]": {}
+  }
+}
