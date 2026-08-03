@@ -430,3 +430,5 @@ that proves it can go red. After: **25/25 isolated + 15/15 full green.**
 absorb unit terms); criterion 10 lane 62 pass / 1 fail, the fail being the known open
 `DIVERGENT` verdict, unchanged; `cargo test --lib` **501 passed, 0 failed**; clippy exit 0;
 auditor 0/0 with selftest 3/3.
+
+📌 Team update (2026-08-03T04-55-00-07-00): Link retired his own Session-13 method of quoting a rebuilt-DLL hash as evidence a binary changed — six builds of an unchanged tree produced six distinct Windows DLL hashes, so a hash witnesses nothing about content. Where your quoted DLL hashes (e.g. in the fatal-log and push-constant liveness work) are being used to argue "this is a different binary," they need a different witness (a real diff, a digest of the compiled artifact's semantic content, or a behavioral control) — a hash alone is not evidence of a code change. — decided by Link
