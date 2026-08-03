@@ -214,3 +214,36 @@ correct two-point construction. No offenders.
 
 Shipped: `bench/ceiling.py`, `bench/clock_log.py`, `bench/test_ceiling.py` (21 tests),
 `docs/PERF.md` §20, decision to main's inbox.
+
+## 2026-08-02 — GQA claimed: re-derived the ceiling rather than flipping a flag
+
+Frame: `main` @ `7c9d1b7`, rebuilt. DLL `47F668336A7BF6A9…` -> `3A9115417CD1A780…` (changed).
+
+- **Found the stale-record defect in my own module before touching it.** `ceiling.py` printed
+  the new DLL hash and, in the same paragraph, "GroupQueryAttention is declined on this build" —
+  the claim status came from a record made by the previous binary. Artifact saved to
+  `bench/_scratch/ceiling_stale_record_artifact.txt` before any edit. `load()` now hashes the DLL
+  and raises `CeilingError` on an out-of-frame record; `bench/environment.py` writes
+  `environment.build.sha256` so records can be checked at all.
+- **Verified GQA on my own build, not from the message**: `subgraphs_live` 1, 355 of 363 claimed,
+  MATCH, claim log `GroupQueryAttention x32 proven`.
+- **Measured the KV byte term instead of assuming it.** `probe_kv_bytes_earned.py`, slope of
+  slopes across past_len 0/128/512 x iters 5/25. Readback = **393,216 B per past token, ratio
+  1.000000 on both segments, linearity spread 0.000000**. Upload **flat** at all three contexts ->
+  `UNOBSERVABLE`, never 0. Falsifier for "past_len is wired" is an artifact: present.0 shape and
+  argmax both move.
+- **My first version of that probe averaged the two staging axes and printed `0.0`**, which read
+  as a refutation of a term that is exact to the byte. Caught and corrected before commit. Two
+  instruments, two worlds — do not collapse them to one number.
+- **Split the extent in two.** `extent()` (DRAM bound describes this build) widened to the full
+  grid; `binding_extent()` (and is the floor) stayed `[0]`, now for a measured reason. Published
+  the transfer crossover per context rather than tuning a constant until the awkward contexts
+  vanished — the threshold-episode discipline.
+- **New result worth carrying: at past_len >= 2048 the inference is transfer-bound, not
+  DRAM-bound, on any link that exists.** Conditional on the readback law past 512.
+- Teeth: in-frame *declined* record still collapses the extent to `[0]`. Discharging a refusal
+  once must not wire it open.
+- `docs/PERF.md` §21; §19 annotated as superseded (33 islands no longer exist on `main`).
+- Suite: `pytest bench/ ci/ tests/ops/` in one process — 586 passed, 3 failed, all three shown
+  pre-existing by removing every file of mine and re-running (2 x Link's `ci/test_lane_checks.py`,
+  1 x `tests/ops/test_harness_census.py::test_census_baseline_has_no_drift`). `ERROR(instrument): 0`.

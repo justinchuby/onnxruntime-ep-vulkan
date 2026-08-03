@@ -92,7 +92,9 @@ _RESULTS_DIR = _REPO_ROOT / "bench" / "results"
 #: criterion whose closure price was fixed in advance, which is the fault the reopening
 #: was written to avoid.
 REQUIRED_RUNS = 3
-
+# R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE, never 0.
+# An empty ULP curve means no output was comparable, not that the residual was zero.
+_ULP_UNOBSERVABLE = "UNOBSERVABLE"
 
 @pytest.fixture(scope="module")
 def phi35_model_path() -> pathlib.Path:
@@ -136,6 +138,18 @@ def _compare_run_to_cpu(
         # makes the misreading impossible rather than merely corrected (R11: a
         # measurement's name is not its definition, so the name had better carry it).
         "logits_max_abs_diff": float(np.abs(logits_vk - logits_cpu).max()),
+        # Declined as reassurance on arithmetic, not on scepticism (Morpheus, 2026-08-02).
+        # `argmax_vk == argmax_cpu` and a top-10 overlap of 10 are both statements about
+        # **one token**.  N=1 is not a stated N, and this project has read an N=1
+        # agreement as a model-wide agreement before.  The numbers stay because they are
+        # cheap and a *dis*agreement here would be informative; the label stops them being
+        # quoted as evidence of scale.
+        "argmax_sample_size": 1,
+        "argmax_is_evidence_of_scale": False,
+        "argmax_caveat": (
+            "argmax and top10_overlap describe a single token position (N=1); they can "
+            "falsify agreement but cannot establish it over the sequence"
+        ),
     }
     agree = argmax_vk == argmax_cpu and overlap >= 5 and max_abs > 0.1
     return (m.COMPARISON_AGREE if agree else m.COMPARISON_DISAGREE), facts
@@ -237,6 +251,45 @@ def test_criterion_10_three_consecutive_attributed_match(
         outcome, facts = _compare_run_to_cpu(run, cpu_out)
         oracle_outcome, oracle_facts = m.compare_all_outputs_to_cpu(run, cpu_out)
         facts.update(oracle_facts)
+        # The unit, per output, in depth order.  §10.0.4 prefers the ratio, and `atol` is
+        # an absolute bound applied to tensors whose scale grows with layer depth — so the
+        # absolute residual rises for a *correct* implementation and the curve is a plot of
+        # magnitude, not of error.  ULPs denominate the residual in the representation's
+        # own spacing, which is the quantity that should be flat if nothing is wrong.
+        #
+        # `median_ulp_diff` is the headline and `max_ulp_diff` is not: a cancellation
+        # element inflates the ULP max by exactly the mechanism that inflates
+        # `max_rel_diff`, so promoting one max over another would have reinstated the
+        # artefact in a new unit (R11).  All four are recorded so a real step cannot hide
+        # behind a robust average.
+        facts["ulp_curve"] = [
+            {
+                "output_index": e.get("index", j),
+                "name": e.get("name"),
+                "median_ulp_diff": e.get("median_ulp_diff"),
+                "p99_ulp_diff": e.get("p99_ulp_diff"),
+                "max_ulp_diff": e.get("max_ulp_diff"),
+                "ulp_cancellation_elements": e.get("ulp_cancellation_elements"),
+                "max_abs_diff": e.get("max_abs_diff"),
+            }
+            for j, e in enumerate(oracle_facts.get("per_output", []))
+        ]
+        _meds = [
+            c["median_ulp_diff"]
+            for c in facts["ulp_curve"]
+            if c["median_ulp_diff"] is not None
+        ]
+        facts["ulp_curve_median_over_outputs"] = (
+            float(np.median(_meds)) if _meds else _ULP_UNOBSERVABLE
+        )
+        facts["ulp_curve_worst_median"] = float(max(_meds)) if _meds else _ULP_UNOBSERVABLE
+        facts["ulp_curve_headline"] = "median_ulp_diff"
+        facts["ulp_predicted_ceiling"] = m.ULP_PREDICTED_CEILING
+        facts["ulp_outliers"] = m.ulp_outliers([c["median_ulp_diff"] for c in facts["ulp_curve"]])
+        facts["ulp_prediction_on_record"] = (
+            "bench/results/criterion10-ulp-prediction.md: flat at 1-3 ULP across all 32 "
+            "layers. Flat => no defect; a step => a located one. Recorded before measuring."
+        )
         facts["logits_oracle_outcome"] = outcome
         facts["all_output_oracle_outcome"] = oracle_outcome
 
@@ -285,7 +338,13 @@ def test_criterion_10_three_consecutive_attributed_match(
             f"outputs, {oracle_facts['oracle_outputs_degenerate']} degenerate, "
             f"worst max_abs_diff="
             f"{oracle_facts['oracle_max_abs_diff_over_all_outputs']:.6g} "
-            f"at output {oracle_facts['oracle_worst_output_index']}"
+            f"at output {oracle_facts['oracle_worst_output_index']}\n"
+            f"             ULP (headline): median-over-outputs="
+            f"{facts['ulp_curve_median_over_outputs']}, "
+            f"worst per-output median={facts['ulp_curve_worst_median']}, "
+            f"worst max_ulp={oracle_facts.get('oracle_max_ulp_diff_over_all_outputs')} "
+            f"at output {oracle_facts.get('oracle_worst_ulp_output_index')} "
+            f"(max is cancellation-sensitive; read the median)"
         )
 
     series = m.AttributedRunSeries.from_runs(

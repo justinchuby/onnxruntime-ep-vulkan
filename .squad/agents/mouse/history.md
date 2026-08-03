@@ -480,3 +480,86 @@ results, and relaxing the tolerance would only move the crossing point. Logits d
 `island-output-consumed-internally` branch in `vk/session.rs`, which is Switch's.
 
 📌 Team update (2026-08-02T14-42-30-07-00): Switch found the proof ledger's `--append` mode skips already-claimed forms — fixing the GQA prefill race required changing a shader the ledger had already marked `PASS` for a different bug, and re-running `--append` afterward printed `PASS` having measured nothing against the new shader. "A proof that cannot be invalidated by changing its subject is not a proof of that subject." You (Mouse) fixed it: `shader_digest`/`shaders` fields, a `--reprove` flag, two new tokens `STALE-SHADER` (digest changed since last proof) and `NO-SUBJECT-WITNESS` (nothing to compare against); all 74 ledger entries re-proved under the new scheme. — decided by Switch, Mouse
+
+
+---
+
+## 2026-08-02 — The staged-op sweep: 21 promoted, 3 refused, two holes in my own harness
+
+**The census was sharper than the brief.** `epctl --dump-capabilities` gave 91 rows, 50 live, 41
+staged, and **five** staging reasons, not four. Only **22 of the 41 were dischargeable by a proof
+run**; the other 19 are missing code. The 13 `XL_KERNEL` rows are almost exactly the
+`com.microsoft` contrib set — MoE, QMoE, MultiHeadAttention, RotaryEmbedding, CausalConvWithState,
+LinearAttention, GatherBlockQuantized, Attention, Q/DQ. **The contrib-op commitment cannot be
+advanced by proof runs at all.** Said so before promoting anything, not after. The JSON dump did
+not carry the staging reason, so I added `staged_reason` first — otherwise the table would have
+been a code reading (R10).
+
+**Promotion grants nothing.** `Live` is deprecated in favour of `Ready` = "kernel exists,
+claimability is derived from the ledger". So a 22-row flip is safe by construction; the proof run
+is the gate.
+
+**I found a hole in the harness before I used it.** 12 of the 22 return bool, and `compare()` had
+no guard on the CPU reference. `Equal` on two normals is all-False; `IsNaN` on a finite tensor is
+all-False; both would have reported `MATCH worst_rel 0.0` having tested nothing. **The cheapest way
+to prove twelve ops was to prove none of them.** Guard added as `ERROR(instrument)` — the kernel
+was not shown wrong, the case model was shown inadequate — and mutation-tested in both polarities
+**in the lane**, not as a script.
+
+**Two predictions written down before the runs turned out wrong, which is what the file is for.**
+I predicted MATCH for `Sum`/`Mean`/`Max`/`Min` and for `Swish`.
+
+* The variadics raised `EP_FAIL … 'Sum' with 3 inputs needs the chained-dispatch lowering, which
+  is not written yet`. My deliberate **3-input** case caught a claim/translate invariant
+  violation: the predicate allowed 1..=8, the lowering handled ≤2. A 2-input case would have
+  proved the binary path and left the fold untested, and a real 3-input node would have been
+  claimed and then failed at session creation. Fixed by construction —
+  `MAX_VARIADIC_INPUTS_LOWERED`, read by both sides. Proved them at `n2` only; arity rides the
+  key, so `n3` stays unclaimable and declines honestly. §8.9's key vindicated a second time.
+* `Swish` offered no key at all: a **second, hand-written evidence list** (`EXERCISED`) vetoes it
+  before the ledger is consulted. Reverted to `Staged` and reported rather than papered over. I
+  did not add `("Swish","f32")` by hand — that would make the list assert something no run has
+  shown.
+
+**Then I broke the ledger and it taught me two things.** Probing the re-proof path, I ran the
+generator without `--append` and it **rewrote 95 entries down to 1, then printed `PASS`** — because
+`--check` was asked whether the file it had just written was self-consistent, which an empty file
+is. Two halves of a report describing different things: Scribe's health report, one level out.
+Entries are now always carried forward; `--rebuild` has to be asked for. I restored them by
+**re-running all 21 proof runs**, not by reconstructing entries from the attempts log.
+
+The second thing is worse. **`--reprove` never re-measured anything against a healthy ledger.**
+`claim_audit` records `unproven_forms_enabled` only when the ledger *misses*, so an already-proven
+key offered through the hatch produced an empty admission set and `UNATTRIBUTED`. **The 74-entry
+re-proof I reported yesterday succeeded only because the on-disk ledger had drifted from the baked
+copy and every lookup was `Faulted`** — an accident of state, not a path. That is §8.9.11's own
+defect one level up: a re-proof that silently measures nothing. Fixed with a distinct witness,
+`reproof_forms_admitted`, deliberately **not** folded into `unproven_forms_enabled` — that list is
+the §8.9.4 disclosure of forms claimed *without* evidence, and a proven form named there would be
+false and would fail `--check-counters`. The two arms now differ observably.
+
+**The falsifier is the op-suite red count, not Phi-3.5's** — none of these 22 ops appears in
+Phi-3.5, so quoting 355/363 would be dishonest. **43 → 18**, and I read all 18:
+7 were `XPASS(stale)` on Switch's GQA `xfail(strict)` whose own removal condition was met (marker
+removed, file now 7 green); 1 is `test_census_baseline_has_no_drift`, drift `- bench/phases.py::load`,
+**pre-existing** — I stashed and re-ran rather than assuming; 8 are documented refusals.
+
+**The refusals, which I would rather have than 8 more claims:** `Swish`/f32, `Add`/i32, `Mul`/i32
+are all blocked by `EXERCISED`, the hand-written list, even though `ew_binary_add_i32.spv` and
+`ew_binary_mul_i32.spv` exist and compile — **a named criterion-11 residual**, a flag its author
+set standing beside an artifact-derived ledger, and because it runs inside the predicate no proof
+run can reach those forms. `IsInf` needs a shader variant; `Cast` ×3 needs a template;
+**`Flatten` and `Reshape` have no row in the op table at all.** The same 8, byte-for-byte, are the
+only op-table reds on device 1, so the 21 promotions hold on the Intel conformance oracle too.
+
+**A test of mine asserted a stand-in.** `families_..._are_still_staged` asserted `Staged` for the
+15 families; after each got its own proof that was backwards — it would have passed for a row
+flipped to `Ready` with nothing measuring it, and failed after a genuine proof. It now asserts that
+none of the 15 rides `add_f32`'s evidence, because each names itself in a ledger key.
+
+**Touched:** `epctl.rs`, `counters.rs` (cross-owner, Tank, declared), `registry.rs`,
+`ops/elementwise.rs`, `ops/norm.rs`, `ops/common/claim.rs`, `ops/common/templates.rs`,
+`gen_proof_ledger.py`, `ledger_case_models.py`, `tests/ops/test_proof_ledger.py`,
+`tests/ops/test_gqa.py` (cross-owner, Switch, stale marker removal),
+`evidence/proof_ledger.jsonl` (74 → 95), `docs/OP_COVERAGE.md` §8.9.13. Rust **477/0**, clippy
+clean, ledger+census lanes green on **both** devices. **No timing figure quoted.**

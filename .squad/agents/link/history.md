@@ -129,3 +129,27 @@ did not move row 12, did not let a PASS from my screen read as census coverage.
 --union-with main` PASS; `python tests/union_check.py --run` **PASS** (145 passed, 0 FAIL,
 0 ERROR); `pytest ci/test_lane_checks.py` 88 passed. Suite took 768 s under contention
 against ~55 s quiet — a 14x spread, and the reason no gate here has a wall clock in it.
+
+---
+
+## Session 15 — 2026-08-02T17:20-07:00 — the device-loss reporting defect
+
+**Task.** Tank hit `vkWaitForFences failed: The logical device has been lost -> CPU fallback -> EXIT = 0` at ctx 512; both his measurement points were truncated and differencing them produced an apparent 6.7% KV saving that was an observation ending early. The cause is Switch's; the reporting defect is mine and survives the cause being fixed.
+
+**Delivered.** `ci/check_device_loss.py`, `ci/negative_control_device_loss.py` (14 arms), `ci/device_loss_incident_records.json`, three lane-inventory checks, one blind spot, four workflow steps, eleven tests, `PLATFORMS.md` 7.18. Commit `93b67ff` on `squad/link`. 98 lane tests pass, union inventory PASS, `tests/union_check.py` PASS. DLL rebuilt after merging `4b5d46b`: `7D3DA69C32DD8BC9` -> `F7E07BE84F278BFC`.
+
+**The LIVE catch.** Pointed at the artifact tree, the screen found a second, earlier device loss nobody had reported: `bench/results/trinity-suite-dev1.log:3216`, 2026-07-31, Intel, `vkQueueSubmit` inside `test_phi35.py:784`, surfaced only as an `AssertionError`. Two days before Tank's, different device, different call site. So the class is not one kernel's bug and the reporting defect outlives whatever Switch fixes. That is the strongest argument for the check and it was made by the check.
+
+**Design decisions worth keeping.**
+- The exit status is not an input. The defect IS an exit status of 0, so accepting one would be accepting the defect as a filter. Printed on every run.
+- Two tiers, because a tree-wide text scan is red on files that are supposed to contain the text: `broken-commitment-control.json` and the criterion-4/5 witnesses induce those failures deliberately. Tree-wide carries only what no control emits on purpose — the Vulkan spec text and the arithmetic rule. The rest is UNOBSERVABLE unless the caller names the file as one run's evidence.
+- Not counting a truncation the producer already filed under `rejected_*`. Counting it would make the honest artifact look like the defective one.
+- The exclusion list is the dangerous part, so: reason/owner/date required, excluded files printed every run, rot is a finding, explicit naming overrides.
+
+**Ruling on question 3.** Three mechanisms, three extents, never one guarantee. `disable_cpu_ep_fallback` is planned fallback at session creation and is structurally blind to a loss on a session ORT has accepted. Demonstrated rather than argued: the reach arm feeds both checks a log the EP reports and ORT does not; mine is red, `check_fatal_log` is green.
+
+**Found in someone else's file, routed not patched.** `_verdict.FATAL_LOG_MARKERS` does not match the line ORT actually prints (a list repr), so `check_fatal_log` reads Tank's log — which announces the fallback twice — as clean, having been cited as a second witness for five incidents. Trinity's file, Trinity's fix; the regression test is written to go green when she lands it.
+
+**GEMV_PACKED.** Investigated, not closed. It enters as specialization constant 5 of `q_gemv.comp` and the pipeline cache keys on `(shader_stem, spec_constants)`, so the two settings really are two pipelines — but nothing we produce records a pipeline key or a spec constant. A host-side record of the env var is not R10 evidence. Needs an EP-side emission; owed by Mouse with Switch.
+
+**Sixth union defect, first caught by an instrument.** Merging main turned my census screen red because Trinity had added two mechanisms my map had no name claim for. Both branches complete, composition not. I did not re-disposition the twelve gaps on the strength of her declaration — a declared mechanism is not an observed one.

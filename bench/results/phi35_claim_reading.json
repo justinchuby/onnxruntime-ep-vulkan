@@ -5,6 +5,7 @@
   "subgraphs_stub": 0,
   "compute_calls": 0,
   "compute_failures": 0,
+  "device_losses": 0,
   "dispatches_executed": 0,
   "claimed_nodes": 355,
   "islands_offered": 1,
@@ -91,5 +92,7 @@
   "weight_cache_release_calls": 1,
   "weight_cache_release_buffers": 0,
   "weight_cache_release_bytes": 0,
-  "weight_cache_bytes_resident": 0
+  "weight_cache_bytes_resident": 0,
+  "counters_snapshot_writes": 1,
+  "counters_snapshot_write_failures": 0
 }

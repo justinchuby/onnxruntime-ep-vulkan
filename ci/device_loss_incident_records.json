@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "Files that ARE the artifact of a past device loss, kept deliberately as evidence.",
+    "A directory scan finds them forever, so without this list ci/check_device_loss.py",
+    "would be permanently red on an incident it did not catch live — and a check that is",
+    "always red is a check nobody reads.",
+    "",
+    "This is an exclusion list, so it is the most dangerous file here. Three rules:",
+    "  1. Every entry carries a reason, an owner and a date. An exclusion nobody can",
+    "     review is an exclusion nobody will review.",
+    "  2. An entry naming a file that no longer exists is a FINDING (incident_record_rot),",
+    "     not a silent no-op.",
+    "  3. Excluded files are counted and printed in the frame line of every run. The check",
+    "     never says 'clean' without also saying what it did not look at.",
+    "Naming a file explicitly on the command line overrides the exclusion, so the red arm",
+    "of the negative control can still read these."
+  ],
+  "records": [
+    {
+      "file": "bench/results/ctx512_device_lost.txt",
+      "reason": "Tank's ctx-512 KV measurement, 2026-08-02: vkWaitForFences reported VK_ERROR_DEVICE_LOST, work moved to the CPU EP and the process exited 0. Kept as the replayed red arm for this check and as the evidence that _verdict.FATAL_LOG_MARKERS misses the real ORT line. The cause is with Switch (GQA attention loop, per-token work grows with context); this file is the record, not a new incident.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/trinity-suite-dev1.log",
+      "reason": "SECOND, EARLIER device loss, found by this check on 2026-08-02 and not previously reported as one: line 3216, 2026-07-31 10:00:04, Intel (dev1), 'vkQueueSubmit failed: The logical device has been lost' inside test_phi35.py:784. It surfaced only as an AssertionError and was read as a test failure, not as a lost device. It predates the GQA attention change and comes through a different call site (vkQueueSubmit, not vkWaitForFences), so the class is not one kernel's bug and the reporting defect outlives whatever Switch fixes. Routed to Switch with the cause; kept here as the record.",
+      "owner": "switch",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/kv_bytes_earned-armed.json",
+      "reason": "Carries the two ctx-512 points truncated by Tank's device loss (points[4]: iters=5/compute_calls=3, uploads=3/readbacks=2; points[5]: iters=25/compute_calls=5) still under 'points'. The roll-up device_memory_kv_lanes.json correctly moved them to 'rejected_points'; this per-lane file did not, so a reader differencing it gets the ghost 6.7% KV saving. Owed by Tank: move them, or add a per-point validity flag. Excluded by name so the standing gap does not make the lane permanently red; the gap itself is recorded here.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/kv_bytes_earned-default.json",
+      "reason": "Same as the armed lane: points[5] (iters=25, compute_calls=9, uploads=9/readbacks=8) is a truncated ctx-512 point still under 'points' rather than 'rejected_points'. Owed by Tank.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n5.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=3, readbacks=2 — an inference caught in flight). It is the raw record of the incident, not a new one.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/armed-kvbytes_p512_n25.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=5, readbacks=4). Raw record of the incident.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    },
+    {
+      "file": "bench/results/device_memory_kv_lanes/default-kvbytes_p512_n25.counters.json",
+      "reason": "Per-point counter dump for a truncated ctx-512 point (uploads=9, readbacks=8). Raw record of the incident.",
+      "owner": "tank",
+      "date": "2026-08-02"
+    }
+  ]
+}

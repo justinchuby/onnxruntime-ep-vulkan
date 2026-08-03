@@ -319,6 +319,89 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.device_loss_screen",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Device-loss screen (artifacts, no GPU)",
+        watches=(
+            "A run that lost the Vulkan device, fell back to the CPU EP and exited 0. "
+            "The exit code is not one of its inputs, because the exit code IS the defect: "
+            "a lost device that exits 0 does not look like a failure, it looks like a "
+            "smaller number. Tank's ctx-512 KV points were truncated by one and "
+            "differencing them produced an apparent 6.7% saving that was an observation "
+            "ending early."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "ci/negative_control_device_loss.py, 14 arms, all fired 2026-08-02: red on "
+            "Tank's real artifact (REPLAYED); red on trinity-suite-dev1.log, a second "
+            "device loss from 2026-07-31 nobody had reported (LIVE — a file the screen "
+            "was not written against); red on a synthesised iters=25/compute_calls=9 "
+            "artifact with no log text at all; green on the same truncation once the "
+            "producer has moved it under rejected_points; green on a clean log; and an "
+            "instrument error, never a pass, when it is given nothing to read."
+        ),
+        arm_healthy=(
+            "284 artifacts read across bench/results, 7 excluded by name as records of "
+            "known incidents with reason/owner/date, 126 decidable by the structural rule"
+        ),
+        arm_broken=(
+            "DEVICE-LOSS: FAIL(condition=device_lost_reported) quoting "
+            "'[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost' "
+            "from bench/results/trinity-suite-dev1.log:3216"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "Its structural rule needs the producer to declare what it expected. An "
+            "artifact carrying no iters/compute_calls pair is UNOBSERVABLE to it, not "
+            "clean — 158 of 284 artifacts were undecidable on the run above.",
+            "Three of its conditions (broken_commitment_reported, "
+            "runtime_fallback_announced, marker_list_misses_real_line) are only decided "
+            "on files the caller NAMES as one run's evidence. Controls on this project "
+            "produce those texts deliberately, so a tree-wide scan reports them "
+            "UNOBSERVABLE rather than red. Point --run-log at the lane's own log or the "
+            "reach is not there.",
+            "It reads artifacts after the fact. It cannot stop a run, and it cannot see "
+            "a device loss whose run wrote nothing.",
+            "ci/device_loss_incident_records.json is an exclusion list, and every "
+            "exclusion list is a place to hide a defect. Its mitigations — reason, owner "
+            "and date required; excluded files printed every run; an entry naming a "
+            "missing file is itself a finding — reduce that risk and do not remove it.",
+            "It says nothing about whether the EP executed. A run can be device-loss-free "
+            "and still be pure CPU output; that is the verdict's job, not this check's.",
+        ),
+    ),
+    Check(
+        id="hostfree.device_loss_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Device-loss screen negative control (demand red)",
+        watches=(
+            "The screen above. It is the only reason that screen may be called a "
+            "detector rather than a step that has been observed passing."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Its own provenance line: it counts LIVE, REPLAYED and PLANTED arms "
+            "separately and prints that a PLANTED arm evidences nothing about whether "
+            "the event occurs in reality. 1 LIVE, 3 REPLAYED, 10 PLANTED on 2026-08-02."
+        ),
+        arm_healthy="all 14 arms fired 2026-08-02",
+        arm_broken=(
+            "a missing bench/results/ctx512_device_lost.txt is reported as an arm that "
+            "DID NOT FIRE — an outage in the control, never a pass"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "Ten of its fourteen arms are PLANTED. They prove each rule fires on an "
+            "input built to make it fire; only the LIVE and REPLAYED arms evidence that "
+            "the event occurs.",
+            "It has never induced a real device loss. Inducing one deliberately (a TDR) "
+            "would make the red arm live rather than replayed, and would also tell us "
+            "whether the EP's own text prints at all when the loss is hard enough.",
+        ),
+    ),
+    Check(
         id="hostfree.census_completeness_negative_control",
         falsifier=FALSIFIER_PLANTED,
         lane=LANE_HOSTFREE,
@@ -649,6 +732,53 @@ CHECKS: tuple[Check, ...] = (
             "it reported ERROR(instrument=log_not_captured) on any lane that died before "
             "the tee step, which is true but adds a second red to a failure it did not "
             "cause; the lane marker now separates those.",
+            "Its marker list DOES NOT MATCH the real line. tests/ops/_verdict.py::"
+            "FATAL_LOG_MARKERS looks for 'Falling back to CPUExecutionProvider'; ORT "
+            "actually prints \"Falling back to ['CPUExecutionProvider'] and retrying.\" — "
+            "a list repr, so neither marker is a substring. Found 2026-08-02 by "
+            "ci/check_device_loss.py on bench/results/ctx512_device_lost.txt, where this "
+            "check reads 0 hits on a log that announces the fallback twice. The file is "
+            "Trinity's and the fix is hers; a second private marker list in ci/ would be "
+            "the two-dialect failure the shared vocabulary exists to prevent. Until it "
+            "lands, this check has been cited as a second witness for five incidents on "
+            "the strength of a match it cannot make.",
+        ),
+    ),
+    Check(
+        id="device.device_loss_screen",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="Device-loss screen on this lane's own evidence",
+        watches=(
+            "A device loss during the lane's own run, named as a run log so the full "
+            "condition set applies. Distinct from device.fatal_log_line in EXTENT, and "
+            "the two must never be quoted as one guarantee: that check reads ORT's "
+            "announcement in a captured log, this one reads the EP's own device-lost "
+            "text and a structural truncation rule that needs no text at all."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "The reach arm in ci/negative_control_device_loss.py: a log carrying the EP's "
+            "device-lost line and no ORT announcement. This check is red on it; "
+            "ci/check_fatal_log.py is green on the same file. That difference is the "
+            "reason both exist and it is demonstrated rather than argued."
+        ),
+        arm_healthy="DEVICE-LOSS: PASS on a lane whose device survived",
+        arm_broken=(
+            "DEVICE-LOSS: FAIL(condition=device_lost_reported) quoting '[vulkan-ep] "
+            "ERROR: vkWaitForFences failed: The logical device has been lost'"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "It has never run on a lane that lost the device LIVE. Both device losses on "
+            "record were caught by replaying artifacts after the fact; inducing a TDR "
+            "deliberately is the arm that is still owed.",
+            "It cannot see a device loss whose run wrote nothing to either named log.",
+            "Trinity's disable_cpu_ep_fallback is a THIRD extent, not a superset: it "
+            "makes ORT refuse at session creation on node assignment, so it catches "
+            "PLANNED fallback and cannot see a loss that happens on a session ORT has "
+            "already accepted. Three mechanisms, three extents, stated separately in "
+            "docs/PLATFORMS.md 7.16.",
         ),
     ),
     Check(
@@ -697,6 +827,38 @@ class BlindSpot:
 
 
 BLIND_SPOTS: tuple[BlindSpot, ...] = (
+    BlindSpot(
+        id="runtime_device_loss_exits_zero",
+        defect=(
+            "The Vulkan device is lost mid-run; ORT re-executes the fused subgraph on the "
+            "CPU EP; the process finishes its remaining work as CPU output and exits 0."
+        ),
+        why_ci_is_blind=(
+            "Every other gate we have keys on something a failure changes: an exit code, a "
+            "raised exception, a verdict token. A runtime device loss changes none of "
+            "them. get_providers() still lists the EP; the harness still writes an "
+            "artifact; the exit status is still 0. What changes is that the run is "
+            "SHORTER, and a shorter run does not read as a failure — it reads as a "
+            "smaller number. Tank's two ctx-512 points were truncated by exactly this and "
+            "differencing them yielded an apparent 6.7% KV saving that was an observation "
+            "ending early. Trinity's disable_cpu_ep_fallback cannot see it either: her "
+            "flag makes ORT refuse at SESSION CREATION on node assignment, and a device "
+            "loss happens long after that, on a session ORT has already accepted."
+        ),
+        substitute=(
+            "ci/check_device_loss.py, on two signals neither of which is an exit code: "
+            "the EP's own device-lost text, which is Vulkan specification language and so "
+            "stable across vendors and versions; and a structural rule that compares what "
+            "an artifact DECLARED it would observe (iters) against what it observed "
+            "(compute_calls), plus uploads == readbacks + 1, an inference caught in "
+            "flight. The structural rule needs no text at all and survives any log-format "
+            "change. Falsified 2026-08-02 by 14 arms including a LIVE catch: a second, "
+            "earlier device loss in bench/results/trinity-suite-dev1.log (2026-07-31, "
+            "Intel, vkQueueSubmit) that had been read as a test failure and never "
+            "reported as a lost device."
+        ),
+        substitute_status=DEMONSTRATED,
+    ),
     BlindSpot(
         id="timestamp_period_52x",
         defect=(

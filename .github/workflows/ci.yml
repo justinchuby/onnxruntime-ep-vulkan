@@ -199,6 +199,22 @@ jobs:
         # nothing — the exact defect the step above exists to find.
         run: python ci/negative_control_census_completeness.py
 
+      - name: Device-loss screen (artifacts, no GPU)
+        # A run that lost the Vulkan device, fell back to the CPU EP and exited 0. The
+        # exit code is deliberately NOT an input: the exit code IS the defect. A lost
+        # device that exits 0 does not look like a failure, it looks like a smaller
+        # number — Tank's two ctx-512 KV points were truncated by one and differencing
+        # them produced an apparent 6.7% saving that was an observation ending early.
+        # Two signals, neither a status code: the EP's own device-lost text (Vulkan
+        # specification language, stable across vendors) and a structural rule comparing
+        # what an artifact declared it would observe against what it observed.
+        run: python ci/check_device_loss.py --lane
+
+      - name: Device-loss screen negative control (demand red)
+        # 14 arms, and it counts LIVE / REPLAYED / PLANTED separately rather than
+        # reporting "14 passed", because those three are worth very different amounts.
+        run: python ci/negative_control_device_loss.py
+
       - name: Upload tick-screen inventory
         if: always()
         uses: actions/upload-artifact@v4
@@ -556,6 +572,23 @@ jobs:
             --lane-marker=bench/results/ci-lane/.lane-reached \
             bench/results/ci-lane/pytest-linux.log \
             bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
+
+      - name: Device-loss screen on this lane's own evidence (Linux)
+        if: env.BUILD_SKIPPED != '1' && always()
+        # --run-log NAMES these files as one run's evidence, which turns on the three
+        # conditions a tree-wide scan reports UNOBSERVABLE (controls on this project emit
+        # those texts deliberately). This step and check_fatal_log above have DIFFERENT
+        # extents and must not be read as one guarantee: check_fatal_log reads ORT's
+        # fallback announcement in a captured log; this reads the EP's own device-lost
+        # text plus a structural rule that needs no text. A device loss the EP reports and
+        # ORT never announces is red here and green there — demonstrated, not argued, in
+        # ci/negative_control_device_loss.py.
+        run: |
+          python ci/check_device_loss.py \
+            --lane-marker=bench/results/ci-lane/.lane-reached \
+            --run-log bench/results/ci-lane/pytest-linux.log \
+            --run-log bench/results/ci-lane/gate_chain_fp32_ort_stderr.log \
+            bench/results/ci-lane
 
       # -------------------------------------------------------
       # POSITIVE CONTROL FOR THE GATE ITSELF (R9) — see the Windows
@@ -1014,6 +1047,19 @@ jobs:
             --lane-marker=bench\results\ci-lane\.lane-reached `
             bench\results\ci-lane\pytest-windows.log `
             bench\results\ci-lane\gate_chain_fp32_ort_stderr.log
+          exit $LASTEXITCODE
+
+      - name: Device-loss screen on this lane's own evidence (Windows)
+        if: env.BUILD_SKIPPED != '1' && always()
+        # See the Linux lane for the rationale. Windows matters more here, not less:
+        # VK_ERROR_DEVICE_LOST on Windows is usually a TDR, and both device losses this
+        # project has recorded happened on this OS.
+        run: |
+          python ci\check_device_loss.py `
+            --lane-marker=bench\results\ci-lane\.lane-reached `
+            --run-log bench\results\ci-lane\pytest-windows.log `
+            --run-log bench\results\ci-lane\gate_chain_fp32_ort_stderr.log `
+            bench\results\ci-lane
           exit $LASTEXITCODE
 
       # -------------------------------------------------------
