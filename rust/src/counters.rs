@@ -922,6 +922,22 @@ static PROVEN_ELSEWHERE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static SOURCE_COSMETIC_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// `key recorded=<digest> current=<digest> source-comparable=<bool>`, first-seen order.
 static SUBJECT_CHANGED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The proof keys behind `unproven_declines`, deduplicated, first-seen order.
+///
+/// The count alone cannot be acted on. When this number moved from 3 to 5 between two builds,
+/// nothing in the artifact could say *which* two forms had joined it, and answering the question
+/// took a second worktree and a second release build. `subject_changed_forms` had carried its
+/// keys since §8.9.19 for exactly this reason; the older and much more common decline had not.
+static UNPROVEN_DECLINE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// `key recorded=<spec digest> current=<spec digest>` for each specialisation delta (§8.9.20).
+///
+/// The dispatch-time frame witness's firing state. It is populated from the dispatch path, not
+/// the claim path, because the specialisation does not exist at claim time: a claim is decided
+/// before a pipeline is created, so a witness read only there could report nothing but
+/// `UNOBSERVED` forever — which is a field no predicate reads, wearing the shape of one that does.
+static SPECIALISATION_DELTA_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Forms claimed on an entry that records no specialisation at all (§8.9.20), first-seen order.
+static SPECIALISATION_UNRECORDED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
@@ -1178,8 +1194,24 @@ fn ledger_miss_state() -> &'static str {
 }
 
 /// Record a node declined because nothing has proven its form (§8.9, `DeclineCode::Unproven`).
-pub fn record_unproven_decline() {
+///
+/// The key is kept beside the count. A count that moves is a question; a count with its keys is
+/// an answer.
+pub fn record_unproven_decline(key: &str) {
     UNPROVEN_DECLINES.fetch_add(1, ORD);
+    if let Ok(mut seen) = UNPROVEN_DECLINE_FORMS.lock()
+        && !seen.iter().any(|r| r == key)
+    {
+        seen.push(key.to_string());
+    }
+}
+
+/// The proof keys behind `unproven_declines`, deduplicated, first-seen order.
+pub fn unproven_decline_forms() -> Vec<String> {
+    UNPROVEN_DECLINE_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
 }
 
 /// Record that the §8.9.4 escape hatch let one node through, and which key did it.
@@ -1255,6 +1287,53 @@ pub fn record_subject_changed_decline(key: &str) {
     {
         seen.push(key.to_string());
     }
+}
+
+/// Record a form whose proof was taken under a **different runtime specialisation** than the one
+/// this run bound (§8.9.20).
+///
+/// The row carries both digests for the same reason `proven_elsewhere_forms` carries δ: "a
+/// different specialisation" is not actionable, "this run bound `q_gemv_f32:128,4,32,0,4,1` and
+/// the proof was taken on `…,0`" is.
+pub fn record_specialisation_delta(key: &str, recorded: &str, current: &str) {
+    if let Ok(mut seen) = SPECIALISATION_DELTA_FORMS.lock() {
+        let row = format!("{key} recorded={recorded} current={current}");
+        if !seen.iter().any(|r| r == &row) {
+            seen.push(row);
+        }
+    }
+}
+
+/// Record a form claimed on an entry that names **no** specialisation at all (§8.9.20).
+///
+/// Not a delta and not agreement. Every entry written before §8.9.20 is in this state, and an
+/// unrecorded frame is not an equal frame — the same reading §8.9.19 row 5 gives a missing
+/// `source_digest`. It differs from row 5 in what it licenses: a missing source digest is
+/// repairable from the build (`--backfill-frame`), and a missing specialisation is a fact about a
+/// **run** that is over, so it is claimable-and-disclosed rather than declined. Declining it would
+/// take the EP to zero claims for a repair nobody can perform.
+pub fn record_specialisation_unrecorded(key: &str) {
+    if let Ok(mut seen) = SPECIALISATION_UNRECORDED_FORMS.lock()
+        && !seen.iter().any(|r| r == key)
+    {
+        seen.push(key.to_string());
+    }
+}
+
+/// The `SPECIALISATION-DELTA` rows recorded so far, deduplicated, first-seen order.
+pub fn specialisation_delta_forms() -> Vec<String> {
+    SPECIALISATION_DELTA_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// The forms claimed on an entry that records no specialisation, deduplicated.
+pub fn specialisation_unrecorded_forms() -> Vec<String> {
+    SPECIALISATION_UNRECORDED_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
 }
 
 /// The unattributable-device disclosure rows recorded so far, deduplicated, first-seen order.
@@ -1768,9 +1847,13 @@ const GEMV_STEM_MARK: &str = "gemv";
 /// environment variable said. Idempotent and order-independent: the value of interest is the set
 /// of distinct pipelines, not how many times each ran — a run that dispatched one variant 355
 /// times and a run that dispatched it once observed the same kernel.
-pub fn record_pipeline_variant(stem: &str, spec_constants: &[u32]) {
+///
+/// Returns whether this call **added** a variant. §8.9.20's dispatch-time witness hangs off that
+/// bool: the specialisation frame can only change when the set does, so auditing on every
+/// dispatch would re-walk the ledger 355 times to learn what the first walk already established.
+pub fn record_pipeline_variant(stem: &str, spec_constants: &[u32]) -> bool {
     if stem.is_empty() {
-        return;
+        return false;
     }
     let mut key = String::with_capacity(stem.len() + 4 * spec_constants.len() + 1);
     key.push_str(stem);
@@ -1784,8 +1867,10 @@ pub fn record_pipeline_variant(stem: &str, spec_constants: &[u32]) {
     if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
         if let Err(pos) = used.binary_search(&key) {
             used.insert(pos, key);
+            return true;
         }
     }
+    false
 }
 
 /// The pipeline keys recorded by [`record_pipeline_variant`], sorted.
@@ -1794,6 +1879,98 @@ pub fn pipeline_variants() -> Vec<String> {
         .lock()
         .map(|u| u.clone())
         .unwrap_or_default()
+}
+
+/// What this run bound for one entry's shader set, as a comparable observation (§8.9.20).
+///
+/// Three states, and the middle one is the reason this is not an `Option<String>`. A digest over
+/// *some* of an entry's stems is not a smaller version of the digest over all of them — it is a
+/// different number, and comparing it against a recorded full-set digest manufactures a delta out
+/// of the fact that the run has not finished binding its pipelines yet. That false delta is the
+/// failure this type exists to make unrepresentable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpecObservation {
+    /// This run has bound no pipeline for any of those stems. **Not the same fact as "it bound a
+    /// different one"** (R12): at claim time, in a cold process, this is the only honest answer,
+    /// because a claim is decided before a single pipeline exists.
+    Unobserved,
+    /// Some of the stems have a recorded variant and some do not, so no set-wide digest is
+    /// comparable yet.
+    Partial {
+        /// Stems with at least one recorded variant.
+        covered: usize,
+        /// Stems in the set.
+        of: usize,
+    },
+    /// Every stem has a recorded variant; the digest is over all of them.
+    Full(String),
+}
+
+/// Digest the **runtime specialisation** this run bound for exactly the named stems (§8.9.20).
+///
+/// The dispatch-time frame witness. `shader_digest` and `source_digest` are both fixed at build
+/// time, and what runs is a *pipeline* — `(SPIR-V, specialisation values, layout)`. The variant
+/// row a build bakes in is inside `source_digest`; a specialisation value **chosen at dispatch**
+/// is inside neither, so two runs that select different constants for one stem have identical
+/// digests and different kernels. `q_gemv.comp`'s packed-load constant is exactly that, and every
+/// selector Switch adds enlarges the gap.
+///
+/// The collection is the one [`record_pipeline_variant`] already keeps, which is why this is a
+/// digest over an existing instrument rather than a third build-time hash: the observation existed
+/// before this function did, and nothing consumed it.
+pub fn specialisation_digest_for(stems: &[&str]) -> SpecObservation {
+    if stems.is_empty() {
+        return SpecObservation::Unobserved;
+    }
+    let mut sorted: Vec<&str> = stems.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let variants = pipeline_variants();
+    let mut covered = 0usize;
+    let mut input: Vec<u8> = Vec::new();
+    for stem in &sorted {
+        let mine: Vec<&String> = variants
+            .iter()
+            .filter(|k| k.split_once(':').is_some_and(|(s, _)| s == *stem))
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        covered += 1;
+        input.extend_from_slice(stem.as_bytes());
+        input.push(0);
+        for k in mine {
+            input.extend_from_slice(k.as_bytes());
+            input.push(0);
+        }
+    }
+    if covered == 0 {
+        return SpecObservation::Unobserved;
+    }
+    if covered < sorted.len() {
+        return SpecObservation::Partial {
+            covered,
+            of: sorted.len(),
+        };
+    }
+    SpecObservation::Full(format!(
+        "{:016x}",
+        crate::registry::fnv1a64(&input)
+    ))
+}
+
+/// The specialisation digest over the stems this run dispatched — the counters-artifact form.
+///
+/// Read by `gen_proof_ledger.py` to stamp `spec_digest` on a new entry, exactly as
+/// `shaders_dispatched_source_digest` is. R12 tokens, never a number, for the two states that
+/// are not a digest.
+fn specialisation_digest_json() -> String {
+    let stems = shaders_dispatched();
+    match specialisation_digest_for(&stems) {
+        SpecObservation::Full(d) => d,
+        SpecObservation::Unobserved => "NONE-DISPATCHED".to_string(),
+        SpecObservation::Partial { covered, of } => format!("PARTIAL-{covered}-OF-{of}"),
+    }
 }
 
 /// The resolved value of `q_gemv.comp`'s packed-load specialization constant, as a **string**.
@@ -1883,9 +2060,38 @@ fn source_cosmetic_forms_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
+/// `unproven_decline_forms` — one row per form declined for want of a proof.
+fn unproven_decline_forms_json() -> String {
+    let Ok(seen) = UNPROVEN_DECLINE_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
 /// `subject_changed_forms` — one row per form declined because its subject moved.
 fn subject_changed_forms_json() -> String {
     let Ok(seen) = SUBJECT_CHANGED_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
+/// `specialisation_delta_forms` — one row per form whose proof was taken under a different
+/// runtime specialisation than this run bound (§8.9.20).
+fn specialisation_delta_forms_json() -> String {
+    let Ok(seen) = SPECIALISATION_DELTA_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
+/// `specialisation_unrecorded_forms` — one row per form claimed on an entry naming no
+/// specialisation.
+fn specialisation_unrecorded_forms_json() -> String {
+    let Ok(seen) = SPECIALISATION_UNRECORDED_FORMS.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
     let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
@@ -1980,6 +2186,21 @@ pub fn reset() {
     if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
         seen.clear();
     }
+    if let Ok(mut seen) = SOURCE_COSMETIC_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = SUBJECT_CHANGED_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = UNPROVEN_DECLINE_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = SPECIALISATION_DELTA_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = SPECIALISATION_UNRECORDED_FORMS.lock() {
+        seen.clear();
+    }
     if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
         used.clear();
     }
@@ -2042,6 +2263,7 @@ impl VulkanEpCounters {
              \"proven_elsewhere_forms\": {},\n  \
              \"source_cosmetic_forms\": {},\n  \
              \"subject_changed_forms\": {},\n  \
+             \"unproven_decline_forms\": {},\n  \
              \"ledger_subject_changed_entries\": {},\n  \
              \"ledger_toolchain_delta_entries\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
@@ -2052,6 +2274,10 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"shaders_dispatched_spec_digest\": \"{}\",\n  \
+             \"specialisation_delta_forms\": {},\n  \
+             \"specialisation_unrecorded_forms\": {},\n  \
+             \"ledger_specialisation_unrecorded_entries\": {},\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
              \"claimed_forms_device_unattributed\": {},\n  \
@@ -2115,6 +2341,7 @@ impl VulkanEpCounters {
             proven_elsewhere_forms_json(),
             source_cosmetic_forms_json(),
             subject_changed_forms_json(),
+            unproven_decline_forms_json(),
             crate::registry::ledger().subject_changed_entries().count(),
             crate::registry::ledger().toolchain_delta_entries().count(),
             json_escape(&crate::registry::running_device_names().join("; ")),
@@ -2125,6 +2352,12 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            specialisation_digest_json(),
+            specialisation_delta_forms_json(),
+            specialisation_unrecorded_forms_json(),
+            crate::registry::ledger()
+                .specialisation_unrecorded_entries()
+                .count(),
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
             CLAIMED_FORMS_DEVICE_UNATTRIBUTED.load(ORD),
@@ -3651,5 +3884,45 @@ mod tests {
         assert_eq!(snapshot().ledger_hits, 0);
 
         reset();
+    }
+
+    /// **A decline count that moved, with no way to say what joined it.**
+    ///
+    /// `unproven_declines` went from 3 to 5 between two builds of this repository and the
+    /// artifact could not name the two new forms; establishing that they were not mine cost a
+    /// second worktree and a second release build. The count is not the finding — the key is.
+    #[test]
+    fn the_unproven_decline_count_names_the_forms_behind_it() {
+        let _g = crate::allocator::ledger::test_lock();
+
+        reset();
+        assert!(unproven_decline_forms().is_empty());
+
+        record_unproven_decline("ai.onnx::Cast/6+/f16>f32/ew_cast_f16_f32/static/n1");
+        record_unproven_decline("ai.onnx::Cast/6+/f32>f16/ew_cast_f32_f16/static/n1");
+        // The same form declining on many nodes is one finding with a multiplicity, so the count
+        // rises and the list does not.
+        record_unproven_decline("ai.onnx::Cast/6+/f16>f32/ew_cast_f16_f32/static/n1");
+
+        assert_eq!(snapshot().unproven_declines, 3);
+        assert_eq!(
+            unproven_decline_forms(),
+            vec![
+                "ai.onnx::Cast/6+/f16>f32/ew_cast_f16_f32/static/n1".to_string(),
+                "ai.onnx::Cast/6+/f32>f16/ew_cast_f32_f16/static/n1".to_string(),
+            ],
+            "first-seen order, deduplicated — the answer to *which* forms, not *how many* nodes"
+        );
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"unproven_decline_forms\": [\"ai.onnx::Cast/6+/f16>f32/"),
+            "the list has to reach the artifact, or it answers the question only in-process: {json}"
+        );
+
+        reset();
+        assert!(
+            unproven_decline_forms().is_empty(),
+            "a list that survives reset() reports one session's forms against another's counts"
+        );
     }
 }

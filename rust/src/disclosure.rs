@@ -530,7 +530,78 @@ pub fn disclose_zero_claims(
 /// and not of what this model happens to touch. Returns `(live, demoted)` so a test can assert on
 /// it without reading a log.
 pub fn disclose_ledger_demotions() -> (usize, usize) {
-    disclose_demotions_of(registry::ledger())
+    let l = registry::ledger();
+    disclose_ledger_faults_of(l);
+    let counts = disclose_demotions_of(l);
+    disclose_specialisation_frame_of(l);
+    counts
+}
+
+/// **The whole-file faults, delivered to somebody who can act on them.**
+///
+/// Link, 2026-08-03: the counters artifact reported a faulted ledger and the log contained
+/// **zero** occurrences of `proof ledger fault`, so the artifact and the log disagreed about
+/// whether anything had gone wrong. The cause is a mechanism, not a wording. `registry::ledger()`
+/// is a `OnceLock` initialised by the first lookup, and that lookup happens while ORT is still
+/// building the EP — *before* the ORT logger is attached to our `log` facade. The `log::warn!` in
+/// the initialiser is therefore emitted into a sink that does not exist yet, exactly once, and
+/// nothing ever repeats it.
+///
+/// Per-entry demotions already avoided this by being disclosed here rather than at init
+/// (§8.9.18); the whole-file faults were left behind, which is the more serious half — a faulted
+/// ledger declines **every** form. Re-emitted here, on ORT's own channel, on every session.
+pub fn disclose_ledger_faults_of(ledger: &registry::Ledger) -> usize {
+    if ledger.faults.is_empty() {
+        return 0;
+    }
+    logging::warn_through_ort_sink(
+        TARGET,
+        &format!(
+            "[§8.9.18] proof ledger UNREADABLE ({} fault(s)); every form declines and the \
+             decline is an instrument failure, not a finding about any form: {}. Regenerate it \
+             with rust/tools/gen_proof_ledger.py",
+            ledger.faults.len(),
+            ledger.faults.join("; ")
+        ),
+    );
+    ledger.faults.len()
+}
+
+/// **§8.9.20 — what the entries do and do not say about the pipeline they were proven on.**
+///
+/// Disclosed on every run because it is a *narrowing of what an entry means*, and a narrowing
+/// nobody is told about is a quiet demotion of the proofs it applies to. An entry with no
+/// `spec_digest` proves its form under a specialisation nobody recorded: the SPIR-V and the
+/// source closure it names are exact, and the pipeline built from them is not pinned down. Unlike
+/// a missing `source_digest` there is no repair from the tree — the value belonged to a run that
+/// has ended — so these claim, and this is where they say so.
+///
+/// Returns `(recorded, unrecorded)`.
+pub fn disclose_specialisation_frame_of(ledger: &registry::Ledger) -> (usize, usize) {
+    let unrecorded = ledger.specialisation_unrecorded_entries().count();
+    let recorded = ledger.len() - unrecorded;
+    if unrecorded == 0 {
+        logging::info_through_ort_sink(
+            TARGET,
+            &format!(
+                "[§8.9.20] proof ledger: all {recorded} entr(ies) name the runtime specialisation \
+                 they were proven under"
+            ),
+        );
+    } else {
+        logging::info_through_ort_sink(
+            TARGET,
+            &format!(
+                "[§8.9.20] proof ledger: {unrecorded} of {} entr(ies) record NO runtime \
+                 specialisation (SPEC-UNRECORDED). They prove their form's kernel exactly and say \
+                 nothing about which pipeline was built from it; a specialisation constant chosen \
+                 at dispatch is outside both the SPIR-V and the source digest. They claim; the \
+                 only repair is rust/tools/gen_proof_ledger.py --reprove.",
+                ledger.len()
+            ),
+        );
+    }
+    (recorded, unrecorded)
 }
 
 /// The body of [`disclose_ledger_demotions`], against any ledger.
@@ -827,8 +898,101 @@ mod tests {
         );
     }
 
-    /// §8.9.18's second group: damage you **cannot locate** still faults the whole artifact.
+    /// **The whole-file fault reaches a session, not just a `OnceLock` nobody was listening to.**
     ///
+    /// Link measured the artifact saying the ledger was faulted while the log held zero
+    /// occurrences of the fault text. The cause is that `registry::ledger()`'s initialiser runs
+    /// before ORT attaches its logger, so the one `log::warn!` it emits goes to a sink that does
+    /// not exist yet and is never repeated. Both polarities here: a sound ledger reports nothing,
+    /// a faulted one reports its faults, and they must differ.
+    #[test]
+    fn a_faulted_ledger_is_reported_on_every_session_not_once_before_anyone_is_listening() {
+        let _g = test_lock();
+        let key = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let digest = registry::shader_digest_for(&["ew_binary_add_f32"]).expect("a stem list");
+        let entry = format!(
+            "{{\"key\":\"{key}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+             \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+             \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest}\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+        );
+        let body = format!("{entry}\n");
+        let good = format!("{:016x}", registry::fnv1a64(body.as_bytes()));
+        let sound = registry::parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{good}\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{body}"
+        ));
+        assert_eq!(
+            disclose_ledger_faults_of(&sound),
+            0,
+            "ERROR(instrument): the control ledger is already faulted, so the arm below cannot \
+             show a fault being reported: {:?}",
+            sound.faults
+        );
+        // A hand-edit: the header's digest no longer describes the body.
+        let hand_edited = registry::parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"0000000000000000\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{body}"
+        ));
+        assert!(
+            disclose_ledger_faults_of(&hand_edited) > 0,
+            "the ledger is unreadable and every form is about to decline, and the session was \
+             told nothing: {:?}",
+            hand_edited.faults
+        );
+        assert_ne!(
+            disclose_ledger_faults_of(&sound),
+            disclose_ledger_faults_of(&hand_edited),
+            "both arms reported the same thing; the fault list is not being read"
+        );
+    }
+
+    /// **§8.9.20 — the narrowing is disclosed, and both polarities exist.**
+    ///
+    /// An entry that records no `spec_digest` proves its form's *kernel* exactly and says nothing
+    /// about which pipeline was built from it. That is a narrowing of what an entry means, and a
+    /// narrowing nobody is told about is a quiet demotion of every proof it applies to — today,
+    /// all of them.
+    #[test]
+    fn the_unrecorded_specialisation_population_is_named_on_every_run() {
+        let _g = test_lock();
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let digest = registry::shader_digest_for(&["ew_binary_add_f32"]).expect("a stem list");
+        let build = |spec: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest}\",\
+                 \"spec_digest\":\"{spec}\",\"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            );
+            let body = format!("{entry}\n");
+            let d = format!("{:016x}", registry::fnv1a64(body.as_bytes()));
+            registry::parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}\n{body}"
+            ))
+        };
+        assert_eq!(
+            disclose_specialisation_frame_of(&build("")),
+            (0, 1),
+            "an entry naming no specialisation was reported as one that names it"
+        );
+        assert_eq!(
+            disclose_specialisation_frame_of(&build("beefbeefbeefbeef")),
+            (1, 0),
+            "an entry naming its specialisation was reported as unrecorded"
+        );
+        // The shipped artifact's state, stated where it can be read rather than inferred.
+        let baked = registry::ledger();
+        let (recorded, unrecorded) = disclose_specialisation_frame_of(baked);
+        assert_eq!(
+            recorded + unrecorded,
+            baked.len(),
+            "the two populations must partition the ledger"
+        );
+    }
+
+    /// §8.9.18's second group: damage you **cannot locate** still faults the whole artifact.
     /// Without this, the per-entry correction reads as "nothing faults the ledger any more",
     /// which is the weakening the ruling warns the correction can become.
     #[test]

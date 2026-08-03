@@ -308,3 +308,37 @@ suffers no consequence, which would mean the discipline was never load-bearing; 
 case "permanent" becomes "not yet solved" and the obligation softens accordingly; witness/discharge
 pattern — falsified if the doc-consistency script, once built, never fires, meaning the human
 discipline alone was already sufficient.
+
+---
+
+## Audit Entry — 2026-08-03T07:40:00-07:00
+
+**Review type:** Recall via coordinator — rule on RAI-008(a) (Tank's CI-plant repair, `137e40f`);
+judge the honesty of the proof-ledger decline message together with Link's counters finding; spot
+check `docs/DESIGN.md` §0 for overstatement
+**Files reviewed:** `rust/src/registry.rs` (`Ledger::state_for`, `parse_ledger`, `claim_decision_audited`),
+`rust/src/counters.rs`, `rust/src/disclosure.rs`, `tests/ops/test_proof_ledger.py`,
+`bench/results/link-linux-downstream/{counters-linux.json,pytest-linux.log}` (Link's worktree, live),
+`bench/results/_ledger_counters.json` (main, post-`137e40f`), `docs/DESIGN.md` §0/§10 (criterion 11 row),
+`.squad/decisions.md` Round 10, `.squad/agents/tank/history.md`
+**Requested by:** Justin Chu, via coordinator
+
+### Findings
+
+| ID | Category | Severity | Finding | Status |
+|----|----------|----------|---------|--------|
+| RAI-008(a) re-check | Falsifier discharge | 🔴 stays OPEN | Tank's `137e40f` repairs the CI plant (rot fixed, non-vacuous membership assertion added, 14/0) — real, verified, correctly-scoped maintenance. It does not discharge RAI-008(a), whose falsifier requires Criterion 11 MET as a whole. Criterion 11's DESIGN.md row is still NOT MET, open on an unrelated defect the plant fix does not touch: no predicate reads `LedgerEntry.device`, so `wiring_census-dev1.json` reads 6 forms proven on a device (`device0`, a selector ordinal) nothing has ever proven anything on. | Not credited — criterion 11 must close on the device-attribution defect, not on the plant |
+| RAI-012 | Deceptive/misleading diagnostic — ledger-fault decline message names the wrong subject | 🟡 Advisory, named 🔴 trigger | Confirmed live in the tree, not hypothetical: `counters-linux.json` reads `ledger_faults: 97, ledger_entries: 0`; `pytest-linux.log` has 0× the true-cause line (`proof ledger fault: ...`, from the `OnceLock` in `registry::ledger()`) against 42× the generic decline text (`no proof ledger entry ... nothing has proven it correct on this form`), which is false in both clauses — 97 entries exist, some proving these exact forms elsewhere, and the true cause is a whole-ledger parse/digest fault. `Ledger::state_for` blankets every key to `Unproven` when `self.faults` is non-empty, bypassing the `SubjectChanged` branch built to name a frame mismatch accurately. Fail-safe output is preserved (decline is still correct), so this is a diagnostic-honesty defect, not RAI-008's silent-wrong-output class. Not Linux-specific: the blanket applies on the certified Windows lane too, on any whole-ledger fault (corrupted install, hand-edited file, `ONNXRUNTIME_EP_VULKAN_LEDGER_FILE` digest mismatch) — it just hasn't fired there yet because the Windows ledger currently parses cleanly. | 🟡 OPEN — owner Mouse (message construction + `OnceLock`/`attach_default_ort_logger` ordering). Escalates to 🔴 if it ships unfixed on Windows and fires against a real user. |
+| RAI-013 | Disclosure emitted but below default visibility — does not discharge §8.9.7 | 🟡 Advisory | `_ledger_counters.json` (main, post-`137e40f`): `session_disclosure_infos: 1`, `session_disclosure_infos_to_ort_sink: 0`, `session_disclosure_info_channel: "BELOW_ORT_THRESHOLD"`, `ort_sink_severity_threshold: "WARNING"`. The self-report is honest and itself good instrumentation (R9/R13 discipline) — credited. But a normal user, ORT's default logging severity unchanged, never sees this INFO line: "we emitted it and can prove it didn't land" is not "the user was told," the same substitution my 2026-08-02 ruling named on a different artifact. | 🟡 OPEN — owner Tank (raise this disclosure to WARN, or Morpheus documents the gap in DESIGN.md §0.2 explicitly) |
+| — | `docs/DESIGN.md` §0 accuracy | 🟢 Green, one omission | Spot-checked `oracle_outputs_within_tolerance: 62` and `argmax_cpu`/`argmax_vk: 30751` against `criterion10-dev0.json` — matches exactly. No overstatement found in the sampled claims; the section's existing self-correction history (withdrawn "bit-identical," withdrawn `x/x` weight-amplification identity) stands. §0.2 omits both RAI-012 and RAI-013's current state, which belong there by its own stated purpose. | 🟡 minor — Morpheus to add one line each once Mouse's/Tank's fixes land or are scoped |
+
+### Verdict Summary
+- 🔴 Critical: 1 (RAI-008 — **remains open; (a) explicitly NOT credited by this repair, (b) and (c)
+  stand as previously credited**)
+- 🟡 Advisory: 2 new (RAI-012 ledger-fault decline message; RAI-013 unseeable INFO disclosure) + one
+  minor doc-omission note on DESIGN.md §0.2
+- 🟢 Green: Tank's CI-plant repair credited as real maintenance, not as criterion closure; DESIGN.md
+  §0's sampled numeric claims check out against cited artifacts
+- Falsifiers: RAI-012 is falsified-upward (🔴) by an unfixed occurrence on the Windows lane against a
+  real user; RAI-013 is falsified-downward (discharged) by either the severity change or the doc
+  addition landing.

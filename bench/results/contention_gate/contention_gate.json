@@ -1,0 +1,117 @@
+{
+  "reps": 20,
+  "pools": {
+    "env:backend_probe": {
+      "tests": [
+        "backend_probe_noop_when_env_unset",
+        "backend_probe_writes_legacy_token",
+        "backend_probe_writes_sync2_token"
+      ],
+      "reps": 20,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 12.2
+    },
+    "env:counters_file": {
+      "tests": [
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "the_dispatch_path_dump_carries_the_allocator_keys_too",
+        "two_frames_in_one_process_are_never_reported_as_one_frame"
+      ],
+      "reps": 20,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 6.4
+    },
+    "env:quarantine_spans": {
+      "tests": [
+        "quarantine_exhaustion_reaches_the_process_wide_counters",
+        "quarantine_retirement_is_counted_so_the_window_is_never_silently_exhausted"
+      ],
+      "reps": 20,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 5.2
+    },
+    "counters": {
+      "tests": [
+        "a_claim_without_a_proof_key_is_unmeasured",
+        "a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero",
+        "a_lost_device_is_recorded_and_reaches_the_json_artifact",
+        "a_mixed_claim_set_warns_only_about_the_unproven_form",
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable",
+        "a_proof_backed_disclosure_informs_whichever_branch_carried_it",
+        "a_variant_is_named_by_its_spec_constants_and_not_by_its_stem",
+        "an_all_proven_claim_set_does_not_warn",
+        "an_override_reports_which_verdict_it_overrode",
+        "an_unmeasured_claimed_form_warns",
+        "attach_rejects_null_pointers",
+        "counters_record_what_they_claim_to_record",
+        "extract_equivalence_parses_the_five_states",
+        "forwarding_is_a_noop_without_an_attached_logger",
+        "staging_bytes_are_recorded_without_any_tracing_flag",
+        "the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else",
+        "the_info_channel_token_distinguishes_offered_from_merely_emitted",
+        "the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly",
+        "the_staging_sentence_separates_itself_from_the_allocator_upload_counters",
+        "variants_are_a_set_and_reach_the_json_as_typed_values",
+        "with_no_ort_logger_the_event_is_still_recorded_and_the_channel_is_not_claimed",
+        "zero_staging_bytes_refuses_to_claim_residency"
+      ],
+      "reps": 20,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 6.0
+    },
+    "all-contended": {
+      "tests": [
+        "a_claim_without_a_proof_key_is_unmeasured",
+        "a_disk_ledger_that_disagrees_with_the_baked_one_refuses_to_claim",
+        "a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero",
+        "a_lost_device_is_recorded_and_reaches_the_json_artifact",
+        "a_mixed_claim_set_warns_only_about_the_unproven_form",
+        "a_pinned_authoritative_counter_reports_unobservable_and_never_zero",
+        "a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable",
+        "a_proof_backed_disclosure_informs_whichever_branch_carried_it",
+        "a_variant_is_named_by_its_spec_constants_and_not_by_its_stem",
+        "an_all_proven_claim_set_does_not_warn",
+        "an_override_reports_which_verdict_it_overrode",
+        "an_unmeasured_claimed_form_warns",
+        "attach_rejects_null_pointers",
+        "backend_probe_noop_when_env_unset",
+        "backend_probe_writes_legacy_token",
+        "backend_probe_writes_sync2_token",
+        "checked_in_manifest_is_in_sync",
+        "counter_events_splice_into_an_empty_and_a_populated_array",
+        "counters_record_what_they_claim_to_record",
+        "every_spelling_of_the_device_memory_flag_reads_the_same_in_both_places",
+        "extract_equivalence_parses_the_five_states",
+        "forwarding_is_a_noop_without_an_attached_logger",
+        "quarantine_exhaustion_reaches_the_process_wide_counters",
+        "quarantine_retirement_is_counted_so_the_window_is_never_silently_exhausted",
+        "staging_bytes_are_recorded_without_any_tracing_flag",
+        "the_audit_line_is_one_line_of_valid_json_lines",
+        "the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else",
+        "the_device_memory_budget_is_uncapped_unless_it_parses",
+        "the_dispatch_path_dump_carries_the_allocator_keys_too",
+        "the_info_channel_token_distinguishes_offered_from_merely_emitted",
+        "the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly",
+        "the_record_is_off_unless_the_env_var_names_a_file",
+        "the_staging_sentence_separates_itself_from_the_allocator_upload_counters",
+        "the_tracer_is_inert_without_the_env_var",
+        "two_frames_in_one_process_are_never_reported_as_one_frame",
+        "variants_are_a_set_and_reach_the_json_as_typed_values",
+        "with_no_ort_logger_the_event_is_still_recorded_and_the_channel_is_not_claimed",
+        "zero_staging_bytes_refuses_to_claim_residency"
+      ],
+      "reps": 20,
+      "reds": 0,
+      "observed_rate": 0.0,
+      "elapsed_s": 8.0
+    }
+  },
+  "reds": [],
+  "verdict": "GREEN",
+  "extent": "Pools are derived from audit_counter_test_lock: tests touching the process-global counters, the ORT logger pointers, or a contended environment variable. A race reached only through a helper defined outside the test body is outside the auditor's extent and therefore outside this gate's pools."
+}
