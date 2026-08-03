@@ -1,0 +1,267 @@
+{
+  "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "dll_sha256_16": "51D7F1340C3AEABD",
+  "steps": 3,
+  "seed_past": 512,
+  "bytes_per_past_token_declared": 393216,
+  "lanes": {
+    "host": {
+      "lane": "host",
+      "steps": 3,
+      "seed_past": 512,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "dac9bc6de4280c13",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 512,
+          "readback_bytes": 201783936,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 2493351952,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 513,
+          "readback_bytes": 202177152,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 202905616,
+          "dispatches": 355
+        },
+        {
+          "step": 2,
+          "past_len": 514,
+          "readback_bytes": 202570368,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 203298832,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 512,
+          "argmax": 10408,
+          "max": 28.046875,
+          "sum": 348642.2109718323,
+          "sha256": "e643b330913b7a0b"
+        },
+        {
+          "step": 1,
+          "past_len": 513,
+          "argmax": 29892,
+          "max": 20.09375,
+          "sum": 100005.75921678543,
+          "sha256": "c8b2203cde6483c2"
+        },
+        {
+          "step": 2,
+          "past_len": 514,
+          "argmax": 518,
+          "max": 24.890625,
+          "sum": 273569.65807724,
+          "sha256": "397938cb765e4a42"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 606531456,
+        "session_staging_readbacks": 3,
+        "session_staging_upload_bytes": 2899556400,
+        "alloc_device_download_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_authority_grants": 0,
+        "outputs_device_bound": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 195,
+        "dispatches_executed": 1065,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_host.json.logits.npy"
+    },
+    "resident": {
+      "lane": "resident",
+      "steps": 3,
+      "seed_past": 512,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "dac9bc6de4280c13",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 512,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 513,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 2,
+          "past_len": 514,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 512,
+          "argmax": 10408,
+          "max": 28.046875,
+          "sum": 348642.2109718323,
+          "sha256": "e643b330913b7a0b"
+        },
+        {
+          "step": 1,
+          "past_len": 513,
+          "argmax": 29892,
+          "max": 20.09375,
+          "sum": 100005.75921678543,
+          "sha256": "c8b2203cde6483c2"
+        },
+        {
+          "step": 2,
+          "past_len": 514,
+          "argmax": 518,
+          "max": 24.890625,
+          "sum": 273569.65807724,
+          "sha256": "397938cb765e4a42"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 3,
+        "session_staging_upload_bytes": 2359320,
+        "alloc_device_download_bytes": 192384,
+        "alloc_device_downloads": 3,
+        "alloc_device_upload_bytes": 2492565528,
+        "alloc_device_frame": "SHARED",
+        "alloc_device_authority_grants": 195,
+        "outputs_device_bound": 195,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 1065,
+        "compute_calls": 3,
+        "compute_failures": 0,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_resident.json.logits.npy"
+    }
+  },
+  "dispatches_per_step": {
+    "host": [
+      355,
+      355,
+      355
+    ],
+    "resident": [
+      355,
+      355,
+      355
+    ]
+  },
+  "resident_vs_host_logits": [
+    {
+      "step": 0,
+      "host_argmax": 10408,
+      "resident_argmax": 10408,
+      "agree": true,
+      "host_sha256": "e643b330913b7a0b",
+      "resident_sha256": "e643b330913b7a0b",
+      "bitwise_identical": true
+    },
+    {
+      "step": 1,
+      "host_argmax": 29892,
+      "resident_argmax": 29892,
+      "agree": true,
+      "host_sha256": "c8b2203cde6483c2",
+      "resident_sha256": "c8b2203cde6483c2",
+      "bitwise_identical": true
+    },
+    {
+      "step": 2,
+      "host_argmax": 518,
+      "resident_argmax": 518,
+      "agree": true,
+      "host_sha256": "397938cb765e4a42",
+      "resident_sha256": "397938cb765e4a42",
+      "bitwise_identical": true
+    }
+  ],
+  "resident_vs_host_numeric": {
+    "steps_compared": 3,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "bitwise_identical": true,
+    "nonzero_fraction_a": 1.0,
+    "nonzero_fraction_b": 1.0,
+    "distinct_values_a": 11040,
+    "distinct_values_b": 11040
+  },
+  "counter_sample_lag_steps": 1,
+  "host_lane_link_bytes_per_step": [
+    201783936,
+    202177152,
+    202570368
+  ],
+  "resident_lane_link_bytes_per_step": [
+    0,
+    64128,
+    64128
+  ],
+  "host_lane_slope_bytes_per_past_token": 393216.0,
+  "resident_lane_slope_bytes_per_past_token": 0.0,
+  "declared_slope_bytes_per_past_token": 393216,
+  "device_read_off_the_run": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "verdict": "ROUND_TRIP_REMOVED",
+  "why": [
+    "the shipping lane reproduces Niobe's slope to the byte: 393216.0 B per past token (declared 393216)",
+    "with the 64 KV outputs bound in this EP's device memory and fed straight back as the next step's past, the slope is flat: 0 B per past token. The lane's link traffic is 64128 B on every step regardless of context length, at identical dispatch counts (1065 each). A ratio is not quoted against zero; the shape of the line is the finding \u2014 the shipping path has a slope and this one does not",
+    "this is a real 355-node island with 64 KV outputs over a real decode chain, not the fixed-extent GQA case: the past grows by one token every step and the extent is 512 -> 514",
+    "no wall-clock is quoted: the box is permanently contended (PERF.md \u00a720) and another team is on the GPU. This is a byte count and byte counts are exact",
+    "the flat term that remains is 64128 B per step and it is named, not rounded away: it is `logits`, 32064 x fp16 = 64,128 B, which the caller asked for. The `outbind_noread` lane, which is what would PROVE that term is the caller's request rather than the runtime's, was not run here",
+    "the grouping this fires under is NOT the general case: Phi-3.5-mini has 32 KV heads for 32 query heads, Nq/Nkv = 1.00, the degenerate ratio where the grouping defect is invisible. It is 4x on Llama-3 8B. Nothing here is keyed on head counts, but the general grouping case is UNTESTED and this number must not be extrapolated to it",
+    "the device is read off the run, not off the selector: NVIDIA GeForce RTX 4060 Laptop GPU (index 1, vendor 0x10de), DLL sha256[:16] 51D7F1340C3AEABD"
+  ]
+}

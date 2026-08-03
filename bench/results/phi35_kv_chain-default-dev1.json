@@ -1,0 +1,805 @@
+{
+  "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "dll_sha256_16": "51D7F1340C3AEABD",
+  "steps": 6,
+  "seed_past": 4,
+  "bytes_per_past_token_declared": 393216,
+  "lanes": {
+    "host": {
+      "lane": "host",
+      "steps": 6,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "readback_bytes": 2030208,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 2293598224,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "readback_bytes": 2423424,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 3151888,
+          "dispatches": 355
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "readback_bytes": 2816640,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 3545104,
+          "dispatches": 355
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "readback_bytes": 3209856,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 3938320,
+          "dispatches": 355
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "readback_bytes": 3603072,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 4331536,
+          "dispatches": 355
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "readback_bytes": 3996288,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 4724752,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "argmax": 2583,
+          "max": 4.4296875,
+          "sum": -284218.2355194092,
+          "sha256": "8b41321d3a624c24"
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "argmax": 11145,
+          "max": 5.95703125,
+          "sum": -346065.1271800995,
+          "sha256": "b3d13ee890302b94"
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "argmax": 29892,
+          "max": 9.5625,
+          "sum": -180968.15208244324,
+          "sha256": "be1dffe0dc14c569"
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "argmax": 5797,
+          "max": 13.1953125,
+          "sum": -57314.07984685898,
+          "sha256": "634cc0c6e8144f91"
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "argmax": 263,
+          "max": 25.328125,
+          "sum": 300033.7403240204,
+          "sha256": "531aa07bbacc4e09"
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "argmax": 11944,
+          "max": 47.28125,
+          "sum": 1129003.953125,
+          "sha256": "c992ff911456a62a"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 18079488,
+        "session_staging_readbacks": 6,
+        "session_staging_upload_bytes": 2313289824,
+        "alloc_device_download_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_authority_grants": 0,
+        "outputs_device_bound": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 390,
+        "dispatches_executed": 2130,
+        "compute_calls": 6,
+        "compute_failures": 0,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_host.json.logits.npy"
+    },
+    "resident": {
+      "lane": "resident",
+      "steps": 6,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 64128,
+          "downloads": 1,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "argmax": 2583,
+          "max": 4.4296875,
+          "sum": -284218.2355194092,
+          "sha256": "8b41321d3a624c24"
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "argmax": 11145,
+          "max": 5.95703125,
+          "sum": -346065.1271800995,
+          "sha256": "b3d13ee890302b94"
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "argmax": 29892,
+          "max": 9.5625,
+          "sum": -180968.15208244324,
+          "sha256": "be1dffe0dc14c569"
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "argmax": 5797,
+          "max": 13.1953125,
+          "sum": -57314.07984685898,
+          "sha256": "634cc0c6e8144f91"
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "argmax": 263,
+          "max": 25.328125,
+          "sum": 300033.7403240204,
+          "sha256": "531aa07bbacc4e09"
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "argmax": 11944,
+          "max": 47.28125,
+          "sum": 1129003.953125,
+          "sha256": "c992ff911456a62a"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 6,
+        "session_staging_upload_bytes": 4718640,
+        "alloc_device_download_bytes": 384768,
+        "alloc_device_downloads": 6,
+        "alloc_device_upload_bytes": 2292811824,
+        "alloc_device_frame": "SHARED",
+        "alloc_device_authority_grants": 390,
+        "outputs_device_bound": 390,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 2130,
+        "compute_calls": 6,
+        "compute_failures": 0,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_resident.json.logits.npy"
+    },
+    "outbind_noread": {
+      "lane": "outbind_noread",
+      "steps": 6,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 1,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 2,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 3,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 4,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        },
+        {
+          "step": 5,
+          "past_len": 4,
+          "readback_bytes": 0,
+          "readbacks": 1,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 786440,
+          "dispatches": 355
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        },
+        {
+          "step": 1,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        },
+        {
+          "step": 2,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        },
+        {
+          "step": 3,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        },
+        {
+          "step": 4,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        },
+        {
+          "step": 5,
+          "past_len": 4,
+          "argmax": 0,
+          "max": 0.0,
+          "sum": 0.0,
+          "sha256": "7d7afd86c2a9d4e8"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 6,
+        "session_staging_upload_bytes": 4718640,
+        "alloc_device_download_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_upload_bytes": 2300676144,
+        "alloc_device_frame": "SHARED",
+        "alloc_device_authority_grants": 390,
+        "outputs_device_bound": 390,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 2130,
+        "compute_calls": 6,
+        "compute_failures": 0,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_outbind_noread.json.logits.npy"
+    },
+    "separating": {
+      "lane": "separating",
+      "steps": 6,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "separating_cases": {
+        "session_outlives_inference": {
+          "what": "same session, same inputs, run twice with the first run's output OrtValues dropped and collected in between",
+          "first": {
+            "argmax": 2583,
+            "sum": -284218.2355194092,
+            "sha256": "c8a206a212bb89ea",
+            "nonzero_fraction": 1.0
+          },
+          "second": {
+            "argmax": 2583,
+            "sum": -284218.2355194092,
+            "sha256": "c8a206a212bb89ea",
+            "nonzero_fraction": 1.0
+          },
+          "pass": true,
+          "why": "a deterministic graph on identical inputs must return identical bits; a difference here is a span that was reused or freed under the session"
+        },
+        "two_sessions_one_device": {
+          "what": "a second session on the same device, interleaved run-for-run with the first",
+          "session1": {
+            "argmax": 2583,
+            "sum": -284218.2355194092,
+            "sha256": "c8a206a212bb89ea",
+            "nonzero_fraction": 1.0
+          },
+          "session2_before": {
+            "argmax": 2583,
+            "sum": -284218.2355194092,
+            "sha256": "c8a206a212bb89ea",
+            "nonzero_fraction": 1.0
+          },
+          "session2_after": {
+            "argmax": 2583,
+            "sum": -284218.2355194092,
+            "sha256": "c8a206a212bb89ea",
+            "nonzero_fraction": 1.0
+          },
+          "pass": true,
+          "why": "neither session may perturb the other's spans; both must still reproduce their own single-session answer bit for bit"
+        },
+        "context_outgrows_first_allocation": {
+          "what": "the past grows 4 -> 10 tokens, a new and larger span allocated on every one of 6 steps",
+          "steps": [
+            {
+              "past_len": 4,
+              "argmax": 2583,
+              "sum": -284218.2355194092,
+              "sha256": "c8a206a212bb89ea",
+              "nonzero_fraction": 1.0
+            },
+            {
+              "past_len": 5,
+              "argmax": 11145,
+              "sum": -346065.1271800995,
+              "sha256": "4cac2dab044d0fbd",
+              "nonzero_fraction": 1.0
+            },
+            {
+              "past_len": 6,
+              "argmax": 29892,
+              "sum": -180968.15208244324,
+              "sha256": "0863ca077e00f92c",
+              "nonzero_fraction": 1.0
+            },
+            {
+              "past_len": 7,
+              "argmax": 5797,
+              "sum": -57314.07984685898,
+              "sha256": "9d8e243aab99c422",
+              "nonzero_fraction": 1.0
+            },
+            {
+              "past_len": 8,
+              "argmax": 263,
+              "sum": 300033.7403240204,
+              "sha256": "a09977f360140883",
+              "nonzero_fraction": 1.0
+            },
+            {
+              "past_len": 9,
+              "argmax": 11944,
+              "sum": 1129003.953125,
+              "sha256": "a3411cf8648aa708",
+              "nonzero_fraction": 1.0
+            }
+          ],
+          "pass": true,
+          "why": "a growing extent must keep producing live, varying logits; a constant or dead output means the larger span was never actually read"
+        },
+        "readback_during_dispatch": {
+          "what": "present.0.key read at the first instant the API permits after run_with_iobinding returns, with no synchronisation by the caller, then read again",
+          "immediate_sha256": "070b93a874ba9bb3",
+          "settled_sha256": "070b93a874ba9bb3",
+          "immediate_nonzero_fraction": 1.0,
+          "pass": true,
+          "why": "the first read must already see the finished kernel's bytes. If it differs from the second read, or is mostly zero, the fence is not being waited and every byte count in this probe was taken against a race"
+        }
+      },
+      "separating_failed": [],
+      "final_counters": {
+        "dispatches_executed": 4260,
+        "compute_calls": 12,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "alloc_device_frame": "SHARED",
+        "session_staging_readback_bytes": 0,
+        "alloc_device_download_bytes": 705408,
+        "outputs_device_bound": 780
+      },
+      "verdict": "SEPARATING_CASES_PASS",
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_separating.json.logits.npy"
+    }
+  },
+  "separating_cases": {
+    "session_outlives_inference": {
+      "what": "same session, same inputs, run twice with the first run's output OrtValues dropped and collected in between",
+      "first": {
+        "argmax": 2583,
+        "sum": -284218.2355194092,
+        "sha256": "c8a206a212bb89ea",
+        "nonzero_fraction": 1.0
+      },
+      "second": {
+        "argmax": 2583,
+        "sum": -284218.2355194092,
+        "sha256": "c8a206a212bb89ea",
+        "nonzero_fraction": 1.0
+      },
+      "pass": true,
+      "why": "a deterministic graph on identical inputs must return identical bits; a difference here is a span that was reused or freed under the session"
+    },
+    "two_sessions_one_device": {
+      "what": "a second session on the same device, interleaved run-for-run with the first",
+      "session1": {
+        "argmax": 2583,
+        "sum": -284218.2355194092,
+        "sha256": "c8a206a212bb89ea",
+        "nonzero_fraction": 1.0
+      },
+      "session2_before": {
+        "argmax": 2583,
+        "sum": -284218.2355194092,
+        "sha256": "c8a206a212bb89ea",
+        "nonzero_fraction": 1.0
+      },
+      "session2_after": {
+        "argmax": 2583,
+        "sum": -284218.2355194092,
+        "sha256": "c8a206a212bb89ea",
+        "nonzero_fraction": 1.0
+      },
+      "pass": true,
+      "why": "neither session may perturb the other's spans; both must still reproduce their own single-session answer bit for bit"
+    },
+    "context_outgrows_first_allocation": {
+      "what": "the past grows 4 -> 10 tokens, a new and larger span allocated on every one of 6 steps",
+      "steps": [
+        {
+          "past_len": 4,
+          "argmax": 2583,
+          "sum": -284218.2355194092,
+          "sha256": "c8a206a212bb89ea",
+          "nonzero_fraction": 1.0
+        },
+        {
+          "past_len": 5,
+          "argmax": 11145,
+          "sum": -346065.1271800995,
+          "sha256": "4cac2dab044d0fbd",
+          "nonzero_fraction": 1.0
+        },
+        {
+          "past_len": 6,
+          "argmax": 29892,
+          "sum": -180968.15208244324,
+          "sha256": "0863ca077e00f92c",
+          "nonzero_fraction": 1.0
+        },
+        {
+          "past_len": 7,
+          "argmax": 5797,
+          "sum": -57314.07984685898,
+          "sha256": "9d8e243aab99c422",
+          "nonzero_fraction": 1.0
+        },
+        {
+          "past_len": 8,
+          "argmax": 263,
+          "sum": 300033.7403240204,
+          "sha256": "a09977f360140883",
+          "nonzero_fraction": 1.0
+        },
+        {
+          "past_len": 9,
+          "argmax": 11944,
+          "sum": 1129003.953125,
+          "sha256": "a3411cf8648aa708",
+          "nonzero_fraction": 1.0
+        }
+      ],
+      "pass": true,
+      "why": "a growing extent must keep producing live, varying logits; a constant or dead output means the larger span was never actually read"
+    },
+    "readback_during_dispatch": {
+      "what": "present.0.key read at the first instant the API permits after run_with_iobinding returns, with no synchronisation by the caller, then read again",
+      "immediate_sha256": "070b93a874ba9bb3",
+      "settled_sha256": "070b93a874ba9bb3",
+      "immediate_nonzero_fraction": 1.0,
+      "pass": true,
+      "why": "the first read must already see the finished kernel's bytes. If it differs from the second read, or is mostly zero, the fence is not being waited and every byte count in this probe was taken against a race"
+    }
+  },
+  "separating_verdict": "SEPARATING_CASES_PASS",
+  "dispatches_per_step": {
+    "host": [
+      355,
+      355,
+      355,
+      355,
+      355,
+      355
+    ],
+    "resident": [
+      355,
+      355,
+      355,
+      355,
+      355,
+      355
+    ]
+  },
+  "resident_vs_host_logits": [
+    {
+      "step": 0,
+      "host_argmax": 2583,
+      "resident_argmax": 2583,
+      "agree": true,
+      "host_sha256": "8b41321d3a624c24",
+      "resident_sha256": "8b41321d3a624c24",
+      "bitwise_identical": true
+    },
+    {
+      "step": 1,
+      "host_argmax": 11145,
+      "resident_argmax": 11145,
+      "agree": true,
+      "host_sha256": "b3d13ee890302b94",
+      "resident_sha256": "b3d13ee890302b94",
+      "bitwise_identical": true
+    },
+    {
+      "step": 2,
+      "host_argmax": 29892,
+      "resident_argmax": 29892,
+      "agree": true,
+      "host_sha256": "be1dffe0dc14c569",
+      "resident_sha256": "be1dffe0dc14c569",
+      "bitwise_identical": true
+    },
+    {
+      "step": 3,
+      "host_argmax": 5797,
+      "resident_argmax": 5797,
+      "agree": true,
+      "host_sha256": "634cc0c6e8144f91",
+      "resident_sha256": "634cc0c6e8144f91",
+      "bitwise_identical": true
+    },
+    {
+      "step": 4,
+      "host_argmax": 263,
+      "resident_argmax": 263,
+      "agree": true,
+      "host_sha256": "531aa07bbacc4e09",
+      "resident_sha256": "531aa07bbacc4e09",
+      "bitwise_identical": true
+    },
+    {
+      "step": 5,
+      "host_argmax": 11944,
+      "resident_argmax": 11944,
+      "agree": true,
+      "host_sha256": "c992ff911456a62a",
+      "resident_sha256": "c992ff911456a62a",
+      "bitwise_identical": true
+    }
+  ],
+  "resident_vs_host_numeric": {
+    "steps_compared": 6,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "mean_abs_diff": 0.0,
+    "bitwise_identical": true,
+    "nonzero_fraction_a": 1.0,
+    "nonzero_fraction_b": 1.0,
+    "distinct_values_a": 14609,
+    "distinct_values_b": 14609
+  },
+  "counter_sample_lag_steps": 1,
+  "host_lane_link_bytes_per_step": [
+    2030208,
+    2423424,
+    2816640,
+    3209856,
+    3603072,
+    3996288
+  ],
+  "resident_lane_link_bytes_per_step": [
+    0,
+    64128,
+    64128,
+    64128,
+    64128,
+    64128
+  ],
+  "host_lane_slope_bytes_per_past_token": 393216.0,
+  "resident_lane_slope_bytes_per_past_token": 0.0,
+  "declared_slope_bytes_per_past_token": 393216,
+  "isolation_lanes": {
+    "outbind_noread": {
+      "link_bytes_per_step": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "downloads_per_step": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "device_read_off_the_run": "Intel(R) Iris(R) Xe Graphics",
+  "verdict": "ROUND_TRIP_REMOVED",
+  "why": [
+    "the four separating cases pass: a session outliving an inference (and outliving the OrtValues it wrote), two sessions on one device interleaved run-for-run, a context outgrowing its first allocation over 6 growing spans, and a readback taken at the first instant the API permits after the run returns. None of these is exercised by the chain itself, which is why they are here",
+    "the shipping lane reproduces Niobe's slope to the byte: 393216.0 B per past token (declared 393216)",
+    "with the 64 KV outputs bound in this EP's device memory and fed straight back as the next step's past, the slope is flat: 0 B per past token. The lane's link traffic is 64128 B on every step regardless of context length, at identical dispatch counts (2130 each). A ratio is not quoted against zero; the shape of the line is the finding \u2014 the shipping path has a slope and this one does not",
+    "this is a real 355-node island with 64 KV outputs over a real decode chain, not the fixed-extent GQA case: the past grows by one token every step and the extent is 4 -> 9",
+    "no wall-clock is quoted: the box is permanently contended (PERF.md \u00a720) and another team is on the GPU. This is a byte count and byte counts are exact",
+    "the flat term that remains is 64128 B per step and it is named, not rounded away: it is `logits`, 32064 x fp16 = 64,128 B, which the caller asked for. The `outbind_noread` lane reads nothing and pays 0 B and 0 downloads over the same steps, which is what proves the remaining term is the caller's request and not the runtime's",
+    "the grouping this fires under is NOT the general case: Phi-3.5-mini has 32 KV heads for 32 query heads, Nq/Nkv = 1.00, the degenerate ratio where the grouping defect is invisible. It is 4x on Llama-3 8B. Nothing here is keyed on head counts, but the general grouping case is UNTESTED and this number must not be extrapolated to it",
+    "the device is read off the run, not off the selector: Intel(R) Iris(R) Xe Graphics (index 0, vendor 0x8086), DLL sha256[:16] 51D7F1340C3AEABD"
+  ]
+}

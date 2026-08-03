@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -601,7 +602,15 @@ def _run_lane(lane: str, steps: int, seed_past: int, scratch: pathlib.Path) -> d
     env["ONNXRUNTIME_VULKAN_EP_LIB"] = _lib()
     if lane in ("resident", "outbind", "outbind_noread", "outbind_readdev", "separating"):
         env["ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY"] = "1"
-        env["ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS"] = "1"
+        # `PROBE_LEAVE_BIND_DEFAULT=1` runs these lanes with `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`
+        # *unset*, so they exercise the shipped default rather than an explicit request. Since
+        # 2026-08-03 the default is ON; before that it was OFF and these lanes needed the `=1`.
+        # Keeping both spellings runnable is the point: a lane that can only be entered by asking
+        # for it cannot tell you what a user who asks for nothing gets.
+        if os.environ.get("PROBE_LEAVE_BIND_DEFAULT") == "1":
+            env.pop("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS", None)
+        else:
+            env["ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS"] = "1"
     else:
         env.pop("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY", None)
         env.pop("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS", None)
@@ -869,6 +878,30 @@ def _score(doc: dict, lanes: dict) -> int:
     doc["host_lane_slope_bytes_per_past_token"] = host_slope
     doc["resident_lane_slope_bytes_per_past_token"] = res_slope
     doc["declared_slope_bytes_per_past_token"] = BYTES_PER_PAST_TOKEN
+    doc["slope_points_after_lag"] = {"host": len(host_pts), "resident": len(res_pts)}
+
+    # A slope that is not a number must not reach a comparison. `_slope` returns NaN on fewer
+    # than two points, and after the one-step counter lag a `--steps 2` run has exactly one —
+    # so `abs(nan - 393216) > 1` is **False**, the host-lane control passes, `nan >= nan` is
+    # False, and the run certifies ROUND_TRIP_REMOVED while printing "reproduces Niobe's slope
+    # to the byte: nan". Measured 2026-08-03 at `--seed-past 2048 --steps 2`; the per-step byte
+    # counts in that run were correct and the verdict was reached without them.
+    #
+    # Every comparison in this scorer is `>` or `>=`, and every one of them is False against NaN.
+    # A guard that silently answers "no objection" to each of a series of independent checks is
+    # not a series of checks. Refuse first, compare after.
+    if not all(map(math.isfinite, (host_slope, res_slope))):
+        doc["verdict"] = "ERROR(instrument)"
+        doc["why"] = [
+            f"a slope is not a number: host={host_slope}, resident={res_slope}, from "
+            f"{len(host_pts)}/{len(res_pts)} usable points after the {doc['counter_sample_lag_steps']}"
+            "-step counter lag. Two points are the minimum and every threshold below compares "
+            "False against NaN, so this would have been certified rather than caught. Run at "
+            "least 3 steps.",
+            "the per-step byte counts in this run are still valid and are reported above; what "
+            "is missing is the line through them",
+        ]
+        return 2
 
     for extra in ("outbind", "outbind_noread", "outbind_readdev"):
         if extra in lanes:
