@@ -170,18 +170,46 @@ def test_clean_log_passes(tmp_path):
 
 
 def test_falling_back_line_fails_the_lane_and_is_quoted(tmp_path):
-    """The line that has now appeared five times while every gate passed."""
+    """The line ORT actually prints — not the one we spent three days believing it prints.
+
+    2026-08-02, Trinity: this arm planted ``"Falling back to CPUExecutionProvider."`` and
+    was green, because `_verdict.FATAL_LOG_MARKERS` was written from the same paraphrase.
+    Fiction testing fiction. ORT emits a **list repr**, so the real announcement never
+    matched and this check read Tank's artifact — which announces the fallback twice — as
+    clean, while being cited as second witness for five incidents.
+
+    The text below is copied verbatim from bench/results/ctx512_device_lost.txt.
+    """
     p = write(
         tmp_path,
         "suite.log",
-        "2026-07-31 ... [E:onnxruntime] EP_FAIL from VulkanExecutionProvider. "
-        "Falling back to CPUExecutionProvider.\n196 passed\n",
+        "2026-08-02 ... EP Error: [ONNXRuntimeError] : 11 : EP_FAIL : Non-zero status "
+        "code returned while running VulkanExecutionProvider_0 node.\n"
+        "Falling back to ['CPUExecutionProvider'] and retrying.\n196 passed\n",
     )
     r = run_check("check_fatal_log.py", str(p))
     assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
     assert "FAIL(condition=runtime_fallback_announced_by_ort)" in r.stdout
     # R13 second clause: quote the failure text, never the failure count.
-    assert "Falling back to CPUExecutionProvider" in r.stdout
+    assert "Falling back to ['CPUExecutionProvider'] and retrying" in r.stdout
+
+
+def test_the_lane_check_is_not_fooled_by_our_own_prose_about_it(tmp_path):
+    """The defect, kept executable in the lane that missed it.
+
+    Across three real logs the old markers produced twelve hits and every one was this
+    repository's own sentence describing what we believed ORT prints, quoted back out of a
+    captured suite log. A witness that matches our description of its subject, in logs that
+    routinely contain our description of its subject, reports hits that mean nothing.
+    """
+    p = write(
+        tmp_path,
+        "suite.log",
+        "E       ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' "
+        "during sess.run()\n196 passed\n",
+    )
+    r = run_check("check_fatal_log.py", str(p))
+    assert r.returncode == EXIT_PASS, r.stdout
 
 
 def test_an_uncaptured_log_is_unobservable_not_zero_hits(tmp_path):
@@ -803,7 +831,9 @@ def test_fatal_log_still_detects_with_a_marker_present(tmp_path):
     marker.write_text("", encoding="utf-8")
     log = tmp_path / "run.log"
     log.write_text(
-        "INFO: ok\n[E:onnxruntime:] EP_FAIL : Falling back to CPUExecutionProvider\n",
+        "INFO: ok\n"
+        "EP Error: [ONNXRuntimeError] : 11 : EP_FAIL : Non-zero status code returned.\n"
+        "Falling back to ['CPUExecutionProvider'] and retrying.\n",
         encoding="utf-8",
     )
     r = run_check("check_fatal_log.py", f"--lane-marker={marker}", str(log))

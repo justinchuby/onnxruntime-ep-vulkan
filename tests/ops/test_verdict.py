@@ -27,6 +27,8 @@ import json
 import re
 from pathlib import Path
 
+import re
+
 import pytest
 
 import _verdict as v
@@ -678,16 +680,117 @@ def test_series_requires_a_real_attribution() -> None:
 # Claim 7 — the second witness with a different failure mode (R13 obligation 3)
 # ===========================================================================
 
-def test_fatal_log_scan_finds_the_line() -> None:
-    captured = (
-        "2026-07-31 21:00:00 [I] some benign line\n"
-        "[E:onnxruntime:, sequential_executor.cc:516] Non-zero status code returned. "
-        "EP_FAIL ... Falling back to CPUExecutionProvider.\n"
-        "more output\n"
+def test_fatal_log_scan_finds_the_line_ORT_ACTUALLY_PRINTS() -> None:
+    """The arm that replaces the one that was green while the witness was blind.
+
+    The previous version of this test built the string ``"Falling back to
+    CPUExecutionProvider."`` -- our paraphrase -- and asserted it was found. It passed for
+    as long as the witness could not see a real announcement, because it was the fiction
+    testing itself. Link: *a classifier tested only against strings we wrote ourselves is
+    tested against the one input it cannot get wrong.*
+
+    So the input here is copied verbatim out of bench/results/ctx512_device_lost.txt,
+    line wrap included, and it is the module's own committed positive control.
+    """
+    hits = v.find_fatal_log_lines(v.FATAL_LOG_POSITIVE_CONTROL)
+    assert hits, v.FATAL_LOG_PATTERNS
+    assert any("Falling back to ['CPUExecutionProvider'] and retrying" in h for h in hits)
+
+
+def test_the_patterns_do_not_match_our_own_prose_about_the_patterns() -> None:
+    """The specific defect, kept executable.
+
+    Across three real logs the old markers produced twelve positive hits and **every one
+    was our own sentence** -- test_phi35.py's docstring saying "ORT prints 'EP_FAIL ...
+    Falling back to CPUExecutionProvider' during sess.run()", quoted back out of a captured
+    suite log. It never once matched ORT.
+
+    A witness that matches this repository's description of its subject, in a log that
+    routinely contains this repository's description of its subject, reports hits that mean
+    nothing. So the prose is a negative control.
+    """
+    our_prose = (
+        "        ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' "
+        "during sess.run()\n"
+        "    FATAL_LOG_MARKERS = (\"Falling back to CPUExecutionProvider\", "
+        "\"Falling back to CPU\")\n"
     )
-    hits = v.find_fatal_log_lines(captured)
-    assert len(hits) == 1
-    assert "Falling back" in hits[0]
+    assert v.find_fatal_log_lines(our_prose) == []
+
+
+def test_the_announcement_is_found_even_when_the_terminal_wrapped_it() -> None:
+    """Tank's artifact wraps the EP Error line mid-list, so a per-line matcher is split.
+
+    This is why matching moved off ``splitlines()`` and onto the whole text.
+    """
+    wrapped = (
+        "Status Message: vkWaitForFences failed using ['VulkanExecutionProvider',\n"
+        "'CPUExecutionProvider']\n"
+        "Falling back\n"
+        "to ['CPUExecutionProvider'] and retrying.\n"
+    )
+    assert v.find_fatal_log_lines(wrapped)
+
+
+def test_the_announcement_is_found_when_ORT_wrote_it_as_utf16() -> None:
+    """ORT's C++ sink emits UTF-16LE, so a real log is UTF-8 with wide regions in it.
+
+    Read as UTF-8 those arrive NUL-separated and no substring of the message is findable.
+    Verified in bench/results/trinity-suite-dev1.log, which carries the device-lost message
+    in both encodings -- had it carried only the wide one, a substring search would have
+    seen an empty log. A text matcher blind to the encoding its input arrives in is the
+    same defect one level down.
+    """
+    wide = "Falling back to ['CPUExecutionProvider'] and retrying.".encode("utf-16-le")
+    as_utf8_would_read_it = wide.decode("utf-8", errors="replace")
+    assert "Falling back to ['" not in as_utf8_would_read_it  # the naive search fails
+    assert v.find_fatal_log_lines(as_utf8_would_read_it)      # this one does not
+
+
+def test_the_witness_proves_it_can_still_see_before_it_is_believed() -> None:
+    """The remedy, and it is the one already used for the silently-swallowed config key.
+
+    ``_models.assert_no_cpu_fallback_is_live()`` proves the ORT option took effect rather
+    than trusting it did; this proves the patterns still match rather than trusting they
+    do. **A marker list that has never been shown to fire is indistinguishable from one
+    that cannot** -- which is precisely how this witness spent three days being cited.
+    """
+    v.assert_fatal_log_check_is_live()  # must not raise
+
+
+def test_the_liveness_check_fails_when_the_witness_is_blinded() -> None:
+    """The falsifier for the falsifier: break the patterns, the liveness check must notice.
+
+    Without this arm the liveness check is itself a thing that has never been shown to
+    fire, and the fix would have the shape of the defect.
+    """
+    saved = v.FATAL_LOG_PATTERNS
+    try:
+        v.FATAL_LOG_PATTERNS = ((  # type: ignore[assignment]
+            "the_old_broken_marker",
+            re.compile(r"Falling back to CPUExecutionProvider"),
+        ),)
+        with pytest.raises(v.InstrumentError) as excinfo:
+            v.assert_fatal_log_check_is_live()
+        assert "blind" in str(excinfo.value)
+    finally:
+        v.FATAL_LOG_PATTERNS = saved  # type: ignore[assignment]
+
+
+def test_the_witness_stays_out_of_check_device_loss_extent() -> None:
+    """Load-bearing on Link's file, not just on mine.
+
+    ci/negative_control_device_loss.py proves ci/check_device_loss.py has reach of its own
+    by requiring THIS check to stay green on a log where the EP reported a device loss and
+    ORT announced nothing. Widening these patterns to catch "The logical device has been
+    lost" would turn that demonstration green-on-both and silently delete the evidence that
+    a second check is needed at all.
+
+    Two gates whose extents differ compose to the weaker extent and the stronger name, so
+    the boundary is asserted rather than remembered.
+    """
+    assert v.find_fatal_log_lines(v.FATAL_LOG_NEGATIVE_CONTROL) == []
+    assert "logical device has been lost" in v.FATAL_LOG_NEGATIVE_CONTROL
 
 
 def test_fatal_log_scan_is_total() -> None:
