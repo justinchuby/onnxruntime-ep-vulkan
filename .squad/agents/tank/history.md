@@ -369,3 +369,12 @@ not named cannot be re-taken.
 `probe_ledger_arms.py` exit 0; `probe_ledger_mutations.py` 3/3 CAUGHT. No clock.
 
 **Decision:** `tank-the-union-of-two-right-changes.md`.
+
+**RAI-008(a), same session.** The CI check the falsifier asks for already exists
+(`tests/ops/test_proof_ledger.py`, in the default `pytest tests/ops` on both lanes). Its plant was
+**spelled by literal** and its docstring still recorded the *previous* plant's key as the
+prediction — third sighting of plant-rot in one day. Imported `PLANTED_CONTROL_CASE` /
+`PLANTED_CONTROL_KEY` and added an assertion that the plant has not acquired a ledger entry; the
+membership test is non-vacuous by measurement (`False` for the plant, `True` for the sibling).
+14 passed / 0 failed. **The tally is not the artifact-supplier's** — criterion 11 is Morpheus's,
+RAI-008's status is Rai's.

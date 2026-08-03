@@ -176,13 +176,25 @@ def _ledger_keys() -> set[str]:
 def test_planted_unproven_form_declines(require_vulkan, _ledger_keys):
     """THE PLANT. A form with no ledger entry must decline with `[unproven]`.
 
-    Predicted before the run and recorded in `bench/results/proof_ledger_prediction.json`:
-    the key is `ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2`, the decline code is
-    `unproven` and nothing else, and the model still computes correctly because ORT falls back
-    to the CPU EP.
+    The plant is **imported, never spelled**: `ledger_case_models.PLANTED_CONTROL_CASE` is the
+    single declaration, and this test derives its model path from it. A planted control names a
+    condition the team is working to eliminate, so it will rot by design — it already moved once,
+    from `mul_f16_unproven` to `sub_f16_dyn_unproven`, and on that day three separate readers were
+    still spelling the old name. A literal here would have made this file the fourth.
+
+    The prediction, restated against the current plant rather than the one it replaced: the
+    declined key is the runtime-extent f16 `Sub` form, the decline code is `unproven` and nothing
+    else, and the model still computes correctly because ORT falls back to the CPU EP.
     """
-    model = CASES / "sub_f16_dyn_unproven.onnx"
+    from ledger_case_models import PLANTED_CONTROL_CASE, PLANTED_CONTROL_KEY
+
+    model = CASES / f"{PLANTED_CONTROL_CASE}.onnx"
     assert model.is_file(), f"the planted control model is missing: {model}"
+    assert PLANTED_CONTROL_KEY not in _ledger_keys, (
+        f"the plant {PLANTED_CONTROL_KEY!r} has acquired a ledger entry, so it is no longer "
+        "unproven and this arm would pass against a gate that claims everything. Move the plant "
+        "rather than deleting this assertion."
+    )
 
     unlockable, census = _discover(model)
 
