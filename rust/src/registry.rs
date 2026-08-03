@@ -1948,6 +1948,19 @@ pub struct LedgerEntry {
     ///
     /// A FRAME component, never a KEY component. Empty for a pre-§8.9.19 entry.
     pub toolchain: String,
+    /// **Frame — the runtime specialisation the proof run actually bound** (§8.9.20).
+    ///
+    /// The dispatch-time witness. Both other digests are fixed at build time and what runs is a
+    /// *pipeline* — `(SPIR-V, specialisation values, layout)` — so a constant chosen at dispatch
+    /// is outside both of them. Two runs that select different values for one stem have identical
+    /// `shader_digest` **and** identical `source_digest` and build different kernels;
+    /// `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` is that case today and every spec-constant selector
+    /// adds another.
+    ///
+    /// Empty for every entry written before §8.9.20, and — unlike `source_digest` — that is
+    /// **not backfillable**: the value is a fact about a run that is over, not about a tree that
+    /// is still here. See [`SpecWitness::Unrecorded`] for what that costs an entry's meaning.
+    pub spec_digest: String,
     /// How this build's shader set compares with the one the entry was proven against.
     ///
     /// Computed at parse time, **recorded on the surviving entry rather than used to delete it**.
@@ -1973,6 +1986,13 @@ pub enum FrameDelta {
     /// The entry's SPIR-V was produced by a different shader compiler, and the **source closure
     /// is identical** — so the kernel did not move, only the compiler did.
     Toolchain,
+    /// The run bound a **different runtime specialisation** for the entry's shader set than the
+    /// proof run did (§8.9.20). Same SPIR-V, same source, different pipeline.
+    ///
+    /// The only δ component that is not a property of the machine or the build: it is a property
+    /// of *this dispatch*, so unlike the others it can become true part-way through a run, at the
+    /// moment the pipeline is created.
+    Specialisation,
     /// The entry names a different ONNX Runtime build.
     ///
     /// **Enumerated but never produced today, and that is a stated residual rather than an
@@ -1991,6 +2011,7 @@ impl FrameDelta {
         match self {
             FrameDelta::Device => "device",
             FrameDelta::Toolchain => "toolchain",
+            FrameDelta::Specialisation => "specialisation",
             FrameDelta::OrtBuild => "ort_build",
             FrameDelta::Driver => "driver",
         }
@@ -2073,6 +2094,136 @@ impl SubjectVerdict {
                 | SubjectVerdict::ToolchainDelta { .. }
                 | SubjectVerdict::SourceCosmetic { .. }
         )
+    }
+}
+
+/// How the specialisation this run **bound** compares with the one an entry was proven under
+/// (§8.9.20) — the dispatch-time frame witness.
+///
+/// Not a `SubjectVerdict` sibling and not stored on the entry, because unlike both digests it is
+/// **not known at parse time**. The value is resolved when `vkCreateComputePipelines` is called,
+/// so this is computed live and can legitimately give different answers before and after a
+/// dispatch. That time-dependence is the finding, not a defect in it: an entry's frame includes
+/// something the reader cannot know until the run reaches the kernel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpecWitness {
+    /// This run has bound no pipeline for the entry's stems. **The claim-time answer in a cold
+    /// process, and it must not read as agreement** — nothing has been compared.
+    Unobserved,
+    /// Some of the entry's stems have a bound pipeline and some do not, so the set-wide digests
+    /// are not comparable. Reporting a delta here would manufacture one out of a run that has not
+    /// finished binding.
+    Partial {
+        /// Stems with a bound pipeline.
+        covered: usize,
+        /// Stems in the entry's set.
+        of: usize,
+    },
+    /// The entry records no specialisation at all — every entry written before §8.9.20.
+    ///
+    /// **An unrecorded frame is not an equal frame** (§8.9.19 row 5's rule, one axis over). Where
+    /// it differs from row 5: a missing `source_digest` is repairable from the tree, so refusing
+    /// the claim buys a `--backfill-frame`; a missing specialisation is a fact about a run that
+    /// has ended, and no build can recover it. Refusing here would decline all 103 forms for a
+    /// repair only `--reprove` can perform, so this **claims and discloses** instead — the same
+    /// trade `DEVICE-UNATTRIBUTED` makes for the same reason.
+    Unrecorded,
+    /// Compared, and equal.
+    Identical,
+    /// Compared, and different: the proof was taken on another pipeline.
+    Delta {
+        /// The specialisation digest recorded on the entry.
+        recorded: String,
+        /// What this run bound for the same stems.
+        current: String,
+    },
+}
+
+impl SpecWitness {
+    /// The token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            SpecWitness::Unobserved => "SPEC-UNOBSERVED",
+            SpecWitness::Partial { .. } => "SPEC-PARTIAL",
+            SpecWitness::Unrecorded => "SPEC-UNRECORDED",
+            SpecWitness::Identical => "SPEC-IDENTICAL",
+            SpecWitness::Delta { .. } => "SPEC-DELTA",
+        }
+    }
+}
+
+/// Compare one entry's recorded specialisation against what this run has bound (§8.9.20).
+///
+/// Live, never cached: the answer changes when a pipeline is created, and caching it at parse
+/// time would freeze the one component of the frame that is not fixed before the run starts.
+pub fn spec_witness_for(entry: &LedgerEntry) -> SpecWitness {
+    let stems: Vec<&str> = entry.shaders.iter().map(String::as_str).collect();
+    match crate::counters::specialisation_digest_for(&stems) {
+        crate::counters::SpecObservation::Unobserved => SpecWitness::Unobserved,
+        crate::counters::SpecObservation::Partial { covered, of } => {
+            SpecWitness::Partial { covered, of }
+        }
+        crate::counters::SpecObservation::Full(current) => {
+            if entry.spec_digest.is_empty() {
+                SpecWitness::Unrecorded
+            } else if entry.spec_digest == current {
+                SpecWitness::Identical
+            } else {
+                SpecWitness::Delta {
+                    recorded: entry.spec_digest.clone(),
+                    current,
+                }
+            }
+        }
+    }
+}
+
+/// **§8.9.20 — the dispatch-time frame witness, read at the moment it becomes readable.**
+///
+/// Called from the pipeline-creation path when a *new* `(stem, spec_constants)` pair is bound. It
+/// exists because the claim path cannot serve: a claim is decided before any pipeline exists, so a
+/// witness consulted only there would report `SPEC-UNOBSERVED` on every single-session run and the
+/// delta counter's only observable value would be zero. That is the defect class this project has
+/// now built two mechanisms to remove, and building a third one with it would be worse than not
+/// building it.
+///
+/// Walks only the entries whose recorded shader set contains `stem`, and only when the set has
+/// actually grown, so the cost is one ledger scan per distinct pipeline rather than per dispatch.
+pub fn audit_dispatch_specialisation(stem: &str) {
+    audit_dispatch_specialisation_of(ledger(), stem);
+}
+
+/// The body of [`audit_dispatch_specialisation`], against any ledger.
+///
+/// Separated for the reason `disclose_demotions_of` is: the baked ledger records no
+/// specialisation at all, so a function that could only be called on it would have exactly one
+/// reachable arm and its delta count would be a number whose only possible value is zero.
+pub fn audit_dispatch_specialisation_of(l: &Ledger, stem: &str) {
+    if !l.faults.is_empty() {
+        return;
+    }
+    for e in l
+        .entries
+        .iter()
+        .filter(|e| e.shaders.iter().any(|s| s == stem))
+    {
+        match spec_witness_for(e) {
+            SpecWitness::Delta { recorded, current } => {
+                crate::counters::record_specialisation_delta(&e.key.0, &recorded, &current);
+                log::warn!(
+                    "[VulkanEP] [§8.9.20] proof ledger entry for `{}` was obtained under \
+                     specialisation {recorded} and this run bound {current} for the same shader \
+                     set: same SPIR-V, same source, different pipeline. The claim stands and is \
+                     out of frame — re-prove it with rust/tools/gen_proof_ledger.py --reprove to \
+                     bring the proof back into this run's frame.",
+                    e.key.0
+                );
+            }
+            SpecWitness::Unrecorded => {
+                crate::counters::record_specialisation_unrecorded(&e.key.0);
+            }
+            SpecWitness::Unobserved | SpecWitness::Partial { .. } | SpecWitness::Identical => {}
+        }
     }
 }
 
@@ -2196,6 +2347,17 @@ impl Ledger {
         self.entries
             .iter()
             .filter(|e| matches!(e.subject, SubjectVerdict::ToolchainDelta { .. }))
+    }
+
+    /// Entries that record **no** runtime specialisation (§8.9.20) — every entry written before
+    /// that section existed.
+    ///
+    /// Counted in the artifact so the specialisation delta's zero is interpretable. A run whose
+    /// delta count is 0 because every entry is comparable and agrees, and a run whose delta count
+    /// is 0 because no entry records anything to compare, are different facts, and the second one
+    /// is today's.
+    pub fn specialisation_unrecorded_entries(&self) -> impl Iterator<Item = &LedgerEntry> {
+        self.entries.iter().filter(|e| e.spec_digest.is_empty())
     }
 
     /// The non-`MATCH` verdict recorded for this key, if the file carried one.    ///
@@ -2576,6 +2738,7 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
             shader_digest: recorded_digest,
             source_digest,
             toolchain: json_field(line, "toolchain").unwrap_or_default(),
+            spec_digest: json_field(line, "spec_digest").unwrap_or_default(),
             subject,
         });
     }
@@ -2936,6 +3099,21 @@ pub fn entry_state(entry: &LedgerEntry) -> ProofState {
         SubjectVerdict::Identical | SubjectVerdict::SourceCosmetic { .. } => {}
     }
 
+    // §8.9.20 — THE DISPATCH-TIME FRAME COMPONENT.
+    //
+    // Read after the subject and beside the device, because it is a frame fact and not a subject
+    // one: the SPIR-V and the source are both identical across a specialisation delta, and the
+    // pipeline is not. `Unobserved`/`Partial` add no delta — nothing has been compared — and
+    // `Unrecorded` adds none either, for the reason on `SpecWitness::Unrecorded`: it is a
+    // narrowing of what the entry means, disclosed through its own count, not a mismatch.
+    if let SpecWitness::Delta { recorded, current } = spec_witness_for(entry) {
+        deltas.push(FrameDelta::Specialisation);
+        detail.push(format!(
+            "specialisation: the entry was proven under {recorded} and this run bound {current} \
+             for the same shader set — identical SPIR-V and identical source, different pipeline"
+        ));
+    }
+
     let device = device_state(&entry.device);
     match &device {
         ProofState::ProvenElsewhere {
@@ -2993,6 +3171,43 @@ pub fn ledger() -> &'static Ledger {
         }
         l
     })
+}
+
+/// The detail text of an `[unproven]` decline, **chosen by which of the three answers the lookup
+/// gave** (Link, 2026-08-03).
+///
+/// `Ledger::state_for` blankets to `Unproven` when the artifact is faulted — R13, and correct,
+/// because a faulted instrument must not grant claims. The message then said *"no proof ledger
+/// entry for X. The kernel exists; nothing has proven it correct on this form"*, and on a faulted
+/// ledger **every clause of that is false**: there may well be an entry, something may well have
+/// proven it, and this build cannot tell which. It also named the wrong repair — regenerating the
+/// entry for one form does not fix a damaged file.
+///
+/// `LedgerLookup` has carried the distinction since R13 and nothing here read it. A blanket in the
+/// *state* is a safety property; a blanket in the *text* is a false statement, and they do not
+/// have to travel together.
+///
+/// A free function rather than an inline branch so both arms are reachable from a test: the
+/// process-wide ledger is a `OnceLock`, so a test cannot fault it after something has looked a key
+/// up, and a message only reachable through a faulted global is a message nothing asserts on.
+pub fn unproven_decline_detail(outcome: LedgerLookup, key: &ProofKey) -> String {
+    if outcome == LedgerLookup::Faulted {
+        return format!(
+            "the proof ledger could not be read, so nothing is known about `{}` from it — this \
+             is an INSTRUMENT failure, not a finding that the form is unproven. Every form \
+             declines while it lasts, and the entry proving this one may well be sitting in the \
+             file. Repair the artifact: rust/tools/gen_proof_ledger.py --check names the fault, \
+             and the session disclosure prints it in full.",
+            key.0
+        );
+    }
+    format!(
+        "no proof ledger entry for `{}`. The kernel exists; nothing has proven it correct on this \
+         form, so it runs on the CPU EP, which is always right. Prove it with \
+         rust/tools/gen_proof_ledger.py, or enable it for development with \
+         ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
+        key.0, key.0
+    )
 }
 
 /// Whether the ledger holds a proof for this key.
@@ -3188,12 +3403,17 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     // `gen_proof_ledger.py` reads to learn which keys a run would need. A key computed only for
     // nodes that already pass is a key that can never bootstrap.
     let proof_key = ProofKey::from_node(view, spec);
-    let form_state = if spec.is_live() {
+    let ledger_outcome = if spec.is_live() {
         // RAI-008(d): the outcome, not a `bool`. A miss that was the ledger failing and a miss
         // that was this form being absent are two findings with two different repairs, and the
         // counters artifact has to be able to say which one happened.
         let outcome = lookup_key(&proof_key);
         crate::counters::record_ledger_lookup(outcome);
+        outcome
+    } else {
+        LedgerLookup::NeverAttempted
+    };
+    let form_state = if spec.is_live() {
         // R12: the entry's frame, read rather than merely recorded. `lookup_key` answers "is
         // there an entry"; this answers "is there an entry *for this device*", and the two used
         // to be the same question because nothing consulted `.device`.
@@ -3221,7 +3441,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         false
     };
     if spec.is_live() && !ledger_hit && !hatch {
-        crate::counters::record_unproven_decline();
+        crate::counters::record_unproven_decline(&proof_key.0);
         match &form_state {
             ProofState::SubjectChanged {
                 recorded,
@@ -3252,13 +3472,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
             _ => {
                 failures.push(decline(
                     DeclineCode::Unproven,
-                    format_args!(
-                        "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
-                         correct on this form, so it runs on the CPU EP, which is always right. \
-                         Prove it with rust/tools/gen_proof_ledger.py, or enable it for \
-                         development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
-                        proof_key.0, proof_key.0
-                    ),
+                    format_args!("{}", unproven_decline_detail(ledger_outcome, &proof_key)),
                 ));
             }
         }
@@ -3542,6 +3756,212 @@ mod tests {
         );
         assert_eq!(l.len() + l.entry_faults.len(), 1, "the populations must still sum to 1");
         assert!(!l.state_for(&key).claimable());
+    }
+
+    /// **§8.9.20 — the dispatch-time frame witness, seen in its firing state.**
+    ///
+    /// The residual §7.22 named: both digests are fixed at build time, and what runs is a
+    /// pipeline. This plants one form four times — same key, same shaders, same SPIR-V digest,
+    /// same source digest, differing only in the specialisation the proof was taken under — and
+    /// requires the four to disagree. If they agree, the field is one no predicate reads, which
+    /// is the defect class this project has now built three mechanisms to remove and would
+    /// otherwise have re-created with the third.
+    #[test]
+    fn a_proof_replayed_under_another_specialisation_is_a_different_frame() {
+        // Process-global statics: `pipeline_variants` is the observed collection.
+        let _g = crate::allocator::ledger::test_lock();
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        const STEM: &str = "ew_binary_add_f32";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let this_spirv = shader_digest_for(&[STEM]).expect("a stem to digest");
+        let this_source = source_digest_for(&[STEM]).expect("a stem to digest");
+        let build = |spec: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"{STEM}\"],\"shader_digest\":\"{this_spirv}\",\
+                 \"source_digest\":\"{this_source}\",\"toolchain\":\"shaderc 2023.8\",\
+                 \"spec_digest\":\"{spec}\",\"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            );
+            let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}\n{entry}\n"
+            ))
+        };
+
+        // ARM 0 — nothing bound yet. This is the claim-time answer in a cold process, and it must
+        // NOT read as agreement: nothing has been compared.
+        crate::counters::reset();
+        let unproven_yet = build("aaaaaaaaaaaaaaaa");
+        let cold = unproven_yet.state_for(&key);
+        assert_eq!(
+            spec_witness_for(unproven_yet.get(&key).expect("entry")),
+            SpecWitness::Unobserved,
+            "a run that has bound no pipeline has observed no specialisation, and that is not the \
+             same fact as having bound the recorded one"
+        );
+        assert!(cold.deltas().is_empty(), "an unobserved frame is not a delta: {cold:?}");
+
+        // Bind a pipeline. Everything below is compared against THIS.
+        crate::counters::record_pipeline_variant(STEM, &[256, 0]);
+        let bound_a = match crate::counters::specialisation_digest_for(&[STEM]) {
+            crate::counters::SpecObservation::Full(d) => d,
+            other => panic!("the run bound a pipeline and the observation is {other:?}"),
+        };
+        crate::counters::reset();
+        crate::counters::record_pipeline_variant(STEM, &[256, 1]);
+        let bound_b = match crate::counters::specialisation_digest_for(&[STEM]) {
+            crate::counters::SpecObservation::Full(d) => d,
+            other => panic!("the run bound a pipeline and the observation is {other:?}"),
+        };
+        assert_ne!(
+            bound_a, bound_b,
+            "two pipelines differing only in a specialisation constant hashed the same; the \
+             witness is blind to exactly what it exists to see"
+        );
+
+        // ARM 1 — the entry was proven under what this run bound. In frame.
+        let identical = build(&bound_b);
+        let s_identical = identical.state_for(&key);
+        assert_eq!(
+            spec_witness_for(identical.get(&key).expect("entry")),
+            SpecWitness::Identical
+        );
+        assert!(s_identical.claimable());
+        assert!(s_identical.deltas().is_empty(), "{s_identical:?}");
+
+        // ARM 2 — THE FIRING STATE. Same SPIR-V, same source closure, other pipeline.
+        let delta = build(&bound_a);
+        let s_delta = delta.state_for(&key);
+        let e = delta.get(&key).expect("entry");
+        assert_eq!(
+            e.shader_digest, this_spirv,
+            "the arm is only about specialisation if the subject is byte-identical"
+        );
+        assert_eq!(e.source_digest, this_source);
+        assert!(matches!(e.subject, SubjectVerdict::Identical));
+        assert!(
+            s_delta.claimable(),
+            "a specialisation delta is a frame delta, not a subject change; declining it would \
+             decline a proof of this exact code: {s_delta:?}"
+        );
+        assert!(
+            s_delta.deltas().contains(&FrameDelta::Specialisation),
+            "both build-time digests agree and the pipelines differ — if this is not a delta the \
+             witness is a field no predicate reads: {s_delta:?}"
+        );
+
+        // ARM 3 — the entry records nothing. Every entry shipped before §8.9.20.
+        let unrecorded = build("");
+        assert_eq!(
+            spec_witness_for(unrecorded.get(&key).expect("entry")),
+            SpecWitness::Unrecorded,
+            "an entry with no spec_digest must not read as one that agrees"
+        );
+        let s_unrecorded = unrecorded.state_for(&key);
+        assert!(
+            s_unrecorded.claimable(),
+            "unlike a missing source digest this has no repair from the tree, so refusing it \
+             would decline 103 forms for a --backfill nobody can run: {s_unrecorded:?}"
+        );
+        assert!(!s_unrecorded.deltas().contains(&FrameDelta::Specialisation));
+
+        // The arms must disagree. Without this every assertion above is satisfiable by a
+        // predicate that returns one constant.
+        let witnesses = [
+            spec_witness_for(identical.get(&key).expect("entry")).token(),
+            spec_witness_for(delta.get(&key).expect("entry")).token(),
+            spec_witness_for(unrecorded.get(&key).expect("entry")).token(),
+        ];
+        assert_eq!(
+            witnesses.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            3,
+            "three specialisation frames produced one verdict {witnesses:?}"
+        );
+
+        // And the dispatch-time audit must report it — the predicate that fires in production,
+        // not merely the one a test can call.
+        crate::counters::reset();
+        crate::counters::record_pipeline_variant(STEM, &[256, 1]);
+        audit_dispatch_specialisation_of(&delta, STEM);
+        let rows = crate::counters::specialisation_delta_forms();
+        assert!(
+            rows.iter().any(|r| r.starts_with(KEY)),
+            "the audit saw a proof taken on another pipeline and said nothing: {rows:?}"
+        );
+        audit_dispatch_specialisation_of(&identical, STEM);
+        assert_eq!(
+            crate::counters::specialisation_delta_forms().len(),
+            rows.len(),
+            "the audit reported a delta for an entry proven under the pipeline this run bound; \
+             it is not reading the digests"
+        );
+        audit_dispatch_specialisation_of(&unrecorded, STEM);
+        assert!(
+            crate::counters::specialisation_unrecorded_forms()
+                .iter()
+                .any(|r| r == KEY),
+            "an entry proven under an unrecorded specialisation was claimed and not disclosed"
+        );
+        crate::counters::reset();
+    }
+
+    /// A partial observation is not a delta.
+    ///
+    /// The false-positive this witness could most easily manufacture: an entry naming two stems,
+    /// a run that has bound a pipeline for one of them, and a set-wide digest compared anyway.
+    /// The delta would then say "this proof was taken on another pipeline" when what actually
+    /// happened is that the run has not finished binding.
+    #[test]
+    fn a_half_bound_shader_set_is_not_a_specialisation_delta() {
+        let _g = crate::allocator::ledger::test_lock();
+        crate::counters::reset();
+        assert_eq!(
+            crate::counters::specialisation_digest_for(&["ew_binary_add_f32", "ew_unary_abs_f32"]),
+            crate::counters::SpecObservation::Unobserved
+        );
+        crate::counters::record_pipeline_variant("ew_binary_add_f32", &[256, 0]);
+        assert_eq!(
+            crate::counters::specialisation_digest_for(&["ew_binary_add_f32", "ew_unary_abs_f32"]),
+            crate::counters::SpecObservation::Partial { covered: 1, of: 2 },
+            "half a shader set gives a different number, not a smaller one; comparing it would \
+             invent a delta out of a run that has not finished binding"
+        );
+        crate::counters::record_pipeline_variant("ew_unary_abs_f32", &[256]);
+        assert!(matches!(
+            crate::counters::specialisation_digest_for(&["ew_binary_add_f32", "ew_unary_abs_f32"]),
+            crate::counters::SpecObservation::Full(_)
+        ));
+        crate::counters::reset();
+    }
+
+    /// **The decline must name the subject it actually has** (Link, 2026-08-03).
+    ///
+    /// He measured 0 × `proof ledger fault` and 42 × `no proof ledger entry` in a log whose
+    /// counters said every entry was in trouble, and the second string is the wrong sentence for
+    /// that state in every clause. Both arms here, asserted against each other, because a text
+    /// that says the same thing in both states is not reading anything.
+    #[test]
+    fn a_faulted_ledger_does_not_decline_a_form_by_saying_nothing_proved_it() {
+        let key = ProofKey::parse("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2");
+        let absent = unproven_decline_detail(LedgerLookup::KeyAbsent, &key);
+        let faulted = unproven_decline_detail(LedgerLookup::Faulted, &key);
+        assert_ne!(absent, faulted, "one sentence for two findings");
+        assert!(absent.contains("nothing has proven it correct"), "{absent}");
+        assert!(
+            !faulted.contains("nothing has proven it correct"),
+            "on a faulted ledger this build cannot tell whether anything proved the form; \
+             asserting that nothing did is a claim it has no evidence for: {faulted}"
+        );
+        assert!(
+            faulted.contains("INSTRUMENT"),
+            "R13: an instrument outage reported as a finding about the form: {faulted}"
+        );
+        assert!(
+            faulted.contains("--check"),
+            "the repair for a damaged artifact is not re-proving one form: {faulted}"
+        );
     }
 
     #[test]

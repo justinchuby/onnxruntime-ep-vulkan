@@ -1,0 +1,135 @@
+{
+  "device_selector": "0",
+  "subject": "\u00a78.9.20 dispatch-time frame witness \u2014 shaders_dispatched_spec_digest",
+  "emission": "counters.rs::specialisation_digest_for over record_pipeline_variant's set; audited from vk/session.rs at pipeline creation via registry::audit_dispatch_specialisation",
+  "no_duration_quoted": "Every reading here is a digest string or a list.",
+  "verdict": "PASS",
+  "checks": [
+    {
+      "check": "the SPIR-V digest is blind to the specialisation",
+      "result": true,
+      "detail": "A1=4be613c24634ec9e A2=4be613c24634ec9e \u2014 if these differed there would be no hole and \u00a78.9.20 would be unnecessary"
+    },
+    {
+      "check": "the source digest is blind to it too",
+      "result": true,
+      "detail": "A1=270e8086408f69a4 A2=270e8086408f69a4"
+    },
+    {
+      "check": "the specialisation digest is not blind to it",
+      "result": true,
+      "detail": "A1=776968369d964eb4 A2=776cce369d9931dd \u2014 the positive state: two pipelines built from identical bytes, told apart"
+    },
+    {
+      "check": "and it does not move when nothing moved",
+      "result": true,
+      "detail": "A1=776968369d964eb4 A3=776968369d964eb4 \u2014 arming a switch that was already on; a digest that always moves is a clock, not an instrument"
+    },
+    {
+      "check": "the dispatch-time audit ran against the shipped ledger",
+      "result": true,
+      "detail": "D claimed 1 node(s) and dispatched 1; unrecorded forms=['ai.onnx::Sum/8+/f32,f32>f32/ew_binary_add_f32/static/n2', 'ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2']. Empty means the audit never ran, which is the field-nobody-reads failure this section exists to avoid"
+    },
+    {
+      "check": "no delta is claimed where no entry records a specialisation",
+      "result": true,
+      "detail": "every shipped entry is SPEC-UNRECORDED, so a delta row here would be invented"
+    }
+  ],
+  "observations": [
+    {
+      "case": "A1_unset_block32",
+      "env": null,
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "observed": "ok",
+      "shader_digest": "4be613c24634ec9e",
+      "source_digest": "270e8086408f69a4",
+      "spec_digest": "776968369d964eb4",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,1"
+      ],
+      "specialisation_delta_forms": [],
+      "specialisation_unrecorded_forms": [
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales"
+      ],
+      "ledger_specialisation_unrecorded_entries": 103,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    },
+    {
+      "case": "A2_forced_off",
+      "env": "0",
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "observed": "ok",
+      "shader_digest": "4be613c24634ec9e",
+      "source_digest": "270e8086408f69a4",
+      "spec_digest": "776cce369d9931dd",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,0"
+      ],
+      "specialisation_delta_forms": [],
+      "specialisation_unrecorded_forms": [
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales"
+      ],
+      "ledger_specialisation_unrecorded_entries": 103,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    },
+    {
+      "case": "A3_forced_on",
+      "env": "1",
+      "graph": {
+        "kind": "matmulnbits",
+        "bits": 4,
+        "block_size": 32
+      },
+      "observed": "ok",
+      "shader_digest": "4be613c24634ec9e",
+      "source_digest": "270e8086408f69a4",
+      "spec_digest": "776968369d964eb4",
+      "pipeline_variants": [
+        "q_gemv_matmul_nbits_f32:32,4,32,0,8,1"
+      ],
+      "specialisation_delta_forms": [],
+      "specialisation_unrecorded_forms": [
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32,u8>f32/q_gemv_matmul_nbits_f32/static/scales+zero_points",
+        "com.microsoft::MatMulNBits/1+/f32,u8,f32>f32/q_gemv_matmul_nbits_f32/static/scales"
+      ],
+      "ledger_specialisation_unrecorded_entries": 103,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    },
+    {
+      "case": "D_elementwise",
+      "env": null,
+      "graph": {
+        "kind": "elementwise"
+      },
+      "observed": "ok",
+      "shader_digest": "c9f5eddc2471b772",
+      "source_digest": "c96284dee813bf70",
+      "spec_digest": "77ed1c69886e68d5",
+      "pipeline_variants": [
+        "ew_binary_add_f32:256,1"
+      ],
+      "specialisation_delta_forms": [],
+      "specialisation_unrecorded_forms": [
+        "ai.onnx::Sum/8+/f32,f32>f32/ew_binary_add_f32/static/n2",
+        "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2"
+      ],
+      "ledger_specialisation_unrecorded_entries": 103,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    }
+  ]
+}

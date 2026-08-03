@@ -647,6 +647,15 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         # written is the one that silently disagrees three weeks later.
         "shaders_dispatched_source_digest": c.get("shaders_dispatched_source_digest", ""),
         "shader_toolchain": c.get("shader_toolchain", ""),
+        # §8.9.20 DISPATCH-TIME FRAME WITNESS — the runtime specialisation this proof run bound.
+        #
+        # Both digests above are fixed at build time, and what actually runs is a *pipeline*:
+        # `(SPIR-V, specialisation values, layout)`. A spec constant chosen at dispatch — the
+        # packed-load constant of `q_gemv.comp`, and every selector added since — is in neither,
+        # so two runs that select different values agree on both digests and run different
+        # kernels. Read off the artifact for the same reason as the other two: a Python
+        # re-derivation would be a mirror, and mirrors drift.
+        "shaders_dispatched_spec_digest": c.get("shaders_dispatched_spec_digest", ""),
         # §8.9.14 input witness — how many inferences this measurement is made of. One is what
         # makes the entry immune to input-cache staleness; the entry records the number so a
         # future multi-inference case cannot inherit that immunity by looking the same.
@@ -695,6 +704,7 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     shader_digest = proof_run.get("shaders_dispatched_digest") or ""
     source_digest = proof_run.get("shaders_dispatched_source_digest") or ""
     toolchain = proof_run.get("shader_toolchain") or ""
+    spec_digest = proof_run.get("shaders_dispatched_spec_digest") or ""
     # THE DEVICE FIELD MUST NAME HARDWARE, NOT A REQUEST (2026-08-02, Mouse).
     #
     # `device` as passed in is `device{N}` — the *selector ordinal*, which is what the caller
@@ -770,6 +780,25 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             f"toolchain={toolchain!r}. The frame this proof was taken in has to be nameable or "
             f"the delta against a second toolchain cannot be printed."
         )
+    # §8.9.20 — THE SPECIALISATION IS PART OF THE FRAME AND CANNOT BE RECOVERED LATER.
+    #
+    # `source_digest` was backfillable because the tree that produced it is still here: an entry
+    # whose SPIR-V still matches this build's proves that this source is that source. The
+    # specialisation has no such witness. It is a value chosen at dispatch by a run that has
+    # ended, and nothing in the tree records what that run bound — which is exactly why the 103
+    # entries written before this section can never be stamped and are disclosed as
+    # `SPEC-UNRECORDED` instead.
+    #
+    # So the refusal has to be here, at the only moment the fact exists. An entry written *now*
+    # without it would be a new member of a population whose only repair is re-proving.
+    if not spec_digest or spec_digest == "NONE-DISPATCHED" or spec_digest.startswith("PARTIAL-"):
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the run reported "
+            f"spec_digest={spec_digest!r}. Both build-time digests are blind to a specialisation "
+            f"constant chosen at dispatch, so without this the entry agrees with a run that "
+            f"built a different pipeline from the same bytes. Unlike source_digest this cannot "
+            f"be backfilled — the value belongs to the run, not the tree."
+        )
     return json.dumps(
         {
             "key": key,
@@ -790,6 +819,8 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             # --- frame: what compiled that code, and what the tree said it was (§8.9.19) ---
             "source_digest": source_digest,
             "toolchain": toolchain,
+            # --- frame: what the run specialised it to, which no build can recover (§8.9.20) ---
+            "spec_digest": spec_digest,
             # --- input provenance: how many inferences this proof is made of (§8.9.14) ---
             **({} if compute_calls is None else {"compute_calls": int(compute_calls)}),
             "worst_rel": float(proof_run.get("worst_rel", 0.0)),
@@ -897,6 +928,7 @@ def check_ledger(path: pathlib.Path) -> int:
         )
     seen = set()
     planted = _planted_control_key()
+    spec_unrecorded: list[str] = []
     for raw in lines[1:]:
         e = json.loads(raw)
         key = e.get("key", "")
@@ -970,12 +1002,38 @@ def check_ledger(path: pathlib.Path) -> int:
                 f"entry {key} names no toolchain; the frame delta against a second compiler "
                 f"cannot be printed (rust/tools/gen_proof_ledger.py --backfill-frame)"
             )
+        # §8.9.20: the specialisation frame. ABSENCE IS NOT A FAILURE HERE AND THAT ASYMMETRY IS
+        # THE POINT. Every entry written before this section records nothing, and no build can
+        # recover what a finished run bound — there is no `--backfill-frame` for it, only
+        # `--reprove`. Failing the check would fail it for 103 entries with no repair available,
+        # which is how a check gets switched off. They are counted and named instead, and
+        # `registry.rs` claims them as SPEC-UNRECORDED rather than as agreement.
+        #
+        # A *present but unusable* value is a different matter: it means the run could not form
+        # the digest and the generator wrote it anyway, so it fails.
+        spec_field = e.get("spec_digest")
+        if spec_field is None or spec_field == "":
+            spec_unrecorded.append(key)
+        elif not isinstance(spec_field, str) or spec_field == "NONE-DISPATCHED" \
+                or spec_field.startswith("PARTIAL-"):
+            failures.append(
+                f"entry {key} carries spec_digest={spec_field!r}, which is a state and not a "
+                f"digest; the run could not form one and the entry should not have been written"
+            )
     if failures:
         print(f"FAIL(condition=LEDGER_INVALID): {path}")
         for f in failures:
             print(f"  - {f}")
         return 1
     print(f"PASS: {path} — {len(lines) - 1} entr(ies), digest {digest}")
+    if spec_unrecorded:
+        # R13: the count is printed on a PASS, because a narrowing nobody is told about is a
+        # quiet demotion. These entries prove their form under a specialisation nobody recorded.
+        print(
+            f"  NOTE(§8.9.20): {len(spec_unrecorded)} of {len(lines) - 1} entr(ies) record no "
+            f"spec_digest and prove their form under an UNRECORDED runtime specialisation. "
+            f"They claim and are disclosed as SPEC-UNRECORDED; --reprove is the only repair."
+        )
     return 0
 
 
