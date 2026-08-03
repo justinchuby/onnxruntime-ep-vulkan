@@ -2210,7 +2210,13 @@ def reconcile_equivalence(record: "dict[str, Any]") -> "dict[str, Any]":
         "of_record_value": outer,
         "of_record_source": (
             "bench/phi35.py::compare — the CPU-vs-EP output comparison, whose evidence is "
-            "the sibling `outputs` list (argmax, top-k overlap, max_rel_diff)"
+            "the sibling `outputs` list (argmax, top-k overlap, max_rel_diff). Read all "
+            "three with their known weaknesses: argmax and top-k overlap describe ONE "
+            "token position (N=1) and can falsify agreement but not establish it, and "
+            "max_rel_diff is a denominator artefact attained at near-zero elements and "
+            "not monotone in depth. The residual statistic of record is median_ulp_diff "
+            "(tests/ops/_models.py::ulp_residual); see "
+            "bench/results/criterion10-ulp-prediction.md"
         ),
         "counters_copy_value": counters_token,
         "counters_copy_authority": authority,
