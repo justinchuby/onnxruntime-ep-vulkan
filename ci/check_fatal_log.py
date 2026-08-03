@@ -82,6 +82,26 @@ def main(argv: list[str]) -> int:
         )
         return EXIT_ERROR_INSTRUMENT
 
+    # LIVENESS, before any verdict of this check is trusted.  Added 2026-08-02 by Trinity
+    # with the marker fix: between 2026-07-31 and 2026-08-02 the patterns did not match the
+    # line ORT actually prints, so this check reported green over a log announcing the
+    # fallback twice, and was cited as second witness for five incidents on the strength of
+    # a match it could not make.  **A marker list that has never been shown to fire is
+    # indistinguishable from one that cannot** — so it is now shown to fire, against a real
+    # captured announcement, every time this check runs.  A blind witness is an instrument
+    # outage and never a detection (R13).
+    try:
+        _verdict.assert_fatal_log_check_is_live()
+    except Exception as exc:  # noqa: BLE001
+        print("FATAL-LOG-CHECK: ERROR(instrument=witness_not_live)", flush=True)
+        print(
+            f"{exc}\n\n"
+            "This check scanned nothing, because a scanner that cannot match its own "
+            "positive control tells you nothing about the log you gave it.",
+            flush=True,
+        )
+        return EXIT_ERROR_INSTRUMENT
+
     hits: list[tuple[str, str]] = []
     scanned = 0
     for name in argv:

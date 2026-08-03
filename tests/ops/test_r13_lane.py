@@ -149,12 +149,28 @@ def test_a_two_state_classifier_fails_the_protocol() -> None:
 # Claim: the known-fatal log line is a lane failure, on a PASSING test
 # ---------------------------------------------------------------------------
 
+# Copied verbatim out of bench/results/ctx512_device_lost.txt, 2026-08-02, line wrap and
+# all.  The previous value of this constant was our own paraphrase -- "Falling back to
+# CPUExecutionProvider." -- and every arm below was green against it while the witness was
+# structurally unable to see what ORT actually prints (a list repr).  Fiction testing
+# fiction.  Do not "simplify" this string: its awkwardness is the evidence.
 _FALLBACK_CAPTURE = (
-    "2026-07-31 21:00:00 [I] session start\n"
-    "[E:onnxruntime:, sequential_executor.cc:516] Non-zero status code returned while "
-    "running VulkanExecutionProvider node. EP_FAIL ... Falling back to "
-    "CPUExecutionProvider.\n"
-    "2026-07-31 21:00:03 [I] done\n"
+    "2026-08-02 21:00:00 [I] session start\n"
+    "EP Error: [ONNXRuntimeError] : 11 : EP_FAIL : Non-zero status code returned while "
+    "running VulkanExecutionProvider_13948954645276092517_0 node.\n"
+    "Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' "
+    "Status Message: vkWaitForFences failed using ['VulkanExecutionProvider',\n"
+    "'CPUExecutionProvider']\n"
+    "Falling back to ['CPUExecutionProvider'] and retrying.\n"
+    "2026-08-02 21:00:03 [I] done\n"
+)
+
+#: The string the witness used to match: THIS repository's prose about what ORT prints.
+#: It must NOT be a lane failure -- twelve of the twelve hits the old markers ever produced
+#: across three real logs were this sentence, quoted back out of a captured suite log.
+_OUR_OWN_PROSE_CAPTURE = (
+    "E       ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' during "
+    "sess.run()\n"
 )
 
 
@@ -173,6 +189,19 @@ def test_clean_capture_is_not_a_lane_failure() -> None:
     """Paired control: a witness that fires on everything is a witness that says nothing."""
     assert lane._fallback_lane_failure("everything was fine\nrun complete\n") is None
     assert lane._fallback_lane_failure("") is None
+
+
+def test_our_own_prose_about_the_line_is_not_the_line() -> None:
+    """The paired control that did not exist, and whose absence was the whole defect.
+
+    A suite log routinely contains this repository's own description of what ORT prints,
+    because our docstrings are echoed into it by pytest.  The old markers matched that
+    description and nothing else: twelve hits across three real logs, all ours, zero from
+    ORT.  So a witness that fires on our prose is not merely imprecise -- it produces
+    confident positives that carry no information at all, which is worse than silence
+    because it looks like corroboration.
+    """
+    assert lane._fallback_lane_failure(_OUR_OWN_PROSE_CAPTURE) is None
 
 
 def test_the_witness_cannot_crash() -> None:
