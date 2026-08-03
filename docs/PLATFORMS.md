@@ -2110,6 +2110,153 @@ The reading is a **dispatch-window** reading. The teardown window is `UNOBSERVAB
 
 ---
 
+## 7.20 Cross-platform: the Linux answer, and the design fact underneath it
+
+Cross-platform is the entire reason this project chose Vulkan, and until 2026-08-02 nobody had checked it. Criterion 1 reads *"Met on Windows; Linux via CI"*. This section is the Linux half, answered by running it rather than by reading the workflow.
+
+Three ordered questions were asked. The first two have short answers. The third is the one that matters.
+
+### 7.20.1 Q1 — does the EP build on Linux today?
+
+**Yes, and this is not a small result.** `cargo build --release` at `d375a4d` on WSL Ubuntu 24.04 (rustc/cargo 1.97.1) completes clean in 57 s, with the ledger, the digest machinery and the disclosure module all in place. The cdylib links, `epctl` links, and both run.
+
+**But `cargo test --lib` does not compile on Linux — eleven errors, all in `rust/src/ep.rs`:**
+
+```
+error[E0308]: mismatched types
+    --> src/ep.rs:2769
+     |     expected `i32`, found `u32`
+error[E0277]: can't compare `i32` with `u32`
+    --> src/ep.rs:2813
+```
+
+at lines 2769, 2813, 2825, 2856, 2914 and 3000. `ort::OrtLoggingLevel_*` are bindgen-generated C enum constants, and bindgen represents them as `i32` on Windows and `u32` on Linux. This is **exactly the class of this morning's `ort::wchar_t` defect, in the same file**, and the established fix is the same shape: Tank's cfg-selected alias at the top of `ep.rs`. `rust/src/ep.rs` is not mine; this is routed, not patched.
+
+### 7.20.2 The misname: "clippy is red" was never a lint problem
+
+`cargo clippy --all-targets` compiles the lib-test cfg, so it hits those eleven errors. In CI the failing step is named **`Clippy (all warnings as errors)`**, and it has been red since the morning, sitting with Switch as a **lint** issue.
+
+It is not a lint issue. It is a **portability** defect, and the misname is precisely why it survived a full day: a red lint step reads as tidiness, and a red portability step reads as *the thing does not build on the target platform*. Tank's vocabulary already has the terminal state for this — `misnamed`: wired, invoked, correct in what it does, and wrong in what it was called. This is a second specimen alongside `Phase::Record`, and the cost was different in kind. `Phase::Record` was wrong by 50× in a number. This one was wrong by *a whole platform* in a priority.
+
+### 7.20.3 The gating chain, and a status my own table did not have
+
+CI does not merely fail at clippy. GitHub Actions marks **every subsequent step in the job `skipped`** — seven of them, including `cargo test --lib`, the portability lint, the four integration targets, `epctl --probe-loader`, and the op-correctness pytest.
+
+**A skipped step reports nothing.** So my inventory's classification of `device.op_correctness` and `build.integration_targets` as `UNDEMONSTRATED` was wrong, and wrong in the flattering direction. `UNDEMONSTRATED` says *this check runs, and nobody has performed the mutation that would prove it can go red* — one demonstration away from green. The truth is **it has never started**. Those are different facts and my table conflated them all session.
+
+`ci/lane_inventory.py` now carries a fifth status, **`GATED_NEVER_RUN`**, in `RECORDED_GAP_STATUSES` and never in `GREEN_STATUSES`, and `device.op_correctness`'s `observed` date is removed — an observation date on a step that has never executed is the overclaim the status exists to delete.
+
+This is R9 turned around. *Running a while is not the falsifier* was the discipline; **a check that has never run is not yet a check at all** is its other half.
+
+### 7.20.4 Q2 — does it execute on lavapipe? The loader says yes. The EP declines.
+
+`epctl --probe-loader` under lavapipe (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`):
+
+```
+Device 0 [Vulkan enum index 0]: llvmpipe (LLVM 20.1.2, 256 bits) [Vulkan 1.4.318]  — gate PASS
+  R1  Vulkan API version (req. >= 1.1)             1.4.318      PASS
+  R3  maxComputeWorkGroupInvocations (req. >= 256) 1024         PASS
+  R4  maxComputeSharedMemorySize (req. >= 16384 B) 32768 B      PASS
+  subgroup_size = 8
+```
+
+Every capability requirement passes. **The device is there and it is admissible.**
+
+Then the EP runs, and claims nothing:
+
+```
+[VulkanEP] proof ledger fault: ledger entry for
+  "ai.onnx::Add/7+/f16,f16>f16/ew_binary_add_f16/static/n2" was proven against shader
+  digest 97cf806c440177be but this build's modules ["ew_binary_add_f16"] hash to
+  74ed33ebb9a5ca89. The entry describes a kernel that has been replaced.
+
+[§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP.
+
+EXIT = 0
+```
+
+151 lines of that, one per ledger entry, and the process exits 0.
+
+So: **the EP loads, registers, enumerates lavapipe, passes its own capability gate, and then declines every form it has.** Not because of lavapipe. Not because of `subgroup_size = 8`. Because of the ledger, which brings us to Q3.
+
+### 7.20.5 Q3 — the ledger is neither per-device nor portable. It is keyed per *toolchain*.
+
+The question posed was a dichotomy: *either the ledger is per-device and Linux needs its own proof runs, or it is not and we are claiming forms on a device where nothing proved them.* **The answer is a third thing, and it is worse than either.**
+
+`registry::shader_digest_for` hashes the **embedded SPIR-V bytes**. The GLSL is identical — same tree, same commit. What differs is the compiler: Vulkan SDK 1.4.350.0's `glslc` on Windows, Ubuntu's `shaderc 2023.8` / `glslang 14.0.0` in WSL. Different compiler, different bytes, different digest, every entry stale.
+
+Meanwhile the ledger records `"device": "device0"` on **74 of 75 entries** (one carries none), and the verification predicate never reads it.
+
+| axis | varies across | does the digest constrain it? | should it? |
+|---|---|---|---|
+| kernel source | a GLSL edit | **yes** — this is what it is for | yes |
+| **build toolchain** | which `glslc` compiled it | **yes, accidentally** | no |
+| **execution device** | NVIDIA / Intel / lavapipe / Adreno | **no** | this is the only axis a GPU-kernel correctness proof actually varies along |
+
+**The falsifier for the second row, demonstrated:** run the harness probe on Windows with `ONNXRUNTIME_EP_VULKAN_DEVICE=1` (Intel Iris Xe). The EP claims the form, and prints its own provenance while doing it:
+
+```
+session claims 1 proven form(s): com.microsoft::MatMulNBits x1
+  proven by evidence/cases/matmulnbits_f16_scales.onnx ON DEVICE0 against 1.28.0
+```
+
+**The banner states that the proof came from a different device, and claims the form anyway.** The provenance is in the record and absent from the predicate. Not one form in this project has ever been proven on Iris Xe, and not one on lavapipe.
+
+The two halves fail in opposite directions and only one of them is safe:
+
+- **Digest disagrees** (Linux today) → form declined → work goes to the CPU EP, which is always right. Loud, wasteful, **fails safe**.
+- **Digest agrees, device never proven** (Iris Xe, every day) → form claimed on a device nothing ever proved it on. Silent, **fails open**, and nothing watches it.
+
+**So cross-platform is an architecture problem, not a CI problem.** Buying a Linux GPU runner would not fix it; the runner would build its own SPIR-V with its own `glslc` and fault on all 74 entries exactly as WSL does. The same sentence as the tick screen: *it would survive buying every runner.*
+
+The choice is Morpheus's and Mouse's, and it is a choice between two coherent positions, not a bug to be patched:
+
+1. **The ledger is per-device.** Then the predicate must include the device, every platform needs its own proof runs, and the entry count multiplies by the device matrix.
+2. **Shader-level correctness is device-independent.** Then the digest should be over the *GLSL source*, not the compiled bytes, and the position must be written down — because it is a claim about every driver we have never run on.
+
+**Do not resolve it by re-proving per platform.** That makes the digest a per-machine build fingerprint, deletes the one thing it does do (a kernel edit invalidating its proofs), and `gen_proof_ledger.py --reprove` without `--append` currently rewrites the ledger from 74 entries to 1 while printing `PASS`. That guard has not landed.
+
+### 7.20.6 The reporting defect, which is mine: the lane would have gone green having asserted nothing
+
+Downstream of the ledger fault, `tests/ops/conftest.py::_probe_vulkan_device` builds a MatMulNBits probe session, sees the EP claim no node, and returns `False`. Every device test then skips with:
+
+```
+No Vulkan device available — either no ICD is installed or all devices failed the
+capability gate. ... To run on CPU software rasterizer (lavapipe): export
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+2 passed, 36 skipped
+```
+
+**Both halves of that sentence are false on this box**, and the remedy it advises is the state it is already in. An ICD is installed. No device failed the capability gate — `epctl` printed gate PASS for llvmpipe seconds earlier. The harness reports an **EP decision** as a **device absence**.
+
+This is the eighth instance of the silent-CPU-fallback class and it arrives through a mechanism no existing screen watches. It is also the exact failure the brief forbade: **fixing clippy alone would turn the op-correctness step green, and the step would have asserted nothing.** A lane that passes because it asserts less is worse than one that is honestly red — and this one would not even have narrowed deliberately. It narrows itself to zero and reports `2 passed`.
+
+`ci/check_ledger_portability.py` goes red on it. Three conditions, each keyed on stable failure **text** rather than a count (R13):
+
+| condition | fires when | arm |
+|---|---|---|
+| `ledger_fault` | the run emitted a proof-ledger fault | **LIVE** — `linux_lavapipe_probe.txt` |
+| `claimed_nothing` | `claims 0/N nodes` on a declared device lane | PLANTED |
+| `device_absence_misnamed` | "No Vulkan device available" on a box whose loader gate passed | **LIVE** — `linux_lavapipe_optests.txt` |
+
+Green arm: **LIVE** — `windows_nvidia_probe_control.txt`, same commit, same ledger file, minutes apart. That is what makes the red arm a portability finding rather than a stale ledger.
+
+`ci/negative_control_ledger_portability.py` stands at **3 LIVE / 0 REPLAYED / 8 PLANTED**. All three conditions have a live arm, which is unusual on this project and only because Linux was genuinely broken when I looked.
+
+**It does not take the exit status as an input**, and there is a test asserting the source never mentions `returncode`. The defect *is* an exit status of 0; accepting one as a filter would be accepting the defect as the filter.
+
+**`claimed_nothing` and `device_absence_misnamed` are `UNOBSERVABLE` unless the caller supplies `--device-lane` and `--loader-artifact`.** A build-only run claims nothing correctly, and without a gate PASS on record an absent device may simply be absent. Both print as `UNOBSERVABLE` rather than passing silently — but a caller who omits them gets a narrower check that still says `PASS` on its last line, and that is a named residual, not a closed one.
+
+### 7.20.7 What this section does not claim
+
+- **It does not claim the EP cannot execute on lavapipe.** It claims the EP *declined to*, for a reason that has nothing to do with lavapipe. Whether a fused island runs correctly on a software rasteriser is still unanswered, and it stays unanswered until the ledger question is decided. `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` would force a claim, but a lane that claims unproven forms to make itself green is the narrowing the brief forbade.
+- **It does not claim the eleven `ep.rs` errors are the only Linux defect.** They are the only ones reachable: they stop the compile, so nothing behind them has been observed. Once they are fixed, the next thing may well be red too, and that would also be a good finding.
+- **`subgroup_size = 8` on lavapipe is now measured on the device rather than quoted.** That is the independent support for the subgroup-32 falsifier-by-construction argument (§7.11), and it is a measurement about llvmpipe. It is not an Adreno or Mali result, and nothing here may launder into Android evidence.
+- **No timing figure appears above, and none is quotable from any of it.** The box is permanently contended (`PERF.md` §20).
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---
