@@ -19,6 +19,7 @@ use crate::engine::{
 use crate::registry::OpSpec;
 
 use super::params;
+use super::selector;
 use super::shape_plan::ShapePlan;
 
 /// Workgroup size every elementwise template is compiled with.
@@ -132,9 +133,22 @@ fn dispatch_elementwise(
     let out_buf = ctx.bind_output(out, TensorDesc::new(out_dtype, plan.out_dims()))?;
     bindings.push(out_buf);
 
+    // The selector is pushed only for the ops that declare one. Vulkan ignores a map entry for a
+    // constant_id the module does not use, so pushing it unconditionally would be legal — but it
+    // would also make every elementwise pipeline key three-wide, and the key is what the counters
+    // report as `pipeline_variants`. Pushing what the op actually has keeps that number readable.
+    let mut spec_constants = vec![EW_LOCAL_SIZE, u32::from(plan.all_identical)];
+    if selector::source_for(&node.op_type).is_some() {
+        spec_constants.push(selector::resolve(&node.op_type, node).map_err(|e| {
+            // Same argument as the parameter tail below: claim already validated this, so a
+            // disagreement here is an internal inconsistency, not a graph we should have declined.
+            EpError::Internal(format!("`{}` {e}", node.op_type))
+        })?);
+    }
+
     ctx.dispatch(KernelRequest {
         shader,
-        spec_constants: vec![EW_LOCAL_SIZE, u32::from(plan.all_identical)],
+        spec_constants,
         push_constants: plan.push_constants_with_params(
             params::resolve(&node.op_type, node).map_err(|e| {
                 // Claim already validated these, so reaching here means the claim predicate and
@@ -163,10 +177,84 @@ pub fn ew_select(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) 
     dispatch_elementwise(spec, node, ctx, 3, 1)
 }
 
-/// Translate `Clip` — three inputs that all share the value dtype, unlike `Where` whose first
-/// input is `bool`. Same template, different `dtype_from`.
+/// Translate `Clip` — the ternary module, whose bounds may be absent.
+///
+/// Unlike `Where`, whose three inputs are always present and whose first is `bool`, `Clip`'s `min`
+/// and `max` are optional inputs. The module always declares three bindings, so an absent bound's
+/// binding is filled with **input 0** as an inert placeholder — the same device `q_gemv` uses for
+/// a missing `zero_points`. `EW_SELECTOR` tells the shader which of bindings 1 and 2 are real, and
+/// the guard it compiles means the placeholder is never read.
+///
+/// Binding the value tensor rather than allocating a dummy is deliberate: it costs no allocation,
+/// it cannot be out of range for any index the shader could compute (it is the same buffer the
+/// value comes from, with the same element count), and there is no sentinel to get wrong at a
+/// dtype that has no infinity.
 pub fn ew_clip(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
-    dispatch_elementwise(spec, node, ctx, 3, 0)
+    let sel = selector::resolve(&node.op_type, node)
+        .map_err(|e| EpError::Internal(format!("`{}` {e}", node.op_type)))?;
+
+    // Which node input backs each of the three bindings. An absent bound reads input 0.
+    let sources = [
+        0usize,
+        if sel & 1 != 0 { 1 } else { 0 },
+        if sel & 2 != 0 { 2 } else { 0 },
+    ];
+
+    let mut shapes = Vec::with_capacity(sources.len());
+    for &i in &sources {
+        let t = node.inputs.get(i).ok_or_else(|| {
+            EpError::InvalidGraph(format!(
+                "`{}` was claimed with selector {sel:#b} but input {i} is missing at compile time",
+                node.op_type
+            ))
+        })?;
+        let desc = t.desc.as_ref().ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input {i} (`{}`) has no shape at compile time",
+                node.op_type, t.name
+            ))
+        })?;
+        shapes.push(desc.shape.clone());
+    }
+    let refs: Vec<&[i64]> = shapes.iter().map(Vec::as_slice).collect();
+    let plan = ShapePlan::broadcast(&refs).map_err(|e| {
+        EpError::Unsupported(format!("`{}` shapes cannot be planned: {e}", node.op_type))
+    })?;
+
+    let dtype = node.inputs[0]
+        .desc
+        .as_ref()
+        .map(|d| d.dtype)
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` input 0 has no element type at compile time",
+                node.op_type
+            ))
+        })?;
+    let shader = spec.kernel.stem(dtype).ok_or_else(|| {
+        EpError::Internal(format!(
+            "`{}` was claimed but its row declares no shader",
+            node.op_type
+        ))
+    })?;
+
+    let mut bindings = Vec::with_capacity(4);
+    for &i in &sources {
+        bindings.push(ctx.resolve(&node.inputs[i])?);
+    }
+
+    let out = single_output(node)?;
+    let out_dtype = out.desc.as_ref().map_or(dtype, |d| d.dtype);
+    let out_buf = ctx.bind_output(out, TensorDesc::new(out_dtype, plan.out_dims()))?;
+    bindings.push(out_buf);
+
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![EW_LOCAL_SIZE, u32::from(plan.all_identical), sel],
+        push_constants: plan.push_constants_with_params(super::shape_plan::EW_PARAMS_NONE),
+        bindings,
+        workgroups: plan.workgroups_1d(EW_LOCAL_SIZE),
+    })
 }
 
 /// Translate a variadic elementwise op by chaining the binary template.
