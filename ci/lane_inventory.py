@@ -531,10 +531,12 @@ CHECKS: tuple[Check, ...] = (
         misses=(
             "It cannot see whether the conversion is CALLED at the real call sites. A "
             "correct ticks_to_ns that nobody invokes passes every one of these tests.",
-            "A flake lives here: counters::tests::a_pinned_authoritative_counter_reports_"
+            "A flake lived here: counters::tests::a_pinned_authoritative_counter_reports_"
             "unobservable_and_never_zero failed once in three full runs on 2026-08-01, "
             "writing to a fixed path under a process-global env var while other tests run "
-            "in parallel. Recorded, not masked, and not mine to fix.",
+            "in parallel. That test now holds ledger::test_lock() and the class is watched "
+            "by build.contention_gate — but this step STILL cannot see an intermittent, "
+            "because it runs once. Its green is a statement about one draw.",
         ),
     ),
     Check(
@@ -570,6 +572,120 @@ CHECKS: tuple[Check, ...] = (
             "(layering, portability, cdylib_load, dump_capabilities, host_registration, "
             "validation_control) can still pass with zero tests and are a NAMED open gap "
             "from the 2026-08-03 sweep, not an oversight.",
+        ),
+    ),
+    Check(
+        id="build.contention_gate",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="Contention gate (repeat the process-global families; keep the whole red)",
+        watches=(
+            "Intermittent failures caused by tests sharing a process-global — the counters "
+            "statics, the ORT logger pointers, or an environment variable — which the single "
+            "`cargo test --lib` above cannot see. A 1-in-40 per-run rate passes 97.5% of "
+            "merges, and on 2026-08-03 exactly that happened: one red, six greens, pushed."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None planted. Remove the three `let _g = crate::allocator::ledger::test_lock();` "
+            "lines from the `backend_probe_*` tests in rust/src/vk/barrier.rs — i.e. restore "
+            "the tree as it stood at main@d46327b — and the gate goes red on its own."
+        ),
+        arm_healthy=(
+            "CONTENTION GATE: GREEN — 5 pools, 20 reps each, 0/20 red on every pool, 38 s "
+            "wall (Windows, 2026-08-03, post-fix tree)"
+        ),
+        arm_broken=(
+            "CONTENTION GATE: RED — 3 of 20 reps of pool env:backend_probe, naming "
+            "vk::barrier::tests::backend_probe_writes_sync2_token at src/vk/barrier.rs:918:9 "
+            "and, in rep 16, backend_probe_writes_legacy_token at src/vk/barrier.rs:899:51 in "
+            "the SAME run; full capture retained per red repetition"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "Its pools come from audit_counter_test_lock, whose stated extent is test "
+            "BODIES, not call graphs. A test that reaches a process-global only through a "
+            "helper defined outside its own body is in neither the auditor nor this gate.",
+            "It repeats; it does not control scheduling. A race whose window is narrower "
+            "than this machine's scheduling jitter can still pass 20 reps. The observed "
+            "rate is printed per pool so a decreasing-but-nonzero rate is visible rather "
+            "than rounding to green.",
+            "20 reps detect a 0.025 per-run rate with probability 0.397 — under half. Its "
+            "power comes entirely from the pools being NARROW; a defect that only "
+            "manifests in the full 525-test population is outside it, and the full-suite "
+            "step above remains the only lane that runs that population at all.",
+            "Race conditions between the EP and ORT, or between two processes, are not "
+            "test-pool contention and are invisible here.",
+        ),
+    ),
+    Check(
+        id="hostfree.test_lock_auditor",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Test-lock auditor (process-global families, static, no GPU)",
+        watches=(
+            "A #[test] that touches a process-global — counters statics, ORT logger "
+            "pointers, or a CONTENDED environment variable — without holding "
+            "crate::allocator::ledger::test_lock(); and a test holding some OTHER mutex, "
+            "which is indistinguishable from a correct guard by eye."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None planted for the positive arm: at main@d46327b the tool reports three real "
+            "ENV-UNGUARDED findings (the backend_probe_* family). --selftest additionally "
+            "carries nine specimens: unguarded, foreign-lock, contended-env, guarded-env, "
+            "sole-writer, #[ignore]d writer, and a top-level #[test] in a whole-file test "
+            "module — the last of which the pre-Round-37 scanner could not see at all."
+        ),
+        arm_healthy="0 unguarded, 0 wrong-lock, 0 unguarded env over 3 contended variables",
+        arm_broken=(
+            "ENV-UNGUARDED vk/barrier.rs:882 backend_probe_writes_legacy_token "
+            "[ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE] (+2 more), exit 1"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "Bodies, not call graphs — see build.contention_gate. This is why the repeat "
+            "gate exists beside it rather than instead of it.",
+            "It gates only CONTENDED variables (>=2 live tests, >=1 writer). A single test "
+            "mutating a variable that production code reads on another thread is REPORTED "
+            "as a sole writer and deliberately not failed, because deciding it needs the "
+            "call graph this tool does not have.",
+            "It cannot see a global that is neither a counters call, a logger attach, nor "
+            "an env access — a fourth family would be invisible exactly as the environment "
+            "was until 2026-08-03, and nothing in a green run would say so.",
+        ),
+    ),
+    Check(
+        id="hostfree.contention_gate_extractor",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Contention-gate failure extractor (replay a real red, demand names)",
+        watches=(
+            "The half of the 2026-08-03 incident that was not the flake: a gate that goes "
+            "red and cannot say WHAT failed. The failing test name was lost to a "
+            "`Select-Object -Last 2`, so the incident produced a red with no name."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None planted. rust/tools/contention_gate_red_fixture.txt is a verbatim capture "
+            "of a real red repetition from this tree (rep 16, two tests failing in one run)."
+        ),
+        arm_healthy=(
+            "selftest 5/5 — two names and a panic site recovered from the real red, a green "
+            "capture stays silent, and the tail-2 slice of that same red yields NOTHING, "
+            "which is the incident reproduced as an assertion"
+        ),
+        arm_broken=(
+            "Delete or truncate the fixture, or narrow the extractor to the `failures:` "
+            "block alone, and the selftest reports the missing names by name"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "It certifies the EXTRACTOR, not the gate's ability to provoke a failure. That "
+            "is build.contention_gate's arm, and it needs a Rust toolchain.",
+            "One fixture, one failure shape (libtest panic). A harness abort with no "
+            "`test ... FAILED` lines and no panic line would yield no names and this "
+            "selftest would not notice.",
         ),
     ),
     Check(

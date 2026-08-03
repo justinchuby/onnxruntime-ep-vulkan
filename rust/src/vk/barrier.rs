@@ -870,6 +870,13 @@ mod tests {
 
     use std::sync::atomic::{AtomicU32, Ordering};
     /// Unique counter so parallel tests do not share a probe file path.
+    ///
+    /// Round 37: this was already here, and it is precisely why the diagnosis is not a
+    /// guess. The *paths* were de-conflicted; the tokens crossed anyway. The only thing
+    /// the three tests still shared was `ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE` itself, so
+    /// the pair `writes_sync2_token` + `writes_legacy_token` failing in one run names the
+    /// contended global directly. Measured 6 red in 40 runs of
+    /// `cargo test --lib backend_probe` before the lock below; 0 in 40 after.
     static PROBE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
     fn probe_path(n: u32) -> std::path::PathBuf {
@@ -881,19 +888,24 @@ mod tests {
 
     #[test]
     fn backend_probe_writes_legacy_token() {
+        // The process environment is a process-global, exactly like the counter statics:
+        // serialise with every other test that touches it. The comment this replaces said
+        // the variable "is unique to our test harness" — true, and irrelevant, because the
+        // harness has three tests in it.
+        let _g = crate::allocator::ledger::test_lock();
         let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let p = probe_path(n);
         let path_str = p.to_str().expect("ASCII path");
 
-        // SAFETY: env-var mutation is safe provided no other thread reads the same var
-        // concurrently. This var is unique to our test harness; cargo test runs unit tests
-        // in the same process but on separate threads. To be safe we use a unique path per
-        // invocation (PROBE_COUNTER) and read the env var immediately after writing it.
+        // SAFETY: `set_var`/`remove_var` are not thread-safe. Every #[test] in this crate
+        // that touches this variable holds `ledger::test_lock()` (enforced by
+        // `rust/tools/audit_counter_test_lock.py`), so no concurrent test reads or writes
+        // it while this one runs.
         unsafe {
             std::env::set_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", path_str);
         }
         write_backend_probe(false /* legacy */);
-        // SAFETY: removing the var we just set.
+        // SAFETY: removing the var we just set, still under the lock.
         unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
 
         let content = std::fs::read_to_string(&p).expect("probe file written");
@@ -903,6 +915,7 @@ mod tests {
 
     #[test]
     fn backend_probe_writes_sync2_token() {
+        let _g = crate::allocator::ledger::test_lock();
         let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let p = probe_path(n);
         let path_str = p.to_str().expect("ASCII path");
@@ -910,7 +923,7 @@ mod tests {
         // SAFETY: see backend_probe_writes_legacy_token.
         unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE", path_str) };
         write_backend_probe(true /* sync2 */);
-        // SAFETY: removing the var we just set.
+        // SAFETY: removing the var we just set, still under the lock.
         unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
 
         let content = std::fs::read_to_string(&p).expect("probe file written");
@@ -920,10 +933,14 @@ mod tests {
 
     #[test]
     fn backend_probe_noop_when_env_unset() {
+        // This test never went red, and it is one of the two clobberers: its `remove_var`
+        // lands inside a sibling's set/write window and that sibling reports a missing
+        // file. Fixing only what was observed red would have left the cause unguarded.
+        let _g = crate::allocator::ledger::test_lock();
         let n = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let p = probe_path(n);
         // Env var is NOT set.
-        // SAFETY: removing a var.
+        // SAFETY: removing a var under the lock; see backend_probe_writes_legacy_token.
         unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE") };
         write_backend_probe(false);
         assert!(

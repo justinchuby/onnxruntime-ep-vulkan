@@ -178,8 +178,25 @@ jobs:
         # was made lazy, green after, same environment both times.
         run: python ci/negative_control_suite_productivity.py
 
-      - name: Tautological-assertion screen (no GPU, whole tree)
-        # Scans Rust and Python sources for assertions that pass without reading their
+      - name: Test-lock auditor (process-global families, static, no GPU)
+        # Which #[test] fns touch a process-global without holding ledger::test_lock():
+        # the counters statics, the ORT logger pointers, and — since Round 37 — contended
+        # environment variables. This is the cheap static half of the contention gate that
+        # the build lanes run: it names the offending test and file:line in milliseconds,
+        # where the repeat gate needs 20 cargo invocations to make the same test go red.
+        #
+        # --selftest first, and it is not decoration: an auditor never shown to fire is
+        # indistinguishable from a blind one, and this one's first version WAS blind twice
+        # (a hand-written two-file list, then a whole-file test module it never scanned).
+        run: python rust/tools/audit_counter_test_lock.py --selftest --check --pairs
+      - name: Contention-gate failure extractor (replay a real red, demand names)
+        # The 2026-08-03 incident had two halves and this is the second one: the red was
+        # real and its test name was lost to a `Select-Object -Last 2`. This replays a
+        # committed real red capture through the gate's extractor and requires the two
+        # failing test names and a panic site back out — and requires the tail-2 slice of
+        # that same capture to yield nothing, which is the incident, reproduced.
+        run: python rust/tools/contention_gate.py --selftest --list
+      - name: Tautological-assertion screen (no GPU, whole tree)        # Scans Rust and Python sources for assertions that pass without reading their
         # subject. It reports 0 detections over the tree today and exists as a regression
         # barrier, not a discovery tool -- the two assertion defects that actually
         # occurred here are outside its reach and its own output says so. Its evidence
@@ -513,6 +530,42 @@ jobs:
         run: python ci/check_suite_productivity.py
           --suite "cargo test --lib" --harness libtest --lane build-test-linux
           bench/results/ci-lane/cargo-test-lib-linux.log
+
+      # -------------------------------------------------------
+      # Contention gate — the step above runs ONCE, and once is not
+      # enough to see an intermittent.
+      #
+      # 2026-08-03: a merge gate consisting of one `cargo test --lib`
+      # went red, was re-run six times green, and was pushed on that
+      # basis. A per-run failure rate of 1 in 40 passes 97.5% of
+      # merges, and this project merges many times a day. The failing
+      # test name was also lost, because the step's output had been
+      # truncated to its last two lines — so the incident produced a
+      # red with no name, which is a rumour rather than a bug report.
+      #
+      # This step repeats only the tests that touch a process-global
+      # (counters statics, ORT logger pointers, contended env vars),
+      # derived from rust/tools/audit_counter_test_lock.py rather than
+      # from a list. Narrowing is the amplifier, not a cost saving:
+      # `cargo test --lib backend_probe` failed 6 in 40 on Windows
+      # while the full suite failed 1 in 40 — a 21-test pool aligns on
+      # a contended global far more often than a 505-test pool.
+      # 20 repetitions of five pools cost 38 s wall on the reference
+      # machine and detect a 0.15 per-run rate with probability 0.961.
+      # -------------------------------------------------------
+      - name: Contention gate (repeat the process-global families; keep the whole red)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            python rust/tools/contention_gate.py --release --reps 20
+
+      - name: Upload contention-gate captures
+        if: env.BUILD_SKIPPED != '1' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contention-gate-linux
+          path: bench/results/contention_gate/
+          if-no-files-found: ignore
 
       # -------------------------------------------------------
       # Portability lint — rule P1: a platform-conditional binding
@@ -1030,6 +1083,31 @@ jobs:
             --suite "cargo test --lib" --harness libtest --lane build-test-windows `
             bench\results\ci-lane\cargo-test-lib-windows.log
           exit $LASTEXITCODE
+
+      # -------------------------------------------------------
+      # Contention gate. See the Linux lane for why. This lane is the
+      # one that matters most for it: every measured instance of this
+      # defect class — Round 36's counters race and Round 37's
+      # `backend_probe` env-var race — was reproduced on Windows, and
+      # the 6-in-40 rate quoted in the Linux comment is a Windows
+      # measurement. It is wired on both lanes anyway, because "it
+      # only reproduces on Windows" is a statement about where anyone
+      # has looked.
+      # -------------------------------------------------------
+      - name: Contention gate (repeat the process-global families; keep the whole red)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          python rust\tools\contention_gate.py --release --reps 20
+          exit $LASTEXITCODE
+
+      - name: Upload contention-gate captures
+        if: env.BUILD_SKIPPED != '1' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contention-gate-windows
+          path: bench/results/contention_gate/
+          if-no-files-found: ignore
 
       - name: Portability lint (cargo test --test portability)
         if: env.BUILD_SKIPPED != '1'

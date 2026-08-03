@@ -1,0 +1,31 @@
+
+running 3 tests
+test vk::barrier::tests::backend_probe_noop_when_env_unset ... ok
+test vk::barrier::tests::backend_probe_writes_legacy_token ... FAILED
+test vk::barrier::tests::backend_probe_writes_sync2_token ... FAILED
+
+failures:
+
+---- vk::barrier::tests::backend_probe_writes_legacy_token stdout ----
+
+thread 'vk::barrier::tests::backend_probe_writes_legacy_token' (9228) panicked at src\vk\barrier.rs:899:51:
+probe file written: Os { code: 2, kind: NotFound, message: "The system cannot find the file specified." }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- vk::barrier::tests::backend_probe_writes_sync2_token stdout ----
+
+thread 'vk::barrier::tests::backend_probe_writes_sync2_token' (14020) panicked at src\vk\barrier.rs:918:9:
+assertion `left == right` failed
+  left: "legacy"
+ right: "sync2"
+
+
+failures:
+    vk::barrier::tests::backend_probe_writes_legacy_token
+    vk::barrier::tests::backend_probe_writes_sync2_token
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src\lib.rs (rust\target\debug\deps\onnxruntime_vulkan_ep-eb71a5888fd71be8.exe)
+error: test failed, to rerun pass `--lib`
