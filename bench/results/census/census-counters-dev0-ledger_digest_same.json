@@ -1,10 +1,11 @@
 {
-  "abi_version": 3,
+  "abi_version": 4,
   "compile_calls": 1,
   "subgraphs_live": 1,
   "subgraphs_stub": 0,
   "compute_calls": 1,
   "compute_failures": 0,
+  "device_losses": 0,
   "dispatches_executed": 1,
   "claimed_nodes": 1,
   "islands_offered": 1,
@@ -81,10 +82,10 @@
   "alloc_device_frame_sides": "alloc_device_frame=OFF — no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 1=NVIDIA GeForce RTX 4060 Laptop GPU.",
   "session_staging_uploads": 1,
   "session_staging_upload_bytes": 256,
-  "session_staging_upload_us": 14,
+  "session_staging_upload_us": 19,
   "session_staging_readbacks": 1,
   "session_staging_readback_bytes": 128,
-  "session_staging_readback_us": 90,
+  "session_staging_readback_us": 65,
   "session_device_allocs": 4,
   "session_device_frees": 4,
   "session_device_bytes_in_use": 0,
@@ -92,5 +93,7 @@
   "weight_cache_release_calls": 1,
   "weight_cache_release_buffers": 0,
   "weight_cache_release_bytes": 0,
-  "weight_cache_bytes_resident": 0
+  "weight_cache_bytes_resident": 0,
+  "counters_snapshot_writes": 2,
+  "counters_snapshot_write_failures": 0
 }

@@ -4341,6 +4341,151 @@ rides `add_f32`'s evidence, because each names itself in a ledger key.
 
 ---
 
+### 8.9.14 Three questions about the writer: a destructive success, a witness nobody could produce, and a staleness the digest cannot see (2026-08-02)
+
+Three findings arrived together, all of them about the *writer* rather than about any kernel, and
+all three from Switch's round against GQA. They are recorded together because they are one shape
+seen from three angles: **an instrument that reports on something other than what it did.**
+
+**1. `--reprove` without `--append` rewrote the ledger from 74 entries to 1 and printed `PASS`.**
+
+This is the second time the same defect has been fixed in this file, and the second time it
+arrived through the flag added to fix the first. §8.9.11's fix made entries always carry forward,
+which makes a drop *unlikely*. It does not make a drop a **detection**, and the difference is the
+whole lesson: carry-forward is a property of one code path, and the next flag gets its own path.
+
+`write_ledger()` now compares against what is on disk **before** it writes. A write that would
+leave fewer entries than it found is `FAIL(condition)`, names the keys that would have gone, and
+**writes nothing**. `--rebuild` is the deliberate instruction and has to be asked for by name.
+
+The second half matters as much as the first: on a refusal, `main()` returns immediately and does
+**not** run `--check`. Running it would ask about the file on disk — which is now the *old*,
+perfectly valid one — and it would answer `PASS`. That is exactly how the original `PASS` came to
+sit under an emptied ledger, and how `outputs_compared: 65` came to sit among oracle facts while
+counting something else. A report whose two halves describe different things is the defect; the
+repair is not to reword it but to stop the second half from being produced.
+
+**2. Can a proof run produce `NO-SUBJECT-WITNESS`, or did Switch only catch it by hand?**
+
+His first isolation arm read `calls=0 dispatches=0` — it ran entirely on the CPU EP and would
+have reported *"GQA is innocent"* from a run GQA never entered.
+
+The answer is that the harness refuses that state in three independent places: `disable_cpu_ep_
+fallback` makes **ORT** raise at session creation (§8.9.10), `prove()` returns `UNATTRIBUTED` on
+`not claimed or not dispatches`, and `entry_line()` refuses to write an entry whose attribution
+or subject witness is empty. Switch reading the counters by hand was a fourth.
+
+But that answer was, until now, **a reading of the source, and R10 says a code reading is not a
+falsifier.** So both shapes are now planted in the lane — a record with no attribution and a
+record with attribution but no nameable shader — and the refusal is asserted, alongside a healthy
+record that must still be written, because a test that refuses everything passes for free.
+
+The distinction worth keeping: his arm was a **probe**, and probes have no writer to refuse them.
+The guards protect the ledger, not every script that touches the EP. `NO-SUBJECT-WITNESS` is the
+right name for the state a probe can be in, and naming it does not make a probe check for it.
+
+**3. Could any of the 95 entries have been proven against stale inputs?**
+
+Switch found the input cache was keyed on `(cpu_ptr, byte_size)` with a 32 KiB floor and no
+content check, so every inference after the first in a session read the first one's inputs. All
+95 entries were minted on a binary carrying that defect.
+
+**The answer is none, and it is clean.** The defect requires a *second* `Compute()` in the same
+session. Every proof arm is a fresh subprocess that builds one session and calls `sess.run`
+exactly once — `sess.run` appears once in the whole harness, with no loop — and the EP's own
+counters from a proof run agree: `compute_calls: 1`, `weight_cache_release_buffers: 0`,
+`weight_cache_bytes_resident: 0`. There is no second inference for a stale cache to serve.
+
+That is a true statement about today's harness and a fragile one about tomorrow's. A future case
+needing two inferences — a KV-cache form is the obvious one — would reintroduce the exposure and
+its entry would look identical, because **the shader digest cannot see it: the shaders do not
+change.** This is the residual §8.9.11 named explicitly and does not cover — *host-side numeric
+changes leave the entry green* — and this is the first concrete instance of it.
+
+So the immunity is now a field rather than a habit. `compute_calls` is recorded in each new entry,
+and `entry_line()` refuses a run that computed more than once until somebody has decided what a
+multi-inference proof means. The prose answer above is correct today; the field is what keeps it
+correct without anyone re-deriving it.
+
+**What none of this closes.** The digest still covers SPIR-V only. Host-side changes — descriptor
+layout, dispatch dimensions, the cache key that started this — leave every entry green. `compute_
+calls` narrows that gap by one known instance; it does not close the class.
+
+**One audit taken on the way past.** Switch's other transferable finding — *a classifier tested
+only against strings we wrote ourselves is tested against the one input it cannot get wrong* — was
+turned on this harness's only foreign-string classifier, the ORT CPU-fallback refusal match. It
+holds, for a reason worth stating rather than a lucky one: **its miss produces an
+`ERROR(instrument)`, not a verdict.** If ORT rewords the message the match fails, the run raises,
+and the lane goes red — it cannot become a decline or a proof. A classifier whose miss produces a
+verdict is the one to distrust; a classifier whose miss produces a raise costs a red lane.
+
+---
+
+### 8.9.15 A counter inserted mid-struct, and three mirrors that went on reading (2026-08-02)
+
+Found while re-running the census after the merge. `test_wiring_census.py` reported:
+
+```
+partitioner: UNWIRED (dispatches_executed delta = 0 — EP ran nothing)
+```
+
+on a run that also reported `claimed=1, islands=1`, `compile_calls=1`, `compute_calls=1`, and,
+from the counters *file*, `dispatches_executed=6`. Two artifacts from the same run disagreeing is
+not a partitioner fault; it is a reader fault.
+
+**The cause.** `a52024f` added `device_losses` to `VulkanEpCounters` and **inserted** it between
+`compute_failures` and `dispatches_executed` rather than appending it — which the struct's own
+doc comment forbids in the line directly above it: *"Fields are never removed or reordered."*
+`COUNTERS_ABI_VERSION` was not bumped, and the three hand-written `ctypes` mirrors
+(`test_wiring_census.py`, and two separate copies in `test_phi35.py`) kept the old layout.
+
+Everything below the insertion shifted by eight bytes. The mapping was exact and silent:
+
+| the mirror called it | it was actually reading |
+| --- | --- |
+| `dispatches_executed` | `device_losses` (always 0 on a healthy run) |
+| `viable_islands_retained` | `dispatches_executed` |
+| `unproven_declines` | `ledger_hits` |
+| `ledger_entries` | `unproven_declines` |
+| `unproven_forms_claimed` | `ledger_entries` (95) |
+
+**Why nothing went red.** `device_losses` is `0` on every healthy run, so the census's criterion-8
+number was a *stable, plausible, entirely wrong* `0` — Switch's `STEADY 21.4×` shape and his
+`arms_must_differ` lesson, arriving through a struct offset. And the failure it produced was a
+**false `UNWIRED`**: the census's most serious verdict, issued about a mechanism that was working.
+Worse, `unproven_forms_claimed` read `95`, i.e. the ledger's *entry count* was being reported as
+the number of forms claimed through the escape hatch — a number that is supposed to be `0` and
+whose being non-zero is what `epctl --check-counters` fails on.
+
+**The repair.** `COUNTERS_ABI_VERSION` is bumped to 4; all three mirrors carry `device_losses` in
+its true position; and the census reader now checks `abi_version` and `struct_size` against the
+running DLL and **raises** on a mismatch. The raise is deliberately outside the `try` that returns
+`{}` for a missing library: `{}` becomes a delta of `0`, and a delta of `0` reads as `UNWIRED`.
+Swallowing a layout mismatch into the same empty dict as a missing DLL is what let this hide.
+
+**The decision worth stating, because it will be argued with.** The new lane test asserts
+`struct_size` **equality**, not `>=`. The struct's documented contract is that an old reader can
+read a new struct, and equality throws that away: every future counter added turns this lane red
+until a human updates the mirror. That is the intended cost. From the reader's side an *append*
+and an *insertion* are indistinguishable — both produce a larger struct and a bumped version — and
+only one of them is safe. A check that cannot tell them apart has to assume the dangerous one.
+The narrower alternative, a per-field offset manifest published by the DLL, is defensible and
+strictly better; it is more machinery than this defect justifies today, and equality can be
+relaxed the day that manifest exists.
+
+**What this does not cover.** The two `test_phi35.py` mirrors are repaired but not guarded — they
+have no equivalent version check, and they are copies of a struct that will move again. Three
+hand-maintained mirrors of one C ABI is the actual defect; the honest fix is one shared reader,
+and it is not mine to land unilaterally. Filed rather than done.
+
+**Attribution, per R13.** This is not a detection of a kernel problem and it was not caught by any
+gate. It surfaced because the census reported a mechanism `UNWIRED` that other artifacts from the
+same run showed working, and the contradiction was followed instead of being explained away. Every
+number any ctypes reader took between `a52024f` and this commit is suspect — including the
+Phi-3.5 lane's `dispatches_executed`, which was reading `device_losses` throughout.
+
+---
+
 ## 9. Op module layout
 
 ### 9.1 File tree

@@ -59,7 +59,7 @@ use std::sync::Mutex;
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
-pub const COUNTERS_ABI_VERSION: u32 = 3;
+pub const COUNTERS_ABI_VERSION: u32 = 4;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -462,6 +462,15 @@ pub struct VulkanEpCounters {
     /// Python fallback re-runs the graph on the CPU EP and returns a plausible answer with exit
     /// status 0. Any run with `device_losses > 0` is `ERROR(instrument)`, not a measurement —
     /// including the parts of it that completed before the loss.
+    ///
+    /// **ABI version 4, and it was INSERTED here rather than appended** (`a52024f`), which the
+    /// rule three lines above forbids: every field after it moved by eight bytes. Three ctypes
+    /// mirrors kept the old layout and went on reading, so `dispatches_executed` in the wiring
+    /// census and in both Phi-3.5 readers was reporting `device_losses` — a stable, plausible
+    /// `0`. The census called it `UNWIRED (EP ran nothing)` on a run that dispatched fine.
+    /// The version is bumped and the mirrors are repaired; the reason it is left *here* rather
+    /// than moved to the end is that the published layout has now shipped in a build and moving
+    /// it again would make a third layout. See §8.9.15.
     pub device_losses: u64,
     /// Dispatches that ran to fence completion. **This is the criterion-8 number.**
     pub dispatches_executed: u64,
