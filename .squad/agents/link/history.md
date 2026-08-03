@@ -398,3 +398,61 @@ against the **process** CWD, which is the *main* repo, not PowerShell's `cd`. I 
 and reverted. Always pass absolute paths to .NET file APIs from this harness.
 
 **Worktree note:** 23 sibling untracked artifacts present on arrival, left untouched.
+
+## Session 18 — three checks that were failing into a void
+
+Trinity handed back three reds that reproduce in `main`'s own checkout:
+`audit_instruments --check` FAIL(drift), `ci/test_lane_checks.py` 3 red,
+`tests/union_check.py --run` 5 red. All three were already printing their
+failure in full. None was wired to anything that reads an exit code.
+
+**The thing that surprised me was in my own reporting.** For four sessions I
+wrote the lane-check suite up as "132 passed, 3 failed (the known census reds)".
+After merging `main` it was **4**, and the fourth was a real regression of mine:
+the merge reintroduced four `if: env.BUILD_SKIPPED != '1'` guards whose writer
+my own previous commit had deleted, arriving on Trinity's new contention-gate
+steps. My own build-precondition screen caught it. Reading the node ids found
+it; reading the count would not have — and "the known reds" is a count.
+
+**An accepted red and a new red are indistinguishable when the only record of
+the acceptance is a number in someone's head.**
+
+Built `ci/check_open_reds.py` + `ci/open_reds.json`: every declared guard states
+the colour it is expected to be, both colours falsifiable. `unaccounted_red`
+(new failure), `stale_acceptance` (good news — delete the entry, and this is the
+arm that stops the register rotting), `signature_changed` (the acceptance does
+not stretch), `lease_expired` (`review_by`; acceptance is a lease, not a grant,
+and yes it is deliberately a time bomb). Accepted reds are annotated into the
+merge UI with owner and closing condition — check-run metadata, which a
+truncated log cannot eat.
+
+Its first run convicted the shipped tree: `unaccounted_red lane_checks_suite`.
+So the entry is **narrowed** — suite expected green with the three census-extent
+tests `--deselect`ed, those three their own accepted-red entry — because
+accepting the suite whole would absorb every future red in 135 tests. Trinity's
+principle: narrowing is the amplifier, not a cost saving. A test asserts the
+deselected set equals the selected set, so nothing falls out of both.
+
+Five accepted reds, none of them mine: Mouse's nine uninvoked two-digest
+accessors (twice, through two gates), the 12 census-extent surfaces
+(Mouse/Switch/Tank), Switch's kv caller-bind reading where the tracked artifact
+now says `OK` and the test asserts `CUDA`, and Mouse's proof-ledger writer
+regression. Writing the third down is the first time anyone has had to say whose
+the "known census reds" are.
+
+`union_check`'s five are declared one at a time, because
+`FAIL(condition=union_red)` sums 3 FAIL(condition) with 2 ERROR(instrument) —
+the same incommensurable-sum defect as the "48". The device-only one is declared
+**absent**, because it is green-by-skip host-free and an entry a skip can
+satisfy is an acceptance granted by an absence.
+
+One half of the census red was mine after all: the frame arm fired on two
+undeclared `bench/` modules (`spirv_simt.py`, `test_weight_reread.py`). Declared
+with reasons; `spirv_simt.py` held out as capture on its own docstring's
+evidence.
+
+Evidence: `ci/negative_control_open_reds.py` 39/39 (2 LIVE, 3 REPLAYED, 34
+PLANTED, ratio printed); REPLAYED takes the real `ci.yml` at `133b9fe` and
+requires an unaccounted red while today's bytes stay green. 18 new two-polarity
+tests (150 passed, 3 accounted red). Windows `cargo test --lib` 527 passed 0
+failed, clippy clean. All four negative controls green. Lane inventory PASS.

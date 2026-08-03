@@ -435,6 +435,16 @@ BENCH_HELD_OUT: dict[str, str] = {
     "phi35.py": "model construction and output classification for one model.",
     "producers.py": "builds the inputs a measurement runs on.",
     "transfer_calibration.py": "calibration data producer.",
+    # Arrived with main 5317bf0 and were the frame arm's first live catch: two files in
+    # `bench/` that this census had never been told about. It refused to render a verdict
+    # over them, which is exactly the behaviour the arm was written for.
+    "spirv_simt.py": (
+        "capture — a SPIR-V interpreter. Its own docstring draws the line: it 'reports the "
+        "multiset of words the module loaded from a binding and lets the caller divide', "
+        "and the amplification verdict is the caller's. It raises `InstrumentError` when it "
+        "cannot execute, which is a refusal to measure, not a verdict about a measurement."
+    ),
+    "test_weight_reread.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_contention.py": "test module — a caller, screened as polarity, not as an instrument.",
     "test_device_state.py": "test module.",
     "test_harness.py": "test module.",

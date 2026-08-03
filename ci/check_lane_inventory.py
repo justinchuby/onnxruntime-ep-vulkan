@@ -85,6 +85,11 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     # like a right one; that is why these four are first.
     ("Flake-witness negative control", "hostfree.flake_witness_negative_control"),
     ("Flake witness", "device.flake_witness"),
+    # Same ordering hazard one row down: "Open-reds negative control" substrings nothing
+    # of "Open reds", but "Open reds" would substring neither — they are disjoint by
+    # luck, not by design, so the control goes first anyway and this comment records why.
+    ("Open-reds negative control", "hostfree.open_reds_negative_control"),
+    ("Open reds", "hostfree.open_reds"),
     ("Layering lint asserted something", "build.layering_lint_productivity"),
     ("Portability lint asserted something", "build.portability_lint_productivity"),
     ("Integration targets asserted something", "build.integration_targets_productivity"),

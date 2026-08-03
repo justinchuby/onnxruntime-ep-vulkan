@@ -685,6 +685,103 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.open_reds",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Open reds (every guard is the colour the register declares)",
+        watches=(
+            "The COLOUR of every declared guard against ci/open_reds.json, in both "
+            "directions. A check the register expects green that goes red is an "
+            "unaccounted red and fails the lane. A check the register accepts as red "
+            "that goes GREEN is a stale acceptance and also fails the lane — that is "
+            "the arm that stops the register rotting, because an allowlist which only "
+            "ever suppresses grows monotonically and nobody is ever asked to prune it. "
+            "An accepted red whose output no longer contains its declared `signature` "
+            "is a DIFFERENT red and fails: the acceptance does not stretch. And every "
+            "entry carries a `review_by` after which it is a lease_expired failure — "
+            "acceptance here is a lease, not a grant."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None needed. It was written against three checks that were red in main's "
+            "own checkout on 2026-08-03 (audit_instruments --check, ci/test_lane_checks."
+            "py, tests/union_check.py --run) and it convicted the shipped tree on its "
+            "first run: the register expected ci/test_lane_checks.py green and it was "
+            "red, which is the arm working on real bytes."
+        ),
+        arm_healthy=(
+            "OPEN-REDS: PASS — 8 check(s) are the colour the register declares "
+            "(5 accepted red, each named with an owner and a closing condition)"
+        ),
+        arm_broken=(
+            "OPEN-REDS: FAIL — FAIL(condition=unaccounted_red) lane_checks_suite, on "
+            "the real tree, before the census-extent trio was split out into its own "
+            "narrowed entry. Also REPLAYED against 133b9fe's real ci.yml bytes (the "
+            "merge that reintroduced four dormant BUILD_SKIPPED guards): "
+            "FAIL(condition=unaccounted_red)."
+        ),
+        observed="2026-08-03",
+        misses=(
+            "It rules on COLOUR, not on coverage. A guard that is in no lane and in no "
+            "register is exactly as invisible to it as it was before; that is "
+            "ci/lane_inventory.py's question and the two are deliberately kept as two "
+            "tools over one tree, which is the failure rust/tools/audit_instruments.py "
+            "names as 'two censuses over one tree'.",
+            "It cannot observe a colour that depends on a device. "
+            "tests/ops/test_matmulnbits.py::test_layer_capture_mechanism is red on a "
+            "lane with a GPU and green-by-skip host-free, so it is named in the "
+            "register's `not_declared_here` block rather than declared — an entry that "
+            "a skip can satisfy is an acceptance granted by an absence.",
+            "`review_by` makes this a deliberate time bomb. That is the design, not an "
+            "oversight: a red nobody has re-read in three months is not accepted, it is "
+            "forgotten, and the inconvenience is the only thing that makes anyone "
+            "re-read the entry.",
+            "It shells out rather than importing, so it is as slow as the checks it "
+            "runs. Importing would screen a different thing from the one that is "
+            "failing — the argv, __main__ and exit-code paths would all go unexercised, "
+            "and the exit code is the entire subject.",
+        ),
+    ),
+    Check(
+        id="hostfree.open_reds_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Open-reds negative control (demand each rule red on purpose)",
+        watches=(
+            "That every rule of the open-reds screen still fires, including the two "
+            "that only ever fire on good news (stale_acceptance) or on the calendar "
+            "(lease_expired) and would otherwise go years without being observed."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "39 arms: 2 LIVE (the shipped register must be the colour it declares, and "
+            "must name an owner for every accepted red), 3 REPLAYED (the real ci.yml at "
+            "133b9fe must be an unaccounted red, the same rule over today's bytes must "
+            "be green — so it is not a constant), 34 PLANTED. The lease arm is driven "
+            "in BOTH polarities off one knob (OPEN_REDS_TODAY the day before and the "
+            "day after review_by), because 'any date makes it red' would pass a "
+            "one-sided test."
+        ),
+        arm_healthy="39/39 arms fire as specified, exit 0",
+        arm_broken=(
+            "Each condition arm is red by construction with its defect genuinely "
+            "present: a green-expected check that exits 1, a red-expected check that "
+            "exits 0, a red-expected check that fails for a different reason, an "
+            "expired lease, seven partial entries, a blanket acceptance with no "
+            "signature, a missing register, a missing command, a check that never "
+            "finished."
+        ),
+        observed="2026-08-03",
+        misses=(
+            "34 of 39 arms are PLANTED and the control prints that ratio itself. A "
+            "planted arm proves the rule fires on the shape it was written for; it does "
+            "not show the rule is load-bearing. The LIVE and REPLAYED arms are the ones "
+            "that do.",
+            "The LIVE arm runs the whole register, so this control is as expensive as "
+            "the screen. It is in the host-free lane for that reason.",
+        ),
+    ),
+    Check(
         id="hostfree.build_precondition",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,

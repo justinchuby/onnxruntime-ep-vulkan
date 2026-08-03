@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "purpose": "The colour every declared guard is expected to be, and — for the ones expected to be red — who owns that red, why it is there, and what would close it. Read ci/check_open_reds.py for the argument; the short form is that an accepted red and a new red must not look the same, and before this file the only record of an acceptance was a number somebody remembered.",
+  "how_to_add_an_entry": "An entry with expect=red is a LEASE, not a grant. It needs an owner who can actually close it, a `closes_when` that names the observable event, a `signature` that is the exact red being accepted (not a wildcard), and a `review_by` after which the lane fails until somebody re-reads it. If you cannot write `closes_when`, you do not have an accepted red, you have an unowned one, and the honest thing is to leave the lane failing.",
+  "how_to_remove_an_entry": "Delete it. The screen will tell you when: an expect=red entry whose check has gone green is FAIL(condition=stale_acceptance). You do not have to remember to come back; the mechanism asks.",
+  "not_declared_here": {
+    "tests/union_check.py --run": "Its five reds are declared here INDIVIDUALLY (harness_census_drift, kv_caller_bind_reading, proof_ledger_writer_refuses x2, and the device-only matmulnbits one below) rather than as one entry, because `FAIL(condition=union_red)` is a returncode, and that returncode sums 3 FAIL(condition) with 2 ERROR(instrument). That is the same incommensurable-sum defect as the '48 failures' headline I carried for three sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing behind one number. An entry for the sum would accept all five as one red and go on accepting a sixth. Tiers 1-2 of union_check are PRECONDITIONS and never render a colour at all, so there is nothing there for this screen to rule on.",
+    "tests/ops/test_matmulnbits.py::test_layer_capture_mechanism": "Its colour depends on a device: it is red on a lane with a GPU (the run falls back to CPUExecutionProvider) and green-by-skip on a host-free runner. This screen runs host-free, so it cannot observe that check's colour, and a colour this screen cannot observe must not be declared here — UNOBSERVABLE is not green, and an entry that is satisfied by a skip is an acceptance granted by an absence. It belongs in a device-lane register when one exists. Named here so that its omission is a statement rather than a gap.",
+    "the 12 Windows-only failures": "Collapsed to 1 after Mouse's two-digest schema landed, and the survivor is a device-only fp16 depth drift routed to Mouse/Switch. Same reason as above: not host-free."
+  },
+  "checks": [
+    {
+      "id": "lane_checks_suite",
+      "cmd": ["python", "-m", "pytest", "ci/test_lane_checks.py", "-q", "-p", "no:cacheprovider",
+              "--deselect", "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
+              "--deselect", "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
+              "--deselect", "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "The two-polarity suite for everything in ci/, MINUS the three census-extent tests, which are their own entry below. This entry is the whole reason the file exists: for four sessions I reported this suite as '132 passed, 3 failed (the known census reds)' and today, post-merge, it was 4 — the fourth being four `if: env.BUILD_SKIPPED != '1'` guards whose writer my own previous commit had deleted, reintroduced by the merge and caught by my own build-precondition screen. Reading the node ids found it; reading the count would not have. Narrowing here is the amplifier, not a cost saving (Trinity's principle from the contention gate): a whole-suite entry accepted as red absorbs every future red in 135 tests, whereas this one goes red on the next one.",
+      "closes_when": "n/a — this is expected green and must stay green.",
+      "timeout": 1200
+    },
+    {
+      "id": "lane_checks_census_extent",
+      "cmd": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+              "ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census",
+              "ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero",
+              "ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently"],
+      "expect": "red",
+      "signature": "CENSUS-EXTENT",
+      "owner": "mouse (counters + ops/), switch (vk/ env switches), tank (allocator env switches)",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "These three are the reds I have been calling 'known' since session 14, and writing them down is the first time anyone has had to say WHOSE they are. All three assert EXIT_PASS from the census-extent screen, and the screen is correctly reporting 12 instrumented surfaces that no census mechanism observes: counters.rs compile_calls / compute_calls / subgraphs_stub (Mouse), and nine env switches — BACKEND_PROBE, DUMP_OUTPUT_BYTES, VERBOSE (Switch), CLAIM_DEBUG, CLAIM_LOG, GEMV_PACKED (Mouse), DEVICE_MEMORY, QUARANTINE_SPANS, VA_RESERVE_MIB (Tank). None of them is mine and none can be closed from ci/. GEMV_PACKED is the interesting one and already has a written verdict: the switch enters the program as specialization constant index 5 and keys the pipeline cache, but no artifact the project produces records a pipeline key or a spec constant, so every kernel observation we hold is silent about which kernel it observed.",
+      "closes_when": "Each owner either wires a census mechanism to their surface or records it out of frame with a reason. The entry is deleted when the three tests go green; until then the screen reports it every run with these names attached, which is strictly more than the count did.",
+      "timeout": 900
+    },
+    {
+      "id": "build_precondition",
+      "cmd": ["python", "ci/check_build_precondition.py", ".github/workflows/ci.yml", ".github/workflows/conformance.yml"],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "The general fix for `BUILD_SKIPPED=1; exit 0` — one missing tracked file converting thirty steps to green. It went red on this very merge (BP2, four dormant guards arriving with Trinity's contention-gate steps), which is the second half of the point: the lane that CAUSED the failure (my deletion of the writer) was not the lane that REPORTED it (her steps).",
+      "closes_when": "n/a — expected green.",
+      "timeout": 600
+    },
+    {
+      "id": "lane_inventory",
+      "cmd": ["python", "ci/check_lane_inventory.py", "--workflow", ".github/workflows/ci.yml"],
+      "expect": "green",
+      "owner": "link",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Every gate step in the workflow must map to a declared Check. This screen rules on colour; that one rules on coverage. Kept as two tools over one tree on purpose — see ci/check_open_reds.py's frame note.",
+      "closes_when": "n/a — expected green.",
+      "timeout": 600
+    },
+    {
+      "id": "audit_instruments_census",
+      "cmd": ["python", "rust/tools/audit_instruments.py", "--check"],
+      "expect": "red",
+      "signature": "9 NEW uninvoked instrument(s)",
+      "owner": "mouse",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Nine `pub fn` accessors arrived on rust/src/counters.rs and rust/src/allocator.rs with the two-digest schema and NOTHING CALLS ANY OF THEM: clear_session_devices, device_unattributed_forms, output_residency, proven_elsewhere_forms, source_cosmetic_forms, specialisation_delta_forms, specialisation_unrecorded_forms, subject_changed_forms, unproven_decline_forms. The JSON emitter reads the statics directly and never goes through the accessors, so the accessors are a public surface with no reader. This red is TRUE and must not be baselined: audit_instruments.py's own comment says baselining an open item 'would turn an open item into a green tick, which is the one thing a census must never do'. The frame arm of the same check (two undeclared bench/ modules, spirv_simt.py and test_weight_reread.py) WAS mine and is fixed, so the only remaining red is this one.",
+      "closes_when": "Mouse gives each of the nine accessors a caller, or removes it, and then runs `python rust/tools/audit_instruments.py --write-baseline`. At that moment this entry becomes FAIL(condition=stale_acceptance) and must be deleted.",
+      "timeout": 900
+    },
+    {
+      "id": "harness_census_drift",
+      "cmd": ["python", "-m", "pytest", "tests/ops/test_harness_census.py::test_census_baseline_has_no_drift", "-q", "-p", "no:cacheprovider"],
+      "expect": "red",
+      "signature": "FAIL(drift)",
+      "owner": "mouse",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "The same defect as `audit_instruments_census`, reported a second time through pytest. Registered separately rather than folded in, because they are two different gates reading one condition and folding them would hide the day one of them stops reading it.",
+      "closes_when": "Closes with `audit_instruments_census`, same event, same commit.",
+      "timeout": 900
+    },
+    {
+      "id": "kv_caller_bind_reading",
+      "cmd": ["python", "-m", "pytest", "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda", "-q", "-p", "no:cacheprovider"],
+      "expect": "red",
+      "signature": "assert 'CUDA' in 'OK'",
+      "owner": "switch",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "A test whose subject is a TRACKED ARTIFACT, `bench/results/kv_device_residency-callerbind.json`. The test asserts the reading contains 'CUDA' — i.e. that `device_type='gpu'` is routed to CUDA regardless of vendor and a plugin EP is therefore unaddressable by the documented spelling. The artifact was re-taken at 872d739 and now records `by_device_type_and_vendor: 'OK'`. So either the obstacle went away and the assertion is stale, or the re-take was made under conditions that do not answer the same question. Exactly one of the two readings is right and I cannot tell which from the artifact alone — which is why this is an owned red and not a fix.",
+      "closes_when": "Switch re-takes the caller-bind reading and either updates the assertion (the obstacle is gone) or restores the reading (the re-take answered a different question). Either way the entry is deleted and the screen reports stale_acceptance until it is.",
+      "timeout": 900
+    },
+    {
+      "id": "proof_ledger_writer_refuses",
+      "cmd": ["python", "-m", "pytest", "tests/ops/test_proof_ledger.py", "-q", "-p", "no:cacheprovider", "-k", "refuses_a_run_with_no_subject_witness or refuses_a_multi_inference_proof_run"],
+      "expect": "red",
+      "signature": "the run reported source_digest=''",
+      "owner": "mouse",
+      "opened": "2026-08-03",
+      "review_by": "2026-11-01",
+      "reason": "Both tests now raise `SystemExit: REFUSING to write an entry ... the run reported source_digest=''` on BOTH platforms. This is a defect INTRODUCED BY the two-digest repair, not one it failed to fix: the writer's new subject-witness precondition fires inside tests that were written to exercise the refusal path with a synthetic run. They are ERROR(instrument) in the R13 lane summary, not FAIL(condition) — a lane with an instrument error is not a lane that ran — and this register keeps that distinction rather than counting them as two more reds.",
+      "closes_when": "Mouse either gives the synthetic runs a source_digest or teaches the writer to distinguish a run with no witness from a run whose witness is deliberately absent. Filed alongside RAI-012.",
+      "timeout": 900
+    }
+  ]
+}

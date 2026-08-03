@@ -222,8 +222,33 @@ jobs:
         # that same capture to yield nothing, which is the incident, reproduced.
         run: python rust/tools/contention_gate.py --selftest --list
 
+      - name: Open-reds negative control (demand each rule red on purpose)
+        # 39 arms, and the REPLAYED one is not a plant: it takes the real ci.yml bytes at
+        # 133b9fe -- the merge that reintroduced four dormant `BUILD_SKIPPED` guards --
+        # and requires the register to call them an UNACCOUNTED red. The same rule over
+        # today's bytes is green, so it is not a constant.
+        run: python ci/negative_control_open_reds.py
+
+      - name: Open reds (every guard is the colour the register declares)
+        # THE POINT OF THIS STEP. Three checks were handed to me that fail in main's own
+        # checkout -- audit_instruments --check, ci/test_lane_checks.py, tests/union_check
+        # --run -- and every one of them was already printing its failure in full. None
+        # was wired to anything that reads a colour. They were not silently passing; they
+        # were loudly failing into a void, which is the same defect wearing a louder coat.
+        #
+        # This does NOT turn them green. Two of the five accepted reds are TRUE and
+        # closing them would mean baselining an open item. It makes an accepted red
+        # structurally different from a new one: a red with no entry fails the lane, an
+        # entry whose check went green fails the lane (good news, delete it), and an
+        # accepted red is ANNOTATED into the merge UI with its owner and the event that
+        # would close it -- where a reviewer sees it and a truncated log cannot eat it.
+        #
+        # There is no flag that suppresses a failure. Adding one would recreate the void.
+        run: python ci/check_open_reds.py --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Tautological-assertion screen (no GPU, whole tree)
-        # Scans Rust and Python sources for assertions that pass without reading their        # subject. It reports 0 detections over the tree today and exists as a regression
+        # Scans Rust and Python sources for assertions that pass without reading their
+        # subject. It reports 0 detections over the tree today and exists as a regression
         # barrier, not a discovery tool -- the two assertion defects that actually
         # occurred here are outside its reach and its own output says so. Its evidence
         # that it works is entirely planted, in the step above.
@@ -598,13 +623,12 @@ jobs:
       # machine and detect a 0.15 per-run rate with probability 0.961.
       # -------------------------------------------------------
       - name: Contention gate (repeat the process-global families; keep the whole red)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             python rust/tools/contention_gate.py --release --reps 20
 
       - name: Upload contention-gate captures
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: contention-gate-linux
@@ -1180,14 +1204,13 @@ jobs:
       # has looked.
       # -------------------------------------------------------
       - name: Contention gate (repeat the process-global families; keep the whole red)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           python rust\tools\contention_gate.py --release --reps 20
           exit $LASTEXITCODE
 
       - name: Upload contention-gate captures
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: contention-gate-windows

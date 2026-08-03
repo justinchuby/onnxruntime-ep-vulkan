@@ -2852,6 +2852,183 @@ quietly vanish on a hosted runner.
 
 ---
 
+## 7.24 Three checks that were failing into a void
+
+Session 18. Trinity handed back three checks that reproduce in `main`'s own
+checkout:
+
+| check | colour on `main` |
+|---|---|
+| `python rust/tools/audit_instruments.py --check` | `FAIL(drift)` |
+| `python -m pytest ci/test_lane_checks.py` | 3 red |
+| `python tests/union_check.py --run` | 5 red |
+
+Every one of them was already printing its failure in full, with the drift
+quoted and the node ids named. **None of them was wired to anything that reads
+an exit code.** They were not silently passing; they were loudly failing into a
+void, which is the same defect as a silent pass wearing a louder coat: a check
+whose failure reaches no one has stopped being a check.
+
+### 7.24.1 The obvious repair is the wrong one
+
+`audit_instruments --check` is red because nine `pub fn` accessors arrived on
+`rust/src/counters.rs` and `rust/src/allocator.rs` with the two-digest schema and
+**nothing calls any of them** — `clear_session_devices`,
+`device_unattributed_forms`, `output_residency`, `proven_elsewhere_forms`,
+`source_cosmetic_forms`, `specialisation_delta_forms`,
+`specialisation_unrecorded_forms`, `subject_changed_forms`,
+`unproven_decline_forms`. The JSON emitter reads the statics directly and never
+goes through the accessors. That red is **true**, and `audit_instruments.py`'s
+own comment says what baselining it would be: *"turn an open item into a green
+tick, which is the one thing a census must never do."*
+
+So the thing that needed building was not a fix for three reds. It was a way to
+tell **a red somebody owns from a red nobody has seen.**
+
+### 7.24.2 The defect, in my own reporting
+
+For four sessions I wrote `ci/test_lane_checks.py` up as *"132 passed, 3 failed
+(the known census reds)"*. After merging `main` it was **4** failed. The fourth
+was a real regression in my own work: the merge reintroduced four
+`if: env.BUILD_SKIPPED != '1'` guards whose writer my previous commit had
+deleted, arriving on Trinity's new contention-gate steps. My own
+build-precondition screen caught it — and Trinity's warning landed exactly:
+**the lane that caused the failure (my deletion of the writer) was not the lane
+that reported it (her steps).**
+
+I found it by reading the node ids. Had I read the count — and *"the known
+reds"* is a count — I would have shipped it.
+
+**An accepted red and a new red are indistinguishable when the only record of
+the acceptance is a number in someone's head.** That is the `BUILD_SKIPPED`
+shape one level up: there, one missing file turned thirty steps green; here, one
+remembered number turns an unbounded number of new failures invisible.
+
+### 7.24.3 `ci/check_open_reds.py` and `ci/open_reds.json`
+
+Every declared check states the colour it is **expected** to be, and both
+colours are falsifiable:
+
+| expected | observed | state |
+|---|---|---|
+| green | green | `PASS` |
+| green | red | `FAIL(condition=unaccounted_red)` — a new failure |
+| red | red, signature present | `ACCOUNTED` — **annotated into the merge UI** |
+| red | green | `FAIL(condition=stale_acceptance)` — good news, delete the entry |
+| red | red, signature absent | `FAIL(condition=signature_changed)` — a *different* red |
+| any | any, past `review_by` | `FAIL(condition=lease_expired)` |
+
+The last three rows are why this is not an allowlist.
+
+- **`stale_acceptance`** is the arm that stops the register rotting. An
+  allowlist that only ever suppresses grows monotonically, because nothing ever
+  asks anyone to prune it. Here the register can only shrink *by being asked to*:
+  the day Mouse wires those nine accessors, the lane goes red until the entry is
+  deleted.
+- **`signature_changed`** is the arm that stops an acceptance covering more than
+  it was granted for. `audit_instruments --check` is accepted for the exact
+  string `9 NEW uninvoked instrument(s)`. A tenth breaks the match and fails the
+  lane. Same rule as the absent `--relax` on `suite_floor.json`: a waiver that
+  widens to fit whatever turns up is not a waiver, it is a deletion.
+- **`review_by`** makes acceptance a **lease, not a grant**, and yes, that is
+  deliberately a time bomb. A red nobody has re-read in three months is not
+  accepted, it is forgotten, and those two states must not look the same. The
+  inconvenience is the only thing that makes anyone re-read the entry. Both
+  polarities are tested off one knob (`OPEN_REDS_TODAY` the day before and the
+  day after), because *"any date makes it red"* would pass a one-sided test.
+
+There is no flag that suppresses a failure. `--relax`, `--allow-fail`,
+`--warn-only` and `--soft` are all asserted to be **rejected by argparse**, in
+the control and again in the suite.
+
+### 7.24.4 Narrowing is the amplifier
+
+The register's first run convicted the shipped tree:
+`FAIL(condition=unaccounted_red) lane_checks_suite`. Accepting the whole suite
+as red would have absorbed every future red in 135 tests — the exact defect that
+let a 4th hide behind *"3 known reds"*. So the entry is **narrowed**: the suite
+is expected green with the three census-extent tests `--deselect`ed, and those
+three are their own accepted-red entry. A test in the suite asserts the two sets
+are **equal**, so a test cannot fall out of both and be observed by neither.
+
+This is Trinity's contention-gate principle applied to a register rather than a
+test pool: narrowing is what makes the entry sensitive, not what makes it cheap.
+
+### 7.24.5 What the five accepted reds are, and whose they are
+
+| entry | owner | closes when |
+|---|---|---|
+| `audit_instruments_census` | Mouse | the nine accessors get callers or are removed, then `--write-baseline` |
+| `harness_census_drift` | Mouse | same event, same commit — the same condition read by a second gate |
+| `lane_checks_census_extent` | Mouse / Switch / Tank | 12 instrumented surfaces get a census mechanism or an out-of-frame reason |
+| `kv_caller_bind_reading` | Switch | the caller-bind reading is re-taken and one of the two readings is retired |
+| `proof_ledger_writer_refuses` | Mouse | the synthetic runs get a `source_digest`, or the writer distinguishes *no witness* from *deliberately absent* |
+
+Writing the third one down is the first time anyone has had to say **whose** the
+"known census reds" are. They are 12 instrumented surfaces observed by no census
+mechanism: `compile_calls`, `compute_calls`, `subgraphs_stub` (Mouse) and nine
+EP env switches split across Mouse, Switch and Tank. None of them is closable
+from `ci/`.
+
+`kv_caller_bind_reading` is the interesting one. The test asserts that the
+tracked artifact `bench/results/kv_device_residency-callerbind.json` contains
+`CUDA` — i.e. that `device_type='gpu'` routes to CUDA regardless of vendor, so a
+plugin EP is unaddressable by the documented spelling. The artifact was re-taken
+at `872d739` and now records `by_device_type_and_vendor: "OK"`. Exactly one of
+those two readings is right, and the artifact alone cannot say which. That is
+why it is an owned red and not a fix.
+
+### 7.24.6 Why `union_check`'s five are declared one at a time
+
+`FAIL(condition=union_red)` is a returncode, and that returncode sums **3
+`FAIL(condition)` with 2 `ERROR(instrument)`**. This is the same
+incommensurable-sum defect as the "48 failures" headline I carried for three
+sessions — 42 ledger + 4 instrument + 2 residual, three different kinds of thing
+behind one number. An entry for the sum would accept all five as one red and go
+on accepting a sixth. So the four host-free ones are declared individually and
+the fifth is declared *absent*:
+
+`tests/ops/test_matmulnbits.py::test_layer_capture_mechanism` is red on a lane
+with a GPU (the run falls back to `CPUExecutionProvider`) and **green-by-skip**
+on a host-free runner. This screen runs host-free, so it cannot observe that
+check's colour — and an entry that a skip can satisfy is an acceptance granted
+by an absence. It is named in the register's `not_declared_here` block so the
+omission is a statement rather than a gap, and a test asserts that block is
+non-empty and that every exclusion carries more than a shrug.
+
+### 7.24.7 The frame arm of `audit_instruments` fired for real
+
+One half of the census red **was** mine, and it was the arm Niobe added on
+2026-08-02 catching its first live case: two files in `bench/` that the census
+had never been told about — `spirv_simt.py` and `test_weight_reread.py`. It
+refused to render a verdict over a tree it could not account for, which is
+exactly what that arm is for. Both are now declared with a reason;
+`spirv_simt.py` is held out as **capture** on its own docstring's evidence (*"it
+reports the multiset of words the module loaded from a binding and lets the
+caller divide"*), and its `InstrumentError` is a refusal to measure, not a
+verdict about a measurement.
+
+### 7.24.8 What this section does not claim
+
+- **It does not claim the accepted reds are harmless.** It claims each has a
+  named owner, a written reason, a stated closing condition and a signature, and
+  that all four are printed on every run and annotated into the merge UI.
+- **It does not claim the register is complete.** It rules on colour, not on
+  coverage. A guard in no lane and no register is as invisible as before; that
+  is `ci/lane_inventory.py`'s question, and the two are kept as **two tools over
+  one tree** on purpose, because *two censuses over one tree* is the failure
+  `audit_instruments.py` itself names.
+- **It does not claim a green check is a correct check.** `--union-required`'s
+  lesson stands: a check that quietly drops half its input is green.
+- **34 of the control's 39 arms are PLANTED and it prints that ratio itself.**
+  The load-bearing arms are the 2 LIVE and the 3 REPLAYED, and the replayed
+  defect is one this repository actually shipped into a merge: the real `ci.yml`
+  bytes at `133b9fe` must be an unaccounted red, and the same rule over today's
+  bytes must be green — so the rule is not a constant.
+- **No timing figure appears above and none is quotable from any of it.**
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---

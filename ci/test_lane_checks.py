@@ -2398,3 +2398,204 @@ def test_a_dormant_guard_is_not_inert_and_the_screen_says_why(tmp_path):
     assert rc == 1
     assert "dead_guard" in out
     assert "BUILD_SKIPPED" in out
+
+
+# ---------------------------------------------------------------------------
+# ci/check_open_reds.py — the register that tells an accepted red from a new one.
+#
+# These tests never point the screen at the SHIPPED register. ci/check_open_reds.py
+# runs ci/test_lane_checks.py, so a test in this file that ran the real register would
+# recurse until something ran out. Every case below builds a synthetic register whose
+# checks are `python -c` one-liners; the shipped register's own shape is asserted by
+# reading the JSON, not by executing it.
+# ---------------------------------------------------------------------------
+
+OPEN_REDS = CI_DIR / "check_open_reds.py"
+OPEN_REDS_REGISTER = CI_DIR / "open_reds.json"
+OPEN_REDS_REPO = CI_DIR.parent
+
+
+def _entry(**over):
+    e = {
+        "id": "e",
+        "cmd": ["python", "-c", "print('hello')"],
+        "expect": "green",
+        "owner": "link",
+        "opened": "2026-01-01",
+        "review_by": "2099-01-01",
+        "reason": "test entry",
+        "closes_when": "n/a",
+    }
+    e.update(over)
+    return e
+
+
+def _open_reds(tmp_path, entries, extra=None, env=None):
+    reg = tmp_path / "reg.json"
+    reg.write_text(
+        json.dumps({"schema": 1, "purpose": "t", "checks": entries}), encoding="utf-8"
+    )
+    e = dict(os.environ)
+    e.pop("OPEN_REDS_TODAY", None)
+    e.pop("OPEN_REDS_FORCE_ANNOTATE", None)
+    e.setdefault("PYTHONIOENCODING", "utf-8")
+    if env:
+        e.update(env)
+    r = subprocess.run(
+        [sys.executable, str(OPEN_REDS), "--register", str(reg), "--repo", str(OPEN_REDS_REPO),
+         *(extra or [])],
+        capture_output=True, encoding="utf-8", errors="replace", env=e, cwd=str(OPEN_REDS_REPO),
+        timeout=300,
+    )
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def test_open_reds_passes_when_every_check_is_the_declared_colour(tmp_path):
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="g"),
+        _entry(id="r", expect="red", signature="the known red",
+               cmd=["python", "-c", "import sys; print('the known red'); sys.exit(1)"],
+               closes_when="when somebody fixes it"),
+    ])
+    assert rc == 0, out
+    assert "ACCOUNTED" in out
+    # And PASS must not be readable as "the tree is clean".
+    assert "does NOT mean the tree is clean" in out
+
+
+def test_open_reds_fails_on_a_red_nobody_declared(tmp_path):
+    """The defect this file exists for: a NEW red must not hide behind known ones."""
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="g", cmd=["python", "-c", "import sys; print('surprise'); sys.exit(1)"]),
+    ])
+    assert rc == 1, out
+    assert "unaccounted_red" in out
+
+
+def test_open_reds_fails_when_an_accepted_red_went_green(tmp_path):
+    """The arm that stops the register rotting. An allowlist that only ever suppresses
+    grows monotonically, because nothing ever asks anyone to prune it."""
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="r", expect="red", signature="was failing",
+               cmd=["python", "-c", "print('fixed')"],
+               closes_when="the day the accessors get callers"),
+    ])
+    assert rc == 1, out
+    assert "stale_acceptance" in out
+    assert "the day the accessors get callers" in out
+
+
+def test_open_reds_acceptance_does_not_stretch_to_a_different_red(tmp_path):
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="r", expect="red", signature="9 NEW uninvoked instrument(s)",
+               cmd=["python", "-c", "import sys; print('10 NEW uninvoked'); sys.exit(1)"]),
+    ])
+    assert rc == 1, out
+    assert "signature_changed" in out
+
+
+def test_open_reds_lease_expires_and_the_day_before_it_does_not(tmp_path):
+    """Both polarities off one knob. 'Any date makes it red' would pass a one-sided test."""
+    entry = _entry(id="r", expect="red", signature="still red", review_by="2026-06-01",
+                   cmd=["python", "-c", "import sys; print('still red'); sys.exit(1)"])
+    rc_before, _ = _open_reds(tmp_path, [entry], env={"OPEN_REDS_TODAY": "2026-05-31"})
+    rc_after, out_after = _open_reds(tmp_path, [entry],
+                                     env={"OPEN_REDS_TODAY": "2026-06-02"})
+    assert rc_before == 0
+    assert rc_after == 1 and "lease_expired" in out_after
+
+
+def test_open_reds_refuses_an_acceptance_with_no_signature(tmp_path):
+    e = _entry(id="r", expect="red",
+               cmd=["python", "-c", "import sys; sys.exit(1)"])
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 2, out
+    assert "signature" in out
+
+
+@pytest.mark.parametrize("field", ["owner", "reason", "closes_when", "review_by", "opened"])
+def test_open_reds_refuses_a_partial_entry(tmp_path, field):
+    e = _entry(id="r", expect="red", signature="x",
+               cmd=["python", "-c", "import sys; sys.exit(1)"])
+    e.pop(field)
+    rc, out = _open_reds(tmp_path, [e])
+    assert rc == 2, out
+    assert field in out
+
+
+def test_open_reds_reports_an_unobserved_colour_as_an_instrument_error(tmp_path):
+    """UNOBSERVABLE is not green. A check that could not be run has no colour."""
+    rc, out = _open_reds(tmp_path, [_entry(cmd=["definitely-not-a-real-binary-xyz"])])
+    assert rc == 4, out
+    assert "command_absent" in out
+    assert "not a check that passed" in out
+
+
+def test_open_reds_annotates_an_accepted_red_with_its_owner(tmp_path):
+    """A truncated log ate a failing test name on a real merge gate. Annotations are
+    check-run metadata and cannot be truncated by log volume."""
+    rc, out = _open_reds(tmp_path, [
+        _entry(id="r", expect="red", signature="known", owner="mouse",
+               cmd=["python", "-c", "import sys; print('known'); sys.exit(1)"]),
+    ], env={"OPEN_REDS_FORCE_ANNOTATE": "1"})
+    assert rc == 0, out
+    assert "::warning title=open red: r::" in out
+    assert "mouse" in out
+
+
+def test_open_reds_list_does_not_claim_a_colour_it_did_not_observe(tmp_path):
+    rc, out = _open_reds(tmp_path, [_entry()], extra=["--list"])
+    assert rc == 0
+    assert "no check was run" in out
+    assert "PASS —" not in out
+
+
+def test_open_reds_has_no_flag_that_suppresses_a_failure(tmp_path):
+    """The same rule as suite_floor's absent --relax: a guard that can be turned off by
+    an argument is a waiver with a flag."""
+    entries = [_entry(cmd=["python", "-c", "import sys; sys.exit(1)"])]
+    for flag in ("--relax", "--allow-fail", "--warn-only", "--soft", "--ignore"):
+        rc, out = _open_reds(tmp_path, entries, extra=[flag])
+        assert rc == 2, f"{flag}: {out}"
+        assert "unrecognized arguments" in out
+
+
+def test_the_shipped_register_narrows_rather_than_accepting_a_whole_suite():
+    """Trinity's principle: narrowing is the amplifier, not a cost saving. Accepting
+    ci/test_lane_checks.py as red WHOLE would absorb every future red in 135 tests —
+    which is exactly the defect that let a 4th red hide behind '3 known reds'."""
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    by_id = {c["id"]: c for c in doc["checks"]}
+    suite = by_id["lane_checks_suite"]
+    assert suite["expect"] == "green"
+    assert "--deselect" in suite["cmd"]
+    extent = by_id["lane_checks_census_extent"]
+    assert extent["expect"] == "red"
+    deselected = {suite["cmd"][i + 1] for i, a in enumerate(suite["cmd"]) if a == "--deselect"}
+    selected = {a for a in extent["cmd"] if a.startswith("ci/test_lane_checks.py::")}
+    assert deselected == selected, (
+        "every test deselected from the green entry must be selected by the red one, "
+        "or a test falls out of both and is observed by neither"
+    )
+
+
+def test_every_accepted_red_in_the_shipped_register_names_who_can_close_it():
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    for c in doc["checks"]:
+        if c["expect"] != "red":
+            continue
+        assert c["owner"] and c["owner"] != "link", (
+            f"{c['id']}: an accepted red owned by nobody but the person who accepted it "
+            "is not owned"
+        )
+        assert len(c["closes_when"]) > 40, f"{c['id']}: closes_when must name an event"
+        assert len(c["signature"]) >= 8, f"{c['id']}: signature too short to be specific"
+
+
+def test_the_register_says_what_it_did_not_look_at():
+    """R12 applied to the register: a check omitted on purpose and a check nobody thought
+    of look identical unless the omission is written down."""
+    doc = json.loads(OPEN_REDS_REGISTER.read_text(encoding="utf-8"))
+    assert doc["not_declared_here"], "the register must state its own exclusions"
+    for subject, why in doc["not_declared_here"].items():
+        assert len(why) > 60, f"{subject}: an exclusion needs a reason, not a shrug"
