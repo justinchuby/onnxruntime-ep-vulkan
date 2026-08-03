@@ -1747,28 +1747,216 @@ class AttributedRunSeries:
 # failure mode (obligation 3).  A grep cannot NameError.
 # ---------------------------------------------------------------------------
 
-#: Substrings that mean ORT abandoned this EP at run time and re-ran on CPU.
-#: A `grep` covers Guard D's outage and Guard D covers a log-format change; each is the
-#: other's second witness, which is the point (R13 obligation 3).
-FATAL_LOG_MARKERS: tuple[str, ...] = (
-    "Falling back to CPUExecutionProvider",
-    "Falling back to CPU",
+# WHAT THIS WITNESS COULD NOT SEE, 2026-07-31 .. 2026-08-02
+# ==========================================================
+# Link routed this rather than patching it, and he was right to: the previous marker list
+# was
+#
+#     FATAL_LOG_MARKERS = ("Falling back to CPUExecutionProvider", "Falling back to CPU")
+#
+# and ORT prints, from onnxruntime_inference_collection.py:
+#
+#     Falling back to ['CPUExecutionProvider'] and retrying.
+#
+# A **list repr**.  Neither marker is a substring of it, because the character after
+# "Falling back to " is "[".  So this witness returned zero hits on Tank's artifact --
+# which announces the fallback TWICE -- after being cited as the second witness for five
+# incidents.  Per R9 an instrument that could not have disagreed adds no evidence, so
+# those five were corroborated by nothing and looked better witnessed than they were.
+#
+# I measured the whole tree before rewriting it, and the result is worse than "returns
+# green".  Across the three real logs:
+#
+#     bench/results/ctx512_device_lost.txt   2 real announcements, 0 hits
+#     bench/results/trinity-suite-dev0.log   5 real announcements, 9 hits
+#     bench/results/trinity-suite-dev1.log   1 real announcement,  3 hits
+#
+# It was not silent.  It produced twelve positive hits -- **and every one of them was our
+# own prose**: the docstring in tests/ops/test_phi35.py that says "ORT prints 'EP_FAIL ...
+# Falling back to CPUExecutionProvider' during sess.run()", quoted back out of a captured
+# suite log.  The marker never once matched an ORT announcement.  Every hit it has ever
+# produced in this repository was a sentence we wrote describing what we believed ORT
+# prints.
+#
+# Link's line, made literal: *a classifier tested only against strings we wrote ourselves
+# is tested against the one input it cannot get wrong.*  And the only positive test this
+# witness had -- test_verdict.py::test_fatal_log_scan_finds_the_line -- constructed the
+# fictional string and asserted it was found.  It was green for as long as the witness was
+# blind, because it was the fiction testing itself.
+#
+# THREE THINGS THE REAL TEXT DOES THAT A LINE-ORIENTED SUBSTRING GREP CANNOT SURVIVE
+# ==================================================================================
+# 1. It is a **list repr**, so the provider list is data, not a fixed string.  Matched
+#    with a pattern over the brackets, so a different fallback set still matches.
+# 2. It **wraps across lines**.  In Tank's artifact the companion EP Error line breaks
+#    mid-list: "...using ['VulkanExecutionProvider'," / "'CPUExecutionProvider']".  A
+#    per-line matcher can be split in half by a terminal width.  Matching is therefore
+#    done over the whole text with whitespace-tolerant patterns, not line by line.
+# 3. It can arrive **UTF-16LE**.  ORT's C++ log sink writes wide characters, so a real
+#    captured log is UTF-8 with UTF-16LE regions embedded; decoded as UTF-8 those become
+#    NUL-separated characters and "vkQueueSubmit" is not findable as a substring.
+#    Verified in bench/results/trinity-suite-dev1.log, which carries "logical" in both
+#    encodings.  `normalise_log_text` strips the NUL interleave first.  A text matcher
+#    blind to the encoding its input actually arrives in is the same defect one level
+#    down.
+#
+# EXTENT -- STATE IT, NEVER READ IT AS COVERING THE OTHER TWO
+# ==========================================================
+# Three mechanisms, three extents (Link demonstrated the differences rather than arguing
+# them, and ci/negative_control_device_loss.py holds them apart):
+#
+#   session.disable_cpu_ep_fallback  refuses a session ORT would have to split, AT
+#     CREATION.  Structurally blind to a loss on an already-accepted session.
+#     (tests/ops/_models.py::ep_only_session_or_refusal)
+#   THIS witness                     ORT's own ANNOUNCEMENT of a run-time fallback, in a
+#     captured log with stderr merged.  Blind to a loss the EP reports and ORT never
+#     announces, and blind to any artifact that is not the captured log.
+#   ci/check_device_loss.py          the loss ITSELF in any artifact, plus structural
+#     truncation (iters declared vs compute_calls observed) -- no text needed at all.
+#
+# The middle one is deliberately kept NARROW.  ci/negative_control_device_loss.py asserts
+# that check_fatal_log is **green** on a log carrying the EP's device-lost line with no
+# ORT announcement; that arm is what proves check_device_loss has reach of its own.
+# Widening these patterns to catch "The logical device has been lost" would turn Link's
+# demonstration green-on-both and silently delete the evidence that his check is needed.
+# So: this witness matches ORT's announcement and nothing else, on purpose.
+#: Patterns that mean ORT abandoned this EP at run time and re-ran on CPU.
+#:
+#: Taken from a real captured log and from ORT's own source, never from memory -- the
+#: previous list was written from memory and matched only our memory.  Whitespace-tolerant
+#: so a wrapped line still matches.  Deliberately does NOT match the EP's own device-lost
+#: text: that is ci/check_device_loss.py's extent, and the difference is load-bearing.
+FATAL_LOG_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (
+        # onnxruntime_inference_collection.py: print(f"Falling back to {self._fallback_providers} and retrying.")
+        "ort_runtime_fallback",
+        re.compile(r"Falling\s+back\s+to\s+\[[^\]]*\]\s+and\s+retrying", re.IGNORECASE),
+    ),
+    (
+        # The companion line ORT prints immediately before it.
+        "ort_ep_fail",
+        re.compile(r"EP\s+Error[:\s].{0,400}?EP_FAIL", re.IGNORECASE | re.DOTALL),
+    ),
 )
+
+#: Kept as a name because docs/PLATFORMS.md and ci/ cite it, but it is now derived from the
+#: patterns rather than being the thing that is matched.  A reader who greps for the old
+#: name lands on the new mechanism instead of on a stale tuple that still looks live.
+FATAL_LOG_MARKERS: tuple[str, ...] = tuple(p.pattern for _, p in FATAL_LOG_PATTERNS)
+
+
+def normalise_log_text(text: str) -> str:
+    """Make a captured log searchable regardless of how ORT encoded it.
+
+    ORT's C++ log sink emits UTF-16LE, so a real captured log is UTF-8 with wide regions
+    embedded in it; read as UTF-8 those arrive as NUL-separated characters and no
+    substring of the message is findable.  Verified on
+    bench/results/trinity-suite-dev1.log, which carries the device-lost message in both
+    encodings -- had it carried only the wide one, a substring search would have seen an
+    empty log.
+
+    Pure and total.  Strips NULs and the Unicode replacement character; changes nothing
+    else, so it cannot invent a match that was not there.
+    """
+    if not text:
+        return ""
+    return text.replace("\x00", "").replace("\ufffd", "")
 
 
 def find_fatal_log_lines(text: str) -> list[str]:
-    """Return the captured lines that announce a run-time fallback.
+    """Return the excerpts that announce a run-time fallback by ORT.
 
     Pure and total: it cannot raise on any string, which is exactly the property that
-    makes it usable as the second witness for a guard that can crash.
+    makes it usable as the second witness for a guard that can crash (R13 obligation 3 --
+    a grep cannot ``NameError``).
+
+    Matches over the WHOLE text rather than line by line, because the real announcement
+    wraps.  Returns one excerpt per match, whitespace-collapsed so a wrapped hit reads as
+    one line in a failure message (R13: quote the failure text, never the failure count).
     """
     if not text:
         return []
+    haystack = normalise_log_text(text)
     hits: list[str] = []
-    for line in text.splitlines():
-        if any(marker in line for marker in FATAL_LOG_MARKERS):
-            hits.append(line.strip())
+    for _name, pattern in FATAL_LOG_PATTERNS:
+        for match in pattern.finditer(haystack):
+            hits.append(" ".join(match.group(0).split()))
     return hits
+
+
+#: A REAL captured announcement, copied verbatim out of
+#: bench/results/ctx512_device_lost.txt including its line wrap.  Not paraphrased and not
+#: reconstructed: the whole defect above was a paraphrase that had drifted from the text.
+FATAL_LOG_POSITIVE_CONTROL: str = (
+    "EP Error: [ONNXRuntimeError] : 11 : EP_FAIL : Non-zero status code returned while "
+    "running VulkanExecutionProvider_13948954645276092517_0 node.\n"
+    "Name:'VulkanExecutionProvider_VulkanExecutionProvider_13948954645276092517_0_0' "
+    "Status Message: vkWaitForFences failed using ['VulkanExecutionProvider',\n"
+    "'CPUExecutionProvider']\n"
+    "Falling back to ['CPUExecutionProvider'] and retrying.\n"
+)
+
+#: A log that must stay GREEN: the EP reports a device loss and ORT announces nothing.
+#: This is Link's extent boundary, asserted here too so that a future widening of the
+#: patterns fails in HIS file and in MINE rather than quietly erasing his negative control.
+FATAL_LOG_NEGATIVE_CONTROL: str = (
+    "[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost. "
+    "See <https://registry.khronos.org/vulkan/specs/1.3-extensions/html/"
+    "vkspec.html#devsandqueues-lost-device>\n"
+    "[vulkan-ep] INFO: session claims 8 proven form(s)\n"
+)
+
+
+def assert_fatal_log_check_is_live() -> None:
+    """Prove this witness can still see its event, before its verdict is trusted.
+
+    **A marker list that has never been shown to fire is indistinguishable from one that
+    cannot.**  That is not a general principle; it is the specific way this witness failed
+    for three days while being cited five times.  The same shape as the silently-swallowed
+    ORT config key, which is why the remedy is the same one:
+    ``_models.assert_no_cpu_fallback_is_live()`` proves the option took effect rather than
+    trusting that it did, and this proves the patterns still match rather than trusting
+    that they do.
+
+    Two polarities, both drawn from real captured text, because one is not a control:
+
+    * the positive control MUST be classified red -- otherwise the witness is blind again
+      and every green it produces is worthless;
+    * the negative control MUST stay green -- otherwise the patterns have widened into
+      ci/check_device_loss.py's extent and Link's demonstration that his check has reach
+      of its own has been silently deleted.
+
+    Raises :class:`InstrumentError`, never ``AssertionError``: a blind witness is an
+    instrument outage, and R13 says an instrument error is never a detection.
+    """
+    hits = find_fatal_log_lines(FATAL_LOG_POSITIVE_CONTROL)
+    if not hits:
+        raise InstrumentError(
+            "[fatal-log witness is blind] the patterns do not match a REAL captured ORT "
+            "announcement, so every green this witness reports is worthless.\n"
+            f"Patterns: {[name for name, _ in FATAL_LOG_PATTERNS]}\n"
+            "Control (verbatim from bench/results/ctx512_device_lost.txt):\n"
+            f"{FATAL_LOG_POSITIVE_CONTROL}\n"
+            "This is exactly how this witness failed between 2026-07-31 and 2026-08-02: "
+            "it matched our own prose describing what we believed ORT prints, and never "
+            "once matched what ORT prints. Fix the patterns against a real log -- not "
+            "against this docstring, and not against memory.",
+            observed=hits,
+        )
+    leaked = find_fatal_log_lines(FATAL_LOG_NEGATIVE_CONTROL)
+    if leaked:
+        raise InstrumentError(
+            "[fatal-log witness has overreached] the patterns now match a log in which "
+            "the EP reported a device loss and ORT announced NOTHING.\n"
+            f"Matched: {leaked}\n"
+            "That is ci/check_device_loss.py's extent, not this one's. "
+            "ci/negative_control_device_loss.py proves that check has reach of its own by "
+            "requiring check_fatal_log to stay GREEN on this input; widening these "
+            "patterns turns his demonstration green-on-both and deletes the evidence that "
+            "a second check is needed at all. Two gates whose extents differ compose to "
+            "the weaker extent and the stronger name.",
+            observed=leaked,
+        )
 
 
 # ---------------------------------------------------------------------------
