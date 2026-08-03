@@ -353,7 +353,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         status=DEMONSTRATED,
         mutation=(
-            "ci/negative_control_device_loss.py, 14 arms, all fired 2026-08-02: red on "
+            "ci/negative_control_device_loss.py, 18 arms, all fired 2026-08-02: red on "
             "Tank's real artifact (REPLAYED); red on trinity-suite-dev1.log, a second "
             "device loss from 2026-07-31 nobody had reported (LIVE — a file the screen "
             "was not written against); red on a synthesised iters=25/compute_calls=9 "
@@ -404,9 +404,9 @@ CHECKS: tuple[Check, ...] = (
         mutation=(
             "Its own provenance line: it counts LIVE, REPLAYED and PLANTED arms "
             "separately and prints that a PLANTED arm evidences nothing about whether "
-            "the event occurs in reality. 1 LIVE, 3 REPLAYED, 10 PLANTED on 2026-08-02."
+            "the event occurs in reality. 1 LIVE, 4 REPLAYED, 13 PLANTED on 2026-08-02."
         ),
-        arm_healthy="all 14 arms fired 2026-08-02",
+        arm_healthy="all 18 arms fired 2026-08-02",
         arm_broken=(
             "a missing bench/results/ctx512_device_lost.txt is reported as an arm that "
             "DID NOT FIRE — an outage in the control, never a pass"
@@ -934,7 +934,7 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
             "an artifact DECLARED it would observe (iters) against what it observed "
             "(compute_calls), plus uploads == readbacks + 1, an inference caught in "
             "flight. The structural rule needs no text at all and survives any log-format "
-            "change. Falsified 2026-08-02 by 14 arms including a LIVE catch: a second, "
+            "change. Falsified 2026-08-02 by 18 arms including a LIVE catch: a second, "
             "earlier device loss in bench/results/trinity-suite-dev1.log (2026-07-31, "
             "Intel, vkQueueSubmit) that had been read as a test failure and never "
             "reported as a lost device."

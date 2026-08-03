@@ -1988,6 +1988,8 @@ A **list repr**. Neither marker is a substring of it. `_verdict.find_fatal_log_l
 
 `_verdict.py` is Trinity's, and it is **the** vocabulary. So this is reported as its own condition (`marker_list_misses_real_line`) and **not patched here**: a second private marker list in `ci/` is exactly the two-dialect failure the shared vocabulary exists to prevent. The regression test in `ci/test_lane_checks.py` is written to go green when she fixes it.
 
+> **Superseded 2026-08-02 by §7.18.5.2.** She fixed it, and the paragraph above is retained only because §7.18.5.1 measures against it. `find_fatal_log_lines()` now returns **3 hits** on Tank's artifact and `check_fatal_log` exits 1 there. Everything in this subsection describing the markers as blind is history, not current state.
+
 #### 7.18.5.1 Fixed 2026-08-02 (Trinity) — and it was worse than "returns green"
 
 Measured across the three real logs in the tree **before** rewriting anything:
@@ -2010,7 +2012,37 @@ Its only positive test, `test_verdict.py::test_fatal_log_scan_finds_the_line`, c
 
 **And a liveness check, because a marker list that has never been shown to fire is indistinguishable from one that cannot.** `_verdict.assert_fatal_log_check_is_live()` classifies a committed, verbatim positive control red and the extent-boundary control green, and `ci/check_fatal_log.py` calls it **before** any verdict of its own is trusted — reporting `ERROR(instrument=witness_not_live)`, never a pass. Same remedy as `_models.assert_no_cpu_fallback_is_live()` for the silently-swallowed ORT config key, and for the same reason.
 
-Verification: `check_fatal_log` is now **red on Tank's artifact** (the file it read as clean while being cited five times) and `ci/negative_control_device_loss.py` still reports **14/14 arms fired** with `check_fatal_log exit=0` on the EP-reports-loss-ORT-silent input — so `check_device_loss` keeps its reach.
+Verification: `check_fatal_log` is now **red on Tank's artifact** (the file it read as clean while being cited five times) and `ci/negative_control_device_loss.py` reports **18/18 arms fired** with `check_fatal_log exit=0` on the EP-reports-loss-ORT-silent input — so `check_device_loss` keeps its reach.
+
+#### 7.18.5.2 Review of Trinity's edits to `ci/` — and two defects of mine her fix exposed
+
+She edited two files I own and asked for review before merging, which is the right order. Reviewed 2026-08-02 at `57a7f62`; merged.
+
+**On the placement of the liveness check in `ci/check_fatal_log.py`: correct, and correct in a way worth naming.** It runs after the vocabulary import and *before* the scan — which means it also runs ahead of my `--lane-marker` branch, the one that returns exit 0 on a lane that died early. That ordering is right. The marker branch exists to avoid adding a second red about a *subject* that never existed; a blind witness is not a fact about the subject but a standing defect in the check, and it invalidates every green the check has ever produced, on dead lanes and live ones alike. It should be unconditional. It is.
+
+**On declining to widen `FATAL_LOG_MARKERS` to `The logical device has been lost`: I agree, and the reason she gave is the reason — I can confirm it rather than assert it.** `ci/negative_control_device_loss.py` does not merely *say* the two checks have separate reach in a comment; it has an executed arm that plants a log in which the EP reports the loss and ORT announces nothing, requires `check_device_loss` to go red on it, and then **runs `ci/check_fatal_log.py` on the same file and requires exit 0**:
+
+```
+[ FIRED] EP reports the loss, ORT announces nothing (reach beyond check_fatal_log)   PLANTED
+         exit=1 saw FAIL(condition=device_lost_reported)
+[ FIRED]   ...and check_fatal_log is NOT red on that same file                       PLANTED
+         check_fatal_log exit=0 (1 would mean it caught it too, and this check would
+         then have no reach of its own to justify it)
+```
+
+So widening would not have been a neutral improvement with a stylistic objection. It would have **flipped that arm and turned the negative control red**, and the control would have been correct: with the markers widened, `check_device_loss` would have no demonstrated reach beyond `check_fatal_log`, and the case for two checks would rest on an argument rather than on an artifact. Coverage bought that way is coverage that deletes the evidence for the thing buying it. Her call, upheld. The constraint is now asserted from the other side too, in `ci/test_lane_checks.py`, so widening cannot happen quietly in either file.
+
+**Two defects of my own, which her fix exposed and which I have fixed here.** Both are the shape she found, one layer up, in my file.
+
+1. **`marker_cross_check()` was reporting a divergence that no longer existed.** It compared a *physical line* to a *matched span* by string equality. That held only while `find_fatal_log_lines` returned whole lines; a form-tolerant matcher necessarily returns the span it matched, so `...and retrying` never equals a stripped line carrying `...and retrying.`. The comparison had silently become a test of punctuation rather than of coverage, and it went on emitting `marker_list_misses_real_line` — with the prose *"so ci/check_fatal_log.py reads this log as clean"* — about a file `check_fatal_log` now exits 1 on. It asked "is my string in their list"; the question worth asking is **"would the shared vocabulary see this line at all"**, which is what it now asks.
+
+   **The serious part is that my own negative control pinned it.** An arm required that finding to be present on Tank's artifact. Anyone who repaired the cross-check would have turned my control red and been told the repair was the defect. That is R9 amendment 5 in a control I wrote to enforce R9 amendment 5: **a check that pins a defect outlives its subject, and then cannot tell repair from breakage.** The arm is replaced by two that assert the *repair* — the divergence is absent on Tank's artifact, and `check_fatal_log` is red on it — so a regression in the vocabulary now reds this control instead of certifying it.
+
+2. **`check_device_loss.py` scanned un-normalised text, so it was blind to UTF-16LE — including for the device-lost text, its own primary condition.** Found by one of the new arms on that arm's first run, not by reading. On a log carrying only the wide form this check would have reported a clean run, and my cross-check would have found no divergence *because both scanners were blind*, which reads as agreement. Two blind scanners agree perfectly. Both sides now normalise through `_verdict.normalise_log_text` — delegated, not reimplemented, for the same reason the marker list is: one normalisation, one owner, no second dialect. If the helper is unavailable the raw text is returned rather than a private substitute, because a wrong answer from a copy is worse than the original blindness — it looks maintained.
+
+The control is now **18 arms, 1 LIVE / 4 REPLAYED / 13 PLANTED**, all fired. The count went up because the fix added falsifiers, which is the only reason a count going up means anything.
+
+**A note on `ci/test_lane_checks.py::test_the_shared_marker_list_still_misses_the_real_ort_line`.** It was written to go green when Trinity fixed the markers. It did — by skipping its only branch and asserting nothing. A guard that goes quiet when its subject is repaired cannot distinguish repair from a second regression, and would have sat there green through any future breakage. Rewritten to assert the agreement it was waiting for, in all three forms a real capture arrives in (list repr, wrapped, UTF-16LE), plus the extent that is deliberately *not* covered.
 
 ### 7.18.6 The exclusion list, which is the dangerous part
 

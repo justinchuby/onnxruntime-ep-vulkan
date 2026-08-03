@@ -1674,21 +1674,46 @@ def test_device_loss_screen_and_fatal_log_have_different_extents():
         assert theirs.returncode != EXIT_FAIL_CONDITION, theirs.stdout
 
 
-def test_the_shared_marker_list_still_misses_the_real_ort_line():
-    """Regression guard on a live finding, and it is written to go GREEN when Trinity
-    fixes _verdict.FATAL_LOG_MARKERS -- it asserts the two agree, so it is red today
-    and stays honest afterwards."""
+def test_the_shared_marker_list_matches_the_real_ort_line():
+    """Was `..._still_misses_the_real_ort_line`, an xfail guard on a live finding written
+    to go green when Trinity fixed `_verdict.FATAL_LOG_MARKERS`. She fixed it on
+    2026-08-02 — at which point the test passed by *skipping its only branch* and
+    asserted nothing at all. A guard that goes quiet when its subject is repaired cannot
+    tell repair from a second regression, so it now asserts the agreement it was waiting
+    for, in the three forms a real capture arrives in.
+    """
     real = "Falling back to ['CPUExecutionProvider'] and retrying."
-    hits = _verdict.find_fatal_log_lines(real + "\n")
-    if not hits:
-        pytest.xfail(
-            "KNOWN, ROUTED TO TRINITY: tests/ops/_verdict.py::FATAL_LOG_MARKERS does not "
-            "match the line ORT actually prints, which is a list repr. "
-            "ci/check_fatal_log.py therefore reads a log announcing the fallback twice "
-            "as clean, and it has been cited as a second witness on that basis. Found "
-            "2026-08-02 by ci/check_device_loss.py on "
-            "bench/results/ctx512_device_lost.txt."
-        )
+    assert _verdict.find_fatal_log_lines(real + "\n"), (
+        "The shared vocabulary no longer matches the line ORT actually prints. Between "
+        "2026-07-31 and 2026-08-02 it did not, ci/check_fatal_log.py read a log "
+        "announcing the fallback twice as clean, and every positive it produced in that "
+        "window was test_phi35.py's own docstring echoed by pytest. Do not restore a "
+        "plain substring here."
+    )
+
+    # It wraps. Matching had to move off splitlines() for this reason.
+    wrapped = "Falling back to\n  ['CPUExecutionProvider'] and\n  retrying."
+    assert _verdict.find_fatal_log_lines(wrapped), "a wrapped announcement must match"
+
+    # ORT's C++ sink writes UTF-16LE into an otherwise UTF-8 file; decoded as UTF-8 the
+    # message is NUL-separated and unfindable by substring.
+    wide = (real + "\n").encode("utf-16-le").decode("utf-8", errors="replace")
+    assert _verdict.find_fatal_log_lines(wide), (
+        "the wide-encoded form must match; trinity-suite-dev1.log happens to carry both "
+        "encodings, and had it carried only this one a substring search would have seen "
+        "an empty log"
+    )
+
+    # And the extent that is deliberately NOT covered, asserted so that widening the
+    # markers cannot happen silently: see ci/negative_control_device_loss.py's reach arm,
+    # which requires check_fatal_log to stay green on EP-reported device loss.
+    assert not _verdict.find_fatal_log_lines(
+        "[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost.\n"
+    ), (
+        "check_fatal_log's extent is ORT's announcement; the EP's own device-lost text is "
+        "ci/check_device_loss.py's. Widening this list buys coverage by destroying the "
+        "demonstration that the two checks have separate reach."
+    )
 
 
 def test_device_loss_checks_are_registered_with_honest_reach():

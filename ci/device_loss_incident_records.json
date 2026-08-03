@@ -18,7 +18,7 @@
   "records": [
     {
       "file": "bench/results/ctx512_device_lost.txt",
-      "reason": "Tank's ctx-512 KV measurement, 2026-08-02: vkWaitForFences reported VK_ERROR_DEVICE_LOST, work moved to the CPU EP and the process exited 0. Kept as the replayed red arm for this check and as the evidence that _verdict.FATAL_LOG_MARKERS misses the real ORT line. The cause is with Switch (GQA attention loop, per-token work grows with context); this file is the record, not a new incident.",
+      "reason": "Tank's ctx-512 KV measurement, 2026-08-02: vkWaitForFences reported VK_ERROR_DEVICE_LOST, work moved to the CPU EP and the process exited 0. Kept as the replayed red arm for this check, and as the artifact that exposed _verdict.FATAL_LOG_MARKERS matching nothing but our own docstring — Trinity repaired the vocabulary the same day, so this file is now the REPLAYED arm proving the repair holds (check_fatal_log exits 1 on it, quoting three lines) rather than evidence of the defect. The cause is with Switch (GQA attention loop, per-token work grows with context); this file is the record, not a new incident.",
       "owner": "tank",
       "date": "2026-08-02"
     },
