@@ -1,0 +1,280 @@
+{
+  "by_shape": [
+    {
+      "K": 3072,
+      "N": 3072,
+      "amplification": 1.0,
+      "b_initializer_bytes_all_nodes": 150994944,
+      "bits": 4,
+      "blob_bytes": 16,
+      "blob_bytes_total": 4718592,
+      "blob_model_agrees_with_initializers": true,
+      "block_size": 32,
+      "blocks_per_col": 96,
+      "cols": 16,
+      "coverage": 1.0,
+      "distinct_bytes_touched": 4718592,
+      "has_zero_points": 0,
+      "load_instructions": 294912,
+      "load_widths_bytes": [
+        16
+      ],
+      "loads_by_width": {
+        "width_16B": 294912
+      },
+      "loads_per_blob": 1.0,
+      "max_loads_naming_one_word": 1,
+      "named_bytes": 4718592,
+      "nodes_with_this_shape": 32,
+      "packed": 1,
+      "wg": 32,
+      "words_named_by_more_than_one_workgroup": 0,
+      "workgroups": 192
+    },
+    {
+      "K": 3072,
+      "N": 8192,
+      "amplification": 1.0,
+      "b_initializer_bytes_all_nodes": 805306368,
+      "bits": 4,
+      "blob_bytes": 16,
+      "blob_bytes_total": 12582912,
+      "blob_model_agrees_with_initializers": true,
+      "block_size": 32,
+      "blocks_per_col": 96,
+      "cols": 16,
+      "coverage": 1.0,
+      "distinct_bytes_touched": 12582912,
+      "has_zero_points": 0,
+      "load_instructions": 786432,
+      "load_widths_bytes": [
+        16
+      ],
+      "loads_by_width": {
+        "width_16B": 786432
+      },
+      "loads_per_blob": 1.0,
+      "max_loads_naming_one_word": 1,
+      "named_bytes": 12582912,
+      "nodes_with_this_shape": 64,
+      "packed": 1,
+      "wg": 32,
+      "words_named_by_more_than_one_workgroup": 0,
+      "workgroups": 512
+    },
+    {
+      "K": 3072,
+      "N": 9216,
+      "amplification": 1.0,
+      "b_initializer_bytes_all_nodes": 452984832,
+      "bits": 4,
+      "blob_bytes": 16,
+      "blob_bytes_total": 14155776,
+      "blob_model_agrees_with_initializers": true,
+      "block_size": 32,
+      "blocks_per_col": 96,
+      "cols": 16,
+      "coverage": 1.0,
+      "distinct_bytes_touched": 14155776,
+      "has_zero_points": 0,
+      "load_instructions": 884736,
+      "load_widths_bytes": [
+        16
+      ],
+      "loads_by_width": {
+        "width_16B": 884736
+      },
+      "loads_per_blob": 1.0,
+      "max_loads_naming_one_word": 1,
+      "named_bytes": 14155776,
+      "nodes_with_this_shape": 32,
+      "packed": 1,
+      "wg": 32,
+      "words_named_by_more_than_one_workgroup": 0,
+      "workgroups": 576
+    },
+    {
+      "K": 3072,
+      "N": 32064,
+      "amplification": 1.0,
+      "b_initializer_bytes_all_nodes": 49250304,
+      "bits": 4,
+      "blob_bytes": 16,
+      "blob_bytes_total": 49250304,
+      "blob_model_agrees_with_initializers": true,
+      "block_size": 32,
+      "blocks_per_col": 96,
+      "cols": 16,
+      "coverage": 1.0,
+      "distinct_bytes_touched": 49250304,
+      "has_zero_points": 0,
+      "load_instructions": 3078144,
+      "load_widths_bytes": [
+        16
+      ],
+      "loads_by_width": {
+        "width_16B": 3078144
+      },
+      "loads_per_blob": 1.0,
+      "max_loads_naming_one_word": 1,
+      "named_bytes": 49250304,
+      "nodes_with_this_shape": 1,
+      "packed": 1,
+      "wg": 32,
+      "words_named_by_more_than_one_workgroup": 0,
+      "workgroups": 2004
+    },
+    {
+      "K": 8192,
+      "N": 3072,
+      "amplification": 1.0,
+      "b_initializer_bytes_all_nodes": 402653184,
+      "bits": 4,
+      "blob_bytes": 16,
+      "blob_bytes_total": 12582912,
+      "blob_model_agrees_with_initializers": true,
+      "block_size": 32,
+      "blocks_per_col": 256,
+      "cols": 16,
+      "coverage": 1.0,
+      "distinct_bytes_touched": 12582912,
+      "has_zero_points": 0,
+      "load_instructions": 786432,
+      "load_widths_bytes": [
+        16
+      ],
+      "loads_by_width": {
+        "width_16B": 786432
+      },
+      "loads_per_blob": 1.0,
+      "max_loads_naming_one_word": 1,
+      "named_bytes": 12582912,
+      "nodes_with_this_shape": 32,
+      "packed": 1,
+      "wg": 128,
+      "words_named_by_more_than_one_workgroup": 0,
+      "workgroups": 192
+    }
+  ],
+  "denominator": {
+    "int4_weight_bytes_from_graph": 1861189632,
+    "matmulnbits_nodes": 161,
+    "source": "ONNX initializers of each MatMulNBits B input (raw_data length, or the external-data `length` field)"
+  },
+  "measured": {
+    "amplification": 1.0,
+    "inb_load_instructions_per_inference": 116324352,
+    "load_widths_bytes_observed": [
+      16
+    ],
+    "max_loads_naming_one_word": 1,
+    "min_coverage_of_the_weight_tensor": 1.0,
+    "named_bytes_per_inference": 1861189632,
+    "verdict": "each weight byte is named by exactly one load instruction",
+    "words_named_by_more_than_one_workgroup": 0
+  },
+  "no_clock": "Every number here is a count of instructions or of bytes.",
+  "positive_controls": {
+    "controls": [
+      {
+        "amplification": 1.1076923076923078,
+        "control": "tail_tile_N_not_divisible_by_cols",
+        "detail": {
+          "K": 64,
+          "N": 130,
+          "amplification": 1.1076923076923078,
+          "bits": 4,
+          "blob_bytes": 16,
+          "blob_bytes_total": 4160,
+          "block_size": 32,
+          "blocks_per_col": 2,
+          "cols": 16,
+          "coverage": 1.0,
+          "distinct_bytes_touched": 4160,
+          "has_zero_points": 0,
+          "load_instructions": 288,
+          "load_widths_bytes": [
+            16
+          ],
+          "loads_by_width": {
+            "width_16B": 288
+          },
+          "loads_per_blob": 1.1076923076923078,
+          "max_loads_naming_one_word": 15,
+          "named_bytes": 4608,
+          "packed": 1,
+          "wg": 32,
+          "words_named_by_more_than_one_workgroup": 0,
+          "workgroups": 9
+        },
+        "max_loads_naming_one_word": 15,
+        "module": "the shipped module, at N=130 cols=16",
+        "positive": true,
+        "predicted": "amplification > 1: the surplus columns redirect onto col0"
+      },
+      {
+        "amplification": 2.0,
+        "control": "deliberately_rereading_variant",
+        "detail": {
+          "K": 64,
+          "N": 128,
+          "amplification": 2.0,
+          "bits": 4,
+          "blob_bytes": 16,
+          "blob_bytes_total": 4096,
+          "block_size": 32,
+          "blocks_per_col": 2,
+          "cols": 16,
+          "coverage": 1.0,
+          "distinct_bytes_touched": 4096,
+          "has_zero_points": 0,
+          "load_instructions": 512,
+          "load_widths_bytes": [
+            16
+          ],
+          "loads_by_width": {
+            "width_16B": 512
+          },
+          "loads_per_blob": 2.0,
+          "max_loads_naming_one_word": 2,
+          "named_bytes": 8192,
+          "packed": 1,
+          "wg": 32,
+          "words_named_by_more_than_one_workgroup": 0,
+          "workgroups": 8
+        },
+        "max_loads_naming_one_word": 2,
+        "module": "q_gemv.comp with the packed 4-bit chunk loop doubled",
+        "positive": true,
+        "predicted": "amplification == 2.0 on a shape whose amplification is 1.0 shipped",
+        "rebuild_reproduces_ledger_digest": true,
+        "unmodified_source_rebuild_digest": "024521d53c2ef5bc"
+      },
+      {
+        "control": "unpacked_path_changes_the_width_not_the_bytes",
+        "named_bytes_equal": true,
+        "packed_loads": 256,
+        "packed_widths_bytes": [
+          16
+        ],
+        "positive": true,
+        "predicted": "width 16 -> 4 B, loads x4, named bytes unchanged",
+        "unpacked_loads": 1024,
+        "unpacked_widths_bytes": [
+          4
+        ]
+      }
+    ],
+    "witnessed": true
+  },
+  "probe": "weight_reread_amplification_phi35_executed",
+  "subject": {
+    "digest_matches_ledger": true,
+    "digest_source": "evidence/proof_ledger.jsonl, entries dispatching this stem",
+    "module_bytes": 20208,
+    "module_path": "rust\\target\\release\\build\\onnxruntime-ep-vulkan-f44a364c58bb864b\\out\\spv\\q_gemv_matmul_nbits_f16.spv",
+    "shader_digest": "024521d53c2ef5bc",
+    "shader_stem": "q_gemv_matmul_nbits_f16",
+    "spec_constants": "[local_size_x, bits, block_size, has_zp, cols, packed], resolved per node by the ops::quant mirrors below"
+  }
+}

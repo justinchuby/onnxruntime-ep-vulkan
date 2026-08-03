@@ -384,6 +384,36 @@ jobs:
           echo "ONNXRUNTIME_VULKAN_EP_LIB=$PWD/rust/target/release/libonnxruntime_vulkan_ep.so" \
             >> "$GITHUB_ENV"
 
+      # -------------------------------------------------------
+      # Compile the test/bench/example targets BEFORE linting them.
+      #
+      # `cargo build --release` above compiles the lib only. Everything
+      # else in the crate — the ~500 unit tests, six integration
+      # targets, xtask — was first *compiled* by the clippy step,
+      # because clippy is the first `--all-targets` invocation in the
+      # lane. So on 2026-08-02 eleven i32/u32 bindgen-signedness errors
+      # in rust/src/ep.rs (OrtLoggingLevel is c_int under MSVC and
+      # c_uint under GCC) surfaced as a red step named
+      # "Clippy (all warnings as errors)", and, because a red step
+      # skips the rest of its job, the seven Linux steps behind it —
+      # unit tests, portability lint, the remaining integration
+      # targets, the loader probe, op-correctness, the gate artifact
+      # and its verdict readers — had never executed at all.
+      #
+      # A step's name is a claim about what its failure means. This one
+      # said "someone wrote un-idiomatic code"; it meant "this crate
+      # does not compile on Linux". The misrouting cost a day.
+      #
+      # No `-D warnings` here on purpose: this step must fail on
+      # compile errors ONLY, so that a red here and a red in clippy are
+      # different findings. Warnings remain clippy's to enforce.
+      # -------------------------------------------------------
+      - name: Compile all targets (cargo check --all-targets — compile errors, not lints)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          ORT_INCLUDE_DIR="$ORT_HOME/include" \
+            cargo check --release --manifest-path rust/Cargo.toml --all-targets
+
       - name: Clippy (all warnings as errors)
         if: env.BUILD_SKIPPED != '1'
         run: |
@@ -870,6 +900,21 @@ jobs:
             Write-Error "cdylib not found after build — check [lib] crate-type in Cargo.toml"
             exit 1
           }
+
+      # -------------------------------------------------------
+      # Compile the test/bench/example targets BEFORE linting them —
+      # the Windows half of the same split. See the Linux lane's
+      # comment for the incident. This lane is the one that was green
+      # throughout, which is the point: the defect was invisible from
+      # here, and naming the compile separately means a future
+      # Windows-only compile error is also reported as a compile error.
+      # -------------------------------------------------------
+      - name: Compile all targets (cargo check --all-targets — compile errors, not lints)
+        if: env.BUILD_SKIPPED != '1'
+        run: |
+          $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          cargo check --release --manifest-path rust\Cargo.toml --all-targets
+          exit $LASTEXITCODE
 
       - name: Clippy (all warnings as errors)
         if: env.BUILD_SKIPPED != '1'

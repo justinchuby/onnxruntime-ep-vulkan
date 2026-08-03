@@ -615,6 +615,7 @@ unsafe fn get_capability_impl(
     if claimed.is_empty() {
         // §8.9.7: disclose the zero-claim outcome on ORT's own channel. Not a warning — ops this
         // EP never claimed running on the CPU EP is the plan, disclosed once in aggregate.
+        crate::disclosure::disclose_ledger_demotions();
         crate::disclosure::disclose_zero_claims(num_nodes, &declined);
         return ptr::null_mut();
     }
@@ -625,6 +626,9 @@ unsafe fn get_capability_impl(
     // A user must learn that a claimed form's correctness is UNMEASURED or DIVERGENT now, not
     // from a wrong answer later.
     {
+        // §8.9.18: the demotion count is a property of the artifact, so it is printed on every
+        // run regardless of what this model claims.
+        crate::disclosure::disclose_ledger_demotions();
         let forms: Vec<crate::disclosure::ClaimedForm> = claimed_forms
             .iter()
             .map(|((op, _), (key, n))| crate::disclosure::ClaimedForm {
@@ -2700,7 +2704,17 @@ mod tests {
         use crate::registry::ProofKey;
 
         /// Run one disclosure with the fake ORT sink attached and return what reached it.
-        fn run_arm(forms: &[ClaimedForm]) -> (crate::disclosure::Disclosure, Vec<(i32, String)>) {
+        ///
+        /// The severity is carried as `ort::OrtLoggingLevel`, never as a spelled-out integer:
+        /// bindgen emits that alias as `c_int` under MSVC and `c_uint` under GCC (portability
+        /// rule P1, same reason as `OrtChar` below), so any concrete width here compiles on
+        /// exactly one platform.
+        fn run_arm(
+            forms: &[ClaimedForm],
+        ) -> (
+            crate::disclosure::Disclosure,
+            Vec<(ort::OrtLoggingLevel, String)>,
+        ) {
             let _guard = broken_commitment::serialize();
             let api = broken_commitment::fake_api();
             broken_commitment::CAPTURED
@@ -2715,7 +2729,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|(_, m)| m.contains("§8.9.7"))
+                .filter(|(_, m)| m.contains("§8.9.7") || m.contains("§10.0.1 R12"))
                 .cloned()
                 .collect();
             (d, seen)
@@ -2799,8 +2813,8 @@ mod tests {
                 nodes: 11,
             }]);
             assert!(
-                d.proven >= 1,
-                "ERROR(instrument): nothing was claimed as proven, so the silence below is \
+                d.proof_backed() >= 1,
+                "ERROR(instrument): nothing proof-backed was claimed, so the silence below is \
                  vacuous: {d:?}"
             );
             assert_eq!(d.unproven(), 0, "{d:?}");
@@ -2823,7 +2837,7 @@ mod tests {
             assert!(
                 seen.iter().any(
                     |(sev, m)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO
-                        && m.contains("proven form(s)")
+                        && (m.contains("proven form(s)") || m.contains("UNATTRIBUTED"))
                 ),
                 "no INFO half reached ORT's sink, so 'no WARN' is indistinguishable from 'no \
                  disclosure': {seen:?}"
@@ -2850,7 +2864,7 @@ mod tests {
                     nodes: 1,
                 },
             ]);
-            assert_eq!((d.proven, d.unmeasured), (1, 1), "{d:?}");
+            assert_eq!((d.proof_backed(), d.unmeasured), (1, 1), "{d:?}");
             let warn = seen
                 .iter()
                 .find(|(sev, _)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING)
@@ -2873,7 +2887,13 @@ mod tests {
         use std::sync::{Mutex, MutexGuard};
 
         /// Everything the fake sink has been handed, as `(severity, message)`.
-        pub(super) static CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+        ///
+        /// The severity keeps the ABI's own type. `ort::OrtLoggingLevel` is `c_int` on MSVC and
+        /// `c_uint` on GCC — the enum's values are 0..=4 on both, so this is a representational
+        /// difference in the binding, not a signed value we are truncating. Storing the alias
+        /// rather than a concrete width is the same portability rule as `OrtChar` below.
+        pub(super) static CAPTURED: Mutex<Vec<(ort::OrtLoggingLevel, String)>> =
+            Mutex::new(Vec::new());
 
         /// The ORT logger pointers **and** the counters are process-global, so a polarity must not
         /// run at the same time as anything else that logs or records. This is the same lock the
@@ -2956,7 +2976,7 @@ mod tests {
         /// Drive `disclose_broken_commitment` with a fake ORT sink attached and report what
         /// reached the sink. `status` is opaque to us — it is only ever passed back to the fake
         /// `GetErrorMessage` — so a dangling-looking non-null value is never dereferenced.
-        fn run_polarity(status: ort::OrtStatusPtr) -> (bool, Vec<(i32, String)>) {
+        fn run_polarity(status: ort::OrtStatusPtr) -> (bool, Vec<(ort::OrtLoggingLevel, String)>) {
             let _guard = serialize();
             let api = fake_api();
             CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clear();

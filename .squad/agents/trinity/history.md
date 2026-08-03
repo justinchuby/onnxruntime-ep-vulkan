@@ -327,3 +327,106 @@ Widening buys coverage by destroying a demonstration. Extent stated in PLATFORMS
 negative control 14/14, 1 LIVE / 3 REPLAYED / 10 PLANTED; `ci/test_lane_checks.py` 5 red -> 3
 (exactly Link's known census reds); lane set **140 PASS / 0 FAIL / 0 ERROR on both devices**.
 Edited two of Link's files as direct consequences -- flagged for his review.
+
+## Round 35 — 2026-08-02 — criterion 10 after `872d739`: the route, the axis, the run that fails it
+
+**What surprised me, first:** the premise I was handed was false. The brief said Switch's
+device-authoritative KV spans had changed the path the 64 KV outputs take under criterion 10.
+The counters said `outputs_device_bound = 0`, `outputs_host_resident = 196`. The new route is
+behind `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`, which ships OFF — a second path appeared **beside**
+the criterion, not underneath it. Forced onto it (`outputs_device_bound = 196`,
+`alloc_device_authority_grants = 196`), all 65 per-output residuals are **identical** on both
+vendors. Switch's writeback delivers the same bytes. The route is now in the record, read off
+the counters the run emitted, never off the env var that requested it: Step 1c unbinds on
+refusal, so a declined bind would be recorded as a route that was taken.
+
+**What surprised me, second, and it nearly cost this project a fictitious defect.** I had a
+drafted finding placing the residual peak at **layer 9** — smooth, plausible, reproducible,
+and identical on both vendors. It was an artifact of reading output names out of the record,
+which is serialised `sort_keys=True`, so `present.10` precedes `present.2`. `present.9.value`
+landed at index 64. Caught by asking the **session** for its order instead of the file:
+`sess.get_outputs()` returns depth order, and this model's true order is not its own sort —
+which is exactly what makes the refusal cheap and sound. Now three defences: names in session
+order in the record, `assert_names_are_session_order()`, and a test that pins both orders
+against the same medians and asserts they reach **different conclusions**.
+R12 one level out: *the frame of a name is the run that produced it, not the file that stored it.*
+
+**The measurement.** 65 compared, 62 within tolerance, 0 degenerate, failing `[0, 63, 64]`,
+per-output verdicts and never an aggregate. Morpheus's prediction — flat at 1–3 ULPs across
+all 32 layers — is **confirmed for the KV cache**: largest layer-to-layer step 1 ULP, no
+discontinuity, only exceedance layer 31 key and value at 4. The step is output 0, the logits,
+at 12 ULP, and it is **not a layer**. "Flat at 1–3 across all 32 layers" is true of the layers
+and false of the model.
+
+**The run that would fail it, named before recording anything as met, and reachable:**
+criterion 10 with `BIND_OUTPUTS=1` on `872d739^` returns all 65 outputs all-zero with
+`cross_run_identical_to_run1 = True` — wrong **and stable**, the exact shape the criterion was
+reopened for. Guard fires: 65 degenerate → `NOT_PERFORMED` → `UNMEASURED`. Unplanted, from the
+project's own history. Caveat stated in the record: logits-only catches this *instance* by luck
+of zeros; the *class* stays covered by the synthetic KV-only plant.
+
+**`atol` untouched. Verdict still `DIVERGENT` on both devices and both routes. Criterion 10
+stays open.** The tolerance is genuinely mis-specified — absolute bound, growing scale — but
+that is a change to what the criterion measures, so it went to Morpheus as an argument with
+old-vs-new and what each catches that the other misses. The moment to fix a tolerance is not
+the moment when fixing it turns two of three failing outputs green, and not by the person whose
+measurement made them red.
+
+**Verified:** 61 GPU-free falsifiers green; five real Phi-3.5 runs (2 routes × 2 devices + the
+pre-Switch control); `cargo test --lib` 492 passed; clippy exit 0, no warnings.
+Reported not fixed: one intermittent `counters::tests` failure (1 in 6, no rust diff on this
+branch, failure text not kept — said so anyway); `bench/phi35.py` still owes Niobe's
+`model_output_equivalence_authority` stamp.
+
+---
+
+## Round 36 — the logits step is inherited, and the intermittent was real
+
+**The premise I was handed was false again, and in the same direction as last round.** The
+brief described the logits as "the top of a smooth climb" up the 32 layers. **There is no
+climb.** Tapping the residual stream at every block gives medians
+`[0,0,1,2,2,...,2,1,3,3]` — flat at ~2, largest step 2, and **not monotone** (it dips at layer
+29). The number only moves in the last two hops: stream L31 `3` → final RMSNorm out `6` →
+logits `12`.
+
+**Named the distinguishing observation before running either arm.** `H_proj` predicts the 12
+ULP survives isolation of `lm_head`; `H_depth` predicts it vanishes. Isolated `lm_head` on
+bit-identical fp16 input both EPs: **median 0.0 ULP**, attributed, both vendors. `H_proj`
+refuted. The five-order accumulation envelope is median 0.0 — fp16 storage rounding swamps
+fp32 order over K=3072, so order cannot manufacture this residual at all. My own named
+falsifier did not fire.
+
+**First float64 reference the criterion has ever had.** At `lm_head`: `neither (equal)`. At
+the final RMSNorm: **Vulkan is bit-exact and the CPU EP is the 1-ULP one.** "The Vulkan EP is
+wrong until proven otherwise" is, at that node, backwards. Worth carrying: `divergent` has
+never once been asked *which* of the two is wrong.
+
+**I built and nearly shipped a false located defect of exactly the Round 35 shape.** My first
+arm F compared a float64 reference built from the *CPU EP's* tapped inputs against the Vulkan
+EP's *in-situ* output — arm A's 6 ULP wearing a reference's clothes, reporting
+`which_is_further_from_true: "vulkan"` **by construction**, and it would have named a node the
+EP executes bit-exactly. The rule that caught it: **isolation means identical inputs on both
+sides or it means nothing.** Kept the discarded version in a comment rather than deleting it.
+Same family: `claimed_nodes` is process-cumulative (arm A 355, arm B 356 for one node), so
+attribution is now a **delta**, and delta 0 marks the arm UNATTRIBUTED — an isolated run the EP
+declined is CPU-vs-CPU and reports 0 ULP, the most convincing possible way to measure nothing.
+
+**`atol` untouched again.** If a relative or ULP bound is correct that is Morpheus's ruling;
+I filed the measurement that makes it arguable and applied nothing.
+
+**The intermittent was three defects across three modules, and one had a false-pass mode.**
+Isolated arm 8/20 failed, full arm ~0% — **the narrower filter was the more sensitive
+instrument**, because a 21-test pool aligns on the contended statics far more often than a
+505-test pool. Four different tests at four different assertion sites → a race. Three
+`counters.rs` tests and two `logging.rs` tests touched process-global statics / the ORT logger
+pointers without `ledger::test_lock()`; the logging one made a WARN that *did* reach ORT record
+as `warn_reached_ort_sink: false`. A reader is as much a party to a race as a writer. My first
+auditor had a hand-written two-file list and was structurally blind to the third module —
+Mouse's anti-pattern; it now scans all 43 sources, resolves lock aliases, and has a selftest
+that proves it can go red. After: **25/25 isolated + 15/15 full green.**
+
+**Verified:** 12 new device-free falsifiers green (one of which I had to *make* able to go red
+— my first separating case used a 2²⁰ pivot whose fp32 spacing is 0.0625, far too small to
+absorb unit terms); criterion 10 lane 62 pass / 1 fail, the fail being the known open
+`DIVERGENT` verdict, unchanged; `cargo test --lib` **501 passed, 0 failed**; clippy exit 0;
+auditor 0/0 with selftest 3/3.

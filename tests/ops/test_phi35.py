@@ -76,6 +76,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sys
 from collections import Counter
 from typing import Any
 
@@ -85,6 +86,10 @@ import pytest
 import onnxruntime as ort
 
 import _models as m
+
+# The counter ABI mirror is generated from rust/src/counters.rs, never hand-written here.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import counters_abi as _counters_abi  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Model location — Foundry cache, never committed to the repo.
@@ -270,29 +275,14 @@ def test_phi35_session_loads_and_declines_cleanly(
     # ------------------------------------------------------------------
     # Read execution counters in-process (scoped to this session via reset above)
     # ------------------------------------------------------------------
+    # The mirror is DERIVED from rust/src/counters.rs by counters_abi, never written here.
+    # Two hand-written mirrors lived at this spot and both misread it: `a52024f` inserted
+    # `device_losses` mid-struct and `dispatches_executed` silently became it, then `898a2ba`
+    # inserted three more and `ledger_entries` read 0 against a true 97. A mismatch now RAISES;
+    # it does not degrade to a plausible number. See tests/ops/test_counters_abi_singleton.py.
     ep_counters: dict[str, int] = {}
     if _ep_dll is not None:
-        import ctypes
-        class _Counters(ctypes.Structure):
-            _fields_ = [
-                ("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
-                ("compile_calls", ctypes.c_uint64), ("subgraphs_live", ctypes.c_uint64),
-                ("subgraphs_stub", ctypes.c_uint64), ("compute_calls", ctypes.c_uint64),
-                ("compute_failures", ctypes.c_uint64),
-                # ABI 4 (§8.9.15): device_losses was INSERTED here, not appended. Omitting it
-                # made `dispatches_executed` below read `device_losses` — a stable, plausible 0.
-                ("device_losses", ctypes.c_uint64),
-                ("dispatches_executed", ctypes.c_uint64),
-            ]
-
-        _c = _Counters()
-        _ep_dll.OrtEpVulkanGetExecutionCounters(ctypes.byref(_c), ctypes.sizeof(_c))
-        ep_counters = {
-            "compile_calls": _c.compile_calls, "subgraphs_live": _c.subgraphs_live,
-            "subgraphs_stub": _c.subgraphs_stub, "compute_calls": _c.compute_calls,
-            "compute_failures": _c.compute_failures, "device_losses": _c.device_losses,
-            "dispatches_executed": _c.dispatches_executed,
-        }
+        ep_counters = _counters_abi.read_counters(_ep_lib)
 
     # ------------------------------------------------------------------
     # Read CLAIM_LOG — claim census
@@ -964,38 +954,10 @@ def test_phi35_multi_run_same_session_interior_pointer_safety(
             )
         all_outputs.append(out)
 
-    # Read counters after all 5 runs.
+    # Read counters after all 5 runs. Derived mirror; see the note on the first read site.
     ep_counters: dict[str, int] = {}
     if _ep_dll is not None:
-        import ctypes
-
-        class _Counters(ctypes.Structure):
-            _fields_ = [
-                ("struct_size", ctypes.c_uint32),
-                ("abi_version", ctypes.c_uint32),
-                ("compile_calls", ctypes.c_uint64),
-                ("subgraphs_live", ctypes.c_uint64),
-                ("subgraphs_stub", ctypes.c_uint64),
-                ("compute_calls", ctypes.c_uint64),
-                ("compute_failures", ctypes.c_uint64),
-                # ABI 4 (§8.9.15) — inserted, not appended; see the note on the other mirror.
-                ("device_losses", ctypes.c_uint64),
-                ("dispatches_executed", ctypes.c_uint64),
-            ]
-
-        _c = _Counters()
-        _ep_dll.OrtEpVulkanGetExecutionCounters(
-            ctypes.byref(_c), ctypes.sizeof(_c)
-        )
-        ep_counters = {
-            "compile_calls": _c.compile_calls,
-            "subgraphs_live": _c.subgraphs_live,
-            "subgraphs_stub": _c.subgraphs_stub,
-            "compute_calls": _c.compute_calls,
-            "compute_failures": _c.compute_failures,
-            "device_losses": _c.device_losses,
-            "dispatches_executed": _c.dispatches_executed,
-        }
+        ep_counters = _counters_abi.read_counters(_ep_lib)
 
     # ── Assert output consistency across all runs ─────────────────────────────
     reference = all_outputs[0]

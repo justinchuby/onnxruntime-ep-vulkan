@@ -160,3 +160,139 @@ dangerous reading is not the wrong-looking one.
 Link. Does generalise across all kernels.
 
 📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it — demonstrated by forcing Intel Iris Xe on Windows, where the EP claims a form "proven ... on device0" though nothing has been proven there. Morpheus has ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — the predicate change (read `device`), the states, and the demotion split are named as still owed to you. Do not resolve by re-proving per platform: that turns the digest into a per-machine fingerprint and `--reprove` without `--append` was destructive at the time it was checked. — decided by Link, Morpheus
+
+---
+
+## 2026-08-02 — The mirrors are gone, the layout is compiler-checked, and `PROVEN-ELSEWHERE` runs
+
+**What I got wrong yesterday, in one sentence.** I built `counters_abi.py`, called it "the real fix,
+built but not yet installed", routed the three call sites to Trinity because four agents were live in
+the tree, and the same defect bit again. The concurrency reasoning was fine. The safety reasoning was
+not: **a generator that co-exists with the thing it replaces is a fourth mirror.** Filing the removal
+of a hazard is not removing the hazard.
+
+**Verified three mirrors, not assumed three** — `test_phi35.py` x2, `test_wiring_census.py` x1. The
+JSON emission and `snapshot()` are name-keyed and compiler-exhaustive, so they are not mirrors.
+All three deleted; `tests/ops/test_counters_abi_singleton.py` fails on any file outside
+`counters.rs` and `counters_abi.py` that declares two or more counter names in a `_fields_` block,
+and carries both a planted-mirror control and a consumer control.
+
+**Version discipline is now computed.** One field list in `counters_abi_struct!`, offsets from
+`offset_of!`, `COUNTERS_LAYOUT_HASH` const-evaluated, and a `const _` assertion that fails the build
+unless `(version, hash)` is in `COUNTERS_LAYOUT_REGISTRY`. A compile-time assertion rather than a
+test, because a test can be filtered out by the person inserting the field. The DLL now also exports
+`OrtEpVulkanGetCountersLayout` — the per-field offset manifest I said last time would be strictly
+better; it is, and it took an afternoon, and I should have built it then.
+
+**Acceptance run, not reasoned about.** Applied the exact `898a2ba` insertion; the build died with
+`error[E0080]` naming the registry and the repair, and the tool exited 1 printing the row to append.
+Reverted.
+
+**Three surprises.**
+
+1. **The build error also showed `E0063 missing fields ... in initializer`.** Appends were *already*
+   compiler-checked, in five places. What was never checked was the meaning of the version number.
+   I had been treating the whole struct as unguarded when only the numbering was.
+2. **The Phi-3.5 probe never saw the defect and never could.** It reads the name-keyed JSON counters
+   file. The offset defect lived only in the ctypes readers. So "the probe reads the same" is not
+   evidence the ABI repair is safe — it is evidence the probe was never in the blast radius. Same
+   digest `eb7c4e1f90cd7ec2`, same 97 entries, same 355 claimed nodes, `ALL-PROVEN`: unchanged, and
+   neither a fix nor a new defect. The fix shows up where the mirrors were: `ledger_entries` reads
+   97 through the derived mirror where the stale one read 0.
+3. **`cargo test --lib` was already racy on `main`** — 2 failures in 6 full runs before I touched
+   anything. Several `counters::tests` call `reset()` on process-global statics without
+   `allocator::ledger::test_lock()`. Added the missing guards; 8/8 clean runs after. Not my defect,
+   but it was quietly eating the signal I needed to trust my own change.
+
+**`PROVEN-ELSEWHERE` observed in both polarities** on real hardware: device 0 `ALL-PROVEN`,
+`proven_elsewhere_claims=0`; device 1 `PROVEN-ELSEWHERE-PRESENT`, 355 claims across 8 named forms,
+each disclosed with `proved-on=device0 running-on=device1`. A missing key stays `UNPROVEN` and
+declines.
+
+**Two honest gaps, recorded rather than papered over.** `docs/DESIGN.md` §8.9 contains no four
+numbered discharge conditions — §8.9 ends at §8.9.7; the ruling is R12 in §10.0.1, and I implemented
+four obligations taken verbatim from its text. And `PROVEN-ELSEWHERE` discloses at INFO rather than
+WARN, because on a non-`device0` run every form is elsewhere-proven and a WARN per form would cost
+the `UNMEASURED` WARN its audience.
+
+**Standing weakness, unmitigated by design.** The device identity is a *selector index*, and Trinity
+established a selector is a request and not an identity. `device_frame_matches` also accepts a
+physical-name match. I did not add an env override for the frame: that is a fail-open lever on the
+one predicate whose failure mode is fail-open.
+
+
+---
+
+## 2026-08-02 (later) — `PROVEN-ELSEWHERE` withdrawn; the device field made load-bearing instead
+
+The coordinator stopped me mid-implementation: Fact Checker's audit returned ❌ on *"model-level ULP
+evidence cannot promote unexercised per-form keys"*, which is the premise Morpheus's cost argument
+rests on. So the entry above describing `PROVEN-ELSEWHERE` as implemented is **withdrawn**, and
+`docs/OP_COVERAGE.md` §7.19(c) with it. The slot exists in `ProofState` and declines.
+
+**What I built instead, and what it cost.** `registry::device_state` is now a four-state classifier
+read on every claim: `PROVEN` / `DEVICE-UNATTRIBUTED` / `PROVEN-ON-ANOTHER-DEVICE` / `UNPROVEN`.
+`DEVICE-UNATTRIBUTED` still claims — declining it would take the EP from 355 nodes to zero over a
+bookkeeping question — but it is counted on every claim and named per form with `entry-device=` and
+`running-device=` in both the session disclosure and the counters file. Being in every artifact of
+every run is what keeps it from becoming the field nobody reads, which was Fact Checker's question.
+
+**The surprise, and it is a good one.** I keyed the predicate on the device name read off the run
+rather than the selector, on Morpheus's finding that a selector is a request. Then the very run that
+validates the fix reproduced it: `ONNXRUNTIME_EP_VULKAN_DEVICE=0` opened
+`1=NVIDIA GeForce RTX 4060 Laptop GPU`. Had I keyed on the ordinal, the predicate would have read
+`device0 == device0` and reported a match against hardware it had never looked at — a predicate that
+is always true, which is the exact shape I spent the morning removing from the counters ABI.
+
+**`parse_ledger` faulted 103 proofs on one stale entry**, directly contradicting its own comment
+three lines above. Split into `Ledger::faults` (whole-file) and `Ledger::entry_faults` (per-entry).
+The header-count check had to move to `entries + entry_faults` or the demotion re-creates the global
+fault through the back door — that one nearly slipped past me, and it is the same shape as the
+defect: a second path to the state you thought you had closed.
+
+**Condition 4 cannot be satisfied as written and I said so rather than reinterpreting it.** For
+`PROVEN-ELSEWHERE` to be a guard something must be able to come out negative on the second device.
+With no per-form evidence there, nothing can. Written up in §7.20(c), together with a counter-
+proposal I have *not* verified: every entry names a per-form case model under `evidence/cases/`, so
+second-device proof may be a replay of 103 tiny graphs rather than the fatal cost the ruling assumes
+— in which case the answer is an entry per `(key, device)` and the status is unnecessary, not merely
+unsound.
+
+**Readings.** Device 0: `claimed_nodes` 355, `ledger_hits` 355, `unproven_declines` 3 — unchanged.
+`claimed_form_evidence` `ALL-PROVEN` → `DEVICE-UNATTRIBUTED-PRESENT`: **a fix**. No node changed
+hands; `ALL-PROVEN` had been asserting a device frame nothing checked. `ledger_entries` 97 → 103 is
+the `main` merge, not this change. 507 lib tests pass, clippy clean, census lane 7 passed/1 xfailed.
+
+
+## 2026-08-02 — §8.9.18 alignment: the ruling landed and the guard bit me
+
+**Morpheus upheld the refutation and withdrew his own paragraph in place.** `PROVEN-ELSEWHERE`
+**keeps disclosure, loses promotion**. His arithmetic is the part I will keep: `proven_key_lookups`
+6 against `ledger_entries` 95 — one clean ULP curve would have promoted 89 keys nothing ever
+touched. My §7.20(c) "condition 4 cannot be satisfied as written" now resolves the other way, and it
+is worth being precise about how: it is not that I was wrong, it is that with promotion withdrawn
+the predicate that must read the status is the *declining* one, and that one does come out negative
+on a planted entry. The condition was unsatisfiable for a status that promotes; it is satisfiable
+for a status that discloses and refuses.
+
+**The layout guard fired on a pure rename, and I did not plan the demonstration.** Renaming
+`device_mismatch_*` → `proven_elsewhere_*` for the ruling's vocabulary moved no offset and changed
+no size; `cargo build --lib` failed with `E0080` regardless, because the hash covers
+`name:offset:size`. v7 `0x16eacc53e6e18d97` ≠ v6 `0xf3fac68aa2c3a3ef` at an identical 152 bytes and
+20 fields. This is the mechanism working in anger on work that was not about layout — and it is
+right, because a name-keyed ctypes reader would have read `0` for the renamed field exactly as
+`ledger_entries` read 0 under `898a2ba`.
+
+**Fault scope: I had the split right and the boundary wrong.** I had put "unparseable line" and
+"invalid key" in `entry_faults`. Morpheus's rule — *fault scope is set by the scope of what you
+cannot locate, not by the severity of what you found* — puts them back on the artifact: you cannot
+locate what a line you cannot read meant to say. Moved. Both attached obligations discharged: a
+demotion count printed on every disclosure (INFO at zero, WARN otherwise), and a demotion test that
+cannot read zero by construction.
+
+**Per-key replay: recorded, not commissioned.** He was careful about that and I will be too. I do
+judge it right, structurally: per-key by construction, so it cannot promote what it did not
+exercise. Still unrun on a second device, so still a proposal.
+
+**Readings after the ABI change: 355 / 355 / 3, unchanged.** 509 lib tests pass, clippy clean, 12
+passed + 1 xfailed on the census + singleton lanes, `counters_abi.py --check` PASS at v7.

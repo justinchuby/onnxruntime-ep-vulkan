@@ -301,49 +301,20 @@ def _cargo_env() -> dict[str, str]:
     return env
 
 
-class _EpCounters(ctypes.Structure):
-    """Mirror of VulkanEpCounters (C ABI — counters.rs).  Append-only; never remove fields.
+# The counter ABI mirror is DERIVED from rust/src/counters.rs, never written here.
+#
+# A hand-written `_EpCounters` lived at this spot and was wrong twice in one day. `a52024f`
+# inserted `device_losses` mid-struct; `dispatches_executed` here silently became it, always `0`,
+# so mechanism 1 reported `UNWIRED (EP ran nothing)` about a run that dispatched normally.
+# `898a2ba` then inserted three `outputs_*` fields in the same place and `ledger_entries` read
+# **0** against a true 97. Both readings were stable and plausible, which is why nothing went red.
+#
+# The generator existed for the second one and did not prevent it, because it co-existed with the
+# mirrors it replaced. tests/ops/test_counters_abi_singleton.py now fails if a mirror comes back.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rust" / "tools"))
+import counters_abi as _counters_abi  # noqa: E402
 
-    §8.9.15 — THIS MIRROR IS NOT CHECKED BY THE COMPILER, SO IT IS CHECKED BY `abi_version`.
-    On 2026-08-02 `device_losses` was *inserted* mid-struct on the Rust side rather than
-    appended. Every field after it moved eight bytes, this mirror kept the old layout, and
-    `dispatches_executed` here silently began reporting `device_losses` — always `0`. The census
-    then reported `partitioner: UNWIRED (EP ran nothing)` about a run that dispatched normally.
-    A stable, plausible, entirely wrong number: R11's shape exactly.
-    """
-
-    _fields_ = [
-        ("struct_size", ctypes.c_uint32),
-        ("abi_version", ctypes.c_uint32),
-        ("compile_calls", ctypes.c_uint64),
-        ("subgraphs_live", ctypes.c_uint64),
-        ("subgraphs_stub", ctypes.c_uint64),
-        ("compute_calls", ctypes.c_uint64),
-        ("compute_failures", ctypes.c_uint64),
-        # ABI version 4: device_losses — INSERTED here, not appended.  Its absence from this
-        # mirror shifted every field below it by one.
-        ("device_losses", ctypes.c_uint64),
-        ("dispatches_executed", ctypes.c_uint64),
-        # ABI version 2: viable_islands_retained — R10 wiring observable for net-benefit gate.
-        ("viable_islands_retained", ctypes.c_uint64),
-        # ABI version 3: the §8.9 proof ledger — R10 wiring observable for criterion 11.
-        ("proven_key_lookups", ctypes.c_uint64),
-        ("ledger_hits", ctypes.c_uint64),
-        ("unproven_declines", ctypes.c_uint64),
-        ("ledger_entries", ctypes.c_uint64),
-        ("unproven_forms_claimed", ctypes.c_uint64),
-    ]
-
-
-# The ABI version this mirror is written against. A mismatch means the struct grew or moved and
-# every number read through the mirror is suspect, so the reader RAISES rather than returning
-# values — a shifted counter is not a smaller reading, it is a different field.
-_COUNTERS_ABI_VERSION = 4
-
-
-class CountersAbiMismatch(RuntimeError):
-    """The DLL's counter layout is not the one this file mirrors.  ERROR(instrument), never a
-    detection: the honest output of a reader that cannot locate its fields is a raise."""
+CountersAbiMismatch = _counters_abi.CountersAbiMismatch
 
 
 def _read_ep_counters_via_ctypes() -> dict[str, int]:
@@ -352,43 +323,12 @@ def _read_ep_counters_via_ctypes() -> dict[str, int]:
     This is the in-process path (test_phi35.py style).  It avoids the Windows UCRT env-var
     cache problem: the EP DLL reads ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE at init time, so
     setting the env var after DLL load is unreliable on Windows.  The C ABI call is always live.
-    """
-    ep_lib = os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB")
-    if not ep_lib:
-        return {}
-    import ctypes as _ct
 
-    try:
-        dll = _ct.CDLL(ep_lib)
-        c = _EpCounters()
-        dll.OrtEpVulkanGetExecutionCounters(_ct.byref(c), _ct.sizeof(c))
-    except Exception:
-        return {}
-    # The version check is deliberately OUTSIDE the try: a layout mismatch must not be swallowed
-    # into the same `{}` that a missing DLL produces, because `{}` becomes a delta of 0 and a
-    # delta of 0 is read as UNWIRED. That is how this defect stayed invisible.
-    if c.abi_version != _COUNTERS_ABI_VERSION or c.struct_size < _ct.sizeof(c):
-        raise CountersAbiMismatch(
-            f"counter layout mismatch: the DLL reports abi_version={c.abi_version} "
-            f"struct_size={c.struct_size}, this mirror is abi_version={_COUNTERS_ABI_VERSION} "
-            f"struct_size={_ct.sizeof(c)}. Every field read through the mirror may be a "
-            f"different field. Update _EpCounters to match rust/src/counters.rs."
-        )
-    return {
-            "compile_calls": c.compile_calls,
-            "subgraphs_live": c.subgraphs_live,
-            "subgraphs_stub": c.subgraphs_stub,
-            "compute_calls": c.compute_calls,
-            "compute_failures": c.compute_failures,
-            "device_losses": c.device_losses,
-            "dispatches_executed": c.dispatches_executed,
-            "viable_islands_retained": c.viable_islands_retained,
-            "proven_key_lookups": c.proven_key_lookups,
-            "ledger_hits": c.ledger_hits,
-            "unproven_declines": c.unproven_declines,
-            "ledger_entries": c.ledger_entries,
-            "unproven_forms_claimed": c.unproven_forms_claimed,
-    }
+    `{}` means only one thing -- ONNXRUNTIME_VULKAN_EP_LIB is unset. A layout mismatch RAISES and
+    is deliberately not swallowed into the same `{}`, because `{}` differences to a delta of 0 and
+    a delta of 0 is read as UNWIRED. That is how this defect stayed invisible for a day.
+    """
+    return _counters_abi.read_counters()
 
 
 def _run_add_session_with_profiling() -> tuple[dict[str, int], dict[str, int]]:
@@ -2258,37 +2198,56 @@ def test_wiring_census(require_vulkan, census_guard) -> None:
     reason="ONNXRUNTIME_VULKAN_EP_LIB not set",
 )
 def test_the_counters_mirror_matches_the_running_dll(require_vulkan) -> None:
-    """§8.9.15 — the ctypes mirror has no compiler checking it, so the lane checks it.
+    """§8.9.15 — the DLL publishes its own field offsets and the derived mirror must equal them.
 
     `device_losses` was inserted mid-struct on 2026-08-02 without a version bump and without
     updating the three ctypes mirrors. Every field below it shifted eight bytes, and the census's
     `dispatches_executed` began reading `device_losses`: always `0`, so mechanism 1 reported
     `UNWIRED (EP ran nothing)` about a run that dispatched normally. Nothing went red — the
-    number was stable and plausible, which is the R11 shape.
+    number was stable and plausible, which is the R11 shape. Hours later `898a2ba` inserted three
+    more fields in the same place and `ledger_entries` read `0` against a true 97.
 
-    The exact `struct_size` equality is deliberate and it is the point: an *append* is safe to
-    read with an old mirror, an *insertion* is not, and from the reader's side the two are
-    indistinguishable. So any change to the layout stops this lane until a human has looked. The
-    cost is a red test on every counter added; the alternative is a silent wrong number, and this
-    project has now paid that price twice.
+    Two things changed since. The mirror is generated from `counters.rs`, so it cannot be stale
+    relative to *source*; and the DLL now exports `OrtEpVulkanGetCountersLayout`, a per-field
+    offset manifest, so it cannot be stale relative to the *binary* either. This lane compares
+    them field by field rather than by size: a size check says only *that* two layouts differ, and
+    the old guard here compared with `<`, which is exactly why a struct that **grew** by three
+    fields sailed through.
+
+    The `struct_size` equality is deliberate. An *append* is safe to read with an old mirror, an
+    *insertion* is not, and from the reader's side the two are indistinguishable.
     """
     import ctypes as _ct
 
-    dll = _ct.CDLL(os.environ["ONNXRUNTIME_VULKAN_EP_LIB"])
-    c = _EpCounters()
-    written = dll.OrtEpVulkanGetExecutionCounters(_ct.byref(c), _ct.sizeof(c))
+    lib = os.environ["ONNXRUNTIME_VULKAN_EP_LIB"]
+    manifest = _counters_abi.dll_manifest(lib)
+    ours = _counters_abi.expected_offsets()
+    assert manifest["fields"] == ours, (
+        f"the DLL's field offsets are not this checkout's.\n"
+        f"{_counters_abi.misattribution(manifest['fields'])}"
+    )
+    assert manifest["layout_hash"] == _counters_abi.layout_hash(), (
+        f"offsets agree but layout hashes do not: DLL 0x{manifest['layout_hash']:016x}, "
+        f"checkout 0x{_counters_abi.layout_hash():016x}."
+    )
+    assert manifest["abi_version"] == _counters_abi.abi_version()
+    assert _counters_abi.layout_is_declared(), (
+        f"({_counters_abi.abi_version()}, 0x{_counters_abi.layout_hash():016x}) is not in "
+        f"COUNTERS_LAYOUT_REGISTRY — a layout nobody declared. Run "
+        f"`python rust/tools/counters_abi.py` for the row to append."
+    )
+
+    mirror = _counters_abi.make_mirror()
+    dll = _ct.CDLL(lib)
+    c = mirror()
+    written = dll.OrtEpVulkanGetExecutionCounters(_ct.byref(c), _ct.c_size_t(_ct.sizeof(c)))
     assert written > 0, "the DLL wrote no counters at all"
-    assert c.abi_version == _COUNTERS_ABI_VERSION, (
-        f"counter ABI version is {c.abi_version}, this mirror is written against "
-        f"{_COUNTERS_ABI_VERSION}. Fields may have been added, moved, or inserted; every value "
-        f"read through the mirror is suspect until it is re-checked against "
-        f"rust/src/counters.rs."
-    )
     assert c.struct_size == _ct.sizeof(c), (
-        f"the DLL's VulkanEpCounters is {c.struct_size} bytes, this mirror is {_ct.sizeof(c)}. "
-        f"A mirror that is the wrong size does not read smaller numbers, it reads different "
-        f"fields."
+        f"the DLL's VulkanEpCounters is {c.struct_size} bytes, the derived mirror is "
+        f"{_ct.sizeof(c)}. A mirror that is the wrong size does not read smaller numbers, it "
+        f"reads different fields."
     )
+    assert c.abi_version == _counters_abi.abi_version()
 
 
 @pytest.mark.skipif(

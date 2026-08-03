@@ -385,8 +385,48 @@ pub unsafe extern "C" fn OrtEpVulkanGetExecutionCounters(
     unsafe { counters::fill(out, out_bytes) }
 }
 
-/// Zero the EP's execution counters.
+/// Write the counters **layout manifest** into `out` as UTF-8 text; return the byte length.
 ///
+/// Returns the length the manifest needs even when `out` is null or too small, so a caller can
+/// size a buffer in two calls.
+///
+/// # Why a DLL that publishes its own layout
+///
+/// Because the alternative is a reader that guesses one. Twice in one day a field was inserted
+/// mid-struct and every ctypes mirror went on reading the old offsets — stable, plausible, wrong.
+/// A size check can only say *that* two layouts differ; this says *how*, so a reader can print
+/// "`dispatches_executed` would have read `outputs_device_resident`" instead of a number nobody
+/// can attribute.
+///
+/// Format, one field per line after two header lines:
+///
+/// ```text
+/// abi_version=5
+/// layout_hash=0x63c4641d754f2443
+/// struct_size=144
+/// 0 4 struct_size
+/// 4 4 abi_version
+/// 8 8 compile_calls
+/// ```
+///
+/// # Safety
+/// `out` must be null, or writable for `out_bytes` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OrtEpVulkanGetCountersLayout(
+    out: *mut std::ffi::c_void,
+    out_bytes: usize,
+) -> usize {
+    let text = counters::layout_manifest();
+    let bytes = text.as_bytes();
+    if !out.is_null() && out_bytes >= bytes.len() {
+        // SAFETY: `out` is non-null and the caller promises `out_bytes` writable bytes, which is
+        // at least `bytes.len()`.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len()) };
+    }
+    bytes.len()
+}
+
+/// Zero the EP's execution counters.///
 /// For a harness that wants to scope a claim to one model run: reset, run, read. Without it the
 /// only available claim is process-cumulative, and "some dispatch executed at some point in this
 /// pytest session" is a much weaker statement than "this model executed on the GPU".

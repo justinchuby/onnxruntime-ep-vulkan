@@ -1,7 +1,7 @@
 {
   "device_selector": "0",
-  "ledger_entries": 97,
-  "dll_mtime": 1785730114.2153242,
+  "ledger_entries": 103,
+  "dll_mtime": 1785755145.8787124,
   "claimed_nodes": 355,
   "ledger_hits": 355,
   "unproven_declines": 3,
@@ -9,5 +9,5 @@
   "islands_offered": 1,
   "viable_islands_retained": 1,
   "ledger_gate": "MIXED",
-  "claimed_form_evidence": "ALL-PROVEN"
+  "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT"
 }

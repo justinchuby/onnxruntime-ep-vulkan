@@ -393,6 +393,8 @@ mod tests {
 
     #[test]
     fn forwarding_is_a_noop_without_an_attached_logger() {
+        // Process-global logger pointers: same lock as `attach_rejects_null_pointers`.
+        let _g = crate::allocator::ledger::test_lock();
         detach_ort_logger();
         // Must not dereference anything: the pointers are null.
         forward_to_ort(Level::Error, "test", "no logger attached", Some("x.rs"), 1);
@@ -427,6 +429,12 @@ mod tests {
 
     #[test]
     fn attach_rejects_null_pointers() {
+        // The ORT logger pointers are process-global: the same lock the counters and the
+        // `ep::tests::session_disclosure` arms take. Without it this test detaches the sink
+        // out from under a disclosure arm mid-run, and that arm reports
+        // `warn_reached_ort_sink: false` -- a WARN that did reach ORT, recorded as one that
+        // did not. Observed 1 run in 4 of `cargo test --lib` on 2026-08-03.
+        let _g = crate::allocator::ledger::test_lock();
         detach_ort_logger();
         // SAFETY: both arguments are null, which `attach_ort_logger` is required to reject
         // without dereferencing.

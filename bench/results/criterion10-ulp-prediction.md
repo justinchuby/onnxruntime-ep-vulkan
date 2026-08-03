@@ -162,3 +162,31 @@ out of it that a satisfied reading would have missed:
   the multiple until it did not. That instinct is the defect — a threshold fitted after the
   fact cannot contradict the person who set it. The predicate is now the prediction, recorded
   above before any ULP existed, and the two overshoots stand in the record.
+
+
+---
+
+## RE-MEASURED after `872d739` (device-authoritative KV spans) — 2026-08-02, Trinity
+
+The prediction was tested a second time because Switch changed the path the 64 KV outputs
+take. Full evidence: `bench/results/criterion10-route-and-depth-2026-08-02.md`.
+
+**The prediction survives the re-measurement, and it survives it on both paths.**
+
+- The criterion-10 lane does **not** take Switch's new path: `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`
+  ships OFF, so `outputs_device_bound = 0` on the default run. The path did not change under
+  the criterion; a second path appeared beside it.
+- Forced onto it (`DEVICE_MEMORY=1 BIND_OUTPUTS=1`, `outputs_device_bound = 196`,
+  `alloc_device_authority_grants = 196`), the per-output residuals are **identical on all 65
+  outputs, on both vendors**. The device-authoritative writeback delivers the same bytes.
+- The per-layer medians are unchanged from the reading above: smooth, largest step 1 ULP,
+  the only KV exceedance still layer 31 key and value at 4 ULP, and the 12-ULP step still
+  output 0, which is not a layer.
+
+**The correction that matters.** The first re-reading of the depth axis appeared to relocate
+the peak to layer 9. It was an artifact of reading output names out of the record, which is
+serialised `sort_keys=True`, so `present.10` precedes `present.2`. The axis is now taken from
+`sess.get_outputs()` and a falsifier refuses any name list equal to its own sort. The layer-31
+finding above is the correct one; there was never a layer-9 anything.
+
+**`atol` is still untouched and the verdict is still `DIVERGENT`.**

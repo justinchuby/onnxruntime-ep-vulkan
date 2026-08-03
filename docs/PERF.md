@@ -3669,3 +3669,103 @@ and the weight term was already earned.
 
 Reproduce: `python bench/ceiling.py`, `python bench/results/probe_kv_bytes_earned.py`.
 Locked by `bench/test_ceiling.py` (36 tests).
+## 22. The anchor was never measured — the amplification becomes falsifiable (2026-08-03)
+
+Every bandwidth argument this project has made rests on one number: **each weight byte is read
+exactly once per token, amplification 1.000000**. It was published by
+`bench/results/probe_island_bytes.py` as a block of five values, and its docstring made a careful,
+correct argument for why `1.0` is a result and not an identity — the product `blobs x blob_bytes`
+*is* the weight tensor by definition, but two factors in it are contingent: **loads per blob** and
+**blobs per workgroup**. It said both had been established by a SPIR-V def-use walk.
+
+**All five values were literals. There was no walk in the tree.** The reasoning happened once, in
+a head, and its conclusion was transcribed as a constant. A kernel change that made the packed path
+re-read every blob eight times would have left the printed `1.000000` untouched. This is R9's third
+generalisation — a criterion is discharged by an observable that changes when the claim is false —
+and R13's dangling-reference class: it was not broken, it *resolved anyway*, which is exactly why it
+survived being quoted as the anchor.
+
+### The instrument
+
+`bench/spirv_simt.py` is a SPIR-V parser and a lockstep SIMT interpreter: it executes a compiled
+module over a whole dispatch grid with numpy lane masks, structured-CFG recursion and per-lane phi
+capture, and records every address a chosen binding is loaded from, at 32-bit-word granularity,
+along with which workgroup named it. `bench/results/probe_weight_reread.py` drives it.
+
+Three bindings make the reading a reading:
+
+* **The module is located by content digest**, reimplementing `registry.rs::shader_digest_for`, and
+  matched against `evidence/proof_ledger.jsonl`. The walk is of the compiled kernel a run
+  dispatched, not of a shader source string re-compiled for the occasion.
+* **The denominator comes from the graph** — the sum of ONNX initializer sizes over the 161
+  `MatMulNBits` B inputs (the external-data `length` field), not a restated constant.
+* **The detector has a demonstrated positive state.** Three controls, all seen:
+  `tail_tile_N_not_divisible_by_cols` at **1.107692** on the shipped module at N=130;
+  `deliberately_rereading_variant` at **2.000000** on `q_gemv.comp` with the packed chunk loop
+  doubled (whose unmodified rebuild reproduces the ledger digest exactly, so the control differs
+  from the shipped kernel by one edit and nothing else); and `unpacked_path_changes_the_width_not_
+  the_bytes`. If no control fires the probe publishes `amplification: null` and `UNWITNESSED`
+  rather than a number.
+
+### The reading
+
+**The number did not move.** 116,324,352 InB load instructions at a measured width of 16 B name
+1,861,189,632 bytes against 1,861,189,632 bytes of initializer: **amplification 1.000000**, max
+loads naming one 4-byte word **1**, words named by more than one workgroup **0**, coverage
+**1.000000**. The original reasoning was right. The tree simply held nothing that could have told
+us if it had been wrong.
+
+Three things were not obvious from the argument:
+
+* The compiled module has **four** `InB` load sites, not one. "One load per blob" is a property of
+  *specialization* — which sites the spec constants make reachable — not of the shader text.
+* The unpacked path names **the same bytes** (amplification 1.0) and differs only in width (16 B →
+  4 B) and instruction count (×4). An amplification-only detector is blind to it; the width had to
+  be measured separately, off the SPIR-V result type.
+* The interpreter's own first bug was this same defect shape: masked-off lanes parked on scatter
+  index 0, where numpy's last-write-wins ate a live store, producing a GEMV wrong in exactly one
+  column per tile and plausible everywhere else. `test_interpreter_reproduces_the_gemv` is the
+  negative control that caught it, and it holds bit-exact against a numpy reference.
+
+### The rule: specification, measurement, model
+
+The generalisation is not "do not hardcode". It is that this file **mixed two kinds of number
+without saying which was which**, and once mixed, a transcribed conclusion is indistinguishable
+from an observation. `probe_island_bytes.py` now carries a `PROVENANCE` table, emitted into its
+JSON record, classifying every published quantity:
+
+| Class | Meaning | In this file |
+|---|---|---|
+| **SPECIFICATION** | A fact about a part, published by its maker. Legitimately a literal — deriving it would be pretending to measure a datasheet. | `PEAK_BYTES_PER_S` (128-bit GDDR6 @ 16 Gbps) |
+| **MEASUREMENT** | A fact about *this* graph, *this* module, *this* run. Must be derived here, every time. A literal is the defect. | `SPEC_PART`, `WEIGHT_STREAM_BYTES`, `LAYERS/HIDDEN/FFN/VOCAB/KV_HEADS/HEAD_DIM/FP16`, `weight_reread_amplification` |
+| **MODEL** | An analytic construction: neither published nor observed. Legitimately code, never quotable as a measurement. | `intermediate_breakdown_bytes`, `kv_bytes()` |
+
+The subtlety worth keeping is in the first two rows. A spec sheet peak **is** a fact about hardware
+— but it is a fact about a *named part*, and the name is a separate claim of a different class. So
+`SPEC_PART` is classified a measurement and is now read off the run's `device_identity.observed_
+from_trace` — the device whose timestamp fingerprint appears in the row's own trace. Reading it off
+`device_index` would have attributed `phi35-certified-dev0.json` to vulkaninfo index 0, which on
+this box is an Intel iGPU. The peak and the run agree; that agreement is now checked rather than
+assumed, and the probe says so in its output.
+
+`intermediate_breakdown_bytes` is the one that most needed a label. Its multipliers are now node
+counts read off the graph (161 MatMulNBits, 64 SkipSimplifiedLayerNorm, 64 Mul, 32 Sigmoid, 32 GQA),
+but the *rule* — every tensor crossing a dispatch boundary is written once and read once — is an
+assumption nothing observes. It is the size of the fusion prize, not a reading of it, and an
+unlabelled model reads exactly like a measurement. That is how the amplification survived: it was a
+model's conclusion wearing a measurement's clothes.
+
+**Nothing in this section reads a clock or a hardware counter**, so none of it falls inside the
+`a52024f`..`4d47362` window Mouse found the ABI-insertion defect in. One disclosure: no Phi-3.5 run
+has ever recorded `pipeline_variants`, so the specialization constants driving the walk are derived
+host-side from the graph through the `ops::quant` mirrors (locked by
+`test_dispatch_geometry_mirrors_the_host`) rather than witnessed on a run.
+`bench/results/gemv_kernel_identity-dev0.json` corroborates `packed=1` for bits=4/block=32 at a
+different dtype — corroboration, not a witness.
+
+The downstream consequences are unchanged because the number is unchanged; the roofline's
+conclusions are not touched here. What changed is that the anchor can now go wrong.
+
+Reproduce: `python bench/results/probe_weight_reread.py`, then
+`python bench/results/probe_island_bytes.py`.
+Locked by `bench/test_weight_reread.py` (15 tests).
