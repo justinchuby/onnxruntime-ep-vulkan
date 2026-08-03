@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 7;
+pub const COUNTERS_ABI_VERSION: u32 = 8;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -590,14 +590,28 @@ pub struct VulkanEpCounters {
     /// and named per form in the session disclosure, which is what stops an unattributable proof
     /// from being indistinguishable from a local one. It is **not** a failure signal.
     pub device_unattributed_claims: u64,
-    /// Nodes declined because the entry names a **different physical device** than this run
-    /// opened. **ABI version 6.**
+    /// Nodes claimed on an entry that is sound about **this exact subject** but was obtained in a
+    /// different FRAME — a different device, a different shader compiler, or both.
+    /// **ABI version 8** (renamed from `proven_elsewhere_declines`, which counted declines).
     ///
-    /// This is the fail-open Link found, closed. It is a subset of `unproven_declines`, split out
-    /// because "nothing has proven this form" and "this form was proven on other hardware" are
-    /// different facts and a reader who sees only the first will look in the wrong place. Non-zero
-    /// requires entries carrying physical device names, so it is zero on today's ledger.
-    pub proven_elsewhere_declines: u64,
+    /// §8.9.19 part 1 turned this reading from a decline into a **disclosed claim**: declining it
+    /// meant a Linux run declined all 97 forms and produced no op-correctness number at all, which
+    /// was the thing being unblocked. The rename is not cosmetic — the old name could only ever
+    /// read zero on a healthy Windows run, and a counter whose only observable value is zero is
+    /// not an instrument. The δ set is named per form in `proven_elsewhere_forms`.
+    ///
+    /// **Claiming is not promoting**: §8.9.18's withdrawal of the promotion licence stands, and
+    /// nothing here promotes an entry to `PROVEN`. Only `tests/ops`, a genuine per-form
+    /// differential, does that.
+    pub proven_elsewhere_claims: u64,
+    /// Nodes declined because the entry's **subject** moved — the kernel it proves has been
+    /// replaced, or its SPIR-V differs with no `source_digest` to say whether the kernel or only
+    /// the compiler changed. **ABI version 8.**
+    ///
+    /// Before §8.9.19 this population was invisible by construction: a stale entry was deleted at
+    /// parse time, so the form read as `KEY-ABSENT` and was indistinguishable from a form nobody
+    /// had ever proven.
+    pub subject_changed_declines: u64,
 }
 }
 
@@ -704,6 +718,11 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // Same size, same offsets, different names — and the hash moves anyway, which is the point:
     // two builds that disagree about what a field is CALLED disagree about what its number means.
     (7, 0x16ea_cc53_e6e1_8d97),
+    // v8 = §8.9.19. `proven_elsewhere_declines` becomes `proven_elsewhere_claims` — the reading
+    // turned from a decline into a disclosed claim, so the old name would have counted an event
+    // that can no longer happen — and `subject_changed_declines` appends the population that used
+    // to be invisible because a stale entry was deleted at parse time and read as `KEY-ABSENT`.
+    (8, 0xdf71_f4e6_a592_71b3),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -883,16 +902,26 @@ static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Nodes claimed on an entry whose device could not be compared to this run's hardware.
 static DEVICE_UNATTRIBUTED_CLAIMS: AtomicU64 = AtomicU64::new(0);
-/// Nodes declined because the entry names a different physical device than this run opened.
-static PROVEN_ELSEWHERE_DECLINES: AtomicU64 = AtomicU64::new(0);
+/// Nodes claimed on an entry that is sound about this subject but out of frame (§8.9.19).
+static PROVEN_ELSEWHERE_CLAIMS: AtomicU64 = AtomicU64::new(0);
+/// Nodes declined because the entry's subject moved (§8.9.19).
+static SUBJECT_CHANGED_DECLINES: AtomicU64 = AtomicU64::new(0);
 /// `key entry-device=<label> running-device=<names> reason=<why>`, first-seen order.
 ///
 /// The count says how many claims rest on an unattributable frame; this says which forms and why.
 /// Without it the count is the same kind of object as `"device": "device0"` was — present in the
 /// artifact, and not enough to act on.
 static DEVICE_UNATTRIBUTED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// `key proved-on=<device> running-device=<names>` for each decline, first-seen order.
+/// `key delta=<δ set> <specifics>` for each out-of-frame claim, first-seen order.
 static PROVEN_ELSEWHERE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// `key recorded=<digest> current=<digest>` for each `SOURCE-COSMETIC` claim, first-seen order.
+///
+/// §8.9.19's fourth row. It is the one that demonstrates the digest **pair** is doing work rather
+/// than one digest wearing two hats: with only the SPIR-V digest this reads as `PROVEN`, with only
+/// the source digest it reads as a kernel change, and only the pair can name it.
+static SOURCE_COSMETIC_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// `key recorded=<digest> current=<digest> source-comparable=<bool>`, first-seen order.
+static SUBJECT_CHANGED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
@@ -1192,15 +1221,39 @@ pub fn record_device_unattributed(key: &str, entry_label: &str, reason: &str) {
     }
 }
 
-/// Record a node declined because its entry names a different physical device than this run.
-pub fn record_proven_elsewhere_decline(key: &str, proved_on: &str) {
-    PROVEN_ELSEWHERE_DECLINES.fetch_add(1, ORD);
+/// Record a node **claimed** on evidence obtained in a different frame (§8.9.19).
+///
+/// `deltas` is the comma-separated δ set, exactly as it is printed in the run record. It is part
+/// of the row rather than a separate counter because a claim out of frame is only honest if the
+/// reader can see *which* frame components moved — "somewhere else" is not actionable, "the
+/// compiler moved and the source closure did not" is.
+pub fn record_proven_elsewhere_claim(key: &str, deltas: &str, detail: &str) {
+    PROVEN_ELSEWHERE_CLAIMS.fetch_add(1, ORD);
     if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
-        let running = crate::allocator::tally::session_devices();
-        let row = format!("{key} proved-on={proved_on} running-device={running}");
+        let row = format!("{key} delta={deltas} {detail}");
         if !seen.iter().any(|r| r == &row) {
             seen.push(row);
         }
+    }
+}
+
+/// Record a node claimed on an entry whose source closure moved while its SPIR-V did not.
+pub fn record_source_cosmetic_claim(key: &str, recorded: &str, current: &str) {
+    if let Ok(mut seen) = SOURCE_COSMETIC_FORMS.lock() {
+        let row = format!("{key} recorded={recorded} current={current}");
+        if !seen.iter().any(|r| r == &row) {
+            seen.push(row);
+        }
+    }
+}
+
+/// Record a node declined because the entry's subject moved (§8.9.19).
+pub fn record_subject_changed_decline(key: &str) {
+    SUBJECT_CHANGED_DECLINES.fetch_add(1, ORD);
+    if let Ok(mut seen) = SUBJECT_CHANGED_FORMS.lock()
+        && !seen.iter().any(|r| r == key)
+    {
+        seen.push(key.to_string());
     }
 }
 
@@ -1212,9 +1265,25 @@ pub fn device_unattributed_forms() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The device-mismatch decline rows recorded so far, deduplicated, first-seen order.
+/// The out-of-frame claim rows recorded so far, deduplicated, first-seen order.
 pub fn proven_elsewhere_forms() -> Vec<String> {
     PROVEN_ELSEWHERE_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// The `SOURCE-COSMETIC` claim rows recorded so far, deduplicated, first-seen order.
+pub fn source_cosmetic_forms() -> Vec<String> {
+    SOURCE_COSMETIC_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// The `SUBJECT-CHANGED` decline rows recorded so far, deduplicated, first-seen order.
+pub fn subject_changed_forms() -> Vec<String> {
+    SUBJECT_CHANGED_FORMS
         .lock()
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -1314,7 +1383,7 @@ fn device_unattributed_forms_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
-/// `proven_elsewhere_forms` — one row per form declined because it was proven on other hardware.
+/// `proven_elsewhere_forms` — one row per form CLAIMED out of frame, carrying its δ set.
 fn proven_elsewhere_forms_json() -> String {
     let Ok(seen) = PROVEN_ELSEWHERE_FORMS.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
@@ -1787,7 +1856,7 @@ fn pipeline_variants_json() -> String {
 /// The digest is over the SPIR-V **bytes** of exactly those modules, so it changes when the
 /// compiled kernel changes and does not change when an unrelated shader does. Its frame — what it
 /// covers and what it deliberately does not — is stated in `docs/OP_COVERAGE.md` §8.9.11.
-fn shaders_dispatched_json() -> (String, String) {
+fn shaders_dispatched_json() -> (String, String, String) {
     let stems = shaders_dispatched();
     let list: Vec<String> = stems
         .iter()
@@ -1798,7 +1867,29 @@ fn shaders_dispatched_json() -> (String, String) {
         // R12: no module was dispatched is a different fact from "the digest is zero".
         None => "NONE-DISPATCHED".to_string(),
     };
-    (format!("[{}]", list.join(", ")), digest)
+    let source_digest = match crate::registry::source_digest_for(&stems) {
+        Some(d) => d,
+        None => "NONE-DISPATCHED".to_string(),
+    };
+    (format!("[{}]", list.join(", ")), digest, source_digest)
+}
+
+/// `source_cosmetic_forms` — one row per form claimed on an edit that produced identical SPIR-V.
+fn source_cosmetic_forms_json() -> String {
+    let Ok(seen) = SOURCE_COSMETIC_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
+/// `subject_changed_forms` — one row per form declined because its subject moved.
+fn subject_changed_forms_json() -> String {
+    let Ok(seen) = SUBJECT_CHANGED_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
 }
 
 /// Current values. Not a consistent cross-counter snapshot; see [`ORD`].
@@ -1823,7 +1914,8 @@ pub fn snapshot() -> VulkanEpCounters {
         ledger_entries: crate::registry::ledger().len() as u64,
         unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
-        proven_elsewhere_declines: PROVEN_ELSEWHERE_DECLINES.load(ORD),
+        proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
+        subject_changed_declines: SUBJECT_CHANGED_DECLINES.load(ORD),
     }
 }
 
@@ -1880,7 +1972,8 @@ pub fn reset() {
     UNPROVEN_DECLINES.store(0, ORD);
     UNPROVEN_FORMS_CLAIMED.store(0, ORD);
     DEVICE_UNATTRIBUTED_CLAIMS.store(0, ORD);
-    PROVEN_ELSEWHERE_DECLINES.store(0, ORD);
+    PROVEN_ELSEWHERE_CLAIMS.store(0, ORD);
+    SUBJECT_CHANGED_DECLINES.store(0, ORD);
     if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
         seen.clear();
     }
@@ -1913,7 +2006,7 @@ impl VulkanEpCounters {
         let claimed = CLAIMED_NODES.load(ORD);
         let islands = ISLANDS_OFFERED.load(ORD);
         let viable = viable_islands_retained_json();
-        let (shaders_list, shaders_digest) = shaders_dispatched_json();
+        let (shaders_list, shaders_digest, shaders_source_digest) = shaders_dispatched_json();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \"device_losses\": {},\n  \
@@ -1944,12 +2037,19 @@ impl VulkanEpCounters {
              \"unproven_forms_enabled\": {},\n  \
              \"device_unattributed_claims\": {},\n  \
              \"device_unattributed_forms\": {},\n  \
-             \"proven_elsewhere_declines\": {},\n  \
+             \"proven_elsewhere_claims\": {},\n  \
+             \"subject_changed_declines\": {},\n  \
              \"proven_elsewhere_forms\": {},\n  \
+             \"source_cosmetic_forms\": {},\n  \
+             \"subject_changed_forms\": {},\n  \
+             \"ledger_subject_changed_entries\": {},\n  \
+             \"ledger_toolchain_delta_entries\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
+             \"shaders_dispatched_source_digest\": \"{}\",\n  \
+             \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
@@ -2010,12 +2110,19 @@ impl VulkanEpCounters {
             unproven_forms_enabled_json(),
             DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
             device_unattributed_forms_json(),
-            PROVEN_ELSEWHERE_DECLINES.load(ORD),
+            PROVEN_ELSEWHERE_CLAIMS.load(ORD),
+            SUBJECT_CHANGED_DECLINES.load(ORD),
             proven_elsewhere_forms_json(),
+            source_cosmetic_forms_json(),
+            subject_changed_forms_json(),
+            crate::registry::ledger().subject_changed_entries().count(),
+            crate::registry::ledger().toolchain_delta_entries().count(),
             json_escape(&crate::registry::running_device_names().join("; ")),
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
+            shaders_source_digest,
+            json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
             SESSION_DISCLOSURES.load(ORD),

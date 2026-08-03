@@ -426,6 +426,69 @@ pub unsafe extern "C" fn OrtEpVulkanGetCountersLayout(
     bytes.len()
 }
 
+/// Answer "what does *this* build hash a given shader set to?" as UTF-8 text; return the length.
+///
+/// `stems` is a NUL-terminated, comma-separated list of shader module stems — exactly the
+/// `shaders` array of a proof-ledger entry. The reply is:
+///
+/// ```text
+/// toolchain=shaderc v2026.2 v2026.2
+/// spirv_digest=1a2b3c4d5e6f7788
+/// source_digest=99aabbccddeeff00
+/// ```
+///
+/// A digest line is **omitted** rather than emptied when this build cannot form it (an unknown
+/// stem, or no shaders compiled at all), because an empty value is a digest a caller can compare
+/// against and get a false match.
+///
+/// # Why this is an export rather than sixty lines of Python
+///
+/// `gen_proof_ledger.py` needs both digests for stem sets it did not just dispatch — that is what
+/// backfilling a frame onto an existing entry means. Re-deriving them in Python would be a fourth
+/// mirror of a hashing rule that already exists in `build.rs` and `registry.rs`, and the mirror
+/// that agrees on the day it is written is the one that silently disagrees three weeks later. The
+/// tool asks the artifact instead.
+///
+/// # Safety
+/// `stems` must be null or a valid NUL-terminated C string. `out` must be null, or writable for
+/// `out_bytes` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OrtEpVulkanGetShaderSubject(
+    stems: *const std::ffi::c_char,
+    out: *mut std::ffi::c_void,
+    out_bytes: usize,
+) -> usize {
+    let list = if stems.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the caller promises a NUL-terminated C string.
+        match unsafe { std::ffi::CStr::from_ptr(stems) }.to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => String::new(),
+        }
+    };
+    let stems: Vec<&str> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut text = format!("toolchain={}\n", registry::toolchain_identity());
+    if let Some(d) = registry::shader_digest_for(&stems) {
+        text.push_str(&format!("spirv_digest={d}\n"));
+    }
+    if let Some(d) = registry::source_digest_for(&stems) {
+        text.push_str(&format!("source_digest={d}\n"));
+    }
+
+    let bytes = text.as_bytes();
+    if !out.is_null() && out_bytes >= bytes.len() {
+        // SAFETY: `out` is non-null and the caller promises `out_bytes` writable bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len()) };
+    }
+    bytes.len()
+}
+
 /// Zero the EP's execution counters.///
 /// For a harness that wants to scope a claim to one model run: reset, run, read. Without it the
 /// only available claim is process-cumulative, and "some dispatch executed at some point in this

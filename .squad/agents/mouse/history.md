@@ -300,3 +300,67 @@ passed + 1 xfailed on the census + singleton lanes, `counters_abi.py --check` PA
 📌 Team update (2026-08-03T04-55-00-07-00): Link found the eleven Linux `cargo test --lib` failures are a representational difference in bindgen typing (MSVC `c_int` vs. GCC `c_uint`, no negative enumerator, no arithmetic), not a signedness bug — three carrier declarations needed, not eleven casts, and `as i32` was rejected on principle (now portability rule P3). More load-bearing for the ledger: Ubuntu shaderc 2023.8 vs. Windows SDK v2026.2 compile different SPIR-V bytes from identical GLSL, so `shader_digest_for` faults every one of the ledger's 74/75 entries on Linux — proved by perturbing one GLSL template *on Windows* and getting a superset of the same test names. This is the keying decision Morpheus's `PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN` ruling still needs settled: per-toolchain digest vs. device-independent shader correctness. — decided by Link
 
 📌 Team update (2026-08-03T04-55-00-07-00): Trinity measured that at the final RMSNorm, Vulkan is bit-exact against a float64 reference while ORT's CPU EP is the side carrying 1 ULP of error — the residual criterion 10 flags is not evidence of a Vulkan defect. Residual is flat ~2 ULP across all 32 blocks (not monotone), with a `3 → 6 → 12` jump only in the last two hops. Bears on the open tolerance ruling: an oracle-side rounding difference should not be scored against Vulkan as if Vulkan were the imprecise side. — decided by Trinity
+
+---
+
+## Round 10 (cont.) — §8.9.19: one key, two digests, and an entry that survives its frame
+
+**The defect was one `continue`, and Morpheus named the line.** `parse_ledger` skipped past a
+`shader_digest` mismatch, so the entry never entered `Ledger::entries` and `Ledger::get` returned
+the **same `None`** it returns for a form nobody ever proved. A frame mismatch and a key absence
+were one observation with two repairs, only one of them actionable. That is the entire Linux
+symptom, and it is my own §8.9.18 part 3 edit one level up: I had moved *demotion* off the artifact
+and left *deletion* in place.
+
+**Two digests.** `source_digest` hashes the tree — variant row, resolved `#include` closure, argv
+minus version **and minus absolute paths** — so it is the same number on both platforms. That
+cross-platform property is the whole design; hashing the raw `-I`/`-o` paths would have turned it
+into a machine fingerprint.
+
+**Five rows, not four.** The ruling's table has no row for "SPIR-V differs and the entry records no
+source digest", which is every entry written before today. Guessing `toolchain` there grants every
+legacy entry a claim on a possibly-rewritten kernel, so it is `SUBJECT-CHANGED{source_comparable:
+false}` and the decline names `--backfill-frame`.
+
+### What surprised me
+
+**A single-valued state can silence a row the ruling requires to be named.** I ran the row-4
+acceptance instead of reasoning about it — comment-only edit to `ew_binary.comp` — and the entries
+went `SOURCE-COSMETIC` on the subject axis while the disclosure printed `DEVICE-UNATTRIBUTED` and
+nothing else, because the frame verdict outranks a cosmetic subject move and *every entry in the
+shipped ledger is device-unattributed*. So the row §8.9.19 calls "the row that proves the pair does
+work" would have been unobservable in the only ledger that exists, and `source_cosmetic` would have
+been a counter whose only possible value is zero — the exact defect class I spent the week removing,
+re-created by me, one axis over. Subject and frame are different axes and one token carries one;
+the subject verdict is now counted and printed beside the state.
+
+**`disclose_demotions_of` was reading the wrong two numbers the moment entry survival landed.** It
+took `live = entries.len()` and `demoted = entry_faults.len()`. Entry survival moves the demoted
+population *into* `entries`, so §8.9.18's obligation would have been satisfied on paper while
+reporting every drifted entry as live. Fixed to `demotion_count()`. It was a stale test that found
+it, which is the argument for tests that encode behaviour rather than shape.
+
+**The include closure had a positive state I nearly missed.** `Select-String` on `*.comp` reported
+no `#include` and I briefly believed it; the file has two at lines 11–12. Editing a comment inside
+`shaders/include/indexing.glsl` moved `ew_binary_add_f32`'s source digest `c96284de → c7edca19`
+with SPIR-V unchanged — the transitive closure demonstrated, not assumed.
+
+**All 103 entries backfilled with zero skips.** The refusal condition is "recorded `shader_digest`
+must equal this build's", and nothing tripped it. That is a fact worth stating: the shipped ledger
+is subject-consistent with the shipped binary.
+
+### Readings
+
+Phi-3.5 claim probe, device 0, release build: **355 claimed / 355 hits / 3 unproven declines,
+`DEVICE-UNATTRIBUTED-PRESENT`, 103 entries — every reading identical to `c1d2a63`.** Nothing moved,
+and that is the correct outcome: on Windows the toolchain matches, so §8.9.19 changes nothing about
+what claims *here*. It changes what happens on Linux. `cargo test --lib` 513 passed / 0 failed,
+clippy `--all-targets -D warnings` clean, `counters_abi.py --check` PASS at v8
+`(8, 0xdf71f4e6a59271b3)` including against the built DLL, `gen_proof_ledger.py --check` PASS.
+
+**Residual I did not close and am not absorbing:** runtime-chosen specialisation values sit outside
+both digests. The observing instrument already exists (`pipeline_variants`,
+`gemv_packed_spec_constant` record the effective `(stem, spec_constants)` pair); the digest does not
+consume it. Closing it is a dispatch-time frame witness, not a third build-time digest. Cost
+comparable to `source_digest`, smaller because the collection exists. Nobody owns it, and it
+interacts with Switch's selectors.

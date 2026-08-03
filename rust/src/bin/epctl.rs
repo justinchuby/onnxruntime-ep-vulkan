@@ -1248,7 +1248,8 @@ mod tests {
             ledger_entries: 0,
             unproven_forms_claimed: 0,
             device_unattributed_claims: 0,
-            proven_elsewhere_declines: 0,
+            proven_elsewhere_claims: 0,
+            subject_changed_declines: 0,
         }
         .to_json()
     }
@@ -1297,7 +1298,8 @@ mod tests {
             ledger_entries: 0,
             unproven_forms_claimed: 0,
             device_unattributed_claims: 0,
-            proven_elsewhere_declines: 0,
+            proven_elsewhere_claims: 0,
+            subject_changed_declines: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_MATCH)
     }
@@ -1325,7 +1327,8 @@ mod tests {
             ledger_entries: 0,
             unproven_forms_claimed: 0,
             device_unattributed_claims: 0,
-            proven_elsewhere_declines: 0,
+            proven_elsewhere_claims: 0,
+            subject_changed_declines: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_DIVERGENT)
     }
@@ -1739,7 +1742,8 @@ mod tests {
             ledger_entries: 0,
             unproven_forms_claimed: 0,
             device_unattributed_claims: 0,
-            proven_elsewhere_declines: 0,
+            proven_elsewhere_claims: 0,
+            subject_changed_declines: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_UNATTRIBUTED);
         std::fs::write(&f, doc).expect("write");
@@ -1822,7 +1826,8 @@ mod tests {
             ledger_entries: 0,
             unproven_forms_claimed: 0,
             device_unattributed_claims: 0,
-            proven_elsewhere_declines: 0,
+            proven_elsewhere_claims: 0,
+            subject_changed_declines: 0,
         }
         .to_json_with_equiv(counters::EQUIVALENCE_SPLIT_FRAME);
         std::fs::write(&f, doc).expect("write");
