@@ -1,0 +1,104 @@
+{
+  "probe": "does the real Phi-3.5 graph decline the KV round trip across a decode chain?",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "dll_sha256_16": "C26BF9CEE7775004",
+  "steps": 3,
+  "seed_past": 6144,
+  "bytes_per_past_token_declared": 393216,
+  "lanes": {
+    "host": {
+      "lane": "host",
+      "steps": 3,
+      "seed_past": 6144,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "logits_dtype": "float16",
+      "seed_kv_sha256": "7e334656fdfc2392",
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 6144,
+          "readback_bytes": 0,
+          "readbacks": 0,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 0,
+          "dispatches": 0
+        },
+        {
+          "step": 1,
+          "past_len": 6145,
+          "readback_bytes": 0,
+          "readbacks": 0,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 0,
+          "dispatches": 0
+        },
+        {
+          "step": 2,
+          "past_len": 6146,
+          "readback_bytes": 0,
+          "readbacks": 0,
+          "download_bytes": 0,
+          "downloads": 0,
+          "upload_bytes": 0,
+          "dispatches": 0
+        }
+      ],
+      "logits": [
+        {
+          "step": 0,
+          "past_len": 6144,
+          "argmax": 1919,
+          "max": 14.09375,
+          "sum": -162791.23312687874,
+          "sha256": "5772735a9bdb2cfe"
+        },
+        {
+          "step": 1,
+          "past_len": 6145,
+          "argmax": 417,
+          "max": 17.109375,
+          "sum": -66348.65808796883,
+          "sha256": "85319cb7e72a4c7b"
+        },
+        {
+          "step": 2,
+          "past_len": 6146,
+          "argmax": 30189,
+          "max": 16.921875,
+          "sum": -1373.843325138092,
+          "sha256": "619535787d0a6fbd"
+        }
+      ],
+      "final_counters": {
+        "session_staging_readback_bytes": 0,
+        "session_staging_readbacks": 0,
+        "session_staging_upload_bytes": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_authority_grants": 0,
+        "outputs_device_bound": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 0,
+        "dispatches_executed": 0,
+        "compute_calls": 1,
+        "compute_failures": 1,
+        "device_losses": 0
+      },
+      "exit_code": 0,
+      "logits_npy": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\bench\\results\\phi35_chain_host.json.logits.npy"
+    }
+  },
+  "verdict": "ERROR(instrument)",
+  "why": [
+    "lane host recorded compute_failures=1 device_losses=0; a run that ended early is not a cheaper run"
+  ]
+}

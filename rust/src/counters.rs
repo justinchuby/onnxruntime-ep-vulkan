@@ -2045,6 +2045,10 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_residency_evaluations\": {},\n  \
              \"alloc_device_authoritative_spans\": {},\n  \
              \"alloc_device_authority_grants\": {},\n  \
+             \"alloc_device_attach_attempts\": {},\n  \
+             \"alloc_device_attach_failures\": {},\n  \
+             \"alloc_device_attach_unavailable\": {},\n  \
+             \"alloc_device_memory_budget_bytes\": {},\n  \
              \"alloc_device_frame\": \"{}\",\n  \
              \"alloc_device_frame_device\": \"{}\",\n  \
              \"alloc_device_frames_declared\": {},\n  \
@@ -2099,6 +2103,10 @@ pub fn dump_observations_if_requested() {
             t.device_residency_evaluations,
             authoritative,
             t.device_authority_grants,
+            t.device_attach_attempts,
+            t.device_attach_failures,
+            t.device_attach_unavailable,
+            t.device_memory_budget_bytes,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
             frames_declared,
@@ -2426,6 +2434,10 @@ mod tests {
             "alloc_device_backed_spans",
             "alloc_device_authoritative_spans",
             "alloc_device_authority_grants",
+            "alloc_device_attach_attempts",
+            "alloc_device_attach_failures",
+            "alloc_device_attach_unavailable",
+            "alloc_device_memory_budget_bytes",
             "alloc_quarantine_retired",
             "alloc_device_frame",
             "alloc_device_frame_device",

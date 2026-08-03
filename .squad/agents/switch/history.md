@@ -1251,3 +1251,66 @@ grouping. It is 4x on Llama-3 8B and the general grouping case has not been run.
 
 **Next:** the general grouping case. Nothing in the fix is keyed on head counts, but nothing has
 proved that either.
+
+## Session 46n — 2026-08-03 — what `DEVICE_MEMORY` is still protecting against: four callers, none separates
+
+Merged `main` (`607056a`) first. 513 lib + 15 epctl green, clippy clean (`-D warnings`).
+
+**The hazard family a *memory* flag exposes, run for the first time.** New
+`bench/results/probe_device_memory_hazards.py`: allocator-asked-for-before-the-session, two
+sessions on one device interleaved, 65 device `OrtValue`s read after their session is gone, and
+an allocation that fails partway through the run. All 65 outputs compared byte for byte against
+the shipping path, twice per lane. `NO_HAZARD_LANE_SEPARATES` on both vendors — 130/130 per lane,
+`alloc_failed_lookups = 0`, `alloc_frees_after_release = 0` in the two lanes written to provoke
+them.
+
+**`SPLIT-DEVICE` declines itself.** The ordering trap I filed as a reason to be careful is closed
+by a guard that already existed: `bind_target_for` condition 2 refuses a frame that is not
+`Shared`, so the early-allocator lane binds 0 of 130, takes the shipping route, and returns the
+same bytes. The check was written before a caller existed who could reach it. One now does.
+
+**An allocation failure is a first-class case and now has an instrument.**
+`try_attach_device_buffer` had four exits and all four were the same silent missing increment.
+Split into `alloc_device_attach_{attempts,failures,unavailable}`. Added
+`ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB` — a provider cap, uncapped by default, reported as
+`alloc_device_memory_budget_bytes` so no artifact recorded under it can be quoted as if its
+failures were discovered. At 8 MB: 605 of 648 attaches refused, 43 spans device-backed, 130 output
+binds declined, **0 compute failures, outputs identical to the byte**, traffic back through the
+staging doors. Uncapped control on the same lane: 648 attempts, 0 failures.
+
+**One flag, two parsers, and they disagreed.** `factory` took `1|true|yes|on`; the allocator took
+"anything non-empty that is not `0`". `DEVICE_MEMORY=off` therefore **armed the allocator's attach
+while leaving the allocator un-advertised** — half-armed from a spelling that reads as "off". Same
+shape as the `disable_cpu_ep_fallback` trap Trinity found, inside our own flag. One function now,
+with a test that calls both entry points on twelve spellings and asserts agreement. Polarity is the
+opposite of `BIND_OUTPUTS` on purpose: a typo must fail towards whichever path *ships*.
+
+**ctx: the boundary is 6144 and 8192 is arithmetic, not a defect.** Predicted from the model's
+shapes before running (`2 × 393,216 × C` + 2.29 GB weights): 6144 → 7.13 GB fits, 8192 → 8.73 GB
+does not. Measured on the 8 GB discrete GPU: at **6144 the shipping lane fails at the first
+Compute (0 dispatches) and the resident lane completes 1065 dispatches at 64,128 B/step flat**; at
+8192 both fail. Largest context ever reached on this box: **6144, resident route only** — 75% of
+the operating point the 82.2% figure is quoted at. Nothing extrapolated past it.
+
+### What surprised me
+**Every hazard I could name was already closed, and by guards written before any caller could
+reach them.** I expected at least one of the four lanes to separate — the split-device one most of
+all, since I had filed it myself as the ordering trap. It declines cleanly. The honest reading is
+that the flag is not protecting against anything I can still name from the code; it is protecting
+against the three things nobody has *looked* at (device loss at ctx 512, two devices in one
+process, concurrent sessions) plus an operating point that does not fit in the card.
+
+Also: **my own probe died once, and the cause was mine again** — the outlive lane derived the KV
+extent from a loop index instead of from the tensor, was one token short, and ORT refused the
+pre-allocated output. Fourth instrument defect in this family. It now reads the extent off
+`past["past_key_values.0.key"].shape[2]`, which cannot be re-derived wrongly.
+
+### Verdict
+**`DEVICE_MEMORY` does not flip this round, and the reason is now a list of four rather than a
+doubt:** Tank's intermittent device loss at ctx 512; the `MIXED` two-device frame
+(`two_allocators_on_two_devices` still `#[ignore]`); concurrent sessions on threads; ctx 8192.
+Items 2 and 3 are a day each and mine; item 1 is Tank's; item 4 is the KV arena.
+
+Decision record: `.squad/decisions/inbox/switch-device-memory-hazard-family-and-the-four-gaps.md`.
+Artifacts: `bench/results/device_memory_hazards-dev{0,1}.json`,
+`bench/results/phi35_kv_chain-ctx6144-{resident,host}-dev0.json`.
