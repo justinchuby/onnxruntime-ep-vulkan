@@ -287,3 +287,103 @@ Four confirmed cases total. C2's fingerprint machinery (opset-number-based) is b
 Nuance from commit message: ORT "hard-rejected or never emitted" the `nonpad_kv_seqlen` external-cache path in production before 1.28. The wrong kernel existed but was never triggered by valid models. ORT 1.28 both fixes the kernel and enables the path. The active false-failure window (ORT 1.28 correct vs onnx 1.22.0 wrong) is real but affects only test harnesses that run the onnx Python reference against ORT 1.28 on these inputs.
 
 ---
+---
+
+## 2026-08-03 — Round 10: derived rule register, coordinator claim audit, rigour-ratio DA
+
+**Tree state:** `8ac1172` (main). All work on `squad/fact-checker`, unpushed.
+
+### Task 1 — Rule register derived from citations (Morpheus's tally handed over)
+**Verdict:** ✅ Derivation complete. **13 numbered + 8 unnumbered-but-binding obligations (U-A…U-H).**
+Definition fixed before results: externality by path ownership, bindingness (constrains a design /
+gates a verdict / justifies a refusal), recoverability, non-authorship. One qualifying citation
+suffices.
+
+**Decline scorecard: 3 of 8 survive.** Survive — D2 (R13 defaulting lookup, absorbed as an amendment),
+D3 (pattern-attracts-cases, no external citation), D4 (criterion-12 witness-vs-discharge, none).
+Do not survive — D1 anti-correlated confidence (`bench/phases.py`, `ci/device_state.py`, `PERF.md`,
+`PLATFORMS.md`); D5 convict/acquit (Trinity names a test after it, `tests/ops/test_criterion10_ulp.py:110`);
+D6 `PROVEN-ELSEWHERE` (a shipped state token: `registry.rs` ×7, `disclosure.rs` ×2, emitted in
+`bench/results/phi35_claim_reading-dev1.json:50`); D7 fault-scope-follows-localisation (Mouse gives it
+subsection §(e), `OP_COVERAGE.md:3812`, verbatim + attribution + 8-row table); D8 suite productivity
+(enforced by `ci/check_suite_productivity.py`, `ci/lane_inventory.py`, `.github/workflows/ci.yml`).
+Morpheus predicted some would not survive; five did not.
+
+**Tally was stale independently of method:** his own history reaches a seventh decline at
+`morpheus/history.md:370` (2026-08-02T23:40) and an eighth at 05:05. "Six" was last true at 21:24.
+
+**Unexpected — the shadow register.** External citations (excluding DESIGN.md, his history, logs,
+artifacts): `R1`–`R13` ≈ **1,337**; **`§8.9.x` = 339** (registry.rs 80, counters.rs 39, disclosure.rs 34,
+OP_COVERAGE.md 28, gen_proof_ledger.py 25). This **refutes the navigability diagnosis he accepted**:
+agents navigate fine, through a second namespace with different semantics — `R#` names an obligation,
+`§8.9.x` names a location, and a location can be re-cut (§8.9.19 already restates §8.9.17 over the
+word "belongs"). One counter, two namespaces.
+
+**Clearing finding:** `R14` occurs exactly once in the tree — in my own prior audit text. No phantom
+rule, no lost principle. The register is under-**counted**, not under-populated.
+
+**Published:** `.squad/fact-checker/rule-register-derived.md` (+ `derive_register.ps1`,
+`derive-hits-8ac1172.txt`) — a file Morpheus does not edit.
+
+### Task 2 — Coordinator claim audit (same instrument, turned on the requester)
+**Verdict:** ⚠️ **21 errors derived vs 5 self-reported classes / 7 propositions = 33% self-report
+recovery.** Rate **0.15 per user-facing turn** over 136 responding turns (~2.1/round).
+**20/21 corrected in the record (95%), 0 denied or defended, 5 self-caught and published, median
+latency same-or-next turn, 1 open.**
+
+Evidence base: local session store `c6bec1a7`, turns 0–163. **Hard observability limit:** routing
+prompts are retained nowhere readable; two of his five self-reported items survive only because
+Morpheus quoted them. **21 is a floor.**
+
+**Direction of self-report failure was the opposite of expected:** the 5 he listed are the 5
+adjudicated by a named agent in a written ruling; the 13 he missed are ones he caught himself in
+passing. He under-reported his catches, not his misses.
+
+**Amplification scored as asked:** ⚠️ mis-scoped, not ❌ false. `weight_reread_amplification = 1.000000`
+was five literals over an `x/x` identity — Morpheus's refutation stands in full — but Niobe's real
+measurement over compiled SPIR-V with three positive controls re-derived exactly 1.000000.
+**The epistemic claim was wrong; the value was not.**
+
+**Structural:** the three long-lived errors (161 nodes; amplification status; `--check PASS` quoted
+≥6×) share one shape — a number or green token that arrived pre-formed from an instrument and was
+re-quoted rather than re-derived (R13/R9 family). **≥8 of 21 (38%) occur where he was both producer
+and reader of the evidence** — the sole-supplier/sole-judge defect he diagnosed in Morpheus, at
+comparable strength on himself.
+
+**Open:** turn 156 asserts six-step logits "bit-identical to the CPU EP" in the same message as
+criterion 10 `DIVERGENT`, unreconciled. Second occurrence of that word at an extent the artifact does
+not carry.
+
+**Published:** `.squad/fact-checker/coordinator-claim-audit.md`.
+
+### Task 3 — Devil's Advocate: is the measurement discipline worth its cost?
+**Verdict:** Advisory. **Measured ratio 4.55 : 1** apparatus:implementation at `8ac1172`
+(103,898 vs 22,818 lines); **2.73 : 1** excluding `docs/` and `.squad/`. The 45:1 figure available by
+comparing apparatus to GLSL alone is a denominator error and was refused.
+
+**Primary-source comparison** (`gh api repos/ggml-org/llama.cpp/contents/ggml/src/ggml-vulkan`, today):
+164 entries in `vulkan-shaders/`, `ggml-vulkan.cpp` = 997,161 bytes, six vendor families, many
+architectures. Ours: 12 shaders, 1 model, 2 GPUs, 1 green platform, 0 users. ✅ verified by API.
+Op-parity narratives about llama.cpp are ⚠️ unverified secondary reporting and were not used.
+
+**Strongest form of the charge:** Round 10's decision record is five entries, four about instruments;
+the two most-cited rules are both rules about instruments. **Highest-expected-loss finding:** the team
+has *written down* that Phi-3.5's `Nq/Nkv = 1.00` hides a GQA defect Llama-3 would expose, and
+answered with instruments rather than a second model — **and that is nobody's assignment.**
+
+**Honest rebuttal:** the apparatus caught, this session, an ABI insertion making `dispatches_executed`
+read `device_losses` (stable, plausible, zero on every healthy run — invisible to a passing suite by
+construction), the `x/x` roofline anchor, a `--check PASS` that checks a file against itself, six DLL
+hashes from one unchanged tree, and a `0/363` from a stale binary. The session's largest perf result
+was produced by an instrument on a box with no usable clock.
+
+**Pre-mortem (2026-09-02):** Llama-3 fails in late August on a GQA path certified at the one ratio
+where the defect is invisible; repair is four days of governance and one of kernel; WebGPU gets good
+enough and the compatibility argument evaporates. Ranked causes: one-model oracle, known; rigour added
+to per-item cost rather than per-project cost; the box was never fixed.
+
+**Settlement items proposed:** land Llama-3 8B as a second oracle this round (unowned, highest expected
+loss); add a counter for the marginal cost of a new op — in a repo that counts almost everything, the
+absence of that counter is the finding; freeze the register at 13 + 8 for three rounds.
+
+**Published:** `.squad/fact-checker/devils-advocate-rigour-ratio.md`.
