@@ -2105,8 +2105,15 @@ impl VulkanSession {
             // different pipelines share one stem and every kernel reading we hold is silent about
             // which produced it. Recorded from the **effective** pair actually handed to
             // `get_or_create`, not from the env var: a selector is a request, not an identity.
-            crate::counters::record_pipeline_variant(eff_shader, eff_spec_constants);
-            desc_pools.push(desc_pool);
+            // §8.9.20 (Mouse, declared): the dispatch-time frame witness. The specialisation this
+            // pipeline was created with is outside BOTH build-time digests — same SPIR-V, same
+            // source closure, different kernel — so a proof taken under one value and replayed
+            // under another agrees on every recorded witness. This is the only point in the
+            // process where the value exists to be compared, which is why the audit hangs here
+            // rather than on the claim path: a claim is decided before any pipeline is built.
+            if crate::counters::record_pipeline_variant(eff_shader, eff_spec_constants) {
+                crate::registry::audit_dispatch_specialisation(eff_shader);
+            }            desc_pools.push(desc_pool);
 
             // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each
             // dispatch (except the last), so a later kernel in the same island sees this one's
