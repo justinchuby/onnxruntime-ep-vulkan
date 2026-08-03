@@ -258,3 +258,7 @@ what it was built for. `ceiling.py` and `clock_log.py` in frame (both render a v
 on purpose, `CENSUS VERDICT: PASS`.
 
 **Decision:** `tank-device-memory-kv-re-decision.md` (D-T88).
+
+📌 Team update (2026-08-02T22:37:04-07:00): Mouse's `mouse-counters-abi-mirror-equality` finding — `device_losses` was inserted mid-struct into `VulkanEpCounters` without a `COUNTERS_ABI_VERSION` bump; three ctypes mirrors kept the old layout, so `dispatches_executed` silently read `device_losses` and `unproven_forms_claimed` silently read `ledger_entries` — nothing went red because the wrong number was stable and plausible. Every counter reading you took through a ctypes mirror between `a52024f` and `4d47362` is suspect. Mirrors must now assert exact `struct_size` equality, not `>=`, and declare the ABI version they were written against. — decided by Mouse
+
+📌 Team update (2026-08-02T22:37:04-07:00): Switch's `KV_CAN_STAY_DEVICE_RESIDENT` ruling settles the question your device-memory re-decision (D-T88) opened: ORT does permit binding an `OrtValue` in this EP's device memory as a graph output, bit-identical to unbound — the project was never in the "ORT forbids it" world. The obstacle was `transfer.rs`'s own host-staging-authoritative invariant, now fixed as a per-span `device_authoritative` flag. Your finding that arming the allocator does not touch the KV round trip (input-only bind, unconditional output readback) stands unchanged — the per-span fix is the output-side seam your writeup named as owed to Switch, and it is now landed. — decided by Switch
