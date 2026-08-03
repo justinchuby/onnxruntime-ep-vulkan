@@ -183,6 +183,11 @@ def _child_main(spec_path: str) -> int:
                 flat[1::4] = -np.inf
                 flat[2::4] = np.nan
             return v
+        if domain == "spread":
+            # A wider float draw, for ops whose interesting behaviour is at magnitudes a unit
+            # normal rarely reaches — `Cast` to an integer, whose truncation is a no-op on almost
+            # every element of a standard normal.
+            return 100.0 * v
         return v
 
     def _ints(shape, dtype):
@@ -195,6 +200,12 @@ def _child_main(spec_path: str) -> int:
         if domain == "bits":
             info = np.iinfo(dtype)
             return rng.integers(info.min, info.max, shape, dtype=np.int64).astype(dtype)
+        if domain == "spread":
+            # Wide enough that the value matters, narrow enough that every value is exactly
+            # representable in f32 — the `i32 -> f32` case must not turn on the rounding mode of
+            # an integer-to-float conversion, which is a different question from whether the cast
+            # is wired up.
+            return rng.integers(-100_000, 100_000, shape).astype(dtype)
         return rng.integers(0, 2, shape).astype(dtype)
 
     feeds = {}

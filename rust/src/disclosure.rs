@@ -164,6 +164,13 @@ pub struct Disclosure {
     /// Whether that WARN reached ORT's own logger. `false` with `warned == true` means the WARN
     /// exists only on our stderr — delivered to nobody who matters.
     pub warn_reached_ort_sink: bool,
+    /// Whether the proven-forms INFO was emitted at all (i.e. anything was proven).
+    pub informed: bool,
+    /// Whether that INFO reached ORT's own logger. Tracked for the same reason as the WARN's
+    /// flag, and added later than it: until 2026-08-03 nothing recorded whether the INFO half of
+    /// the §8.9.7 pair was delivered, so an artifact could show a fully-proven claim set and say
+    /// nothing about whether the user was ever told what proved it.
+    pub info_reached_ort_sink: bool,
 }
 
 impl Disclosure {
@@ -278,22 +285,41 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         }
     }
 
+    // Both INFO branches feed the same pair of fields, and the second one has to be *joined* to
+    // the first rather than dropped. Before this merge each branch was written by a different
+    // author: the proven-forms INFO set `informed`, the unattributed-forms INFO discarded its
+    // return value. On this box every claimed form is DEVICE-UNATTRIBUTED, so `proven_lines` is
+    // empty, and the artifact read `session_disclosure_info_channel: UNOBSERVABLE` on a run that
+    // had in fact emitted an INFO. A channel counter that reports no traffic while traffic is
+    // moving is worse than no counter, because it is cited as evidence.
+    //
+    // `info_reached_ort_sink` is ANDed, not ORed: it is a claim about the disclosure's INFO half
+    // as a whole, and one record the threshold refused makes that half incomplete.
+    let mut note_info = |reached: bool| {
+        d.info_reached_ort_sink = if d.informed {
+            d.info_reached_ort_sink && reached
+        } else {
+            reached
+        };
+        d.informed = true;
+    };
+
     if !proven_lines.is_empty() {
-        logging::info_through_ort_sink(
+        note_info(logging::info_through_ort_sink(
             TARGET,
             &format!(
                 "session claims {} proven form(s) [§8.9.7]: {}",
                 proven_lines.len(),
                 proven_lines.join("; ")
             ),
-        );
+        ));
     }
 
     if !unattributed_lines.is_empty() {
         // INFO, not WARN — see `FormEvidence::warrants_warning`. It is its own message rather
         // than a suffix on the proven one because the two make different statements and a reader
         // grepping for what this build vouched for *here* must not have to parse a joined list.
-        logging::info_through_ort_sink(
+        note_info(logging::info_through_ort_sink(
             TARGET,
             &format!(
                 "session claims {} form(s) whose proof frame is UNATTRIBUTED [§10.0.1 R12]: {}. \
@@ -305,7 +331,7 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                 unattributed_lines.len(),
                 unattributed_lines.join("; ")
             ),
-        );
+        ));
     }
 
     if !unproven_lines.is_empty() {
@@ -324,15 +350,17 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         d.warn_reached_ort_sink = logging::warn_through_ort_sink(TARGET, &msg);
     }
 
-    counters::record_session_disclosure(
-        d.proven,
-        d.device_unattributed,
-        d.unmeasured,
-        d.divergent,
-        d.ledger_faulted,
-        d.warned,
-        d.warn_reached_ort_sink,
-    );
+    counters::record_session_disclosure(counters::SessionDisclosure {
+        proven: d.proven,
+        device_unattributed: d.device_unattributed,
+        unmeasured: d.unmeasured,
+        divergent: d.divergent,
+        ledger_faulted: d.ledger_faulted,
+        warned: d.warned,
+        warn_reached_ort_sink: d.warn_reached_ort_sink,
+        informed: d.informed,
+        info_reached_ort_sink: d.info_reached_ort_sink,
+    });
     d
 }
 
@@ -360,14 +388,21 @@ pub fn disclose_zero_claims(
     } else {
         top.join("; ")
     };
-    logging::info_through_ort_sink(
+    let reached = logging::info_through_ort_sink(
         TARGET,
         &format!(
             "[§8.9.7] this session claims 0/{num_nodes} nodes; all work runs on the CPU EP. \
              Leading reasons: {detail}"
         ),
     );
-    counters::record_session_disclosure(0, 0, 0, 0, 0, false, false);
+    // A zero-claims disclosure is still a disclosure, and it is still an INFO whose delivery can
+    // fail. Counting it keeps `session_disclosure_info_channel` a statement about the channel
+    // rather than about which branch of §8.9.7 happened to run.
+    counters::record_session_disclosure(counters::SessionDisclosure {
+        informed: true,
+        info_reached_ort_sink: reached,
+        ..Default::default()
+    });
 }
 
 /// **§8.9.18 obligation 1 — print the demotions, on every run.**
@@ -499,10 +534,53 @@ mod tests {
         );
     }
 
+    /// **Every INFO branch of §8.9.7 must reach the INFO counter, not just the first one.**
+    ///
+    /// `disclose_claimed_forms` has two INFO branches: proven-here forms and DEVICE-UNATTRIBUTED
+    /// ones. They were written by different authors and only the first set `informed`; the second
+    /// discarded the return of its own `info_through_ort_sink` call. That is not a corner case on
+    /// this hardware — **every baked ledger entry is DEVICE-UNATTRIBUTED** (see
+    /// `FormEvidence::warrants_warning`), so the unjoined branch is the *only* INFO a real session
+    /// emits, and `session_disclosure_info_channel` read `UNOBSERVABLE` on runs that had just
+    /// emitted one. A channel counter that reports no traffic while traffic moves is worse than
+    /// no counter, because it is cited as evidence.
+    ///
+    /// This asserts the property (a proof-backed disclosure informs) rather than the branch, so
+    /// it stays honest on hardware where the entry does attribute and the *other* branch runs.
+    #[test]
+    fn a_proof_backed_disclosure_informs_whichever_branch_carried_it() {
+        let _g = test_lock();
+        counters::reset();
+        let d = disclose_claimed_forms(&[ClaimedForm {
+            op_type: "ai.onnx::Proven".to_string(),
+            key: Some(a_proven_key()),
+            nodes: 7,
+        }]);
+        assert!(
+            d.proof_backed() >= 1,
+            "ERROR(instrument): nothing was proof-backed, so this arm cannot see an INFO: {d:?}"
+        );
+        assert!(
+            d.informed,
+            "a disclosure that emitted a proof-backed INFO reported no INFO at all. The INFO \
+             half is counted per disclosure, not per branch: {d:?}"
+        );
+        let doc = counters::snapshot().to_json();
+        let expected = if d.info_reached_ort_sink {
+            "\"session_disclosure_info_channel\": \"OFFERED_TO_ORT\""
+        } else {
+            "\"session_disclosure_info_channel\": \"BELOW_ORT_THRESHOLD\""
+        };
+        assert!(
+            doc.contains(expected),
+            "the counters artifact and the disclosure disagree about the INFO half; expected \
+             {expected} for {d:?}. Got:\n{doc}"
+        );
+    }
+
     /// Both polarities in one claim set: the WARN names the unproven form and not the proven one.
     #[test]
-    fn a_mixed_claim_set_warns_only_about_the_unproven_form() {
-        let _g = test_lock();
+    fn a_mixed_claim_set_warns_only_about_the_unproven_form() {        let _g = test_lock();
         counters::reset();
         let proven = a_proven_key();
         let unproven =

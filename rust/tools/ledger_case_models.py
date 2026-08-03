@@ -274,6 +274,24 @@ def _clip(elem: int, opset: int = 21, bounds: str = "min+max") -> onnx.ModelProt
     return model
 
 
+def _cast(in_elem: int, to_elem: int, shape=(4, 8), opset: int = 21) -> onnx.ModelProto:
+    """`Cast` from one element type to another.
+
+    Every (source, destination) pair is its own proof obligation: the proof key carries both
+    dtypes, and the pair chooses a **different compiled module** — `ew_cast.comp` is the one
+    template whose variant space is a cross product rather than a column. A proof of `f32 -> i32`
+    describes a module that the `i32 -> f32` node never runs.
+    """
+    x = helper.make_tensor_value_info("X", in_elem, list(shape))
+    y = helper.make_tensor_value_info("Y", to_elem, list(shape))
+    node = helper.make_node("Cast", ["X"], ["Y"], name="cast0", to=int(to_elem))
+    graph = helper.make_graph([node], "Cast_graph", [x], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _isinf(elem: int, opset: int = 21, **attrs) -> onnx.ModelProto:
     """`IsInf`, whose two `detect_*` attributes select four different predicates.
 
@@ -570,6 +588,10 @@ BUILDERS.update({
     "isinf_f32": lambda: _isinf(TensorProto.FLOAT),
     "isinf_f32_pos_only": lambda: _isinf(TensorProto.FLOAT, detect_negative=0),
     "isinf_f32_neg_only": lambda: _isinf(TensorProto.FLOAT, detect_positive=0),
+    # The three Cast pairs the op suite exercises. Each is a different compiled module.
+    "cast_f32_to_i32": lambda: _cast(TensorProto.FLOAT, TensorProto.INT32),
+    "cast_i32_to_f32": lambda: _cast(TensorProto.INT32, TensorProto.FLOAT),
+    "cast_f32_to_bool": lambda: _cast(TensorProto.FLOAT, TensorProto.BOOL),
     # Pow is a partial function in its *first* argument: a negative base with a non-integral
     # exponent has no real value, and standard_normal supplies both. Sampled positive.
     "pow_f32": lambda: _binary("Pow", TensorProto.FLOAT, opset=21),
@@ -727,6 +749,16 @@ INPUT_DOMAIN.update({
     "isinf_f32": "withinf",
     "isinf_f32_pos_only": "withinf",
     "isinf_f32_neg_only": "withinf",
+    # `Cast` to an integer truncates. A standard normal truncates to **zero** for ~68% of its
+    # elements and to +/-1 for most of the rest, which is very close to a constant reference: a
+    # kernel that returned zero unconditionally would score a near-match. `spread` widens the
+    # draw so the truncation is actually doing something.
+    "cast_f32_to_i32": "spread",
+    "cast_i32_to_f32": "spread",
+    # `Cast` to bool on a continuous distribution is all-True, a constant reference and exactly
+    # the vacuous case `isnan_f32` gets `withnan` for. `discrete` is integer-valued and includes
+    # zero, so both polarities of `x != 0` appear.
+    "cast_f32_to_bool": "discrete",
 })
 
 def input_domain(name: str) -> str:

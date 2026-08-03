@@ -48,6 +48,15 @@ pub enum Template {
     /// block. Not an elementwise template and deliberately not pretending to be one — it is the
     /// first row that earns a hand-written kernel, per `OP_COVERAGE.md` §7.1.3.
     QGemv,
+    /// One input, one output, shape-preserving, **whose output element type differs from its
+    /// input's**. `Cast`.
+    ///
+    /// The only template whose variant space is a dtype **pair**. Every other row picks one
+    /// `DTYPE_*` and both its buffers follow; here the two buffers have independent storage
+    /// types, so the source and destination halves of `indexing.glsl`'s type mapping cannot both
+    /// come from one define. That is a different *shape* of variant table, not a bigger one,
+    /// which is why it is a template rather than another `EwUnary` op selector.
+    EwCast,
 }
 
 impl Template {
@@ -59,6 +68,7 @@ impl Template {
             Template::EwBinary => "ew_binary",
             Template::EwSelect => "ew_select",
             Template::QGemv => "q_gemv",
+            Template::EwCast => "ew_cast",
         }
     }
 
@@ -89,6 +99,7 @@ impl Template {
             // second time as an inert placeholder. The arity is therefore a property of the
             // *shader*, which always declares five, not of the node, which may have three inputs.
             Template::QGemv => 5,
+            Template::EwCast => 1,
         }
     }
 
@@ -104,12 +115,22 @@ impl Template {
         )
     }
 
+    /// Whether this template's variant space is keyed on a **dtype pair** rather than one dtype.
+    ///
+    /// Named once here because three separate things branch on it — the manifest's cross product,
+    /// the stem lookup, and the define set — and re-deriving it by matching on the variant at each
+    /// site is how the three would drift apart.
+    pub const fn is_pair_keyed(self) -> bool {
+        matches!(self, Template::EwCast)
+    }
+
     /// Every template that has a source file.
     pub const ALL: &'static [Template] = &[
         Template::EwUnary,
         Template::EwBinary,
         Template::EwSelect,
         Template::QGemv,
+        Template::EwCast,
     ];
 }
 
@@ -143,6 +164,13 @@ pub struct Kernel {
     /// Variant stems indexed by [`dtype_index`]. Only entries whose dtype is in the row's `caps`
     /// are ever generated or dispatched.
     pub stems: [&'static str; DTYPE_COUNT],
+    /// Variant stems indexed by `[source][destination]`, for pair-keyed templates only.
+    ///
+    /// `Some` exactly when `template.is_pair_keyed()`; a test asserts the two agree. It is a
+    /// second field rather than a widening of `stems` because 34 of the 36 rows a pair table
+    /// holds are meaningless for every other template, and a single field would have made every
+    /// row's stem lookup ask which kind it was.
+    pub pair_stems: Option<&'static [[&'static str; DTYPE_COUNT]; DTYPE_COUNT]>,
 }
 
 impl Kernel {
@@ -151,23 +179,29 @@ impl Kernel {
         template: Template::None,
         op: "",
         stems: [""; DTYPE_COUNT],
+        pair_stems: None,
     };
 
     /// The SPIR-V module stem for this op at this dtype.
     ///
-    /// Returns `None` for [`Template::None`]. The caller is responsible for having checked that
-    /// the dtype is in the row's `caps` — the claim predicate does exactly that, which is why
-    /// translate handlers may treat a `Some` here as a guarantee that the module exists.
+    /// Returns `None` for [`Template::None`], and `None` for a pair-keyed template, which has no
+    /// answer to this question — ask [`Kernel::pair_stem`] instead. Returning the source-dtype
+    /// row's first entry would have been a plausible-looking wrong answer.
     pub fn stem(&self, d: DType) -> Option<&'static str> {
-        if self.template == Template::None {
+        if self.template == Template::None || self.template.is_pair_keyed() {
             return None;
         }
         Some(self.stems[dtype_index(d)])
     }
 
+    /// The SPIR-V module stem for a source/destination dtype pair.
+    pub fn pair_stem(&self, src: DType, dst: DType) -> Option<&'static str> {
+        Some(self.pair_stems?[dtype_index(src)][dtype_index(dst)])
+    }
+
     /// `-D` defines the build must pass to compile this variant.
     pub fn defines(&self, d: DType) -> Vec<String> {
-        if self.template == Template::None {
+        if self.template == Template::None || self.template.is_pair_keyed() {
             return Vec::new();
         }
         let mut out = Vec::with_capacity(3);
@@ -180,6 +214,25 @@ impl Kernel {
         out.push(format!("SCALAR_T={}", dtype_glsl(d)));
         out.push(format!("DTYPE_{}", dtype_suffix(d).to_uppercase()));
         out
+    }
+
+    /// `-D` defines for one pair-keyed variant.
+    ///
+    /// The source half is byte-identical to what every other template gets, so `indexing.glsl`
+    /// maps `COMPUTE_T` and the load accessors exactly as it always has. The destination half is
+    /// carried in its own namespace (`CAST_DST_*`, `DST_SCALAR_T`) and read only by
+    /// `ew_cast.comp`, because a second `DTYPE_*` would make the shared header choose between two
+    /// answers for `COMPUTE_T`.
+    pub fn defines_pair(&self, src: DType, dst: DType) -> Vec<String> {
+        if !self.template.is_pair_keyed() {
+            return Vec::new();
+        }
+        vec![
+            format!("SCALAR_T={}", dtype_glsl(src)),
+            format!("DTYPE_{}", dtype_suffix(src).to_uppercase()),
+            format!("DST_SCALAR_T={}", dtype_glsl(dst)),
+            format!("CAST_DST_{}", dtype_suffix(dst).to_uppercase()),
+        ]
     }
 }
 
@@ -200,6 +253,34 @@ macro_rules! stems {
     };
 }
 
+/// Build the `[[&'static str; DTYPE_COUNT]; DTYPE_COUNT]` stem matrix for a pair-keyed template.
+///
+/// Rows are the **source** dtype, columns the **destination**, both in [`ALL_DTYPES`] order —
+/// which is the same order [`stems!`] uses, and a test asserts it here too. Written as a nested
+/// macro rather than generated at runtime for the same reason `stems!` is: `KernelRequest::shader`
+/// is `&'static str` and may never be formatted while a graph is being compiled.
+///
+/// [`ALL_DTYPES`]: crate::ops::common::dtype::ALL_DTYPES
+#[macro_export]
+macro_rules! pair_stems {
+    ($prefix:literal) => {
+        $crate::pair_stems!(@rows $prefix, "f32", "f16", "i64", "i32", "u8", "bool")
+    };
+    (@rows $prefix:literal, $($src:literal),+) => {
+        [$($crate::pair_stems!(@row $prefix, $src)),+]
+    };
+    (@row $prefix:literal, $src:literal) => {
+        [
+            ::core::concat!($prefix, "_", $src, "_to_f32"),
+            ::core::concat!($prefix, "_", $src, "_to_f16"),
+            ::core::concat!($prefix, "_", $src, "_to_i64"),
+            ::core::concat!($prefix, "_", $src, "_to_i32"),
+            ::core::concat!($prefix, "_", $src, "_to_u8"),
+            ::core::concat!($prefix, "_", $src, "_to_bool"),
+        ]
+    };
+}
+
 /// Declare the [`Kernel`] for a registry row.
 ///
 /// ```ignore
@@ -216,6 +297,7 @@ macro_rules! kernel {
             template: $crate::ops::common::variants::Template::EwUnary,
             op: $op,
             stems: $crate::stems!("ew_unary", $op),
+            pair_stems: None,
         }
     };
     (EwBinary, $op:literal) => {
@@ -223,6 +305,7 @@ macro_rules! kernel {
             template: $crate::ops::common::variants::Template::EwBinary,
             op: $op,
             stems: $crate::stems!("ew_binary", $op),
+            pair_stems: None,
         }
     };
     (EwSelect, $op:literal) => {
@@ -230,6 +313,7 @@ macro_rules! kernel {
             template: $crate::ops::common::variants::Template::EwSelect,
             op: $op,
             stems: $crate::stems!("ew_select", $op),
+            pair_stems: None,
         }
     };
     (QGemv, $op:literal) => {
@@ -237,6 +321,18 @@ macro_rules! kernel {
             template: $crate::ops::common::variants::Template::QGemv,
             op: $op,
             stems: $crate::stems!("q_gemv", $op),
+            pair_stems: None,
+        }
+    };
+    (EwCast, $op:literal) => {
+        $crate::ops::common::variants::Kernel {
+            template: $crate::ops::common::variants::Template::EwCast,
+            op: $op,
+            // The single-dtype array is unreachable for a pair-keyed row (`stem` returns `None`),
+            // but it is filled with the pair table's diagonal rather than with `""` so that a
+            // future reader who prints it sees something true.
+            stems: $crate::stems!("ew_cast", "x"),
+            pair_stems: ::core::option::Option::Some(&$crate::pair_stems!("ew_cast")),
         }
     };
 }
@@ -262,6 +358,24 @@ pub fn manifest() -> Vec<VariantSpec> {
         let Some(source) = spec.kernel.template.source_file() else {
             continue;
         };
+        if spec.kernel.template.is_pair_keyed() {
+            // The cross product, including the diagonal. `Cast` to the same type is a legal ONNX
+            // node and a real exporter emits it; leaving the diagonal out would put a hole in the
+            // middle of the table that only shows up as a decline on a graph nobody tested.
+            for src in spec.caps.iter() {
+                for dst in spec.caps.iter() {
+                    let Some(stem) = spec.kernel.pair_stem(src, dst) else {
+                        continue;
+                    };
+                    out.push(VariantSpec {
+                        stem,
+                        source: source.clone(),
+                        defines: spec.kernel.defines_pair(src, dst),
+                    });
+                }
+            }
+            continue;
+        }
         for d in spec.caps.iter() {
             let Some(stem) = spec.kernel.stem(d) else {
                 continue;
@@ -449,6 +563,20 @@ mod tests {
             if spec.kernel.template == Template::None {
                 continue;
             }
+            if spec.kernel.template.is_pair_keyed() {
+                for src in spec.caps.iter() {
+                    for dst in spec.caps.iter() {
+                        let stem = spec.kernel.pair_stem(src, dst).expect("pair row has a stem");
+                        assert!(
+                            m.iter().any(|v| v.stem == stem),
+                            "{} @ {src:?}->{dst:?} claims `{stem}` but it is not in the build \
+                             manifest",
+                            spec.op_type
+                        );
+                    }
+                }
+                continue;
+            }
             for d in spec.caps.iter() {
                 let stem = spec.kernel.stem(d).expect("shader row has a stem");
                 assert!(
@@ -457,6 +585,40 @@ mod tests {
                     spec.op_type
                 );
             }
+        }
+    }
+
+    /// The pair table's rows are sources and its columns destinations, both in `ALL_DTYPES` order.
+    ///
+    /// Transposing it would compile, would generate exactly the same 36 modules, and would then
+    /// dispatch `f32 -> i32` nodes to the module that reads ints and writes floats. Nothing else
+    /// in the system can catch that: the stem exists, the module loads, and the answer is wrong.
+    #[test]
+    fn pair_stem_table_is_source_major() {
+        let k = kernel!(EwCast, "cast");
+        for src in ALL_DTYPES {
+            for dst in ALL_DTYPES {
+                assert_eq!(
+                    k.pair_stem(src, dst).unwrap(),
+                    format!("ew_cast_{}_to_{}", dtype_suffix(src), dtype_suffix(dst)),
+                    "pair stem table is not source-major at {src:?}->{dst:?}"
+                );
+            }
+        }
+        assert!(k.stem(DType::F32).is_none(), "a pair row has no single stem");
+        assert!(k.defines(DType::F32).is_empty());
+    }
+
+    /// `pair_stems` is present exactly when the template says the row is pair-keyed.
+    #[test]
+    fn pair_tables_and_pair_keyed_templates_agree() {
+        for spec in crate::registry::all_specs() {
+            assert_eq!(
+                spec.kernel.pair_stems.is_some(),
+                spec.kernel.template.is_pair_keyed(),
+                "`{}` disagrees with its template about being pair-keyed",
+                spec.op_type
+            );
         }
     }
 
@@ -483,9 +645,12 @@ mod tests {
             );
             assert!(v.source.ends_with(".comp"));
             // Elementwise variants carry `EW_OP`, `SCALAR_T` and `DTYPE_*`; a hand-written kernel
-            // carries the last two only. The count is asserted rather than the contents so that
-            // adding a define to one family without the other is a failure here.
-            let want = if v.stem.starts_with(Template::QGemv.prefix()) {
+            // carries the last two only; a pair-keyed variant carries a source and a destination
+            // half. The count is asserted rather than the contents so that adding a define to one
+            // family without the other is a failure here.
+            let want = if v.stem.starts_with(Template::EwCast.prefix()) {
+                4
+            } else if v.stem.starts_with(Template::QGemv.prefix()) {
                 2
             } else {
                 3

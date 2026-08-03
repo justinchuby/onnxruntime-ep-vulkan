@@ -3,11 +3,18 @@
   "evidence_class": "PLANTED",
   "evidence_class_note": "Arm A's UNMEASURED form is one I planted; it is reachable only by naming a key in ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN. No production build has ever produced this condition. What is demonstrated is the warning path.",
   "verdict": "PASS",
+  "limitations": [
+    "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn.",
+    "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."
+  ],
+  "rai_008b_reading": "WARN half: DISCHARGED \u2014 witnessed on ORT's own sink on every device listed, naming the unproven form and its proof key, with the must-be-silent polarity shown on a proven claim set. INFO half: EMITTED and OFFERED, and NOT witnessed on ORT's console; see `limitations`. Read this artifact as a partial discharge. It is recorded this way deliberately: a control that reported PASS on the pair while only half the pair had been seen would be the same defect the control was built to detect.",
   "devices": [
     {
       "device": 0,
       "evidence_class": "PLANTED",
-      "learned_proof_key": "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2",
+      "planted_control_case": "sub_f16_dyn_unproven",
+      "proven_case": "add_f32",
+      "learned_proof_key": "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2",
       "arm_a": {
         "returncode": 0,
         "claimed_form_evidence": "UNMEASURED-PRESENT",
@@ -15,16 +22,42 @@
         "claimed_forms_unmeasured": 1,
         "claimed_nodes": 1,
         "ort_sink_warns": [
-          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Mul x1 [ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Sub x1 [ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
         ]
       },
       "arm_b": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
         "session_disclosure_channel": "UNOBSERVABLE",
         "claimed_nodes": 1,
-        "claimed_forms_proven": 1,
-        "ort_sink_warns": []
+        "claimed_forms_proven": 0,
+        "ort_sink_warns": [],
+        "claimed_forms_device_unattributed": 1
+      },
+      "arm_c": {
+        "returncode": 0,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "claimed_forms_proven": 0,
+        "claimed_nodes": 1,
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 1,
+        "session_disclosure_info_channel": "OFFERED_TO_ORT",
+        "ort_sink_severity_threshold": "INFO",
+        "ort_sink_infos": [],
+        "ort_decorated_lines_seen": 2,
+        "claimed_forms_device_unattributed": 1,
+        "content_witness": "EP_STDERR",
+        "ort_console_delivery": "NOT_OBSERVED",
+        "ort_console_delivery_note": "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."
+      },
+      "arm_d": {
+        "at_INFO": "OFFERED_TO_ORT",
+        "at_WARNING": "BELOW_ORT_THRESHOLD",
+        "threshold_at_WARNING": "WARNING",
+        "expected": {
+          "at_INFO": "OFFERED_TO_ORT",
+          "at_WARNING": "BELOW_ORT_THRESHOLD"
+        }
       },
       "verdict": "PASS",
       "failures": []
@@ -32,7 +65,9 @@
     {
       "device": 1,
       "evidence_class": "PLANTED",
-      "learned_proof_key": "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2",
+      "planted_control_case": "sub_f16_dyn_unproven",
+      "proven_case": "add_f32",
+      "learned_proof_key": "ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2",
       "arm_a": {
         "returncode": 0,
         "claimed_form_evidence": "UNMEASURED-PRESENT",
@@ -40,16 +75,42 @@
         "claimed_forms_unmeasured": 1,
         "claimed_nodes": 1,
         "ort_sink_warns": [
-          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Mul x1 [ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
+          "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] this session will claim 1 form(s) whose correctness is NOT established: Sub x1 [ai.onnx::Sub/7+/f16,f16>f16/ew_binary_sub_f16/runtime-extent/n2] UNMEASURED: no differential proof exists for this form. Results produced by these forms are not backed by any differential proof and may be silently wrong. They are claimed because ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN names them; unset it to leave them on the CPU EP."
         ]
       },
       "arm_b": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
         "session_disclosure_channel": "UNOBSERVABLE",
         "claimed_nodes": 1,
-        "claimed_forms_proven": 1,
-        "ort_sink_warns": []
+        "claimed_forms_proven": 0,
+        "ort_sink_warns": [],
+        "claimed_forms_device_unattributed": 1
+      },
+      "arm_c": {
+        "returncode": 0,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "claimed_forms_proven": 0,
+        "claimed_nodes": 1,
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 1,
+        "session_disclosure_info_channel": "OFFERED_TO_ORT",
+        "ort_sink_severity_threshold": "INFO",
+        "ort_sink_infos": [],
+        "ort_decorated_lines_seen": 2,
+        "claimed_forms_device_unattributed": 1,
+        "content_witness": "EP_STDERR",
+        "ort_console_delivery": "NOT_OBSERVED",
+        "ort_console_delivery_note": "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."
+      },
+      "arm_d": {
+        "at_INFO": "OFFERED_TO_ORT",
+        "at_WARNING": "BELOW_ORT_THRESHOLD",
+        "threshold_at_WARNING": "WARNING",
+        "expected": {
+          "at_INFO": "OFFERED_TO_ORT",
+          "at_WARNING": "BELOW_ORT_THRESHOLD"
+        }
       },
       "verdict": "PASS",
       "failures": []

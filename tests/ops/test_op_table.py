@@ -375,11 +375,17 @@ _CASES: list[CaseSpec] = [
     # ======================================================================
 
     # Cast fp32 → int32
+    #
+    # The feed is scaled and given exact zeros on purpose. A standard normal truncates to zero on
+    # ~68% of its elements and to ±1 on most of the rest, so a kernel that wrote zeros everywhere
+    # would have matched the CPU oracle closely enough to look right. The property under test is
+    # "truncation toward zero, at magnitudes that make truncation observable", and the feed has to
+    # contain such magnitudes for the assertion to mean it.
     CaseSpec(
         id="Cast-fp32-to-i32", op="Cast",
         attrs={"to": int(DT.INT32)},  # ONNX TensorProto.INT32 = 6
         inputs=[("x", DT.FLOAT, list(_S))],
-        feeds={"x": _f32(_S)},
+        feeds={"x": (100.0 * _f32(_S)).astype(np.float32)},
         outputs=[("out", DT.INT32, list(_S))],
         tol=dict(m.FP32_EXACT),
     ),
@@ -389,17 +395,21 @@ _CASES: list[CaseSpec] = [
         id="Cast-i32-to-fp32", op="Cast",
         attrs={"to": int(DT.FLOAT)},  # ONNX TensorProto.FLOAT = 1
         inputs=[("x", DT.INT32, list(_S))],
-        feeds={"x": _i32(_S)},
+        feeds={"x": (1000 * _i32(_S)).astype(np.int32)},
         outputs=[("out", DT.FLOAT, list(_S))],
         tol=dict(m.FP32_EXACT),
     ),
 
     # Cast fp32 → bool
+    #
+    # ONNX casts to bool with `x != 0`, so a continuous feed is all-True — a constant reference,
+    # which any kernel that returned a constant would match. The zeros here are what make the
+    # False arm reachable at all.
     CaseSpec(
         id="Cast-fp32-to-bool", op="Cast",
         attrs={"to": int(DT.BOOL)},   # ONNX TensorProto.BOOL = 9
         inputs=[("x", DT.FLOAT, list(_S))],
-        feeds={"x": _f32(_S)},
+        feeds={"x": np.trunc(2.0 * _f32(_S)).astype(np.float32)},
         outputs=[("out", DT.BOOL, list(_S))],
         tol=dict(m.FP32_EXACT),
     ),
@@ -436,10 +446,54 @@ _CASES: list[CaseSpec] = [
     # §4.5  Shape metadata — zero-dispatch ops (9 ops)
     # ======================================================================
 
-    # Identity: passthrough, no kernel, always claimed as an island-welder.
+    # Identity: an ew_unary copy kernel, claimed even as a one-node island.
     _ew1("Identity-fp32", "Identity", _f32(_S), live=True),
 
-    # Flatten (to 1D by default, axis=1 → [3, 4])
+    # ----------------------------------------------------------------------
+    # Flatten / Reshape — DECLINED, and the decline is the correct answer.
+    #
+    # These two rows asserted `claim=True` for three rounds and were red every
+    # time. The row comment below used to read "Row is present to mark the
+    # claimed op" — which is the tell: it asserted an *intention*, not a
+    # property, and no version of the EP has ever satisfied it.
+    #
+    # The ruling, and the evidence for it. `Reshape` and `Flatten` perform no
+    # arithmetic: they are a copy with a different output descriptor. The only
+    # value a copy has on the device is *not breaking an island* — keeping a
+    # run of real work whole so its operands never round-trip to the host. So
+    # the question is entirely empirical: is there a graph in which one of
+    # these sits between two claimed nodes?
+    #
+    # There is not. The Phi-3.5 claim log (bench/results/roofline_claimlog-dev0
+    # .jsonl, 363 node records, the whole graph) contains **zero** `Reshape` and
+    # **zero** `Flatten` nodes. Registering them would widen the claim table for
+    # this suite's benefit and no model's, and every widened row is a form that
+    # must then be proven and re-proven forever.
+    #
+    # The obvious objection is `Identity`, directly above: it is also a pure
+    # copy, it is registered, and it is claimed in a one-node island. The
+    # difference is cost of entry, not principle. `Identity`'s output descriptor
+    # is its input's. `Reshape`'s is a *second input tensor* that may be
+    # computed at runtime, with `-1` and `0` wildcards and an `allowzero`
+    # attribute to honour; `Flatten` needs axis normalisation against a rank
+    # that may be symbolic. Both are shape machinery this EP does not have, for
+    # ops no graph asks for. If a graph ever asks, the argument reverses and
+    # these two rows flip back.
+    #
+    # THE RUN THAT WOULD FAIL IF THIS RULING WERE WRONG, and it is reachable:
+    #   python rust/tools/probe_phi35_claim_reading.py
+    # emits a claim log with one record per node. If a real model ever puts a
+    # `Reshape` or `Flatten` in it, the premise above is falsified by name and
+    # these rows go back to claim=True. That is a cheaper falsifier than the
+    # assertion it replaces, because the assertion it replaces could only ever
+    # be satisfied by changing the EP.
+    #
+    # What these rows now assert is not "the EP declines" for its own sake: the
+    # claim=False arm also runs the CPU oracle, so an accidental registration
+    # OR a wrong answer both fail here.
+    # ----------------------------------------------------------------------
+
+    # Flatten (axis=1 over [3, 4] → [3, 4])
     CaseSpec(
         id="Flatten-fp32-axis1", op="Flatten",
         attrs={"axis": 1},
@@ -447,18 +501,13 @@ _CASES: list[CaseSpec] = [
         feeds={"x": _f32((3, 4))},
         outputs=[("out", DT.FLOAT, [3, 4])],
         tol=dict(m.FP32_EXACT),
+        claim=False,
     ),
 
-    # Reshape (static shape initializer as input 1 — must be a constant in the graph)
-    # NOTE: Reshape with a dynamic shape input requires graph-building support for
-    # initializer constants. See test_elementwise.py for a full graph test when it lands.
-    # Row is present to mark the claimed op; the graph builder below handles the static case.
+    # Reshape (static shape initializer as input 1)
     CaseSpec(
         id="Reshape-fp32-static", op="Reshape",
         attrs={},
-        # inputs[1] is the target shape — encoded as a constant initializer in the graph.
-        # We special-case this in the dispatch below via a CaseSpec subclass or skip marker.
-        # For now, mark as pending with a sentinel that the dispatch recognises.
         inputs=[("x", DT.FLOAT, [3, 4]), ("shape", DT.INT64, [2])],
         feeds={
             "x":     _f32((3, 4)),
@@ -466,6 +515,7 @@ _CASES: list[CaseSpec] = [
         },
         outputs=[("out", DT.FLOAT, [4, 3])],
         tol=dict(m.FP32_EXACT),
+        claim=False,
     ),
 
     # ======================================================================

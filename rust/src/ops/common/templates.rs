@@ -257,6 +257,54 @@ pub fn ew_clip(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) ->
     })
 }
 
+/// Translate `Cast` — the one template whose module is chosen by a dtype **pair**.
+///
+/// The destination type comes from the *output edge*, not from the `to` attribute. They say the
+/// same thing when the graph is well formed, and ONNX Runtime has already run shape inference by
+/// the time we are asked to compile, so the edge is the resolved answer and `to` is the request.
+/// Reading the request would mean this handler and `claim::cast` — which checks the edge — could
+/// disagree, and the node would already have been claimed by then.
+pub fn ew_cast(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext) -> EpResult<()> {
+    let shapes = input_shapes(node, 1)?;
+    let refs: Vec<&[i64]> = shapes.iter().map(Vec::as_slice).collect();
+    let plan = ShapePlan::broadcast(&refs).map_err(|e| {
+        EpError::Unsupported(format!("`{}` shapes cannot be planned: {e}", node.op_type))
+    })?;
+
+    let src = common_dtype(node, 0, 1)?;
+    let out = single_output(node)?;
+    let dst = out
+        .desc
+        .as_ref()
+        .map(|d| d.dtype)
+        .ok_or_else(|| {
+            EpError::Unsupported(format!(
+                "`{}` output has no element type at compile time",
+                node.op_type
+            ))
+        })?;
+
+    let shader = spec.kernel.pair_stem(src, dst).ok_or_else(|| {
+        EpError::Internal(format!(
+            "`{}` was claimed but its row declares no pair-keyed shader",
+            node.op_type
+        ))
+    })?;
+
+    let bindings = vec![
+        ctx.resolve(&node.inputs[0])?,
+        ctx.bind_output(out, TensorDesc::new(dst, plan.out_dims()))?,
+    ];
+
+    ctx.dispatch(KernelRequest {
+        shader,
+        spec_constants: vec![EW_LOCAL_SIZE, u32::from(plan.all_identical)],
+        push_constants: plan.push_constants_with_params(super::shape_plan::EW_PARAMS_NONE),
+        bindings,
+        workgroups: plan.workgroups_1d(EW_LOCAL_SIZE),
+    })
+}
+
 /// Translate a variadic elementwise op by chaining the binary template.
 ///
 /// Not yet reachable — every variadic row is staged — but written now because the *shape* of

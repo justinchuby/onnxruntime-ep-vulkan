@@ -264,3 +264,120 @@ on purpose, `CENSUS VERDICT: PASS`.
 📌 Team update (2026-08-02T22:37:04-07:00): Switch's `KV_CAN_STAY_DEVICE_RESIDENT` ruling settles the question your device-memory re-decision (D-T88) opened: ORT does permit binding an `OrtValue` in this EP's device memory as a graph output, bit-identical to unbound — the project was never in the "ORT forbids it" world. The obstacle was `transfer.rs`'s own host-staging-authoritative invariant, now fixed as a per-span `device_authoritative` flag. Your finding that arming the allocator does not touch the KV round trip (input-only bind, unconditional output readback) stands unchanged — the per-span fix is the output-side seam your writeup named as owed to Switch, and it is now landed. — decided by Switch
 
 📌 Team update (2026-08-03T04-55-00-07-00): Switch measured that on the real Phi-3.5 graph (64 KV outputs, 6-step decode chain), the shipping (host) KV lane fails to allocate at past context 4096 on the 8 GB discrete GPU (`alloc failed for output buffer`, 0 dispatches) while the device-resident lane completes normally — the round trip is a VRAM cost, not only a bandwidth cost. Separately, ctx 8192 fails on **both** lanes, so the operating point the 82.2%-of-traffic KV figure is quoted at has never actually been reached on this hardware. This directly answers your open question on the VRAM cost of arming device-resident KV at long context, deferred jointly to you and Niobe in Round 9 — the answer is: it fails outright past 4096, before the tradeoff you were sizing even becomes relevant. — decided by Switch
+📌 Team update (2026-08-02T22:37:04-07:00): Switch's `KV_CAN_STAY_DEVICE_RESIDENT` ruling settles the question your device-memory re-decision (D-T88) opened: ORT does permit binding an `OrtValue` in this EP's device memory as a graph output, bit-identical to unbound — the project was never in the "ORT forbids it" world. The obstacle was `transfer.rs`'s own host-staging-authoritative invariant, now fixed as a per-span `device_authoritative` flag. Your finding that arming the allocator does not touch the KV round trip (input-only bind, unconditional output readback) stands unchanged — the per-span fix is the output-side seam your writeup named as owed to Switch, and it is now landed. — decided by Switch
+
+## Session 24 — 2026-08-02 — the last six ops, and the disclosure half nobody had ever seen
+
+**The six were seven.** The baseline was taken before anything was touched:
+`tests/ops/test_op_table.py` + `test_elementwise.py` = **7 failed / 120 passed**. Mouse had
+counted two suites separately and `test_clip_no_bounds` lived in the other one. Final:
+**0 failed / 127 passed**. `cargo test --lib` 492 -> **505 / 0**. Clippy clean. Ledger 97 -> **106**.
+
+**IsInf and Clip: a selector is a specialisation constant, not a shader variant.** The record's
+premise was right (a selector is not a float and cannot ride `pc.params`) and its conclusion was
+one step too far. `PipelineKey` is already keyed on `(shader_stem, spec_constants)` and
+`build_spec_info_data` already maps index -> `constant_id`; id 2 was free. Declaring it in the
+shared `indexing.glsl` faulted all 97 ledger entries at once (11 lib tests -> ERROR(instrument)) —
+the digest gate catching a one-line header edit made to serve two modules. Scoped into the two
+templates instead. Commit `164f9bf`.
+
+**I re-derived a repair the record had already argued against, and the record was right.** I
+invented a `SelectorError::NoBoundPresent` refusing a bounds-free `Clip`. It contradicts this
+project's own `Identity` precedent. Reversed to `Ok(0)`.
+
+**Cast is a pair-keyed template** (`Template::EwCast`, 6x6 `pair_stems!`, 36 modules, 11 refused
+for `shaderInt64`). Promotion made **two latent defects reachable**: `claim::cast` declined every
+opset-19+ `Cast` because ORT reports a defaulted `saturate` as present, and `variant_key` rendered
+every `Cast` proof key as `metadata`. A `Staged` row's predicate is never really run — **staging
+hides bugs in the code staging says is ready.** Three test feeds were also vacuous
+(`Cast-fp32-to-i32` truncates ~68% of a standard normal to zero). Commit `26fd93f`.
+
+**Flatten/Reshape were not a defect.** A census of the whole Phi-3.5 graph (363 node records) found
+**zero** of either. The rows asserted an *intention* no version of this EP has ever satisfied.
+`claim=False`, argued, with a named reachable falsifier — not deleted.
+
+**RAI-008(b): the INFO half had never been witnessed.** The probe that certifies the §8.9.7
+disclosure ran ORT at WARNING in *both* arms, where an INFO is invisible by construction. Adding
+arm C found that the EP emits the record, ORT's own `Logger_GetLoggingSeverityLevel` reports a
+threshold that admits it, and the line never appears — at any host severity — while the WARN from
+the identical call site always does. Blindness control rules out the boring explanation. Cause is
+inside ORT 1.28 and is **not** established. The channel counter's tokens are therefore
+`OFFERED_TO_ORT` / `BELOW_ORT_THRESHOLD`, never `ORT_SINK`: **a counter that overstates delivery is
+the defect the counter exists to catch, wearing the counter's badge.**
+
+**The planted control had moved out from under two probes.** `mul_f16_unproven` became
+`sub_f16_dyn_unproven` because populating the op-suite ledger *proved the old plant's form* — the
+control fired on its own author. `probe_session_disclosure.py` said ERROR(instrument) and exited 4;
+`tests/ops/probe_ledger_arms.py` had the same dead name and **exited 0 with the arm errored**. Both
+now import `PLANTED_CONTROL_CASE`; the ledger-arms probe exits 4 on any errored arm.
+**A planted control names a condition the team is working to eliminate — it will rot by design.
+Import the plant; never spell it.**
+
+**An OBSERVED arm for criterion 11(c), supplied not tallied.** `Cast` f32->i32 HITs and f32->u8 is
+KEY-ABSENT on models identical but for the `to` attribute. No plant, no environment variable —
+strictly stronger than the arranged control. Trinity's (c) artifacts refreshed from
+`ledger_entries: 9` to 106. The tally is not the artifact-supplier's.
+
+**ABI caution:** no conclusion in this session rests on a ctypes-mirror counter read from the
+`a52024f`..`4d47362` window. The Phi-3.5 census is a claim log, not a counter struct.
+
+**Decisions:** `tank-selectors-are-spec-constants-not-variants.md`,
+`tank-shape-ops-stay-unregistered.md`, `tank-cast-is-a-pair-keyed-template.md`,
+`tank-the-info-half-was-never-witnessed.md`. Commits `164f9bf`, `26fd93f`, `1578fcd` on `squad/tank`.
+
+## Session 25 — the merge that found the seam
+
+**Merged `origin/main` (`607056a`) into `squad/tank` as `5cd5507`.** The coordinator refused to
+guess the union of my `SessionDisclosure` struct and Mouse's positional `device_unattributed`, and
+was right to. Resolution: struct form, `device_unattributed` as a **field**; Mouse's
+`ledger_faulted` leg and his `DEVICE-UNATTRIBUTED-PRESENT` rung kept verbatim.
+
+**Two right changes; the join was wrong.** `disclose_claimed_forms` has two INFO branches. Mine set
+`informed`; Mouse's DEVICE-UNATTRIBUTED branch discarded the return of its own
+`info_through_ort_sink` call, because when he wrote it there was no INFO counter to feed. **Every
+baked ledger entry is DEVICE-UNATTRIBUTED**, so the unjoined branch is the *only* INFO a real
+session emits — and `session_disclosure_info_channel` read `UNOBSERVABLE` on runs that had just
+emitted one. A channel counter reporting no traffic while traffic moves is worse than no counter,
+because it is cited as evidence. Both branches now feed the pair; `info_reached_ort_sink` is ANDed,
+because it is a claim about the INFO half as a whole.
+
+**My own probe was asserting the defect.** `probe_session_disclosure.py` went FAIL on both devices
+after the merge: it demanded `claimed_forms_proven >= 1` and `claimed_form_evidence == "ALL-PROVEN"`
+— the token Mouse deleted *precisely because* it asserted a device frame nothing had checked.
+Repaired to assert the property (proof-backed = proven + device_unattributed; the device is
+reachable from the disclosure, in either branch's wording) rather than one author's phrasing.
+PASS both devices.
+
+**Both fixes proved by mutation, not by assertion.** Dropping `device_unattributed` from the struct:
+caught by a new `device_unattributed: 1` rung in the `claimed_form_evidence` ladder test. Un-joining
+the INFO branches: caught by `a_proof_backed_disclosure_informs_whichever_branch_carried_it`. Before
+those arms, the obvious merge resolution would have compiled, passed, cleared clippy, and silently
+re-promoted every claim in the repository to `ALL-PROVEN`.
+
+**The ABI guard did not fire, and that is correct.** `counters_abi.py --check`: v7, 20 fields,
+152 bytes, `0x16eacc53e6e18d97`, PASS. The guard covers the mirrored C struct; `SessionDisclosure`
+is a Rust-side call shape and `session_disclosure_*` are JSON-only. Mouse's rename fired it because
+it renamed a *mirrored* field and the hash covers names. **The guard fires on exactly what a
+name-keyed ctypes reader would misread — no more, no less.**
+
+**Census artifacts regenerated, not hand-merged.** Producer recorded:
+`onnxruntime_vulkan_ep.dll` SHA-256
+`5D457FBBB5B68EC7B75FDB84476C1B8EF0C8FC606D7119DB2979B516C18D2305`, release build of the `5cd5507`
+tree, abi_version 7. A hand-merged reading is a reading of nothing, and a reading whose binary is
+not named cannot be re-taken.
+
+**Verified:** `cargo test --lib` 515 passed / 0 failed / 4 ignored (main was 510); clippy
+`--all-targets -D warnings` clean; `tests/ops` 127 passed / 0 failed; `test_wiring_census.py`
+7 passed / 1 xfailed; `probe_session_disclosure.py --devices 0,1` PASS/PASS exit 0;
+`probe_ledger_arms.py` exit 0; `probe_ledger_mutations.py` 3/3 CAUGHT. No clock.
+
+**Decision:** `tank-the-union-of-two-right-changes.md`.
+
+**RAI-008(a), same session.** The CI check the falsifier asks for already exists
+(`tests/ops/test_proof_ledger.py`, in the default `pytest tests/ops` on both lanes). Its plant was
+**spelled by literal** and its docstring still recorded the *previous* plant's key as the
+prediction — third sighting of plant-rot in one day. Imported `PLANTED_CONTROL_CASE` /
+`PLANTED_CONTROL_KEY` and added an assertion that the plant has not acquired a ledger entry; the
+membership test is non-vacuous by measurement (`False` for the plant, `True` for the sibling).
+14 passed / 0 failed. **The tally is not the artifact-supplier's** — criterion 11 is Morpheus's,
+RAI-008's status is Rai's.

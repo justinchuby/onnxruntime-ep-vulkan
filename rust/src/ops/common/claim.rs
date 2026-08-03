@@ -696,14 +696,20 @@ pub fn cast(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
         dtype_suffix(dst),
         spec.caps
     );
-    // `saturate` (opset 19+, float8 only) changes numerics; we store no float8, so its presence
-    // means the graph is doing something this row does not model.
-    require!(
-        !view.has_attr("saturate"),
-        Attribute,
-        "`{}` sets `saturate`, which only applies to float8 types this EP does not store",
-        spec.op_type
-    );
+    // `saturate` (opset 19+) is **not** checked here, and its absence is deliberate.
+    //
+    // This predicate used to decline any node carrying the attribute at all. That looked correct
+    // and was not: `saturate` has a default of 1 in the opset-19 schema, and ORT's node view
+    // reports a defaulted attribute as present, so the check declined **every** opset-19-or-later
+    // `Cast` — which is every `Cast` a current exporter emits. It was invisible for as long as the
+    // row was `Staged`, because a staged row never runs its predicate for real; the first proof
+    // run after promotion declined three cases with `[attribute] sets saturate` on models that set
+    // nothing.
+    //
+    // The right check is the one already above it. `saturate` changes numerics only for float8
+    // destinations, and a float8 destination is refused by the `caps` test — `spec.caps` is a set
+    // of dtypes this EP has storage for and float8 is not among them. So by the time control
+    // reaches here the attribute cannot be doing anything, whatever its value.
     Ok(())
 }
 
