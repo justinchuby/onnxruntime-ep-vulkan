@@ -1,0 +1,151 @@
+{
+  "note": "Re-derivation of Switch's kv_int8_budget artifacts under the at-scale ULP basis. Exact, not approximate: every oracle logits scale observed in these artifacts (32.21875, 46.21875, 52.65625) lies in [32,64), where float16 spacing is exactly 0.03125, so one ULP at the tensor's scale is the same constant for every lane and every step and max_ulp_at_scale = max_abs / 0.03125 exactly. No re-run was needed and none was possible: the npz tensors were not retained.",
+  "one_ulp_at_scale": 0.03125,
+  "devices": {
+    "dev0": {
+      "rows": [
+        {
+          "lane": "cpu_i8_per_tensor",
+          "max_ulp_element_basis": 7886.0,
+          "max_abs": 2.34375,
+          "max_ulp_at_scale": 75.0,
+          "max_of_median_ulp": 40.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "cpu_i8_per_head",
+          "max_ulp_element_basis": 45638.0,
+          "max_abs": 1.75,
+          "max_ulp_at_scale": 56.0,
+          "max_of_median_ulp": 54.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "cpu_i8_per_block32",
+          "max_ulp_element_basis": 38278.0,
+          "max_abs": 0.453125,
+          "max_ulp_at_scale": 14.5,
+          "max_of_median_ulp": 4.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "cpu_i4_per_head",
+          "max_ulp_element_basis": 71602.0,
+          "max_abs": 28.375,
+          "max_ulp_at_scale": 908.0,
+          "max_of_median_ulp": 981.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "cpu_i4_per_block32",
+          "max_ulp_element_basis": 52634.0,
+          "max_abs": 16.171875,
+          "max_ulp_at_scale": 517.5,
+          "max_of_median_ulp": 556.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "vk_fp16",
+          "max_ulp_element_basis": 337178.0,
+          "max_abs": 0.1953125,
+          "max_ulp_at_scale": 6.25,
+          "max_of_median_ulp": 16.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "vk_i8_per_head",
+          "max_ulp_element_basis": 131174.0,
+          "max_abs": 1.625,
+          "max_ulp_at_scale": 52.0,
+          "max_of_median_ulp": 50.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "vk_i8_per_block32",
+          "max_ulp_element_basis": 296422.0,
+          "max_abs": 0.5,
+          "max_ulp_at_scale": 16.0,
+          "max_of_median_ulp": 7.0,
+          "cancellation_elements_as_published": 0
+        }
+      ],
+      "worst_to_best_by_max_ulp_element_basis": [
+        "vk_fp16",
+        "vk_i8_per_block32",
+        "vk_i8_per_head",
+        "cpu_i4_per_head",
+        "cpu_i4_per_block32",
+        "cpu_i8_per_head",
+        "cpu_i8_per_block32",
+        "cpu_i8_per_tensor"
+      ],
+      "worst_to_best_by_max_ulp_at_scale": [
+        "cpu_i4_per_head",
+        "cpu_i4_per_block32",
+        "cpu_i8_per_tensor",
+        "cpu_i8_per_head",
+        "vk_i8_per_head",
+        "vk_i8_per_block32",
+        "cpu_i8_per_block32",
+        "vk_fp16"
+      ],
+      "worst_to_best_by_max_abs": [
+        "cpu_i4_per_head",
+        "cpu_i4_per_block32",
+        "cpu_i8_per_tensor",
+        "cpu_i8_per_head",
+        "vk_i8_per_head",
+        "vk_i8_per_block32",
+        "cpu_i8_per_block32",
+        "vk_fp16"
+      ],
+      "at_scale_ordering_equals_max_abs_ordering": true,
+      "element_basis_ordering_equals_max_abs_ordering": false
+    },
+    "dev1": {
+      "rows": [
+        {
+          "lane": "vk_fp16",
+          "max_ulp_element_basis": 75622.0,
+          "max_abs": 0.171875,
+          "max_ulp_at_scale": 5.5,
+          "max_of_median_ulp": 4.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "vk_i8_per_head",
+          "max_ulp_element_basis": 10598.0,
+          "max_abs": 1.890625,
+          "max_ulp_at_scale": 60.5,
+          "max_of_median_ulp": 45.0,
+          "cancellation_elements_as_published": 0
+        },
+        {
+          "lane": "vk_i8_per_block32",
+          "max_ulp_element_basis": 282854.0,
+          "max_abs": 1.265625,
+          "max_ulp_at_scale": 40.5,
+          "max_of_median_ulp": 15.0,
+          "cancellation_elements_as_published": 0
+        }
+      ],
+      "worst_to_best_by_max_ulp_element_basis": [
+        "vk_i8_per_block32",
+        "vk_fp16",
+        "vk_i8_per_head"
+      ],
+      "worst_to_best_by_max_ulp_at_scale": [
+        "vk_i8_per_head",
+        "vk_i8_per_block32",
+        "vk_fp16"
+      ],
+      "worst_to_best_by_max_abs": [
+        "vk_i8_per_head",
+        "vk_i8_per_block32",
+        "vk_fp16"
+      ],
+      "at_scale_ordering_equals_max_abs_ordering": true,
+      "element_basis_ordering_equals_max_abs_ordering": false
+    }
+  }
+}

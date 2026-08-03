@@ -677,6 +677,172 @@ def ulp_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, str]:
     )
 
 
+def ulp_at_scale_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, str]:
+    """Residual in **ULPs of the stored dtype at the tensor's own scale**.
+
+    WHY A SECOND ULP BASIS EXISTS (Trinity 2026-08-03)
+    =================================================
+    ``ulp_residual`` counts against the spacing **at each element's own value**.  That is
+    the right basis for asking *"was this element stored correctly"*, and it is what the
+    KV-cache work uses.  It is the wrong basis for asking *"is this tensor further from
+    the oracle than that one"*, because the spacing in the denominator varies by six
+    orders of magnitude across a single logits vector, and the element with the smallest
+    reference wins the max regardless of how large its residual actually is.
+
+    MEASURED, on this project's own artifact, not argued
+    ====================================================
+    ``bench/results/kv_int8_budget-dev0.json``, logits, max over steps:
+
+        lane                 max ULP (element basis)     ULP at scale     max_abs
+        vk_fp16                          337,178                6.25     0.195
+        cpu_i4_per_head                    7,110              908.00    28.375
+
+    A max-ULP criterion ranks the shipping **fp16 GPU path 47x worse than a simulated
+    int4 KV cache**.  On the same tensors, at the tensor's own scale, fp16 is 145x
+    *better*.  The ordering is not noisy, it is reversed, and by two orders of magnitude
+    in each direction.  That is a defect in the observable, not in the lanes, and it is
+    independent of whether int8 ever ships.
+
+    WHY THIS UNIT AND NOT ``max_abs``
+    =================================
+    ``max_abs`` orders the lanes correctly here, and it is recorded.  But it is not
+    comparable across dtypes or across tensors of different magnitude -- 0.195 means
+    something completely different on the logits (scale 32) and on layer 0's key (scale
+    0.4).  Dividing by the spacing **at the tensor's scale** keeps the ULP unit's
+    cross-tensor comparability and drops the per-element denominator that made the max
+    meaningless.  It is a rescaling of ``max_abs``, and that is exactly the point: the
+    ordering it produces is ``max_abs``'s ordering, expressed in a unit criterion 10 can
+    use for every output at once.
+
+    WHERE IT FAILS, STATED BEFORE ANYONE ELSE FINDS IT
+    ==================================================
+    This unit is **blind to a wrong element in a small-magnitude region of a
+    large-magnitude tensor**: an element that should be 1e-4 and comes back 1e-2 is
+    catastrophically wrong relatively, and reads 0.3 ULP at a scale of 32.  So it does
+    not replace ``ulp_residual`` and must never be quoted alone.  The two are recorded
+    together **so that they can disagree**, and a large disagreement is itself reported
+    (see ``ulp_distribution``).  A single observable that could not be contradicted is
+    how five instrument defects in this project survived.
+
+    A degenerate tensor has no scale; ``spacing(0)`` is the denormal floor and would make
+    every residual enormous, so a zero-scale tensor returns all-zero with that said in
+    the basis string rather than a number nobody should read.
+    """
+    if not np.issubdtype(vk.dtype, np.floating):
+        return np.abs(vk.astype(np.int64) - cpu.astype(np.int64)).astype(np.float64), (
+            f"{vk.dtype} is integral; 1 ULP = 1 at every scale"
+        )
+    dt = vk.dtype
+    b = cpu.astype(np.float64)
+    scale = float(np.abs(b).max()) if b.size else 0.0
+    if not np.isfinite(scale) or scale == 0.0:
+        return np.zeros_like(b), (
+            "the reference tensor has no finite nonzero scale, so 'one ULP at the "
+            "tensor's scale' is undefined; residual reported as 0 rather than measured "
+            "against the denormal floor"
+        )
+    spacing = abs(float(np.spacing(dt.type(scale))))
+    diff = np.abs(vk.astype(np.float64) - b)
+    return diff / spacing, (
+        f"ULP of {dt} at the reference tensor's own scale {scale:.6g} (one ULP = "
+        f"{spacing:.6g}); a near-zero reference element cannot inflate this count, and it "
+        "is correspondingly blind to a relatively-wrong element in a small-magnitude "
+        "region -- read it beside ulp_residual, never instead of it"
+    )
+
+
+# How far apart the two ULP bases may be before the element-basis max is reported as
+# being carried by near-zero references rather than by a real residual.  Chosen, not
+# tuned: 100x means the offending element's reference sits at least ~100 ULP-of-scale
+# below the tensor's scale, which is two decimal orders and is not a borderline call.
+ULP_BASIS_DISAGREEMENT_RATIO = 100.0
+
+
+def ulp_distribution(vk: np.ndarray, cpu: np.ndarray) -> dict:
+    """The one implementation of "the ULP distribution of this output pair".
+
+    WHY THIS IS A FUNCTION
+    ======================
+    ``compare_all_outputs_to_cpu`` computed this inline, so any consumer that wanted the
+    same distribution over a pair the comparator does not see had to re-implement it.
+    ``bench/results/probe_kv_int8_budget.py`` did exactly that -- correctly noting in its
+    own docstring that "a second ULP instrument would be a second answer nobody could
+    reconcile" -- and its re-implementation then defined ``cancellation_elements`` as an
+    **exact-zero** count and ``near_zero_reference_elements`` as a **subnormal** count.
+    On the logits both read 0 while ``max_ulp`` read 337,178: the counters that exist to
+    explain the max explained nothing, and a reader would have concluded the max was
+    real.  Arithmetic on that artifact's own numbers shows why -- the offending reference
+    element is ~5e-4, eight times *above* fp16's smallest normal, so a subnormal test
+    cannot see it.  The predicate that does see it is "small relative to **this tensor's**
+    scale", which is what is implemented here and only here.
+
+    Returns median / p99 / max on both bases, the cancellation and near-zero counts, the
+    tensor scale, and an explicit instrument-disagreement verdict.
+    """
+    ulps, basis = ulp_residual(vk, cpu)
+    at_scale, at_scale_basis = ulp_at_scale_residual(vk, cpu)
+    finite = ulps[np.isfinite(ulps)]
+    finite_s = at_scale[np.isfinite(at_scale)]
+    a = vk.astype(np.float64)
+    b = cpu.astype(np.float64)
+
+    scale = float(np.abs(b).max()) if b.size else 0.0
+    floating = bool(np.issubdtype(vk.dtype, np.floating))
+    spacing_at_scale = (
+        abs(float(np.spacing(vk.dtype.type(scale)))) if floating and scale > 0 else 0.0
+    )
+    # A cancellation element: the reference has collapsed towards zero while the tensor's
+    # scale has not.  Relative to THIS tensor's scale -- not to an exact zero, and not to
+    # the dtype's smallest normal.  Both of those narrower predicates have now been
+    # shipped in this project and both returned 0 on a tensor whose max ULP was six
+    # figures.
+    if floating and b.size and spacing_at_scale > 0:
+        cancellation = int(np.count_nonzero(np.abs(b) < spacing_at_scale))
+        exact_zero_reference = int(np.count_nonzero((b == 0.0) & (a != 0.0)))
+        subnormal_reference = int(
+            np.count_nonzero(np.abs(b) < float(np.finfo(vk.dtype).tiny))
+        )
+    else:
+        cancellation = exact_zero_reference = subnormal_reference = 0
+
+    max_ulp = float(finite.max()) if finite.size else 0.0
+    max_at_scale = float(finite_s.max()) if finite_s.size else 0.0
+    ratio = (max_ulp / max_at_scale) if max_at_scale > 0 else (
+        float("inf") if max_ulp > 0 else 1.0
+    )
+    disagree = bool(ratio > ULP_BASIS_DISAGREEMENT_RATIO)
+    if not disagree:
+        verdict = "BASES_AGREE"
+    elif cancellation > 0:
+        # Explained: the element-basis max is carried by references that have cancelled
+        # relative to the tensor's scale, and the counter says how many.
+        verdict = "ELEMENT_BASIS_MAX_IS_CANCELLATION_DRIVEN"
+    else:
+        # The two observables contradict each other and nothing in the record accounts
+        # for it.  This is an instrument state, not a measurement, and it must never be
+        # collapsed into a pass or a fail.
+        verdict = "ERROR(instrument=cancellation_counter_blind)"
+
+    return {
+        "tensor_scale": scale,
+        "one_ulp_at_scale": spacing_at_scale,
+        "median_ulp": float(np.median(finite)) if finite.size else 0.0,
+        "p99_ulp": float(np.percentile(finite, 99)) if finite.size else 0.0,
+        "max_ulp": max_ulp,
+        "median_ulp_at_scale": float(np.median(finite_s)) if finite_s.size else 0.0,
+        "p99_ulp_at_scale": float(np.percentile(finite_s, 99)) if finite_s.size else 0.0,
+        "max_ulp_at_scale": max_at_scale,
+        "max_abs": float(np.abs(a - b).max()) if a.size else 0.0,
+        "cancellation_elements": cancellation,
+        "exact_zero_reference_elements": exact_zero_reference,
+        "subnormal_reference_elements": subnormal_reference,
+        "ulp_basis_ratio": ratio,
+        "ulp_basis_verdict": verdict,
+        "ulp_basis": basis,
+        "ulp_at_scale_basis": at_scale_basis,
+    }
+
+
 def _is_degenerate(arr: np.ndarray) -> bool:
     """A tensor carrying no information: empty, all-NaN, or every element identical.
 
@@ -736,6 +902,12 @@ def compare_all_outputs_to_cpu(
         "oracle_max_ulp_diff_over_all_outputs": 0.0,
         "oracle_worst_output_index": None,
         "oracle_worst_ulp_output_index": None,
+        "oracle_max_ulp_at_scale_diff_over_all_outputs": 0.0,
+        "oracle_worst_ulp_at_scale_output_index": None,
+        # Outputs where the two ULP bases contradict each other and the cancellation
+        # counter does not account for it.  Non-empty means an instrument is blind, not
+        # that the kernel is wrong -- and it must not be read as either a pass or a fail.
+        "oracle_instrument_errors": [],
         "per_output": [],
     }
 
@@ -745,6 +917,7 @@ def compare_all_outputs_to_cpu(
 
     worst = -1.0
     worst_ulp = -1.0
+    worst_ulp_at_scale = -1.0
     for i, (v, c) in enumerate(zip(vk_out, cpu_out)):
         entry: dict = {"index": i, "shape": list(v.shape), "dtype": str(v.dtype)}
 
@@ -779,23 +952,12 @@ def compare_all_outputs_to_cpu(
         max_rel = float(np.max(abs_diff / np.where(denom == 0, 1.0, denom))) if a.size else 0.0
         within = bool(np.allclose(a, b, rtol=tol["rtol"], atol=tol["atol"], equal_nan=True))
 
-        ulps, ulp_basis = ulp_residual(v, c)
-        finite_ulps = ulps[np.isfinite(ulps)]
-        max_ulp = float(finite_ulps.max()) if finite_ulps.size else 0.0
-        # Max alone is not a sound headline: one element whose reference cancels to zero
-        # can read 16384 ULP for a residual of one ULP at the tensor's own scale.  The
-        # distribution is recorded so "flat at 1-3" is read off a distribution rather than
-        # off the single element sitting where no unit works.
-        median_ulp = float(np.median(finite_ulps)) if finite_ulps.size else 0.0
-        p99_ulp = float(np.percentile(finite_ulps, 99)) if finite_ulps.size else 0.0
-        # Elements whose reference has cancelled relative to the tensor's own scale — the
-        # only place the ULP count is untrustworthy, counted rather than silently included.
-        if np.issubdtype(v.dtype, np.floating) and c.size:
-            scale = float(np.abs(c.astype(np.float64)).max())
-            floor = abs(float(np.spacing(v.dtype.type(scale)))) if scale > 0 else 0.0
-            cancellation = int(np.count_nonzero(np.abs(c.astype(np.float64)) < floor))
-        else:
-            cancellation = 0
+        dist = ulp_distribution(v, c)
+        ulp_basis = dist["ulp_basis"]
+        max_ulp = dist["max_ulp"]
+        median_ulp = dist["median_ulp"]
+        p99_ulp = dist["p99_ulp"]
+        cancellation = dist["cancellation_elements"]
         # How much of this tensor sits where relative error is a denominator artefact.
         # Recorded so a reader can see WHY max_rel_diff is not the headline, rather than
         # being asked to take it on trust.
@@ -812,6 +974,28 @@ def compare_all_outputs_to_cpu(
                 "max_ulp_diff": max_ulp,
                 "median_ulp_diff": median_ulp,
                 "p99_ulp_diff": p99_ulp,
+                # ADDED 2026-08-03 (Trinity).  Additive: no existing number moves.  The
+                # element-basis max above is attained at whichever element has the
+                # smallest reference, which on the logits made the shipping fp16 path
+                # rank 47x worse than a simulated int4 KV cache.  These are the same
+                # residuals counted in ULPs of the dtype at the TENSOR's scale, which
+                # orders the lanes the way max_abs_diff does while staying comparable
+                # across outputs.  Blind where the element basis is sharp (a relatively
+                # wrong element in a small-magnitude region), which is why both are here.
+                "max_ulp_at_scale_diff": dist["max_ulp_at_scale"],
+                "median_ulp_at_scale_diff": dist["median_ulp_at_scale"],
+                "p99_ulp_at_scale_diff": dist["p99_ulp_at_scale"],
+                "one_ulp_at_scale": dist["one_ulp_at_scale"],
+                "tensor_scale": dist["tensor_scale"],
+                "ulp_at_scale_basis": dist["ulp_at_scale_basis"],
+                # The two bases are recorded so they can CONTRADICT each other.  Five
+                # instrument defects in this project were found by one observable
+                # disagreeing with another and none by an observable agreeing with
+                # itself.  A large ratio with nothing in the cancellation counter to
+                # account for it is an instrument state, and it is reported as one rather
+                # than being collapsed into a pass.
+                "ulp_basis_ratio": dist["ulp_basis_ratio"],
+                "ulp_basis_verdict": dist["ulp_basis_verdict"],
                 "ulp_cancellation_elements": cancellation,
                 "ulp_basis": ulp_basis,
                 # DEMOTED 2026-08-02.  Kept because deleting a number two people have
@@ -836,6 +1020,7 @@ def compare_all_outputs_to_cpu(
                 "headline_statistic": "median_ulp_diff",
                 "headline_secondary": [
                     "p99_ulp_diff",
+                    "max_ulp_at_scale_diff",
                     "max_ulp_diff",
                     "ulp_cancellation_elements",
                     "max_abs_diff",
@@ -843,7 +1028,11 @@ def compare_all_outputs_to_cpu(
                 "headline_note": (
                     "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; "
                     "read median_ulp_diff for the bulk residual and "
-                    "ulp_cancellation_elements for how many elements the max speaks for"
+                    "ulp_cancellation_elements for how many elements the max speaks for. "
+                    "To RANK two lanes against the same oracle use max_ulp_at_scale_diff "
+                    "and not max_ulp_diff: on bench/results/kv_int8_budget-dev0.json the "
+                    "element-basis max ranks fp16 (337178) below int4 (7110) and the "
+                    "at-scale basis ranks it 145x above (6.25 vs 908)"
                 ),
                 "rtol": tol["rtol"],
                 "atol": tol["atol"],
@@ -861,10 +1050,20 @@ def compare_all_outputs_to_cpu(
         if max_ulp > worst_ulp:
             worst_ulp = max_ulp
             facts["oracle_worst_ulp_output_index"] = i
+        if dist["max_ulp_at_scale"] > worst_ulp_at_scale:
+            worst_ulp_at_scale = dist["max_ulp_at_scale"]
+            facts["oracle_worst_ulp_at_scale_output_index"] = i
+        if dist["ulp_basis_verdict"].startswith("ERROR("):
+            facts["oracle_instrument_errors"].append(
+                {"index": i, "name": entry.get("name"), "verdict": dist["ulp_basis_verdict"],
+                 "max_ulp_diff": max_ulp, "max_ulp_at_scale_diff": dist["max_ulp_at_scale"],
+                 "ulp_basis_ratio": dist["ulp_basis_ratio"]}
+            )
         facts["per_output"].append(entry)
 
     facts["oracle_max_abs_diff_over_all_outputs"] = max(worst, 0.0)
     facts["oracle_max_ulp_diff_over_all_outputs"] = max(worst_ulp, 0.0)
+    facts["oracle_max_ulp_at_scale_diff_over_all_outputs"] = max(worst_ulp_at_scale, 0.0)
 
     if facts["oracle_failing_indices"]:
         return COMPARISON_DISAGREE, facts

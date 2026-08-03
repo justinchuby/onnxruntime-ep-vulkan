@@ -1,0 +1,1483 @@
+{
+  "probe": "gqa_grouping",
+  "ep_library": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "question_answered": "node-level correctness of GroupQueryAttention at Nq/Nkv != 1",
+  "question_not_answered": "end-to-end behaviour of a full grouped model (no Llama-3 export was run; an 8 GB discrete GPU on this box will not hold one)",
+  "hypotheses": {
+    "H_DISJOINT_HOLDS": "arena aliasing argument is invariant in group size",
+    "H_DISJOINT_FAILS": "grouped arena corrupts the t < past_len region of present",
+    "H_DUP_BENIGN": "the G duplicate present writers write identical bits",
+    "H_DUP_RACES": "the G duplicate present writers race; cross-run unstable"
+  },
+  "vulkan_device_index_env": "",
+  "arms": [
+    {
+      "arm": "g1_decode_growing",
+      "group_size": 1,
+      "nq": 8,
+      "nkv": 8,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "decode",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          1,
+          256
+        ],
+        [
+          1,
+          8,
+          17,
+          32
+        ],
+        [
+          1,
+          8,
+          17,
+          32
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          1,
+          256
+        ],
+        [
+          1,
+          8,
+          17,
+          32
+        ],
+        [
+          1,
+          8,
+          17,
+          32
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            256
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 7.62939453125e-06,
+          "max_ulp_diff": 1.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.44999999999998863,
+          "ulp_cancellation_elements": 1,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0005170438329079786,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            8,
+            17,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 11,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            8,
+            17,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 5,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 3.029830358497465e-05,
+          "cpu_max_abs_from_f64": 3.029830358497465e-05,
+          "vk_median_abs_from_f64": 2.2444140202974167e-06,
+          "cpu_median_abs_from_f64": 2.2444140202974167e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 6.060674786567688e-05,
+          "cpu_max_abs_from_f64": 6.060674786567688e-05,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "g4_decode_growing",
+      "group_size": 4,
+      "nq": 8,
+      "nkv": 2,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "decode",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          1,
+          256
+        ],
+        [
+          1,
+          2,
+          17,
+          32
+        ],
+        [
+          1,
+          2,
+          17,
+          32
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          1,
+          256
+        ],
+        [
+          1,
+          2,
+          17,
+          32
+        ],
+        [
+          1,
+          2,
+          17,
+          32
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            256
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 0,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            2,
+            17,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 3,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            2,
+            17,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 3,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 1.7266084919323466e-05,
+          "cpu_max_abs_from_f64": 1.7266084919323466e-05,
+          "vk_median_abs_from_f64": 2.2976179294437876e-06,
+          "cpu_median_abs_from_f64": 2.2976179294437876e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 6.060674786567688e-05,
+          "cpu_max_abs_from_f64": 6.060674786567688e-05,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "g1_prefill_growing",
+      "group_size": 1,
+      "nq": 8,
+      "nkv": 8,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "prefill",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          8,
+          256
+        ],
+        [
+          1,
+          8,
+          24,
+          32
+        ],
+        [
+          1,
+          8,
+          24,
+          32
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          8,
+          256
+        ],
+        [
+          1,
+          8,
+          24,
+          32
+        ],
+        [
+          1,
+          8,
+          24,
+          32
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            8,
+            256
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 7.62939453125e-06,
+          "max_ulp_diff": 1.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.5299999999999727,
+          "ulp_cancellation_elements": 6,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0007848849986499978,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            8,
+            24,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 7,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            8,
+            24,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 7,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 2.9376030527980546e-05,
+          "cpu_max_abs_from_f64": 2.9376030527980546e-05,
+          "vk_median_abs_from_f64": 1.838552131283068e-06,
+          "cpu_median_abs_from_f64": 1.843079361667048e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 0.00011539459228515625,
+          "cpu_max_abs_from_f64": 0.00011539459228515625,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "g4_prefill_growing",
+      "group_size": 4,
+      "nq": 8,
+      "nkv": 2,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "prefill",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          8,
+          256
+        ],
+        [
+          1,
+          2,
+          24,
+          32
+        ],
+        [
+          1,
+          2,
+          24,
+          32
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          8,
+          256
+        ],
+        [
+          1,
+          2,
+          24,
+          32
+        ],
+        [
+          1,
+          2,
+          24,
+          32
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            8,
+            256
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 1.52587890625e-05,
+          "max_ulp_diff": 1.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 1,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.000586141733760357,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            2,
+            24,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 5,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            2,
+            24,
+            32
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 2,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 1.5254407812068105e-05,
+          "cpu_max_abs_from_f64": 1.5254407812068105e-05,
+          "vk_median_abs_from_f64": 2.1995195842788515e-06,
+          "cpu_median_abs_from_f64": 2.1995195842788515e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 6.41942024230957e-05,
+          "cpu_max_abs_from_f64": 6.41942024230957e-05,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "g4_prefill_growing_frompast0",
+      "group_size": 4,
+      "nq": 8,
+      "nkv": 2,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 8,
+      "past_len": 0,
+      "past_stride": 0,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "prefill",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": false,
+      "verdict": "UNMEASURED(node_not_claimed)"
+    },
+    {
+      "arm": "g1_decode_arena",
+      "lane": "arena",
+      "group_size": 1,
+      "nq": 8,
+      "nkv": 8,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 64,
+      "regime": "decode",
+      "kv_arena_env": "1",
+      "device_memory_env": "",
+      "bind_outputs_env": "",
+      "verdict": "UNMEASURED(arena_env_not_set)"
+    },
+    {
+      "arm": "g4_decode_arena",
+      "lane": "arena",
+      "group_size": 4,
+      "nq": 8,
+      "nkv": 2,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 64,
+      "regime": "decode",
+      "kv_arena_env": "1",
+      "device_memory_env": "",
+      "bind_outputs_env": "",
+      "verdict": "UNMEASURED(arena_env_not_set)"
+    },
+    {
+      "arm": "g1_prefill_arena",
+      "lane": "arena",
+      "group_size": 1,
+      "nq": 8,
+      "nkv": 8,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 64,
+      "regime": "prefill",
+      "kv_arena_env": "1",
+      "device_memory_env": "",
+      "bind_outputs_env": "",
+      "verdict": "UNMEASURED(arena_env_not_set)"
+    },
+    {
+      "arm": "g4_prefill_arena",
+      "lane": "arena",
+      "group_size": 4,
+      "nq": 8,
+      "nkv": 2,
+      "head_dim": 32,
+      "rotary_dim": 16,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 64,
+      "regime": "prefill",
+      "kv_arena_env": "1",
+      "device_memory_env": "",
+      "bind_outputs_env": "",
+      "verdict": "UNMEASURED(arena_env_not_set)"
+    },
+    {
+      "arm": "llama3_g1_decode_growing",
+      "group_size": 1,
+      "nq": 32,
+      "nkv": 32,
+      "head_dim": 128,
+      "rotary_dim": 128,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "decode",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          1,
+          4096
+        ],
+        [
+          1,
+          32,
+          17,
+          128
+        ],
+        [
+          1,
+          32,
+          17,
+          128
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          1,
+          4096
+        ],
+        [
+          1,
+          32,
+          17,
+          128
+        ],
+        [
+          1,
+          32,
+          17,
+          128
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            4096
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 3.0517578125e-05,
+          "max_ulp_diff": 3.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 7,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.000912601937636434,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            32,
+            17,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 136,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            32,
+            17,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 129,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 2.9801106322516202e-05,
+          "cpu_max_abs_from_f64": 2.9801106322516202e-05,
+          "vk_median_abs_from_f64": 2.1058710769680106e-06,
+          "cpu_median_abs_from_f64": 2.1058710769680106e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 0.00011751940473914146,
+          "cpu_max_abs_from_f64": 0.00011751940473914146,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "llama3_g4_decode_growing",
+      "group_size": 4,
+      "nq": 32,
+      "nkv": 8,
+      "head_dim": 128,
+      "rotary_dim": 128,
+      "seq_len": 1,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "decode",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          1,
+          4096
+        ],
+        [
+          1,
+          8,
+          17,
+          128
+        ],
+        [
+          1,
+          8,
+          17,
+          128
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          1,
+          4096
+        ],
+        [
+          1,
+          8,
+          17,
+          128
+        ],
+        [
+          1,
+          8,
+          17,
+          128
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            1,
+            4096
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 1.52587890625e-05,
+          "max_ulp_diff": 2.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 1.0,
+          "ulp_cancellation_elements": 6,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.000766556078176455,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 1,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            8,
+            17,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 24,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            8,
+            17,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 38,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 2.9873917080910917e-05,
+          "cpu_max_abs_from_f64": 2.9873917080910917e-05,
+          "vk_median_abs_from_f64": 1.999604502767212e-06,
+          "cpu_median_abs_from_f64": 1.999604502767212e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 0.00010798871517181396,
+          "cpu_max_abs_from_f64": 0.00010798871517181396,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "llama3_g4_prefill_growing",
+      "group_size": 4,
+      "nq": 32,
+      "nkv": 8,
+      "head_dim": 128,
+      "rotary_dim": 128,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 16,
+      "present_declared": true,
+      "symbolic_extents": false,
+      "kv_arena_env": "",
+      "regime": "prefill",
+      "device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "vulkan_claimed": true,
+      "vk_shapes": [
+        [
+          1,
+          8,
+          4096
+        ],
+        [
+          1,
+          8,
+          24,
+          128
+        ],
+        [
+          1,
+          8,
+          24,
+          128
+        ]
+      ],
+      "cpu_shapes": [
+        [
+          1,
+          8,
+          4096
+        ],
+        [
+          1,
+          8,
+          24,
+          128
+        ],
+        [
+          1,
+          8,
+          24,
+          128
+        ]
+      ],
+      "cross_run_identical": true,
+      "cross_run_differing_outputs": [],
+      "repeats": 3,
+      "cpu_comparison": "AGREE",
+      "per_output": [
+        {
+          "index": 0,
+          "shape": [
+            1,
+            8,
+            4096
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 3.0517578125e-05,
+          "max_ulp_diff": 4.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 1.0,
+          "ulp_cancellation_elements": 74,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0009400545983710733,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 1,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 1,
+          "shape": [
+            1,
+            8,
+            24,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 45,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        },
+        {
+          "index": 2,
+          "shape": [
+            1,
+            8,
+            24,
+            128
+          ],
+          "dtype": "float16",
+          "vk_degenerate": false,
+          "cpu_degenerate": false,
+          "status": "WITHIN_TOLERANCE",
+          "max_abs_diff": 0.0,
+          "max_ulp_diff": 0.0,
+          "median_ulp_diff": 0.0,
+          "p99_ulp_diff": 0.0,
+          "ulp_cancellation_elements": 43,
+          "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+          "max_rel_diff": 0.0,
+          "max_rel_diff_is_headline": false,
+          "max_rel_diff_caveat": "denominator artefact: attained at near-zero elements and not monotone in depth; use median_ulp_diff or max_abs_diff",
+          "near_zero_elements": 0,
+          "headline_statistic": "median_ulp_diff",
+          "headline_secondary": [
+            "p99_ulp_diff",
+            "max_ulp_diff",
+            "ulp_cancellation_elements",
+            "max_abs_diff"
+          ],
+          "headline_note": "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; read median_ulp_diff for the bulk residual and ulp_cancellation_elements for how many elements the max speaks for",
+          "rtol": 0.02,
+          "atol": 0.001,
+          "tolerance_justification": "fp16 MatMulNBits tolerance (_models.py header, derived from measured data: max_abs=3.6e-3, rtol_max=4.6e-3); the qkv path that produces this tensor is the arithmetic that tolerance was justified for"
+        }
+      ],
+      "oracle_failing_indices": [],
+      "oracle_degenerate_indices": [],
+      "f64_reference": [
+        {
+          "output": "attn_out",
+          "vk_max_abs_from_f64": 3.0426233769587085e-05,
+          "cpu_max_abs_from_f64": 3.0426233769587085e-05,
+          "vk_median_abs_from_f64": 1.8422720544091116e-06,
+          "cpu_median_abs_from_f64": 1.8435699377624196e-06,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_key",
+          "vk_max_abs_from_f64": 0.00012118788436055183,
+          "cpu_max_abs_from_f64": 0.00012118788436055183,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        },
+        {
+          "output": "present_value",
+          "vk_max_abs_from_f64": 0.0,
+          "cpu_max_abs_from_f64": 0.0,
+          "vk_median_abs_from_f64": 0.0,
+          "cpu_median_abs_from_f64": 0.0,
+          "which_is_further_from_true": "neither (equal)"
+        }
+      ],
+      "past_region_of_present_bit_intact": true,
+      "past_region_rows_checked": 16,
+      "arena_tail_poison_intact": null,
+      "verdict": "AGREE"
+    },
+    {
+      "arm": "llama3_g4_prefill_arena",
+      "lane": "arena",
+      "group_size": 4,
+      "nq": 32,
+      "nkv": 8,
+      "head_dim": 128,
+      "rotary_dim": 128,
+      "seq_len": 8,
+      "past_len": 16,
+      "past_stride": 64,
+      "regime": "prefill",
+      "kv_arena_env": "1",
+      "device_memory_env": "",
+      "bind_outputs_env": "",
+      "verdict": "UNMEASURED(arena_env_not_set)"
+    }
+  ],
+  "kv_convention_observed": "GROWING",
+  "running_device_names_observed": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "counters_file": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\bench\\results\\gqa_grouping_grow_dev0.counters.json",
+  "device_names_seen": [
+    "NVIDIA GeForce RTX 4060 Laptop GPU"
+  ],
+  "device_index_requested": 0
+}
