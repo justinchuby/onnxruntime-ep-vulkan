@@ -1,0 +1,1641 @@
+{
+  "probe": "kv_int8_error_budget",
+  "question": "what does an int8 KV cache cost, in ULPs, on the outputs criterion 10 already measures?",
+  "prediction_record": "bench/results/kv-int8-budget-prediction.md",
+  "instrument": "tests/ops/_models.ulp_residual (Trinity's), used unmodified",
+  "steps": 8,
+  "seed_past": 4,
+  "tokens": [
+    1,
+    450,
+    4996,
+    310,
+    278,
+    3186,
+    338,
+    263
+  ],
+  "nq_over_nkv": 1.0,
+  "untested": [
+    "Nq/Nkv = 1.00 on Phi-3.5 and 4x on Llama-3; per_head here is a per-head-group scale over a group of ONE query head, so nothing here exercises a non-unit grouping and no number here may be quoted for a 4x model",
+    "quantisation is simulated at the host boundary: storage error is modelled exactly, kernel write rounding and accumulation order are not modelled at all, so every residual below is a LOWER BOUND on a real int8 kernel's"
+  ],
+  "lanes": {
+    "cpu_fp16": {
+      "lane": "cpu_fp16",
+      "backend": "cpu",
+      "bits": 0,
+      "granularity": null,
+      "steps": 8,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "tokens_sha256": "6e65492314c613dc",
+      "seed_scales": 0,
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "token": 1,
+          "logits_argmax": 2583,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "token": 450,
+          "logits_argmax": 2441,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "token": 4996,
+          "logits_argmax": 17354,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "token": 310,
+          "logits_argmax": 278,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "token": 278,
+          "logits_argmax": 9755,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "token": 3186,
+          "logits_argmax": 29892,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 6,
+          "past_len": 10,
+          "token": 338,
+          "logits_argmax": 2989,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 7,
+          "past_len": 11,
+          "token": 263,
+          "logits_argmax": 6592,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        }
+      ],
+      "past_prefix_preserved_all_steps": true,
+      "counters": {},
+      "verdict": "LANE_RAN",
+      "footprint": {
+        "provenance": "MODEL",
+        "bytes_per_past_token": 393216,
+        "value_bytes_per_past_token": 393216,
+        "scale_bytes_per_past_token": 0,
+        "predicted_footprint_ctx8192_B": 5512528520,
+        "ratio_vs_fp16_arena": 1.0,
+        "non_kv_term_B": 2291303048,
+        "non_kv_term_provenance": "MEASUREMENT \u2014 the arena's measured ctx-8192 footprint 5,512,528,520 B minus 8192 * 393,216; see bench/results/kv_arena_chain-A8192.json"
+      }
+    },
+    "vk_fp16": {
+      "lane": "vk_fp16",
+      "backend": "vk",
+      "bits": 0,
+      "granularity": null,
+      "steps": 8,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "tokens_sha256": "6e65492314c613dc",
+      "seed_scales": 0,
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "token": 1,
+          "logits_argmax": 2583,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "token": 450,
+          "logits_argmax": 2441,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "token": 4996,
+          "logits_argmax": 17354,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "token": 310,
+          "logits_argmax": 278,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "token": 278,
+          "logits_argmax": 9755,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "token": 3186,
+          "logits_argmax": 29892,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 6,
+          "past_len": 10,
+          "token": 338,
+          "logits_argmax": 2989,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 7,
+          "past_len": 11,
+          "token": 263,
+          "logits_argmax": 6592,
+          "scales_written": 0,
+          "past_prefix_preserved": true
+        }
+      ],
+      "past_prefix_preserved_all_steps": true,
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 8,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 520,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 520,
+        "outputs_bind_declined": 520,
+        "dispatches_executed": 2840,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 103,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 323,
+        "device_unattributed_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity"
+        ],
+        "proven_elsewhere_claims": 32,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `Intel(R) Iris(R) Xe Graphics`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "Intel(R) Iris(R) Xe Graphics",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "ab077902af3312bd",
+        "shaders_dispatched_source_digest": "f2b49fa105701ac1",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "b5553321771359d7",
+        "specialisation_delta_forms": [],
+        "specialisation_unrecorded_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/static/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2"
+        ],
+        "ledger_specialisation_unrecorded_entries": 103,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 7,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=Intel(R) Iris(R) Xe Graphics.",
+        "session_staging_uploads": 8,
+        "session_staging_upload_bytes": 2323918976,
+        "session_staging_upload_us": 1140467,
+        "session_staging_readbacks": 8,
+        "session_staging_readback_bytes": 27251712,
+        "session_staging_readback_us": 6797,
+        "session_device_allocs": 5260,
+        "session_device_frees": 4936,
+        "session_device_bytes_in_use": 2290839568,
+        "session_device_high_water_bytes": 2305733312,
+        "weight_cache_release_calls": 0,
+        "weight_cache_release_buffers": 0,
+        "weight_cache_release_bytes": 0,
+        "weight_cache_bytes_resident": 2290839552,
+        "counters_snapshot_writes": 8,
+        "counters_snapshot_write_failures": 0
+      },
+      "verdict": "LANE_RAN",
+      "liveness": {
+        "dispatches_executed": 2840,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "subgraphs_live": 1
+      },
+      "vs_cpu_fp16": {
+        "kv_median_ulp_slope_per_step": 0.17857142857142855,
+        "kv_median_ulp_by_token_position_at_last_step": [
+          {
+            "token_pos": 0,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "token_pos": 1,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "token_pos": 2,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "token_pos": 3,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "token_pos": 4,
+            "median_of_median_ulp": 1.0
+          },
+          {
+            "token_pos": 5,
+            "median_of_median_ulp": 3.0
+          },
+          {
+            "token_pos": 6,
+            "median_of_median_ulp": 2.0
+          },
+          {
+            "token_pos": 7,
+            "median_of_median_ulp": 4.0
+          },
+          {
+            "token_pos": 8,
+            "median_of_median_ulp": 4.0
+          },
+          {
+            "token_pos": 9,
+            "median_of_median_ulp": 4.0
+          },
+          {
+            "token_pos": 10,
+            "median_of_median_ulp": 5.0
+          },
+          {
+            "token_pos": 11,
+            "median_of_median_ulp": 7.0
+          }
+        ],
+        "kv": {
+          "outputs": 512,
+          "median_of_median_ulp": 0.0,
+          "max_of_median_ulp": 3.0,
+          "max_p99_ulp": 357.0,
+          "max_ulp": 469456.0,
+          "max_abs": 0.0576171875,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 18765,
+          "max_near_zero_reference_fraction": 0.004503038194444444,
+          "bitwise_equal_outputs": 0
+        },
+        "logits": {
+          "outputs": 8,
+          "median_of_median_ulp": 1.0,
+          "max_of_median_ulp": 4.0,
+          "max_p99_ulp": 38.0,
+          "max_ulp": 75622.0,
+          "max_abs": 0.171875,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 0,
+          "max_near_zero_reference_fraction": 0.0,
+          "bitwise_equal_outputs": 0
+        },
+        "layer31": {
+          "outputs": 16,
+          "median_of_median_ulp": 1.0,
+          "max_of_median_ulp": 3.0,
+          "max_p99_ulp": 357.0,
+          "max_ulp": 469456.0,
+          "max_abs": 0.048095703125,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 523,
+          "max_near_zero_reference_fraction": 0.0022786458333333335,
+          "bitwise_equal_outputs": 0
+        },
+        "degenerate_pairs": 0,
+        "top1_token_agreement": "8/8",
+        "top1_token_agreement_fraction": 1.0,
+        "rank_of_oracle_top1_per_step": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "worst_rank_of_oracle_top1": 0,
+        "kv_median_ulp_by_step": [
+          {
+            "step": 0,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "step": 1,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "step": 2,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "step": 3,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "step": 4,
+            "median_of_median_ulp": 0.0
+          },
+          {
+            "step": 5,
+            "median_of_median_ulp": 1.0
+          },
+          {
+            "step": 6,
+            "median_of_median_ulp": 1.0
+          },
+          {
+            "step": 7,
+            "median_of_median_ulp": 1.0
+          }
+        ],
+        "worst_outputs": [
+          {
+            "near_zero_reference_elements": 0,
+            "near_zero_reference_fraction": 0.0,
+            "tensor_scale": 32.21875,
+            "median_ulp": 4.0,
+            "p99_ulp": 38.0,
+            "max_ulp": 75622.0,
+            "max_abs": 0.1015625,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 0,
+            "output": "logits"
+          },
+          {
+            "near_zero_reference_elements": 0,
+            "near_zero_reference_fraction": 0.0,
+            "tensor_scale": 46.21875,
+            "median_ulp": 3.0,
+            "p99_ulp": 9.0,
+            "max_ulp": 27.0,
+            "max_abs": 0.171875,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 6,
+            "output": "logits"
+          },
+          {
+            "near_zero_reference_elements": 29,
+            "near_zero_reference_fraction": 0.0007866753472222222,
+            "tensor_scale": 6.23828125,
+            "median_ulp": 3.0,
+            "p99_ulp": 315.74000000000524,
+            "max_ulp": 98683.0,
+            "max_abs": 0.054443359375,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.29.value"
+          },
+          {
+            "near_zero_reference_elements": 32,
+            "near_zero_reference_fraction": 0.0008680555555555555,
+            "tensor_scale": 8.3984375,
+            "median_ulp": 3.0,
+            "p99_ulp": 348.0,
+            "max_ulp": 101432.0,
+            "max_abs": 0.0576171875,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.30.value"
+          },
+          {
+            "near_zero_reference_elements": 31,
+            "near_zero_reference_fraction": 0.0008409288194444445,
+            "tensor_scale": 22.734375,
+            "median_ulp": 3.0,
+            "p99_ulp": 357.0,
+            "max_ulp": 469456.0,
+            "max_abs": 0.048095703125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.31.value"
+          }
+        ]
+      },
+      "footprint": {
+        "provenance": "MODEL",
+        "bytes_per_past_token": 393216,
+        "value_bytes_per_past_token": 393216,
+        "scale_bytes_per_past_token": 0,
+        "predicted_footprint_ctx8192_B": 5512528520,
+        "ratio_vs_fp16_arena": 1.0,
+        "non_kv_term_B": 2291303048,
+        "non_kv_term_provenance": "MEASUREMENT \u2014 the arena's measured ctx-8192 footprint 5,512,528,520 B minus 8192 * 393,216; see bench/results/kv_arena_chain-A8192.json"
+      }
+    },
+    "vk_i8_per_head": {
+      "lane": "vk_i8_per_head",
+      "backend": "vk",
+      "bits": 8,
+      "granularity": "per_head",
+      "steps": 8,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "tokens_sha256": "6e65492314c613dc",
+      "seed_scales": 8192,
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "token": 1,
+          "logits_argmax": 2583,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "token": 450,
+          "logits_argmax": 2441,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "token": 4996,
+          "logits_argmax": 17354,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "token": 310,
+          "logits_argmax": 278,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "token": 278,
+          "logits_argmax": 9755,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "token": 3186,
+          "logits_argmax": 29892,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 6,
+          "past_len": 10,
+          "token": 338,
+          "logits_argmax": 2989,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 7,
+          "past_len": 11,
+          "token": 263,
+          "logits_argmax": 6592,
+          "scales_written": 2048,
+          "past_prefix_preserved": true
+        }
+      ],
+      "past_prefix_preserved_all_steps": true,
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 8,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 520,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 520,
+        "outputs_bind_declined": 520,
+        "dispatches_executed": 2840,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 103,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 323,
+        "device_unattributed_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity"
+        ],
+        "proven_elsewhere_claims": 32,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `Intel(R) Iris(R) Xe Graphics`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "Intel(R) Iris(R) Xe Graphics",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "ab077902af3312bd",
+        "shaders_dispatched_source_digest": "f2b49fa105701ac1",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "b5553321771359d7",
+        "specialisation_delta_forms": [],
+        "specialisation_unrecorded_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/static/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2"
+        ],
+        "ledger_specialisation_unrecorded_entries": 103,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 7,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=Intel(R) Iris(R) Xe Graphics.",
+        "session_staging_uploads": 8,
+        "session_staging_upload_bytes": 2323918976,
+        "session_staging_upload_us": 988081,
+        "session_staging_readbacks": 8,
+        "session_staging_readback_bytes": 27251712,
+        "session_staging_readback_us": 6767,
+        "session_device_allocs": 5260,
+        "session_device_frees": 4936,
+        "session_device_bytes_in_use": 2290839568,
+        "session_device_high_water_bytes": 2305733312,
+        "weight_cache_release_calls": 0,
+        "weight_cache_release_buffers": 0,
+        "weight_cache_release_bytes": 0,
+        "weight_cache_bytes_resident": 2290839552,
+        "counters_snapshot_writes": 8,
+        "counters_snapshot_write_failures": 0
+      },
+      "verdict": "LANE_RAN",
+      "liveness": {
+        "dispatches_executed": 2840,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "subgraphs_live": 1
+      },
+      "vs_cpu_fp16": {
+        "kv_median_ulp_slope_per_step": 1.7738095238095235,
+        "kv_median_ulp_by_token_position_at_last_step": [
+          {
+            "token_pos": 0,
+            "median_of_median_ulp": 11.0
+          },
+          {
+            "token_pos": 1,
+            "median_of_median_ulp": 11.0
+          },
+          {
+            "token_pos": 2,
+            "median_of_median_ulp": 11.0
+          },
+          {
+            "token_pos": 3,
+            "median_of_median_ulp": 11.0
+          },
+          {
+            "token_pos": 4,
+            "median_of_median_ulp": 38.0
+          },
+          {
+            "token_pos": 5,
+            "median_of_median_ulp": 33.0
+          },
+          {
+            "token_pos": 6,
+            "median_of_median_ulp": 22.0
+          },
+          {
+            "token_pos": 7,
+            "median_of_median_ulp": 36.0
+          },
+          {
+            "token_pos": 8,
+            "median_of_median_ulp": 36.0
+          },
+          {
+            "token_pos": 9,
+            "median_of_median_ulp": 36.0
+          },
+          {
+            "token_pos": 10,
+            "median_of_median_ulp": 42.5
+          },
+          {
+            "token_pos": 11,
+            "median_of_median_ulp": 62.0
+          }
+        ],
+        "kv": {
+          "outputs": 512,
+          "median_of_median_ulp": 17.0,
+          "max_of_median_ulp": 28.0,
+          "max_p99_ulp": 2241.162500000095,
+          "max_ulp": 3534032.0,
+          "max_abs": 0.45361328125,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 18765,
+          "max_near_zero_reference_fraction": 0.004503038194444444,
+          "bitwise_equal_outputs": 0
+        },
+        "logits": {
+          "outputs": 8,
+          "median_of_median_ulp": 7.0,
+          "max_of_median_ulp": 45.0,
+          "max_p99_ulp": 119.0,
+          "max_ulp": 10598.0,
+          "max_abs": 1.890625,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 0,
+          "max_near_zero_reference_fraction": 0.0,
+          "bitwise_equal_outputs": 0
+        },
+        "layer31": {
+          "outputs": 16,
+          "median_of_median_ulp": 19.0,
+          "max_of_median_ulp": 28.0,
+          "max_p99_ulp": 2241.162500000095,
+          "max_ulp": 3534032.0,
+          "max_abs": 0.3876953125,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 523,
+          "max_near_zero_reference_fraction": 0.0022786458333333335,
+          "bitwise_equal_outputs": 0
+        },
+        "degenerate_pairs": 0,
+        "top1_token_agreement": "8/8",
+        "top1_token_agreement_fraction": 1.0,
+        "rank_of_oracle_top1_per_step": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "worst_rank_of_oracle_top1": 0,
+        "kv_median_ulp_by_step": [
+          {
+            "step": 0,
+            "median_of_median_ulp": 12.0
+          },
+          {
+            "step": 1,
+            "median_of_median_ulp": 14.0
+          },
+          {
+            "step": 2,
+            "median_of_median_ulp": 15.0
+          },
+          {
+            "step": 3,
+            "median_of_median_ulp": 17.0
+          },
+          {
+            "step": 4,
+            "median_of_median_ulp": 19.0
+          },
+          {
+            "step": 5,
+            "median_of_median_ulp": 21.0
+          },
+          {
+            "step": 6,
+            "median_of_median_ulp": 23.0
+          },
+          {
+            "step": 7,
+            "median_of_median_ulp": 24.0
+          }
+        ],
+        "worst_outputs": [
+          {
+            "near_zero_reference_elements": 0,
+            "near_zero_reference_fraction": 0.0,
+            "tensor_scale": 46.21875,
+            "median_ulp": 45.0,
+            "p99_ulp": 119.0,
+            "max_ulp": 276.0,
+            "max_abs": 1.453125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 6,
+            "output": "logits"
+          },
+          {
+            "near_zero_reference_elements": 0,
+            "near_zero_reference_fraction": 0.0,
+            "tensor_scale": 52.65625,
+            "median_ulp": 29.0,
+            "p99_ulp": 87.0,
+            "max_ulp": 121.0,
+            "max_abs": 1.890625,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "logits"
+          },
+          {
+            "near_zero_reference_elements": 38,
+            "near_zero_reference_fraction": 0.0010308159722222222,
+            "tensor_scale": 15.859375,
+            "median_ulp": 28.0,
+            "p99_ulp": 1777.0,
+            "max_ulp": 1361256.0,
+            "max_abs": 0.408203125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.28.key"
+          },
+          {
+            "near_zero_reference_elements": 38,
+            "near_zero_reference_fraction": 0.0010308159722222222,
+            "tensor_scale": 14.3359375,
+            "median_ulp": 28.0,
+            "p99_ulp": 1747.1100000000079,
+            "max_ulp": 179352.0,
+            "max_abs": 0.43634033203125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.29.key"
+          },
+          {
+            "near_zero_reference_elements": 30,
+            "near_zero_reference_fraction": 0.0008138020833333334,
+            "tensor_scale": 17.90625,
+            "median_ulp": 28.0,
+            "p99_ulp": 1763.850000000013,
+            "max_ulp": 311769.0,
+            "max_abs": 0.40087890625,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.30.key"
+          }
+        ]
+      },
+      "footprint": {
+        "provenance": "MODEL",
+        "bytes_per_past_token": 200704,
+        "value_bytes_per_past_token": 196608,
+        "scale_bytes_per_past_token": 4096,
+        "predicted_footprint_ctx8192_B": 3935470216,
+        "ratio_vs_fp16_arena": 1.400729320117411,
+        "non_kv_term_B": 2291303048,
+        "non_kv_term_provenance": "MEASUREMENT \u2014 the arena's measured ctx-8192 footprint 5,512,528,520 B minus 8192 * 393,216; see bench/results/kv_arena_chain-A8192.json"
+      }
+    },
+    "vk_i8_per_block32": {
+      "lane": "vk_i8_per_block32",
+      "backend": "vk",
+      "bits": 8,
+      "granularity": "per_block32",
+      "steps": 8,
+      "seed_past": 4,
+      "ort_version": "1.28.0",
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "seed_kv_sha256": "2dac51c382098ac9",
+      "tokens_sha256": "6e65492314c613dc",
+      "seed_scales": 24576,
+      "per_step": [
+        {
+          "step": 0,
+          "past_len": 4,
+          "token": 1,
+          "logits_argmax": 2583,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 1,
+          "past_len": 5,
+          "token": 450,
+          "logits_argmax": 2441,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 2,
+          "past_len": 6,
+          "token": 4996,
+          "logits_argmax": 17354,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 3,
+          "past_len": 7,
+          "token": 310,
+          "logits_argmax": 278,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 4,
+          "past_len": 8,
+          "token": 278,
+          "logits_argmax": 9755,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 5,
+          "past_len": 9,
+          "token": 3186,
+          "logits_argmax": 29892,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 6,
+          "past_len": 10,
+          "token": 338,
+          "logits_argmax": 2989,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        },
+        {
+          "step": 7,
+          "past_len": 11,
+          "token": 263,
+          "logits_argmax": 6592,
+          "scales_written": 6144,
+          "past_prefix_preserved": true
+        }
+      ],
+      "past_prefix_preserved_all_steps": true,
+      "counters": {
+        "abi_version": 8,
+        "compile_calls": 1,
+        "subgraphs_live": 1,
+        "subgraphs_stub": 0,
+        "compute_calls": 8,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "outputs_device_resident": 0,
+        "outputs_host_resident": 520,
+        "outputs_device_bound": 0,
+        "outputs_bind_attempted": 520,
+        "outputs_bind_declined": 520,
+        "dispatches_executed": 2840,
+        "claimed_nodes": 355,
+        "islands_offered": 1,
+        "viable_islands_retained": 1,
+        "net_benefit_gate": "EVALUATED",
+        "net_benefit_gate_clusters_seen": 1,
+        "net_benefit_gate_evaluations": 1,
+        "net_benefit_gate_bypasses": 0,
+        "net_benefit_sole_island_overrides": 0,
+        "net_benefit_override_reason": "UNOBSERVABLE",
+        "broken_commitments": 0,
+        "broken_commitment_warns_to_ort_sink": 0,
+        "broken_commitment_warn_channel": "UNOBSERVABLE",
+        "compute_failures_injected": 0,
+        "fault_injection": "NONE",
+        "proven_key_lookups": 360,
+        "ledger_hits": 355,
+        "ledger_gate": "MIXED",
+        "ledger_miss": "KEY-ABSENT",
+        "ledger_entries": 103,
+        "ledger_faults": 0,
+        "ledger_entry_faults": 0,
+        "unproven_declines": 5,
+        "unproven_forms_claimed": 0,
+        "unproven_forms_enabled": [],
+        "device_unattributed_claims": 323,
+        "device_unattributed_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none entry-device=device0 running-device=0=Intel(R) Iris(R) Xe Graphics reason=the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not an identity"
+        ],
+        "proven_elsewhere_claims": 32,
+        "subject_changed_declines": 0,
+        "proven_elsewhere_forms": [
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache delta=device device: entry proved on `NVIDIA GeForce RTX 4060 Laptop GPU`, this run opened `Intel(R) Iris(R) Xe Graphics`"
+        ],
+        "source_cosmetic_forms": [],
+        "subject_changed_forms": [],
+        "unproven_decline_forms": [
+          "ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1",
+          "ai.onnx::Sub/7+/i64,i64>i64/ew_binary_sub_i64/runtime-extent/n2",
+          "ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/runtime-extent/n1",
+          "ai.onnx::Greater/7+/i64,i64>bool/ew_binary_gt_i64/static/n2"
+        ],
+        "ledger_subject_changed_entries": 0,
+        "ledger_toolchain_delta_entries": 0,
+        "running_device_names": "Intel(R) Iris(R) Xe Graphics",
+        "reproof_forms_admitted": [],
+        "shaders_dispatched": [
+          "ew_binary_mul_f16",
+          "ew_unary_sigmoid_f16",
+          "gather_f16",
+          "gqa_f16",
+          "q_gemv_matmul_nbits_f16",
+          "simplified_layer_norm_f16",
+          "skip_simplified_layer_norm_f16"
+        ],
+        "shaders_dispatched_digest": "ab077902af3312bd",
+        "shaders_dispatched_source_digest": "f2b49fa105701ac1",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "pipeline_variants": [
+          "ew_binary_mul_f16:256,1",
+          "ew_unary_sigmoid_f16:256,1",
+          "gather_f16:256",
+          "gqa_f16:",
+          "q_gemv_matmul_nbits_f16:128,4,32,0,16,1",
+          "q_gemv_matmul_nbits_f16:32,4,32,0,16,1",
+          "simplified_layer_norm_f16:256",
+          "skip_simplified_layer_norm_f16:256"
+        ],
+        "gemv_packed_spec_constant": "1",
+        "shaders_dispatched_spec_digest": "b5553321771359d7",
+        "specialisation_delta_forms": [],
+        "specialisation_unrecorded_forms": [
+          "ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2",
+          "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16,u8>f16/q_gemv_matmul_nbits_f16/static/scales+zero_points",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales",
+          "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales",
+          "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/static/none",
+          "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/static/none",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1",
+          "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/static/n1",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2",
+          "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/static/n2"
+        ],
+        "ledger_specialisation_unrecorded_entries": 103,
+        "kv_cache_convention": "GROWING",
+        "session_disclosures": 1,
+        "claimed_forms_proven": 0,
+        "claimed_forms_device_unattributed": 7,
+        "claimed_forms_unmeasured": 0,
+        "claimed_forms_divergent": 0,
+        "claimed_forms_ledger_faulted": 0,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "session_disclosure_warns": 0,
+        "session_disclosure_warns_to_ort_sink": 0,
+        "session_disclosure_channel": "UNOBSERVABLE",
+        "session_disclosure_infos": 1,
+        "session_disclosure_infos_to_ort_sink": 0,
+        "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+        "ort_sink_severity_threshold": "WARNING",
+        "model_output_equivalence": "UNMEASURED",
+        "pointers_observed": 0,
+        "pointers_host": 0,
+        "pointers_at_base": 0,
+        "pointers_interior": 0,
+        "pointers_in_guard_band": 0,
+        "pointers_use_after_free": 0,
+        "pointer_max_offset": 0,
+        "alloc_allocations": 0,
+        "alloc_frees": 0,
+        "alloc_bytes": 0,
+        "alloc_high_water_bytes": 0,
+        "alloc_device_backed_spans": 0,
+        "alloc_staged_spans": 0,
+        "alloc_staged_bytes": 0,
+        "alloc_allocators_released": 0,
+        "alloc_allocators_live": 0,
+        "alloc_frees_after_release": 0,
+        "alloc_live_at_release_spans": 0,
+        "alloc_live_at_release_bytes": 0,
+        "alloc_device_uploads": 0,
+        "alloc_device_upload_bytes": 0,
+        "alloc_device_downloads": 0,
+        "alloc_device_download_bytes": 0,
+        "alloc_unified_memory": 0,
+        "alloc_quarantine_peak_spans": 0,
+        "alloc_quarantine_retired": 0,
+        "alloc_device_buffer_binds": 0,
+        "alloc_failed_lookups": 0,
+        "alloc_device_authoritative_ceiling": 0,
+        "alloc_device_residency_evaluations": 0,
+        "alloc_device_authoritative_spans": "UNOBSERVABLE",
+        "alloc_device_authority_grants": 0,
+        "alloc_device_attach_attempts": 0,
+        "alloc_device_attach_failures": 0,
+        "alloc_device_attach_unavailable": 0,
+        "alloc_device_memory_budget_bytes": 0,
+        "alloc_device_frame": "OFF",
+        "alloc_device_frame_device": "",
+        "alloc_device_frames_declared": 0,
+        "alloc_device_frame_allocator_index": "unset",
+        "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+        "alloc_device_frame_sides": "alloc_device_frame=OFF \u2014 no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 0=Intel(R) Iris(R) Xe Graphics.",
+        "session_staging_uploads": 8,
+        "session_staging_upload_bytes": 2323918976,
+        "session_staging_upload_us": 1190825,
+        "session_staging_readbacks": 8,
+        "session_staging_readback_bytes": 27251712,
+        "session_staging_readback_us": 8403,
+        "session_device_allocs": 5260,
+        "session_device_frees": 4936,
+        "session_device_bytes_in_use": 2290839568,
+        "session_device_high_water_bytes": 2305733312,
+        "weight_cache_release_calls": 0,
+        "weight_cache_release_buffers": 0,
+        "weight_cache_release_bytes": 0,
+        "weight_cache_bytes_resident": 2290839552,
+        "counters_snapshot_writes": 8,
+        "counters_snapshot_write_failures": 0
+      },
+      "verdict": "LANE_RAN",
+      "liveness": {
+        "dispatches_executed": 2840,
+        "compute_failures": 0,
+        "device_losses": 0,
+        "subgraphs_live": 1
+      },
+      "vs_cpu_fp16": {
+        "kv_median_ulp_slope_per_step": 1.0833333333333335,
+        "kv_median_ulp_by_token_position_at_last_step": [
+          {
+            "token_pos": 0,
+            "median_of_median_ulp": 9.0
+          },
+          {
+            "token_pos": 1,
+            "median_of_median_ulp": 9.0
+          },
+          {
+            "token_pos": 2,
+            "median_of_median_ulp": 9.0
+          },
+          {
+            "token_pos": 3,
+            "median_of_median_ulp": 9.0
+          },
+          {
+            "token_pos": 4,
+            "median_of_median_ulp": 18.0
+          },
+          {
+            "token_pos": 5,
+            "median_of_median_ulp": 24.0
+          },
+          {
+            "token_pos": 6,
+            "median_of_median_ulp": 15.0
+          },
+          {
+            "token_pos": 7,
+            "median_of_median_ulp": 23.0
+          },
+          {
+            "token_pos": 8,
+            "median_of_median_ulp": 29.0
+          },
+          {
+            "token_pos": 9,
+            "median_of_median_ulp": 24.0
+          },
+          {
+            "token_pos": 10,
+            "median_of_median_ulp": 29.0
+          },
+          {
+            "token_pos": 11,
+            "median_of_median_ulp": 44.0
+          }
+        ],
+        "kv": {
+          "outputs": 512,
+          "median_of_median_ulp": 12.0,
+          "max_of_median_ulp": 22.0,
+          "max_p99_ulp": 1881.1850000000013,
+          "max_ulp": 1373544.0,
+          "max_abs": 0.38037109375,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 18765,
+          "max_near_zero_reference_fraction": 0.004503038194444444,
+          "bitwise_equal_outputs": 0
+        },
+        "logits": {
+          "outputs": 8,
+          "median_of_median_ulp": 5.0,
+          "max_of_median_ulp": 15.0,
+          "max_p99_ulp": 54.0,
+          "max_ulp": 282854.0,
+          "max_abs": 1.265625,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 0,
+          "max_near_zero_reference_fraction": 0.0,
+          "bitwise_equal_outputs": 0
+        },
+        "layer31": {
+          "outputs": 16,
+          "median_of_median_ulp": 14.0,
+          "max_of_median_ulp": 22.0,
+          "max_p99_ulp": 1881.1850000000013,
+          "max_ulp": 1016016.0,
+          "max_abs": 0.345703125,
+          "cancellation_elements": 0,
+          "near_zero_reference_elements": 523,
+          "max_near_zero_reference_fraction": 0.0022786458333333335,
+          "bitwise_equal_outputs": 0
+        },
+        "degenerate_pairs": 0,
+        "top1_token_agreement": "8/8",
+        "top1_token_agreement_fraction": 1.0,
+        "rank_of_oracle_top1_per_step": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "worst_rank_of_oracle_top1": 0,
+        "kv_median_ulp_by_step": [
+          {
+            "step": 0,
+            "median_of_median_ulp": 10.0
+          },
+          {
+            "step": 1,
+            "median_of_median_ulp": 11.0
+          },
+          {
+            "step": 2,
+            "median_of_median_ulp": 12.0
+          },
+          {
+            "step": 3,
+            "median_of_median_ulp": 13.0
+          },
+          {
+            "step": 4,
+            "median_of_median_ulp": 14.0
+          },
+          {
+            "step": 5,
+            "median_of_median_ulp": 15.0
+          },
+          {
+            "step": 6,
+            "median_of_median_ulp": 16.0
+          },
+          {
+            "step": 7,
+            "median_of_median_ulp": 18.0
+          }
+        ],
+        "worst_outputs": [
+          {
+            "near_zero_reference_elements": 31,
+            "near_zero_reference_fraction": 0.0008409288194444445,
+            "tensor_scale": 22.734375,
+            "median_ulp": 22.0,
+            "p99_ulp": 1881.1850000000013,
+            "max_ulp": 1016016.0,
+            "max_abs": 0.345703125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.31.value"
+          },
+          {
+            "near_zero_reference_elements": 29,
+            "near_zero_reference_fraction": 0.0007866753472222222,
+            "tensor_scale": 6.23828125,
+            "median_ulp": 21.0,
+            "p99_ulp": 1703.3700000000026,
+            "max_ulp": 451579.0,
+            "max_abs": 0.311126708984375,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.29.value"
+          },
+          {
+            "near_zero_reference_elements": 32,
+            "near_zero_reference_fraction": 0.0008680555555555555,
+            "tensor_scale": 8.3984375,
+            "median_ulp": 21.0,
+            "p99_ulp": 1715.7400000000052,
+            "max_ulp": 152456.0,
+            "max_abs": 0.38037109375,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.30.value"
+          },
+          {
+            "near_zero_reference_elements": 31,
+            "near_zero_reference_fraction": 0.000917376893939394,
+            "tensor_scale": 22.734375,
+            "median_ulp": 20.0,
+            "p99_ulp": 1591.0,
+            "max_ulp": 679366.0,
+            "max_abs": 0.2021484375,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 6,
+            "output": "present.31.value"
+          },
+          {
+            "near_zero_reference_elements": 30,
+            "near_zero_reference_fraction": 0.0008138020833333334,
+            "tensor_scale": 3.2890625,
+            "median_ulp": 20.0,
+            "p99_ulp": 1578.2200000000157,
+            "max_ulp": 639667.0,
+            "max_abs": 0.10205078125,
+            "cancellation_elements": 0,
+            "bitwise_equal": false,
+            "vk_degenerate": false,
+            "cpu_degenerate": false,
+            "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error",
+            "step": 7,
+            "output": "present.15.value"
+          }
+        ]
+      },
+      "footprint": {
+        "provenance": "MODEL",
+        "bytes_per_past_token": 208896,
+        "value_bytes_per_past_token": 196608,
+        "scale_bytes_per_past_token": 12288,
+        "predicted_footprint_ctx8192_B": 4002579080,
+        "ratio_vs_fp16_arena": 1.3772441243059712,
+        "non_kv_term_B": 2291303048,
+        "non_kv_term_provenance": "MEASUREMENT \u2014 the arena's measured ctx-8192 footprint 5,512,528,520 B minus 8192 * 393,216; see bench/results/kv_arena_chain-A8192.json"
+      }
+    }
+  },
+  "why": [],
+  "inputs_shared_exactly": true,
+  "summary": {
+    "fp16_control_kv_max_of_median_ulp": 3.0,
+    "int8_kv_max_of_median_ulp": {
+      "vk_i8_per_head": 28.0,
+      "vk_i8_per_block32": 22.0
+    },
+    "int4_kv_max_of_median_ulp": {},
+    "granularity_monotone_per_block32_le_per_head_le_per_tensor": null,
+    "best_int8_lane": "vk_i8_per_block32",
+    "headroom_ratio_int8_over_fp16_control": 7.333333333333333,
+    "fp16_control_floor": 0.0
+  },
+  "verdict": "NO_ULP_BAND_ADMITS_INT8_AND_STILL_CATCHES_FP16",
+  "tolerance_ruling": "NOT MADE HERE, DELIBERATELY. A criterion may not be hardened because it is about to pass nor narrowed because it has just failed, and the mirror of that rule forbids choosing a tolerance the result under test happens to pass. Filed with the tolerance owner (Morpheus) with three candidate shapes; see bench/results/kv-int8-budget-prediction.md section 4."
+}

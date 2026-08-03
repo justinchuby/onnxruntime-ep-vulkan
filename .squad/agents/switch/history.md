@@ -299,3 +299,104 @@ nothing.
 Decision records: `.squad/decisions/inbox/switch-kv-arena-present-aliases-past.md`,
 `.squad/decisions/inbox/switch-ledger-check-cannot-see-subject-changed.md`.
 Artifacts: `bench/results/kv_arena_{graph_accepts,chain-A64,chain-A2048,chain-A8192,chain-intel,separating,unbound,budget}.json`.
+## Session 48 (2026-08-03) — the int8 KV error budget, measured before a kernel: it saturates
+**Merged `main` (`8ac1172`) first.** 532 lib passed / 0 failed / 4 ignored, clippy `-D warnings
+--all-targets` clean, `counters_abi.py --check` PASS `(8, 0xdf71f4e6a59271b3)`,
+`gen_proof_ledger.py --check` PASS 103 entries digest `94d994ba54821056`. No shader was touched
+this round, so the `--check`-cannot-see-subject-changed defect had nothing to hide.
+**The merge conflict in `counters.rs` resolved correctly.** Both sets of JSON fields are kept and
+the format string's order matches the argument order exactly through the contested block:
+`pipeline_variants` -> `gemv_packed_spec_constant` -> `shaders_dispatched_spec_digest` ->
+`specialisation_delta_forms` -> `specialisation_unrecorded_forms` ->
+`ledger_specialisation_unrecorded_entries` -> `kv_cache_convention`. Checked against both parents
+and re-run: 532 green, and the three counters tests that assert on the emitted JSON text
+(`pipeline_variants`, `gemv_packed_spec_constant`, `UNOBSERVABLE`) pass, which is what would catch
+two same-typed arguments transposed.
+### No kernel was written, deliberately
+The task was the error budget, and the budget is what gates the kernel. `probe_kv_int8_budget.py`
+quantises the cache at the **host** boundary — storage error modelled exactly, kernel write
+rounding and accumulation order not modelled at all, so **every residual is a lower bound on a real
+int8 kernel's, never an estimate of it**. If int8 is unaffordable at the lower bound, no kernel
+makes it affordable. Trinity's `ulp_residual` used **unmodified**; I did not build a second one.
+### What it cost, both devices, inputs shared exactly
+8-step chain, fp16 CPU-EP oracle, one seed-KV hash and one fixed non-argmax token sequence asserted
+equal across all nine lanes, correctness read before any byte count, liveness checked (2840
+dispatches, 0 failures, 0 device losses on every Vulkan lane, RTX 4060 and Iris Xe):
+| lane | KV worst-median ULP | logits median | top-1 | footprint ratio (MODEL) |
+|---|---|---|---|---|
+| fp16 Vulkan control | **3** | 1 | 8/8 | 1.000 |
+| int8 `per_block32` | 18–22 | 2–5 | 8/8 | 1.377 |
+| int8 `per_head` | 27–28 | 6–12 | 8/8 | 1.401 |
+| int8 `per_tensor` | 63 | 14 | 7/8 | 1.412 |
+| int4 `per_block32` | 343 | 60 | 5/8 | 1.724 |
+| int4 `per_head` | 732 | 81 | 5/8 | 1.761 |
+Granularity monotone as predicted. **Vulkan and CPU agree to within 2 ULP at every granularity, on
+both devices — the EP does not amplify the quantisation error.** Verdict
+`NO_ULP_BAND_ADMITS_INT8_AND_STILL_CATCHES_FP16`: the best granularity sits at **6-7x** the fp16
+path's own residual, so any band admitting int8 stops policing fp16. **No tolerance was chosen.**
+Three candidate ruling shapes filed with Morpheus; I rejected shape 1 (widen the ULP band) in
+advance and named shape 2 (change the observable on the logits) as the one the data supports —
+without ruling it, because that is his.
+### What surprised me, and it reverses my own reading twice
+**1. The residual saturates.** I predicted flat in `past_len`. The 8-step run said rising —
+**1.60 ULP/step** for `per_head` — and I filed that as compounding. So I ran it to **past_len 259**
+in lockstep (`probe_kv_int8_depth.py`, oracle and quantised lane in one process, comparison thrown
+away each step because the saved tensors would have been 6.6 GB). It compounds and then **stops**:
+| lane | storage-only (seed tokens) | saturated | reached by | power-law exponent | top-1 / 256 |
+|---|---|---|---|---|---|
+| int8 `per_block32` | **9** | **18–19** | past_len ~20 | 0.065 | **250/256** |
+| int8 `per_head` | **11** | **29** | past_len ~28 | 0.113 | **249/256** |
+| int4 `per_block32` | **165.5** | **~340** | past_len ~20 | 0.073 | **177/256** |
+At past_len 259 the profile along the token axis is **flat** — position 4 and position 256 read the
+same ULP. Old tokens are not worse than new ones. The multiplier from pure storage error to the
+fixed point is **~2x at every bit width and granularity**, which is a fixed point, not an
+accumulation: error feeds forward through attention, and attention's convex combination dilutes it
+by `1/past_len` at the same time.
+**Carried linearly to ctx 8192, that 1.60 ULP/step predicts ~13,000 ULP. The measured value is 29.
+A slope over 8 steps would have been wrong by ~450x, in the direction that kills the lever.** This
+project's refusal to extrapolate slopes now has a number on it, out of its own tree, and it cost one
+CPU-EP lockstep run.
+**2. A max-ULP criterion would rank the fp16 GPU path as worse than the quantised cache.** The fp16
+Vulkan control's max ULP on the logits is **337,178**; every int8 CPU lane's is smaller (7,886 /
+45,638 / 38,278). Trinity's R11 said max ULP cannot acquit; this is the same sentence pointed at a
+criterion, with a number on it.
+**3. My own cancellation counter explained nothing.** It counted `b == 0.0` exactly and returned
+**0 everywhere** while `max_ulp` read 6.3e6 — the counter that exists to explain the max explained
+nothing, and a reader would have concluded the max was real. The spacing floor is reached by any
+reference below the smallest fp16 normal, not only by an exact zero. Both are recorded now: 18,765
+subnormal references (0.45% of the worst tensor) against 0 exact zeros. **Fifth instrument defect
+in this family, mine again, and again found by an observable disagreeing with another observable
+rather than by inspection.**
+**4. The ledger's ratios do not reproduce.** The lever ledger quotes **2.21x / 3.17x / 4.06x**. I
+cannot reproduce any of the three from any artifact in this tree, on any baseline — footprint,
+modelled stream, KV-only, with or without the present write. What the artifacts support is int8
+**1.40x** and int4 **1.76x** on the footprint (**1.42x / 1.81x** on the modelled stream). **This
+disagreement was written down before the first int8 run**, in
+`bench/results/kv-int8-budget-prediction.md` §3, so that if int8 landed near 1.4x the ledger would
+be what was wrong rather than the measurement being explained afterwards. At 1.40x int8 is the same
+order as the 2.21x already banked, and it costs a correctness argument the arena did not — that
+changes the ranking.
+### The byte saving is NOT measured, and is not quoted as if it were
+Every int8 byte figure above is class **MODEL** (`provenance` in the record). The arena's
+5,512,528,520 B at ctx 8192 was measured; nothing int8 can be until a kernel exists. The
+measurement that would settle it is the one the arena round established: a slope at equal work on
+both devices with a correctness control sharing inputs exactly, read before the byte count. I will
+not quote a modelled ratio as a measured one to close a task.
+### Named rather than rounded away
+1. **`Nq/Nkv = 1.00` on Phi-3.5, 4x on Llama-3.** `per_head` here is a per-head-group scale over a
+   group of **one** query head. No run exercises a non-unit grouping; **no number here may be
+   quoted for a 4x model.** This is the lever where tuning to this model would hurt most.
+2. **ctx 8192 is not reached by the depth run** — measured to past_len 259, and a fitted exponent is
+   not a licence to extrapolate, which is exactly the mistake this round documents one level up.
+   What would make it knowable: the same lockstep run at 8192, one CPU-EP oracle chain.
+3. The arena overrun is still **dropped by the shader guard, not refused**. Carried.
+**An int8 KV kernel will introduce a specialisation constant** — cache element width and scale
+group size are pipeline-build-time facts, not push constants — so `gqa_f16` acquires a non-empty
+selector list and `shaders_dispatched_spec_digest` must move. It is the first case in this project
+where the specialisation is **load-bearing for correctness**: the wrong group size dequantises with
+the wrong stride and returns plausible wrong numbers. Filed, not left to be discovered.
+Decision records: `switch-int8-kv-error-budget.md`, `switch-int8-kv-residual-saturates.md`,
+`switch-kv-ledger-ratios-not-reproducible.md`, `switch-int8-kv-spec-constant-for-mouse.md`.
+Artifacts: `bench/results/kv_int8_budget-dev{0,1}.json`,
+`bench/results/kv_int8_depth-i{8,8,4}-{per_head,per_block32,per_block32}-n256.json`,
+`bench/results/kv-int8-budget-prediction.md` (written before the first run).

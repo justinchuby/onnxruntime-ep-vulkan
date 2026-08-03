@@ -1,0 +1,592 @@
+{
+  "probe": "kv_int8_depth",
+  "question": "does the int8 KV residual compound with depth, and in what shape?",
+  "instrument": "tests/ops/_models.ulp_residual (Trinity's), used unmodified",
+  "bits": 8,
+  "granularity": "per_block32",
+  "group_size": 32,
+  "steps": 256,
+  "seed_past": 4,
+  "ort_version": "1.28.0",
+  "backend": "CPUExecutionProvider (both lanes)",
+  "tokens_sha256": "19c1443a9e0c8198",
+  "untested": [
+    "Nq/Nkv = 1.00 on Phi-3.5 and 4x on Llama-3; no non-unit head grouping is exercised",
+    "quantisation is simulated at the host boundary: a LOWER BOUND on a real kernel's residual, never an estimate of it"
+  ],
+  "seed_kv_sha256": "2dac51c382098ac9",
+  "series": [
+    {
+      "step": 0,
+      "past_len": 4,
+      "kv_median_of_median_ulp": 10.0,
+      "kv_worst_median_ulp": 11.0,
+      "logits_median_ulp": 3.0,
+      "logits_max_abs": 0.0703125,
+      "top1_agree_cumulative": 1
+    },
+    {
+      "step": 8,
+      "past_len": 12,
+      "kv_median_of_median_ulp": 16.0,
+      "kv_worst_median_ulp": 19.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.28125,
+      "top1_agree_cumulative": 9
+    },
+    {
+      "step": 16,
+      "past_len": 20,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 22.0,
+      "logits_median_ulp": 4.0,
+      "logits_max_abs": 0.21875,
+      "top1_agree_cumulative": 17
+    },
+    {
+      "step": 24,
+      "past_len": 28,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 23.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 24
+    },
+    {
+      "step": 32,
+      "past_len": 36,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.1875,
+      "top1_agree_cumulative": 32
+    },
+    {
+      "step": 40,
+      "past_len": 44,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 40
+    },
+    {
+      "step": 48,
+      "past_len": 52,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 0.0,
+      "logits_max_abs": 0.0625,
+      "top1_agree_cumulative": 48
+    },
+    {
+      "step": 56,
+      "past_len": 60,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.15625,
+      "top1_agree_cumulative": 56
+    },
+    {
+      "step": 64,
+      "past_len": 68,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 8.0,
+      "logits_max_abs": 0.21875,
+      "top1_agree_cumulative": 64
+    },
+    {
+      "step": 72,
+      "past_len": 76,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 3.0,
+      "logits_max_abs": 0.21875,
+      "top1_agree_cumulative": 72
+    },
+    {
+      "step": 80,
+      "past_len": 84,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 11.0,
+      "logits_max_abs": 0.265625,
+      "top1_agree_cumulative": 80
+    },
+    {
+      "step": 88,
+      "past_len": 92,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 3.0,
+      "logits_max_abs": 0.1875,
+      "top1_agree_cumulative": 88
+    },
+    {
+      "step": 96,
+      "past_len": 100,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 5.0,
+      "logits_max_abs": 0.265625,
+      "top1_agree_cumulative": 96
+    },
+    {
+      "step": 104,
+      "past_len": 108,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.0625,
+      "top1_agree_cumulative": 104
+    },
+    {
+      "step": 112,
+      "past_len": 116,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 112
+    },
+    {
+      "step": 120,
+      "past_len": 124,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 3.0,
+      "logits_max_abs": 0.234375,
+      "top1_agree_cumulative": 119
+    },
+    {
+      "step": 128,
+      "past_len": 132,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 9.0,
+      "logits_max_abs": 0.40625,
+      "top1_agree_cumulative": 127
+    },
+    {
+      "step": 136,
+      "past_len": 140,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.15625,
+      "top1_agree_cumulative": 135
+    },
+    {
+      "step": 144,
+      "past_len": 148,
+      "kv_median_of_median_ulp": 19.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 12.0,
+      "logits_max_abs": 0.296875,
+      "top1_agree_cumulative": 142
+    },
+    {
+      "step": 152,
+      "past_len": 156,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 25.0,
+      "logits_median_ulp": 3.0,
+      "logits_max_abs": 0.21875,
+      "top1_agree_cumulative": 150
+    },
+    {
+      "step": 160,
+      "past_len": 164,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 25.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 158
+    },
+    {
+      "step": 168,
+      "past_len": 172,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 166
+    },
+    {
+      "step": 176,
+      "past_len": 180,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 174
+    },
+    {
+      "step": 184,
+      "past_len": 188,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 8.0,
+      "logits_max_abs": 0.21875,
+      "top1_agree_cumulative": 182
+    },
+    {
+      "step": 192,
+      "past_len": 196,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.078125,
+      "top1_agree_cumulative": 189
+    },
+    {
+      "step": 200,
+      "past_len": 204,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 197
+    },
+    {
+      "step": 208,
+      "past_len": 212,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 0.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 205
+    },
+    {
+      "step": 216,
+      "past_len": 220,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 213
+    },
+    {
+      "step": 224,
+      "past_len": 228,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 221
+    },
+    {
+      "step": 232,
+      "past_len": 236,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.125,
+      "top1_agree_cumulative": 228
+    },
+    {
+      "step": 240,
+      "past_len": 244,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 11.0,
+      "logits_max_abs": 0.265625,
+      "top1_agree_cumulative": 236
+    },
+    {
+      "step": 248,
+      "past_len": 252,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 2.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 244
+    },
+    {
+      "step": 255,
+      "past_len": 259,
+      "kv_median_of_median_ulp": 18.0,
+      "kv_worst_median_ulp": 24.0,
+      "logits_median_ulp": 1.0,
+      "logits_max_abs": 0.09375,
+      "top1_agree_cumulative": 250
+    }
+  ],
+  "final_profile_by_token_position": [
+    {
+      "token_pos": 0,
+      "median_of_median_ulp": 9.0
+    },
+    {
+      "token_pos": 4,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 8,
+      "median_of_median_ulp": 24.0
+    },
+    {
+      "token_pos": 12,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 16,
+      "median_of_median_ulp": 24.0
+    },
+    {
+      "token_pos": 20,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 24,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 28,
+      "median_of_median_ulp": 20.0
+    },
+    {
+      "token_pos": 32,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 36,
+      "median_of_median_ulp": 20.0
+    },
+    {
+      "token_pos": 40,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 44,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 48,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 52,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 56,
+      "median_of_median_ulp": 20.0
+    },
+    {
+      "token_pos": 60,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 64,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 68,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 72,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 76,
+      "median_of_median_ulp": 14.0
+    },
+    {
+      "token_pos": 80,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 84,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 88,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 92,
+      "median_of_median_ulp": 16.75
+    },
+    {
+      "token_pos": 96,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 100,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 104,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 108,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 112,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 116,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 120,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 124,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 128,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 132,
+      "median_of_median_ulp": 19.0
+    },
+    {
+      "token_pos": 136,
+      "median_of_median_ulp": 20.0
+    },
+    {
+      "token_pos": 140,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 144,
+      "median_of_median_ulp": 21.0
+    },
+    {
+      "token_pos": 148,
+      "median_of_median_ulp": 22.0
+    },
+    {
+      "token_pos": 152,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 156,
+      "median_of_median_ulp": 20.5
+    },
+    {
+      "token_pos": 160,
+      "median_of_median_ulp": 22.0
+    },
+    {
+      "token_pos": 164,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 168,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 172,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 176,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 180,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 184,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 188,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 192,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 196,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 200,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 204,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 208,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 212,
+      "median_of_median_ulp": 20.0
+    },
+    {
+      "token_pos": 216,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 220,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 224,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 228,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 232,
+      "median_of_median_ulp": 15.0
+    },
+    {
+      "token_pos": 236,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 240,
+      "median_of_median_ulp": 16.0
+    },
+    {
+      "token_pos": 244,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 248,
+      "median_of_median_ulp": 18.0
+    },
+    {
+      "token_pos": 252,
+      "median_of_median_ulp": 17.0
+    },
+    {
+      "token_pos": 256,
+      "median_of_median_ulp": 18.0
+    }
+  ],
+  "seed_tokens_storage_only_median_ulp": 9.0,
+  "top1_token_agreement": "250/256",
+  "first_top1_disagreement_step": 22,
+  "degenerate_comparisons_skipped": 0,
+  "curve": {
+    "linear_slope_ulp_per_token": 0.0032218357174368427,
+    "power_law_exponent": 0.06508408806658353,
+    "first_half_mean": 18.0625,
+    "second_half_mean": 18.176470588235293,
+    "shape": "SATURATING"
+  },
+  "verdict": "INT8_KV_RESIDUAL_COMPOUNDS_SATURATING",
+  "not_claimed": "measured to past_len 259. The operating point every roofline number in this project is quoted at is ctx 8192, which this run does not reach, and a fitted exponent is not a licence to extrapolate to it. What would make ctx 8192 knowable: the same lockstep run at that depth, which costs one CPU-EP oracle chain of 8192 steps and nothing else \u2014 the arena already reaches 8192 on the device side."
+}

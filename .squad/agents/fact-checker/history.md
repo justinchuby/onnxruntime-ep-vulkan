@@ -224,3 +224,101 @@ evidence of truncation. Recorded separately for the coordinator/skill owner.
 - `.squad/fact-checker/audit-trail.md` — Claims 1-5 appended
 - `.squad/decisions/inbox/fact-checker-onnx-attention24-oracle.md` — created (Section A: Trinity/Mouse oracle pin; Section B: Justin upstream-ready summary)
 ---
+
+## 2026-08-03 — Round 10: register derivation, coordinator claim audit, rigour-ratio DA
+
+**Task:** Three items from the coordinator. (1) Take over Morpheus's decline tally and **derive** the
+rule register from citations rather than from his self-count — he ruled that the count must leave his
+hands after I found it "measures numbering, not register growth". (2) Apply the same instrument to the
+coordinator's own claims across the session, on his request, because he is not neutral on his own
+tallies either. (3) Devil's Advocate: steelman that the measurement discipline is not worth its cost,
+with a 30-day pre-mortem.
+
+**Finding:** Register derives to **13 numbered + 8 unnumbered-but-binding**; **3 of Morpheus's 8
+declines survive**. Coordinator's derived error count is **21 against 5 self-reported classes (33%
+recovery)**, rate **0.15/user-facing turn**, **95% corrected, 0 defended**. Apparatus:implementation
+ratio is **4.55 : 1** (2.73 : 1 stripped of docs and squad state).
+
+**Key learnings:**
+
+1. **Fix the definition before looking at the results, and say so in the file.** I wrote the four
+clauses — externality by path ownership, bindingness, recoverability, non-authorship — into §1 of the
+published register before running the instrument. A definition chosen after seeing results is not a
+measurement, and the whole authority of a derived count rests on that ordering being visible.
+
+2. **Separate the instrument from the verdict.** `derive_register.ps1` emits owner-tagged citation
+hits and **no verdicts**; the judgement lives in the prose. That makes a disagreement about method
+distinguishable from a disagreement about result — which was the coordinator's stated reason for
+wanting the count derived at all.
+
+3. **Git author metadata is useless here — every commit is authored "Justin Chu".** Agent attribution
+has to come from path ownership (`team.md` / `routing.md`), branch names, and `**By:**` blocks in
+decision records. Any citation instrument on this repo must be built on the ownership map, and it
+inherits that map's errors.
+
+4. **Three destinations for a declined principle, and only two are declines.** Nowhere → survives.
+Into an existing numbered rule as an amendment → survives (on-book growth is navigable). Into
+unnumbered prose that a non-author later cites as binding → **does not survive**, because that is
+exactly the off-book growth the count was built to detect. Five of eight landed in the third bucket.
+
+5. **The shadow register — the finding I did not expect.** `R1`–`R13` are cited ~1,337 times outside
+Morpheus's surfaces; **`§8.9.x` is cited 339 times**, 80 of them in `registry.rs`. This **refutes the
+navigability diagnosis Morpheus accepted from me last round.** Agents were never lost; they were using
+a second namespace with different semantics — `R#` names an obligation, `§8.9.x` names a location, and
+a location can be re-cut under a stable citation. §8.9.19 already restates §8.9.17 over one word.
+Lesson: before accepting "people cannot find it", check whether they found something else.
+
+6. **Self-reported error lists fail in a direction nobody predicts.** I expected the coordinator's
+list to be missing his worst misses. It was missing his own **catches** — the 5 he reported are the 5
+adjudicated by a named agent in writing; the 13 he missed are ones he found himself mid-turn. Memory
+of one's errors is indexed by who ruled on them, not by severity.
+
+7. **Score the epistemic claim separately from the value.** `weight_reread_amplification = 1.000000`
+was quoted as "exact, not approximate" over four literals and an `x/x` ratio — wrong as a claim about
+status — and Niobe's later real measurement returned exactly 1.000000. ⚠️ mis-scoped, not ❌ false.
+Collapsing those two would have been unfair in one direction and useless in the other.
+
+8. **Persistence matters more than rate, and persistent errors have a shape.** The three long-lived
+ones all involved a number or a green token that **arrived pre-formed from an instrument and was
+re-quoted rather than re-derived**. That is R13's and R9's family, arriving from a different direction.
+
+9. **A clearing verification is worth as much as a damning one — state both at the same volume.**
+`R14` appears exactly once in the tree (in my own prior text): no phantom rule, no lost principle, the
+register is under-counted rather than under-populated. Likewise 95% correction and zero denials go in
+the headline, not the footnotes.
+
+10. **Refuse the flattering denominator even when it serves your own argument.** Apparatus vs GLSL
+alone gives 45:1 and a much sharper Devil's Advocate brief. It is a denominator error of precisely the
+kind this project catalogues, so I used 4.55:1 and 2.73:1 and said why.
+
+11. **Get the competitor number from primary source.** `gh api` on llama.cpp's Vulkan backend returned
+164 shader entries and a 997,161-byte backend file. The web-search summary of its op parity went in as
+⚠️ unverified and was not leaned on anywhere the argument load-bears.
+
+12. **The absence of a counter is a finding in a repo that counts everything.** There is no counter for
+the marginal cost of adding an op, in a project with counters for nearly all else — which is why the
+per-item cost could rise every round without anyone seeing it.
+
+**Methodology notes:**
+- Task 2 evidence base: local session store (`session_store_sql`, `source: "local"`), session
+  `c6bec1a7-ab4c-46df-bfbf-1305f9a28366`, turns 0–163, 136 carrying a response. Timestamps are UTC.
+- The coordinator's user-facing summaries are **in Chinese**; anchors had to include 我错 / 更正 /
+  撤回 / 推翻了我 / 逐位 / 放大 / 哈希 as well as English.
+- **Hard observability limit, stated in the published file:** his *routing prompts* are retained
+  nowhere I can read. Two of five self-reported items survive only because Morpheus quoted them.
+  21 is a floor whose height is set by other agents' note-taking. Direction of error: undercount.
+- `git --no-pager` is not valid in this environment. `Select-String` over `docs/DESIGN.md` (663 KB,
+  very long lines) floods output — use `git grep -l`/`-n` with narrow paths and the `view` tool with
+  `view_range`. Always exclude `':!*.json' ':!*.log'` from tree-wide greps.
+- Worked in worktree `../ep-vulkan-fact-checker` on `squad/fact-checker` from `8ac1172`; did **not**
+  switch the shared main worktree, which holds other agents' uncommitted work.
+- `.squad/decisions/inbox/` is gitignored **and** worktree-local, so inbox records written inside an
+  agent worktree are invisible to Scribe. All three were written into the **main** worktree's inbox.
+
+**Output files:**
+- `.squad/fact-checker/rule-register-derived.md` — Task 1, the register Morpheus does not edit
+- `.squad/fact-checker/derive_register.ps1`, `.squad/fact-checker/derive-hits-8ac1172.txt` — instrument + preserved hit list
+- `.squad/fact-checker/coordinator-claim-audit.md` — Task 2
+- `.squad/fact-checker/devils-advocate-rigour-ratio.md` — Task 3
+- `.squad/fact-checker/audit-trail.md` — three entries appended
+- `.squad/decisions/inbox/fact-checker-derived-rule-register.md`, `-coordinator-claim-audit.md`, `-rigour-ratio-premortem.md` (main worktree)

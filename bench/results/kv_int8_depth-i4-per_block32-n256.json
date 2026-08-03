@@ -1,0 +1,592 @@
+{
+  "probe": "kv_int8_depth",
+  "question": "does the int8 KV residual compound with depth, and in what shape?",
+  "instrument": "tests/ops/_models.ulp_residual (Trinity's), used unmodified",
+  "bits": 4,
+  "granularity": "per_block32",
+  "group_size": 32,
+  "steps": 256,
+  "seed_past": 4,
+  "ort_version": "1.28.0",
+  "backend": "CPUExecutionProvider (both lanes)",
+  "tokens_sha256": "19c1443a9e0c8198",
+  "untested": [
+    "Nq/Nkv = 1.00 on Phi-3.5 and 4x on Llama-3; no non-unit head grouping is exercised",
+    "quantisation is simulated at the host boundary: a LOWER BOUND on a real kernel's residual, never an estimate of it"
+  ],
+  "seed_kv_sha256": "2dac51c382098ac9",
+  "series": [
+    {
+      "step": 0,
+      "past_len": 4,
+      "kv_median_of_median_ulp": 186.0,
+      "kv_worst_median_ulp": 199.0,
+      "logits_median_ulp": 7.0,
+      "logits_max_abs": 0.11285400390625,
+      "top1_agree_cumulative": 1
+    },
+    {
+      "step": 8,
+      "past_len": 12,
+      "kv_median_of_median_ulp": 298.0,
+      "kv_worst_median_ulp": 368.0,
+      "logits_median_ulp": 175.0,
+      "logits_max_abs": 10.890625,
+      "top1_agree_cumulative": 6
+    },
+    {
+      "step": 16,
+      "past_len": 20,
+      "kv_median_of_median_ulp": 333.0,
+      "kv_worst_median_ulp": 395.0,
+      "logits_median_ulp": 36.0,
+      "logits_max_abs": 3.28125,
+      "top1_agree_cumulative": 11
+    },
+    {
+      "step": 24,
+      "past_len": 28,
+      "kv_median_of_median_ulp": 346.0,
+      "kv_worst_median_ulp": 411.0,
+      "logits_median_ulp": 6.0,
+      "logits_max_abs": 1.21875,
+      "top1_agree_cumulative": 17
+    },
+    {
+      "step": 32,
+      "past_len": 36,
+      "kv_median_of_median_ulp": 356.0,
+      "kv_worst_median_ulp": 423.0,
+      "logits_median_ulp": 9.0,
+      "logits_max_abs": 2.09375,
+      "top1_agree_cumulative": 22
+    },
+    {
+      "step": 40,
+      "past_len": 44,
+      "kv_median_of_median_ulp": 355.0,
+      "kv_worst_median_ulp": 434.5,
+      "logits_median_ulp": 24.0,
+      "logits_max_abs": 2.03125,
+      "top1_agree_cumulative": 28
+    },
+    {
+      "step": 48,
+      "past_len": 52,
+      "kv_median_of_median_ulp": 354.0,
+      "kv_worst_median_ulp": 436.5,
+      "logits_median_ulp": 40.0,
+      "logits_max_abs": 2.15625,
+      "top1_agree_cumulative": 31
+    },
+    {
+      "step": 56,
+      "past_len": 60,
+      "kv_median_of_median_ulp": 352.0,
+      "kv_worst_median_ulp": 442.0,
+      "logits_median_ulp": 21.0,
+      "logits_max_abs": 1.5625,
+      "top1_agree_cumulative": 37
+    },
+    {
+      "step": 64,
+      "past_len": 68,
+      "kv_median_of_median_ulp": 352.5,
+      "kv_worst_median_ulp": 441.5,
+      "logits_median_ulp": 185.0,
+      "logits_max_abs": 4.09375,
+      "top1_agree_cumulative": 44
+    },
+    {
+      "step": 72,
+      "past_len": 76,
+      "kv_median_of_median_ulp": 352.0,
+      "kv_worst_median_ulp": 446.0,
+      "logits_median_ulp": 63.0,
+      "logits_max_abs": 3.6875,
+      "top1_agree_cumulative": 48
+    },
+    {
+      "step": 80,
+      "past_len": 84,
+      "kv_median_of_median_ulp": 348.0,
+      "kv_worst_median_ulp": 442.0,
+      "logits_median_ulp": 15.0,
+      "logits_max_abs": 1.796875,
+      "top1_agree_cumulative": 54
+    },
+    {
+      "step": 88,
+      "past_len": 92,
+      "kv_median_of_median_ulp": 344.0,
+      "kv_worst_median_ulp": 440.0,
+      "logits_median_ulp": 105.5,
+      "logits_max_abs": 4.46875,
+      "top1_agree_cumulative": 61
+    },
+    {
+      "step": 96,
+      "past_len": 100,
+      "kv_median_of_median_ulp": 344.0,
+      "kv_worst_median_ulp": 439.0,
+      "logits_median_ulp": 7.0,
+      "logits_max_abs": 1.125,
+      "top1_agree_cumulative": 66
+    },
+    {
+      "step": 104,
+      "past_len": 108,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 436.5,
+      "logits_median_ulp": 192.0,
+      "logits_max_abs": 4.046875,
+      "top1_agree_cumulative": 74
+    },
+    {
+      "step": 112,
+      "past_len": 116,
+      "kv_median_of_median_ulp": 345.0,
+      "kv_worst_median_ulp": 435.0,
+      "logits_median_ulp": 21.0,
+      "logits_max_abs": 1.8125,
+      "top1_agree_cumulative": 78
+    },
+    {
+      "step": 120,
+      "past_len": 124,
+      "kv_median_of_median_ulp": 345.0,
+      "kv_worst_median_ulp": 436.0,
+      "logits_median_ulp": 40.0,
+      "logits_max_abs": 2.25,
+      "top1_agree_cumulative": 84
+    },
+    {
+      "step": 128,
+      "past_len": 132,
+      "kv_median_of_median_ulp": 344.0,
+      "kv_worst_median_ulp": 437.0,
+      "logits_median_ulp": 18.0,
+      "logits_max_abs": 1.71875,
+      "top1_agree_cumulative": 89
+    },
+    {
+      "step": 136,
+      "past_len": 140,
+      "kv_median_of_median_ulp": 345.0,
+      "kv_worst_median_ulp": 439.0,
+      "logits_median_ulp": 122.0,
+      "logits_max_abs": 4.0,
+      "top1_agree_cumulative": 93
+    },
+    {
+      "step": 144,
+      "past_len": 148,
+      "kv_median_of_median_ulp": 345.0,
+      "kv_worst_median_ulp": 441.0,
+      "logits_median_ulp": 262.0,
+      "logits_max_abs": 5.6328125,
+      "top1_agree_cumulative": 98
+    },
+    {
+      "step": 152,
+      "past_len": 156,
+      "kv_median_of_median_ulp": 345.0,
+      "kv_worst_median_ulp": 444.0,
+      "logits_median_ulp": 43.0,
+      "logits_max_abs": 2.5625,
+      "top1_agree_cumulative": 101
+    },
+    {
+      "step": 160,
+      "past_len": 164,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 445.0,
+      "logits_median_ulp": 6.0,
+      "logits_max_abs": 1.375,
+      "top1_agree_cumulative": 108
+    },
+    {
+      "step": 168,
+      "past_len": 172,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 445.0,
+      "logits_median_ulp": 45.0,
+      "logits_max_abs": 2.21875,
+      "top1_agree_cumulative": 115
+    },
+    {
+      "step": 176,
+      "past_len": 180,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 446.5,
+      "logits_median_ulp": 24.0,
+      "logits_max_abs": 1.90625,
+      "top1_agree_cumulative": 121
+    },
+    {
+      "step": 184,
+      "past_len": 188,
+      "kv_median_of_median_ulp": 344.0,
+      "kv_worst_median_ulp": 448.0,
+      "logits_median_ulp": 78.0,
+      "logits_max_abs": 2.359375,
+      "top1_agree_cumulative": 128
+    },
+    {
+      "step": 192,
+      "past_len": 196,
+      "kv_median_of_median_ulp": 344.0,
+      "kv_worst_median_ulp": 448.0,
+      "logits_median_ulp": 150.0,
+      "logits_max_abs": 3.546875,
+      "top1_agree_cumulative": 132
+    },
+    {
+      "step": 200,
+      "past_len": 204,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 449.0,
+      "logits_median_ulp": 9.0,
+      "logits_max_abs": 1.625,
+      "top1_agree_cumulative": 138
+    },
+    {
+      "step": 208,
+      "past_len": 212,
+      "kv_median_of_median_ulp": 343.5,
+      "kv_worst_median_ulp": 447.0,
+      "logits_median_ulp": 15.5,
+      "logits_max_abs": 1.625,
+      "top1_agree_cumulative": 144
+    },
+    {
+      "step": 216,
+      "past_len": 220,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 445.5,
+      "logits_median_ulp": 65.0,
+      "logits_max_abs": 4.03125,
+      "top1_agree_cumulative": 150
+    },
+    {
+      "step": 224,
+      "past_len": 228,
+      "kv_median_of_median_ulp": 343.0,
+      "kv_worst_median_ulp": 445.0,
+      "logits_median_ulp": 18.0,
+      "logits_max_abs": 1.71875,
+      "top1_agree_cumulative": 155
+    },
+    {
+      "step": 232,
+      "past_len": 236,
+      "kv_median_of_median_ulp": 342.0,
+      "kv_worst_median_ulp": 443.0,
+      "logits_median_ulp": 29.0,
+      "logits_max_abs": 1.796875,
+      "top1_agree_cumulative": 161
+    },
+    {
+      "step": 240,
+      "past_len": 244,
+      "kv_median_of_median_ulp": 342.0,
+      "kv_worst_median_ulp": 444.0,
+      "logits_median_ulp": 30.0,
+      "logits_max_abs": 1.984375,
+      "top1_agree_cumulative": 167
+    },
+    {
+      "step": 248,
+      "past_len": 252,
+      "kv_median_of_median_ulp": 341.0,
+      "kv_worst_median_ulp": 444.0,
+      "logits_median_ulp": 18.0,
+      "logits_max_abs": 1.484375,
+      "top1_agree_cumulative": 173
+    },
+    {
+      "step": 255,
+      "past_len": 259,
+      "kv_median_of_median_ulp": 340.5,
+      "kv_worst_median_ulp": 444.0,
+      "logits_median_ulp": 6.0,
+      "logits_max_abs": 0.96875,
+      "top1_agree_cumulative": 177
+    }
+  ],
+  "final_profile_by_token_position": [
+    {
+      "token_pos": 0,
+      "median_of_median_ulp": 165.5
+    },
+    {
+      "token_pos": 4,
+      "median_of_median_ulp": 387.0
+    },
+    {
+      "token_pos": 8,
+      "median_of_median_ulp": 452.0
+    },
+    {
+      "token_pos": 12,
+      "median_of_median_ulp": 370.75
+    },
+    {
+      "token_pos": 16,
+      "median_of_median_ulp": 431.0
+    },
+    {
+      "token_pos": 20,
+      "median_of_median_ulp": 334.0
+    },
+    {
+      "token_pos": 24,
+      "median_of_median_ulp": 307.75
+    },
+    {
+      "token_pos": 28,
+      "median_of_median_ulp": 350.0
+    },
+    {
+      "token_pos": 32,
+      "median_of_median_ulp": 329.5
+    },
+    {
+      "token_pos": 36,
+      "median_of_median_ulp": 364.5
+    },
+    {
+      "token_pos": 40,
+      "median_of_median_ulp": 387.25
+    },
+    {
+      "token_pos": 44,
+      "median_of_median_ulp": 311.5
+    },
+    {
+      "token_pos": 48,
+      "median_of_median_ulp": 319.0
+    },
+    {
+      "token_pos": 52,
+      "median_of_median_ulp": 298.0
+    },
+    {
+      "token_pos": 56,
+      "median_of_median_ulp": 399.0
+    },
+    {
+      "token_pos": 60,
+      "median_of_median_ulp": 304.0
+    },
+    {
+      "token_pos": 64,
+      "median_of_median_ulp": 329.0
+    },
+    {
+      "token_pos": 68,
+      "median_of_median_ulp": 324.0
+    },
+    {
+      "token_pos": 72,
+      "median_of_median_ulp": 307.0
+    },
+    {
+      "token_pos": 76,
+      "median_of_median_ulp": 291.0
+    },
+    {
+      "token_pos": 80,
+      "median_of_median_ulp": 292.5
+    },
+    {
+      "token_pos": 84,
+      "median_of_median_ulp": 372.0
+    },
+    {
+      "token_pos": 88,
+      "median_of_median_ulp": 339.0
+    },
+    {
+      "token_pos": 92,
+      "median_of_median_ulp": 310.5
+    },
+    {
+      "token_pos": 96,
+      "median_of_median_ulp": 332.0
+    },
+    {
+      "token_pos": 100,
+      "median_of_median_ulp": 341.0
+    },
+    {
+      "token_pos": 104,
+      "median_of_median_ulp": 326.0
+    },
+    {
+      "token_pos": 108,
+      "median_of_median_ulp": 287.5
+    },
+    {
+      "token_pos": 112,
+      "median_of_median_ulp": 317.75
+    },
+    {
+      "token_pos": 116,
+      "median_of_median_ulp": 319.75
+    },
+    {
+      "token_pos": 120,
+      "median_of_median_ulp": 345.5
+    },
+    {
+      "token_pos": 124,
+      "median_of_median_ulp": 311.25
+    },
+    {
+      "token_pos": 128,
+      "median_of_median_ulp": 331.5
+    },
+    {
+      "token_pos": 132,
+      "median_of_median_ulp": 354.0
+    },
+    {
+      "token_pos": 136,
+      "median_of_median_ulp": 370.0
+    },
+    {
+      "token_pos": 140,
+      "median_of_median_ulp": 292.5
+    },
+    {
+      "token_pos": 144,
+      "median_of_median_ulp": 380.0
+    },
+    {
+      "token_pos": 148,
+      "median_of_median_ulp": 352.0
+    },
+    {
+      "token_pos": 152,
+      "median_of_median_ulp": 288.5
+    },
+    {
+      "token_pos": 156,
+      "median_of_median_ulp": 370.5
+    },
+    {
+      "token_pos": 160,
+      "median_of_median_ulp": 362.0
+    },
+    {
+      "token_pos": 164,
+      "median_of_median_ulp": 297.0
+    },
+    {
+      "token_pos": 168,
+      "median_of_median_ulp": 313.5
+    },
+    {
+      "token_pos": 172,
+      "median_of_median_ulp": 301.5
+    },
+    {
+      "token_pos": 176,
+      "median_of_median_ulp": 320.0
+    },
+    {
+      "token_pos": 180,
+      "median_of_median_ulp": 319.0
+    },
+    {
+      "token_pos": 184,
+      "median_of_median_ulp": 311.0
+    },
+    {
+      "token_pos": 188,
+      "median_of_median_ulp": 334.0
+    },
+    {
+      "token_pos": 192,
+      "median_of_median_ulp": 388.0
+    },
+    {
+      "token_pos": 196,
+      "median_of_median_ulp": 337.5
+    },
+    {
+      "token_pos": 200,
+      "median_of_median_ulp": 329.0
+    },
+    {
+      "token_pos": 204,
+      "median_of_median_ulp": 313.0
+    },
+    {
+      "token_pos": 208,
+      "median_of_median_ulp": 337.0
+    },
+    {
+      "token_pos": 212,
+      "median_of_median_ulp": 354.0
+    },
+    {
+      "token_pos": 216,
+      "median_of_median_ulp": 311.0
+    },
+    {
+      "token_pos": 220,
+      "median_of_median_ulp": 346.25
+    },
+    {
+      "token_pos": 224,
+      "median_of_median_ulp": 324.5
+    },
+    {
+      "token_pos": 228,
+      "median_of_median_ulp": 334.0
+    },
+    {
+      "token_pos": 232,
+      "median_of_median_ulp": 288.0
+    },
+    {
+      "token_pos": 236,
+      "median_of_median_ulp": 330.0
+    },
+    {
+      "token_pos": 240,
+      "median_of_median_ulp": 317.5
+    },
+    {
+      "token_pos": 244,
+      "median_of_median_ulp": 348.0
+    },
+    {
+      "token_pos": 248,
+      "median_of_median_ulp": 347.0
+    },
+    {
+      "token_pos": 252,
+      "median_of_median_ulp": 373.75
+    },
+    {
+      "token_pos": 256,
+      "median_of_median_ulp": 334.25
+    }
+  ],
+  "seed_tokens_storage_only_median_ulp": 165.5,
+  "top1_token_agreement": "177/256",
+  "first_top1_disagreement_step": 4,
+  "degenerate_comparisons_skipped": 0,
+  "curve": {
+    "linear_slope_ulp_per_token": 0.10708673919547271,
+    "power_law_exponent": 0.07299040179648152,
+    "first_half_mean": 334.59375,
+    "second_half_mean": 343.1764705882353,
+    "shape": "SATURATING"
+  },
+  "verdict": "INT4_KV_RESIDUAL_COMPOUNDS_SATURATING",
+  "not_claimed": "measured to past_len 259. The operating point every roofline number in this project is quoted at is ctx 8192, which this run does not reach, and a fitted exponent is not a licence to extrapolate to it. What would make ctx 8192 knowable: the same lockstep run at that depth, which costs one CPU-EP oracle chain of 8192 steps and nothing else \u2014 the arena already reaches 8192 on the device side."
+}

@@ -1,0 +1,177 @@
+### P01-pattern-attracts  /attracting cases that do not belong/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:31
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-02T14-42-30-07-00-round7.md:58
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4540
+### P02-coverage-composes  /compose to the weaker extent/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:147
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-02T22-37-04-07-00-round8.md:64
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-02T22-37-04-07-00-round8.md:120
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-03T04-55-00-07-00-round9.md:39
+    [NIOBE (bench)               ] bench/results/no_cpu_fallback_migration.json:19
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4441
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+    [LINK                        ] docs/PLATFORMS.md:1965
+    [TRINITY (tests)             ] tests/ops/_models.py:1227
+    [TRINITY (tests)             ] tests/ops/test_no_cpu_fallback.py:41
+    [TRINITY (tests)             ] tests/ops/test_no_cpu_fallback.py:304
+    [TRINITY (tests)             ] tests/ops/test_verdict.py:789
+### P02b-coverage-composes  /coverage does not compose/
+    [FACT CHECKER                ] .squad/agents/fact-checker/history.md:126
+    [DECISION RECORD (check **By:**)] .squad/decisions.md:56
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4427
+### P03-convict  /cannot convict/
+    [NIOBE (bench)               ] bench/results/criterion10-ulp-prediction.md:68
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4484
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+### P03b-acquit  /cannot acquit/
+    [NIOBE (bench)               ] bench/results/criterion10-ulp-prediction.md:69
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4485
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+    [TRINITY (tests)             ] tests/ops/_models.py:649
+    [TRINITY (tests)             ] tests/ops/test_criterion10_ulp.py:110
+### P04-prohibition-blind  /blind to the state/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:284
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:997
+### P05-fault-scope  /scope of what you cannot locate/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:422
+    [MORPHEUS (self)             ] docs/DESIGN.md:3104
+    [MOUSE                       ] docs/OP_COVERAGE.md:3817
+### P06-harden-narrow  /hardened because it is about to pass/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:132
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+### P07-frame-not-carried  /comment with a schema/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:248
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-03T04-55-00-07-00-round9.md:51
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+### P08-identifying-field  /read a field that identifies something/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:315
+### P09-key-frame-subject  /key is the form/
+    (no hits)
+### P10-one-hash  /blind to the compiler/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:467
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:3151
+    [MORPHEUS (self)             ] docs/DESIGN.md:3234
+    [MOUSE                       ] docs/OP_COVERAGE.md:3886
+    [CODE (tank/switch/mouse)    ] rust/build.rs:414
+    [MOUSE (code)                ] rust/src/registry.rs:2024
+### P11-fingerprint-fn  /production is a function/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:491
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:3295
+### P12-ruling-party  /adversarial review by a party with no stake/
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+### P13-proven-elsewhere  /PROVEN-ELSEWHERE/
+    [FACT CHECKER                ] .squad/agents/fact-checker/history.md:119
+    [FACT CHECKER                ] .squad/agents/fact-checker/history.md:131
+    [FACT CHECKER                ] .squad/agents/fact-checker/history.md:137
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:261
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:269
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:293
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:296
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:379
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:393
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:434
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:438
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:162
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:166
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:207
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:208
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:214
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:226
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:230
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:254
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:269
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:300
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-03T04-55-00-07-00-round9.md:49
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-03T04-55-00-07-00-round9.md:51
+    [DECISION RECORD (check **By:**)] .squad/decisions.md:32
+    [DECISION RECORD (check **By:**)] .squad/decisions.md:56
+    [NIOBE (bench)               ] bench/results/phi35_claim_reading-dev1.json:50
+    [NIOBE (bench)               ] bench/results/phi35_claim_reading_summary-dev1.json:12
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:2932
+    [MORPHEUS (self)             ] docs/DESIGN.md:2959
+    [MORPHEUS (self)             ] docs/DESIGN.md:2961
+    [MORPHEUS (self)             ] docs/DESIGN.md:2979
+    [MORPHEUS (self)             ] docs/DESIGN.md:3013
+    [MORPHEUS (self)             ] docs/DESIGN.md:3020
+    [MORPHEUS (self)             ] docs/DESIGN.md:3032
+    [MORPHEUS (self)             ] docs/DESIGN.md:3037
+    [MORPHEUS (self)             ] docs/DESIGN.md:3151
+    [MORPHEUS (self)             ] docs/DESIGN.md:3202
+    [MORPHEUS (self)             ] docs/DESIGN.md:3206
+    [MORPHEUS (self)             ] docs/DESIGN.md:3208
+    [MORPHEUS (self)             ] docs/DESIGN.md:3220
+    [MORPHEUS (self)             ] docs/DESIGN.md:5007
+    [MORPHEUS (self)             ] docs/DESIGN.md:5010
+    [MORPHEUS (self)             ] docs/DESIGN.md:5022
+    [MORPHEUS (self)             ] docs/DESIGN.md:5033
+    [MOUSE                       ] docs/OP_COVERAGE.md:3696
+    [MOUSE                       ] docs/OP_COVERAGE.md:3704
+    [MOUSE                       ] docs/OP_COVERAGE.md:3729
+    [MOUSE                       ] docs/OP_COVERAGE.md:3744
+    [MOUSE                       ] docs/OP_COVERAGE.md:3804
+    [MOUSE                       ] docs/OP_COVERAGE.md:3861
+    [MOUSE                       ] docs/OP_COVERAGE.md:3895
+    [CODE (tank/switch/mouse)    ] rust/src/disclosure.rs:97
+    [CODE (tank/switch/mouse)    ] rust/src/disclosure.rs:335
+    [MOUSE (code)                ] rust/src/registry.rs:1980
+    [MOUSE (code)                ] rust/src/registry.rs:2030
+    [MOUSE (code)                ] rust/src/registry.rs:2912
+    [MOUSE (code)                ] rust/src/registry.rs:2916
+    [MOUSE (code)                ] rust/src/registry.rs:2982
+    [MOUSE (code)                ] rust/src/registry.rs:3300
+    [MOUSE (code)                ] rust/src/registry.rs:3303
+    [CODE (tank/switch/mouse)    ] rust/tools/gen_proof_ledger.py:1078
+### P14-frame-vs-absence  /indistinguishable from a key absence/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:459
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:3190
+    [MOUSE (code)                ] rust/src/registry.rs:2712
+    [MOUSE (code)                ] rust/src/registry.rs:4895
+    [MOUSE (code)                ] rust/src/registry.rs:4928
+### P15-verdict-filename  /names its own frame in its filename/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:366
+    [MORPHEUS (self)             ] docs/DESIGN.md:5639
+### P16-binary-that-ran  /the frame is the binary that ran it/
+    [AGENT mouse                 ] .squad/agents/mouse/history.md:50
+    [AGENT trinity               ] .squad/agents/trinity/history.md:77
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-02T14-42-30-07-00-round7.md:53
+    [DECISION RECORD (check **By:**)] .squad/decisions-archive/2026-08-02T14-42-30-07-00-round7.md:60
+    [NIOBE (bench)               ] bench/test_ceiling.py:47
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4552
+    [NIOBE                       ] docs/PERF.md:3443
+    [NIOBE                       ] docs/PERF.md:3519
+    [LINK                        ] docs/PLATFORMS.md:2100
+    [TRINITY (tests)             ] tests/ops/probe_fallback_screen_mutations.py:14
+    [TRINITY (tests)             ] tests/ops/test_validation_phi35.py:27
+### P17-date-is-a-claim  /a date is a claim/
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:4928
+### P18-cheapest-satisf  /cheapest satisfaction/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:151
+    [RAI                         ] .squad/rai/audit-trail.md:155
+    [MORPHEUS (self)             ] docs/DESIGN.md:4
+    [MORPHEUS (self)             ] docs/DESIGN.md:1475
+    [MORPHEUS (self)             ] docs/DESIGN.md:5227
+    [MORPHEUS (self)             ] docs/DESIGN.md:5661
+    [MORPHEUS (self)             ] docs/DESIGN.md:6327
+    [MOUSE                       ] docs/OP_COVERAGE.md:3197
+    [MOUSE (code)                ] rust/src/registry.rs:4556
+### P19-wrong-and-stable  /wrong \*?and stable/
+    [MORPHEUS (self)             ] .squad/agents/morpheus/history.md:153
+    [NIOBE (bench)               ] bench/results/criterion10-route-and-depth-2026-08-02.md:100
+    [NIOBE (bench)               ] bench/results/probe_planted_kv.py:38
+    [MORPHEUS (self)             ] docs/DESIGN.md:5660
+    [TRINITY (tests)             ] tests/ops/test_criterion10_oracle.py:18
+    [TRINITY (tests)             ] tests/ops/test_criterion10_oracle.py:52
