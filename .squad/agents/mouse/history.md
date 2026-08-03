@@ -219,3 +219,46 @@ the `UNMEASURED` WARN its audience.
 established a selector is a request and not an identity. `device_frame_matches` also accepts a
 physical-name match. I did not add an env override for the frame: that is a fail-open lever on the
 one predicate whose failure mode is fail-open.
+
+
+---
+
+## 2026-08-02 (later) — `PROVEN-ELSEWHERE` withdrawn; the device field made load-bearing instead
+
+The coordinator stopped me mid-implementation: Fact Checker's audit returned ❌ on *"model-level ULP
+evidence cannot promote unexercised per-form keys"*, which is the premise Morpheus's cost argument
+rests on. So the entry above describing `PROVEN-ELSEWHERE` as implemented is **withdrawn**, and
+`docs/OP_COVERAGE.md` §7.19(c) with it. The slot exists in `ProofState` and declines.
+
+**What I built instead, and what it cost.** `registry::device_state` is now a four-state classifier
+read on every claim: `PROVEN` / `DEVICE-UNATTRIBUTED` / `PROVEN-ON-ANOTHER-DEVICE` / `UNPROVEN`.
+`DEVICE-UNATTRIBUTED` still claims — declining it would take the EP from 355 nodes to zero over a
+bookkeeping question — but it is counted on every claim and named per form with `entry-device=` and
+`running-device=` in both the session disclosure and the counters file. Being in every artifact of
+every run is what keeps it from becoming the field nobody reads, which was Fact Checker's question.
+
+**The surprise, and it is a good one.** I keyed the predicate on the device name read off the run
+rather than the selector, on Morpheus's finding that a selector is a request. Then the very run that
+validates the fix reproduced it: `ONNXRUNTIME_EP_VULKAN_DEVICE=0` opened
+`1=NVIDIA GeForce RTX 4060 Laptop GPU`. Had I keyed on the ordinal, the predicate would have read
+`device0 == device0` and reported a match against hardware it had never looked at — a predicate that
+is always true, which is the exact shape I spent the morning removing from the counters ABI.
+
+**`parse_ledger` faulted 103 proofs on one stale entry**, directly contradicting its own comment
+three lines above. Split into `Ledger::faults` (whole-file) and `Ledger::entry_faults` (per-entry).
+The header-count check had to move to `entries + entry_faults` or the demotion re-creates the global
+fault through the back door — that one nearly slipped past me, and it is the same shape as the
+defect: a second path to the state you thought you had closed.
+
+**Condition 4 cannot be satisfied as written and I said so rather than reinterpreting it.** For
+`PROVEN-ELSEWHERE` to be a guard something must be able to come out negative on the second device.
+With no per-form evidence there, nothing can. Written up in §7.20(c), together with a counter-
+proposal I have *not* verified: every entry names a per-form case model under `evidence/cases/`, so
+second-device proof may be a replay of 103 tiny graphs rather than the fatal cost the ruling assumes
+— in which case the answer is an entry per `(key, device)` and the status is unnecessary, not merely
+unsound.
+
+**Readings.** Device 0: `claimed_nodes` 355, `ledger_hits` 355, `unproven_declines` 3 — unchanged.
+`claimed_form_evidence` `ALL-PROVEN` → `DEVICE-UNATTRIBUTED-PRESENT`: **a fix**. No node changed
+hands; `ALL-PROVEN` had been asserting a device frame nothing checked. `ledger_entries` 97 → 103 is
+the `main` merge, not this change. 507 lib tests pass, clippy clean, census lane 7 passed/1 xfailed.

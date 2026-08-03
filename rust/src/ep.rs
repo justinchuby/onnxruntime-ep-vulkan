@@ -2715,7 +2715,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|(_, m)| m.contains("§8.9.7"))
+                .filter(|(_, m)| m.contains("§8.9.7") || m.contains("§10.0.1 R12"))
                 .cloned()
                 .collect();
             (d, seen)
@@ -2799,8 +2799,8 @@ mod tests {
                 nodes: 11,
             }]);
             assert!(
-                d.proven >= 1,
-                "ERROR(instrument): nothing was claimed as proven, so the silence below is \
+                d.proof_backed() >= 1,
+                "ERROR(instrument): nothing proof-backed was claimed, so the silence below is \
                  vacuous: {d:?}"
             );
             assert_eq!(d.unproven(), 0, "{d:?}");
@@ -2823,7 +2823,7 @@ mod tests {
             assert!(
                 seen.iter().any(
                     |(sev, m)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_INFO
-                        && m.contains("proven form(s)")
+                        && (m.contains("proven form(s)") || m.contains("UNATTRIBUTED"))
                 ),
                 "no INFO half reached ORT's sink, so 'no WARN' is indistinguishable from 'no \
                  disclosure': {seen:?}"
@@ -2850,7 +2850,7 @@ mod tests {
                     nodes: 1,
                 },
             ]);
-            assert_eq!((d.proven, d.unmeasured), (1, 1), "{d:?}");
+            assert_eq!((d.proof_backed(), d.unmeasured), (1, 1), "{d:?}");
             let warn = seen
                 .iter()
                 .find(|(sev, _)| *sev == ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING)

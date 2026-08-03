@@ -3615,7 +3615,7 @@ without a new field — which is the durable part. But the remaining env switche
 specialization constants, so each needs its own EP-side observable and none of them gets one for
 free here. They stay with Link.
 
-### 7.19 The mirrors are gone, the layout is compiler-checked, and `PROVEN-ELSEWHERE` exists in code (2026-08-02)
+### 7.19 The mirrors are gone and the layout is compiler-checked (2026-08-02)
 
 Artifacts: `rust/tools/counters_abi.py`, `tests/ops/test_counters_abi_singleton.py`,
 `bench/results/phi35_claim_reading_summary.json`. **No timing figure.**
@@ -3684,45 +3684,110 @@ Reverted afterwards. Note what the build error also shows: `E0063 missing fields
 The struct is exhaustively initialised in five places, so *appends* were already compiler-checked;
 what was never checked was the **meaning** of a version number, and that is what the registry adds.
 
-#### (c) `PROVEN-ELSEWHERE` is code now, and was observed in its positive state
+### 7.20 `LedgerEntry.device` is load-bearing; `PROVEN-ELSEWHERE` is specified and **not** built (2026-08-02)
 
-Morpheus's three-state table (§10.0.1 R12) is implemented as `registry::ProofState`:
+Artifacts: `rust/src/registry.rs` (`running_device_names`, `is_selector_ordinal`, `device_state`,
+`ProofState`), `rust/src/disclosure.rs` (`FormEvidence`), `bench/results/phi35_claim_reading.json`.
+**No timing figure.**
 
-| state | condition | claimable |
-|---|---|---|
-| `PROVEN` | entry exists, `MATCH`, witnesses present, **and its `device` matches the running device** | yes |
-| `PROVEN-ELSEWHERE` | entry exists and is sound, obtained on another device | yes — counted in `proven_elsewhere_claims`, named in `proven_elsewhere_forms` with `proved-on`/`running-on`, disclosed at session creation |
-| `UNPROVEN` | no entry, or a demoted one | no |
+#### (a) What was retracted, and why
 
-A missing key is `UNPROVEN` and declines; it never falls back to `PROVEN-ELSEWHERE`. The count is
-taken where the claim is granted, not where the lookup happens, so it counts claims rather than
-lookups some later check declined.
+§7.19 originally reported `PROVEN-ELSEWHERE` as implemented. It is **withdrawn**. Fact Checker's
+audit of the R12 rule declines returned ❌ on *"model-level ULP evidence cannot promote unexercised
+per-form keys"*. That finding is load-bearing for the status: Morpheus's cost argument was *the
+expensive proof establishes the form; the cheap invariant establishes the port*, resting on his own
+ruling that device-dependence surfaces as ULP-scale residual movement. If a model-level residual
+cannot promote a per-form key that was never exercised on the second device, the cheap invariant
+does not establish the port, and `PROVEN-ELSEWHERE` becomes a status claimed without the thing it
+claims. The code has been reverted to a state where the slot exists and **declines**.
 
-Both polarities on real hardware, same build, same ledger (`eb7c4e1f90cd7ec2`, 97 entries):
+#### (b) The precondition: the device field now decides something
 
-| reading | device 0 | device 1 |
-|---|---|---|
-| `claimed_nodes` | 355 | 355 |
-| `ledger_hits` | 355 | 355 |
-| `proven_elsewhere_claims` | 0 | 355 |
-| `claimed_forms_proven_elsewhere` | 0 | 8 |
-| `claimed_form_evidence` | `ALL-PROVEN` | `PROVEN-ELSEWHERE-PRESENT` |
+`"device": "device0"` sat on 103 of 103 entries and **no predicate read it**. It does now.
 
-The device-1 column is the extrapolation that was already happening and had no word. It is now a
-named suspect list of eight forms — which is Morpheus's own test of whether this is a strengthening.
+| `ProofState` | condition | claimable | counted as |
+|---|---|---|---|
+| `PROVEN` | entry `MATCH`, witnesses present, `device` **names hardware this run opened** | yes | — |
+| `DEVICE-UNATTRIBUTED` | entry sound, but its `device` is a **selector ordinal** (`device0`), or this run has opened no device | yes | `device_unattributed_claims`, `device_unattributed_forms`, `claimed_forms_device_unattributed` |
+| `PROVEN-ON-ANOTHER-DEVICE` | entry sound, obtained on a **named** device this run did not open | **no** | `device_mismatch_declines`, `device_mismatch_forms` |
+| `UNPROVEN` | no entry, or a demoted one | no | `unproven_declines` |
 
-**The ABI repair changed no reading.** The Phi-3.5 claim probe on device 0 reports the same ledger
-digest, the same 97 entries, the same 355 claimed nodes and the same `ALL-PROVEN` as before the
-change. That is the expected answer here and it is neither a fix nor a new defect: the probe reads
-the **name-keyed JSON** counters file, which was never subject to the offset defect. The offset
-defect lived in the ctypes readers, and there the change *is* a fix — `ledger_entries` read through
-the derived mirror is 97, where the stale mirror read 0.
+Two design points, both of which are the difference between a predicate and a field:
 
-**Disclosed weakness.** The device identity is the ledger's own `device{N}` label, i.e. a *selector
-index*, and Trinity established that a selector is a request and not an identity — `DEVICE=0` has
-run on `1=NVIDIA`. `device_frame_matches` therefore also accepts a physical-name match against
-`session_devices()`. I deliberately did not add an environment override for the frame: that would be
-a fail-open lever on the one predicate whose failure mode is fail-open.
+* **The key is the device name read off the run, never the selector.** `running_device_names()`
+  parses `allocator::tally::session_devices()` — what the EP *opened*. `is_selector_ordinal()`
+  recognises `device` + digits and refuses to treat it as an identity. This is Morpheus's separate
+  finding, and this session reproduced it live: with `ONNXRUNTIME_EP_VULKAN_DEVICE=0` the probe run
+  reported `alloc_device_frame_session_devices: "1=NVIDIA GeForce RTX 4060 Laptop GPU"`. **The
+  selector said 0 and the hardware was ordinal 1.** An entry stamped `device0` names neither.
+* **`DEVICE-UNATTRIBUTED` still claims.** Declining it would take the EP from 355 claimed nodes to
+  zero over a *frame* question — a bookkeeping defect used to withdraw working kernels. It is
+  instead counted on every claim and named per form with `entry-device=` and `running-device=` in
+  the session disclosure and the counters file. That is the answer to Fact Checker's question about
+  `PROVEN-ELSEWHERE` — *what stops it becoming the default nobody looks at?* — applied to the state
+  that actually exists today: it appears in every artifact of every run even while it changes no
+  outcome.
+
+Measured, device 0, this build, ledger `b0b06b464134fc33` / 103 entries:
+`claimed_nodes` 355, `ledger_hits` 355, `unproven_declines` 3 — **identical to the pre-change
+reading**. `device_unattributed_claims` 355, `claimed_forms_device_unattributed` 8,
+`device_mismatch_declines` 0, `running_device_names` `NVIDIA GeForce RTX 4060 Laptop GPU`.
+`claimed_form_evidence` moved `ALL-PROVEN` → `DEVICE-UNATTRIBUTED-PRESENT`. **That is a fix, not a
+new defect**: no node changed hands, and `ALL-PROVEN` was an over-claim — it asserted a device frame
+nothing had checked. (`ledger_entries` 97 → 103 is the `main` merge, not this change.)
+
+`gen_proof_ledger.py` now writes the physical name into `device` when the proof run reports one, and
+keeps the ordinal in a separate `device_selector`. The 103 baked entries predate that and are
+therefore all `DEVICE-UNATTRIBUTED` until re-proven; they were **not** regenerated here.
+
+#### (c) What `PROVEN-ELSEWHERE` would require, read off the code
+
+R12's obligations, and what each costs in this tree:
+
+1. **Claimable on purpose, never as a fallback.** Satisfiable and already structured for it: a
+   missing key reaches `ProofState::Unproven` before any device comparison, so the status cannot be
+   reached by absence. The slot is `ProofState::ProvenOnAnotherDevice`, which today declines.
+2. **Counted.** Satisfiable: `device_mismatch_declines` / `device_mismatch_forms` are the counters,
+   and they would simply change sign from decline to claim.
+3. **Disclosed with the device it was proven on.** Satisfiable **only after** the ledger carries
+   device names rather than ordinals. Until entries are re-proven, "proven elsewhere" would have to
+   name `device0`, which is not a device. This is why (b) had to land first.
+4. **A predicate must read it.** *This is the unsatisfied one.* For the status to be a guard rather
+   than a comment with a schema, some check must be able to come out **negative** — i.e. there must
+   exist evidence, obtainable on the second device, whose failure withholds the promotion. Morpheus
+   proposed a model-level ULP invariant. Fact Checker's ❌ says that evidence does not reach a
+   per-form key that was never exercised there. **With no per-form evidence on the second device,
+   condition 4 cannot be satisfied as written**, and I decline to reinterpret it as "the operator
+   asked for it", which is condition 1 counted twice.
+
+#### (d) A mechanism that would settle it — and dissolve the need
+
+The premise of `PROVEN-ELSEWHERE` is that per-device proof is too expensive to repeat. **Read off
+the ledger, that premise looks false.** Every entry carries `artifact` and `artifact_sha256`
+pointing at a per-form case model under `evidence/cases/*.onnx`, each one a tiny graph, and
+`gen_proof_ledger.py --reprove` re-measures an already-claimed form against exactly that artifact.
+So the second-device cost is not "re-run Phi-3.5's proof programme"; it is **replay 103 recorded
+case models on the second device**, per form, producing real `PROVEN` entries with their own
+witnesses.
+
+If that holds, the sound mechanism is not a new status but a new *column*: an entry per
+`(key, device)` rather than per `key`, filled by replay. `PROVEN-ELSEWHERE` would then be
+unnecessary rather than merely unsound — which is a better outcome than ruling on it. **I have not
+run that replay on a second device, so this is a proposal and not a result**; what is verified is
+that the artifacts, their digests and the `--reprove` path all exist. The obstacle is that the
+generator's `--reprove` requires the form to be offered by the model in that invocation, which the
+case models do satisfy by construction.
+
+#### (e) One stale entry no longer faults 103 proofs
+
+`parse_ledger`'s comment said *"a stale entry demotes ITSELF and nothing else"* while it pushed the
+message onto `Ledger::faults`, which `Ledger::get` consults for **every** key. One shader edit
+therefore disarmed the whole artifact. `Ledger` now has `entry_faults` — per-entry, demotes only its
+own entry — separate from `faults`, which stays whole-file (missing generator, digest mismatch,
+header count mismatch, duplicate key). The header-count check now compares against
+`entries + entry_faults`, or the demotion would have re-created the global fault through the back
+door. `registry::tests::one_stale_entry_does_not_fault_the_entries_beside_it` puts both polarities
+in one ledger and asserts the stale one is detected *before* asserting the sound one survives.
 
 ## 8. Quantization
 

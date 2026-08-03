@@ -65,7 +65,7 @@ use std::sync::Mutex;
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 5;
+pub const COUNTERS_ABI_VERSION: u32 = 6;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -579,16 +579,25 @@ pub struct VulkanEpCounters {
     /// Forms claimed through the `CLAIM_UNPROVEN` escape hatch rather than on evidence.
     /// **ABI version 3.**  Non-zero means this run's claims are not fully backed by proofs.
     pub unproven_forms_claimed: u64,
-    /// Forms claimed on a proof obtained on a **different device** — §10.0.1 R12's
-    /// `PROVEN-ELSEWHERE`. **ABI version 5.**
+    /// Nodes claimed on an entry whose `device` **cannot be compared to this run's hardware** —
+    /// it carries a selector ordinal (`device0`), or the run had not opened a device yet.
+    /// **ABI version 6.**
     ///
-    /// Claimable on purpose, never silently: this counter is the "counted" half of the ruling,
-    /// and `proven_elsewhere_devices` in the JSON artifact is the "disclosed with the device it
-    /// was proven on" half. Zero on a run whose ledger entries were all obtained here; equal to
-    /// the claimed-form count on a run that is entirely extrapolating. It is **not** a failure
-    /// signal — `epctl --check-counters` does not fail on it — because refusing the extrapolation
-    /// is the horn Morpheus's ruling explicitly rejects.
-    pub proven_elsewhere_claims: u64,
+    /// This is the population the ledger cannot attribute to hardware. All 97 baked entries are in
+    /// it, because `gen_proof_ledger.py` writes `device{N}` from the selector unless
+    /// `--device-name` is given, and a selector is a request rather than an identity. Claims are
+    /// still granted — the evidence is not in question, only its frame — but they are counted here
+    /// and named per form in the session disclosure, which is what stops an unattributable proof
+    /// from being indistinguishable from a local one. It is **not** a failure signal.
+    pub device_unattributed_claims: u64,
+    /// Nodes declined because the entry names a **different physical device** than this run
+    /// opened. **ABI version 6.**
+    ///
+    /// This is the fail-open Link found, closed. It is a subset of `unproven_declines`, split out
+    /// because "nothing has proven this form" and "this form was proven on other hardware" are
+    /// different facts and a reader who sees only the first will look in the wrong place. Non-zero
+    /// requires entries carrying physical device names, so it is zero on today's ledger.
+    pub device_mismatch_declines: u64,
 }
 }
 
@@ -685,6 +694,12 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     // longer be produced.
     (4, 0xcfc7_f82e_9e62_c5ef),
     (5, 0x63c4_641d_754f_2443),
+    // v6 = `LedgerEntry.device` becomes load-bearing: `proven_elsewhere_claims` is replaced by
+    // `device_unattributed_claims` and `device_mismatch_declines`. A *rename* is a layout change
+    // here even at an identical size, because the hash covers field names — two builds that
+    // disagree about what a field is called disagree about what its number means, and that is the
+    // defect this table exists for, one level up from the offset.
+    (6, 0xf3fa_c68a_a2c3_a3ef),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -858,14 +873,18 @@ static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// that also fails `epctl --check-counters`.
 static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Forms claimed on a proof obtained on another device (§10.0.1 R12 `PROVEN-ELSEWHERE`).
-static PROVEN_ELSEWHERE_CLAIMS: AtomicU64 = AtomicU64::new(0);
-/// `key proven-on=<device> running-on=<device>` for each distinct extrapolation, first-seen order.
+/// Nodes claimed on an entry whose device could not be compared to this run's hardware.
+static DEVICE_UNATTRIBUTED_CLAIMS: AtomicU64 = AtomicU64::new(0);
+/// Nodes declined because the entry names a different physical device than this run opened.
+static DEVICE_MISMATCH_DECLINES: AtomicU64 = AtomicU64::new(0);
+/// `key entry-device=<label> running-device=<names> reason=<why>`, first-seen order.
 ///
-/// The count says an extrapolation happened; this says what it extrapolated from. Morpheus's
-/// ruling asks for both, and the second is the one that turns a later divergence on a new device
-/// into a named suspect list.
-static PROVEN_ELSEWHERE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The count says how many claims rest on an unattributable frame; this says which forms and why.
+/// Without it the count is the same kind of object as `"device": "device0"` was — present in the
+/// artifact, and not enough to act on.
+static DEVICE_UNATTRIBUTED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// `key proved-on=<device> running-device=<names>` for each decline, first-seen order.
+static DEVICE_MISMATCH_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
@@ -889,7 +908,7 @@ static SESSION_DISCLOSURES: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms backed by a ledger `MATCH`.
 static CLAIMED_FORMS_PROVEN: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms admitted on a proof obtained on **another device** (R12).
-static CLAIMED_FORMS_PROVEN_ELSEWHERE: AtomicU64 = AtomicU64::new(0);
+static CLAIMED_FORMS_DEVICE_UNATTRIBUTED: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms with no proof at all.
 static CLAIMED_FORMS_UNMEASURED: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms whose recorded verdict is not `MATCH`.
@@ -1102,29 +1121,54 @@ pub fn record_unproven_form_enabled(key: &str) {
     }
 }
 
-/// Record a form claimed on a proof obtained on **another device** (§10.0.1 R12,
-/// `PROVEN-ELSEWHERE`).
+/// Record a node claimed on an entry whose device could not be compared to this run's hardware.
 ///
-/// `proved_on` is the device the entry names; `running_on` is this run's device. Both are kept,
-/// because the ruling's disclosure obligation is *"named in the run record with the device it was
-/// proven on"* — a count alone says an extrapolation happened, not what it extrapolated from.
+/// `entry_label` is what the entry says (`device0`, or empty); `reason` is why no comparison was
+/// possible. Both are kept, because a count alone reproduces the defect being repaired: a datum
+/// that is present in the artifact and cannot be acted on.
 ///
 /// Never called on a miss. A key with no entry at all is `UNPROVEN` and declines; if this counter
-/// could move on an absent key, `PROVEN-ELSEWHERE` would be the silent fallback the ruling
-/// forbids, and the counter would be evidence for exactly the wrong proposition.
-pub fn record_proven_elsewhere(key: &str, proved_on: &str, running_on: &str) {
-    PROVEN_ELSEWHERE_CLAIMS.fetch_add(1, ORD);
-    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
-        let row = format!("{key} proven-on={proved_on} running-on={running_on}");
+/// could move on an absent key, an unattributable device would be a silent fallback rather than a
+/// reading of an entry that exists.
+pub fn record_device_unattributed(key: &str, entry_label: &str, reason: &str) {
+    DEVICE_UNATTRIBUTED_CLAIMS.fetch_add(1, ORD);
+    if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
+        let running = crate::allocator::tally::session_devices();
+        let label = if entry_label.is_empty() {
+            "<absent>"
+        } else {
+            entry_label
+        };
+        let row = format!("{key} entry-device={label} running-device={running} reason={reason}");
         if !seen.iter().any(|r| r == &row) {
             seen.push(row);
         }
     }
 }
 
-/// The `PROVEN-ELSEWHERE` disclosure rows recorded so far, deduplicated, in first-seen order.
-pub fn proven_elsewhere_forms() -> Vec<String> {
-    PROVEN_ELSEWHERE_FORMS
+/// Record a node declined because its entry names a different physical device than this run.
+pub fn record_device_mismatch_decline(key: &str, proved_on: &str) {
+    DEVICE_MISMATCH_DECLINES.fetch_add(1, ORD);
+    if let Ok(mut seen) = DEVICE_MISMATCH_FORMS.lock() {
+        let running = crate::allocator::tally::session_devices();
+        let row = format!("{key} proved-on={proved_on} running-device={running}");
+        if !seen.iter().any(|r| r == &row) {
+            seen.push(row);
+        }
+    }
+}
+
+/// The unattributable-device disclosure rows recorded so far, deduplicated, first-seen order.
+pub fn device_unattributed_forms() -> Vec<String> {
+    DEVICE_UNATTRIBUTED_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// The device-mismatch decline rows recorded so far, deduplicated, first-seen order.
+pub fn device_mismatch_forms() -> Vec<String> {
+    DEVICE_MISMATCH_FORMS
         .lock()
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -1209,12 +1253,21 @@ fn unproven_forms_enabled_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
-/// `proven_elsewhere_forms` — one row per distinct extrapolation, naming the device that proved it.
+/// `device_unattributed_forms` — one row per form whose proof frame could not be checked.
 ///
 /// A list rather than a count, for the same reason `unproven_forms_enabled` is one: the reader of
 /// a divergence on a new device needs a suspect list, and a count of 97 is not one.
-fn proven_elsewhere_forms_json() -> String {
-    let Ok(seen) = PROVEN_ELSEWHERE_FORMS.lock() else {
+fn device_unattributed_forms_json() -> String {
+    let Ok(seen) = DEVICE_UNATTRIBUTED_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
+/// `device_mismatch_forms` — one row per form declined because it was proven on other hardware.
+fn device_mismatch_forms_json() -> String {
+    let Ok(seen) = DEVICE_MISMATCH_FORMS.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
     let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
@@ -1326,7 +1379,7 @@ pub fn record_injected_compute_failure() {
 /// out-of-frame by construction. Read it at the instant of the event instead.
 pub fn record_session_disclosure(
     proven: usize,
-    proven_elsewhere: usize,
+    device_unattributed: usize,
     unmeasured: usize,
     divergent: usize,
     ledger_faulted: usize,
@@ -1335,7 +1388,7 @@ pub fn record_session_disclosure(
 ) {
     SESSION_DISCLOSURES.fetch_add(1, ORD);
     CLAIMED_FORMS_PROVEN.fetch_add(proven as u64, ORD);
-    CLAIMED_FORMS_PROVEN_ELSEWHERE.fetch_add(proven_elsewhere as u64, ORD);
+    CLAIMED_FORMS_DEVICE_UNATTRIBUTED.fetch_add(device_unattributed as u64, ORD);
     CLAIMED_FORMS_UNMEASURED.fetch_add(unmeasured as u64, ORD);
     CLAIMED_FORMS_DIVERGENT.fetch_add(divergent as u64, ORD);
     CLAIMED_FORMS_LEDGER_FAULTED.fetch_add(ledger_faulted as u64, ORD);
@@ -1368,11 +1421,11 @@ fn claimed_form_evidence() -> &'static str {
         "DIVERGENT-PRESENT"
     } else if CLAIMED_FORMS_UNMEASURED.load(ORD) > 0 {
         "UNMEASURED-PRESENT"
-    } else if CLAIMED_FORMS_PROVEN_ELSEWHERE.load(ORD) > 0 {
+    } else if CLAIMED_FORMS_DEVICE_UNATTRIBUTED.load(ORD) > 0 {
         // Below the three findings and above `ALL-PROVEN`, because it is not a fault and it is
         // not the same statement as a proof obtained here. Its own token, per §10.0: every way of
         // not knowing gets a name a machine can print.
-        "PROVEN-ELSEWHERE-PRESENT"
+        "DEVICE-UNATTRIBUTED-PRESENT"
     } else if CLAIMED_FORMS_PROVEN.load(ORD) > 0 {
         "ALL-PROVEN"
     } else {
@@ -1622,7 +1675,8 @@ pub fn snapshot() -> VulkanEpCounters {
         unproven_declines: UNPROVEN_DECLINES.load(ORD),
         ledger_entries: crate::registry::ledger().len() as u64,
         unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
-        proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
+        device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
+        device_mismatch_declines: DEVICE_MISMATCH_DECLINES.load(ORD),
     }
 }
 
@@ -1660,7 +1714,7 @@ pub fn reset() {
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     SESSION_DISCLOSURES.store(0, ORD);
     CLAIMED_FORMS_PROVEN.store(0, ORD);
-    CLAIMED_FORMS_PROVEN_ELSEWHERE.store(0, ORD);
+    CLAIMED_FORMS_DEVICE_UNATTRIBUTED.store(0, ORD);
     CLAIMED_FORMS_UNMEASURED.store(0, ORD);
     CLAIMED_FORMS_DIVERGENT.store(0, ORD);
     CLAIMED_FORMS_LEDGER_FAULTED.store(0, ORD);
@@ -1673,8 +1727,12 @@ pub fn reset() {
     LEDGER_FAULTED_LOOKUPS.store(0, ORD);
     UNPROVEN_DECLINES.store(0, ORD);
     UNPROVEN_FORMS_CLAIMED.store(0, ORD);
-    PROVEN_ELSEWHERE_CLAIMS.store(0, ORD);
-    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
+    DEVICE_UNATTRIBUTED_CLAIMS.store(0, ORD);
+    DEVICE_MISMATCH_DECLINES.store(0, ORD);
+    if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = DEVICE_MISMATCH_FORMS.lock() {
         seen.clear();
     }
     if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
@@ -1727,12 +1785,15 @@ impl VulkanEpCounters {
              \"ledger_miss\": \"{}\",\n  \
              \"ledger_entries\": {},\n  \
              \"ledger_faults\": {},\n  \
+             \"ledger_entry_faults\": {},\n  \
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
-             \"proven_elsewhere_claims\": {},\n  \
-             \"proven_elsewhere_forms\": {},\n  \
-             \"running_device_frame\": \"{}\",\n  \
+             \"device_unattributed_claims\": {},\n  \
+             \"device_unattributed_forms\": {},\n  \
+             \"device_mismatch_declines\": {},\n  \
+             \"device_mismatch_forms\": {},\n  \
+             \"running_device_names\": \"{}\",\n  \
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
@@ -1740,7 +1801,7 @@ impl VulkanEpCounters {
              \"gemv_packed_spec_constant\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
-             \"claimed_forms_proven_elsewhere\": {},\n  \
+             \"claimed_forms_device_unattributed\": {},\n  \
              \"claimed_forms_unmeasured\": {},\n  \
              \"claimed_forms_divergent\": {},\n  \
              \"claimed_forms_ledger_faulted\": {},\n  \
@@ -1784,12 +1845,15 @@ impl VulkanEpCounters {
             ledger_miss_state(),
             crate::registry::ledger().len(),
             crate::registry::ledger().faults.len(),
+            crate::registry::ledger().entry_faults.len(),
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
-            PROVEN_ELSEWHERE_CLAIMS.load(ORD),
-            proven_elsewhere_forms_json(),
-            json_escape(&crate::registry::running_device_frame()),
+            DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
+            device_unattributed_forms_json(),
+            DEVICE_MISMATCH_DECLINES.load(ORD),
+            device_mismatch_forms_json(),
+            json_escape(&crate::registry::running_device_names().join("; ")),
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
@@ -1797,7 +1861,7 @@ impl VulkanEpCounters {
             gemv_packed_spec_constant(),
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
-            CLAIMED_FORMS_PROVEN_ELSEWHERE.load(ORD),
+            CLAIMED_FORMS_DEVICE_UNATTRIBUTED.load(ORD),
             CLAIMED_FORMS_UNMEASURED.load(ORD),
             CLAIMED_FORMS_DIVERGENT.load(ORD),
             CLAIMED_FORMS_LEDGER_FAULTED.load(ORD),

@@ -56,13 +56,20 @@ pub const TARGET: &str = "VulkanEP";
 pub enum FormEvidence {
     /// The ledger holds a `MATCH` for this key, with provenance, **obtained on this device**.
     Proven(&'static LedgerEntry),
-    /// The ledger holds a sound `MATCH` for this key that was obtained on **another device**
-    /// (§10.0.1 R12). Claimable on purpose; disclosed by name, with the device that proved it.
+    /// The ledger holds a sound `MATCH` for this key whose `device` **cannot be compared** to this
+    /// run's hardware — a selector ordinal, or a run that has not opened a device. Claimed, and
+    /// disclosed by name with what the entry says and what the run is on.
     ///
-    /// It is a fifth state rather than a flavour of `Proven` for the same reason `Unmeasured` and
-    /// `Divergent` are two: the reader's action differs. A divergence seen here first suspects
-    /// this list.
-    ProvenElsewhere(&'static LedgerEntry),
+    /// It is its own state rather than a flavour of `Proven` for the same reason `Unmeasured` and
+    /// `Divergent` are two: the reader's action differs. A divergence seen on new hardware
+    /// suspects this list first, and today this list is *every* form.
+    DeviceUnattributed(&'static LedgerEntry, &'static str),
+    /// The ledger holds a sound `MATCH` obtained on a **named other device**. Not claimed.
+    ///
+    /// This is the slot §10.0.1 R12's `PROVEN-ELSEWHERE` would occupy. It declines while the
+    /// instrument that would promote a per-form key onto second hardware is disputed — see
+    /// `docs/OP_COVERAGE.md` §7.20.
+    ProvenOnAnotherDevice(&'static LedgerEntry),
     /// No entry under this key. Nothing has ever compared this form against the CPU EP.
     Unmeasured,
     /// An entry exists and its verdict is not `MATCH`. Carries that verdict verbatim.
@@ -76,7 +83,8 @@ impl FormEvidence {
     pub fn token(&self) -> &'static str {
         match self {
             FormEvidence::Proven(_) => "PROVEN",
-            FormEvidence::ProvenElsewhere(_) => "PROVEN-ELSEWHERE",
+            FormEvidence::DeviceUnattributed(..) => "DEVICE-UNATTRIBUTED",
+            FormEvidence::ProvenOnAnotherDevice(_) => "PROVEN-ON-ANOTHER-DEVICE",
             FormEvidence::Unmeasured => "UNMEASURED",
             FormEvidence::Divergent(_) => "DIVERGENT",
             FormEvidence::LedgerFaulted => "LEDGER-FAULTED",
@@ -85,14 +93,16 @@ impl FormEvidence {
 
     /// Whether this evidence obliges the session-creation WARN.
     ///
-    /// **`ProvenElsewhere` does not**, and that is the ruling, not a softening: refusing the
-    /// extrapolation is the horn Morpheus's ruling rejects, and a WARN that fires on all 97 forms
-    /// of a routine second-device run is a WARN a reader learns to filter — which would cost the
-    /// `UNMEASURED` WARN its audience. It is disclosed at INFO, by name, with its device.
+    /// **`DeviceUnattributed` does not.** Every one of the 97 baked entries is in that state, so a
+    /// WARN there fires on every form of every run and a WARN that always fires is one a reader
+    /// learns to filter — which would cost the `UNMEASURED` WARN its audience. It is disclosed at
+    /// INFO, by name, with the label the entry carries and the device the run opened.
+    /// `ProvenOnAnotherDevice` **does** warn: it is a decline, and a form dropping to the CPU EP
+    /// is a thing the operator must be able to see without reading a counters file.
     pub fn warrants_warning(&self) -> bool {
         !matches!(
             self,
-            FormEvidence::Proven(_) | FormEvidence::ProvenElsewhere(_)
+            FormEvidence::Proven(_) | FormEvidence::DeviceUnattributed(..)
         )
     }
 }
@@ -109,10 +119,12 @@ pub fn evidence_for(key: &ProofKey) -> FormEvidence {
         return FormEvidence::Divergent(verdict.to_string());
     }
     if let Some(entry) = ledger.get(key) {
-        return if registry::device_frame_matches(&entry.device) {
-            FormEvidence::Proven(entry)
-        } else {
-            FormEvidence::ProvenElsewhere(entry)
+        return match registry::device_state(&entry.device) {
+            registry::ProofState::Proven => FormEvidence::Proven(entry),
+            registry::ProofState::DeviceUnattributed { reason, .. } => {
+                FormEvidence::DeviceUnattributed(entry, reason)
+            }
+            _ => FormEvidence::ProvenOnAnotherDevice(entry),
         };
     }
     if !ledger.faults.is_empty() {
@@ -140,7 +152,7 @@ pub struct Disclosure {
     /// Distinct claimed forms whose evidence is a ledger `MATCH` obtained on this device.
     pub proven: usize,
     /// Distinct claimed forms admitted on a `MATCH` obtained on **another device** (R12).
-    pub proven_elsewhere: usize,
+    pub device_unattributed: usize,
     /// Distinct claimed forms with no evidence at all.
     pub unmeasured: usize,
     /// Distinct claimed forms whose recorded verdict is not `MATCH`.
@@ -159,6 +171,15 @@ impl Disclosure {
     pub fn unproven(&self) -> usize {
         self.unmeasured + self.divergent + self.ledger_faulted
     }
+
+    /// Forms admitted on ledger evidence, whichever device frame that evidence carries.
+    ///
+    /// The WARN's negative arm asserts non-vacuity on **this**, not on `proven`: every one of the
+    /// 97 baked entries records a selector ordinal, so `proven` is 0 for every run today and an
+    /// arm gated on it would pass because nothing was claimed rather than because nothing warned.
+    pub fn proof_backed(&self) -> usize {
+        self.proven + self.device_unattributed
+    }
 }
 
 /// Emit the §8.9.7 session-creation disclosure for the forms this session is claiming.
@@ -174,7 +195,7 @@ impl Disclosure {
 pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
     let mut d = Disclosure::default();
     let mut proven_lines: Vec<String> = Vec::new();
-    let mut elsewhere_lines: Vec<String> = Vec::new();
+    let mut unattributed_lines: Vec<String> = Vec::new();
     let mut unproven_lines: Vec<String> = Vec::new();
 
     for form in forms {
@@ -196,18 +217,39 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                     form.op_type, form.nodes, key.0, entry.artifact, entry.device, entry.ort_build
                 ));
             }
-            FormEvidence::ProvenElsewhere(entry) => {
-                d.proven_elsewhere += 1;
-                elsewhere_lines.push(format!(
-                    "{} x{} [{}] PROVEN-ELSEWHERE: proven by {} on {} against {}, and this run is \
-                     on {}. The proof is sound and it was not obtained here",
+            FormEvidence::DeviceUnattributed(entry, reason) => {
+                d.device_unattributed += 1;
+                unattributed_lines.push(format!(
+                    "{} x{} [{}] DEVICE-UNATTRIBUTED: proven by {} against {}, entry-device={}, \
+                     running-device={} — {}",
+                    form.op_type,
+                    form.nodes,
+                    key.0,
+                    entry.artifact,
+                    entry.ort_build,
+                    if entry.device.is_empty() {
+                        "<absent>"
+                    } else {
+                        &entry.device
+                    },
+                    registry::running_device_names().join("; "),
+                    reason,
+                ));
+            }
+            FormEvidence::ProvenOnAnotherDevice(entry) => {
+                // A decline, so it belongs in the WARN list beside UNMEASURED and DIVERGENT: the
+                // operator's action is the same shape — a form they expected on the GPU is not.
+                d.unmeasured += 1;
+                unproven_lines.push(format!(
+                    "{} x{} [{}] PROVEN-ON-ANOTHER-DEVICE: proven by {} on {}, and this run is on \
+                     {}. A proof is a property of a form on a device, so this form runs on the \
+                     CPU EP. Prove it here with gen_proof_ledger.py --append",
                     form.op_type,
                     form.nodes,
                     key.0,
                     entry.artifact,
                     entry.device,
-                    entry.ort_build,
-                    registry::running_device_frame(),
+                    registry::running_device_names().join("; "),
                 ));
             }
             FormEvidence::Unmeasured => {
@@ -247,18 +289,21 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         );
     }
 
-    if !elsewhere_lines.is_empty() {
+    if !unattributed_lines.is_empty() {
         // INFO, not WARN — see `FormEvidence::warrants_warning`. It is its own message rather
         // than a suffix on the proven one because the two make different statements and a reader
         // grepping for what this build vouched for *here* must not have to parse a joined list.
         logging::info_through_ort_sink(
             TARGET,
             &format!(
-                "session claims {} form(s) PROVEN-ELSEWHERE [§10.0.1 R12]: {}. These are claimed \
-                 deliberately: the proof establishes the form, and this run extrapolates it to \
-                 this device. Promote them with a per-device ULP check.",
-                elsewhere_lines.len(),
-                elsewhere_lines.join("; ")
+                "session claims {} form(s) whose proof frame is UNATTRIBUTED [§10.0.1 R12]: {}. \
+                 The proofs are sound; what cannot be checked is whether they were obtained on \
+                 the hardware this run opened, because the entry records a selector ordinal and \
+                 a selector is a request rather than an identity. Re-prove with \
+                 gen_proof_ledger.py --append on this device to replace the ordinal with a \
+                 device name.",
+                unattributed_lines.len(),
+                unattributed_lines.join("; ")
             ),
         );
     }
@@ -281,7 +326,7 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
 
     counters::record_session_disclosure(
         d.proven,
-        d.proven_elsewhere,
+        d.device_unattributed,
         d.unmeasured,
         d.divergent,
         d.ledger_faulted,
@@ -392,8 +437,8 @@ mod tests {
             nodes: 7,
         }]);
         assert!(
-            d.proven >= 1,
-            "ERROR(instrument): the 'proven' arm claimed no proven form, so its silence is \
+            d.proof_backed() >= 1,
+            "ERROR(instrument): the 'proven' arm claimed no proof-backed form, so its silence is \
              vacuous: {d:?}"
         );
         assert_eq!(d.unproven(), 0, "expected no unproven forms: {d:?}");
@@ -424,7 +469,7 @@ mod tests {
                 nodes: 1,
             },
         ]);
-        assert_eq!(d.proven, 1, "{d:?}");
+        assert_eq!(d.proof_backed(), 1, "{d:?}");
         assert_eq!(d.unmeasured, 1, "{d:?}");
         assert!(d.warned, "{d:?}");
     }

@@ -301,13 +301,29 @@ def main() -> int:
         )
     else:
         # This is what the developer who just inserted a field needs to read. The build has
-        # already failed by the time they get here; the row is the repair.
+        # already failed by the time they get here; the row is the repair. Which repair it is
+        # depends on whether the version has already been bumped: appending a second hash under a
+        # version that already has one is the `898a2ba` defect itself — one number naming two
+        # layouts — so the tool must not print that as advice.
+        version, digest = abi_version(), layout_hash()
+        taken = [v for v, _ in layout_registry()]
+        if version in taken:
+            repair = (
+                f"  Repair: COUNTERS_ABI_VERSION={version} already has a row with a different\n"
+                f"  hash, and one version may name only one layout — that is exactly the 898a2ba\n"
+                f"  defect. Bump COUNTERS_ABI_VERSION to {max(taken) + 1} and append\n"
+                f"      ({max(taken) + 1}, 0x{digest:016x}),"
+            )
+        else:
+            repair = (
+                f"  Repair: append\n"
+                f"      ({version}, 0x{digest:016x}),"
+            )
         print(
             f"\nFAIL(layout undeclared): VulkanEpCounters has layout hash "
-            f"0x{layout_hash():016x} and COUNTERS_LAYOUT_REGISTRY has no such row under "
-            f"COUNTERS_ABI_VERSION={abi_version()}.\n"
-            f"  Repair: bump COUNTERS_ABI_VERSION to {abi_version() + 1} and append\n"
-            f"      ({abi_version() + 1}, 0x{layout_hash():016x}),\n"
+            f"0x{digest:016x} and COUNTERS_LAYOUT_REGISTRY has no such row under "
+            f"COUNTERS_ABI_VERSION={version}.\n"
+            f"{repair}\n"
             f"  to COUNTERS_LAYOUT_REGISTRY. Do not edit an existing row."
         )
         if "--check" in sys.argv:
