@@ -5,6 +5,7 @@
   "subgraphs_stub": 0,
   "compute_calls": 1,
   "compute_failures": 0,
+  "device_losses": 0,
   "dispatches_executed": 6,
   "claimed_nodes": 6,
   "islands_offered": 1,
@@ -80,10 +81,10 @@
   "alloc_device_frame_sides": "alloc_device_frame=OFF — no device-memory provider exists in this process, so the allocator side is on no VkDevice at all. Sessions have offered: 1=NVIDIA GeForce RTX 4060 Laptop GPU.",
   "session_staging_uploads": 1,
   "session_staging_upload_bytes": 128,
-  "session_staging_upload_us": 19,
+  "session_staging_upload_us": 18,
   "session_staging_readbacks": 1,
   "session_staging_readback_bytes": 64,
-  "session_staging_readback_us": 221,
+  "session_staging_readback_us": 98,
   "session_device_allocs": 9,
   "session_device_frees": 9,
   "session_device_bytes_in_use": 0,
@@ -91,5 +92,7 @@
   "weight_cache_release_calls": 1,
   "weight_cache_release_buffers": 0,
   "weight_cache_release_bytes": 0,
-  "weight_cache_bytes_resident": 0
+  "weight_cache_bytes_resident": 0,
+  "counters_snapshot_writes": 2,
+  "counters_snapshot_write_failures": 0
 }

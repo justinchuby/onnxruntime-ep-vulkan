@@ -180,3 +180,150 @@ Commit `e39bdd6` on `squad/trinity`, not pushed.
 - **Round 31 — ORT refuses the session we spent the session learning to detect (2026-08-02)** — **Handed to me:** the user asked whether ORT has a flag preventing EP fallback. It does:
 - **Round 32 — the specimen stopped being a specimen (2026-08-02, merged `a0bd22d`)** — Merged `origin/main` (18 artifact conflicts, all regenerable — took main's), **rebuilt**:
 - **Round 29 — the two unfalsified guards, screened in the always-on lane (2026-08-02T11:40-07:00)** — Merged `main` (`4e70601`), rebuilt, hashed either side: `D45B3A8C8C2B...` -> `918E8FF56B2E...`,
+
+## Round 33 — 2026-08-02 — criterion 10's residual unit: ULPs, and the median
+
+**Task:** Morpheus's ruling (merged `abf3b3e`): `atol` is an absolute bound on tensors of
+growing scale; express the residual in ULPs; prediction *flat at 1-3 across 32 layers*
+recorded before measuring. Do not move `atol`, do not flip `DIVERGENT`.
+
+**Binary:** merged `origin/main`, rebuilt, DLL `523A07C1...` -> `7F55C0C1...` (hashed either
+side; a stale binary told this project the wrong story three times today).
+
+**What I built.** `ulp_residual()` and `ulp_outliers()` in `_models.py`;
+`compare_all_outputs_to_cpu` now emits `median_ulp_diff` / `p99_ulp_diff` /
+`max_ulp_diff` / `ulp_cancellation_elements` / `ulp_basis` per output;
+`test_criterion10.py` records the full `ulp_curve` and `ulp_outliers`;
+`test_criterion10_ulp.py` is a 15-arm GPU-free instrument lane.
+
+**Three things I got wrong and the file now asserts.**
+
+1. I demoted `max_rel_diff` for *unboundedness*. It divides by `atol + |b|`, so it is
+   atol-floored and does not diverge. The complaint against it is **non-monotonicity**.
+   Asserting the stronger claim would have made the file allege something the code does
+   not do.
+2. My docstring claimed ULP cannot blow up near zero. **It can** — a cancellation element
+   reads 16384 ULP in fp16, verified. So the headline moved from `max_ulp_diff` to
+   **`median_ulp_diff`**: swapping one max for another would have reinstated the artefact
+   in a fresh unit (R11). The real record proves it — output 0's max reads 255658 while
+   its median reads 12.
+3. My specimen for max_rel_diff's non-monotonicity used a 1-ULP residual everywhere and
+   came out flat — correctly, because the relative error of a 1-ULP residual is
+   scale-free. **The non-monotonicity needs a cancellation element to exist at all**, and
+   finding that out is what located the right headline.
+
+**The measurement** (3 runs, 65 outputs, **byte-identical on RTX 4060 and Iris Xe**):
+KV cache flat at 0-3 ULP, baseline 1, over 62 of 64 outputs — the ruling's claim, measured,
+against an absolute curve that rises monotonically. Outputs 63-64 read 4: a smooth
+accumulation drift, no discontinuity, reported as an exceedance rather than tuned away.
+**Output 0 (logits) reads median 12 ULP, 12x baseline, both vendors, all three runs.**
+
+**The finding.** Under `max_abs_diff` the logits were already the worst output and that read
+as "largest tensor, largest residual". In ULPs magnitude is in the denominator and output 0
+is **still** an order clear. Not a big tensor — **a located defect, in the head not the
+layers**, and vendor-independent, therefore arithmetic in our kernels. Candidate: the final
+vocab projection (3072 -> 32064). Owner: Mouse/Switch.
+
+**The predicate is his number, not mine.** My first exceedance rule was "3x the observed
+baseline", written before I saw the curve; on real data it flagged 63-64 and my instinct was
+to widen it until it did not. That instinct is the defect. The predicate is now the
+prediction, and the overshoots stand in the record.
+
+**R13 on a confirming result.** The KV curve confirms the prediction, so it got the harder
+look, and the second reading found what the first missed: *flat at 1-3 across all 32 layers*
+is true of the layers and **false of the model**, because the model has a 65th output that is
+not a layer.
+
+**Also:** `argmax`/top-10 now carry `argmax_sample_size: 1` and a caveat (N=1 can falsify
+agreement, not establish it); `_verdict.py`'s `of_record_source` names its sibling list's
+weaknesses instead of listing three statistics unqualified.
+
+**Untouched, deliberately:** `atol`, the `np.allclose` gate, the `DIVERGENT` verdict (both
+devices), GQA's 1.37x margin. Criterion 10 stays open. No row closed.
+
+**Verification:** `test_criterion10_ulp` + verdict + output_attribution (+hw) + island +
+r13_lane + no_cpu_fallback = **133 passed / 0 FAIL / 0 ERROR on dev0 and dev1**.
+
+## Round 31 — 2026-08-02 — criterion 3(a) on a run that genuinely executes Phi-3.5
+
+**Discharged, both devices.** `bench/results/criterion3a_phi35-dev{0,1}.json`.
+355 claimed nodes, one retained island, `device_losses: 0`, `in_frame_vuid_count: 0`.
+
+**The load-bearing part is not the zero.** The EP messenger subscribes to ERROR|WARNING, so a
+healthy run is silent whether the callback is live or dead: a bare `0` here is `UNOBSERVABLE`,
+not a measurement. No existing falsifier reaches the ORT-session frame (the Rust plant is on a
+path the session never takes and its VUID is teardown; `epctl` proves arming in *another*
+process — R12 gen-4). Used `VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT`:
+WARNING-severity best-practices messages ride the EP's own messenger in-process and in-frame,
+and are prefixed `BestPractices-` not `VUID-`, so they prove liveness without contaminating the
+count. **14 in-frame messenger lines in the liveness arm, 0 in the clean arm, on both devices**,
+with the arms asserted to differ.
+
+**Lesson worth keeping: the device selector is a request, not an identity.** Selector 0 ran on
+`1=NVIDIA GeForce RTX 4060 Laptop GPU`; selector 1 on `0=Intel(R) Iris(R) Xe Graphics`. The
+allocator index is not the selector. "Both devices covered" from the env var would have been a
+claim about what I asked for. The lane now reads the device name off the run and refuses a run
+that cannot name its device.
+
+**Corrections to the brief** (recorded, not adopted): `ledger_gate` is `MIXED` not `ALL-PROVEN`
+(2 unproven declines); `dispatches_executed` is 355 not 8875 (per claimed node, not per
+`vkCmdDispatch`) — I quoted no 8875; criterion 10 is attributed but DIVERGENT and 3(a) is
+recorded against that rather than waiting on it.
+
+**Files:** `tests/ops/probe_validation_phi35.py` (probe, `run_arm` shared with the lane),
+`tests/ops/test_validation_phi35.py` (4 lane tests), `tests/ops/test_validation_phi35_frame_split.py`
+(18 device-free polarity tests screening `split_frame`, `_gate_attribution`, `device_name`, so
+they do not land as `unfalsified` in Tank's census). `audit_instruments.py --check`: PASS.
+
+**Routed:** Switch — in-frame on both devices, `vkCmdDispatch(): Pipeline uses a push constant
+range with offset 0 and size 128, but 104 bytes were never set` (also 88/72/36/20/4). Not a VUID,
+does not fail 3(a); reading unwritten push-constant bytes is undefined.
+
+**Two reds attributed away from this branch:** `test_r13_lane.py::test_fallback_line_produces_a_lane_failure`
+is a **26-line uncommitted edit by the sibling instance in the shared worktree** (absent from
+`git status` minutes earlier); main's checkout passes it 37/37. And 41 `test_op_table` failures
+(`VulkanExecutionProvider did not execute any node`) reproduce in main's own checkout with main's
+own DLL. Attribute before reporting — twice in one round it mattered.
+
+
+---
+
+## Round 34 — the second witness had been agreeing with us in our own words
+
+**Routed by Link, not found by me:** `_verdict.FATAL_LOG_MARKERS` did not match the line ORT
+prints. ORT emits `Falling back to ['CPUExecutionProvider'] and retrying.` -- a **list repr**.
+Five incidents had cited `check_fatal_log` as second witness.
+
+**It was not returning silence, which is the part worth remembering.** Measured across the three
+real logs before touching anything: Tank's `ctx512_device_lost.txt` -- 2 announcements, **0**
+hits. `trinity-suite-dev0.log` -- 5 announcements, **9** hits. `dev1` -- 1 announcement, **3**
+hits. **All twelve hits were `test_phi35.py`'s own docstring** echoed into the captured log by
+pytest. The marker never once matched ORT. Per R9 the five corroborations added nothing, and
+they made those incidents look better witnessed than they were.
+
+Its only positive test built the fiction and asserted it was found -- green for exactly as long
+as the witness was blind.
+
+**Two properties I would not have found from the source.** The announcement **wraps** (Tank's log
+breaks the EP Error line mid-list), so matching had to move off `splitlines()`; and ORT's C++
+sink writes **UTF-16LE** into an otherwise UTF-8 file, so decoded as UTF-8 the message is
+NUL-separated and unfindable by substring. `dev1.log` happens to carry it in both encodings --
+had it carried only the wide form, a substring search would have seen an empty log. Read the
+artifacts, not the source.
+
+**Remedy is liveness, not a better string:** a marker list never shown to fire is
+indistinguishable from one that cannot. `assert_fatal_log_check_is_live()` classifies a verbatim
+committed positive control red and the extent-boundary control green, before any verdict is
+trusted; `check_fatal_log` reports `ERROR(instrument=witness_not_live)`, never a pass. Lineage:
+`assert_no_cpu_fallback_is_live()`. One arm monkeypatches the **old broken marker** back and
+requires the liveness check to raise.
+
+**The restraint that mattered:** I did not widen the patterns to catch `The logical device has
+been lost`, though it would have looked like an improvement. Link's negative control proves
+`check_device_loss` has reach of its own by requiring `check_fatal_log` to stay **green** there.
+Widening buys coverage by destroying a demonstration. Extent stated in PLATFORMS 7.18.4/7.18.5.1.
+
+**Verified:** red on Tank's artifact (the file it read as clean), quoting all three lines;
+negative control 14/14, 1 LIVE / 3 REPLAYED / 10 PLANTED; `ci/test_lane_checks.py` 5 red -> 3
+(exactly Link's known census reds); lane set **140 PASS / 0 FAIL / 0 ERROR on both devices**.
+Edited two of Link's files as direct consequences -- flagged for his review.

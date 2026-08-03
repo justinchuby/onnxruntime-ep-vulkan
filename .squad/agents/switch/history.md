@@ -982,3 +982,134 @@ criterion 10 identical to the digit at 62/65.
 Commit `4b98b63`. Not pushed.
 
 📌 Team update (2026-08-02T14-42-30-07-00): Niobe measured that past context length 2048 we are link-bound, not memory-bound (KV-cache readback exact at 393,216 B per past token, ratio 1.000000). This changes what the present-copy KV-cache fix is worth once contexts grow past that point, and connects to `offer_shared_device`, whose default is `OFF` and whose recorded reason for staying off Morpheus has separately ruled expired. Worth revisiting whether the default should change now that the bottleneck downstream of it has moved. — decided by Niobe
+
+## Session 46h — 2026-08-02 — the input cache was serving stale KV, and the fix made Niobe's UNOBSERVABLE upload MEASURED
+
+Chasing Niobe's `UNOBSERVABLE` upload axis to its mechanism found a live correctness defect.
+The past-KV upload was in the **intercept, not the slope** — the whole past cache uploaded once
+per session — because the EP's input cache was keyed on `(cpu_ptr, byte_size)` with a 32 KiB
+floor and no content check. Phi-3.5's `past_key_values.N.key` is `past_len * 6144` B, so it
+crosses 32 KiB at `past_len >= 6`. All 64 KV inputs were cached as weights; every inference
+after the first read the first inference's KV.
+
+`probe_kv_input_cache.py` (new falsifier): pre-fix `STALE_CACHE` — run B returned run A's
+answer to the bit while the correct answer moved 0.0157. Post-fix `FOLLOWS_DATA`. Both guards
+live (reference must move; Vulkan must have executed).
+
+**The predicate was one struct away.** ORT answers it — but *not on the fused node*. Measured:
+`ValueInfo_IsConstantInitializer` is false for all **457** fused-node inputs while the body
+nodes report **388** constant. ORT surfaces initializers as fused inputs without re-marking
+them at the boundary. Constancy recovered by name join in `subgraph_plan`; contradictions
+resolve to `false` (a false negative costs an upload, a false positive costs a wrong answer).
+
+**Two mistakes I made and caught with controls, not reasoning:**
+1. First version keyed on the fused node alone → weight cache silently stopped firing,
+   2.29 GB uploaded *per inference*. Caught only because I ran the byte control instead of
+   trusting that "weights are initializers".
+2. `probe_kv_bytes_earned.py` printed **negative bytes per inference**. The 512×25 worker had
+   lost the device, exited 0, and written a complete counters file. Guards now refuse on
+   `compute_failures`, short `compute_calls`, and zero `dispatches_executed`.
+
+**Attribution I checked rather than assumed:** `VK_ERROR_DEVICE_LOST` at past 512 reproduces on
+the **pre-fix binary on `main`** too (compute_calls 6, failures 1). Not mine. `past_len=512` is
+outside the extent this box currently permits; added `--past-lens` so a narrowed extent is
+stated, not assumed.
+
+**The payoff for the project's byte model:** upload is now MEASURED at 393,216 B per past token,
+ratio 1.000000 — matching Niobe's readback term to the byte. Her instrument was right; the
+build was wrong. Link traffic at ctx 8192 is 6144 MiB/inference both directions vs 8140.8 MiB
+DRAM. **Against my own interest: my 1.377× fused-copy result is a DRAM reduction and moves no
+byte off the link axis, so at ctx >= 2048 it is admissible but not binding.** `probe_kv_traffic.py`
+now prints the link axis and asserts **no** link rate — this box's rate is unmeasured.
+
+Criterion 10 is identical to the digit (62/65, `[0,63,64]`, 0.0625/0.005859375/0.015625) and is
+a **null result inadmissible on its own terms**: it runs at past 0 where the changed branch is
+provably unreachable. My own rule, applied to my own change.
+
+Commit `b602bbb`. Shipped DLL `8818A8C40729292F`. 473 lib + 59 integration green, clippy clean.
+Not pushed.
+
+Decision records filed: *an address identifies storage, not contents*; *a counters file is
+evidence that counters were written, not that work was done*.
+
+## Session 46i — 2026-08-02 — the ctx-512 device loss: mechanism named, reproduction not available
+
+Merged `main` (4b5d46b) at 812d64d. Commit **a52024f** on `squad/switch`. DLL 4040C588638EDDED -> 87AB2650513EE0C8.
+
+**The ledger declined my own shader, and it was right to.** Mouse's digest-and-reprove path
+landed in main: the GQA entry was proven against `2c565607e9179ccb`, this build's `gqa_f16`
+hashes to `c55e2e518a0559d4`, so GQA was declined on my branch and my first isolation arm ran
+entirely on the CPU EP — `calls=0 dispatches=0`. It would have reported "GQA is innocent" from
+a run GQA never entered. Re-proved: MATCH, worst_rel 7.294e-04, ledger 74 entries / 845a7fc97d1a87aa.
+The gap I filed earlier is closed and it fired against me first.
+
+**Instrument defect for Mouse:** `--reprove` without `--append` rewrote the ledger from 74
+entries to 1 and printed `PASS`. A destructive write reported as a passing check.
+
+**TDR hypothesis refuted mechanically.** nvlddmkm/13 (FECS exception) x19 and nvlddmkm/153 x21
+in 14 h; **Display/4101, the TDR signature, zero in 24 h**. It is a driver/GPU fault, not a
+watchdog timeout — so "the GQA loop is too long for the watchdog" is not the mechanism.
+
+**And the events track the clock, not the build.** All 40 fall in 15:02-16:21. Afterwards I ran
+~460 inferences at ctx >= 512 (gqa 512x200, gqa 2048x100, phi 512x25 five times, phi 1024x25,
+phi 2048x15 — 8875 dispatches per phi inference) with zero losses and zero new events, on a
+heavier workload than the fault window carried. Earlier today BOTH binaries faulted inside it,
+including pre-fix `main` under a stash-and-rebuild control. Not a claim of a fix: mechanism
+named, reproduction not currently available.
+
+**The reporting defect is fixed and is independent of the mechanism.** `device_losses` counter
+(cross-owner edit to Tank's counters.rs, emitted at zero so probes can refuse on it), status text
+naming VK_ERROR_DEVICE_LOST, `failure_condition_token` -> "device-lost" checked before the
+shape family, `disable_fallback()` in every harness, non-triviality guard exiting 2 on
+`compute_calls == 0`, and `probe_kv_bytes_earned.py` refusing any point with device_losses != 0.
+
+**The token test failed on the driver's own wording, first try.** The matcher had "device was
+lost" and "device_lost"; the text that arrives is "The logical device has been lost", which
+matched neither and fell through to `shape` because it also contains "bytes". *A classifier
+tested only against strings we wrote ourselves is tested against the one input it cannot get
+wrong.*
+
+478 lib tests, 15 epctl, clippy clean.
+
+## Session 46j — 2026-08-02 — the KV arena: allocatable, bindable, and still not removable
+
+Merged `main` (2397f5a, docs-only fast-forward; DLL hash correctly unchanged at
+87AB2650513EE0C8). Commit **898a2ba** on `squad/switch`. DLL -> F226AD136BE1842E.
+
+**Which world are we in: a third one.** ORT *does* allocate fused-node outputs through this
+EP's device provider — measured 195/195 armed vs 0/195 in the disarmed control, frame SHARED
+vs OFF. So "ORT forbids it" is refuted, and the shipped path is worse than it looked: armed, we
+download all 65 outputs to host staging and memcpy them into a pointer that is itself device
+memory. A device->host->device round trip.
+
+**But binding them returns zeros.** I built the output-side `bind_target_for` (Step 1c,
+`ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`, default OFF) and it produced ALL-ZERO logits and
+present tensors. `transfer`'s own doc predicted it — the host staging block is authoritative
+and the device buffer is a mirror. The kernel writes the device buffer, the caller reads the
+host block, nothing writes the host block.
+
+So: allocation permitted, binding permitted, **authority not available** — because the consumer
+of `present.*` is the caller and the caller reads host memory. The 2.21x is not available in
+the shape it was costed in. It needs IOBinding with device OrtValues (a caller-side change) or
+an EP-owned cache ORT never sees.
+
+**My scorer nearly certified the zeros and that is the lesson.** First verdict rule scored
+`cpu~bound` against `cpu~ep` and returned BOUND_OUTPUT_IS_SOUND: the zero lane won at
+**1.0 vs 1.9958**, because an all-zero tensor scores 1.0 on a relative metric and the
+incumbent's logits score saturates near 2 on a 1e-3 denominator floor.
+
+*A scoring rule that can be beaten by returning nothing is not a scoring rule.*
+
+Fixed with a degeneracy guard and by making the primary criterion `ep` vs `bound` rather
+than `cpu` vs `bound` — same kernel, same inputs, only the writeback path differs, so
+anything but agreement to the digit is the writeback path changing the answer. Scoring against
+the CPU EP let the EP's own tolerance hide it. Second time in two days a noisy incumbent nearly
+admitted a worse replacement.
+
+**Corollary:** the bound lane made `outputs_device_resident` read 0, because a bound output
+never reaches the site that records residency — indistinguishable from the change not firing.
+The probe refused it as ERROR(instrument). *A change that removes a code path also removes
+whatever that path was counting.* Fixed with a separate `outputs_device_bound` counter
+recorded at the bind.
+
+Default path re-verified unchanged on the shipped binary. 478 lib tests, 15 epctl, clippy clean.
