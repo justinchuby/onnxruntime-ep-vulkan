@@ -415,10 +415,26 @@ unsafe fn get_supported_devices_impl(
 /// > There's no data transfer registered for copying tensors from Device:[DeviceType:0 …] to
 /// > Device:[DeviceType:1 … Alignment:4096]
 ///
-/// — verified locally against ORT 1.28 on both devices. The data transfer cannot be written until
-/// the handle→`VkBuffer` seam is filled, which is Switch's side. So the allocator ships complete,
-/// proven in ORT's path, and opt-in until its partner exists. Turning it on before then would
-/// trade a working EP for an unusable one.
+/// — verified locally against ORT 1.28 on both devices.
+///
+/// **That reason has expired, and this is what replaced it (2026-08-02).** It said the data
+/// transfer could not be written until the handle→`VkBuffer` seam was filled. That seam is filled:
+/// `CreateDataTransfer` is registered unconditionally and `VulkanDataTransfer` exists. The default
+/// is still off, but now for a *measured* reason, and here is the measurement — device 0, Phi-3.5,
+/// counters only, no clock (`bench/results/device_memory_kv_lanes.json`):
+///
+/// | per inference | default lane (`OFF`) | armed lane (`SHARED`) |
+/// |---|---|---|
+/// | staging **readback** @ ctx 0 / 128 | 457,344 / 50,788,992 B | **identical** |
+/// | readback per past token (0→128) | 393,216.0 B | **393,216.0 B** |
+/// | staging **upload** | 399,376 B | **8 B** |
+///
+/// So arming this does **not** remove the host round-trip for `past_key_values`/`present` — the
+/// readback is byte-identical in both lanes, because `bind_target_for` is called on inputs only
+/// (`vk/session.rs` step 1a) and the output readback is an unconditional sum over
+/// `actual_output_byte_sizes`. No configuration can decline it; only an output-side bind can.
+/// What arming *does* remove is weight re-upload: 2.29 GB → 1.57 MB over five inferences. That is
+/// the live argument for flipping the default, and it is a weight-residency argument, not a KV one.
 ///
 /// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` enables it. That is the switch the M2 work runs behind.
 pub const ENV_DEVICE_MEMORY: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY";

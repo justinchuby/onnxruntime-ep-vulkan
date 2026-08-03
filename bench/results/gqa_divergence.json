@@ -1,5 +1,5 @@
 {
-  "dll_sha256": "235e6d78aaa5a77f0ea701717fd8b73deeda2ac072b1ae9af6680eedc9ac0955",
+  "dll_sha256": "ac9076415584f3042455167afcac41e92db71c9a5829dcbcc650f72f936d2bb4",
   "case": "group_query_attention_f16.onnx",
   "node_inputs": [
     "packed_qkv",

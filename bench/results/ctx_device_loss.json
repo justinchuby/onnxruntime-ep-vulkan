@@ -1,0 +1,21 @@
+{
+  "points": [
+    {
+      "arm": "phi",
+      "past_len": 512,
+      "iters": 5,
+      "exit": 0,
+      "device_lost_in_text": false,
+      "device_losses_counter": 0,
+      "compute_calls": 5,
+      "compute_failures": 0,
+      "dispatches_executed": 1775,
+      "claimed_nodes": 355,
+      "events": {
+        "state": "UNDETERMINED",
+        "counts": {}
+      }
+    }
+  ],
+  "trivial_arms": 0
+}

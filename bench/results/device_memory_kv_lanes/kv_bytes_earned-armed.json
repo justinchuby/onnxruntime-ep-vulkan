@@ -2,7 +2,7 @@
   "kind": "kv_bytes_earned",
   "question": "are the KV bytes the byte model names the KV bytes that move?",
   "device": "0",
-  "dll": "C:\\Users\\justinchu\\dev\\ep-vulkan-switch\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "dll": "C:\\Users\\justinchu\\dev\\ep-vulkan-tank\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
   "predicted_bytes_per_past_token": 393216,
   "predicted_from": "model-declared input shapes past_key_values.{0..31}.{key,value} [1,32,past_len,96] f16 -- not from any counter in this record",
   "past_len_is_wired": {
@@ -14,53 +14,73 @@
     {
       "past_len": 0,
       "iters": 5,
-      "session_staging_upload_bytes": 2296768592,
+      "session_staging_upload_bytes": 1572904,
       "session_staging_uploads": 5,
       "session_staging_readback_bytes": 2286720,
       "session_staging_readbacks": 5,
-      "session_device_allocs": 3089,
+      "session_device_allocs": 3148,
       "dispatches_executed": 1775,
       "compute_calls": 5,
-      "compute_failures": 0,
       "subgraphs_live": 1
     },
     {
       "past_len": 0,
       "iters": 25,
-      "session_staging_upload_bytes": 2320484752,
+      "session_staging_upload_bytes": 1573064,
       "session_staging_uploads": 25,
       "session_staging_readback_bytes": 11433600,
       "session_staging_readbacks": 25,
-      "session_device_allocs": 14149,
+      "session_device_allocs": 14168,
       "dispatches_executed": 8875,
       "compute_calls": 25,
-      "compute_failures": 0,
       "subgraphs_live": 1
     },
     {
       "past_len": 128,
       "iters": 5,
-      "session_staging_upload_bytes": 2548426832,
+      "session_staging_upload_bytes": 1572904,
       "session_staging_uploads": 5,
       "session_staging_readback_bytes": 253944960,
       "session_staging_readbacks": 5,
-      "session_device_allocs": 3409,
+      "session_device_allocs": 3468,
       "dispatches_executed": 1775,
       "compute_calls": 5,
-      "compute_failures": 0,
       "subgraphs_live": 1
     },
     {
       "past_len": 128,
       "iters": 25,
-      "session_staging_upload_bytes": 3578775952,
+      "session_staging_upload_bytes": 1573064,
       "session_staging_uploads": 25,
       "session_staging_readback_bytes": 1269724800,
       "session_staging_readbacks": 25,
-      "session_device_allocs": 15749,
+      "session_device_allocs": 15768,
       "dispatches_executed": 8875,
       "compute_calls": 25,
-      "compute_failures": 0,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 512,
+      "iters": 5,
+      "session_staging_upload_bytes": 1572888,
+      "session_staging_uploads": 3,
+      "session_staging_readback_bytes": 403567872,
+      "session_staging_readbacks": 2,
+      "session_device_allocs": 2173,
+      "dispatches_executed": 710,
+      "compute_calls": 3,
+      "subgraphs_live": 1
+    },
+    {
+      "past_len": 512,
+      "iters": 25,
+      "session_staging_upload_bytes": 1572904,
+      "session_staging_uploads": 5,
+      "session_staging_readback_bytes": 807135744,
+      "session_staging_readbacks": 4,
+      "session_device_allocs": 3403,
+      "dispatches_executed": 1420,
+      "compute_calls": 5,
       "subgraphs_live": 1
     }
   ],
@@ -68,7 +88,7 @@
     {
       "past_len": 0,
       "islands": 1,
-      "upload_bytes_per_inference": 1185808.0,
+      "upload_bytes_per_inference": 8.0,
       "readback_bytes_per_inference": 457344.0,
       "uploads_per_inference": 1.0,
       "dispatches_per_inference": 355.0,
@@ -77,34 +97,52 @@
     {
       "past_len": 128,
       "islands": 1,
-      "upload_bytes_per_inference": 51517456.0,
+      "upload_bytes_per_inference": 8.0,
       "readback_bytes_per_inference": 50788992.0,
       "uploads_per_inference": 1.0,
       "dispatches_per_inference": 355.0,
       "modelled_kv_bytes": 50331648
+    },
+    {
+      "past_len": 512,
+      "islands": 1,
+      "upload_bytes_per_inference": 0.8,
+      "readback_bytes_per_inference": 20178393.6,
+      "uploads_per_inference": 0.1,
+      "dispatches_per_inference": 35.5,
+      "modelled_kv_bytes": 201326592
     }
   ],
   "segments": [
     {
       "from_past_len": 0,
       "to_past_len": 128,
-      "upload_bytes_per_past_token": 393216.0,
+      "upload_bytes_per_past_token": 0.0,
       "readback_bytes_per_past_token": 393216.0,
       "predicted_bytes_per_past_token": 393216.0,
-      "upload_ratio": 1.0,
+      "upload_ratio": 0.0,
       "readback_ratio": 1.0
+    },
+    {
+      "from_past_len": 128,
+      "to_past_len": 512,
+      "upload_bytes_per_past_token": -0.01875,
+      "readback_bytes_per_past_token": -79715.09999999999,
+      "predicted_bytes_per_past_token": 393216.0,
+      "upload_ratio": -4.7683715820312496e-08,
+      "readback_ratio": -0.2027259826660156
     }
   ],
   "readback": {
     "state": "MEASURED",
-    "bytes_per_past_token": 393216.0,
-    "factor": 1.0,
-    "linearity_spread": 0.0,
+    "bytes_per_past_token": 156750.45,
+    "factor": 0.3986370086669922,
+    "linearity_spread": 1.2027259826660157,
     "means": "the present KV cache is copied device->host in full every inference: (past_len + 1) * 393,216 B. The modelled KV magnitude is confirmed to the byte on this axis, on both segments, with zero spread between them."
   },
   "upload": {
     "state": "MEASURED",
-    "observed_bytes_per_inference": 1185808.0,
+    "observed_bytes_per_inference": 8.0,
     "means": "upload per inference is identical at past_len 0, 128 and 512, so the past KV cache does not reach the device through the staging path these counters watch. It reaches it somehow -- the answers change with past_len and GQA is claimed -- so this is a path this instrument cannot see, not an absence of traffic. Reporting 0 here would claim the read side of the KV cache is free.",
     "why_not_zero": "R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE. `session_staging_upload_bytes` observes staging uploads; if the past KV is made resident by any other mechanism, this counter is structurally blind to it and its silence is not evidence."
   },

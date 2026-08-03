@@ -1,0 +1,18 @@
+{
+  "kind": "kv_input_cache",
+  "question": "does the >=32 KiB input cache serve stale KV at a reused address?",
+  "past_len": 512,
+  "past_key_bytes": 65536,
+  "cache_min_bytes": 32768,
+  "cacheable_by_size": true,
+  "vulkan_node_executions": 2,
+  "reference_moved_between_runs": 0.015689849853515625,
+  "run_b_vs_correct_max_abs": 2.384185791015625e-07,
+  "run_b_vs_stale_max_abs": 0.015689849853515625,
+  "outputs": [
+    "attn_out",
+    "present_key",
+    "present_value"
+  ],
+  "verdict": "FOLLOWS_DATA"
+}

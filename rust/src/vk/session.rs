@@ -813,6 +813,7 @@ impl VulkanSession {
         &mut self,
         kernels: &[CompiledKernel],
         input_byte_sizes: &[u64],
+        input_is_constant: &[bool],
         output_byte_sizes: &[u64],
         output_shapes: &[Vec<i64>],
         n_intermediates: usize,
@@ -833,6 +834,15 @@ impl VulkanSession {
 
         let n_plan_inputs = input_byte_sizes.len();
         let n_plan_outputs = output_byte_sizes.len();
+        // `input_is_constant` is built from the same `plan.inputs` as `input_byte_sizes` and is
+        // index-parallel to it. A short slice would silently disable the device-buffer cache
+        // (the `unwrap_or(false)` below), which is safe but expensive, so make the disagreement
+        // loud in debug builds rather than paying for it quietly.
+        debug_assert_eq!(
+            input_is_constant.len(),
+            n_plan_inputs,
+            "input_is_constant must be index-parallel to input_byte_sizes"
+        );
 
         // Per-subgraph weight cache: obtain a raw pointer to break the borrow conflict
         // between `self.weight_caches` and `self.alloc` / `self.device` used later.
@@ -1247,14 +1257,38 @@ impl VulkanSession {
                 ));
                 continue;
             }
-            // Weight-cache check: if ORT gives us the same CPU pointer as a prior inference,
-            // the tensor is a model constant (initialiser/weight) — skip alloc and upload.
-            // `borrowed_ref` produces a non-owning GpuBuffer: `free_all` below is a no-op
-            // for it, so the real buffer stays alive in `weight_caches` for next time.
+            // Device-buffer cache check. The key is `(cpu_ptr, byte_size)`, but the *predicate*
+            // for being cacheable at all is `input_is_constant[i]` — ORT's own answer to whether
+            // this subgraph input is a graph initializer.
+            //
+            // MEASURED 2026-08-02: this was gated on `byte_size >= 32 KiB` instead, on the
+            // reasoning that "activations are small (seq=1 in Phi-3.5 → 6 KB)". KV-cache inputs
+            // are neither small nor constant: `past_key_values.N.key` is `past_len * 6144` bytes
+            // and crosses 32 KiB at past_len >= 6. Every one of the 64 KV inputs was cached as
+            // though it were a weight, and every inference after the first read the FIRST
+            // inference's cache. `probe_kv_input_cache.py` reads STALE_CACHE: with the past
+            // mutated in place between two runs, the second run returned the first run's answer
+            // to the bit while the reference answer moved by 0.0157.
+            //
+            // An address identifies storage; it does not identify contents. Those are the same
+            // question for an initializer and different questions for anything ORT may rewrite,
+            // and no size threshold separates them — Phi-3.5's KV inputs are on the same side of
+            // every threshold as its weights. The information that does separate them exists in
+            // the caller (`GraphViewer::input_is_constant`), so the fix is to carry it here
+            // rather than to infer it from something that correlates with it.
+            //
+            // The size floor is kept as a secondary condition only because a tiny constant is not
+            // worth a cache slot; it is no longer load-bearing for correctness.
+            let cacheable = input_is_constant.get(i).copied().unwrap_or(false);
             let cpu_key = (input_cpu_ptrs[i] as usize, sz);
-            // SAFETY: weight_cache_ptr is a valid, exclusive pointer to the per-subgraph
-            // HashMap entry; no other code accesses weight_caches during this call.
-            if let Some(cached) = unsafe { (*weight_cache_ptr).get(&cpu_key) } {
+            let cached_hit = if cacheable {
+                // SAFETY: `weight_cache_ptr` is a valid, exclusive pointer to the per-subgraph
+                // HashMap entry; no other code accesses `weight_caches` during this call.
+                unsafe { (*weight_cache_ptr).get(&cpu_key) }
+            } else {
+                None
+            };
+            if let Some(cached) = cached_hit {
                 gpu_inputs.push(GpuBuffer::borrowed_ref(
                     cached.buffer,
                     cached.size,
@@ -1897,7 +1931,15 @@ impl VulkanSession {
                 crate::sys::make_status(
                     api,
                     ort::OrtErrorCode_ORT_EP_FAIL,
-                    "vkWaitForFences failed",
+                    if crate::vk::cmd::device_was_lost() {
+                        // Name the mechanism in the status ORT propagates. The host sees only
+                        // this string, and "vkWaitForFences failed" reads as a transient wait
+                        // problem when the device is gone and every later submission will fail
+                        // the same way.
+                        "vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)"
+                    } else {
+                        "vkWaitForFences failed"
+                    },
                 )
             };
         }
@@ -1979,16 +2021,22 @@ impl VulkanSession {
 
         // Cleanup regardless of output-write outcome.
         //
-        // Weight-cache: for each input that was a fresh upload (non-borrowed staging),
-        // move its device buffer into `weight_cache` keyed on (cpu_ptr, byte_size) so the
-        // next inference can skip the upload.  Only tensors ≥ WEIGHT_CACHE_MIN_BYTES are
-        // cached — activations are small (seq=1 in Phi-3.5 → 6 KB) and may be backed by
-        // ORT's recycled frame allocator; caching them could serve stale data if ORT reuses
-        // the same address with different bytes.  Model weights and scales are ≥32 KB.
+        // Device-buffer cache insertion: for each input that was a fresh upload (non-borrowed
+        // staging) *and that ORT reports as a graph initializer*, move its device buffer into
+        // `weight_cache` keyed on (cpu_ptr, byte_size) so the next inference can skip the upload.
+        //
+        // The constancy flag is the load-bearing condition and the size floor is a convenience.
+        // The prior code had it the other way round: it cached anything ≥32 KiB, reasoning that
+        // "activations are small (seq=1 in Phi-3.5 → 6 KB)". That reasoning names the right
+        // hazard — "caching them could serve stale data if ORT reuses the same address with
+        // different bytes" — and then tests for it with a proxy that Phi-3.5's KV-cache inputs
+        // fail: `past_key_values.N.key` is `past_len * 6144` bytes, i.e. ≥32 KiB from past_len 6.
+        // See the lookup site for the falsifier (`probe_kv_input_cache.py` → STALE_CACHE).
         const WEIGHT_CACHE_MIN_BYTES: u64 = 32 * 1024;
         for (i, stg) in staging_ups.iter().enumerate() {
             let sz = actual_input_byte_sizes[i];
-            if !stg.borrowed && sz >= WEIGHT_CACHE_MIN_BYTES {
+            let is_const = input_is_constant.get(i).copied().unwrap_or(false);
+            if !stg.borrowed && is_const && sz >= WEIGHT_CACHE_MIN_BYTES {
                 // Read fields before the mutable replace to avoid a borrow conflict.
                 let (handle, cached_sz, cls) = (
                     gpu_inputs[i].buffer,

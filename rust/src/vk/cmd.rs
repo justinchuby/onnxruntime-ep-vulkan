@@ -255,9 +255,23 @@ pub(crate) unsafe fn wait_fence_then_destroy(ash_device: &ash::Device, fence: vk
     unsafe { ash_device.destroy_fence(fence, None) };
     if let Err(e) = wait_ok {
         log::error!("vkWaitForFences failed: {e}");
+        // A lost device is not one failure among many: every later submission on this device
+        // will fail too, the process keeps running, and ORT's Python fallback will quietly
+        // re-run the graph on the CPU EP and return a plausible answer. Record it separately so
+        // a post-run screen can see it in the counters even when nothing raised.
+        if e == vk::Result::ERROR_DEVICE_LOST {
+            crate::counters::record_device_lost();
+        }
         return false;
     }
     true
+}
+
+/// Whether the device has been lost at any point in this process.
+///
+/// Read after a run to decide whether the numbers it produced describe this EP at all.
+pub(crate) fn device_was_lost() -> bool {
+    crate::counters::device_losses() > 0
 }
 
 /// Submit `cmd` to `queue` and wait (via fence) for it to complete.
