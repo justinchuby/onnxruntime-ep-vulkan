@@ -2214,6 +2214,20 @@ fn failure_condition_token(error_text: &str) -> &'static str {
         "panic"
     } else if t.contains("planted") || t.contains("fault-injection") {
         "planted-control"
+    } else if t.contains("device was lost")
+        || t.contains("device_lost")
+        || t.contains("device has been lost")
+    {
+        // Checked before the size/shape family: the message names byte counts and the device
+        // in the same sentence, and "the device is gone" is the fact that decides whether any
+        // number from this run may be read at all.
+        //
+        // All three spellings are load-bearing. The driver's own text is "The logical device
+        // has been lost" — it contains neither "device was lost" nor "device_lost", so the
+        // first version of this branch classified the real message as `shape` (it contains
+        // "bytes" further along). The token is only useful if it fires on the text that
+        // actually arrives, not on the text we chose to write ourselves.
+        "device-lost"
     } else if t.contains("alloc") || t.contains("out of memory") || t.contains("oom") {
         "allocator"
     } else if t.contains("shape")
@@ -3057,6 +3071,31 @@ mod tests {
                 failure_condition_token("planted control (…): synthetic Compute failure"),
                 "planted-control"
             );
+        }
+
+        /// A lost device must be named as a lost device.
+        ///
+        /// Found 2026-08-02 at ctx 512: `vkWaitForFences failed: The logical device has been
+        /// lost` reached ORT, ORT re-ran the island on the CPU EP, and the process exited 0.
+        /// A run that dies partway and exits 0 does not look like a failure; it looks like a
+        /// smaller number — differencing a truncated pair produced an apparent 6.7% KV saving
+        /// that was an observation ending early. The token exists so that a lost device is
+        /// distinguishable from every other Compute failure without parsing prose, and it is
+        /// tested against the *verbatim* driver text because that text is the only thing the
+        /// classifier ever sees.
+        #[test]
+        fn a_lost_device_is_classified_as_a_lost_device_and_not_as_a_shape_error() {
+            for text in [
+                "vkWaitForFences failed: The logical device has been lost",
+                "vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)",
+                "vkQueueSubmit failed: ERROR_DEVICE_LOST",
+            ] {
+                assert_eq!(
+                    failure_condition_token(text),
+                    "device-lost",
+                    "device loss must not be classified as anything else: {text}"
+                );
+            }
         }
 
         /// A fused island of 355 nodes must not print 355 node names into a host's log: the WARN

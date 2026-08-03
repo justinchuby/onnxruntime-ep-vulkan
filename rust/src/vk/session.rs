@@ -1931,7 +1931,15 @@ impl VulkanSession {
                 crate::sys::make_status(
                     api,
                     ort::OrtErrorCode_ORT_EP_FAIL,
-                    "vkWaitForFences failed",
+                    if crate::vk::cmd::device_was_lost() {
+                        // Name the mechanism in the status ORT propagates. The host sees only
+                        // this string, and "vkWaitForFences failed" reads as a transient wait
+                        // problem when the device is gone and every later submission will fail
+                        // the same way.
+                        "vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)"
+                    } else {
+                        "vkWaitForFences failed"
+                    },
                 )
             };
         }

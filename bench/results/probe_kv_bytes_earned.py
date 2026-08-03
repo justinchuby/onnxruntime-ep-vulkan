@@ -232,6 +232,18 @@ def run_point(past_len: int, iters: int, scratch: Path) -> dict:
             f"ERROR(instrument): worker past_len={past_len} iters={iters} executed 0 "
             "dispatches — nothing ran on the device, so no byte it reports is ours."
         )
+    # A lost device is not just another Compute failure: the EP may lose it, ORT may re-run the
+    # island on the CPU EP, and the process still exits 0 with a *complete-looking* file. The
+    # three guards above are all necessary but none of them names the mechanism, and a run that
+    # recovered on the CPU can satisfy all three while reporting device byte counts that stopped
+    # early. `device_losses` is checked separately so the refusal says what actually happened.
+    if c.get("device_losses"):
+        raise SystemExit(
+            f"ERROR(instrument): worker past_len={past_len} iters={iters} recorded "
+            f"device_losses={c['device_losses']}. The device was lost during this point; every "
+            "byte count in it describes a run that ended when the device did. Re-run it; do "
+            "not difference it."
+        )
     return {"past_len": past_len, "iters": iters, **{k: c[k] for k in COUNTERS}}
 
 

@@ -455,6 +455,14 @@ pub struct VulkanEpCounters {
     pub compute_calls: u64,
     /// Compute calls that returned an `OrtStatus` instead of success.
     pub compute_failures: u64,
+    /// `VK_ERROR_DEVICE_LOST` observations on a fence wait.
+    ///
+    /// Separate from `compute_failures` because it is not one failure among many: once the
+    /// device is lost every later submission fails, the host process keeps running, and ORT's
+    /// Python fallback re-runs the graph on the CPU EP and returns a plausible answer with exit
+    /// status 0. Any run with `device_losses > 0` is `ERROR(instrument)`, not a measurement —
+    /// including the parts of it that completed before the loss.
+    pub device_losses: u64,
     /// Dispatches that ran to fence completion. **This is the criterion-8 number.**
     pub dispatches_executed: u64,
     /// Islands that passed `partition::evaluate` (net-benefit gate, §7.0.2) in multi-cluster
@@ -496,6 +504,7 @@ static SUBGRAPHS_LIVE: AtomicU64 = AtomicU64::new(0);
 static SUBGRAPHS_STUB: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
+static DEVICE_LOSSES: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
 /// Successful and failed writes of the JSON snapshot, reported *by the next successful write*.
 ///
@@ -680,6 +689,18 @@ pub fn record_compute_call() {
 
 pub fn record_compute_failure() {
     COMPUTE_FAILURES.fetch_add(1, ORD);
+}
+
+/// One VK_ERROR_DEVICE_LOST on a fence wait. Sticky for the life of the process: a device
+/// that came back is still a device that went away, and everything measured either side of it
+/// belongs to two different machines.
+pub fn record_device_lost() {
+    DEVICE_LOSSES.fetch_add(1, ORD);
+}
+
+/// How many times the device has been lost in this process.
+pub fn device_losses() -> u64 {
+    DEVICE_LOSSES.load(ORD)
 }
 
 /// Record a `GetCapability` call's partition results.
@@ -1130,6 +1151,7 @@ pub fn snapshot() -> VulkanEpCounters {
         subgraphs_stub: SUBGRAPHS_STUB.load(ORD),
         compute_calls: COMPUTE_CALLS.load(ORD),
         compute_failures: COMPUTE_FAILURES.load(ORD),
+        device_losses: DEVICE_LOSSES.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
         viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
         proven_key_lookups: LEDGER_LOOKUPS.load(ORD),
@@ -1147,6 +1169,7 @@ pub fn reset() {
     SUBGRAPHS_STUB.store(0, ORD);
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
+    DEVICE_LOSSES.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
     if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
         used.clear();
@@ -1208,7 +1231,7 @@ impl VulkanEpCounters {
         let (shaders_list, shaders_digest) = shaders_dispatched_json();
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
-             \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \
+             \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \"device_losses\": {},\n  \
              \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
              \"viable_islands_retained\": {},\n  \
              \"net_benefit_gate\": \"{}\",\n  \
@@ -1249,6 +1272,7 @@ impl VulkanEpCounters {
             self.subgraphs_stub,
             self.compute_calls,
             self.compute_failures,
+            self.device_losses,
             self.dispatches_executed,
             claimed,
             islands,
@@ -1569,6 +1593,37 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lost device must be visible in the artifact a harness reads, not only in a log line.
+    ///
+    /// Found 2026-08-02: at ctx 512 the device was lost, ORT re-ran the island on the CPU EP,
+    /// the process exited 0, and a *complete* counters file was written. Differencing that pair
+    /// against its sibling produced an apparent 6.7% KV saving that was an observation ending
+    /// early. `compute_failures` alone does not separate "a dispatch failed" from "the device is
+    /// gone, and every number in this file describes a partial run"; `device_losses` does, and it
+    /// has to be in the JSON because the JSON is what the probes read.
+    #[test]
+    fn a_lost_device_is_recorded_and_reaches_the_json_artifact() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(device_losses(), 0, "reset must clear the device-loss count");
+        assert!(
+            snapshot().to_json().contains("\"device_losses\""),
+            "the key must be present at zero: a probe cannot refuse on a key that only \
+             appears once the failure has happened"
+        );
+        record_device_lost();
+        record_device_lost();
+        assert_eq!(device_losses(), 2);
+        assert_eq!(snapshot().device_losses, 2);
+        assert!(
+            snapshot().to_json().contains("\"device_losses\": 2"),
+            "got: {}",
+            snapshot().to_json()
+        );
+        reset();
+    }
 
     /// The bytes that dominate the run must be counted with **no flag set**.
     ///
