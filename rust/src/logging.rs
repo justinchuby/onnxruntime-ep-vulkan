@@ -180,7 +180,9 @@ fn forward_to_ort(
 /// so `PRIVATE_LOG_ONLY` can never be read as a delivered disclosure.
 pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
     eprintln!("[vulkan-ep] WARN: {message}");
-    forward_to_ort(Level::Warn, target, message, Some(UNKNOWN_FILE), 0)
+    let handed = forward_to_ort(Level::Warn, target, message, Some(UNKNOWN_FILE), 0);
+    // Handing it over is not delivery. See `ort_sink_severity`.
+    handed && ort_sink_accepts(Level::Warn).unwrap_or(true)
 }
 
 /// Emit one INFO into **ORT's own logging sink**, bypassing this crate's `log` facade, for the
@@ -196,7 +198,8 @@ pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
 /// own environment can suppress is a disclosure whose absence means nothing.
 pub fn info_through_ort_sink(target: &str, message: &str) -> bool {
     eprintln!("[vulkan-ep] INFO: {message}");
-    forward_to_ort(Level::Info, target, message, Some(UNKNOWN_FILE), 0)
+    let handed = forward_to_ort(Level::Info, target, message, Some(UNKNOWN_FILE), 0);
+    handed && ort_sink_accepts(Level::Info).unwrap_or(true)
 }
 
 /// Stand-in `file_path` for a record with no source location. Never empty, never null.
@@ -217,6 +220,53 @@ fn ort_path(s: &str) -> Vec<u16> {
 #[cfg(not(windows))]
 fn ort_path(s: &str) -> CString {
     CString::new(s.replace('\0', "?")).unwrap_or_else(|_| CString::default())
+}
+
+/// The severity threshold of the ORT logger currently attached, if one is.
+///
+/// # Why this exists
+///
+/// `forward_to_ort` used to return `true` for "I handed the message to `Logger_LogMessage`",
+/// and every caller read that as "the message was delivered". Those are not the same claim:
+/// ORT drops any record below the logger's own threshold, silently and with a success status.
+/// The gap was invisible until the §8.9.7 disclosure's *INFO* half was witnessed for the first
+/// time (2026-08-03) and turned out never to reach ORT's sink at any host severity, while the
+/// WARN half always did — with `warn_reached_ort_sink` reporting `true` throughout.
+///
+/// A counter that says a disclosure was delivered when it was dropped is worse than no counter,
+/// so the threshold is now read from ORT rather than assumed.
+///
+/// Returns `None` when no logger is attached, or when this ORT build does not export
+/// `Logger_GetLoggingSeverityLevel`. Callers treat `None` as "cannot say". They must not turn it
+/// into a *worse* claim than they had before either: [`warn_through_ort_sink`] keeps reporting
+/// delivery when the threshold is unreadable, because "we handed it over and nothing says it was
+/// dropped" is exactly what that boolean has always meant. What changes is that a threshold we
+/// *can* read and that *does* exclude the level is now believed.
+pub fn ort_sink_severity() -> Option<ort::OrtLoggingLevel> {
+    let logger = ORT_LOGGER.load(Ordering::Acquire);
+    let api = ORT_API.load(Ordering::Acquire);
+    if logger.is_null() || api.is_null() {
+        return None;
+    }
+    // SAFETY: both pointers were published by `attach_ort_logger` from pointers ORT handed us and
+    // are cleared before ORT can invalidate them, so a non-null read here is a live logger. `out`
+    // is a valid writable `OrtLoggingLevel`. The returned status is ours to release.
+    unsafe {
+        let get = (*api).Logger_GetLoggingSeverityLevel?;
+        let mut level: ort::OrtLoggingLevel = ort::OrtLoggingLevel_ORT_LOGGING_LEVEL_VERBOSE;
+        let status = get(logger, &mut level);
+        let ok = status.is_null();
+        crate::sys::release_status(api, status);
+        ok.then_some(level)
+    }
+}
+
+/// Whether ORT's attached sink would actually record a message at `level`.
+///
+/// `None` means the question cannot be answered — no logger, or no threshold API. R13: an
+/// instrument that cannot read is not a reading of "no".
+pub fn ort_sink_accepts(level: Level) -> Option<bool> {
+    ort_sink_severity().map(|threshold| ort_severity(level) >= threshold)
 }
 
 /// Start forwarding log records into ORT's logger.

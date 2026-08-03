@@ -54,8 +54,8 @@
 //! executed nothing must not be able to look like a lane that was never asked to.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
 /// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
@@ -685,7 +685,8 @@ static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static SHADERS_DISPATCHED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 /// Claimed nodes whose `Compute()` returned a non-OK status — RAI Ruling 2's broken commitment.
-static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
+static BROKEN_COMMITMENTS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose mandatory WARN reached ORT's own logging sink.
 static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 
 /// How many §8.9.7 session-creation disclosures ran in this process.
@@ -705,6 +706,22 @@ static CLAIMED_FORMS_LEDGER_FAULTED: AtomicU64 = AtomicU64::new(0);
 static SESSION_DISCLOSURE_WARNS: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones whose WARN reached ORT's own logging sink.
 static SESSION_DISCLOSURE_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
+/// Disclosures that emitted the INFO half — the proven forms and what proved them.
+///
+/// RAI-008(b) asks for **both** halves, and until 2026-08-03 only the WARN half was counted. The
+/// INFO's delivery was therefore unobservable in the artifact, which is the same defect
+/// `warn_reached_ort_sink` was built to prevent, left standing on the other half of the pair.
+static SESSION_DISCLOSURE_INFOS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose INFO reached ORT's own logging sink.
+static SESSION_DISCLOSURE_INFOS_TO_ORT: AtomicU64 = AtomicU64::new(0);
+/// ORT's own severity threshold, sampled at the instant of the session-creation disclosure.
+///
+/// Stored as `threshold + 1` so that `0` means *never sampled* and cannot be confused with
+/// `VERBOSE`, which is `0` on ORT's scale. Read it through
+/// [`ort_sink_severity_threshold`]; it exists because "the EP did not speak" and "the EP spoke
+/// and the host's log level discarded it" are different findings with different repairs, and
+/// until this was recorded the artifact spelled both the same way.
+static ORT_SINK_SEVERITY_SAMPLED: AtomicU64 = AtomicU64::new(0);
 /// Compute failures produced by the fault-injection control rather than suffered.
 static COMPUTE_FAILURES_INJECTED: AtomicU64 = AtomicU64::new(0);
 
@@ -761,7 +778,6 @@ pub fn record_output_residency(device_resident: bool) {
         OUTPUTS_HOST_RESIDENT.fetch_add(1, ORD);
     }
 }
-
 
 /// One fused-node output bound directly to ORT's device buffer (Step 1c).
 pub fn record_output_bound() {
@@ -982,7 +998,10 @@ fn unproven_forms_enabled_json() -> String {
     let Ok(used) = UNPROVEN_KEYS_USED.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
-    let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    let body: Vec<String> = used
+        .iter()
+        .map(|k| format!("\"{}\"", json_escape(k)))
+        .collect();
     format!("[{}]", body.join(", "))
 }
 
@@ -995,7 +1014,10 @@ fn reproof_forms_admitted_json() -> String {
     let Ok(used) = REPROOF_KEYS_ADMITTED.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
-    let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    let body: Vec<String> = used
+        .iter()
+        .map(|k| format!("\"{}\"", json_escape(k)))
+        .collect();
     format!("[{}]", body.join(", "))
 }
 
@@ -1081,6 +1103,34 @@ pub fn record_injected_compute_failure() {
     COMPUTE_FAILURES_INJECTED.fetch_add(1, ORD);
 }
 
+/// One §8.9.7 session-creation disclosure, as recorded.
+///
+/// This is a struct rather than a positional argument list for one reason: the tail is four
+/// independent booleans describing two halves of a pair (`warned`/`informed` and, for each,
+/// whether ORT's own threshold admitted it). Four adjacent bare `bool`s at a call site is a
+/// transposition waiting to happen, and a transposition here would silently report the INFO half's
+/// standing as the WARN half's — the exact confusion the INFO counter was added to end.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionDisclosure {
+    /// Distinct claimed forms with a ledger entry proving them.
+    pub proven: usize,
+    /// Distinct claimed forms with no measurement behind them.
+    pub unmeasured: usize,
+    /// Distinct claimed forms whose last measurement DIVERGED.
+    pub divergent: usize,
+    /// Distinct claimed forms unreadable because the ledger itself is faulted (R13).
+    pub ledger_faulted: usize,
+    /// Whether a session-creation WARN was emitted at all.
+    pub warned: bool,
+    /// Whether the WARN was handed to ORT's logger at a level its threshold admits.
+    pub warn_reached_ort_sink: bool,
+    /// Whether the per-form INFO half of the disclosure was emitted.
+    pub informed: bool,
+    /// Whether that INFO was handed to ORT's logger at a level its threshold admits. Note this is
+    /// *offered*, never *delivered*; see [`session_disclosure_info_channel`].
+    pub info_reached_ort_sink: bool,
+}
+
 /// Record one §8.9.7 session-creation disclosure.
 ///
 /// Counts **distinct forms**, not nodes: the disclosure itself is per form, and a counter whose
@@ -1091,15 +1141,24 @@ pub fn record_injected_compute_failure() {
 /// session that goes on to claim unproven forms is by construction a session that may end
 /// abnormally, and an observable that can only be read at a shutdown that no longer occurs is
 /// out-of-frame by construction. Read it at the instant of the event instead.
-pub fn record_session_disclosure(
-    proven: usize,
-    unmeasured: usize,
-    divergent: usize,
-    ledger_faulted: usize,
-    warned: bool,
-    warn_reached_ort_sink: bool,
-) {
+pub fn record_session_disclosure(d: SessionDisclosure) {
+    let SessionDisclosure {
+        proven,
+        unmeasured,
+        divergent,
+        ledger_faulted,
+        warned,
+        warn_reached_ort_sink,
+        informed,
+        info_reached_ort_sink,
+    } = d;
     SESSION_DISCLOSURES.fetch_add(1, ORD);
+    // Sample ORT's threshold while a logger is certainly attached. `+ 1` keeps `VERBOSE` (0)
+    // distinguishable from "never sampled"; `6` is the unreadable case.
+    ORT_SINK_SEVERITY_SAMPLED.store(
+        crate::logging::ort_sink_severity().map_or(6, |s| u64::from(s.max(0) as u32) + 1),
+        ORD,
+    );
     CLAIMED_FORMS_PROVEN.fetch_add(proven as u64, ORD);
     CLAIMED_FORMS_UNMEASURED.fetch_add(unmeasured as u64, ORD);
     CLAIMED_FORMS_DIVERGENT.fetch_add(divergent as u64, ORD);
@@ -1108,6 +1167,12 @@ pub fn record_session_disclosure(
         SESSION_DISCLOSURE_WARNS.fetch_add(1, ORD);
         if warn_reached_ort_sink {
             SESSION_DISCLOSURE_WARNS_TO_ORT.fetch_add(1, ORD);
+        }
+    }
+    if informed {
+        SESSION_DISCLOSURE_INFOS.fetch_add(1, ORD);
+        if info_reached_ort_sink {
+            SESSION_DISCLOSURE_INFOS_TO_ORT.fetch_add(1, ORD);
         }
     }
     dump_if_requested();
@@ -1151,6 +1216,46 @@ fn session_disclosure_channel() -> &'static str {
         "ORT_SINK"
     } else {
         "PRIVATE_LOG_ONLY"
+    }
+}
+
+/// ORT's sink severity threshold as a token, or `"UNSAMPLED"` if no disclosure has run.
+fn ort_sink_severity_threshold() -> &'static str {
+    match ORT_SINK_SEVERITY_SAMPLED.load(ORD) {
+        0 => "UNSAMPLED",
+        1 => "VERBOSE",
+        2 => "INFO",
+        3 => "WARNING",
+        4 => "ERROR",
+        5 => "FATAL",
+        _ => "UNREADABLE",
+    }
+}
+
+/// Which channel carried the session-creation INFOs — the proven half of the pair.
+///
+/// The tokens say exactly what is measured and no more, which took two attempts to get right:
+///
+/// * `"UNOBSERVABLE"` — no INFO was due, so nothing is known about the channel.
+/// * `"OFFERED_TO_ORT"` — the record was handed to `Logger_LogMessage` **and** ORT's own
+///   threshold, read back through `Logger_GetLoggingSeverityLevel`, admits its level. This is
+///   deliberately **not** called `ORT_SINK`: what ORT does after accepting a record is ORT's
+///   business, and on ORT 1.28 an accepted INFO from a plugin EP is not observed on the console
+///   sink even though the identical call at WARNING is. Naming this `ORT_SINK` would assert a
+///   delivery this process cannot witness — the very overstatement this counter exists to end.
+/// * `"BELOW_ORT_THRESHOLD"` — ORT's threshold excludes the level, so only this crate's stderr
+///   carried the disclosure. At ORT's default severity (WARNING) this is what a user gets: the
+///   bad news reaches them and the good news does not. That is the safe direction to fail in,
+///   and it is a limitation rather than a design.
+fn session_disclosure_info_channel() -> &'static str {
+    let infos = SESSION_DISCLOSURE_INFOS.load(ORD);
+    let offered = SESSION_DISCLOSURE_INFOS_TO_ORT.load(ORD);
+    if infos == 0 {
+        "UNOBSERVABLE"
+    } else if offered == infos {
+        "OFFERED_TO_ORT"
+    } else {
+        "BELOW_ORT_THRESHOLD"
     }
 }
 
@@ -1217,7 +1322,10 @@ pub fn record_shader_dispatched(stem: &'static str) {
 
 /// The stems recorded by [`record_shader_dispatched`], sorted.
 pub fn shaders_dispatched() -> Vec<&'static str> {
-    SHADERS_DISPATCHED.lock().map(|u| u.clone()).unwrap_or_default()
+    SHADERS_DISPATCHED
+        .lock()
+        .map(|u| u.clone())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -1287,7 +1395,10 @@ pub fn record_pipeline_variant(stem: &str, spec_constants: &[u32]) {
 
 /// The pipeline keys recorded by [`record_pipeline_variant`], sorted.
 pub fn pipeline_variants() -> Vec<String> {
-    PIPELINE_VARIANTS.lock().map(|u| u.clone()).unwrap_or_default()
+    PIPELINE_VARIANTS
+        .lock()
+        .map(|u| u.clone())
+        .unwrap_or_default()
 }
 
 /// The resolved value of `q_gemv.comp`'s packed-load specialization constant, as a **string**.
@@ -1352,7 +1463,10 @@ fn pipeline_variants_json() -> String {
 /// covers and what it deliberately does not — is stated in `docs/OP_COVERAGE.md` §8.9.11.
 fn shaders_dispatched_json() -> (String, String) {
     let stems = shaders_dispatched();
-    let list: Vec<String> = stems.iter().map(|s| format!("\"{}\"", json_escape(s))).collect();
+    let list: Vec<String> = stems
+        .iter()
+        .map(|s| format!("\"{}\"", json_escape(s)))
+        .collect();
     let digest = match crate::registry::shader_digest_for(&stems) {
         Some(d) => d,
         // R12: no module was dispatched is a different fact from "the digest is zero".
@@ -1424,6 +1538,9 @@ pub fn reset() {
     CLAIMED_FORMS_LEDGER_FAULTED.store(0, ORD);
     SESSION_DISCLOSURE_WARNS.store(0, ORD);
     SESSION_DISCLOSURE_WARNS_TO_ORT.store(0, ORD);
+    SESSION_DISCLOSURE_INFOS.store(0, ORD);
+    SESSION_DISCLOSURE_INFOS_TO_ORT.store(0, ORD);
+    ORT_SINK_SEVERITY_SAMPLED.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
     LEDGER_LOOKUPS.store(0, ORD);
     LEDGER_HITS.store(0, ORD);
@@ -1498,6 +1615,10 @@ impl VulkanEpCounters {
              \"session_disclosure_warns\": {},\n  \
              \"session_disclosure_warns_to_ort_sink\": {},\n  \
              \"session_disclosure_channel\": \"{}\",\n  \
+             \"session_disclosure_infos\": {},\n  \
+             \"session_disclosure_infos_to_ort_sink\": {},\n  \
+             \"session_disclosure_info_channel\": \"{}\",\n  \
+             \"ort_sink_severity_threshold\": \"{}\",\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
             self.compile_calls,
@@ -1551,6 +1672,10 @@ impl VulkanEpCounters {
             SESSION_DISCLOSURE_WARNS.load(ORD),
             SESSION_DISCLOSURE_WARNS_TO_ORT.load(ORD),
             session_disclosure_channel(),
+            SESSION_DISCLOSURE_INFOS.load(ORD),
+            SESSION_DISCLOSURE_INFOS_TO_ORT.load(ORD),
+            session_disclosure_info_channel(),
+            ort_sink_severity_threshold(),
             equiv,
         )
     }
@@ -2004,7 +2129,10 @@ mod tests {
             "a channel with no traffic is not a proven channel. Got:\n{doc}"
         );
 
-        record_session_disclosure(3, 0, 0, 0, false, false);
+        record_session_disclosure(SessionDisclosure {
+            proven: 3,
+            ..Default::default()
+        });
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"ALL-PROVEN\""),
@@ -2015,7 +2143,13 @@ mod tests {
             "no WARN was emitted, so the WARN channel is still unexercised. Got:\n{doc}"
         );
 
-        record_session_disclosure(1, 1, 0, 0, true, true);
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            unmeasured: 1,
+            warned: true,
+            warn_reached_ort_sink: true,
+            ..Default::default()
+        });
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"UNMEASURED-PRESENT\""),
@@ -2026,7 +2160,11 @@ mod tests {
             "the WARN reached ORT's logger and must say so. Got:\n{doc}"
         );
 
-        record_session_disclosure(0, 0, 1, 0, true, false);
+        record_session_disclosure(SessionDisclosure {
+            divergent: 1,
+            warned: true,
+            ..Default::default()
+        });
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"DIVERGENT-PRESENT\""),
@@ -2038,11 +2176,115 @@ mod tests {
              and the artifact must say so. Got:\n{doc}"
         );
 
-        record_session_disclosure(0, 0, 0, 1, true, true);
+        record_session_disclosure(SessionDisclosure {
+            ledger_faulted: 1,
+            warned: true,
+            warn_reached_ort_sink: true,
+            ..Default::default()
+        });
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"LEDGER-FAULTED\""),
             "R13: an instrument error outranks the findings it makes unreadable. Got:\n{doc}"
+        );
+        reset();
+    }
+
+    /// **The INFO half of the §8.9.7 disclosure, held to the same standard as the WARN half.**
+    ///
+    /// RAI-008(b) asks for an INFO *and* a WARN. Until this session only the WARN had an
+    /// observable, and the probe that certifies the disclosure ran ORT at WARNING severity, where
+    /// the INFO is invisible by construction — so half a condition was discharged and reported
+    /// whole. `session_disclosure_info_channel` is that missing observable, and this test is what
+    /// stops it from being a constant wearing a measurement's name.
+    ///
+    /// The token names are deliberate and this test pins them. `OFFERED_TO_ORT` means the EP
+    /// handed the record to ORT's logger at a level ORT's own reported threshold admits. It does
+    /// **not** mean the line was printed: on ORT 1.28 it is not, at any host severity, while the
+    /// WARN from the identical call site always is. An earlier draft called this state `ORT_SINK`,
+    /// which asserted an arrival no run in this repository has ever witnessed. Renaming it is not
+    /// cosmetic — a counter that overstates delivery is the same defect the counter exists to
+    /// catch, wearing the counter's own badge.
+    #[test]
+    fn the_info_channel_token_distinguishes_offered_from_merely_emitted() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_channel\": \"UNOBSERVABLE\""),
+            "no disclosure has run, so the INFO channel has carried nothing and may not claim to \
+             have carried it anywhere. Got:\n{doc}"
+        );
+
+        // Emitted, and the host's threshold was above INFO, so ORT never had the chance to drop
+        // it. This is the state a user at ORT's default severity is in, and it must not be
+        // spelled the same as the state where the record was accepted and then vanished.
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_infos\": 1,"),
+            "the INFO was emitted and the count must show it. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_infos_to_ort_sink\": 0,"),
+            "the host's threshold was above INFO, so nothing was offered. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_info_channel\": \"BELOW_ORT_THRESHOLD\""),
+            "an INFO the host asked not to be told is not a failure of the EP, and the token must \
+             say which of the two it is. Got:\n{doc}"
+        );
+
+        // A *mixed* frame reads pessimistically, exactly as the WARN channel does: one INFO
+        // offered and one not is not a channel that works. Pinning this stops a later "fix" from
+        // making the token report the best of its samples instead of the worst.
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            info_reached_ort_sink: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_infos\": 2,")
+                && doc.contains("\"session_disclosure_infos_to_ort_sink\": 1,"),
+            "the second disclosure was offered to ORT and both counts must move. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_info_channel\": \"BELOW_ORT_THRESHOLD\""),
+            "one offered and one not is not a working channel, and the token takes the worse of \
+             the two rather than the better. Got:\n{doc}"
+        );
+
+        // Now the clean frame, which is the state the probe's arm C measures.
+        reset();
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            info_reached_ort_sink: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_infos_to_ort_sink\": 1,"),
+            "the disclosure was offered to ORT and the count must move. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_info_channel\": \"OFFERED_TO_ORT\""),
+            "the record was handed to ORT at a level its own threshold admits. Got:\n{doc}"
+        );
+
+        // And the WARN channel must be untouched by any of it. The two halves of §8.9.7 are
+        // reported separately precisely so that one can be discharged while the other is not.
+        assert!(
+            snapshot()
+                .to_json()
+                .contains("\"session_disclosure_channel\": \"UNOBSERVABLE\""),
+            "no WARN was emitted in this frame; the INFO half may not discharge the WARN half."
         );
         reset();
     }
@@ -2502,7 +2744,10 @@ mod tests {
             "an elementwise pipeline says nothing about the GEMV constant; index 5 of its own \
              vector does not exist and must not be invented"
         );
-        assert_eq!(pipeline_variants(), vec!["ew_binary_add_f32:256,1".to_string()]);
+        assert_eq!(
+            pipeline_variants(),
+            vec!["ew_binary_add_f32:256,1".to_string()]
+        );
         reset();
     }
 
@@ -2522,7 +2767,10 @@ mod tests {
             json.contains("\"pipeline_variants\": [\"q_gemv_f32:128,4,32,0,4,0\"]"),
             "{json}"
         );
-        assert!(json.contains("\"gemv_packed_spec_constant\": \"0\""), "{json}");
+        assert!(
+            json.contains("\"gemv_packed_spec_constant\": \"0\""),
+            "{json}"
+        );
         reset();
         let json = snapshot().to_json();
         assert!(
@@ -2737,7 +2985,11 @@ mod tests {
             "NEVER-ATTEMPTED",
             "a run that consulted the ledger zero times has not found a form missing"
         );
-        assert!(snapshot().to_json().contains("\"ledger_miss\": \"NEVER-ATTEMPTED\""));
+        assert!(
+            snapshot()
+                .to_json()
+                .contains("\"ledger_miss\": \"NEVER-ATTEMPTED\"")
+        );
 
         reset();
         record_ledger_lookup(L::Hit);
@@ -2765,7 +3017,11 @@ mod tests {
             "LEDGER-FAULTED",
             "R13: an instrument outage outranks a finding, or an outage reads as a detection"
         );
-        assert!(snapshot().to_json().contains("\"ledger_miss\": \"LEDGER-FAULTED\""));
+        assert!(
+            snapshot()
+                .to_json()
+                .contains("\"ledger_miss\": \"LEDGER-FAULTED\"")
+        );
 
         // `NeverAttempted` is not a lookup, and recording one must not manufacture the lookup it
         // asserts did not happen.

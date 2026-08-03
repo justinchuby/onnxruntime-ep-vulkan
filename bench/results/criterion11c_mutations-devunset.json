@@ -1,0 +1,20 @@
+[
+  {
+    "mutation": "M1_dtype_arms_collapsed",
+    "broke": "the proven and unproven dtype arms read the same input",
+    "outcome": "CAUGHT",
+    "failure_text": "arms_must_differ FAILED (control 1, dtype). The proven and unproven forms of the same op produced the SAME ledger reading, so `ledger_hits` does not vary with the key presented to it \u2014 which is what a counter derived from the claim enumeration would look like. proven=(1, 'HIT', 'ALL-PROVEN', 1) unpr"
+  },
+  {
+    "mutation": "M2_digest_control_drifted",
+    "broke": "the identical-file control arm was given a drifted ledger",
+    "outcome": "CAUGHT",
+    "failure_text": "the CONTROL arm faulted: the on-disk ledger is byte-identical to the baked one and the run still refused to claim. Every other assertion in this test would pass against a check that rejects everything, so this arm failing makes the whole test ERROR(instrument) rather than a detection. arm={'arm': 'l"
+  },
+  {
+    "mutation": "M3_optional_input_component_dropped",
+    "broke": "the two MatMulNBits keys were collapsed onto one",
+    "outcome": "CAUGHT",
+    "failure_text": "expected exactly the two static f16 MatMulNBits forms in the ledger \u2014 the pair is the regression control for the 2026-07-30 defect. Found: ['com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales', 'com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/stat"
+  }
+]

@@ -130,6 +130,13 @@ pub struct Disclosure {
     /// Whether that WARN reached ORT's own logger. `false` with `warned == true` means the WARN
     /// exists only on our stderr — delivered to nobody who matters.
     pub warn_reached_ort_sink: bool,
+    /// Whether the proven-forms INFO was emitted at all (i.e. anything was proven).
+    pub informed: bool,
+    /// Whether that INFO reached ORT's own logger. Tracked for the same reason as the WARN's
+    /// flag, and added later than it: until 2026-08-03 nothing recorded whether the INFO half of
+    /// the §8.9.7 pair was delivered, so an artifact could show a fully-proven claim set and say
+    /// nothing about whether the user was ever told what proved it.
+    pub info_reached_ort_sink: bool,
 }
 
 impl Disclosure {
@@ -200,7 +207,8 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
     }
 
     if !proven_lines.is_empty() {
-        logging::info_through_ort_sink(
+        d.informed = true;
+        d.info_reached_ort_sink = logging::info_through_ort_sink(
             TARGET,
             &format!(
                 "session claims {} proven form(s) [§8.9.7]: {}",
@@ -226,14 +234,16 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         d.warn_reached_ort_sink = logging::warn_through_ort_sink(TARGET, &msg);
     }
 
-    counters::record_session_disclosure(
-        d.proven,
-        d.unmeasured,
-        d.divergent,
-        d.ledger_faulted,
-        d.warned,
-        d.warn_reached_ort_sink,
-    );
+    counters::record_session_disclosure(counters::SessionDisclosure {
+        proven: d.proven,
+        unmeasured: d.unmeasured,
+        divergent: d.divergent,
+        ledger_faulted: d.ledger_faulted,
+        warned: d.warned,
+        warn_reached_ort_sink: d.warn_reached_ort_sink,
+        informed: d.informed,
+        info_reached_ort_sink: d.info_reached_ort_sink,
+    });
     d
 }
 
@@ -261,14 +271,21 @@ pub fn disclose_zero_claims(
     } else {
         top.join("; ")
     };
-    logging::info_through_ort_sink(
+    let reached = logging::info_through_ort_sink(
         TARGET,
         &format!(
             "[§8.9.7] this session claims 0/{num_nodes} nodes; all work runs on the CPU EP. \
              Leading reasons: {detail}"
         ),
     );
-    counters::record_session_disclosure(0, 0, 0, 0, false, false);
+    // A zero-claims disclosure is still a disclosure, and it is still an INFO whose delivery can
+    // fail. Counting it keeps `session_disclosure_info_channel` a statement about the channel
+    // rather than about which branch of §8.9.7 happened to run.
+    counters::record_session_disclosure(counters::SessionDisclosure {
+        informed: true,
+        info_reached_ort_sink: reached,
+        ..Default::default()
+    });
 }
 
 #[cfg(test)]
