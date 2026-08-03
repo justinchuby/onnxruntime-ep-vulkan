@@ -1970,3 +1970,190 @@ def test_the_ledger_device_provenance_blind_spot_is_recorded_and_not_substituted
         "the blind spot must carry the warning against per-platform re-proving, which "
         "is the obvious wrong fix and is also currently destructive"
     )
+
+
+# ===========================================================================
+# check_suite_productivity.py — a step that asserted nothing must not pass
+#
+# The two polarities are unusually cheap here because the check's whole input is
+# text, so both arms are exact captured summary lines rather than paraphrases.
+# ===========================================================================
+
+SUITE_PRODUCTIVITY = CI_DIR / "check_suite_productivity.py"
+
+
+def _productivity(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(SUITE_PRODUCTIVITY), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _log(tmp_path: Path, text: str) -> str:
+    p = tmp_path / "run.log"
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def test_a_productive_suite_passes_and_an_all_skipped_one_does_not(tmp_path):
+    """The pair. Same step, same exit code from pytest, opposite verdicts here."""
+    rc, out = _productivity(
+        "--suite", "tests/ops", "--lane", "build-test-linux",
+        _log(tmp_path, "50 failed, 272 passed, 343 skipped in 300.00s\n"),
+    )
+    assert rc == 0 and "SUITE-PRODUCTIVITY: PASS" in out
+
+    rc, out = _productivity(
+        "--suite", "tests/ops", "--lane", "build-test-linux",
+        _log(tmp_path, "665 skipped in 300.00s\n"),
+    )
+    assert rc == 1, "an all-skipped suite exits ZERO from pytest and must not pass here"
+    assert "FAIL(condition=asserted_nothing)" in out
+
+
+def test_a_collection_error_is_a_hard_fail_and_quotes_the_line(tmp_path):
+    """R13's second clause: no count without its text."""
+    rc, out = _productivity(
+        "--suite", "tests/ops",
+        _log(
+            tmp_path,
+            "ERROR collecting tests/ops/test_shape_inference_delta.py\n"
+            "!!!!!! Interrupted: 1 error during collection !!!!!!\n"
+            "1 error in 4.90s\n",
+        ),
+    )
+    assert rc == 1
+    assert "FAIL(condition=collection_error)" in out
+    assert "test_shape_inference_delta.py" in out, (
+        "the failing file must be quoted; a count of collection errors is exactly the "
+        "shape that let a NameError masquerade as a detection"
+    )
+
+
+def test_the_collected_floor_is_environment_independent_and_the_executed_floor_is_not(tmp_path):
+    """Why there are two floors and not one.
+
+    A full collection with a collapsed executed count is a different finding from a
+    collection that shrank, and they have different causes.
+    """
+    rc, out = _productivity(
+        "--suite", "tests/ops", "--lane", "build-test-linux",
+        _log(tmp_path, "400 passed, 100 skipped in 30.00s\n"),
+    )
+    assert rc == 1 and "FAIL(condition=collected_below_floor)" in out
+
+    rc, out = _productivity(
+        "--suite", "tests/ops", "--lane", "build-test-linux",
+        _log(tmp_path, "200 passed, 465 skipped in 30.00s\n"),
+    )
+    assert rc == 1 and "FAIL(condition=executed_below_floor)" in out
+
+
+def test_an_unobserved_input_is_an_instrument_error_and_never_a_pass(tmp_path):
+    """UNOBSERVABLE is not zero (R12), in all three of its forms here."""
+    rc, out = _productivity("--suite", "tests/ops", str(tmp_path / "absent.log"))
+    assert rc == 4 and "ERROR(instrument=log_not_captured)" in out
+
+    rc, out = _productivity(
+        "--suite", "tests/ops", _log(tmp_path, "ORT chatter and nothing else\n")
+    )
+    assert rc == 4 and "ERROR(instrument=summary_not_found)" in out
+
+    rc, out = _productivity(
+        "--suite", "tests/nowhere", _log(tmp_path, "665 passed in 30.00s\n")
+    )
+    assert rc == 4 and "ERROR(instrument=suite_has_no_floor)" in out, (
+        "an unclassified suite must not pass by default — that is the state the "
+        "op-correctness step lived in"
+    )
+
+
+def test_the_lane_marker_distinguishes_a_dead_lane_from_a_lost_log(tmp_path):
+    """Borrowed from check_fatal_log, and for the same reason.
+
+    A lane that died before the test step is already red; adding a second red about a
+    subject that never existed makes the first one harder to read.
+    """
+    marker = tmp_path / ".lane-reached"
+    rc, out = _productivity(
+        "--suite", "tests/ops", f"--lane-marker={marker}", str(tmp_path / "absent.log")
+    )
+    assert rc == 0 and "lane_did_not_reach_evidence" in out
+
+    marker.write_text("", encoding="utf-8")
+    rc, out = _productivity(
+        "--suite", "tests/ops", f"--lane-marker={marker}", str(tmp_path / "absent.log")
+    )
+    assert rc == 4 and "ERROR(instrument=log_not_captured)" in out
+
+
+def test_libtest_zero_tests_is_the_same_defect_and_is_caught(tmp_path):
+    """`cargo test` on an empty target prints `ok.` and exits 0. There is no --strict."""
+    empty = (
+        "running 0 tests\n\n"
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        " finished in 0.00s\n"
+    )
+    rc, out = _productivity(
+        "--suite", "cargo test --lib", "--harness", "libtest", _log(tmp_path, empty)
+    )
+    assert rc == 1 and "FAIL(condition=asserted_nothing)" in out
+
+    healthy = (
+        "running 510 tests\n\n"
+        "test result: ok. 510 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out;"
+        " finished in 11.79s\n"
+    )
+    rc, out = _productivity(
+        "--suite", "cargo test --lib", "--harness", "libtest", _log(tmp_path, healthy)
+    )
+    assert rc == 0 and "SUITE-PRODUCTIVITY: PASS" in out
+
+
+def test_no_flag_can_lower_a_floor(tmp_path):
+    """A floor that a command line can relax is a waiver with a flag.
+
+    Asserted rather than commented, because the obvious way to unblock a red lane is to
+    add exactly such a flag, and the person adding it will not read this docstring.
+    """
+    rc, _ = _productivity(
+        "--suite", "tests/ops", "--min-collected", "1",
+        _log(tmp_path, "10 passed in 1.00s\n"),
+    )
+    assert rc == 2, "argparse must reject it; lowering a floor is a tracked-file edit"
+
+
+def test_every_floor_states_where_its_number_came_from():
+    """A floor without provenance is a number somebody remembered."""
+    data = json.loads((CI_DIR / "suite_floor.json").read_text(encoding="utf-8"))
+    for name, entry in data["suites"].items():
+        assert entry.get("provenance"), f"{name}: floor with no provenance"
+        assert entry.get("min_collected") or entry.get("min_executed_by_lane"), (
+            f"{name}: an entry with no floor at all passes everything"
+        )
+
+
+def test_the_shape_inference_module_no_longer_imports_its_optional_dep_at_module_scope():
+    """The structural half of the dependency fix, asserted rather than trusted.
+
+    The repair was to make the report lazy. Nothing stops a future edit from moving it
+    back to module scope, and the symptom would be a directory-wide collection abort in
+    an environment nobody on this team runs.
+    """
+    src = (REPO_ROOT / "tests" / "ops" / "test_shape_inference_delta.py").read_text(
+        encoding="utf-8"
+    )
+    module_level_calls = [
+        line
+        for line in src.splitlines()
+        if line.startswith(("_REPORT =", "_REPORT=")) and "_DeltaReport(" in line
+    ]
+    assert not module_level_calls, (
+        "_REPORT must not be built at module scope: apply_shape_inference imports the "
+        "optional onnx-shape-inference package, and at module scope that import runs "
+        "during COLLECTION, taking all 665 tests in tests/ops with it"
+    )
+    assert "def _report()" in src, "the lazy accessor is the repair; keep it named"

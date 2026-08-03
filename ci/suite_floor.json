@@ -1,0 +1,105 @@
+{
+  "_README": [
+    "Floors for ci/check_suite_productivity.py — the counts below which a pytest step is",
+    "not doing its job, whatever its exit code says.",
+    "",
+    "WHY A COMMITTED FILE AND NOT A FLAG.  A floor that can be lowered by a command-line",
+    "argument is a waiver with a flag: the lane that most needs the floor is the lane whose",
+    "author is under pressure to get past it.  Lowering a floor here is an edit to a tracked",
+    "file, in a diff, next to a `provenance` string that has to be rewritten to stay true.",
+    "",
+    "WHY `min_collected` IS THE STRONG ONE.  The collected count does not depend on a GPU, an",
+    "ICD, a driver, an ORT build or an environment variable — it is the same number on every",
+    "lane and every developer machine.  So it can be a real ratchet.  `min_executed` cannot:",
+    "skip counts legitimately differ between lanes, so its floor is set from the WEAKEST",
+    "environment that still counts as running (no EP library, no Vulkan ICD, optional deps",
+    "absent).  Nothing that is working can execute less than that.",
+    "",
+    "HOW TO RE-MEASURE.  Run the suite, then read the number this check itself reports:",
+    "  python -m pytest tests/ops -q --tb=short -p no:randomly 2>&1 | tee run.log",
+    "  python ci/check_suite_productivity.py --suite tests/ops run.log"
+  ],
+  "version": 1,
+  "suites": {
+    "tests/ops": {
+      "min_collected": 660,
+      "min_executed_by_lane": {
+        "*": 300,
+        "build-test-linux": 300,
+        "build-test-windows": 300
+      },
+      "provenance": [
+        "2026-08-03, Link. min_collected: 665 items collected, measured identically in two",
+        "independent Python environments on the same tree — the developer environment",
+        "(anaconda 3.12, all of tests/requirements.txt installed) and a scratch venv built",
+        "WITHOUT the optional `onnx-shape-inference` package. The two agreeing is the point:",
+        "the collected count is meant to be environment-independent, and before 2026-08-03",
+        "it was not — a module-level import of that optional package in",
+        "tests/ops/test_shape_inference_delta.py aborted collection of the whole directory,",
+        "taking all 665 to 0. Floor set 5 below the measured value: enough headroom that a",
+        "single test being renamed or merged does not redden the lane, small enough that a",
+        "file failing to import cannot hide.",
+        "",
+        "min_executed '*' = 300: measured 316 executed (311 passed + 5 failed) in the scratch",
+        "venv with NO EP library, NO Vulkan ICD and the optional dependency absent — i.e. the",
+        "least capable environment in which this suite can still be said to have run. A lane",
+        "with a GPU and an EP must execute at least as many. If a real lane ever legitimately",
+        "executes fewer than 300, that is a finding about the lane, not about this number.",
+        "",
+        "The per-lane keys are set equal to '*' deliberately, and are NOT calibrated from a",
+        "real CI run — nobody has measured build-test-linux or build-test-windows executed",
+        "counts from inside those runners yet. Stating that here rather than inventing two",
+        "tighter numbers: an uncalibrated floor that says so is honest; a fabricated one",
+        "reads exactly like a measured one."
+      ]
+    },
+    "tests/ops/test_claim_diagnostics.py::test_no_vulkan_icd_falls_back_to_cpu": {
+      "min_collected": 1,
+      "min_executed_by_lane": {
+        "*": 1
+      },
+      "provenance": [
+        "2026-08-03, Link. A single-test selector, and therefore the exact shape the sweep",
+        "was looking for: a node id that stops matching — renamed test, renamed file, moved",
+        "class — makes pytest run nothing. This lane step has no other content, so 'ran zero",
+        "tests' and 'the no-ICD fallback works' would be indistinguishable in the log.",
+        "Floor of 1 is not a guess; it is the whole suite."
+      ]
+    },
+    "cargo test --lib": {
+      "min_collected": 500,
+      "min_executed_by_lane": {
+        "*": 500
+      },
+      "provenance": [
+        "2026-08-03, Link, measured on Windows at main 607056a merged into squad/link:",
+        "`test result: ok. 510 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out`.",
+        "",
+        "Rust's libtest has exactly the same hole as pytest, and a quieter one: a target",
+        "with no tests prints `running 0 tests` / `test result: ok.` and exits ZERO. There",
+        "is no --strict flag for it. Eleven of the two device lanes' steps are `cargo test`",
+        "invocations, so the defect class does not stop at Python.",
+        "",
+        "`ignored` maps to skipped and `filtered out` to deselected: neither executed. The",
+        "floor is 500 against 510 executed — the same ~1% headroom as tests/ops, for the",
+        "same reason. Only the --lib step is wired today; the five integration-target steps",
+        "are a NAMED, OPEN gap recorded in the sweep, not an oversight."
+      ]
+    },
+    "ci/test_lane_checks.py": {
+      "min_collected": 100,
+      "min_executed_by_lane": {
+        "*": 100
+      },
+      "provenance": [
+        "2026-08-03, Link, measured on this tree after this round's 8 new tests landed:",
+        "125 collected, 122 passed + 3 failed (the three known census reds). The host-free",
+        "lane's own suite had the same hole it",
+        "exists to close in others: if ci/ stopped importing, this step would have reported",
+        "success for collecting nothing — and it is the step that certifies every other",
+        "check in ci/. Executed counts failures deliberately: a failing test is evidence",
+        "that its subject was exercised."
+      ]
+    }
+  }
+}

@@ -1,0 +1,283 @@
+........................................................................ [ 57%]
+.........F.F...F.....................................                    [100%]
+================================== FAILURES ===================================
+________________ test_the_whole_is_not_derived_from_the_census ________________
+
+    def test_the_whole_is_not_derived_from_the_census():
+        """R11's falsifier-that-cannot-fire, stated as a test.
+    
+        If the denominator came from the same list as the numerator, 12/12 would be true by
+        construction. The whole is enumerated from production Rust -- counters.rs fields,
+        trace.rs Phase variants, ONNXRUNTIME_EP_VULKAN_* switches -- none of which the census
+        writes. The check that this stays true is that the screen's own source never reads
+        the census's mechanism list from anywhere but the artifact the census PRODUCED.
+        """
+        src = (CI_DIR / "check_census_completeness.py").read_text(encoding="utf-8")
+        assert "_MECHANISMS" not in src, (
+            "the screen must not read the census's own mechanism list; R10 says the "
+            "falsifier is an artifact the mechanism produced, never a reading of its code"
+        )
+        assert '"tests"' not in src and "'tests'" not in src, (
+            "the screen must not open anything under tests/ — its numerator is the artifact "
+            "the census wrote, and its denominator is production Rust"
+        )
+        r = run_check("check_census_completeness.py")
+>       assert r.returncode == EXIT_PASS, r.stdout
+E       AssertionError: 
+E         CENSUS-EXTENT: the independent whole — what the census's twelve is twelve OF.
+E           58 instrumented surfaces from production Rust under C:\Users\justinchu\dev\ep-vulkan-link\rust\src: 20 C ABI counter fields, 10 trace phases, 28 EP env switches.
+E           frame: 32483 production lines read, 13338 lines held out as #[cfg(test)] (UNOBSERVABLE by frame, not zero findings).
+E           The census does not write any of these files. A mechanism added to the Rust tree grows this denominator whether or not the census is told.
+E           2 env switch(es) appear only in prose, never in a line of production code: ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC, ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS.
+E         
+E         CENSUS-EXTENT: (2) THE WHOLE — 58 surfaces against the census's 14 mechanisms.
+E           33 censused, 12 instrumented and observed by NO census mechanism, 3 out of the census's frame, 2 not mechanisms.
+E             GAP  rust/src/counters.rs:499  [counter] compile_calls (owner Mouse) — Counts ORT Compile() entries. No census mechanism reads it, so 'the EP was asked to compile and did not' is not a state the census can report.
+E             GAP  rust/src/counters.rs:506  [counter] compute_calls (owner Mouse) — Counts Compute() entries. The census infers execution from dispatches_executed instead; a Compute() that entered and dispatched nothing is invisible to it.
+E             GAP  rust/src/counters.rs:504  [counter] subgraphs_stub (owner Mouse) — Counts subgraphs taken as stubs. A stub subgraph is the identity outcome for the partitioner and no census mechanism observes the count.
+E             GAP  rust/src/vk/barrier.rs:238  [env_switch] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE (owner Switch) — Selects a barrier backend probe. Unobserved by the census.
+E             GAP  rust/src/logging.rs:42  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG (owner Mouse) — Raises claim logging to Debug. Unobserved by the census.
+E             GAP  rust/src/ops/claim_log.rs:118  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_LOG (owner Mouse) — Writes the per-claim log. Unobserved by the census.
+E             GAP  rust/src/factory.rs:440  [env_switch] ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY (owner Tank) — Switches allocations to device-local memory — changes what the EP does on every upload, and no census mechanism observes whether it was in force.
+E             GAP  rust/src/vk/session.rs:2077  [env_switch] ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES (owner Switch) — Dumps output bytes. Unobserved by the census.
+E             GAP  rust/src/ops/quant.rs:350  [env_switch] ONNXRUNTIME_EP_VULKAN_GEMV_PACKED (owner Mouse) — Selects the packed GEMV path. Investigated 2026-08-02: the switch is resolved in rust/src/ops/quant.rs:345 and enters the program as SPECIALIZATION CONSTANT index 5 of q_gemv.comp, and rust/src/vk/pipeline.rs keys the pipeline cache on (shader_stem, spec_constants) — so the two settings really are two different pipelines. But NO artifact this project produces records a pipeline key or a spec constant: trace.rs's Phase set has PipelineLookup and no payload, and no counter names the variant. So a host-side record of the env var would not close this: R10 asks for an artifact the mechanism PRODUCED whose content varies with its input, and reading env::var from a harness proves nothing about what the EP did with it. UNTIL an EP-side change records the resolved value (or the pipeline key) in an artifact, every kernel observation we hold is silent about which kernel it observed. Owed by Mouse (ops/) with Switch (vk/pipeline.rs): emit the spec-constant vector, or the resolved gemv_packed bool, into the trace or the counters.
+E             GAP  rust/src/allocator.rs:95  [env_switch] ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS (owner Tank) — Quarantines freed spans. Unobserved by the census.
+E             GAP  rust/src/allocator.rs:89  [env_switch] ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB (owner Tank) — Sizes the VA reservation. Unobserved by the census.
+E             GAP  rust/src/logging.rs:38  [env_switch] ONNXRUNTIME_EP_VULKAN_VERBOSE (owner Switch) — Raises logging to Info. Unobserved by the census.
+E           Numerator and denominator have different authors, in different files, in a different language. This is the property that lets the count be wrong.
+E         
+E         CENSUS-EXTENT: (1) EXTENT — how much of each mechanism's surface the observation names.
+E           partitioner                2/2
+E           partition_identity_check   UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           net_benefit_gate           6/6
+E           gpu_tracer                 12/12
+E           model_output_equivalence   UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           retain_viable              1/1
+E           ledger_lookup              7/7
+E           validation_messenger       3/3
+E           layering_lint              UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           broken_commitment_warn     2/2
+E           device_state_guard         UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           instrument_census          UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           ep_entrypoints             UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           flag_frame                 UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           An extent is an UPPER bound: the numerator counts identifiers the observation mentions, which is the weakest evidence of coverage that can be checked at all.
+E         
+E         CENSUS-EXTENT: (3) NAME AGAINST CONTENT — did the observation's content respond to input, across 3 census arm(s)?
+E           partitioner                VARIES        2 distinct over 3 arm(s)
+E           partition_identity_check   INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           net_benefit_gate           INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           gpu_tracer                 VARIES        3 distinct over 3 arm(s)
+E           model_output_equivalence   INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           retain_viable              VARIES        2 distinct over 3 arm(s)
+E           ledger_lookup              VARIES        3 distinct over 3 arm(s)
+E           validation_messenger       INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           layering_lint              INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           broken_commitment_warn     INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           device_state_guard         INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           instrument_census          INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           ep_entrypoints             INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           flag_frame                 VARIES        3 distinct over 3 arm(s)
+E           9 mechanism(s) certified on presence alone; 0 with too few arms to say. Neither is a claim that the name is wrong — Phase::Record was correct code.
+E           The arms are the census runs that exist, not arms designed to vary each mechanism. INVARIANT therefore means 'no arm on record distinguished it', which is weaker than 'no arm could' and stronger than nothing: a name whose content no recorded run has ever moved is a name certified by presence.
+E         CENSUS-EXTENT: FAIL(condition=unmapped_surface)
+E         Surfaces present in the independent whole with no entry in the surface map.
+E         Each is a mechanism-shaped thing the census has not been told about; the
+E         census's own list cannot report these because it does not enumerate them.
+E         
+E           rust/src/counters.rs:525  [counter] device_losses
+E               pub device_losses: u64,
+E           rust/src/counters.rs:592  [counter] device_unattributed_claims
+E               pub device_unattributed_claims: u64,
+E           rust/src/counters.rs:547  [counter] outputs_device_bound
+E               pub outputs_device_bound: u64,
+E           rust/src/counters.rs:538  [counter] outputs_device_resident
+E               pub outputs_device_resident: u64,
+E           rust/src/counters.rs:540  [counter] outputs_host_resident
+E               pub outputs_host_resident: u64,
+E           rust/src/counters.rs:600  [counter] proven_elsewhere_declines
+E               pub proven_elsewhere_declines: u64,
+E           rust/src/vk/session.rs:692  [env_switch] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS
+E               std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+E           rust/src/ep.rs:1631  [env_switch] ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS
+E               // MEASURED 2026-08-02 on Phi-3.5 (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`): the fused node
+E         CENSUS-EXTENT: this is a finding about the census's coverage of an independently enumerated whole. The screen reached its observation and the source lines it read are quoted above.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['C:\\Users\\justinchu\\AppData\\Local\\anaconda3\\python.exe', 'C:\\Users\\justinchu\\dev\\ep-v...ntly enumerated whole. The screen reached its observation and the source lines it read are quoted above.\n', stderr='').returncode
+
+ci\test_lane_checks.py:1441: AssertionError
+_________ test_extent_reports_unobservable_rather_than_zero_over_zero _________
+
+    def test_extent_reports_unobservable_rather_than_zero_over_zero():
+        """R12 applied to the screen's own coverage.
+    
+        A host-side mechanism has no surface in the independent whole. Reporting it as 0/0 --
+        or worse, as complete -- is the identity defect the screen exists to refuse.
+        """
+        import importlib
+    
+        mod = importlib.import_module("check_census_completeness")
+        rows = mod.extent_table(
+            {"has_surfaces": [{"id": "a_counter"}]},
+            ["has_surfaces", "host_side_only"],
+            [{"name": "x.json", "observations": {"has_surfaces": "", "host_side_only": "PASS"}}],
+        )
+        by_mech = {r["mechanism"]: r for r in rows}
+        assert by_mech["host_side_only"]["extent"] == "UNOBSERVABLE"
+        assert by_mech["has_surfaces"]["extent"] == "0/1"
+        assert not any(r["extent"] == "0/0" for r in rows)
+    
+        r = run_check("check_census_completeness.py")
+>       assert r.returncode == EXIT_PASS, r.stdout
+E       AssertionError: 
+E         CENSUS-EXTENT: the independent whole — what the census's twelve is twelve OF.
+E           58 instrumented surfaces from production Rust under C:\Users\justinchu\dev\ep-vulkan-link\rust\src: 20 C ABI counter fields, 10 trace phases, 28 EP env switches.
+E           frame: 32483 production lines read, 13338 lines held out as #[cfg(test)] (UNOBSERVABLE by frame, not zero findings).
+E           The census does not write any of these files. A mechanism added to the Rust tree grows this denominator whether or not the census is told.
+E           2 env switch(es) appear only in prose, never in a line of production code: ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC, ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS.
+E         
+E         CENSUS-EXTENT: (2) THE WHOLE — 58 surfaces against the census's 14 mechanisms.
+E           33 censused, 12 instrumented and observed by NO census mechanism, 3 out of the census's frame, 2 not mechanisms.
+E             GAP  rust/src/counters.rs:499  [counter] compile_calls (owner Mouse) — Counts ORT Compile() entries. No census mechanism reads it, so 'the EP was asked to compile and did not' is not a state the census can report.
+E             GAP  rust/src/counters.rs:506  [counter] compute_calls (owner Mouse) — Counts Compute() entries. The census infers execution from dispatches_executed instead; a Compute() that entered and dispatched nothing is invisible to it.
+E             GAP  rust/src/counters.rs:504  [counter] subgraphs_stub (owner Mouse) — Counts subgraphs taken as stubs. A stub subgraph is the identity outcome for the partitioner and no census mechanism observes the count.
+E             GAP  rust/src/vk/barrier.rs:238  [env_switch] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE (owner Switch) — Selects a barrier backend probe. Unobserved by the census.
+E             GAP  rust/src/logging.rs:42  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG (owner Mouse) — Raises claim logging to Debug. Unobserved by the census.
+E             GAP  rust/src/ops/claim_log.rs:118  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_LOG (owner Mouse) — Writes the per-claim log. Unobserved by the census.
+E             GAP  rust/src/factory.rs:440  [env_switch] ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY (owner Tank) — Switches allocations to device-local memory — changes what the EP does on every upload, and no census mechanism observes whether it was in force.
+E             GAP  rust/src/vk/session.rs:2077  [env_switch] ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES (owner Switch) — Dumps output bytes. Unobserved by the census.
+E             GAP  rust/src/ops/quant.rs:350  [env_switch] ONNXRUNTIME_EP_VULKAN_GEMV_PACKED (owner Mouse) — Selects the packed GEMV path. Investigated 2026-08-02: the switch is resolved in rust/src/ops/quant.rs:345 and enters the program as SPECIALIZATION CONSTANT index 5 of q_gemv.comp, and rust/src/vk/pipeline.rs keys the pipeline cache on (shader_stem, spec_constants) — so the two settings really are two different pipelines. But NO artifact this project produces records a pipeline key or a spec constant: trace.rs's Phase set has PipelineLookup and no payload, and no counter names the variant. So a host-side record of the env var would not close this: R10 asks for an artifact the mechanism PRODUCED whose content varies with its input, and reading env::var from a harness proves nothing about what the EP did with it. UNTIL an EP-side change records the resolved value (or the pipeline key) in an artifact, every kernel observation we hold is silent about which kernel it observed. Owed by Mouse (ops/) with Switch (vk/pipeline.rs): emit the spec-constant vector, or the resolved gemv_packed bool, into the trace or the counters.
+E             GAP  rust/src/allocator.rs:95  [env_switch] ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS (owner Tank) — Quarantines freed spans. Unobserved by the census.
+E             GAP  rust/src/allocator.rs:89  [env_switch] ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB (owner Tank) — Sizes the VA reservation. Unobserved by the census.
+E             GAP  rust/src/logging.rs:38  [env_switch] ONNXRUNTIME_EP_VULKAN_VERBOSE (owner Switch) — Raises logging to Info. Unobserved by the census.
+E           Numerator and denominator have different authors, in different files, in a different language. This is the property that lets the count be wrong.
+E         
+E         CENSUS-EXTENT: (1) EXTENT — how much of each mechanism's surface the observation names.
+E           partitioner                2/2
+E           partition_identity_check   UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           net_benefit_gate           6/6
+E           gpu_tracer                 12/12
+E           model_output_equivalence   UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           retain_viable              1/1
+E           ledger_lookup              7/7
+E           validation_messenger       3/3
+E           layering_lint              UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           broken_commitment_warn     2/2
+E           device_state_guard         UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           instrument_census          UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           ep_entrypoints             UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           flag_frame                 UNOBSERVABLE — the independent whole enumerates no counter, trace phase or env switch for this mechanism — its denominator would have to be self-supplied, and 0/0 presented as coverage is the identity defect this screen refuses
+E           An extent is an UPPER bound: the numerator counts identifiers the observation mentions, which is the weakest evidence of coverage that can be checked at all.
+E         
+E         CENSUS-EXTENT: (3) NAME AGAINST CONTENT — did the observation's content respond to input, across 3 census arm(s)?
+E           partitioner                VARIES        2 distinct over 3 arm(s)
+E           partition_identity_check   INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           net_benefit_gate           INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           gpu_tracer                 VARIES        3 distinct over 3 arm(s)
+E           model_output_equivalence   INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           retain_viable              VARIES        2 distinct over 3 arm(s)
+E           ledger_lookup              VARIES        3 distinct over 3 arm(s)
+E           validation_messenger       INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           layering_lint              INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           broken_commitment_warn     INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           device_state_guard         INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           instrument_census          INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           ep_entrypoints             INVARIANT     1 distinct over 3 arm(s) — presence only; nothing here would differ if the name were wrong
+E           flag_frame                 VARIES        3 distinct over 3 arm(s)
+E           9 mechanism(s) certified on presence alone; 0 with too few arms to say. Neither is a claim that the name is wrong — Phase::Record was correct code.
+E           The arms are the census runs that exist, not arms designed to vary each mechanism. INVARIANT therefore means 'no arm on record distinguished it', which is weaker than 'no arm could' and stronger than nothing: a name whose content no recorded run has ever moved is a name certified by presence.
+E         CENSUS-EXTENT: FAIL(condition=unmapped_surface)
+E         Surfaces present in the independent whole with no entry in the surface map.
+E         Each is a mechanism-shaped thing the census has not been told about; the
+E         census's own list cannot report these because it does not enumerate them.
+E         
+E           rust/src/counters.rs:525  [counter] device_losses
+E               pub device_losses: u64,
+E           rust/src/counters.rs:592  [counter] device_unattributed_claims
+E               pub device_unattributed_claims: u64,
+E           rust/src/counters.rs:547  [counter] outputs_device_bound
+E               pub outputs_device_bound: u64,
+E           rust/src/counters.rs:538  [counter] outputs_device_resident
+E               pub outputs_device_resident: u64,
+E           rust/src/counters.rs:540  [counter] outputs_host_resident
+E               pub outputs_host_resident: u64,
+E           rust/src/counters.rs:600  [counter] proven_elsewhere_declines
+E               pub proven_elsewhere_declines: u64,
+E           rust/src/vk/session.rs:692  [env_switch] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS
+E               std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+E           rust/src/ep.rs:1631  [env_switch] ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS
+E               // MEASURED 2026-08-02 on Phi-3.5 (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`): the fused node
+E         CENSUS-EXTENT: this is a finding about the census's coverage of an independently enumerated whole. The screen reached its observation and the source lines it read are quoted above.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['C:\\Users\\justinchu\\AppData\\Local\\anaconda3\\python.exe', 'C:\\Users\\justinchu\\dev\\ep-v...ntly enumerated whole. The screen reached its observation and the source lines it read are quoted above.\n', stderr='').returncode
+
+ci\test_lane_checks.py:1486: AssertionError
+___________ test_the_screen_will_not_narrow_to_source_only_silently ___________
+
+    def test_the_screen_will_not_narrow_to_source_only_silently():
+        """The --union-required lesson, applied again: a check that quietly drops half its
+        input when the input is missing returns to the view it was written to replace."""
+        with tempfile.TemporaryDirectory() as td:
+            r = run_check("check_census_completeness.py", "--artifacts", td)
+            assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+            assert "census_artifacts_unavailable" in r.stdout
+            r2 = run_check("check_census_completeness.py", "--artifacts", td, "--no-artifacts")
+>           assert r2.returncode == EXIT_PASS, r2.stdout
+E           AssertionError: 
+E             CENSUS-EXTENT: the independent whole — what the census's twelve is twelve OF.
+E               58 instrumented surfaces from production Rust under C:\Users\justinchu\dev\ep-vulkan-link\rust\src: 20 C ABI counter fields, 10 trace phases, 28 EP env switches.
+E               frame: 32483 production lines read, 13338 lines held out as #[cfg(test)] (UNOBSERVABLE by frame, not zero findings).
+E               The census does not write any of these files. A mechanism added to the Rust tree grows this denominator whether or not the census is told.
+E               2 env switch(es) appear only in prose, never in a line of production code: ONNXRUNTIME_EP_VULKAN_ALLOW_MISSING_GLSLC, ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS.
+E             
+E             CENSUS-EXTENT: (2) THE WHOLE — 58 surfaces against the census's unknown number of mechanisms.
+E               33 censused, 12 instrumented and observed by NO census mechanism, 3 out of the census's frame, 2 not mechanisms.
+E                 GAP  rust/src/counters.rs:499  [counter] compile_calls (owner Mouse) — Counts ORT Compile() entries. No census mechanism reads it, so 'the EP was asked to compile and did not' is not a state the census can report.
+E                 GAP  rust/src/counters.rs:506  [counter] compute_calls (owner Mouse) — Counts Compute() entries. The census infers execution from dispatches_executed instead; a Compute() that entered and dispatched nothing is invisible to it.
+E                 GAP  rust/src/counters.rs:504  [counter] subgraphs_stub (owner Mouse) — Counts subgraphs taken as stubs. A stub subgraph is the identity outcome for the partitioner and no census mechanism observes the count.
+E                 GAP  rust/src/vk/barrier.rs:238  [env_switch] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE (owner Switch) — Selects a barrier backend probe. Unobserved by the census.
+E                 GAP  rust/src/logging.rs:42  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG (owner Mouse) — Raises claim logging to Debug. Unobserved by the census.
+E                 GAP  rust/src/ops/claim_log.rs:118  [env_switch] ONNXRUNTIME_EP_VULKAN_CLAIM_LOG (owner Mouse) — Writes the per-claim log. Unobserved by the census.
+E                 GAP  rust/src/factory.rs:440  [env_switch] ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY (owner Tank) — Switches allocations to device-local memory — changes what the EP does on every upload, and no census mechanism observes whether it was in force.
+E                 GAP  rust/src/vk/session.rs:2077  [env_switch] ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES (owner Switch) — Dumps output bytes. Unobserved by the census.
+E                 GAP  rust/src/ops/quant.rs:350  [env_switch] ONNXRUNTIME_EP_VULKAN_GEMV_PACKED (owner Mouse) — Selects the packed GEMV path. Investigated 2026-08-02: the switch is resolved in rust/src/ops/quant.rs:345 and enters the program as SPECIALIZATION CONSTANT index 5 of q_gemv.comp, and rust/src/vk/pipeline.rs keys the pipeline cache on (shader_stem, spec_constants) — so the two settings really are two different pipelines. But NO artifact this project produces records a pipeline key or a spec constant: trace.rs's Phase set has PipelineLookup and no payload, and no counter names the variant. So a host-side record of the env var would not close this: R10 asks for an artifact the mechanism PRODUCED whose content varies with its input, and reading env::var from a harness proves nothing about what the EP did with it. UNTIL an EP-side change records the resolved value (or the pipeline key) in an artifact, every kernel observation we hold is silent about which kernel it observed. Owed by Mouse (ops/) with Switch (vk/pipeline.rs): emit the spec-constant vector, or the resolved gemv_packed bool, into the trace or the counters.
+E                 GAP  rust/src/allocator.rs:95  [env_switch] ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS (owner Tank) — Quarantines freed spans. Unobserved by the census.
+E                 GAP  rust/src/allocator.rs:89  [env_switch] ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB (owner Tank) — Sizes the VA reservation. Unobserved by the census.
+E                 GAP  rust/src/logging.rs:38  [env_switch] ONNXRUNTIME_EP_VULKAN_VERBOSE (owner Switch) — Raises logging to Info. Unobserved by the census.
+E               Numerator and denominator have different authors, in different files, in a different language. This is the property that lets the count be wrong.
+E             
+E             CENSUS-EXTENT: extent and name-content are UNOBSERVABLE in this frame (--no-artifacts). The census produced no output for this run to read, and this screen will not infer coverage from source alone.
+E             CENSUS-EXTENT: FAIL(condition=unmapped_surface)
+E             Surfaces present in the independent whole with no entry in the surface map.
+E             Each is a mechanism-shaped thing the census has not been told about; the
+E             census's own list cannot report these because it does not enumerate them.
+E             
+E               rust/src/counters.rs:525  [counter] device_losses
+E                   pub device_losses: u64,
+E               rust/src/counters.rs:592  [counter] device_unattributed_claims
+E                   pub device_unattributed_claims: u64,
+E               rust/src/counters.rs:547  [counter] outputs_device_bound
+E                   pub outputs_device_bound: u64,
+E               rust/src/counters.rs:538  [counter] outputs_device_resident
+E                   pub outputs_device_resident: u64,
+E               rust/src/counters.rs:540  [counter] outputs_host_resident
+E                   pub outputs_host_resident: u64,
+E               rust/src/counters.rs:600  [counter] proven_elsewhere_declines
+E                   pub proven_elsewhere_declines: u64,
+E               rust/src/vk/session.rs:692  [env_switch] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS
+E                   std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+E               rust/src/ep.rs:1631  [env_switch] ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS
+E                   // MEASURED 2026-08-02 on Phi-3.5 (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`): the fused node
+E             CENSUS-EXTENT: this is a finding about the census's coverage of an independently enumerated whole. The screen reached its observation and the source lines it read are quoted above.
+E             
+E           assert 1 == 0
+E            +  where 1 = CompletedProcess(args=['C:\\Users\\justinchu\\AppData\\Local\\anaconda3\\python.exe', 'C:\\Users\\justinchu\\dev\\ep-v...ntly enumerated whole. The screen reached its observation and the source lines it read are quoted above.\n', stderr='').returncode
+
+ci\test_lane_checks.py:1546: AssertionError
+=========================== short test summary info ===========================
+FAILED ci/test_lane_checks.py::test_the_whole_is_not_derived_from_the_census
+FAILED ci/test_lane_checks.py::test_extent_reports_unobservable_rather_than_zero_over_zero
+FAILED ci/test_lane_checks.py::test_the_screen_will_not_narrow_to_source_only_silently
+3 failed, 122 passed in 39.57s

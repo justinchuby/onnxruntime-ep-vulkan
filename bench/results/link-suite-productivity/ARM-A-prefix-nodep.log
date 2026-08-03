@@ -1,0 +1,38 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+
+=================================== ERRORS ====================================
+__________ ERROR collecting tests/ops/test_shape_inference_delta.py ___________
+ImportError while importing test module 'C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_shape_inference_delta.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests\ops\_models.py:155: in apply_shape_inference
+    from onnx_shape_inference import infer_symbolic_shapes
+E   ModuleNotFoundError: No module named 'onnx_shape_inference'
+
+The above exception was the direct cause of the following exception:
+..\..\AppData\Local\anaconda3\Lib\importlib\__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\test_shape_inference_delta.py:360: in <module>
+    after=_count_resolved(_DELTA_CASES, inferred=True),
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\test_shape_inference_delta.py:327: in _count_resolved
+    model_bytes = m.apply_shape_inference(model_bytes)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\_models.py:157: in apply_shape_inference
+    raise ImportError(
+E   ImportError: onnx-shape-inference is required for shape-inference preprocessing.
+E   Install: pip install onnx-shape-inference
+E   Or: pip install -r tests/requirements.txt
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 0
+FAIL(condition)    : 0
+ERROR(instrument)  : 0
+XPASS(stale expect): 0
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+ERROR tests/ops/test_shape_inference_delta.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 4.90s

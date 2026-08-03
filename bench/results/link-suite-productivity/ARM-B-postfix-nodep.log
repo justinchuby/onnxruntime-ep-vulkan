@@ -1,0 +1,139 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 10%]
+sssssssssssssssssss..sss.....ss......................................... [ 21%]
+....................ss..ssssssssssssssssssssssssssssssssssss...
+PRECONDITION(equivalence authority): 19 uncertified record(s) carry both values; 19 are unreconciled. Not a gate — see _is_certified().
+.ssss.sss [ 32%]
+ssss.................F....s.....................Fs............sss.sFssss [ 43%]
+ssssssssssssssssssssssssssssssss........ssssssssssssssssssssssssssssssss [ 54%]
+sssssssssssssssssssssssssssssssssssssssssssssssssssssssssss............. [ 64%]
+.........sssssssssssss.....ssss...............s......................... [ 75%]
+.............FFsssssssssssssssssssssssssssssssssssss................ssss [ 86%]
+.......ssss............................................................. [ 97%]
+.........ssssssss                                                        [100%]
+================================== FAILURES ===================================
+______________________ test_census_baseline_has_no_drift ______________________
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_harness_census.py:199: in test_census_baseline_has_no_drift
+    ???
+E   AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+E     disturbance.py::measure                          calls=15 reject_polarity=2 accept_polarity=8
+E       SCREENED   bench/run_disturbance.py::per_inference_kernel_us          calls=13 reject_polarity=1 accept_polarity=4
+E       SCREENED   bench/run_disturbance.py::synthetic_clean                  calls=8 reject_polarity=1 accept_polarity=3
+E     
+E       UNFALSIFIED is not a bug report; it is the absence of one. It says only that
+E       nothing in the always-on lane has ever watched this instrument disagree, so a
+E       broken one and a working one would look the same. Guard D lived here for its
+E       whole life while the Rust screen's question ('has it got a caller?') said WIRED.
+E     
+E       READ THE UNFALSIFIED COUNT HERE AS A PROPERTY OF THIS SCREEN, NOT AS A VERDICT ON
+E       bench/'s TESTS. Polarity is detected from `pytest.raises`, and most bench
+E       instruments are TOTAL functions: they return a token (`STEADY`, `MARGINAL_TAIL`,
+E       `NO_STEADY_TAIL`, `SOLE_TENANT`) instead of raising, so a test that watches
+E       `gpu_steady_tail` refuse a series is invisible to the raise-based model. This is the
+E       same limit already recorded for `classify_` in the harness domain. `unfalsified`
+E       here means THIS SCREEN has not seen a disagreement, which is exactly what R12 says
+E       it should say, and not that no test watches one. Crediting a polarity this screen
+E       did not observe would be the Guard D shape with the sign flipped.
+E       Handed to Niobe: a value-polarity model for total instruments, or a note per row.
+E     
+E     CENSUS VERDICT: FAIL(drift)
+E       UNDECLARED bench/ MODULES (neither screened nor held out):
+E         ? bench/spirv_simt.py
+E         ? bench/test_weight_reread.py
+E     
+E     FAIL: 4 NEW uninvoked instrument(s):
+E       + allocator.rs::clear_session_devices
+E       + counters.rs::device_unattributed_forms
+E       + counters.rs::output_residency
+E       + counters.rs::proven_elsewhere_forms
+E     
+E     FAIL: 2 undeclared item(s) in the census frame. Add each to FRAME_DIRS / BENCH_INSTRUMENT_FILES / BENCH_HELD_OUT with a reason. 'Not scanned' is an acceptable answer; not saying which is not.
+E     
+E   assert 1 == 0
+E    +  where 0 = <module 'audit_instruments' from 'C:\\Users\\justinchu\\dev\\ep-vulkan-link\\rust\\tools\\audit_instruments.py'>.EXIT_PASS
+________________ test_the_python_binding_hardcodes_gpu_to_cuda ________________
+/mnt/c/Users/justinchu/dev/ep-vulkan-link/tests/ops/test_kv_device_residency.py:166: in test_the_python_binding_hardcodes_gpu_to_cuda
+    ???
+E   AssertionError: assert 'CUDA' in 'OK'
+________________________ test_layer_capture_mechanism _________________________
+[LANE FAILURE — known-fatal log line, R13 obligation 3]
+AssertionError: ORT announced a run-time fallback during this test:
+    Falling back to ['CPUExecutionProvider'] and retrying
+A known-fatal log line is a lane failure, not a log line.  This line has appeared five times on this project while every gate passed — which is exactly the shape of the UNATTRIBUTED specimen (§10.0 third amendment).
+If this test provokes the fallback deliberately, mark it @pytest.mark.expects_ort_fallback.
+---------------------------- Captured stdout call -----------------------------
+*************** EP Error ***************
+EP Error Unknown Provider Type: VulkanExecutionProvider when using ['VulkanExecutionProvider', 'CPUExecutionProvider']
+Falling back to ['CPUExecutionProvider'] and retrying.
+****************************************
+________________ test_shape_inference_increases_resolved_count ________________
+tests\ops\_models.py:155: in apply_shape_inference
+    from onnx_shape_inference import infer_symbolic_shapes
+E   ModuleNotFoundError: No module named 'onnx_shape_inference'
+
+The above exception was the direct cause of the following exception:
+tests\ops\test_shape_inference_delta.py:405: in test_shape_inference_increases_resolved_count
+    report = _report()
+             ^^^^^^^^^
+tests\ops\test_shape_inference_delta.py:385: in _report
+    after=_count_resolved(_DELTA_CASES, inferred=True),
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\test_shape_inference_delta.py:327: in _count_resolved
+    model_bytes = m.apply_shape_inference(model_bytes)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\_models.py:157: in apply_shape_inference
+    raise ImportError(
+E   ImportError: onnx-shape-inference is required for shape-inference preprocessing.
+E   Install: pip install onnx-shape-inference
+E   Or: pip install -r tests/requirements.txt
+_____________________ test_inferred_model_cpu_correctness _____________________
+tests\ops\_models.py:155: in apply_shape_inference
+    from onnx_shape_inference import infer_symbolic_shapes
+E   ModuleNotFoundError: No module named 'onnx_shape_inference'
+
+The above exception was the direct cause of the following exception:
+tests\ops\test_shape_inference_delta.py:433: in test_inferred_model_cpu_correctness
+    inferred_bytes = m.apply_shape_inference(original_bytes)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\ops\_models.py:157: in apply_shape_inference
+    raise ImportError(
+E   ImportError: onnx-shape-inference is required for shape-inference preprocessing.
+E   Install: pip install onnx-shape-inference
+E   Or: pip install -r tests/requirements.txt
+============================== warnings summary ===============================
+tests/ops/test_domain_regression.py::test_notarealop_ordinary_decline
+tests/ops/test_domain_regression.py::test_notarealop_vulkan_does_not_claim
+tests/ops/test_matmulnbits.py::test_layer_capture_mechanism
+  C:\Users\justinchu\dev\ep-vulkan-link\ci\link-scratch-nodep\venv\Lib\site-packages\onnxruntime\capi\onnxruntime_inference_collection.py:153: UserWarning: Specified provider 'VulkanExecutionProvider' is not in available provider names.Available providers: 'AzureExecutionProvider, CPUExecutionProvider'
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 311
+FAIL(condition)    : 3
+ERROR(instrument)  : 2
+XPASS(stale expect): 0
+  FAIL(condition)   tests/ops/test_harness_census.py::test_census_baseline_has_no_drift
+                    AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+                    AssertionError: assert 'CUDA' in 'OK'
+  FAIL(condition)   tests/ops/test_matmulnbits.py::test_layer_capture_mechanism
+                    [LANE FAILURE — known-fatal log line, R13 obligation 3]
+  ERROR(instrument) tests/ops/test_shape_inference_delta.py::test_shape_inference_increases_resolved_count
+                    ImportError: onnx-shape-inference is required for shape-inference preprocessing.
+  ERROR(instrument) tests/ops/test_shape_inference_delta.py::test_inferred_model_cpu_correctness
+                    ImportError: onnx-shape-inference is required for shape-inference preprocessing.
+LANE FAILURE (fallback log): 1
+  tests/ops/test_matmulnbits.py::test_layer_capture_mechanism
+    Falling back to ['CPUExecutionProvider'] and retrying
+A lane with any instrument error is not a lane that ran, whatever else it reports.  An instrument error NEVER counts as a detection: none of the ERROR(instrument) lines above is evidence about the EP.
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+FAILED tests/ops/test_harness_census.py::test_census_baseline_has_no_drift - ...
+FAILED tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+FAILED tests/ops/test_matmulnbits.py::test_layer_capture_mechanism - [LANE FA...
+FAILED tests/ops/test_shape_inference_delta.py::test_shape_inference_increases_resolved_count
+FAILED tests/ops/test_shape_inference_delta.py::test_inferred_model_cpu_correctness
+5 failed, 311 passed, 349 skipped, 3 warnings in 125.49s (0:02:05)

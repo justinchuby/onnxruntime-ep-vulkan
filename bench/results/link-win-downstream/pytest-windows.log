@@ -1,0 +1,313 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+.......ssssssssssssssssss.......................ssss.................... [ 11%]
+.........ssss.ss........F............................................... [ 23%]
+...................F.....
+PRECONDITION(equivalence authority): 19 uncertified record(s) carry both values; 19 are unreconciled. Not a gate — see _is_certified().
+..............................F................ [ 35%]
+..........F.x........................................................... [ 46%]
+.......................................F...............................F [ 58%]
+FF...FF................................F..s............................. [ 70%]
+.........................................x..............s............... [ 81%]
+........................................................................ [ 93%]
+...............................FF.F...x                                  [100%]
+================================== FAILURES ===================================
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_verdict.py:1710: AssertionError: [criterion 10] series verdict is DIVERGENT, not MATCH.
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_harness_census.py:199: AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_kv_device_residency.py:166: AssertionError: assert 'CUDA' in 'OK'
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\_models.py:966: AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_phi35.py:1068: AssertionError: [Device 0] dispatches_per_run=0 < subgraphs_live=1: fewer GPU dispatches than islands per run. Each island must dispatch at least one node per Compute() call.
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_wiring_census.py:2178: AssertionError: Wiring census FAILED — the following mandatory mechanisms are UNWIRED:
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_wiring_census.py:2287: AssertionError: the DLL's VulkanEpCounters is 136 bytes, this mirror is 112. A mirror that is the wrong size does not read smaller numbers, it reads different fields.
+C:\Users\justinchu\dev\ep-vulkan-link\tests\ops\test_wiring_census.py:2334: AssertionError: the ledger fields are published but nothing consulted the ledger — UNWIRED, which is a distinct state from UNOBSERVABLE and from a real count (R12). ledger_entries=1726
+============================== warnings summary ===============================
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Add-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sub-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Div-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Pow-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Pow-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Neg-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Neg-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Abs-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Abs-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sign-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Floor-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Floor-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Ceil-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Ceil-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Round-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Round-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sqrt-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Reciprocal-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Reciprocal-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Exp-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Log-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Log-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Erf-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sin-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cos-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Cos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tan-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asin-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Asin-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acos-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Acos-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atan-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Atan-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sinh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Cosh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Cosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Asinh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Asinh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Acosh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Acosh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Atanh-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Atanh-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Relu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sigmoid-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-act-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-act-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [LeakyRelu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[LeakyRelu-alpha0.1]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [LeakyRelu-alpha0.1] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Elu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Elu-alpha1.5]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Elu-alpha1.5] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Selu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Selu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Celu-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Celu-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-default]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSigmoid-default] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSigmoid-custom]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSigmoid-custom] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[HardSwish-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [HardSwish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softplus-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Softplus-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Softsign-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Softsign-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Gelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mish-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mish-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[ThresholdedRelu-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [ThresholdedRelu-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Add-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Add-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sub-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sub-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Div-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Div-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Mul-fp16-bcast]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Mul-fp16-bcast] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Relu-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Relu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sigmoid-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sigmoid-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Sqrt-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Sqrt-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Exp-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Exp-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Tanh-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Tanh-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Erf-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Erf-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Gelu-fp16]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Gelu-fp16] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+tests/ops/test_barrier_parity.py::test_barrier_parity[Identity-fp32]
+  C:\Users\justinchu\AppData\Local\anaconda3\Lib\site-packages\_pytest\python.py:194: UserWarning: [Identity-fp32] ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE probe file not written — EP is likely not built yet. The parity comparison proceeds but cannot verify which barrier backend ran. Once the EP crate is linked, this should always return 'sync2' or 'legacy'. See rust/src/vk/barrier.rs (commit 255f2db).
+    result = testfunction(**testargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 568
+FAIL(condition)    : 14
+ERROR(instrument)  : 0
+XPASS(stale expect): 0
+  FAIL(condition)   tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match
+                    AssertionError: [criterion 10] series verdict is DIVERGENT, not MATCH.
+  FAIL(condition)   tests/ops/test_elementwise.py::test_clip_no_bounds
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_harness_census.py::test_census_baseline_has_no_drift
+                    AssertionError: instrument census reported FAIL(drift).  Quote the drift, not the exit code:
+  FAIL(condition)   tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+                    AssertionError: assert 'CUDA' in 'OK'
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[IsInf-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-i32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-i32-to-fp32]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-bool]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Flatten-fp32-axis1]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_op_table.py::test_op_table[Reshape-fp32-static]
+                    AssertionError: VulkanExecutionProvider did not execute any node of this model — the CPU-match check would be a vacuous pass. Providers seen: ['CPUExecutionProvider'].
+  FAIL(condition)   tests/ops/test_phi35.py::test_phi35_multi_run_same_session_interior_pointer_safety
+                    AssertionError: [Device 0] dispatches_per_run=0 < subgraphs_live=1: fewer GPU dispatches than islands per run. Each island must dispatch at least one node per Compute() call.
+  FAIL(condition)   tests/ops/test_wiring_census.py::test_wiring_census
+                    AssertionError: Wiring census FAILED — the following mandatory mechanisms are UNWIRED:
+  FAIL(condition)   tests/ops/test_wiring_census.py::test_the_counters_mirror_matches_the_running_dll
+                    AssertionError: the DLL's VulkanEpCounters is 136 bytes, this mirror is 112. A mirror that is the wrong size does not read smaller numbers, it reads different fields.
+  FAIL(condition)   tests/ops/test_wiring_census.py::test_ledger_lookup_wired
+                    AssertionError: the ledger fields are published but nothing consulted the ledger — UNWIRED, which is a distinct state from UNOBSERVABLE and from a real count (R12). ledger_entries=1726
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+FAILED tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match
+FAILED tests/ops/test_elementwise.py::test_clip_no_bounds - AssertionError: V...
+FAILED tests/ops/test_harness_census.py::test_census_baseline_has_no_drift - ...
+FAILED tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda
+FAILED tests/ops/test_op_table.py::test_op_table[IsInf-fp32] - AssertionError...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-i32] - Assertio...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-i32-to-fp32] - Assertio...
+FAILED tests/ops/test_op_table.py::test_op_table[Cast-fp32-to-bool] - Asserti...
+FAILED tests/ops/test_op_table.py::test_op_table[Flatten-fp32-axis1] - Assert...
+FAILED tests/ops/test_op_table.py::test_op_table[Reshape-fp32-static] - Asser...
+FAILED tests/ops/test_phi35.py::test_phi35_multi_run_same_session_interior_pointer_safety
+FAILED tests/ops/test_wiring_census.py::test_wiring_census - AssertionError: ...
+FAILED tests/ops/test_wiring_census.py::test_the_counters_mirror_matches_the_running_dll
+FAILED tests/ops/test_wiring_census.py::test_ledger_lookup_wired - AssertionE...
+14 failed, 568 passed, 30 skipped, 3 xfailed, 58 warnings in 446.14s (0:07:26)

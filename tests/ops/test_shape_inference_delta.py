@@ -355,10 +355,37 @@ class _DeltaReport(NamedTuple):
         )
 
 
-_REPORT = _DeltaReport(
-    before=_count_resolved(_DELTA_CASES, inferred=False),
-    after=_count_resolved(_DELTA_CASES, inferred=True),
-)
+# The delta report is built LAZILY, on first use inside a test.
+#
+# It used to be a module-level constant. `_count_resolved(..., inferred=True)` calls
+# `m.apply_shape_inference`, which imports `onnx_shape_inference` — an optional
+# dependency. At module scope that import runs at COLLECTION time, so on any
+# environment without the package pytest reported
+# `Interrupted: 1 error during collection` and abandoned the WHOLE `tests/ops`
+# directory having asserted nothing at all. One optional dependency zeroed the entire
+# op-correctness step, and the two tests that actually need the package are the only
+# two that should have noticed.
+#
+# Lazy construction keeps the blast radius at the tests that use it: they fail (loudly,
+# with the install hint from `_models.apply_shape_inference`), and the other 663 tests
+# in the directory still run and still assert.
+#
+# This is containment, NOT a repair of the missing dependency, and deliberately not a
+# skip: `pytest.importorskip` here would trade a directory-wide abort for a silent
+# green, which is the same defect one layer quieter. `ci/check_suite_productivity.py`
+# is the mechanism that stops either shape from reading as a passing lane.
+_REPORT_CACHE: list = []
+
+
+def _report() -> _DeltaReport:
+    if not _REPORT_CACHE:
+        _REPORT_CACHE.append(
+            _DeltaReport(
+                before=_count_resolved(_DELTA_CASES, inferred=False),
+                after=_count_resolved(_DELTA_CASES, inferred=True),
+            )
+        )
+    return _REPORT_CACHE[0]
 
 
 # ---------------------------------------------------------------------------
@@ -375,19 +402,20 @@ def test_shape_inference_increases_resolved_count() -> None:
       2. After inference: all outputs have concrete integer shapes.
       3. Delta = len(_DELTA_CASES) (every designed case is inferable).
     """
-    print(_REPORT)
-    assert _REPORT.before == 0, (
+    report = _report()
+    print(report)
+    assert report.before == 0, (
         f"Expected all {len(_DELTA_CASES)} cases to have UNKNOWN output shapes before inference "
-        f"(make_model_dynamic_output leaves them None), but {_REPORT.before} already had shapes. "
+        f"(make_model_dynamic_output leaves them None), but {report.before} already had shapes. "
         "make_model_dynamic_output must produce shape=None outputs."
     )
-    assert _REPORT.after == _EXPECTED_DELTA, (
+    assert report.after == _EXPECTED_DELTA, (
         f"Expected all {_EXPECTED_DELTA} cases to gain concrete shapes after inference, "
-        f"but only {_REPORT.after} did. "
+        f"but only {report.after} did. "
         "Check onnx_shape_inference supports these op types."
     )
-    assert _REPORT.delta == _EXPECTED_DELTA, (
-        f"Delta should be {_EXPECTED_DELTA} but got {_REPORT.delta}."
+    assert report.delta == _EXPECTED_DELTA, (
+        f"Delta should be {_EXPECTED_DELTA} but got {report.delta}."
     )
 
 

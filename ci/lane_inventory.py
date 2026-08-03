@@ -538,6 +538,160 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="build.rust_unit_tests_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane="both",
+        step="Rust unit tests asserted something (productivity floor, libtest)",
+        watches=(
+            "That `cargo test --lib` actually RAN its tests. libtest prints "
+            "`running 0 tests` / `test result: ok.` and exits ZERO, so the step above "
+            "cannot distinguish 510 passing tests from none at all."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Feed ci/check_suite_productivity.py --harness libtest a log reading "
+            "`running 0 tests` / `test result: ok. 0 passed; 0 failed; ...`, and a second "
+            "reading `3 passed; ...; 507 filtered out` — the shape a stray filter leaves."
+        ),
+        arm_healthy=(
+            "SUITE-PRODUCTIVITY: PASS — 510 executed, floor 500 (real Windows run, "
+            "bench/results/link-suite-productivity/cargo-test-lib-windows.log)"
+        ),
+        arm_broken=(
+            "SUITE-PRODUCTIVITY: FAIL(condition=asserted_nothing) on the zero-test log, and "
+            "FAIL(condition=executed_below_floor) '3 test(s) executed ... floor is 500' on "
+            "the filtered one"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "It counts outcomes; it cannot see a test that ran and asserted something "
+            "vacuous. That is ci/check_tautological_assertions.py's extent.",
+            "Only `cargo test --lib` is wired. The five integration-target steps "
+            "(layering, portability, cdylib_load, dump_capabilities, host_registration, "
+            "validation_control) can still pass with zero tests and are a NAMED open gap "
+            "from the 2026-08-03 sweep, not an oversight.",
+        ),
+    ),
+    Check(
+        id="hostfree.lane_check_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Two-polarity suite asserted something (productivity floor)",
+        watches=(
+            "That the suite which certifies every other check in ci/ collected and ran "
+            "its 116 tests, rather than reporting success for collecting none."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Feed ci/check_suite_productivity.py a log reading `400 passed, 100 skipped` "
+            "against the tests/ops floor, and `no tests ran in 0.01s` against the "
+            "single-test floor."
+        ),
+        arm_healthy="SUITE-PRODUCTIVITY: PASS — 116 executed (3 failed, 113 passed), floor 100",
+        arm_broken=(
+            "SUITE-PRODUCTIVITY: FAIL(condition=collected_below_floor) and "
+            "FAIL(condition=no_tests_ran) — see ci/negative_control_suite_productivity.py"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "A floor is a lower bound on WORK, never on correctness. 116 vacuous tests "
+            "clear it exactly as well as 116 real ones.",
+        ),
+    ),
+    Check(
+        id="hostfree.suite_productivity_negative_control",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Suite-productivity negative control (demand red on a suite that did nothing)",
+        watches=(
+            "ci/check_suite_productivity.py itself — every condition and every instrument "
+            "path, including the two LIVE arms from a real environment with the optional "
+            "dependency really removed."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "The control IS the mutation: 25 arms, each asserting a specific terminal "
+            "state. Deleting any condition branch from check_suite_productivity.py turns "
+            "its arm red on the next run."
+        ),
+        arm_healthy="NEGATIVE-CONTROL: PASS — every arm fired as declared (3 LIVE / 1 REPLAYED / 21 PLANTED)",
+        arm_broken=(
+            "The LIVE pre-fix arm: a scratch venv built without onnx-shape-inference "
+            "reproduced `Interrupted: 1 error during collection` over all 665 tests, and "
+            "the check reported FAIL(condition=collection_error). The REPLAYED arm is "
+            "stronger: bench/results/linux_lavapipe_optests.txt is a real green run "
+            "reading `2 passed, 36 skipped`, and it now trips collected_below_floor."
+        ),
+        observed="2026-08-03",
+        misses=(
+            "The LIVE arms are replayed logs from a real run, not a live re-run. If "
+            "pytest's summary format changes, the arms keep passing against text that no "
+            "longer occurs — which is why summary_not_found and "
+            "unrecognised_outcome_word are ERROR(instrument) rather than a shrug.",
+        ),
+    ),
+    Check(
+        id="device.op_correctness_productivity",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="Op-correctness step asserted something (productivity floor)",
+        watches=(
+            "That the op-correctness step collected and executed tests at all. Until "
+            "2026-08-03 one missing OPTIONAL Python dependency aborted collection of the "
+            "whole tests/ops directory, and an all-skipped run exits ZERO."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Build a Python environment without `onnx-shape-inference` and run "
+            "`pytest tests/ops`. Before the 2026-08-03 fix this produced "
+            "`Interrupted: 1 error during collection`; the floors also fire on any log "
+            "whose accounted total drops below 660 or whose executed count drops below "
+            "300."
+        ),
+        arm_healthy=(
+            "SUITE-PRODUCTIVITY: PASS — 665 collected, 316 executed in the WEAKEST "
+            "possible environment (no EP library, no ICD, optional dep absent)"
+        ),
+        arm_broken=(
+            "FAIL(condition=collection_error) quoting "
+            "'ERROR collecting tests/ops/test_shape_inference_delta.py' and "
+            "'Interrupted: 1 error during collection'; and, on a real historical log, "
+            "FAIL(condition=collected_below_floor) '38 test(s) collected, floor is 660'"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "The per-lane executed floors are set from a developer machine, NOT from "
+            "inside build-test-linux or build-test-windows. Nobody has measured either "
+            "runner's executed count, and ci/suite_floor.json says so rather than "
+            "carrying two invented numbers that would read as measured.",
+            "It cannot see a suite that runs its floor's worth of tests against the CPU "
+            "EP. That is ci/check_verdict.py and the Criterion 10 gate.",
+        ),
+    ),
+    Check(
+        id="device.no_icd_step_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_WINDOWS,
+        step="No-ICD fallback step asserted something (productivity floor)",
+        watches=(
+            "A step whose entire content is ONE pytest node id. A renamed test, a moved "
+            "file or a new skip makes it run nothing and say nothing."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Feed the check a `no tests ran in 0.01s` log against the single-test floor "
+            "of 1."
+        ),
+        arm_healthy="SUITE-PRODUCTIVITY: PASS on `1 passed in 0.40s`",
+        arm_broken="SUITE-PRODUCTIVITY: FAIL(condition=no_tests_ran)",
+        observed="2026-08-03",
+        misses=(
+            "It cannot tell a test that ran under a REAL absent ICD from one that ran "
+            "with the environment override silently ineffective. That is "
+            "ci/check_icd_suppression.py's subject.",
+        ),
+    ),
+    Check(
         id="build.portability_lint",
         falsifier=FALSIFIER_OBSERVED,
         lane="both",

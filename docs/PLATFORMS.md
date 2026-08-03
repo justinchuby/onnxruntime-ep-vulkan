@@ -2352,6 +2352,276 @@ A separate, smaller finding on the way in: `tests/ops/test_shape_inference_delta
 
 ---
 
+## 7.22 A lane that asserted nothing must not be able to report success (2026-08-03)
+
+### 7.22.0 The finding that opened the round
+
+One missing optional Python package zeroed the entire op-correctness step.
+`tests/ops/test_shape_inference_delta.py` built its report object at **module
+scope**, so `import onnx_shape_inference` ran during pytest *collection*.  With
+the package absent, pytest printed `Interrupted: 1 error during collection` and
+abandoned **all 665 tests in `tests/ops`** — including the 663 that have nothing
+to do with shape inference.
+
+That is a dependency bug and it is the small half.  The large half is the shape:
+**a step that reports success for having done nothing.**  This project has spent
+the session cataloguing that class — `check_fatal_log`'s twelve hits that were
+its own docstring, an INFO channel that had never carried anything,
+`elementwise::EXERCISED` consulted before a proof key exists.  A CI step that
+passes having collected zero tests is the CI form of an observable that is true
+whatever happens.
+
+### 7.22.1 The correction I did not expect to have to make
+
+The collection-error form **already reddened**: pytest exits 2 on
+`Interrupted`, and the lane would have failed.  The real hole was quieter, and I
+found it only because I went looking for a log to test the checker against:
+
+```
+bench/results/linux_lavapipe_optests.txt   (tracked, historical)
+    2 passed, 36 skipped in 3.23s
+```
+
+A real, recorded, **green** run of the op-correctness suite in which 36 of 38
+tests never ran.  Nothing in the lane distinguished it from a full pass.  That
+log is now a REPLAYED arm of the negative control — the falsifier was observed
+in the repository's own history, not planted.
+
+`cargo test` has the identical hole and no flag that closes it:
+
+```
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+$ echo $?      # 0
+```
+
+There is no `--strict`.  A `--test` target whose tests were all `#[cfg]`-ed out,
+or a filter that matches nothing, is a green step.
+
+### 7.22.2 The mechanism, and why it is a file and not a flag
+
+`ci/check_suite_productivity.py` reads a captured pytest or libtest log and
+applies five assertions in order:
+
+| # | Assertion | Terminal state on violation |
+|---|---|---|
+| 1 | The log exists | `ERROR(instrument=log_not_captured)` |
+| 2 | No collection error (pytest) | `FAIL(condition=collection_error)` |
+| 3 | The suite ran at all | `FAIL(condition=no_tests_ran / asserted_nothing)` |
+| 4 | `min_collected` floor met | `FAIL(condition=collected_below_floor)` |
+| 5 | `min_executed_by_lane` floor met | `FAIL(condition=executed_below_floor)` |
+
+Two design points carry the weight:
+
+- **`min_collected` is the strong floor, because the collected count is
+  environment-independent.**  It does not vary with GPU, ICD, driver or ORT
+  build.  `min_executed` cannot be environment-independent, so its floor is
+  calibrated from *the weakest environment that still counts as running* — no EP
+  library, no ICD, optional deps absent.  Nothing that is working can execute
+  less than that.
+- **There is deliberately no `--min-collected` or `--relax` flag.**  A floor
+  that can be lowered by a command-line argument is a waiver with a flag.
+  Lowering a floor here is an edit to a tracked file, immediately adjacent to a
+  `provenance` string that must be rewritten to stay true.  A negative-control
+  arm and a two-polarity test both assert that argparse *rejects*
+  `--min-collected` with exit 2, so this property is itself checked.
+
+`skipped` and `deselected` are not executed.  An `error` is not an assertion.
+`xfailed` **is** executed — the body runs and its failure is checked.
+
+### 7.22.3 The demonstration: a matched LIVE pair, not a plant
+
+The brief required the guard be shown in its positive state by deleting the
+dependency from a scratch environment.  A venv without system site-packages was
+built with `onnxruntime onnx onnx_ir numpy pytest` and deliberately **without**
+`onnx-shape-inference`.  Both arms ran in that same environment:
+
+| Arm | Tree | pytest result | exit | Checker |
+|---|---|---|---|---|
+| **A** | pre-fix (`git show HEAD:…`) | `Interrupted: 1 error during collection` — 665 → 0 | 2 | `FAIL(condition=collection_error)` |
+| **B** | post-fix | `5 failed, 311 passed, 349 skipped` — 665 accounted for | 1 | `PASS` |
+
+Arm B is the arm that matters.  A guard that only ever reddens is a lock on the
+broken state; the green arm in the *same broken environment* is what shows the
+fix contains the blast radius to the two tests that genuinely need the package,
+rather than suppressing the signal.
+
+The fix itself is a lazy accessor, not `pytest.importorskip` — `importorskip`
+would trade a directory-wide abort for a silent green, which is the same defect
+wearing the opposite sign.
+
+Negative control: `ci/negative_control_suite_productivity.py`, **25 arms, 3 LIVE
+/ 1 REPLAYED / 21 PLANTED, all fired.**
+
+### 7.22.4 The sweep, reported as a count so it can be falsified
+
+**Universe:** 4 lanes (`lane-checks`, `build-test-linux`, `build-test-windows`,
+`conformance`) across 2 workflow files; **84 named steps**, of which 28 are
+provisioning (checkout/install/upload) and **56 are work-doing**.  Every one of
+the 56 was asked a single question: *can this step exit 0 having done zero work?*
+
+**15 step-instances carry the shape.**
+
+| Disposition | n | Steps |
+|---|---|---|
+| **Closed this round** | 8 | `Build Vulkan EP` ×2, `Two-polarity tests`, `cargo test --lib` ×2, op-correctness pytest ×2, Windows no-ICD fallback |
+| **Open, named** | 6 | `Layering lint` ×2, `Portability lint` ×2, `Remaining integration targets` ×2 — all `cargo test --test`, all still able to pass with zero tests |
+| **Accepted, reason on record** | 1 | `conformance.yml` bounded subset: `continue-on-error: true` plus `\|\| true`, already declared non-evidence and diagnostic-only |
+
+**The largest instance was not the dependency that started the round.**  Both
+device lanes' `Build Vulkan EP` steps carried:
+
+```bash
+if [ ! -f rust/Cargo.toml ]; then echo "BUILD_SKIPPED=1" >> $GITHUB_ENV; exit 0; fi
+```
+
+and every downstream step in both lanes carries `if: env.BUILD_SKIPPED != '1'`.
+`rust/Cargo.toml` is tracked, so its absence is a broken checkout, not a
+condition to tolerate — but had it ever been absent, **the entire device lane
+would have reported success having compiled nothing, run nothing and asserted
+nothing.**  One missing file, thirty green steps.  It is now `exit 1` with a
+`::error::`.  The `BUILD_SKIPPED` guards are left in the downstream `if:`
+expressions deliberately, so the change reads as one deletion rather than thirty.
+
+**Five static screens were checked for the same shape and found already
+guarded** — `check_tautological_assertions.py` (`language_scanned_nothing`),
+`check_tick_conversions.py` (UNOBSERVABLE-by-frame),
+`check_census_completeness.py` (`empty_whole`), plus the device-loss and
+fatal-log screens' lane-marker semantics.  Reporting this matters: a sweep that
+lists only what it found is not falsifiable.  The defect class was already
+understood for *static screens over source*; it had simply never been applied to
+*steps that run a test harness*.
+
+### 7.22.5 The 48 was never the numerator
+
+Last round recorded 50 Linux pytest failures against 14 on Windows, 2 shared, 48
+Linux-only.  Classifying the 48 by its own R13 lane summary:
+
+| n | Class |
+|---|---|
+| **42** | EP declined every node — `no proof ledger entry for …`, providers seen `['CPUExecutionProvider']` |
+| **4** | **`ERROR(instrument)`, not failures at all** — 3 × validation layer absent (`LAYER-ABSENT`), 1 × a sibling worktree's `.so` missing |
+| **2** | Residual, examined individually below |
+
+The 4 instrument errors are properties of my WSL reproduction box, not of Linux
+and not of the ledger.  CI's Linux lane installs the validation layers, so three
+of them cannot occur there at all.  **48 was never the right numerator, because
+the lane summary counts `ERROR(instrument)` alongside `FAIL(condition)`** — the
+R13 vocabulary is carefully distinguished at the point of emission and then
+silently re-merged at the point of counting.
+
+And the framing implied Windows was clean.  It is not: **12 Windows-only
+failures** exist in the same pair of logs (criterion 10, an elementwise clip,
+5 × op table, phi35, 3 × wiring census).
+
+### 7.22.6 The decline message names the wrong subject
+
+Chasing whether the 42 were digest drift, the log gave the opposite of what I
+expected:
+
+```
+proof ledger fault          →   0 occurrences
+no proof ledger entry for   →  42 occurrences
+```
+
+Read literally, that says the keys are absent — a statement about the *form*,
+which would contradict the shaderc/SPIR-V digest story entirely.  The counters
+artifact from the same run settles it:
+
+```
+ledger_gate    = FAULTED
+ledger_miss    = LEDGER-FAULTED
+ledger_entries = 0
+ledger_faults  = 97        <- every entry
+```
+
+`Ledger::state_for()` returns a blanket `ProofState::Unproven` when
+`!self.faults.is_empty()`, and the decline text then reads:
+
+> `[unproven] no proof ledger entry for '…'. The kernel exists; nothing has
+> proven it correct on this form.`
+
+**Every word of that is false in this situation.**  The ledger has 97 entries,
+one of them is for this form, and it faulted.  The fault *is* reported —
+`log::warn!("[VulkanEP] proof ledger fault: {f}")` — but from inside a
+`OnceLock` initialiser that runs once per process, before the ORT logger is
+attached in a pytest session, which is why the captured log contains zero of
+them.  So the only surviving channel is the counters artifact, and the only
+message a human reads says the opposite thing.
+
+This is the same defect class as everything else in this section, one level up:
+**the fault-free and the fault-blanketed cases are indistinguishable in the
+output an operator actually reads.**  `check_ledger_portability.py` could not
+name the cause for the same reason and had to fall back on
+`FAIL(condition=claimed_nothing)`.
+
+Routed to Morpheus with the counters evidence.  The digest hypothesis survives —
+`ledger_faults = 97` is consistent with Ubuntu shaderc 2023.8 against Windows SDK
+v2026.2 producing different SPIR-V for every entry — but it survives **on the
+counters artifact, not on the decline text, and the decline text is a defect in
+its own right.**
+
+### 7.22.7 The two residuals, and one latent test defect
+
+- **`test_skip_norm_f16_phi35_shape`** — the EP declined, ORT fell back to CPU,
+  and ORT's *own* CPU kernel then raised
+  `INVALID_ARGUMENT: input is expected to have 3 or 2 dimensions, got 1`.  So it
+  is downstream of the decline, but through a different mechanism, and it exposes
+  something real: **this test has no valid CPU path.**  It can only ever pass on
+  a machine where that form is proven and claimed.  On any machine where the EP
+  declines — for any reason, forever — it fails for a reason that has nothing to
+  do with the EP.  Routed as a latent test defect.
+- **`test_live_caller_bound_kv_stays_device_resident`** — consistent with the
+  decline (device residency cannot be observed when nothing is claimed).  No
+  independent cause found.
+
+**So: 44 of 48 explained, 4 were never failures, 0 genuine cross-platform
+defects — and one latent test defect and one instrument defect surfaced that are
+worth more than a defect count.**
+
+### 7.22.8 `backend_probe_writes_legacy_token`: same family, different global
+
+The intermittent recorded last round is the same family as the flakes Trinity
+just fixed — an unsynchronised process-global mutated by concurrent `#[test]`s —
+but a **different global**.  Not the counters statics: the environment variable
+`ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE`, set and removed by three
+`backend_probe_*` tests in `rust/src/vk/barrier.rs` with no
+`ledger::test_lock()`.  A `PROBE_COUNTER` makes each *path* unique, which hides
+the race; the env var is a single process-global slot, so one test's write lands
+in another test's path.
+
+Trinity's `rust/tools/audit_counter_test_lock.py` reports clean here and is
+correct to: its `TOUCHES_*` regexes know `counters::*` and the logger attach
+functions.  **That is a stated-extent limit, not a defect in her tool** — and
+the fact that it can be stated is why the tool is worth more than the
+hand-written list it replaced.
+
+Two corrections to last round's record: it reproduces **on Windows**, 1 failure
+in 40 runs of `cargo test --lib backend_probe`, and the failing run had **two**
+`backend_probe_*` tests fail simultaneously — which is a shared-slot race, not
+the vague order-dependence I recorded.  Fix is one line per test; test bodies in
+`rust/src` are Trinity's domain and it is routed, not applied.
+
+### 7.22.9 What this section does not claim
+
+- **It does not claim the new steps work in GitHub Actions.**  Nothing here ran
+  in a runner.  The Python was exercised locally, the workflow was parsed, and
+  the inventory classifies every new step — but a local run is not a lane, and
+  the inventory statuses say so.
+- **It does not claim the sweep is complete.**  It claims 56 work-doing steps
+  were examined against one specific question and 15 answered yes.  A step can
+  be productive and still be wrong about what it measures; that is a different
+  sweep.
+- **It does not claim the six open `cargo test --test` steps are safe.**  They
+  are open, named, and recorded in `ci/suite_floor.json` and the lane
+  inventory's `misses`.  They are bounded scope, not an argument.
+- **It does not resolve the ledger.**  It establishes that the message everyone
+  reads misnames the cause, and hands Morpheus the artifact that does not.
+- **No timing figure appears above and none is quotable from any of it.**  The
+  box is permanently contended (`PERF.md` §20).  Counts and bounds only.
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---
