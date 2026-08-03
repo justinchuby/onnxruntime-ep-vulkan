@@ -251,8 +251,33 @@ void main() {
     //    back as zero, and it can also mean a device loss. Bound it. A skipped write is not
     //    silently accepted: it changes `present`, and every arena lane carries a bit-exact
     //    correctness control against the shipping lane that reads before any byte count.
+    //
+    //    Group leader. `present` is indexed by `kv_h = h / G`, not by `h`, so all G query heads
+    //    of one KV group name the *same* words here. They wrote identical values — `k_new` and
+    //    `v_new` are read from `k_base`/`v_base`, which are functions of (b, s_local, kv_h)
+    //    only, and the RoPE applied to them uses `tok_pos`, which is a function of (b, s_local)
+    //    only; `h` does not appear in either — so the redundancy was invisible to every
+    //    correctness test and cost G x the KV write bandwidth. On Phi-3.5 G is 1 and there is
+    //    nothing to see; on a 4-way grouped model this was 4 writes of the same half-word.
+    //
+    //    Exactly one invocation per (b, kv_h, s_local) has `h % G == 0` — namely `h = kv_h * G`
+    //    — and it maps back to this same `kv_h`, so the single writer covers every word the G
+    //    used to and no word loses a writer. This is the same predicate `copy_leader` below
+    //    already uses for the past-region copy, and for the same reason.
+    //
+    //    Note what this changes about the masks. The G writers were what made the masked
+    //    half-word writes *safe by redundancy*: complementary `And`/`Or` masks and identical
+    //    values meant any interleaving ended correct. With one writer that argument is gone,
+    //    and the safety now rests on disjointness instead: the surviving writer owns both
+    //    halves of every word it touches, because the base `(b*Nkv + kv_h)*present_len*D +
+    //    tok_pos*D` and the extent `D` are both multiples of 2 whenever D is even, and D is
+    //    even for every model this kernel claims. The atomics are kept for the odd-D case,
+    //    where two *different* (kv_h, tok_pos) rows can share a word — that sharing is between
+    //    different leaders, so it survives the deduplication and still needs the mask.
     // ------------------------------------------------------------------
-    if (tok_pos < pc.present_len) {
+    uint group_size = Nq / Nkv;
+    bool kv_write_leader = (h % group_size) == 0u;
+    if (kv_write_leader && tok_pos < pc.present_len) {
         uint pb = (b * Nkv + kv_h) * pc.present_len * D + tok_pos * D;
         for (uint d = 0u; d < D; d++) {
             wr_presk(pb + d, k_new[d]);
@@ -299,7 +324,7 @@ void main() {
     //     into a corruption.
     // ------------------------------------------------------------------
     bool copy_leader =
-        pc.present_len != pc.past_stride && s_local == 0u && (h % (Nq / Nkv)) == 0u;
+        pc.present_len != pc.past_stride && s_local == 0u && kv_write_leader;
     // The leader's own attention loop runs t over [0, past_len] inclusive, so it covers
     // every past position exactly once. Any other s_local would too, but only s_local == 0
     // is guaranteed to, and one writer per (b, kv_h) is what keeps the writes unduplicated.

@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-__all__ = ["InstrumentError", "SpirvModule", "LoadTrace", "Dispatch"]
+__all__ = ["InstrumentError", "SpirvModule", "LoadTrace", "StoreTrace", "Dispatch"]
 
 MAX_LOOP_ITERATIONS = 1 << 22
 
@@ -108,8 +108,26 @@ _OPNAMES = {
     331: "OpModuleProcessed",
 }
 
+#: GLSL.std.450 instruction numbers, from the extended-instruction-set specification.
+#:
+#: The four entries that used to live here -- `30: "Fma", 43: "FMin", 37: "FMax", 40: "FClamp"`
+#: -- were **wrong**, and wrong in the worst available way: 37 is `FMin` and 40 is `FMax`, so a
+#: `relu` (which compiles to 40) would have been interpreted as a minimum and a `celu` (37) as a
+#: maximum. Every one of them would have returned a plausible float. Nothing caught it because
+#: the interpreter's only correctness control is a quantised GEMV, which uses none of them; the
+#: numbers were checked here by disassembling every `.spv` in the tree and matching the opcode
+#: histogram against the ops the sources actually call (40 appears in `ew_unary_relu`, 43 in
+#: `hardsigmoid`/`hardswish`, 45 in `gather`'s index clamp, 42 in `gqa_f16`'s `max(int, 0)`).
 _GLSL450 = {
-    30: "Fma", 43: "FMin", 37: "FMax", 40: "FClamp",
+    1: "Round", 2: "RoundEven", 3: "Trunc", 4: "FAbs", 5: "SAbs", 6: "FSign", 7: "SSign",
+    8: "Floor", 9: "Ceil", 10: "Fract",
+    13: "Sin", 14: "Cos", 15: "Tan", 16: "Asin", 17: "Acos", 18: "Atan",
+    19: "Sinh", 20: "Cosh", 21: "Tanh", 22: "Asinh", 23: "Acosh", 24: "Atanh", 25: "Atan2",
+    26: "Pow", 27: "Exp", 28: "Log", 29: "Exp2", 30: "Log2",
+    31: "Sqrt", 32: "InverseSqrt",
+    37: "FMin", 38: "UMin", 39: "SMin", 40: "FMax", 41: "UMax", 42: "SMax",
+    43: "FClamp", 44: "UClamp", 45: "SClamp", 46: "FMix",
+    50: "Fma",
     58: "PackHalf2x16", 62: "UnpackHalf2x16",
 }
 
@@ -223,6 +241,58 @@ class LoadTrace:
     def words_read_by_more_than_one_workgroup(self) -> int:
         touched = self.word_reads > 0
         return int(np.count_nonzero(self.word_min_wg[touched] != self.word_max_wg[touched]))
+
+
+@dataclass
+class StoreTrace:
+    """What one binding's *writes* named, in words, over one dispatch.
+
+    The mirror of `LoadTrace`, and it exists for the same reason: a claim that a kernel writes
+    each destination word once is a claim about the executed grid, not about the source text.
+    Every instruction that names a word for writing is counted -- `OpStore` and the read-modify-
+    write atomics alike -- because the redundancy this measures is redundancy of *memory
+    traffic*, and an `atomicAnd`/`atomicOr` pair moves the cache line exactly as a store does.
+
+    `writer_invocations[i]` counts *invocations* that wrote word `i` at least once, which is the
+    quantity a "G invocations write the same word" claim is about; `word_writes[i]` counts
+    instructions, which is what the memory system sees. They differ by the fixed per-write
+    instruction multiplicity of the kernel (2 for this project's masked half-word writes), so
+    both are published and neither is derived from the other.
+    """
+
+    binding: int
+    words: int
+    word_writes: np.ndarray
+    writer_invocations: np.ndarray
+    word_min_wg: np.ndarray
+    word_max_wg: np.ndarray
+    sites: dict[int, tuple[int, int]] = field(default_factory=dict)
+
+    @property
+    def store_instructions(self) -> int:
+        return sum(c for c, _ in self.sites.values())
+
+    @property
+    def named_bytes(self) -> int:
+        return int(sum(c * w for c, w in self.sites.values()) * 4)
+
+    @property
+    def touched_words(self) -> int:
+        return int(np.count_nonzero(self.word_writes))
+
+    @property
+    def max_writers_per_word(self) -> int:
+        return int(self.writer_invocations.max()) if self.writer_invocations.size else 0
+
+    @property
+    def words_written_by_more_than_one_workgroup(self) -> int:
+        touched = self.word_writes > 0
+        return int(np.count_nonzero(self.word_min_wg[touched] != self.word_max_wg[touched]))
+
+    def write_amplification(self) -> float:
+        """Instructions naming a word, per word actually reached. 1.0 only if nothing repeats."""
+        t = self.touched_words
+        return float(self.word_writes.sum() / t) if t else 0.0
 
 
 @dataclass
@@ -381,12 +451,19 @@ class SpirvModule:
     def run(self, d: Dispatch, trace_binding: int | None = None,
             wg_batch: int | None = None) -> LoadTrace | None:
         """Execute the whole grid. Returns the load trace for `trace_binding`, if asked."""
+        load, _ = self.run_traced(d, load_binding=trace_binding, wg_batch=wg_batch)
+        return load
+
+    def run_traced(self, d: Dispatch, load_binding: int | None = None,
+                   store_binding: int | None = None,
+                   wg_batch: int | None = None) -> tuple[LoadTrace | None, StoreTrace | None]:
+        """Execute the whole grid, tracing reads of one binding and writes of another."""
         trace = None
-        if trace_binding is not None:
-            var = self._binding_var(trace_binding)
-            words = d.buffers[trace_binding].size
+        if load_binding is not None:
+            var = self._binding_var(load_binding)
+            words = d.buffers[load_binding].size
             trace = LoadTrace(
-                binding=trace_binding, words=words,
+                binding=load_binding, words=words,
                 word_reads=np.zeros(words, dtype=np.uint32),
                 word_min_wg=np.full(words, np.iinfo(np.uint32).max, dtype=np.uint32),
                 word_max_wg=np.zeros(words, dtype=np.uint32),
@@ -396,14 +473,38 @@ class SpirvModule:
             self._trace_var = None
         self._trace = trace
 
+        wtrace = None
+        if store_binding is not None:
+            wvar = self._binding_var(store_binding)
+            wwords = d.buffers[store_binding].size
+            wtrace = StoreTrace(
+                binding=store_binding, words=wwords,
+                word_writes=np.zeros(wwords, dtype=np.uint32),
+                writer_invocations=np.zeros(wwords, dtype=np.uint32),
+                word_min_wg=np.full(wwords, np.iinfo(np.uint32).max, dtype=np.uint32),
+                word_max_wg=np.zeros(wwords, dtype=np.uint32),
+            )
+            self._wtrace_var = wvar
+        else:
+            self._wtrace_var = None
+        self._wtrace = wtrace
+        # `writer_invocations` counts invocations, not instructions, so a word an invocation
+        # writes twice (the And then the Or of one masked half-word write) must count once.
+        # The set of (word, global invocation index) pairs already seen is kept per batch;
+        # invocation indices are batch-local but a workgroup never spans two batches, so no
+        # invocation is split across them.
+        self._wseen: set | None = set() if store_binding is not None else None
+
         gx, gy, gz = d.groups
         total_groups = gx * gy * gz
         lsz = d.local_size[0] * d.local_size[1] * d.local_size[2]
         batch = wg_batch or max(1, min(total_groups, max(1, (1 << 21) // max(lsz, 1))))
         for start in range(0, total_groups, batch):
             stop = min(total_groups, start + batch)
+            if self._wseen is not None:
+                self._wseen = set()
             self._run_batch(d, start, stop)
-        return trace
+        return trace, wtrace
 
     def _binding_var(self, binding: int) -> int:
         for vid, dec in self.decor.items():
@@ -452,6 +553,9 @@ class SpirvModule:
                     arr = np.tile(np.array(d.groups, dtype=np.uint32), (T, 1))
                 elif b == 25:  # WorkgroupSize (normally a constant, not a variable)
                     arr = np.tile(np.array(d.local_size, dtype=np.uint32), (T, 1))
+                elif b == 28:  # GlobalInvocationId
+                    arr = np.stack([wg_x * lx + l_x, wg_y * ly + l_y, wg_z * lz + l_z],
+                                   axis=1)
                 else:
                     raise InstrumentError(f"unsupported BuiltIn {b}")
                 # Registered both as a value (a whole-variable `OpLoad`) and as storage (an
@@ -850,6 +954,38 @@ class SpirvModule:
         np.minimum.at(tr.word_min_wg, off, wgs)
         np.maximum.at(tr.word_max_wg, off, wgs)
 
+    def _record_store(self, ptr: dict, mask: np.ndarray) -> None:
+        tr = self._wtrace
+        if tr is None or ptr["var"] != self._wtrace_var:
+            return
+        width = self.scalar_count(ptr["type"])
+        key = ptr["type"]
+        cnt, w = tr.sites.get(key, (0, width))
+        active = int(np.count_nonzero(mask))
+        tr.sites[key] = (cnt + active, width)
+        if active == 0:
+            return
+        lanes = np.nonzero(mask)[0]
+        off = ptr["off"][lanes].astype(np.int64)
+        wgs = self.wg_index[lanes].astype(np.uint32)
+        if width > 1:
+            off = (off[:, None] + np.arange(width)).ravel()
+            wgs = np.repeat(wgs, width)
+            lanes = np.repeat(lanes, width)
+        off = np.clip(off, 0, tr.words - 1)
+        tr.word_writes += np.bincount(off, minlength=tr.words).astype(np.uint32)
+        np.minimum.at(tr.word_min_wg, off, wgs)
+        np.maximum.at(tr.word_max_wg, off, wgs)
+        seen = self._wseen
+        first = np.fromiter(
+            ((int(o), int(l)) not in seen for o, l in zip(off, lanes)),
+            dtype=bool, count=off.size,
+        )
+        seen.update((int(o), int(l)) for o, l in zip(off[first], lanes[first]))
+        if first.any():
+            tr.writer_invocations += np.bincount(
+                off[first], minlength=tr.words).astype(np.uint32)
+
     # -- instruction execution ----------------------------------------------------------
     def _exec_block(self, label: int, mask: np.ndarray) -> None:
         b = self.blocks[label]
@@ -883,12 +1019,14 @@ class SpirvModule:
             ptr = self.vals[dst] if dst not in self.storage else {
                 "var": dst, "off": np.zeros(self.T, dtype=np.int64),
                 "type": self.storage[dst]["type"]}
+            self._record_store(ptr, mask)
             self._store(ptr, self.value(ins.operands[1]), mask)
             return
         if op in ("OpControlBarrier", "OpMemoryBarrier"):
             return
         if op in ("OpAtomicAnd", "OpAtomicOr", "OpAtomicXor", "OpAtomicIAdd"):
             ptr = self.vals[ins.operands[0]]
+            self._record_store(ptr, mask)
             val = self.value(ins.operands[3])
             st = self._mem(ptr)
             data = st["data"]
@@ -921,12 +1059,34 @@ class SpirvModule:
                 return np.ascontiguousarray(h).view(np.uint32).reshape(-1)
             if name == "Fma":
                 return args[0] * args[1] + args[2]
-            if name == "FMin":
+            if name in ("FMin", "UMin", "SMin"):
                 return np.minimum(args[0], args[1])
-            if name == "FMax":
+            if name in ("FMax", "UMax", "SMax"):
                 return np.maximum(args[0], args[1])
-            if name == "FClamp":
+            if name in ("FClamp", "UClamp", "SClamp"):
                 return np.clip(args[0], args[1], args[2])
+            if name == "Exp":
+                return np.exp(args[0])
+            if name == "Log":
+                return np.log(args[0])
+            if name == "Exp2":
+                return np.exp2(args[0])
+            if name == "Log2":
+                return np.log2(args[0])
+            if name == "Sqrt":
+                return np.sqrt(args[0])
+            if name == "InverseSqrt":
+                return 1.0 / np.sqrt(args[0])
+            if name == "FAbs":
+                return np.abs(args[0])
+            if name == "SAbs":
+                return np.abs(args[0].astype(np.int32))
+            if name == "Floor":
+                return np.floor(args[0])
+            if name == "Ceil":
+                return np.ceil(args[0])
+            if name == "Pow":
+                return np.power(args[0], args[1])
             raise InstrumentError(f"unsupported GLSL.std.450 instruction {o[1]}")
         if op == "OpCompositeExtract":
             base = v(o[0])

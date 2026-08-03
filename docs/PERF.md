@@ -3769,3 +3769,124 @@ conclusions are not touched here. What changed is that the anchor can now go wro
 Reproduce: `python bench/results/probe_weight_reread.py`, then
 `python bench/results/probe_island_bytes.py`.
 Locked by `bench/test_weight_reread.py` (15 tests).
+
+## 23. The lever every grouped model pays for, and a ledger with no derivation (2026-08-03)
+
+Two items, one shader change, one retraction. Neither needed a clock.
+
+### 23.1 `Nq/Nkv > 1` writes `present` G times
+
+`gqa_f16.comp` indexes `present_key`/`present_value` by `kv_h = h / G`. The value written is a
+function of `(b, s_local, kv_h)` only — `k_new`/`v_new` come from `k_base`/`v_base`, and RoPE uses
+`tok_pos = past_len + s_local`. **`h` appears nowhere in the written value.** So all G query heads
+of a KV group wrote the same half-words, with complementary masks and an `Or` last, which is
+bit-identical and therefore invisible to every output comparison in the tree. It is not a
+correctness defect. It is G x the KV write traffic on every grouped model.
+
+Phi-3.5 is `Nq == Nkv == 32`, i.e. `G = 1`. **This is the first performance defect the project has
+found that our only end-to-end model is structurally incapable of showing.**
+
+The fix is one predicate: `kv_write_leader = (h % group_size) == 0u`, gating step 3's `present`
+write; `copy_leader` (which already had the guard) now reuses it. Coverage: within a group
+`h in [kv_h*G, (kv_h+1)*G)` exactly one h satisfies `h % G == 0`, namely `h = kv_h*G`, and it maps
+back to the same `kv_h` — so every word that had G writers has exactly one, and no word has zero.
+The masked-write safety argument **moves from redundancy to disjointness**: for even D the base
+`(b*Nkv + kv_h)*present_len*D + tok_pos*D` and the extent D are both even, so the surviving writer
+owns both halves of every word it touches. The atomic path is kept for odd D, where two different
+`(kv_h, tok_pos)` rows — different leaders — can share a word.
+
+### 23.2 The measurement, and why the arena is load-bearing
+
+Instrument: `bench/spirv_simt.py`, extended this round to trace **stores** as well as loads
+(`run_traced(d, load_binding, store_binding) -> (LoadTrace|None, StoreTrace|None)`; `run()` still
+delegates, so existing callers are untouched). `probe_kv_write_redundancy.py` compiles the
+BASELINE from `git show main:rust/shaders/glsl/gqa_f16.comp` and the FIXED kernel from the
+worktree with build.rs's own glslc flags, runs both over 10 arms, and **compares all three output
+buffers bit-exact before printing any byte figure**.
+
+| case | G | writers/word | K write bytes | x |
+|---|---|---|---|---|
+| phi35-like S1 arena | 1 | 1 -> 1 | 2048 -> 2048 | 1.00 |
+| gqa4 S1 arena | 4 | 4 -> 1 | 2048 -> 512 | **4.00** |
+| gqa4 S4 growing | 4 | 4 -> 1 | 11264 -> 5120 | 2.20 |
+| gqa8 S2 growing | 8 | 8 -> 1 | 10240 -> 3072 | 3.33 |
+| llama3-8b-decode arena (32/8/128) | 4 | 4 -> 1 | 32768 -> 8192 | **4.00** |
+| llama3-8b-decode growing | 4 | 4 -> 1 | 98304 -> 73728 | 1.33 |
+| phi35-decode arena (32/32/96) | 1 | 1 -> 1 | 24576 -> 24576 | 1.00 |
+
+The result that is not the headline: **the growing convention hides most of the lever.** Under
+growing, the mandatory past-region relocation already had exactly one writer, so it dilutes the
+new-token dedup — 1.33x at `past_len 8`, falling toward 1.0 as past grows. Under the arena the
+past copy does not exist, the new-token write is 100% of `present` traffic, and the reduction is
+exactly G. **L3 (arena) and L4 (dedup) compose; they are not independent levers**, and quoting
+4.00x without the arena in the same sentence overstates it by up to 3x.
+
+Scope that must travel with the 4.00x: this is node-level. No grouped model is run end-to-end here
+(an 8 GB board will not hold Llama-3 8B), and the byte figures are **words named by store
+instructions**, not DRAM transactions — calling them DRAM is `probe_roofline.py`'s cache argument,
+an argument, not this measurement.
+
+Trinity's warning landed on me too: `tests/ops/test_gqa.py` had G=4 all along. Before asserting
+something is untested, check.
+
+### 23.3 A sixth instrument defect: the interpreter's GLSL.std.450 table was wrong
+
+Extending the interpreter hit `unsupported GLSL.std.450 instruction 42`. Adding 42 would have been
+the small fix. Checking the table instead found **four wrong entries**: it said
+`30:Fma, 37:FMax, 40:FClamp, 43:FMin`; the real numbering is `30:Log2, 37:FMin, 40:FMax,
+43:FClamp, 50:Fma`. A `relu` — ext-inst 40 — would have been computed as a **minimum**, returning a
+plausible float, silently.
+
+Verified by histogramming the opcode numbers our own parser extracts and matching them against
+`spirv-dis`'s names on `gqa_f16.spv` (`27->Exp x2, 42->SMax x1, 58->PackHalf2x16 x3,
+62->UnpackHalf2x16 x9`, exact counts), then corroborated across every `.spv` in the tree: 40 appears
+only in `ew_unary_relu`, 43 only in `hardsigmoid`/`hardswish`, 37 only in `celu`, 45 in `gather`,
+32 in the layer norms. Nothing caught it because the interpreter's sole correctness control is a
+quantised GEMV that calls none of the four.
+
+### 23.4 The KV lever ledger, re-derived — and three numbers retracted
+
+`docs/DESIGN.md:3699` and `bench/results/kv-int8-budget-prediction.md:107` quote **2.21x / 3.17x /
+4.06x**. Those figures exist nowhere in this tree as an artifact — only as mentions.
+`bench/results/probe_kv_lever_ledger.py` is a **generator, not a table**: it re-derives every
+figure from artifacts at run time and classes each one per §22's SPECIFICATION / MEASUREMENT /
+MODEL rule.
+
+| id | lever | axis | class | ratio | status |
+|---|---|---|---|---|---|
+| L1 | KV cache stays device-resident across `run()` | LINK | MEASUREMENT | **n/a** | LANDED |
+| L2 | past-copy fused into the attention loop | DRAM | MODEL | 1.50x | LANDED |
+| L3 | KV arena (`present`/`past` one allocation) | DRAM + FOOTPRINT | MODEL | 2.00x | AVAILABLE |
+| L4 | one `present` writer per KV group | DRAM (write) | MEASUREMENT | 4.00x at G=4 arena | THIS ROUND |
+| L5 | int8 / int4 KV storage | FOOTPRINT | MODEL | 1.377–1.412x / 1.724–1.761x | NOT BUILT |
+
+**L1 has no ratio at all** and this is the point, not an omission: its after-term is zero
+(393,216 -> 0 bytes per past token over the link). An elimination has no multiplier, and writing
+one requires inventing a denominator.
+
+**LINK bytes, DRAM bytes and FOOTPRINT bytes are three different quantities.** A ratio on one does
+not compose with a ratio on another. The KV cache is 60.5% of the stream at ctx 8192 and 0% of the
+weights, so a 2x/4x saving on the KV *term* is 1.4x/1.8x of the total.
+
+The reconstruction attempt is in the generator's output. `2.21` sits 0.21 from the naive KV-term
+fp16/int8 ratio 2.0; `4.06` sits 0.06 from the naive KV-term fp16/int4 ratio 4.0; **`3.17` fits
+nothing**. The hypothesis — labelled as a hypothesis, and nothing depends on it — is that the old
+ledger quoted KV-term savings as whole-system savings: an **axis error, not an arithmetic one**,
+which is why no amount of re-deriving on the stream or the footprint could land on them. All three
+are **RETRACTED rather than corrected**: a number whose derivation cannot be found is not repaired
+by finding a derivation that lands nearby. The artifacts support **1.377–1.412x (int8)** and
+**1.724–1.761x (int4)** on the footprint axis, and those were written into
+`kv-int8-budget-prediction.md` before the first int8 run.
+
+### 23.5 The proof ledger caught my own shader edit
+
+Editing `gqa_f16.comp` moved its digest (`4f8ea70a1a80b290` -> `ae376245998decd6`), which demoted
+the GQA proof-ledger entry to `SUBJECT-CHANGED`, and the EP **declined every GQA node** until it
+was re-proven. This is the mechanism working. Repair is two steps and the second is easy to miss:
+`gen_proof_ledger.py --model evidence/cases/group_query_attention_f16.onnx --reprove --append`,
+then **rebuild** — `proof_ledger.jsonl` is `include_str!`d, so the on-disk file only takes effect at
+the next build. Any shader edit needs both.
+
+Reproduce: `python bench/results/probe_kv_write_redundancy.py`, then
+`python bench/results/probe_kv_lever_ledger.py`.
+Locked by `bench/test_kv_write_redundancy.py` (22 tests).

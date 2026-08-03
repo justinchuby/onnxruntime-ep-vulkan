@@ -156,3 +156,12 @@ discover it.
 An overrun past the arena's capacity is **dropped by the shader guard, not refused**, because the
 true past length lives in `seqlens_k` on device. If int8 work goes back into `gqa_f16.comp`, making
 that silent drop observable is worth more than a percent of bandwidth.
+
+---
+
+**RESOLVED (2026-08-03, Switch).** The three ledger figures are **RETRACTED**, not corrected. See
+`docs/PERF.md` §23.4 and `bench/results/probe_kv_lever_ledger.py`, which re-derives every lever from
+artifacts at run time and classes each one. `2.21` sits 0.21 from the naive KV-term-only fp16/int8
+ratio 2.0 and `4.06` sits 0.06 from the naive fp16/int4 ratio 4.0 — consistent with an **axis error**
+(KV-term savings quoted as whole-system savings) rather than an arithmetic one. `3.17` fits nothing,
+so even that does not explain all three. The paragraph above stands as written and was right.

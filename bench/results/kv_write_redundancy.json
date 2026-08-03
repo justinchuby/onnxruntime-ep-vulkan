@@ -1,0 +1,572 @@
+{
+  "probe": "kv_write_redundancy",
+  "base_ref": "main",
+  "shader": "rust/shaders/glsl/gqa_f16.comp",
+  "PROVENANCE": {
+    "writers_per_new_token_word": "MEASUREMENT",
+    "store_instructions": "MEASUREMENT",
+    "named_bytes": "MEASUREMENT",
+    "reduction": "MEASUREMENT",
+    "bit_exact_vs_baseline": "MEASUREMENT",
+    "numpy_reference_rel_err": "MEASUREMENT"
+  },
+  "controls": {
+    "positive_G_gt_1_baseline_writers_equals_G": true,
+    "repaired_G_gt_1_fixed_writers_equals_1": true,
+    "negative_G_eq_1_unchanged": true,
+    "all_arms_bit_exact": true,
+    "numpy_reference_max_rel_err": 0.0004418727744405104
+  },
+  "arms": [
+    {
+      "case": "phi35-like B1 S1 Nq8 Nkv8 D32 G1 past6 arena",
+      "name": "phi35-like",
+      "B": 1,
+      "S": 1,
+      "Nq": 8,
+      "Nkv": 8,
+      "D": 32,
+      "G": 1,
+      "past_len": 6,
+      "convention": "arena",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.00023121119005559823,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 128,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 128
+        },
+        "present_value": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 128,
+          "max_writers_per_word": 1
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 128,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 128
+        },
+        "present_value": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 128,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 2048,
+      "present_key_write_bytes_fixed": 2048,
+      "reduction": 1.0
+    },
+    {
+      "case": "phi35-like B1 S4 Nq8 Nkv8 D32 G1 past6 growing",
+      "name": "phi35-like",
+      "B": 1,
+      "S": 4,
+      "Nq": 8,
+      "Nkv": 8,
+      "D": 32,
+      "G": 1,
+      "past_len": 6,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.00025412080492558434,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 5120,
+          "named_bytes": 20480,
+          "touched_words": 1280,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 5120,
+          "named_bytes": 20480,
+          "touched_words": 1280,
+          "max_writers_per_word": 1
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 5120,
+          "named_bytes": 20480,
+          "touched_words": 1280,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 5120,
+          "named_bytes": 20480,
+          "touched_words": 1280,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 20480,
+      "present_key_write_bytes_fixed": 20480,
+      "reduction": 1.0
+    },
+    {
+      "case": "gqa4 B1 S1 Nq8 Nkv2 D32 G4 past6 arena",
+      "name": "gqa4",
+      "B": 1,
+      "S": 1,
+      "Nq": 8,
+      "Nkv": 2,
+      "D": 32,
+      "G": 4,
+      "past_len": 6,
+      "convention": "arena",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.00029911505983769244,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 32,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 32
+        },
+        "present_value": {
+          "store_instructions": 512,
+          "named_bytes": 2048,
+          "touched_words": 32,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 128,
+          "named_bytes": 512,
+          "touched_words": 32,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 32
+        },
+        "present_value": {
+          "store_instructions": 128,
+          "named_bytes": 512,
+          "touched_words": 32,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 2048,
+      "present_key_write_bytes_fixed": 512,
+      "reduction": 4.0
+    },
+    {
+      "case": "gqa4 B1 S1 Nq8 Nkv2 D32 G4 past6 growing",
+      "name": "gqa4",
+      "B": 1,
+      "S": 1,
+      "Nq": 8,
+      "Nkv": 2,
+      "D": 32,
+      "G": 4,
+      "past_len": 6,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0002764307800966134,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 1280,
+          "named_bytes": 5120,
+          "touched_words": 224,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 32
+        },
+        "present_value": {
+          "store_instructions": 1280,
+          "named_bytes": 5120,
+          "touched_words": 224,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 896,
+          "named_bytes": 3584,
+          "touched_words": 224,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 32
+        },
+        "present_value": {
+          "store_instructions": 896,
+          "named_bytes": 3584,
+          "touched_words": 224,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 5120,
+      "present_key_write_bytes_fixed": 3584,
+      "reduction": 1.4285714285714286
+    },
+    {
+      "case": "gqa4 B1 S4 Nq8 Nkv2 D32 G4 past6 growing",
+      "name": "gqa4",
+      "B": 1,
+      "S": 4,
+      "Nq": 8,
+      "Nkv": 2,
+      "D": 32,
+      "G": 4,
+      "past_len": 6,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0002795775589486128,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 2816,
+          "named_bytes": 11264,
+          "touched_words": 320,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 128
+        },
+        "present_value": {
+          "store_instructions": 2816,
+          "named_bytes": 11264,
+          "touched_words": 320,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 1280,
+          "named_bytes": 5120,
+          "touched_words": 320,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 128
+        },
+        "present_value": {
+          "store_instructions": 1280,
+          "named_bytes": 5120,
+          "touched_words": 320,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 11264,
+      "present_key_write_bytes_fixed": 5120,
+      "reduction": 2.2
+    },
+    {
+      "case": "gqa4 B2 S3 Nq8 Nkv2 D64 G4 past5 growing",
+      "name": "gqa4",
+      "B": 2,
+      "S": 3,
+      "Nq": 8,
+      "Nkv": 2,
+      "D": 64,
+      "G": 4,
+      "past_len": 5,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0002938809996239752,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 8704,
+          "named_bytes": 34816,
+          "touched_words": 1024,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 384
+        },
+        "present_value": {
+          "store_instructions": 8704,
+          "named_bytes": 34816,
+          "touched_words": 1024,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 4096,
+          "named_bytes": 16384,
+          "touched_words": 1024,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 384
+        },
+        "present_value": {
+          "store_instructions": 4096,
+          "named_bytes": 16384,
+          "touched_words": 1024,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 34816,
+      "present_key_write_bytes_fixed": 16384,
+      "reduction": 2.125
+    },
+    {
+      "case": "gqa8 B1 S2 Nq16 Nkv2 D32 G8 past4 growing",
+      "name": "gqa8",
+      "B": 1,
+      "S": 2,
+      "Nq": 16,
+      "Nkv": 2,
+      "D": 32,
+      "G": 8,
+      "past_len": 4,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0004418727744405104,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 2560,
+          "named_bytes": 10240,
+          "touched_words": 192,
+          "max_writers_per_word": 8,
+          "writers_per_new_token_word_min": 8,
+          "writers_per_new_token_word_max": 8,
+          "new_token_words": 64
+        },
+        "present_value": {
+          "store_instructions": 2560,
+          "named_bytes": 10240,
+          "touched_words": 192,
+          "max_writers_per_word": 8
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 768,
+          "named_bytes": 3072,
+          "touched_words": 192,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 64
+        },
+        "present_value": {
+          "store_instructions": 768,
+          "named_bytes": 3072,
+          "touched_words": 192,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 10240,
+      "present_key_write_bytes_fixed": 3072,
+      "reduction": 3.3333333333333335
+    },
+    {
+      "case": "llama3-8b-decode B1 S1 Nq32 Nkv8 D128 G4 past8 arena",
+      "name": "llama3-8b-decode",
+      "B": 1,
+      "S": 1,
+      "Nq": 32,
+      "Nkv": 8,
+      "D": 128,
+      "G": 4,
+      "past_len": 8,
+      "convention": "arena",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.00028143951344547713,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 8192,
+          "named_bytes": 32768,
+          "touched_words": 512,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 8192,
+          "named_bytes": 32768,
+          "touched_words": 512,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 2048,
+          "named_bytes": 8192,
+          "touched_words": 512,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 2048,
+          "named_bytes": 8192,
+          "touched_words": 512,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 32768,
+      "present_key_write_bytes_fixed": 8192,
+      "reduction": 4.0
+    },
+    {
+      "case": "llama3-8b-decode B1 S1 Nq32 Nkv8 D128 G4 past8 growing",
+      "name": "llama3-8b-decode",
+      "B": 1,
+      "S": 1,
+      "Nq": 32,
+      "Nkv": 8,
+      "D": 128,
+      "G": 4,
+      "past_len": 8,
+      "convention": "growing",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0002198523128182485,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 24576,
+          "named_bytes": 98304,
+          "touched_words": 4608,
+          "max_writers_per_word": 4,
+          "writers_per_new_token_word_min": 4,
+          "writers_per_new_token_word_max": 4,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 24576,
+          "named_bytes": 98304,
+          "touched_words": 4608,
+          "max_writers_per_word": 4
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 18432,
+          "named_bytes": 73728,
+          "touched_words": 4608,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 512
+        },
+        "present_value": {
+          "store_instructions": 18432,
+          "named_bytes": 73728,
+          "touched_words": 4608,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 98304,
+      "present_key_write_bytes_fixed": 73728,
+      "reduction": 1.3333333333333333
+    },
+    {
+      "case": "phi35-decode B1 S1 Nq32 Nkv32 D96 G1 past8 arena",
+      "name": "phi35-decode",
+      "B": 1,
+      "S": 1,
+      "Nq": 32,
+      "Nkv": 32,
+      "D": 96,
+      "G": 1,
+      "past_len": 8,
+      "convention": "arena",
+      "bit_exact_vs_baseline": {
+        "attn_output": true,
+        "present_key": true,
+        "present_value": true
+      },
+      "numpy_reference_rel_err": 0.0002735022049118222,
+      "baseline": {
+        "present_key": {
+          "store_instructions": 6144,
+          "named_bytes": 24576,
+          "touched_words": 1536,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 1536
+        },
+        "present_value": {
+          "store_instructions": 6144,
+          "named_bytes": 24576,
+          "touched_words": 1536,
+          "max_writers_per_word": 1
+        }
+      },
+      "fixed": {
+        "present_key": {
+          "store_instructions": 6144,
+          "named_bytes": 24576,
+          "touched_words": 1536,
+          "max_writers_per_word": 1,
+          "writers_per_new_token_word_min": 1,
+          "writers_per_new_token_word_max": 1,
+          "new_token_words": 1536
+        },
+        "present_value": {
+          "store_instructions": 6144,
+          "named_bytes": 24576,
+          "touched_words": 1536,
+          "max_writers_per_word": 1
+        }
+      },
+      "present_key_write_bytes_baseline": 24576,
+      "present_key_write_bytes_fixed": 24576,
+      "reduction": 1.0
+    }
+  ]
+}

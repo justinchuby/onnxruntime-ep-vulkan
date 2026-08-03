@@ -1,0 +1,315 @@
+{
+  "probe": "kv_lever_ledger",
+  "PROVENANCE": {
+    "SPECIFICATION": "a fact about a named part, published by its maker",
+    "MEASUREMENT": "a fact about this graph/module/run, re-derived here every run",
+    "MODEL": "an analytic construction; never quotable as a measurement"
+  },
+  "axes": {
+    "LINK": "bytes crossing host<->device per past token (staging traffic)",
+    "DRAM": "bytes the kernel's own loads and stores name, per token",
+    "FOOTPRINT": "bytes of device allocation held at a context length"
+  },
+  "composition_rule": "levers on different axes are never multiplied. L2 and L3 are both DRAM and are MUTUALLY EXCLUSIVE (L2 exists only under the growing convention, L3 abolishes it). L3 and L4 are both DRAM and DO compose: L3 removes the past-region write, after which L4's new-token dedup is the whole of what remains \u2014 which is why L4 measures its full G on the arena arm and only 1.33x on the growing arm.",
+  "levers": [
+    {
+      "id": "L1",
+      "name": "KV cache stays device-resident across run() calls",
+      "axis": "LINK (bytes crossing host<->device per past token)",
+      "baseline": "the shipping lane: every present_key/value downloaded to host after each step and re-uploaded as the next step's past",
+      "before": 393216.0,
+      "after": 0.0,
+      "unit": "bytes per past token",
+      "ratio": null,
+      "ratio_is_undefined_because": "the after-term is 0. This is an ELIMINATION, not a multiplier. Any finite 'Nx' written here is an invented denominator -- which is the most likely shape of the old ledger's unreproducible figures.",
+      "class": "MEASUREMENT",
+      "source": "phi35_kv_chain-default-dev0.json: host_lane_slope_bytes_per_past_token / resident_lane_slope_bytes_per_past_token",
+      "correctness_control": "logits bitwise identical across the two lanes on all 6 steps: True",
+      "status": "LANDED (default since 2026-08-03; ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=0 off)",
+      "applies_when": "always; independent of grouping and of cache convention",
+      "notes": [
+        "declared bytes per past token from the model's own input shapes: 393216",
+        "verdict recorded by the probe: ROUND_TRIP_REMOVED",
+        "does NOT reduce DRAM traffic: the kernel still reads and writes the same cache."
+      ]
+    },
+    {
+      "id": "L2",
+      "name": "past-cache copy fused into the attention loop (one load, used twice)",
+      "axis": "DRAM (multiples of the resident cache, per token, growing convention)",
+      "baseline": "a standalone relocation loop re-reading the whole past cache purely to materialise it in `present`",
+      "before": 3,
+      "after": 2,
+      "unit": "x resident cache per token",
+      "ratio": 1.5,
+      "class": "MODEL",
+      "source": "kv_traffic.json: shader_facts.copy_fused_into_attention_loop=True, our_amplification_over_cache=2.0, geometry.num_heads/kv_num_heads",
+      "correctness_control": "the fused path is the shipping path; tests/ops/test_gqa*.py gate it against the CPU EP",
+      "status": "LANDED",
+      "applies_when": "the GROWING cache convention only. Under the arena the copy does not exist at all and this lever is already spent (see L3).",
+      "notes": [
+        "the model in the artifact has Nq/Nkv = 1; at G = 1 the rule gives 3 -> 2",
+        "MODEL because `kv_traffic.json` is an analytic per-token account. Nothing here observes DRAM. It is the size of a prize, not a reading."
+      ]
+    },
+    {
+      "id": "L3",
+      "name": "KV arena \u2014 `present` and `past` are one allocation (SHARED convention)",
+      "axis": "DRAM (per-token) and FOOTPRINT (allocation at a context length)",
+      "baseline": "the GROWING convention, where `present` is a separate, strictly larger allocation whose past region must be materialised every step",
+      "before": 2.0,
+      "after": 1.0,
+      "unit": "x resident cache per token (write side removed entirely)",
+      "ratio": 2.0,
+      "class": "MODEL",
+      "source": "kv_traffic.json: per_token[past_len=8192] attention_read_bytes=3221225472, copy_write_bytes=3221225472",
+      "measured_companion": {
+        "quantity": "device allocation high-water at ctx 8192, arena lane",
+        "value": 5512528520,
+        "unit": "bytes",
+        "class": "MEASUREMENT",
+        "source": "kv_arena_chain-A8192.json: bytes.arena.alloc_high_water_bytes (kv_cache_convention='SHARED')",
+        "note": "the growing lane did not complete this size (worker_rc=1); the arena did. A lever that runs where the baseline OOMs has no ratio against it at that extent, and one must not be manufactured."
+      },
+      "correctness_control": "tests/ops/test_gqa_grouping.py arena lane, bit-exact against the CPU EP at G=1 and G=4, decode and prefill",
+      "status": "AVAILABLE (ONNXRUNTIME_EP_VULKAN_KV_ARENA=1); caller-side declaration, not a shader mode",
+      "applies_when": "the caller can declare a fixed KV capacity up front",
+      "notes": [
+        "the arena is what makes L4 worth the whole of its value: once the past copy is gone, the new-token write is 100% of `present` traffic, so the group redundancy is 100% of what is left. The two levers are not independent \u2014 see L4's arms."
+      ]
+    },
+    {
+      "id": "L4",
+      "name": "one `present` writer per KV group instead of G (group write leader)",
+      "axis": "DRAM (write side: bytes named by stores into present_key/present_value)",
+      "baseline": "the same kernel at the same shape with all G query heads of a group writing the same `present` words",
+      "before": 8,
+      "after": 1,
+      "unit": "invocations writing each new-token word",
+      "ratio": 4.0,
+      "class": "MEASUREMENT",
+      "source": "kv_write_redundancy.json: arms[].present_key_write_bytes_{baseline,fixed}, recorded by executing the compiled SPIR-V over the whole dispatch grid (bench/spirv_simt.py store trace)",
+      "correctness_control": "all arms bit-exact vs the baseline kernel on attn_output, present_key and present_value, read before any byte count; plus tests/ops/test_gqa_grouping.py against the CPU EP on both devices, arena and growing, decode and prefill",
+      "status": "THIS ROUND",
+      "applies_when": "Nq/Nkv > 1 ONLY. Phi-3.5-mini has Nq/Nkv = 1 and cannot exhibit it at all \u2014 the first performance defect in this project that the reference model is structurally incapable of showing.",
+      "arms": [
+        {
+          "case": "phi35-like B1 S1 Nq8 Nkv8 D32 G1 past6 arena",
+          "G": 1,
+          "convention": "arena",
+          "present_key_write_bytes_before": 2048,
+          "present_key_write_bytes_after": 2048,
+          "ratio": 1.0,
+          "writers_per_new_token_word_before": 1,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "phi35-like B1 S4 Nq8 Nkv8 D32 G1 past6 growing",
+          "G": 1,
+          "convention": "growing",
+          "present_key_write_bytes_before": 20480,
+          "present_key_write_bytes_after": 20480,
+          "ratio": 1.0,
+          "writers_per_new_token_word_before": 1,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "gqa4 B1 S1 Nq8 Nkv2 D32 G4 past6 arena",
+          "G": 4,
+          "convention": "arena",
+          "present_key_write_bytes_before": 2048,
+          "present_key_write_bytes_after": 512,
+          "ratio": 4.0,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "gqa4 B1 S1 Nq8 Nkv2 D32 G4 past6 growing",
+          "G": 4,
+          "convention": "growing",
+          "present_key_write_bytes_before": 5120,
+          "present_key_write_bytes_after": 3584,
+          "ratio": 1.4285714285714286,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "gqa4 B1 S4 Nq8 Nkv2 D32 G4 past6 growing",
+          "G": 4,
+          "convention": "growing",
+          "present_key_write_bytes_before": 11264,
+          "present_key_write_bytes_after": 5120,
+          "ratio": 2.2,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "gqa4 B2 S3 Nq8 Nkv2 D64 G4 past5 growing",
+          "G": 4,
+          "convention": "growing",
+          "present_key_write_bytes_before": 34816,
+          "present_key_write_bytes_after": 16384,
+          "ratio": 2.125,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "gqa8 B1 S2 Nq16 Nkv2 D32 G8 past4 growing",
+          "G": 8,
+          "convention": "growing",
+          "present_key_write_bytes_before": 10240,
+          "present_key_write_bytes_after": 3072,
+          "ratio": 3.3333333333333335,
+          "writers_per_new_token_word_before": 8,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "llama3-8b-decode B1 S1 Nq32 Nkv8 D128 G4 past8 arena",
+          "G": 4,
+          "convention": "arena",
+          "present_key_write_bytes_before": 32768,
+          "present_key_write_bytes_after": 8192,
+          "ratio": 4.0,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "llama3-8b-decode B1 S1 Nq32 Nkv8 D128 G4 past8 growing",
+          "G": 4,
+          "convention": "growing",
+          "present_key_write_bytes_before": 98304,
+          "present_key_write_bytes_after": 73728,
+          "ratio": 1.3333333333333333,
+          "writers_per_new_token_word_before": 4,
+          "writers_per_new_token_word_after": 1
+        },
+        {
+          "case": "phi35-decode B1 S1 Nq32 Nkv32 D96 G1 past8 arena",
+          "G": 1,
+          "convention": "arena",
+          "present_key_write_bytes_before": 24576,
+          "present_key_write_bytes_after": 24576,
+          "ratio": 1.0,
+          "writers_per_new_token_word_before": 1,
+          "writers_per_new_token_word_after": 1
+        }
+      ],
+      "notes": [
+        "G=1 arms move by exactly 1.00x (3 of them): the negative control.",
+        "the ratio quoted is the arena/decode arm, where the new-token write is the whole of `present` traffic. Under the growing convention the mandatory past relocation dilutes it (1.33x at past_len 8, falling toward 1.0 as past_len grows), because that relocation already had exactly one writer.",
+        "the write bytes are what the kernel's stores NAME. Calling them DRAM transactions is `probe_roofline.py`'s cache argument, which is an argument, not this reading."
+      ]
+    },
+    {
+      "id": "L5",
+      "name": "quantised KV cache (int8 / int4 storage)",
+      "axis": "FOOTPRINT (device allocation at a context length)",
+      "baseline": "the fp16 arena's MEASURED 5512528520 B high-water at ctx 8192 (kv_arena_chain-A8192.json: bytes.arena.alloc_high_water_bytes)",
+      "before": 5512528520,
+      "after": 3902964360,
+      "unit": "bytes of device allocation at ctx 8192",
+      "ratio": 1.4123953004787366,
+      "ratio_int8_best": 1.4123953004787366,
+      "ratio_int8_worst": 1.3772441243059712,
+      "ratio_int4_best": 1.7610990311328905,
+      "class": "MODEL",
+      "derivation": {
+        "elements_per_token": 196608,
+        "elements_per_token_from": "island_bytes_phi35.json: LAYERS x 2 x KV_HEADS x HEAD_DIM = 32 x 2 x 32 x 96",
+        "fp16_kv_bytes_per_token": 393216,
+        "non_kv_footprint_bytes": 2291303048,
+        "non_kv_from": "5512528520 (MEASURED) - 8192 x 393216",
+        "scales_stored": "fp16, counted per (layer, K/V) at the lane's granularity"
+      },
+      "source": "derived at run time from island_bytes_phi35.json (graph geometry, MEASUREMENT) and kv_arena_chain-A8192.json (arena high-water, MEASUREMENT). The COMPOSITION is MODEL: no int8 kernel exists, so no int8 byte has ever been observed. Residuals in kv_int8_budget-dev0.json are MEASUREMENT; the bytes are not.",
+      "correctness_control": "host-boundary quantisation only: storage error modelled exactly, kernel write rounding and accumulation order not modelled at all, so every residual is a LOWER BOUND on a real int8 kernel's.",
+      "status": "NOT BUILT \u2014 deliberately. The error budget gates the kernel and the budget was measured first.",
+      "applies_when": "if and when a tolerance ruling admits it; open, and Morpheus's call",
+      "lanes": [
+        {
+          "lane": "int8/per_tensor",
+          "bits": 8,
+          "granularity": "per_tensor",
+          "kv_bytes_per_token": 196736,
+          "footprint_at_ctx_8192": 3902964360,
+          "ratio_vs_fp16_arena": 1.4123953004787366
+        },
+        {
+          "lane": "int8/per_head",
+          "bits": 8,
+          "granularity": "per_head",
+          "kv_bytes_per_token": 200704,
+          "footprint_at_ctx_8192": 3935470216,
+          "ratio_vs_fp16_arena": 1.400729320117411
+        },
+        {
+          "lane": "int8/per_block32",
+          "bits": 8,
+          "granularity": "per_block32",
+          "kv_bytes_per_token": 208896,
+          "footprint_at_ctx_8192": 4002579080,
+          "ratio_vs_fp16_arena": 1.3772441243059712
+        },
+        {
+          "lane": "int4/per_head",
+          "bits": 4,
+          "granularity": "per_head",
+          "kv_bytes_per_token": 102400,
+          "footprint_at_ctx_8192": 3130163848,
+          "ratio_vs_fp16_arena": 1.7610990311328905
+        },
+        {
+          "lane": "int4/per_block32",
+          "bits": 4,
+          "granularity": "per_block32",
+          "kv_bytes_per_token": 110592,
+          "footprint_at_ctx_8192": 3197272712,
+          "ratio_vs_fp16_arena": 1.724134603629645
+        }
+      ],
+      "notes": [
+        "verdict NO_ULP_BAND_ADMITS_INT8_AND_STILL_CATCHES_FP16: the best granularity sits at 6-7x the fp16 path's own residual, so any band admitting int8 stops policing fp16. That survived the \u00a78.9.22 repair of the observable.",
+        "the residual SATURATES: 29 ULP by past_len ~28 for int8/per_head, measured to 259. An 8-step slope extrapolated to ctx 8192 predicted ~13,000 \u2014 wrong by ~450x.",
+        "the old ledger's 3.17x (int8) and 4.06x (int4) do not reproduce; the derivation above is what the artifacts support. The disagreement was written down in kv-int8-budget-prediction.md Section 3 before the first int8 run.",
+        "the FOOTPRINT ratio is the small one because the KV cache is only 60.5% of the stream at ctx 8192 and 0% of the weights; a 2x or 4x saving on 60% of a total is 1.4x or 1.8x of the total, and quoting the 2x/4x as the lever is the single most likely way the old numbers got their size."
+      ]
+    }
+  ],
+  "retracted": {
+    "targets": {
+      "present_copy": 2.21,
+      "int8": 3.17,
+      "int4": 4.06
+    },
+    "baselines_tried": {
+      "stream total at 8192 / stream total at 0 (i.e. all KV removed)": 2.5311,
+      "(non-KV + 2x KV) / (non-KV + KV)  [removing the present copy]": 1.6049,
+      "(non-KV + 3x KV) / (non-KV + 2x KV)  [the fused-copy lever, L2, on the stream]": 1.3769,
+      "KV term only, fp16 / int8 (naive, no scales)": 2.0,
+      "KV term only, fp16 / int4 (naive, no scales)": 4.0,
+      "footprint ratio, int8 per_block32 (derived above)": 1.3772,
+      "footprint ratio, int4 per_head (derived above)": 1.7611,
+      "modelled stream ratio, int8 per_head": 1.4208,
+      "modelled stream ratio, int4 per_head": 1.8096
+    },
+    "nearest": {
+      "present_copy": {
+        "nearest_baseline": "KV term only, fp16 / int8 (naive, no scales)",
+        "value": 2.0,
+        "gap": 0.21
+      },
+      "int8": {
+        "nearest_baseline": "stream total at 8192 / stream total at 0 (i.e. all KV removed)",
+        "value": 2.5311,
+        "gap": 0.6389
+      },
+      "int4": {
+        "nearest_baseline": "KV term only, fp16 / int4 (naive, no scales)",
+        "value": 4.0,
+        "gap": 0.06
+      }
+    },
+    "conclusion": "none of the three reproduces on any baseline constructible from the artifacts in this tree. All three are RETRACTED rather than corrected: a number whose derivation cannot be found is not repaired by finding a derivation that lands nearby.",
+    "hypothesis_named_as_a_hypothesis": "2.21 and 4.06 sit 0.21 and 0.06 from the naive KV-TERM-ONLY ratios 2.0 (fp16 -> int8, scales ignored) and 4.0 (fp16 -> int4, scales ignored). That is consistent with the old ledger quoting savings on the KV term as if they were savings on something a user waits for -- an axis error, not an arithmetic one, which is why no amount of re-deriving on the stream or the footprint could ever land on them. 3.17 fits nothing, so even this does not explain all three. It is offered as a hypothesis and is not the derivation; what would settle it is the artifact the figures were read off, and no such artifact exists in this tree. Nothing in this ledger depends on it."
+  }
+}
