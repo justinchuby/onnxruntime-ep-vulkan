@@ -5,11 +5,11 @@
   "attribution_witnesses": {
     "counters_dispatches_executed": 1066,
     "counters_witness_reason": "",
-    "profile_digest": "sha256:a41305aff83ac3e7",
-    "profile_mtime_ns": 1785739672168160900,
+    "profile_digest": "sha256:3ff6c9c655d9f95f",
+    "profile_mtime_ns": 1785739744344070600,
     "profile_node_events": 3,
-    "profile_node_events_total": 27,
-    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-263\\test_criterion_10_three_consec0\\criterion10_dev1_2026-08-02_23-47-47_382.json",
+    "profile_node_events_total": 39,
+    "profile_path": "C:\\Users\\justinchu\\AppData\\Local\\Temp\\pytest-of-justinchu\\pytest-265\\test_criterion_10_three_consec0\\criterion10_dev1_2026-08-02_23-48-58_429.json",
     "witness_agreement": "AGREE",
     "witnesses_present": [
       "ort_profile",
@@ -26,7 +26,7 @@
   "device_name": "Intel(R) Iris(R) Xe Graphics",
   "device_name_source": "counters alloc_device_frame_session_devices \u2014 the name the run reported, not the ONNXRUNTIME_EP_VULKAN_DEVICE selector that requested it",
   "executed_by": {
-    "CPUExecutionProvider": 24,
+    "CPUExecutionProvider": 36,
     "VulkanExecutionProvider": 3
   },
   "kv_depth_curve": [
@@ -216,14 +216,14 @@
     }
   },
   "kv_writeback_route": {
-    "alloc_device_authority_grants": 0,
-    "alloc_device_download_bytes": 0,
-    "alloc_device_downloads": 0,
-    "alloc_device_frame": "OFF",
-    "outputs_device_bound": 0,
+    "alloc_device_authority_grants": 196,
+    "alloc_device_download_bytes": 914752,
+    "alloc_device_downloads": 131,
+    "alloc_device_frame": "SHARED",
+    "outputs_device_bound": 196,
     "outputs_device_resident": 0,
-    "outputs_host_resident": 196,
-    "route": "HOST_STAGING",
+    "outputs_host_resident": 0,
+    "route": "DEVICE_AUTHORITATIVE",
     "why": "read off the counters the run emitted, not off the env var that requested it: a bind the EP declined would otherwise be recorded as a route that was taken"
   },
   "output_coverage": {
