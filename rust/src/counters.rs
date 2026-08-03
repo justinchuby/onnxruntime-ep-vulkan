@@ -1220,6 +1220,131 @@ pub fn shaders_dispatched() -> Vec<&'static str> {
     SHADERS_DISPATCHED.lock().map(|u| u.clone()).unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// pipeline_variants — which KERNEL VARIANT the run actually built
+//
+// JSON-only, like `model_output_equivalence` above, and for the same reason: the C struct is
+// consumed by epctl and three hand-maintained ctypes mirrors, and `a52024f` is the standing proof
+// that growing it is how `dispatches_executed` came to read `device_losses` — stable, plausible
+// and therefore invisible. A variable-length set of strings has no place in a `#[repr(C)]` struct
+// anyway. **No abi_version bump.**
+//
+// Why this exists (Link, 2026-08-02, `ci/census_surface_map.json`):
+// `shaders_dispatched` already names the SPIR-V module, and that is not enough.
+// `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` does not change the module — it changes specialization
+// constant 5 of `q_gemv.comp`, and `vk/pipeline.rs` keys the pipeline cache on
+// `(shader_stem, spec_constants)`. So the two settings are two different pipelines wearing one
+// stem, and *every kernel reading this project holds is silent about which of them produced it*.
+// A reading whose subject is unidentified is not a reading of that subject.
+//
+// Recorded from `vk/session.rs` at the point the `PipelineKey` is built from `eff_shader` and
+// `eff_spec_constants` — the **effective** pair, after any substitution. That is deliberate and it
+// is the whole distinction: a host-side record of `GEMV_PACKED=1` says what was *asked for*, the
+// way `DEVICE=0` said what was asked for and ran on device 1. The selector is a request, not an
+// identity.
+// ---------------------------------------------------------------------------
+
+/// `"{stem}:{c0},{c1},…"` for every distinct pipeline this process built, sorted and deduplicated.
+static PIPELINE_VARIANTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Index of the packed-load specialization constant in `q_gemv.comp`'s constant vector.
+///
+/// The vector is built in `ops/quant.rs::matmul_nbits_gemv` as
+/// `[wg, bits, block_size, has_zp, cols, packed]`. Named here rather than spelled `5` at the use
+/// site so that a reordering there is a compile-adjacent edit rather than a silent misreading.
+const GEMV_PACKED_SPEC_INDEX: usize = 5;
+
+/// Substring identifying a GEMV pipeline by stem. The stems are `q_gemv`-derived per dtype
+/// (`q_gemv_f16`, `q_gemv_f32`), so matching the family is correct and matching an exact spelling
+/// would go quietly blind the next time a dtype is added.
+const GEMV_STEM_MARK: &str = "gemv";
+
+/// Record the pipeline this dispatch was actually built against.
+///
+/// `spec_constants` is the resolved vector handed to `vkCreateComputePipelines`, not anything an
+/// environment variable said. Idempotent and order-independent: the value of interest is the set
+/// of distinct pipelines, not how many times each ran — a run that dispatched one variant 355
+/// times and a run that dispatched it once observed the same kernel.
+pub fn record_pipeline_variant(stem: &str, spec_constants: &[u32]) {
+    if stem.is_empty() {
+        return;
+    }
+    let mut key = String::with_capacity(stem.len() + 4 * spec_constants.len() + 1);
+    key.push_str(stem);
+    key.push(':');
+    for (i, c) in spec_constants.iter().enumerate() {
+        if i > 0 {
+            key.push(',');
+        }
+        key.push_str(&c.to_string());
+    }
+    if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
+        if let Err(pos) = used.binary_search(&key) {
+            used.insert(pos, key);
+        }
+    }
+}
+
+/// The pipeline keys recorded by [`record_pipeline_variant`], sorted.
+pub fn pipeline_variants() -> Vec<String> {
+    PIPELINE_VARIANTS.lock().map(|u| u.clone()).unwrap_or_default()
+}
+
+/// The resolved value of `q_gemv.comp`'s packed-load specialization constant, as a **string**.
+///
+/// Four states, and the first two are the reason this is not a `bool`:
+///
+/// * `"UNOBSERVABLE"` — no GEMV pipeline was built in this frame. The constant was never resolved,
+///   which is not the same fact as resolved-to-zero, and R12 forbids spelling it `0`. The census
+///   graph is a six-node elementwise chain with no `MatMulNBits`, so this is the *common* case and
+///   the one a `0` would quietly falsify.
+/// * `"MIXED"` — two GEMV pipelines with different values of it were built in one process. Real
+///   when a session runs both dtypes or a probe interleaves arms; collapsing it onto either value
+///   would name one kernel for a reading that came from two.
+/// * `"0"` / `"1"` — the value the pipeline was created with.
+///
+/// A string, not an integer, for the reason `net_benefit_override_reason` is one: a reader that
+/// tries to do arithmetic on it fails loudly instead of quietly treating `UNOBSERVABLE` as zero.
+fn gemv_packed_spec_constant() -> &'static str {
+    let mut seen: Option<u32> = None;
+    for key in pipeline_variants() {
+        let Some((stem, consts)) = key.split_once(':') else {
+            continue;
+        };
+        if !stem.contains(GEMV_STEM_MARK) {
+            continue;
+        }
+        let Some(v) = consts
+            .split(',')
+            .nth(GEMV_PACKED_SPEC_INDEX)
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            // A GEMV pipeline whose constant vector is too short to hold the field. That is a
+            // shape this code does not understand, and saying so is not the same as saying 0.
+            return "UNRECORDED";
+        };
+        match seen {
+            None => seen = Some(v),
+            Some(prev) if prev != v => return "MIXED",
+            Some(_) => {}
+        }
+    }
+    match seen {
+        None => "UNOBSERVABLE",
+        Some(0) => "0",
+        Some(_) => "1",
+    }
+}
+
+/// `pipeline_variants` as a JSON array fragment.
+fn pipeline_variants_json() -> String {
+    let list: Vec<String> = pipeline_variants()
+        .iter()
+        .map(|s| format!("\"{}\"", json_escape(s)))
+        .collect();
+    format!("[{}]", list.join(", "))
+}
+
 /// `shaders_dispatched` and `shaders_dispatched_digest` as JSON fragments.
 ///
 /// The digest is over the SPIR-V **bytes** of exactly those modules, so it changes when the
@@ -1273,6 +1398,9 @@ pub fn reset() {
     OUTPUTS_DEVICE_BOUND.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
     if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
+        used.clear();
+    }
+    if let Ok(mut used) = PIPELINE_VARIANTS.lock() {
         used.clear();
     }
     CLAIMED_NODES.store(0, ORD);
@@ -1359,6 +1487,8 @@ impl VulkanEpCounters {
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
+             \"pipeline_variants\": {},\n  \
+             \"gemv_packed_spec_constant\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
              \"claimed_forms_unmeasured\": {},\n  \
@@ -1410,6 +1540,8 @@ impl VulkanEpCounters {
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
+            pipeline_variants_json(),
+            gemv_packed_spec_constant(),
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
             CLAIMED_FORMS_UNMEASURED.load(ORD),
@@ -2314,6 +2446,97 @@ mod tests {
         record_net_benefit_decision(true);
         record_sole_island_override(Some(OverriddenVerdict::TransferDominated));
         assert!(net_benefit_override_reason().parse::<u64>().is_err());
+        reset();
+    }
+
+    /// The whole point: two pipelines that share a stem must not share a recorded identity.
+    #[test]
+    fn a_variant_is_named_by_its_spec_constants_and_not_by_its_stem() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "UNOBSERVABLE",
+            "no GEMV pipeline was built, and that is not the same fact as one built unpacked"
+        );
+        assert!(
+            gemv_packed_spec_constant().parse::<u64>().is_err(),
+            "typed as a string so arithmetic on the never-resolved state fails loudly"
+        );
+
+        record_pipeline_variant("q_gemv_f16", &[64, 4, 32, 1, 8, 1]);
+        assert_eq!(gemv_packed_spec_constant(), "1");
+        // Same stem, same everything except the constant under test.
+        record_pipeline_variant("q_gemv_f16", &[64, 4, 32, 1, 8, 0]);
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "MIXED",
+            "one process built both variants; naming either one would attribute a reading to a \
+             kernel that produced only half of it"
+        );
+        assert_eq!(
+            pipeline_variants(),
+            vec![
+                "q_gemv_f16:64,4,32,1,8,0".to_string(),
+                "q_gemv_f16:64,4,32,1,8,1".to_string(),
+            ],
+            "shaders_dispatched would report one entry for these two"
+        );
+        reset();
+    }
+
+    /// A non-GEMV pipeline must not be read as an unpacked GEMV.
+    #[test]
+    fn a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        record_pipeline_variant("ew_binary_add_f32", &[256, 1]);
+        assert_eq!(
+            gemv_packed_spec_constant(),
+            "UNOBSERVABLE",
+            "an elementwise pipeline says nothing about the GEMV constant; index 5 of its own \
+             vector does not exist and must not be invented"
+        );
+        assert_eq!(pipeline_variants(), vec!["ew_binary_add_f32:256,1".to_string()]);
+        reset();
+    }
+
+    /// Recording the same pipeline repeatedly is a set operation: a run that dispatched one
+    /// variant 355 times and a run that dispatched it once observed the same kernel.
+    #[test]
+    fn variants_are_a_set_and_reach_the_json_as_typed_values() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        for _ in 0..8 {
+            record_pipeline_variant("q_gemv_f32", &[128, 4, 32, 0, 4, 0]);
+        }
+        assert_eq!(pipeline_variants().len(), 1);
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"pipeline_variants\": [\"q_gemv_f32:128,4,32,0,4,0\"]"),
+            "{json}"
+        );
+        assert!(json.contains("\"gemv_packed_spec_constant\": \"0\""), "{json}");
+        reset();
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"gemv_packed_spec_constant\": \"UNOBSERVABLE\""),
+            "after reset the constant is unresolved again, not zero; got:\n{json}"
+        );
+    }
+
+    /// A GEMV whose constant vector is too short is a shape this code does not understand, and
+    /// saying so is not the same as saying the packed path was off.
+    #[test]
+    fn a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero() {
+        // Process-global statics: serialise with every other test that touches them.
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        record_pipeline_variant("q_gemv_f16", &[64, 4, 32]);
+        assert_eq!(gemv_packed_spec_constant(), "UNRECORDED");
         reset();
     }
 

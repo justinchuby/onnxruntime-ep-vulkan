@@ -1972,6 +1972,13 @@ impl VulkanSession {
             // bound, so a proof-ledger entry can name the code it proved and go stale when that
             // code is replaced.
             crate::counters::record_shader_dispatched(eff_shader);
+            // §7.18.8 (Mouse, declared into Switch's file): the stem alone does not identify the
+            // kernel. `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` leaves `eff_shader` unchanged and moves
+            // specialization constant 5, and the pipeline cache keys on the pair — so two
+            // different pipelines share one stem and every kernel reading we hold is silent about
+            // which produced it. Recorded from the **effective** pair actually handed to
+            // `get_or_create`, not from the env var: a selector is a request, not an identity.
+            crate::counters::record_pipeline_variant(eff_shader, eff_spec_constants);
             desc_pools.push(desc_pool);
 
             // For multi-node islands: emit a SHADER_WRITE → SHADER_READ barrier after each
