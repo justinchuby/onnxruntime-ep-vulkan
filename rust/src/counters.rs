@@ -1842,6 +1842,76 @@ fn gemv_packed_spec_constant() -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// kv_cache_convention — which KV convention the dispatch was actually built with
+// JSON-only, no `abi_version` bump, for the same reason as `pipeline_variants` above: the C
+// struct has three hand-maintained ctypes mirrors and a mid-struct insertion has already read
+// `dispatches_executed` out of `device_losses` twice.
+//
+// **Why this field exists at all** (Mouse, 2026-08-03): the two digests cover the SPIR-V module
+// and its source, and neither covers the values chosen at dispatch time. `gqa_f16` builds with
+// `spec_constants: vec![]` — the arena introduces **no specialization constant** and therefore
+// no new pipeline variant, so `pipeline_variants` cannot see it. What it does change is a push
+// constant (`present_len`) and the binding topology (`present` bound to `past`'s buffer). Those
+// are exactly the runtime-chosen frame values Mouse's dispatch-time witness is being built to
+// cover, and a lane that reads `SHARED` here is reading the value the dispatch was built with,
+// not the value the environment asked for.
+//
+// Recorded from the **effective** push-constant block handed to the dispatch, after every
+// substitution — `DEVICE=0` has run on device 1 and `GEMV_PACKED=1` has built an unpacked
+// pipeline. A host-side record of the flag says what was requested.
+// ---------------------------------------------------------------------------
+
+/// `present` is a separate, strictly larger allocation; the past tokens are copied into it.
+pub const KV_CONVENTION_GROWING: &str = "GROWING";
+/// `present` aliases `past` in one fixed arena; there is no copy.
+pub const KV_CONVENTION_SHARED: &str = "SHARED";
+
+/// Distinct KV conventions observed in this process, sorted. Empty means no GQA dispatch was
+/// built, which is **not** the same fact as "the growing convention was used".
+static KV_CONVENTIONS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// Record the KV convention of one GQA dispatch, read off its effective push constants.
+///
+/// `present_len` and `past_stride` are the shader's two KV strides (`gqa_f16.comp` push offsets
+/// 24 and 28). They are equal exactly when `present` aliases `past`; the kernel's own
+/// `copy_leader` predicate is that same comparison, so this reads the condition the shader
+/// reads rather than a parallel restatement of it.
+pub fn record_kv_convention(present_len: u32, past_stride: u32) {
+    let v = if present_len == past_stride {
+        KV_CONVENTION_SHARED
+    } else {
+        KV_CONVENTION_GROWING
+    };
+    if let Ok(mut seen) = KV_CONVENTIONS.lock() {
+        if !seen.contains(&v) {
+            seen.push(v);
+            seen.sort_unstable();
+        }
+    }
+}
+
+/// The KV convention this run's GQA dispatches were built with, as a **string**.
+///
+/// Four states, and the first is the reason this is not a `bool`:
+///
+/// * `"UNOBSERVABLE"` — no GQA dispatch was built in this frame. Every graph without attention
+///   is this case, and spelling it `GROWING` would falsify it.
+/// * `"MIXED"` — both conventions were built in one process. Real when a probe interleaves
+///   arms in one session; collapsing it onto either would name one convention for a reading
+///   that came from two.
+/// * `"GROWING"` / `"SHARED"` — the convention every GQA dispatch in this frame used.
+pub fn kv_cache_convention() -> &'static str {
+    match KV_CONVENTIONS.lock() {
+        Ok(seen) => match seen.len() {
+            0 => "UNOBSERVABLE",
+            1 => seen[0],
+            _ => "MIXED",
+        },
+        Err(_) => "UNRECORDED",
+    }
+}
+
 /// `pipeline_variants` as a JSON array fragment.
 fn pipeline_variants_json() -> String {
     let list: Vec<String> = pipeline_variants()
@@ -2052,6 +2122,7 @@ impl VulkanEpCounters {
              \"shader_toolchain\": \"{}\",\n  \
              \"pipeline_variants\": {},\n  \
              \"gemv_packed_spec_constant\": \"{}\",\n  \
+             \"kv_cache_convention\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
              \"claimed_forms_device_unattributed\": {},\n  \
@@ -2125,6 +2196,7 @@ impl VulkanEpCounters {
             json_escape(crate::registry::toolchain_identity()),
             pipeline_variants_json(),
             gemv_packed_spec_constant(),
+            kv_cache_convention(),
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
             CLAIMED_FORMS_DEVICE_UNATTRIBUTED.load(ORD),

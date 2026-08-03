@@ -1,0 +1,67 @@
+{
+  "probe": "kv_arena_graph_accepts",
+  "ort_version": "1.28.0",
+  "model": "C:\\Users\\justinchu\\.foundry\\cache\\models\\Microsoft\\Phi-3.5-mini-instruct-cuda-gpu\\cuda-int4-rtn-block-32\\phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx",
+  "past": 4,
+  "arena": 16,
+  "prediction": {
+    "accepts": "ACCEPT \u2014 symbolic dims are resolved per-value, not cross-checked",
+    "honours": "UNKNOWN \u2014 this is the question; a growing-convention export has no reason to read the past extent off seqlens_k"
+  },
+  "bytes_per_past_token": 393216,
+  "accepts": "ACCEPTED",
+  "compare": {
+    "max_abs": 0.0,
+    "worst_rel": 0.0,
+    "bitwise_equal": true,
+    "argmax_tight": 2583,
+    "argmax_arena": 2583
+  },
+  "degeneracy": {
+    "nonzero_frac_tight": 1.0,
+    "distinct_tight": 3735
+  },
+  "verdict": "ARENA_SHAPE_HONOURED_BITWISE",
+  "lanes": {
+    "tight": {
+      "logits": {
+        "argmax": 2583,
+        "max": 4.41015625,
+        "sum": -284926.77209329605,
+        "sha256": "aa8a8b6bb02e70fb"
+      },
+      "present_shape": [
+        1,
+        32,
+        5,
+        96
+      ],
+      "past_shape": [
+        1,
+        32,
+        4,
+        96
+      ]
+    },
+    "arena": {
+      "logits": {
+        "argmax": 2583,
+        "max": 4.41015625,
+        "sum": -284926.77209329605,
+        "sha256": "aa8a8b6bb02e70fb"
+      },
+      "present_shape": [
+        1,
+        32,
+        16,
+        96
+      ],
+      "past_shape": [
+        1,
+        32,
+        16,
+        96
+      ]
+    }
+  }
+}

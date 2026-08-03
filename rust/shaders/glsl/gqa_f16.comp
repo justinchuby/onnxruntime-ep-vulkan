@@ -242,8 +242,17 @@ void main() {
     //    present layout: [B, Nkv, present_len, D]
     //    (Atomic writes — with local_size=1 they are never contended, but must be correct
     //    for seq_len > 1 where sibling invocations on the same kv_head can co-exist.)
+    //
+    //    Capacity guard. Under the growing convention present_len is past_stride + seq_len and
+    //    tok_pos < present_len always. Under the shared-buffer (arena) convention present_len
+    //    is a *capacity* the caller chose, and tok_pos is derived from seqlens_k, so a caller
+    //    who runs past the arena would index outside the buffer. An out-of-bounds store in
+    //    GLSL is undefined — on this project it has already meant a dropped write that read
+    //    back as zero, and it can also mean a device loss. Bound it. A skipped write is not
+    //    silently accepted: it changes `present`, and every arena lane carries a bit-exact
+    //    correctness control against the shipping lane that reads before any byte count.
     // ------------------------------------------------------------------
-    {
+    if (tok_pos < pc.present_len) {
         uint pb = (b * Nkv + kv_h) * pc.present_len * D + tok_pos * D;
         for (uint d = 0u; d < D; d++) {
             wr_presk(pb + d, k_new[d]);
@@ -269,11 +278,25 @@ void main() {
     //     region of `present` to be materialised and no arrangement of ours avoids that.
     //     Per-token KV traffic goes from (Nq/Nkv + 2) x cache to (Nq/Nkv + 1) x cache.
     //
-    //     Note what this does NOT do: it does not remove the write, and the write cannot be
-    //     removed by aliasing `present` onto `past`, because on a growing cache `present` is
-    //     strictly larger than `past` and an alias cannot put the larger tensor in the
-    //     smaller allocation. That lever needs a different declared convention, not a
-    //     different kernel.
+    //     Note what this does NOT do: it does not remove the write. Under the growing
+    //     convention nothing can: ORT's `present` is a separate, strictly larger allocation and
+    //     its past region must be materialised.
+    //
+    //     What *does* remove it is the caller changing convention, not the kernel changing
+    //     arithmetic. Under the shared-buffer (arena) convention `present_len == past_stride`,
+    //     `copy_leader` is false for every invocation, and this whole fused copy compiles out
+    //     of the run: the past tokens are already at the addresses `present` names, because
+    //     `present` and `past` are the same allocation. That is the third lever on the KV
+    //     ledger and it is a caller-side declaration (`ONNXRUNTIME_EP_VULKAN_KV_ARENA`), not a
+    //     shader mode.
+    //
+    //     Aliasing is sound here for a reason that is checkable rather than hoped for: with one
+    //     common stride, this invocation reads only `t < past_len` and writes only
+    //     `tok_pos = past_len + s_local >= past_len`, at the same base. The read set and the
+    //     write set of the entire dispatch are disjoint. The one read of `present` that ever
+    //     existed — the sibling key at `past_len <= t < tok_pos` — was removed on 2026-08-02
+    //     and recomputed from `packed_qkv`; had it survived, the arena would have turned a race
+    //     into a corruption.
     // ------------------------------------------------------------------
     bool copy_leader =
         pc.present_len != pc.past_stride && s_local == 0u && (h % (Nq / Nkv)) == 0u;

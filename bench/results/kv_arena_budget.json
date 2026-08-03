@@ -1,0 +1,27 @@
+{
+  "probe": "kv_arena_chain",
+  "arena": 512,
+  "past": 8,
+  "steps": 4,
+  "correctness": {
+    "arena": {
+      "verdict": "NOT_PERFORMED"
+    }
+  },
+  "bytes": {
+    "arena": {
+      "per_step_link_bytes": [],
+      "slope_bytes_per_past_token": NaN,
+      "dispatches": [],
+      "kv_cache_convention": null,
+      "alloc_high_water_bytes": null,
+      "session_device_high_water_bytes": null,
+      "alloc_device_attach_failures": null,
+      "compute_failures": null,
+      "device_losses": null,
+      "ep_device": null,
+      "worker_rc": 1
+    }
+  },
+  "verdict": "ARENA_LANE_DID_NOT_RUN"
+}

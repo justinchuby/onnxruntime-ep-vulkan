@@ -1,0 +1,81 @@
+{
+  "probe": "kv_arena_chain",
+  "arena": 128,
+  "past": 60,
+  "steps": 4,
+  "correctness": {
+    "arena": {
+      "reference_lane": "grow",
+      "logits_bitwise_equal": true,
+      "logits_max_abs": 0.0,
+      "argmax_equal": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "kv_tensors_compared": 64,
+      "kv_tensors_bitwise_equal": 64,
+      "kv_tensors_differing": [],
+      "kv_reference_nonzero_frac": 0.9999949137369791,
+      "verdict": "BIT_IDENTICAL"
+    }
+  },
+  "bytes": {
+    "grow": {
+      "per_step_link_bytes": [
+        0,
+        64128,
+        64128,
+        64128
+      ],
+      "slope_bytes_per_past_token": 19238.4,
+      "dispatches": [
+        355,
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "GROWING",
+      "alloc_high_water_bytes": 2341241480,
+      "session_device_high_water_bytes": 2346897456,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "worker_rc": 0
+    },
+    "arena": {
+      "per_step_link_bytes": [
+        0,
+        64128,
+        64128,
+        64128
+      ],
+      "slope_bytes_per_past_token": 19238.4,
+      "dispatches": [
+        355,
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "SHARED",
+      "alloc_high_water_bytes": 2341634696,
+      "session_device_high_water_bytes": 2347159600,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+        "vulkan.device_index": "0",
+        "vulkan.vendor_id": "0x8086"
+      },
+      "worker_rc": 0
+    }
+  },
+  "verdict": "ARENA_TAKEN_AND_BIT_IDENTICAL"
+}

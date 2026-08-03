@@ -1372,3 +1372,85 @@ Items 2 and 3 are a day each and mine; item 1 is Tank's; item 4 is the KV arena.
 Decision record: `.squad/decisions/inbox/switch-device-memory-hazard-family-and-the-four-gaps.md`.
 Artifacts: `bench/results/device_memory_hazards-dev{0,1}.json`,
 `bench/results/phi35_kv_chain-ctx6144-{resident,host}-dev0.json`.
+
+---
+
+## Session 47 (2026-08-03) — the KV arena: `present` aliases `past`, ctx 8192 reached at 5.51 GB
+
+**Housekeeping first: the Scribe condensation was undone by the merge.** `a9d8693` condensed this
+file to 13,914 bytes, but `822ac0c` was cut from a pre-condense parent and `.gitattributes` sets
+`merge=union` on `.squad/agents/*/history.md`, so the merge re-appended the full body — 108,195
+bytes again. **Nothing is lost.** The condensation is what was lost, and it is a Scribe item, not a
+content one. Union merge and summarisation are incompatible on the same file.
+
+### What shipped
+`ONNXRUNTIME_EP_VULKAN_KV_ARENA=1` makes `present.*` and `past_key_values.*` **one allocation**.
+Peak KV memory `2 × 393,216 × C` → `1 × 393,216 × C`.
+
+- **ctx 8192 reached and measured for the first time in this project: 5,512,528,520 B**, 355
+  dispatches/step, 0 compute failures, 0 device losses. The shipping lane dies with `alloc failed
+  for output buffer`. Verdict `ARENA_RAN_WHERE_GROWING_COULD_NOT`, reproduced twice. **5.51 GB was
+  written down before the run** and the run landed on it.
+- ctx 2048: 3,900,736,136 → 3,096,609,416 B, a saving of **804,126,720 B = 2045 × 393,216 exactly**
+  — the present copy dropping out to the token.
+- **BIT_IDENTICAL on all 65 outputs** at A=64 and A=2048 against the *shipping Vulkan lane*, and on
+  **Intel Iris Xe** as well as the RTX 4060. Correctness read before the byte count.
+
+### Soundness came from the kernel, not from a residual
+`gqa_f16.comp` step 3 writes `present[tok_pos]`, step 4 reads `past[t]`, `t < past_len`. Under one
+common stride these are disjoint for all invocations because `tok_pos = past_len + s_local ≥
+past_len`. The single read of `present` that used to exist was removed on 2026-08-02 and is
+recomputed from read-only `packed_qkv` — **had it survived, the arena would have turned a benign
+redundancy into silent corruption.** Also put to ORT on the CPU EP first (`--mode graph`, poisoned
+arena tail): `ARENA_SHAPE_HONOURED_BITWISE`, `max_abs 0.0`. Unpredicted: ORT's own GQA returns
+`present` at the *past extent* — ORT already uses the shared-buffer convention.
+
+### The defect I shipped and then found
+`translate_gqa` shortened `present` on the strength of the **flag alone**. A caller who binds
+nothing got `max_abs 60.82`, all 64 KV tensors wrong, **exit 0, no counter moving**. That is the
+two-parser failure one level up: a *declaration* treated as a *fact* about where ORT put a tensor.
+Fix: a sweep after the whole output-binding block (`session.rs` ~1629) that **refuses the Compute**
+when an aliased output is not bound to its input's `VkBuffer` — placed outside the block so
+`BIND_OUTPUTS=0`, a failed authority mark and a declined span are all caught. No fallback exists:
+once `present` is short, the staging route writes the same short tensor. After the fix:
+`dispatches_executed 0`, `compute_failures 1`, `broken_commitments 1`, CPU fallback, answer correct.
+
+### Separating cases, all run
+growing-caller → `GROWING_CALLER_REFUSED_LOUDLY(ORT shape check)` (a fact about ORT 1.28, not about
+this EP); unbound caller → refused loudly; **allocation failing partway** (budget 2250 MB, A=512) →
+43 of 454 attaches fail, 43 declines, 0 dispatches, refused; boundary ≈ 2377 MB.
+
+### The instrument that lied by staying green
+My `gqa_f16.comp` edit moved the SPIR-V, the ledger subject changed, and the EP declined **all 32
+GQA nodes** — while `gen_proof_ledger.py --check` said `PASS — 103 entries` the whole time. `--check`
+checks the file against itself; the subject comparison happens at runtime against *this build's*
+embedded digests. Only `subject_changed_declines` saw it. And the ledger is `include_str!`'d
+(`registry.rs:1890`), so **`--reprove` has no effect until you rebuild** — that cost two full probe
+runs. Re-proof gave `worst_rel = 0.0007293946024799417`, **identical to pre-edit**: the capacity
+guard changed no arithmetic. Separate decision record filed; this is project-wide, not arena-local.
+
+### Residuals I am naming rather than rounding away
+1. **The arena capacity is a ceiling, and overrun is dropped, not refused** — the shader guard
+   discards a step past the allocation and the EP cannot detect it, because the true past length
+   lives in `seqlens_k` on device. The one place the arena can still be quietly wrong.
+2. **`Nq/Nkv = 1.00` on Phi-3.5, 4× on Llama-3.** Nothing was tuned to it and the disjointness
+   argument does not use it, but **no run this round exercised a non-unit grouping** — and that is
+   exactly where an aliasing bug would hide.
+3. 7 ledger forms still carry `entry-device=device0`; the GQA entry no longer does.
+
+### For Mouse
+**The arena introduces no specialisation constant** — `pipeline_variants` shows `"gqa_f16:"` with an
+empty selector list. It changes a **push constant** (`present_len`) and the **binding topology**.
+`kv_cache_convention` is the witness for that class, recorded in the dispatch loop off the effective
+push constants — where his frame witness sits.
+
+### Gates
+526 lib passed / 0 failed / 4 ignored; clippy `-D warnings --all-targets` clean; `counters_abi.py
+--check` PASS, layout unchanged `(8, 0xdf71f4e6a59271b3)`; `gen_proof_ledger.py --check` PASS, 103
+entries, digest `94d994ba54821056`. **Nothing went red-once-green-after this round** — nothing for
+Trinity. No clock anywhere. Device names read off the run. The DLL hash is quoted as evidence of
+nothing.
+
+Decision records: `.squad/decisions/inbox/switch-kv-arena-present-aliases-past.md`,
+`.squad/decisions/inbox/switch-ledger-check-cannot-see-subject-changed.md`.
+Artifacts: `bench/results/kv_arena_{graph_accepts,chain-A64,chain-A2048,chain-A8192,chain-intel,separating,unbound,budget}.json`.

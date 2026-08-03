@@ -1,0 +1,83 @@
+{
+  "probe": "kv_arena_chain",
+  "arena": 64,
+  "past": 8,
+  "steps": 5,
+  "correctness": {
+    "arena": {
+      "verdict": "NOT_PERFORMED"
+    },
+    "growflag": {
+      "verdict": "NOT_PERFORMED"
+    },
+    "plainflag_vs_plain": {
+      "reference_lane": "plain",
+      "logits_bitwise_equal": false,
+      "logits_max_abs": 0.109375,
+      "kv_tensors_compared": 64,
+      "kv_tensors_bitwise_equal": 0,
+      "verdict": "UNBOUND_CALLER_CORRUPTED_BY_THE_FLAG"
+    }
+  },
+  "bytes": {
+    "plain": {
+      "per_step_link_bytes": [
+        0,
+        3603072,
+        3996288,
+        4389504,
+        4782720
+      ],
+      "slope_bytes_per_past_token": 1035187.2,
+      "dispatches": [
+        355,
+        355,
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "GROWING",
+      "alloc_high_water_bytes": 2301133448,
+      "session_device_high_water_bytes": 2306789424,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "worker_rc": 0
+    },
+    "plainflag": {
+      "per_step_link_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "slope_bytes_per_past_token": 0.0,
+      "dispatches": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "kv_cache_convention": "UNOBSERVABLE",
+      "alloc_high_water_bytes": 2297594504,
+      "session_device_high_water_bytes": 2298519600,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 1,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "worker_rc": 0
+    }
+  },
+  "verdict": "ARENA_LANE_DID_NOT_RUN"
+}

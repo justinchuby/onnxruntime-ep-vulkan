@@ -583,6 +583,34 @@ fn translate_gqa(_spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext)
             node.op_type
         )));
     }
+    // -- The arena --------------------------------------------------------------------
+    //
+    // When the caller declares the shared-buffer convention (`DispatchContext::kv_arena`),
+    // `past`'s extent is a **capacity**, not a length: the true past length is carried by
+    // `seqlens_k`, and `present` is the same allocation. The whole present-copy disappears —
+    // not moved, not fused, gone — because the past tokens are already where `present` wants
+    // them.
+    //
+    // Two things make this sound, and neither is an assumption about the test set:
+    //
+    //  1. **The regions are disjoint.** Under the alias `present_len == past_stride`, so a
+    //     read of past token `t` and a write of present token `tok_pos` land at the same base
+    //     `(b*Nkv + kv_h) * stride * D`. The kernel reads only `t < past_len` and writes only
+    //     `tok_pos = past_len + s_local >= past_len`. No invocation, of any dispatch, reads a
+    //     byte another invocation writes. (`gqa_f16.comp` step 3 vs step 4; the sibling-key
+    //     read that *did* alias was removed on 2026-08-02 and recomputes from `packed_qkv`.)
+    //  2. **The past extent does not come from the shape.** `past_len` is
+    //     `seqlens_k[b] + 1 - seq_len` in the kernel, so an oversized `past` changes the
+    //     stride and nothing else. MEASURED against ORT's own CPU GQA on the real Phi-3.5
+    //     export, arena tail poisoned to 0.5: **bit-identical logits**
+    //     (`bench/results/kv_arena_graph_accepts.json`).
+    //
+    // The declared present extent, when the graph states one, outranks this flag: a graph
+    // that declares `[B, Nkv, P+S, D]` has asked for the growing convention in writing, and
+    // the evidence case `group_query_attention_f16` is exactly that graph. Only a symbolic
+    // (unstated) present extent — which is what Phi-3.5 has — is the EP's to decide.
+    let arena = ctx.kv_arena() && declared_present_len.is_none() && past_len_max >= seq_len;
+    let present_len = if arena { past_len_max } else { present_len };
     let shares_past_buffer = past_len_max > 0 && present_len == past_len_max;
     let kv_desc = TensorDesc::new(
         dtype,
@@ -1195,6 +1223,147 @@ mod tests {
             "the two strides coincide exactly when the buffer is shared — and the shader \
              uses that equality to skip the past->present copy"
         );
+    }
+
+    /// A `Recorder` that declares the shared-buffer (arena) convention.
+    ///
+    /// The convention is on the context, not in the environment, so a test can state it
+    /// without a process-wide variable — and so two arms can run in the same test binary
+    /// without racing each other through `std::env`.
+    #[derive(Default)]
+    struct ArenaRecorder(Recorder);
+
+    impl DispatchContext for ArenaRecorder {
+        fn resolve(&mut self, r: &crate::engine::TensorRef) -> EpResult<BufferView> {
+            self.0.resolve(r)
+        }
+        fn bind_output(
+            &mut self,
+            o: &crate::engine::OutRef,
+            desc: TensorDesc,
+        ) -> EpResult<BufferView> {
+            self.0.bind_output(o, desc)
+        }
+        fn alloc_temp(&mut self, desc: TensorDesc) -> EpResult<BufferView> {
+            self.0.alloc_temp(desc)
+        }
+        fn dispatch(&mut self, k: KernelRequest) -> EpResult<()> {
+            self.0.dispatch(k)
+        }
+        fn read_const_i64(&self, r: &crate::engine::TensorRef) -> Option<Vec<i64>> {
+            self.0.read_const_i64(r)
+        }
+        fn kv_arena(&self) -> bool {
+            true
+        }
+    }
+
+    /// Build a GQA node whose `present` extent is **unstated**, which is what Phi-3.5's
+    /// symbolic `total_sequence_length` produces after `tensor_desc` drops it.
+    fn gqa_node_symbolic_present(past_max: i64) -> NodeDesc {
+        let mut node = gqa_node(1, 1, 8, 2, 32, past_max);
+        for out in node.outputs.iter_mut().skip(1) {
+            out.desc = None;
+        }
+        node
+    }
+
+    /// The arena: with the convention declared and the present extent unstated, `present`
+    /// aliases `past` and the two strides coincide — which is the exact condition
+    /// `gqa_f16.comp` reads to skip the past→present copy.
+    #[test]
+    fn translate_gqa_arena_aliases_present_onto_past() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node_symbolic_present(8192);
+        let mut ctx = ArenaRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(
+            ctx.0.outputs.len(),
+            1,
+            "arena: present aliases past, so attn is the only new allocation"
+        );
+        let pc = &ctx.0.dispatches[0].push_constants;
+        let present_len = u32::from_le_bytes(pc[24..28].try_into().unwrap());
+        let past_stride = u32::from_le_bytes(pc[28..32].try_into().unwrap());
+        assert_eq!(present_len, 8192, "the arena extent is the write stride");
+        assert_eq!(
+            present_len, past_stride,
+            "one stride, or the write region of head h lands inside the read region of head h+1"
+        );
+    }
+
+    /// Same node, same shapes, **without** the declaration: the shipping path is untouched.
+    ///
+    /// This is the control that says the previous test measured the flag and not the shapes.
+    #[test]
+    fn translate_gqa_without_the_declaration_still_grows() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node_symbolic_present(8192);
+        let mut ctx = Recorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(ctx.outputs.len(), 3, "growing: present is its own allocation");
+        let pc = &ctx.dispatches[0].push_constants;
+        assert_eq!(
+            u32::from_le_bytes(pc[24..28].try_into().unwrap()),
+            8193,
+            "growing cache derives present as past + seq_len"
+        );
+    }
+
+    /// A graph that **states** a growing `present` has asked for the growing convention in
+    /// writing, and the caller's flag does not overrule it.
+    ///
+    /// This matters because the two graphs this project runs disagree: the evidence case
+    /// `group_query_attention_f16` declares `[B,2,4,32]` against `[B,2,5,32]`, and Phi-3.5
+    /// declares symbols. A flag that ignored the declaration would silently write a 5-token
+    /// layout into a 4-token buffer on the case every correctness gate uses.
+    #[test]
+    fn translate_gqa_a_declared_growing_present_outranks_the_arena_flag() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let node = gqa_node(1, 1, 8, 2, 32, 4); // declares present = 5
+        let mut ctx = ArenaRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(
+            ctx.0.outputs.len(),
+            3,
+            "the declaration wins: present is still its own allocation"
+        );
+        let pc = &ctx.0.dispatches[0].push_constants;
+        assert_eq!(u32::from_le_bytes(pc[24..28].try_into().unwrap()), 5);
+        assert_eq!(u32::from_le_bytes(pc[28..32].try_into().unwrap()), 4);
+    }
+
+    /// The arena needs capacity for the tokens this step writes. `past_len_max < seq_len`
+    /// cannot hold them under any past length, so the alias is declined rather than taken
+    /// and clamped — a clamped write is the dropped-write defect this project has already
+    /// shipped once and read back as zeros.
+    #[test]
+    fn translate_gqa_arena_declines_a_capacity_smaller_than_one_step() {
+        let spec = crate::registry::all_specs()
+            .find(|s| s.op_type == "GroupQueryAttention")
+            .unwrap();
+        let mut node = gqa_node_symbolic_present(2);
+        // seq_len 8 against an arena of 2.
+        node.inputs[0].desc = Some(TensorDesc::new(DType::F16, vec![1, 8, (8 + 2 * 2) * 32]));
+        let mut ctx = ArenaRecorder::default();
+        translate_gqa(spec, &node, &mut ctx).expect("translate should succeed");
+
+        assert_eq!(
+            ctx.0.outputs.len(),
+            3,
+            "capacity below one step's worth of tokens is not an arena"
+        );
+        let pc = &ctx.0.dispatches[0].push_constants;
+        assert_eq!(u32::from_le_bytes(pc[24..28].try_into().unwrap()), 10);
     }
 
     #[test]

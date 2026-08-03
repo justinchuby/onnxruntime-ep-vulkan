@@ -3484,7 +3484,59 @@ mod tests {
         );
     }
 
-    /// **One variable, one reader, and a spelling that reads as "off" must be off.**
+    /// The KV-arena flag reads the same twelve spellings the device-memory flag does, and
+    /// reaches the dispatch context through the **one** parser.
+    ///
+    /// The two assertions are different claims. The first is the allow-list: this flag ships
+    /// OFF, so `off`/`false`/`no`/a typo must read OFF. The second is that
+    /// `DispatchContext::kv_arena` — the value an op handler actually sees — is that same
+    /// function's answer and not a second reading of the variable. That is the defect
+    /// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=off` produced: two readers, one arming and one
+    /// not, from a spelling that reads as "off" in English.
+    #[test]
+    fn every_spelling_of_the_kv_arena_flag_reads_the_same_at_both_ends() {
+        use crate::engine::DispatchContext;
+        let _g = ledger::test_lock();
+        let saved = std::env::var(crate::factory::ENV_KV_ARENA).ok();
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("ON", true),
+            (" yes ", true),
+            ("0", false),
+            ("off", false),
+            ("false", false),
+            ("no", false),
+            ("", false),
+            ("yess", false),
+            ("enabled", false),
+            ("2", false),
+        ] {
+            // SAFETY: single-threaded test holding the process-global test lock; the variable is
+            // restored before returning.
+            unsafe { std::env::set_var(crate::factory::ENV_KV_ARENA, value) };
+            let parser_side = crate::factory::kv_arena_enabled();
+            let context_side = crate::vk::session::CompileRecorder::new(0).kv_arena();
+            assert_eq!(
+                parser_side, context_side,
+                "ONNXRUNTIME_EP_VULKAN_KV_ARENA={value:?}: the parser says {parser_side} and the \
+                 dispatch context says {context_side}. A second reader is how the device-memory \
+                 flag came to half-arm the EP."
+            );
+            assert_eq!(
+                parser_side, expected,
+                "ONNXRUNTIME_EP_VULKAN_KV_ARENA={value:?} must read {expected}"
+            );
+        }
+        // SAFETY: see above.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var(crate::factory::ENV_KV_ARENA, v),
+                None => std::env::remove_var(crate::factory::ENV_KV_ARENA),
+            }
+        }
+    }
+
     ///
     /// This was two readers. `factory::device_memory_enabled` took an allow-list; the allocator's
     /// `device_memory_requested` took "anything non-empty that is not `0`". So
