@@ -1759,7 +1759,23 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
                 .first()
                 .and_then(|t| t.as_ref().and_then(|e| e.dtype))
         });
-    let stem = match dispatch_dtype.and_then(|d| spec.kernel.stem(d)) {
+    // A pair-keyed row's module is chosen by (source, destination), so the source dtype alone
+    // does not name it. `stem` returns `None` there by design; asking it anyway would have
+    // rendered every `Cast` key as `metadata` — a component that says "this row has no shader" on
+    // a row with thirty-six of them, and one string shared by all thirty-six.
+    let pair_stem = if spec.kernel.template.is_pair_keyed() {
+        let dst = view
+            .output_types()
+            .first()
+            .and_then(|t| t.as_ref().and_then(|e| e.dtype));
+        match (dispatch_dtype, dst) {
+            (Some(s), Some(d)) => spec.kernel.pair_stem(s, d),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let stem = match pair_stem.or_else(|| dispatch_dtype.and_then(|d| spec.kernel.stem(d))) {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
     };
@@ -2768,6 +2784,15 @@ mod tests {
             let has_dispatch = if spec.kernel.template == Template::None {
                 // Direct-shader row: translate handler must be non-trivial.
                 !std::ptr::fn_addr_eq(spec.translate, templates::unimplemented as fn(_, _, _) -> _)
+            } else if spec.kernel.template.is_pair_keyed() {
+                // Pair-keyed row: at least one compiled (source, destination) variant.
+                spec.caps.iter().any(|src| {
+                    spec.caps.iter().any(|dst| {
+                        spec.kernel
+                            .pair_stem(src, dst)
+                            .is_some_and(|stem| shaders::find(stem).is_some())
+                    })
+                })
             } else {
                 // Template row: at least one compiled shader variant must be present.
                 spec.caps.iter().any(|d| {

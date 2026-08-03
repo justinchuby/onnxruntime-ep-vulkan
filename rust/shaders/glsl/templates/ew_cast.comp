@@ -1,0 +1,103 @@
+// The type-conversion template — one op, 36 compiled variants, one file.
+//
+// `Cast` is the only row in the table whose variant space is keyed on a dtype **pair**. Every
+// other template picks one `DTYPE_*` and both its buffers follow from it; here the two buffers
+// have independent storage types, which is a different *shape* of variant table rather than a
+// bigger one. That is the whole reason this is a template and not another `ew_unary.comp` op
+// selector: `indexing.glsl` derives `COMPUTE_T`, `SCALAR_T` and the packing decision from a single
+// define, and it can only answer for one side.
+//
+// The split: the **source** half arrives in the ordinary `DTYPE_*` / `SCALAR_T` defines, so the
+// shared header maps `COMPUTE_T` and the load accessor exactly as it does for every other module.
+// The **destination** half arrives in its own namespace, `CAST_DST_*` / `DST_SCALAR_T`, and is
+// read only here. A second `DTYPE_*` would have made the shared header choose between two answers
+// for `COMPUTE_T`, silently, at every include site.
+//
+// ON THE 36 MODULES vs THE PAIRS WE HAVE PROVEN. The build generates the whole cross product,
+// including the diagonal (`Cast` to the same type is a legal node a real exporter emits). It does
+// **not** follow that all 36 are claimable: the proof key carries both dtypes, so each pair is its
+// own ledger obligation and an unproven pair declines `[unproven]` and runs on the CPU EP, which
+// is correct for it. Generating a variant costs a few kilobytes; claiming on one costs an answer.
+// The conversions whose out-of-range behaviour is genuinely undefined in GLSL (a negative float to
+// an unsigned integer, a float larger than the destination's range) are exactly the pairs no
+// evidence case has measured, and the ledger — not a comment — is what keeps them unclaimed.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// `indexing.glsl` requires this extension itself when the *source* is i64. The destination side is
+// invisible to it, so the requirement is repeated here for a 64-bit destination.
+#ifdef CAST_DST_I64
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#endif
+
+#define EW_ARITY 1
+#include "indexing.glsl"
+
+layout(local_size_x_id = 0, local_size_x = 256) in;
+
+// -- source binding ----------------------------------------------------------------------------
+
+#if defined(EW_PACKED_BYTES)
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_BYTE(load0, in0)
+#elif defined(EW_PACKED_HALF)
+layout(set = 0, binding = 0) readonly buffer In0 { uint data[]; } in0;
+EW_DEFINE_LOAD_HALF(load0, in0)
+#else
+layout(set = 0, binding = 0) readonly buffer In0 { SCALAR_T data[]; } in0;
+EW_DEFINE_LOAD(load0, in0)
+#endif
+
+// -- destination binding -----------------------------------------------------------------------
+//
+// Written out rather than reusing `EW_DEFINE_STORE*`: those macros take a `COMPUTE_T`, and here the
+// stored value has the *destination's* compute type, which is the one thing this template exists
+// to make different.
+
+#if defined(CAST_DST_U8) || defined(CAST_DST_BOOL)
+layout(set = 0, binding = 1) buffer Out { uint data[]; } outb;
+void store_out(uint i, uint v) {
+    uint word = i >> 2u;
+    uint shift = (i & 3u) * 8u;
+    atomicAnd(outb.data[word], ~(0xFFu << shift));
+    atomicOr(outb.data[word], (v & 0xFFu) << shift);
+}
+#elif defined(CAST_DST_F16)
+layout(set = 0, binding = 1) buffer Out { uint data[]; } outb;
+void store_out(uint i, float v) {
+    uint word = i >> 1u;
+    uint shift = (i & 1u) * 16u;
+    uint bits = packHalf2x16(vec2(v, 0.0)) & 0xFFFFu;
+    atomicAnd(outb.data[word], ~(0xFFFFu << shift));
+    atomicOr(outb.data[word], bits << shift);
+}
+#else
+layout(set = 0, binding = 1) writeonly buffer Out { DST_SCALAR_T data[]; } outb;
+void store_out(uint i, DST_SCALAR_T v) { outb.data[i] = v; }
+#endif
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.elem_count) {
+        return;
+    }
+    // `Cast` never broadcasts — ONNX fixes the output shape to the input's — so `ew_index` is the
+    // identity here for every node. It is still called rather than assumed, because `EW_IDENTICAL`
+    // is what the host pushes and the two must not be allowed to disagree.
+    COMPUTE_T x = load0(ew_index(0u, gid));
+
+#if defined(CAST_DST_BOOL)
+    // ONNX `Cast` to bool is `x != 0`, not a truncation: 0.5 casts to `true`, and casting through
+    // an integer first would make it `false`.
+    store_out(gid, x != COMPUTE_T(0) ? 1u : 0u);
+#elif defined(CAST_DST_U8)
+    store_out(gid, uint(x));
+#elif defined(CAST_DST_F16)
+    store_out(gid, float(x));
+#else
+    // Integer destinations truncate toward zero, which is what `int()`/`int64_t()` do in GLSL and
+    // what ONNX specifies (it follows C's conversion rules).
+    store_out(gid, DST_SCALAR_T(x));
+#endif
+}

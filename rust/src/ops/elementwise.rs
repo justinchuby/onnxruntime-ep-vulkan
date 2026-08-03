@@ -36,7 +36,7 @@
 //!   answer: `OP_COVERAGE.md` §7's rule is that an op is claimed only when the *attribute*
 //!   combination is genuinely handled, and here it is not. See §5.1.1 for the float/selector
 //!   distinction.
-//! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
+//! * [`NEEDS_RUNTIME_CAST_TARGET`] — the destination dtype is a runtime tensor, not an attribute.
 
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
@@ -58,9 +58,15 @@ const EQ_CAPS: DTypeSet = NUMERIC.union(BOOL);
 pub const NEEDS_PARAMS: &str = "its attribute selects a different expression rather than supplying a value, so it needs its own \
      shader variant rather than a push-constant parameter";
 
-/// Staging reason for `Cast`, whose variant space is keyed on a dtype *pair*.
-pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
-     dtype, so it needs its own template and manifest column";
+/// Staging reason for `CastLike`, whose destination type is a runtime tensor rather than an
+/// attribute.
+///
+/// This used to be `NEEDS_CAST_MATRIX` — "keyed on a dtype pair rather than a single dtype, so it
+/// needs its own template and manifest column" — shared with `Cast`. `Cast` now has both, so that
+/// text no longer describes anything: keeping it on `CastLike` would have been a discharged
+/// blocker still holding a row down, which reads to the next person as work already tried.
+pub const NEEDS_RUNTIME_CAST_TARGET: &str = "its destination type is the element type of a second *input tensor*, which a graph may change \
+     between runs, while the pair-keyed module is chosen when the graph is compiled";
 
 // §8.9.16 — `EXERCISED` and `TEMPLATE_LIVE` used to live here.
 //
@@ -136,6 +142,36 @@ fn only_loadable_variants(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
          create a pipeline for it. The CPU EP is correct for this node",
         spec.op_type,
         dt.map_or("untyped", dtype_suffix),
+    );
+    Ok(())
+}
+
+/// `Cast` — the shared predicate plus the pair-keyed loadability check.
+///
+/// [`only_loadable_variants`] asks `stem(dtype)`, which is `None` for a pair-keyed row by design,
+/// so `Cast` cannot reuse it. The check itself is the same one and matters more here than
+/// anywhere else: every `*_to_i64` and `i64_to_*` module in the 36 declares `OpCapability Int64`,
+/// which this engine does not enable, and there are eleven of them.
+fn cast_loadable(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::cast(view, spec)?;
+    let src = claim::input_edge(view, spec, 0)?.dtype;
+    let dst = view.output_type(0).and_then(|e| e.dtype);
+    let loadable = match (src, dst) {
+        (Some(s), Some(d)) => spec
+            .kernel
+            .pair_stem(s, d)
+            .is_some_and(crate::ops::common::variants::variant_is_loadable),
+        _ => false,
+    };
+    crate::require!(
+        loadable,
+        DType,
+        "`{}` has no loadable shader variant for {} -> {}; the module either was not generated \
+         or declares a SPIR-V capability this engine does not enable, so no device we run on \
+         could create a pipeline for it. The CPU EP is correct for this node",
+        spec.op_type,
+        src.map_or("untyped", dtype_suffix),
+        dst.map_or("untyped", dtype_suffix),
     );
     Ok(())
 }
@@ -280,8 +316,8 @@ crate::op_table! {
     // ---------------------------------------------------------------------------------------
     "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Ready;
     "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   clip_f32,           templates::ew_clip,     Live;
-    "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(None),               claim::cast,        templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
-    "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
+    "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(EwCast, "cast"),     cast_loadable,      templates::ew_cast,     Ready;
+    "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_RUNTIME_CAST_TARGET);
 }
 
 #[cfg(test)]
@@ -574,11 +610,21 @@ mod tests {
                 OpStatus::Live | OpStatus::Ready => {
                     // A live/ready row promises its shader compiles and has been executed on a device.
                     // Verify at minimum that the shader variant exists in the binary.
-                    let any_shader = s.caps.iter().any(|d| {
-                        s.kernel
-                            .stem(d)
-                            .is_some_and(|stem| shaders::find(stem).is_some())
-                    });
+                    let any_shader = if s.kernel.template.is_pair_keyed() {
+                        s.caps.iter().any(|src| {
+                            s.caps.iter().any(|dst| {
+                                s.kernel
+                                    .pair_stem(src, dst)
+                                    .is_some_and(|stem| shaders::find(stem).is_some())
+                            })
+                        })
+                    } else {
+                        s.caps.iter().any(|d| {
+                            s.kernel
+                                .stem(d)
+                                .is_some_and(|stem| shaders::find(stem).is_some())
+                        })
+                    };
                     assert!(
                         any_shader,
                         "{} is live but has no compiled shader variant in the binary",
@@ -605,6 +651,7 @@ mod tests {
                 Template::EwUnary => assert_eq!(arity, 1),
                 Template::EwBinary => assert_eq!(arity, 2),
                 Template::EwSelect => assert_eq!(arity, 3),
+                Template::EwCast => assert_eq!(arity, 1),
                 // QGemv rows live in quant.rs, not in this table; arity checked there.
                 Template::QGemv => {}
             }
@@ -671,8 +718,47 @@ mod tests {
 
         for op in ["Cast", "CastLike"] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
-            assert_eq!(s.status, OpStatus::Staged(NEEDS_CAST_MATRIX), "{op}");
+            assert!(
+                crate::ops::common::params::slots_for(s.op_type).is_none(),
+                "{op}'s destination type is a dtype, not a float coefficient"
+            );
         }
+    }
+
+    /// `Cast` is `Ready` on a pair-keyed template; `CastLike` is still staged, and for its own
+    /// reason rather than the one `Cast` used to share.
+    ///
+    /// `NEEDS_CAST_MATRIX` said the variant space needed "its own template and manifest column".
+    /// It now has both, so the blocker is discharged for `Cast`. `CastLike` is not the same op
+    /// wearing a different name: its destination type comes from a **second input tensor** rather
+    /// than an attribute, so a graph can change what it casts to at runtime, and the pair-keyed
+    /// module is chosen at compile time. That is a distinct gap and it keeps its own reason.
+    #[test]
+    fn cast_is_ready_on_a_pair_keyed_row_and_castlike_is_staged_for_its_own_reason() {
+        let cast = OPS.iter().find(|s| s.op_type == "Cast").unwrap();
+        assert_eq!(cast.status, OpStatus::Ready);
+        assert!(cast.kernel.template.is_pair_keyed());
+        assert!(cast.kernel.pair_stems.is_some());
+        assert!(std::ptr::fn_addr_eq(
+            cast.claim,
+            cast_loadable as crate::registry::ClaimPredicate
+        ));
+        // Every pair the row's caps imply must have a generated module, otherwise `pair_stem`
+        // hands the dispatcher a name `shaders::find` cannot resolve.
+        for src in crate::ops::common::dtype::ALL_DTYPES {
+            for dst in crate::ops::common::dtype::ALL_DTYPES {
+                let stem = cast.kernel.pair_stem(src, dst).unwrap();
+                assert!(
+                    crate::engine::shaders::SHADER_MODULES
+                        .iter()
+                        .any(|(n, _)| *n == stem),
+                    "`{stem}` is named by the pair table but was never built"
+                );
+            }
+        }
+
+        let castlike = OPS.iter().find(|s| s.op_type == "CastLike").unwrap();
+        assert_eq!(castlike.status, OpStatus::Staged(NEEDS_RUNTIME_CAST_TARGET));
     }
 
     /// Every op with a slot-table entry must use a predicate that actually reads that table, and
