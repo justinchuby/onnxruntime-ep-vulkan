@@ -194,6 +194,67 @@ known red items, and self-correcting an over-claimed criterion).
 
 ---
 
+## Session — 2026-08-03T07:40:00-07:00 (RAI-008(a) recall; the ledger-fault message; INFO-below-threshold)
+
+Recalled via coordinator for three rulings: Tank's RAI-008(a) CI-plant repair (`137e40f`), Link's
+finding that the proof-ledger decline message misnames its subject under a whole-ledger fault, and a
+spot check of `docs/DESIGN.md` §0 for overstatement.
+
+**RAI-008(a): NOT credited.** Tank's plant repair (imported `PLANTED_CONTROL_CASE`/`_KEY`, fixed a
+stale docstring prediction, added the missing non-vacuous membership assertion, 14/0) is real,
+verified, correctly-scoped maintenance — credited as that. It does not discharge RAI-008(a), whose
+falsifier requires Criterion 11 MET *as a whole*; Criterion 11's own DESIGN.md row is still NOT MET,
+open on the unrelated device-attribution defect (`LedgerEntry.device` unread by any predicate — six
+forms read `ALL-PROVEN` on a device nothing has proven anything on). A repair to the control is not a
+repair to the criterion. RAI-008 stays 🔴 OPEN.
+
+**New finding, verified live in the tree (not hypothetical):** `bench/results/link-linux-downstream/
+counters-linux.json` reads `ledger_faults: 97, ledger_entries: 0`; the matching `pytest-linux.log`
+has **0×** the true-cause line (`proof ledger fault: ...`, emitted once from a `OnceLock` in
+`registry::ledger()`) against **42×** the generic decline text (`no proof ledger entry ... nothing
+has proven it correct on this form`) — false in both clauses, since 97 entries exist and some prove
+these exact forms elsewhere; the true cause is a whole-ledger parse/digest fault, not key absence.
+Traced to source: `Ledger::state_for` blankets every key to `Unproven` whenever `self.faults` is
+non-empty, bypassing the `SubjectChanged` branch built for exactly this kind of accurate naming.
+Fail-safe output is preserved (still declines correctly to CPU), so this is a diagnostic-honesty
+defect, not RAI-008's silent-wrong-output class — named 🟡 (RAI-012), with an explicit 🔴 trigger:
+unfixed and firing on the certified Windows lane against a real user. Owner: Mouse.
+
+**INFO disclosure below ORT's default threshold (RAI-013), 🟡.** `_ledger_counters.json` post-`137e40f`
+honestly reports `session_disclosure_infos_to_ort_sink: 0` / `BELOW_ORT_THRESHOLD` / threshold
+`WARNING`. Credited: the self-report is good instrumentation. Ruled: an honestly-labeled emission
+that a user will never see by default does not discharge §8.9.7's obligation — same substitution my
+2026-08-02 ruling already named ("a verdict is not evidence for a different claim"). Owner: Tank
+(raise severity) or Morpheus (document the gap explicitly in §0.2) — either closes it.
+
+**DESIGN.md §0 spot check: no overstatement found**, two numeric claims verified against
+`criterion10-dev0.json` exactly. One omission noted: §0.2 should name both open items above, by its
+own stated standard.
+
+### Learnings
+- **A repair to a control is not a repair to what the control was gating.** RAI-008(a)'s falsifier is
+  a conjunction (criterion MET *and* planted control correct); crediting the conjunction on one
+  conjunct's repair would be the same witness/discharge conflation this project has already named
+  twice this week by other people's hands. Worth re-checking every time a "the CI check now works"
+  commit arrives framed as closing a criterion it only partially touches.
+- **A message can be safe and still be false.** RAI-008's hazard class is silently wrong *output*;
+  this session's ledger-fault message is a case where the output stays correct (fail-safe decline)
+  but the stated *reason* is false and actively misdirects remediation. These need separate severity
+  tracks — conflating them either over-blocks safe-but-mislabeled behavior at 🔴 or, worse, lets a
+  real diagnostic-honesty defect hide inside a "no RAI-008 recurrence" verdict.
+- **"We can prove it didn't reach the user" is not the same claim as "the user was told."** This is
+  the second time this exact substitution has needed naming (first: correctness vs. disclosure,
+  2026-08-02). It generalizes: any obligation phrased as an *action* (disclose, warn, inform) is not
+  satisfied by evidence about the *attempt*, however honestly instrumented the attempt's failure is.
+
+### Deliverables
+- Appended to `.squad/rai/audit-trail.md` (RAI-008(a) re-check, RAI-012, RAI-013, DESIGN.md spot check)
+- Appended to `.squad/agents/Rai/history.md` (this entry)
+- Created `.squad/decisions/inbox/rai-008a-not-credited-and-the-ledger-fault-message.md`
+- Working branch: `squad/rai` (not pushed to `main`)
+
+---
+
 📌 Team update (2026-07-30T19:05:03-07:00) — Scribe
 
 Two findings apply to every agent on the team:
