@@ -629,54 +629,112 @@ pub(crate) struct VulkanSession {
     zero_elem_placeholder: Option<GpuBuffer>,
 }
 
-/// Is the output-side device bind requested for this process?
+/// Is the output-side device bind active for this process?
 ///
-/// Default OFF. `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1` turns it on.
+/// **Default ON since 2026-08-03. `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=0` turns it OFF.**
 ///
-/// It is a flag rather than a behaviour because of an unresolved fact, not because of nerves.
-/// `transfer`'s own documentation states that a device-backed span keeps its host staging block
-/// and that **the staging block stays authoritative** — the device buffer is a mirror. If that
-/// still holds for outputs, then writing only the device side leaves ORT's consumer reading the
-/// previous inference's bytes: correct-looking, wrong, and reproducible. That is the same shape
-/// as the stale input cache, and it would be certified by any test that reads a single
-/// inference. So the flag ships OFF and the question gets settled by comparing armed output
-/// against the CPU EP, not by reasoning about the comment.
+/// # What the flag protected against, and where each hazard now stands
+///
+/// It shipped OFF because of an unresolved fact, not nerves: `transfer`'s own documentation said
+/// a device-backed span keeps its host staging block and that **the staging block stays
+/// authoritative** — the device buffer is a mirror. Writing only the device side would then leave
+/// ORT's consumer reading the previous inference's bytes: correct-looking, wrong, reproducible,
+/// and certified by any test that reads a single inference. That was not hypothetical — it was
+/// **measured** as `DEVICE_BOUND_OUTPUTS_RETURN_NOTHING`, 0 nonzero of 32,064 logits.
+///
+/// | hazard | status | what closes it |
+/// |---|---|---|
+/// | staging stays authoritative ⇒ bound output reads stale/zero | **closed** | per-span `device_authoritative`, set *before* the dispatch (`transfer::mark_device_authoritative`); `transfer::tests::a_device_authoritative_span_is_downloaded_before_it_is_read` |
+/// | a bind that succeeds while the authority grant is refused | **closed** | Step 1c unbinds and takes the staged path; the grant is the gate, not the bind |
+/// | a partial host write revoking authority over bytes it never wrote | **closed** | `refresh_whole_span_before_partial_write` + its unit test |
+/// | the two writeback routes disagree on some output | **closed by measurement, not by argument** | Trinity, criterion 10: all **65 of 65** per-output residuals **identical** on both vendors, host-staging route vs device-authoritative route (`bench/results/criterion10_route-dev{0,1}-*.json`, `tests/ops/test_criterion10_route.py`) |
+/// | prefill (zero-extent KV) / aliased outputs | **not reached** | Step 1c skips `sz == 0` and aliased outputs; they take the path that already shipped |
+/// | a caller who binds nothing and just reads numpy | **closed by measurement** | `bench/results/probe_default_bind_outputs.py`; ORT's own device→host copy goes through `CopyTensors`, which refreshes a device-authoritative span before the memcpy |
+///
+/// # What flipping this default does NOT do
+///
+/// `bind_target_for` declines every pointer that is not one of **our** handles in a `SHARED`
+/// frame, and ORT only allocates fused-node outputs through our allocator when
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`. That flag still ships OFF. So for the default
+/// configuration this change binds **nothing** and costs one `KernelContext_GetOutput` per output
+/// per Compute — the same call `write_outputs_to_ort` already makes, and idempotent. The win
+/// belongs to the armed lane. **Nobody gets the 393,216 → 0 from this flag alone**; that is a
+/// statement about `ENV_DEVICE_MEMORY`, and it is made in `factory.rs`, not here.
+///
+/// # Reading the route
+///
+/// Off the counters, never off the environment: `outputs_bind_attempted == 0` means this path did
+/// not run, `attempted > 0 && outputs_device_bound == 0` means it ran and nothing was bindable.
+/// The env var records what was *asked for*; Step 1c can decline, and a declined bind that
+/// recorded as a route taken is exactly the error this discipline exists to prevent.
+/// Does this value of `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS` **disable** the output-side bind?
+///
+/// Split out from [`output_bind_requested`] so the polarity can be tested without touching
+/// process environment — the direction of this predicate is the whole flip, and an inverted
+/// edit to it would be invisible in every counter (the run would simply take the old route and
+/// still be correct, which is precisely the kind of silent regression this project keeps
+/// catching only by accident).
+///
+/// Tri-state, and **the default arm is the ON arm**: unset is on, an unrecognised value is on.
+/// A typo'd escape hatch must fail towards the well-tested path, and since 2026-08-03 the
+/// well-tested path is the bound one.
+fn output_bind_disabled_by(v: Option<&str>) -> bool {
+    matches!(
+        v.map(str::trim),
+        Some("0") | Some("false") | Some("FALSE") | Some("off") | Some("OFF") | Some("no")
+            | Some("NO")
+    )
+}
+
 fn output_bind_requested() -> bool {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    let on = matches!(
-        std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+    let off = output_bind_disabled_by(
+        std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS")
+            .ok()
+            .as_deref(),
     );
-    if on {
+    if off {
         ONCE.call_once(|| {
             log::info!(
-                "[VulkanEP] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1: fused-node outputs are bound \
-                 directly to ORT's device buffers, and each bound span is marked \
-                 device-authoritative so every later reader downloads it instead of reading a \
-                 staging block nothing wrote. MEASURED 2026-08-02 on the GQA evidence case: \
-                 agrees with the same session run unbound to 0.0 on every output, all outputs \
-                 nonzero, alloc_device_authority_grants = 6 for 6 bound outputs. The reading and \
-                 the DLL hash it was taken against travel together in \
-                 bench/results/kv_device_residency-epbind.json -> KV_CAN_STAY_DEVICE_RESIDENT; \
-                 no hash is quoted here, because a hash embedded in the binary it describes is \
-                 stale the next time that binary is built. This REPLACES the previous warning \
-                 on this flag, which said it returned ALL ZEROS: that was true and is no longer, \
-                 and a record describing a build nobody is running is the defect this project \
-                 has now hit four times. What this flag does NOT do is make the transfer \
-                 disappear: the download is MOVED to whoever asks for host bytes, and is counted \
-                 when it happens (alloc_device_downloads). A caller that never asks never pays. \
-                 MEASURED 2026-08-03 on the real Phi-3.5-mini graph (355-node island, 64 KV \
-                 outputs, 6-step decode chain, past 4 -> 9, NVIDIA RTX 4060 Laptop and Intel \
-                 Iris Xe, both read off the run): shipping path 393,216 B per past token; with \
-                 the 64 presents bound in device memory and fed back as the next step's past, \
-                 the slope is FLAT at 0 B per past token and the whole per-step link cost is \
-                 the caller's own 64,128 B of logits. Bit-identical to the unbound lane on all \
-                 6 steps, same token chain as the CPU EP. See \
-                 bench/results/probe_kv_chain_phi35.py -> ROUND_TRIP_REMOVED."
+                "[VulkanEP] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=0: the output-side device bind is \
+                 DISABLED for this process. Fused-node outputs go back through host staging and \
+                 are memcpy'd into ORT's tensor, which is what shipped before 2026-08-03. This is \
+                 the escape hatch, not the fast path: it exists so a user hitting a driver problem \
+                 on the bound path has somewhere to go, and it costs one device→host→device round \
+                 trip per output on every Compute when the device allocator is armed — 393,216 B \
+                 per past token on Phi-3.5-mini. Do not read this variable to decide which route a \
+                 run took; read `outputs_bind_attempted` and `outputs_device_bound` off the run."
+            );
+        });
+    } else {
+        ONCE.call_once(|| {
+            log::info!(
+                "[VulkanEP] output-side device bind is ON (default since 2026-08-03; \
+                 ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=0 disables it). Fused-node outputs ORT placed \
+                 in this EP's device memory are bound directly as the kernel's output, and each \
+                 bound span is marked device-authoritative so every later reader downloads it \
+                 instead of reading a staging block nothing wrote. This does NOT make the \
+                 transfer disappear: the download is MOVED to whoever asks for host bytes, and is \
+                 counted when it happens (alloc_device_downloads). A caller that never asks never \
+                 pays. It also does nothing at all unless \
+                 ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1, because ORT allocates fused-node outputs \
+                 through this EP's provider only when that is armed and `bind_target_for` \
+                 declines every other pointer — see outputs_bind_attempted vs \
+                 outputs_device_bound. MEASURED 2026-08-03 on the real Phi-3.5-mini graph \
+                 (355-node island, 64 KV outputs, 6-step decode chain, past 4 -> 9, NVIDIA RTX \
+                 4060 Laptop and Intel Iris Xe, both read off the run): shipping path 393,216 B \
+                 per past token; with the 64 presents bound in device memory and fed back as the \
+                 next step's past, the slope is FLAT at 0 B per past token and the whole per-step \
+                 link cost is the caller's own 64,128 B of logits. Bit-identical to the unbound \
+                 lane on all 6 steps, same token chain as the CPU EP \
+                 (bench/results/probe_kv_chain_phi35.py -> ROUND_TRIP_REMOVED). Route identity \
+                 independently: all 65 of 65 criterion-10 per-output residuals identical across \
+                 the two routes on both vendors (Trinity, \
+                 bench/results/criterion10_route-dev{{0,1}}-*.json)."
             );
         });
     }
-    on
+    !off
 }
 
 /// Materialise ORT's output tensor `i` and return a writable pointer to it, or `None`.
@@ -1444,13 +1502,16 @@ impl VulkanSession {
         // download all 65 of them to host staging and then memcpy them into a pointer that is
         // itself device memory. That is a device→host→device round trip.
         //
-        // DEFAULT OFF, and the reason is a hazard, not caution. `transfer`'s own documentation
-        // says the host staging block stays **authoritative** and the device buffer is a mirror.
-        // If that is still true for outputs, dispatching straight into the device buffer leaves
-        // the host side holding the previous inference's bytes — stale-but-plausible, which is
-        // the failure mode that survives a smoke test and is exactly the defect class that has
-        // cost this project five separate incidents. The flag exists so the claim can be
-        // falsified against the CPU EP before it is believed.
+        // DEFAULT ON since 2026-08-03, and the flip is earned rather than assumed. The hazard
+        // that kept it off — `transfer`'s "the host staging block stays authoritative, the device
+        // buffer is a mirror", which was measured returning all zeros — is closed by the per-span
+        // `device_authoritative` flag set below, *before* the dispatch. The independent evidence
+        // that the two routes agree is Trinity's criterion-10 route axis: all 65 of 65 per-output
+        // residuals identical on both vendors, host-staging route vs device-authoritative route.
+        // `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=0` is the escape hatch; see `output_bind_requested`
+        // for the full hazard table and for why this flag on its own gives a default-configured
+        // caller nothing (ORT does not allocate fused-node outputs here unless
+        // `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1`).
         let mut bound_outputs: Vec<Option<(vk::Buffer, u64)>> =
             vec![None; actual_output_byte_sizes.len()];
         if output_bind_requested() {
@@ -1461,6 +1522,10 @@ impl VulkanSession {
                 if sz == 0 || aliased_output_to_input.contains_key(&i) {
                     continue;
                 }
+                // Counted here rather than at the bind: `outputs_device_bound == 0` cannot
+                // distinguish "the path is off" from "the path ran and declined everything",
+                // and once the path is on by default the second is the ordinary case.
+                crate::counters::record_output_bind_attempt();
                 // SAFETY: `api` and `kernel_ctx` are live for this call per `dispatch_ort`'s
                 // contract; `i` is in range because `check_bound_counts` in `ep.rs` verified the
                 // context's output count equals the compiled output count; `actual_output_shapes`
@@ -1469,6 +1534,7 @@ impl VulkanSession {
                 let Some(ptr) = (unsafe {
                     ort_output_ptr(api, kernel_ctx, i, &actual_output_shapes[i])
                 }) else {
+                    crate::counters::record_output_bind_declined();
                     continue;
                 };
                 bound_outputs[i] =
@@ -1495,6 +1561,7 @@ impl VulkanSession {
                              {ptr:p} and marked the span device-authoritative"
                         );
                     } else {
+                        crate::counters::record_output_bind_declined();
                         log::warn!(
                             "[VulkanEP] output {i}: the device buffer bound but its span could \
                              not be made authoritative, so a reader would be sent to a stale \
@@ -1502,6 +1569,8 @@ impl VulkanSession {
                         );
                         bound_outputs[i] = None;
                     }
+                } else {
+                    crate::counters::record_output_bind_declined();
                 }
             }
         }
@@ -2571,5 +2640,42 @@ impl Drop for VulkanSession {
         // drain, so the artifact carries the post-release truth (release_calls > 0, device
         // bytes drained). Counters are cumulative atomics, so this can only add information.
         crate::counters::dump_if_requested();
+    }
+}
+
+#[cfg(test)]
+mod bind_default_tests {
+    use super::output_bind_disabled_by;
+
+    /// The polarity of the escape hatch, pinned.
+    ///
+    /// `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS` was an **opt-in** until 2026-08-03 and is an
+    /// **opt-out** after it. Both spellings still occur in this repo's probes and in the
+    /// project record, so the risk is not that somebody deletes the flag — it is that somebody
+    /// reads `=1` in an old artifact, concludes the variable turns the path *on*, and restores
+    /// the old `matches!(..., Ok("1") | ...)` form. That edit compiles, passes every existing
+    /// test, and silently returns the whole fleet to the host round trip while every counter
+    /// still reads consistently, because taking the old route is not incorrect — only slower.
+    /// A byte count cannot tell you the default moved. This test can.
+    #[test]
+    fn an_unset_bind_outputs_means_on_and_only_a_falsy_value_means_off() {
+        // The default arm, and the reason this test exists.
+        assert!(!output_bind_disabled_by(None), "unset must mean ON");
+
+        for off in ["0", "false", "FALSE", "off", "OFF", "no", "NO", " 0 ", "\t0"] {
+            assert!(
+                output_bind_disabled_by(Some(off)),
+                "{off:?} must disable the output-side bind"
+            );
+        }
+        // `=1` is the spelling every pre-flip artifact and probe in this repo uses. It must keep
+        // meaning ON, or replaying a recorded run would silently change its route.
+        for on in ["1", "true", "on", "yes", "", "banana", "2"] {
+            assert!(
+                !output_bind_disabled_by(Some(on)),
+                "{on:?} must leave the output-side bind ON — an unrecognised value fails towards \
+                 the well-tested path"
+            );
+        }
     }
 }
