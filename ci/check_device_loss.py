@@ -337,24 +337,89 @@ def scan_counters(doc: object) -> tuple[list[str], bool, int]:
 # ---------------------------------------------------------------------------
 
 
+def searchable_text(raw: str) -> str:
+    """Make a captured log searchable however ORT encoded it.
+
+    Found 2026-08-02 by an arm of this file's own negative control, on that arm's first
+    run. ORT's C++ log sink writes UTF-16LE into an otherwise UTF-8 file; read as UTF-8
+    those regions arrive NUL-separated, and every regex in `scan_text` — device-lost text
+    included — silently matches nothing. This check would then have read such a log as a
+    clean run. `bench/results/trinity-suite-dev1.log` happens to carry its message in both
+    encodings; had it carried only the wide one, this file would have seen an empty log.
+
+    Deliberately delegated to `tests/ops/_verdict.py` rather than reimplemented, for the
+    same reason the marker list is: one normalisation, one owner, no second dialect. If
+    the helper is unavailable the raw text is returned rather than a private substitute —
+    a wrong answer from a copy is worse than the original blindness, because it looks
+    maintained.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "tests" / "ops"))
+    try:
+        import _verdict  # type: ignore
+
+        return _verdict.normalise_log_text(raw)
+    except Exception:  # noqa: BLE001
+        return raw
+
+
 def marker_cross_check(samples: list[tuple[Path, str]]) -> list[str]:
     """Lines this file matches that the shared marker list does not.
 
     Not fixed here on purpose. `tests/ops/_verdict.py` is the one vocabulary and it has an
     owner; a second private list in ci/ is exactly the "two dialects" failure the vocabulary
     exists to prevent. So the divergence is reported as a finding addressed to its owner.
+
+    TWO DEFECTS OF MY OWN, FOUND 2026-08-02 AND FIXED HERE
+    ------------------------------------------------------
+
+    Trinity repaired the shared markers so they match what ORT actually prints. This
+    function went on reporting `marker_list_misses_real_line` against Tank's
+    `ctx512_device_lost.txt` afterwards — a **false** finding, because
+    `ci/check_fatal_log.py` now goes red on that exact file, quoting all three lines.
+    Worse, my own negative control had an arm *requiring* that finding to appear, so
+    repairing the divergence would have turned my control red and blamed the repair.
+    That is R9 amendment 5 in my own file: a check that had stopped being able to tell
+    repair from breakage, while still reading as confident.
+
+    1. **It compared a physical line to a matched span by string equality.** That was
+       adequate only while `find_fatal_log_lines` returned whole lines. A form-tolerant
+       matcher necessarily returns the *span it matched*, so
+       ``Falling back to ['CPUExecutionProvider'] and retrying`` (no trailing period, the
+       regex ends at ``retrying``) never equals the stripped physical line that carries
+       one. The comparison had silently become a test of punctuation rather than of
+       coverage. The question worth asking is not "is my string in their list" but
+       **"would the shared vocabulary see this line at all"**, so that is now the
+       question asked.
+
+    2. **My side scanned un-normalised text.** ORT's C++ sink writes UTF-16LE into an
+       otherwise UTF-8 file; read as UTF-8 those regions arrive NUL-separated and
+       `FALLBACK_RE` cannot match them. So on a log carrying *only* the wide form, `mine`
+       would have been empty, no divergence would have been reported, and this function
+       would have read as agreement. Two blind scanners agree perfectly. Both sides are
+       now normalised through the one shared helper, which also means there is still
+       exactly one implementation of the normalisation.
+
+    The finding this function exists to raise is unchanged and still reachable: a line
+    *I* can see that the shared vocabulary cannot. It is now reachable for that reason
+    only.
     """
     sys.path.insert(0, str(REPO_ROOT / "tests" / "ops"))
     try:
         import _verdict  # type: ignore
     except Exception:  # noqa: BLE001
         return []
+    normalise = getattr(_verdict, "normalise_log_text", None)
     findings: list[str] = []
     for path, text in samples:
-        mine = [ln.strip() for ln in text.splitlines() if FALLBACK_RE.search(ln)]
-        theirs = set(_verdict.find_fatal_log_lines(text))
-        for line in mine:
-            if line not in theirs:
+        searchable = normalise(text) if normalise else text
+        for raw_line in searchable.splitlines():
+            line = raw_line.strip()
+            if not FALLBACK_RE.search(line):
+                continue
+            # Coverage, not equality: hand the shared matcher this one line and ask
+            # whether it finds anything in it. A line is only a divergence if the
+            # vocabulary is blind to it.
+            if not _verdict.find_fatal_log_lines(line):
                 findings.append(f"{path}: {line}")
     return findings
 
@@ -474,9 +539,9 @@ def main(argv=None) -> int:
                     findings.setdefault("observation_ended_early", []).extend(
                         f"{path}: {f}" for f in found
                     )
-        hits = scan_text(path, raw)
+        hits = scan_text(path, searchable_text(raw))
         if named:
-            samples.append((path, raw))
+            samples.append((path, searchable_text(raw)))
         for condition, lines in hits.items():
             if not lines:
                 continue

@@ -1,0 +1,3 @@
+[vulkan-ep] INFO: session claims 1 proven form(s) [§8.9.7]: com.microsoft::MatMulNBits x1 [com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales] proven by evidence/cases/matmulnbits_f16_scales.onnx on device0 against 1.28.0
+devices: ['CPUExecutionProvider', 'VulkanExecutionProvider']
+probe -> True

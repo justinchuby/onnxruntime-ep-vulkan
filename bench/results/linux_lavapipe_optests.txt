@@ -1,0 +1,22 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+..ssssssssssssssssssssssssssssssssssss                                   [100%]
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 2
+FAIL(condition)    : 0
+ERROR(instrument)  : 0
+XPASS(stale expect): 0
+=== end R13 lane summary ===
+=========================== short test summary info ============================
+SKIPPED [7] tests/ops/test_elementwise.py:69: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [2] tests/ops/test_elementwise.py:88: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [1] tests/ops/test_elementwise.py:105: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [11] tests/ops/test_elementwise.py:142: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [11] tests/ops/test_elementwise.py:182: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [1] tests/ops/test_elementwise.py:199: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [1] tests/ops/test_elementwise.py:216: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [1] tests/ops/test_elementwise.py:231: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+SKIPPED [1] tests/ops/test_elementwise.py:243: No Vulkan device available — either no ICD is installed or all devices failed the capability gate. Tests requiring a Vulkan device are skipped. To run on CPU software rasterizer (lavapipe): export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+2 passed, 36 skipped in 3.23s
+EXIT=True

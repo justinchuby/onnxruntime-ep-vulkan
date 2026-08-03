@@ -98,6 +98,8 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Criterion 10", "device.criterion10_gate"),
     ("Known-fatal log line", "device.fatal_log_line"),
     ("Device-loss screen on this lane's own evidence", "device.device_loss_screen"),
+    ("Proof-ledger portability negative control", "device.ledger_portability"),
+    ("Proof-ledger portability screen", "device.ledger_portability"),
     ("no ICD", "device.icd_negative_control"),
     ("no-ICD", "device.icd_negative_control"),
     ("ICD suppression", "device.icd_negative_control"),

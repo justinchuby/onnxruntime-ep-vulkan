@@ -87,13 +87,33 @@ UNDEMONSTRATED = "UNDEMONSTRATED"
 IMPOSSIBLE_HERE = "IMPOSSIBLE_HERE"
 RED_NOW = "RED_NOW"
 
+#: A check that has NEVER EXECUTED, because an earlier step in its own job failed and CI
+#: skips the remainder. This is not ``UNDEMONSTRATED`` and the difference is the whole
+#: reason it exists.
+#:
+#: ``UNDEMONSTRATED`` says: *this check runs, and nobody has performed the mutation that
+#: would prove it can go red.* ``GATED_NEVER_RUN`` says: *this check has not run at all,
+#: so we do not know it can even start.* I had the Linux lane's `device.op_correctness`
+#: and `build.integration_targets` at ``UNDEMONSTRATED`` all session. That was wrong, and
+#: it was wrong in the flattering direction: it read as "runs, never observed to fail",
+#: which is one demonstration away from green. The truth is that the Linux job fails at
+#: `Clippy (all warnings as errors)` and GitHub Actions marks every subsequent step
+#: **skipped** — seven of them — and a skipped step reports nothing at all.
+#:
+#: A skipped step is the same shape as the defect this whole session has been about: an
+#: instrument that exists, is cited in a table, and never runs. Distinguishing it in the
+#: vocabulary is the only way the table stops overclaiming for a lane nobody has watched.
+GATED_NEVER_RUN = "GATED_NEVER_RUN"
+
 #: Statuses that support calling the lane containing them `green` for that check.
 GREEN_STATUSES = frozenset({DEMONSTRATED, RED_NOW})
 
 #: Statuses that are an honest recorded gap rather than an unexamined one.
-RECORDED_GAP_STATUSES = frozenset({IMPOSSIBLE_HERE})
+RECORDED_GAP_STATUSES = frozenset({IMPOSSIBLE_HERE, GATED_NEVER_RUN})
 
-ALL_STATUSES = frozenset({DEMONSTRATED, UNDEMONSTRATED, IMPOSSIBLE_HERE, RED_NOW})
+ALL_STATUSES = frozenset(
+    {DEMONSTRATED, UNDEMONSTRATED, IMPOSSIBLE_HERE, RED_NOW, GATED_NEVER_RUN}
+)
 
 #: Orthogonal to status: where the failing arm came from. See the module docstring.
 FALSIFIER_PLANTED = "PLANTED"
@@ -333,7 +353,7 @@ CHECKS: tuple[Check, ...] = (
         ),
         status=DEMONSTRATED,
         mutation=(
-            "ci/negative_control_device_loss.py, 14 arms, all fired 2026-08-02: red on "
+            "ci/negative_control_device_loss.py, 18 arms, all fired 2026-08-02: red on "
             "Tank's real artifact (REPLAYED); red on trinity-suite-dev1.log, a second "
             "device loss from 2026-07-31 nobody had reported (LIVE — a file the screen "
             "was not written against); red on a synthesised iters=25/compute_calls=9 "
@@ -384,9 +404,9 @@ CHECKS: tuple[Check, ...] = (
         mutation=(
             "Its own provenance line: it counts LIVE, REPLAYED and PLANTED arms "
             "separately and prints that a PLANTED arm evidences nothing about whether "
-            "the event occurs in reality. 1 LIVE, 3 REPLAYED, 10 PLANTED on 2026-08-02."
+            "the event occurs in reality. 1 LIVE, 4 REPLAYED, 13 PLANTED on 2026-08-02."
         ),
-        arm_healthy="all 14 arms fired 2026-08-02",
+        arm_healthy="all 18 arms fired 2026-08-02",
         arm_broken=(
             "a missing bench/results/ctx512_device_lost.txt is reported as an arm that "
             "DID NOT FIRE — an outage in the control, never a pass"
@@ -562,6 +582,12 @@ CHECKS: tuple[Check, ...] = (
             "falsifying them; being wired is not itself the falsification.",
             "host_registration talks to tests/mock_ort, not to ORT. It proves the shape "
             "of the registration call, not that the real host accepts it.",
+            "ON THE LINUX LANE THIS HAS NEVER EXECUTED AT ALL (added 2026-08-02). The "
+            "`observed` date above is a Windows local run. The Linux job dies at clippy "
+            "and skips the remaining seven steps including this one, so the status is "
+            "UNDEMONSTRATED on Windows and GATED_NEVER_RUN on Linux. The entry carries "
+            "the weaker of the two rather than splitting, and this line is why. A "
+            "per-lane status is the right fix if a second such entry appears.",
         ),
     ),
     Check(
@@ -623,17 +649,28 @@ CHECKS: tuple[Check, ...] = (
         lane="both",
         step="pytest tests/ops (lavapipe)",
         watches="Op outputs against a CPU-EP reference, bit-exact or within a stated tolerance.",
-        status=UNDEMONSTRATED,
+        status=GATED_NEVER_RUN,
         mutation=(
-            "NOT YET PERFORMED. What would close it: perturb one kernel's arithmetic — a "
-            "changed constant in a shader, or an off-by-one in a dispatch's workgroup "
-            "count — rebuild, and confirm the op suite reds with the failure attributed "
-            "to that op. This needs a shader/kernel edit (Switch) and a test-suite "
-            "expectation (Trinity), so it is named here rather than claimed. Until it is "
-            "done, 'the op suite passes' is a candidate for evidence."
+            "NOT YET PERFORMED, and — corrected 2026-08-02 — IT CANNOT BE, BECAUSE THIS "
+            "STEP HAS NEVER EXECUTED IN CI. The Linux job fails at `Clippy (all warnings "
+            "as errors)` and GitHub Actions marks the remaining seven steps *skipped*, "
+            "this one among them. I had it at UNDEMONSTRATED all session, which reads as "
+            "'runs, never observed to fail' and is one demonstration away from green. It "
+            "is not: it has not started. `epctl --probe-loader` on lavapipe reports gate "
+            "PASS, so the device is reachable — the step is gated, not impossible.\n\n"
+            "AND IT WOULD NOT ASSERT ANYTHING IF THE GATE WERE LIFTED TODAY. Run by hand "
+            "on lavapipe at d375a4d (WSL Ubuntu 24.04): `2 passed, 36 skipped`, every "
+            "skip reading 'No Vulkan device available'. The cause is not the device. "
+            "Every ledger entry faults on Linux because `shader_digest` is over the "
+            "embedded SPIR-V bytes and Ubuntu's glslc (shaderc 2023.8) emits different "
+            "bytes than the Vulkan SDK's, so the EP claims 0/1 nodes and the harness's "
+            "`_probe_vulkan_device` reports that decision as an absent device. Fixing "
+            "clippy alone would turn this step GREEN HAVING ASSERTED NOTHING. See "
+            "PLATFORMS.md §7.19 and `ci/check_ledger_portability.py`, which goes red on "
+            "exactly that run."
         ),
-        arm_healthy="op suite green on lavapipe",
-        observed="2026-07-31",
+        arm_healthy="op suite green on lavapipe — NOT OBSERVED; the step has never run in CI",
+        observed=None,
         misses=(
             "Everything lavapipe implements differently from silicon: subgroup width, "
             "fp16 and int8 arithmetic paths, cooperative-matrix paths, and any race a "
@@ -641,6 +678,51 @@ CHECKS: tuple[Check, ...] = (
             "a device that does not run the two dispatches concurrently.",
             "Anything about SPEED. Correct output on a CPU renderer says nothing about "
             "whether the GPU path is fast, and there is no producer here that could say.",
+        ),
+    ),
+    Check(
+        id="device.ledger_portability",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="Proof-ledger portability screen (named run artifacts)",
+        watches=(
+            "That a run declared to be a device lane actually claimed nodes: no proof-"
+            "ledger fault, no `claims 0/N nodes`, and no 'No Vulkan device available' "
+            "reported by a harness on a box where the loader gate passed."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Not planted — OBSERVED. Built the EP on Linux (WSL Ubuntu 24.04) at d375a4d "
+            "and ran it against lavapipe. Every ledger entry faulted, the session claimed "
+            "0/1 nodes, all work went to the CPU EP, and the process exited 0. The same "
+            "probe on Windows/NVIDIA at the same commit claims 1 proven form and is "
+            "clean. Two live artifacts, opposite polarities, same commit and same ledger."
+        ),
+        arm_healthy="windows_nvidia_probe_control.txt → PASS",
+        arm_broken=(
+            "linux_lavapipe_probe.txt → FAIL(condition=ledger_fault); "
+            "linux_lavapipe_optests.txt → FAIL(condition=device_absence_misnamed) on a "
+            "run whose own summary line reads '2 passed, 36 skipped'"
+        ),
+        observed="2026-08-02",
+        misses=(
+            "It takes named artifacts and does not scan the tree. bench/results holds "
+            "artifacts that quote ledger faults on purpose, and unlike the device-loss "
+            "screen there is no text here that no negative control would ever emit. A "
+            "run nobody names is a run this screen reports UNOBSERVABLE for, not a run "
+            "it reports clean.",
+            "`claimed_nothing` and `device_absence_misnamed` are UNOBSERVABLE unless the "
+            "caller supplies --device-lane and --loader-artifact respectively. Both are "
+            "printed as UNOBSERVABLE rather than silently passing, but a caller who "
+            "forgets them gets a narrower check that still says PASS on the last line.",
+            "It says nothing about WHY the digests differ. It reports that this build's "
+            "modules do not match what was proven; establishing that the cause is the "
+            "glslc version rather than a real kernel edit took a separate comparison and "
+            "is written up rather than checked.",
+            "It cannot see the deeper defect it exposed: the ledger's predicate is the "
+            "shader digest alone, and `device` is recorded in every entry and never "
+            "read. This screen fires when the digest disagrees. Nothing fires when the "
+            "digest agrees and the device is one no proof run ever touched.",
         ),
     ),
     Check(
@@ -852,7 +934,7 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
             "an artifact DECLARED it would observe (iters) against what it observed "
             "(compute_calls), plus uploads == readbacks + 1, an inference caught in "
             "flight. The structural rule needs no text at all and survives any log-format "
-            "change. Falsified 2026-08-02 by 14 arms including a LIVE catch: a second, "
+            "change. Falsified 2026-08-02 by 18 arms including a LIVE catch: a second, "
             "earlier device loss in bench/results/trinity-suite-dev1.log (2026-07-31, "
             "Intel, vkQueueSubmit) that had been read as a test failure and never "
             "reported as a lost device."
@@ -982,6 +1064,50 @@ BLIND_SPOTS: tuple[BlindSpot, ...] = (
             "reproducible evidence, and a GPU runner, which the project does not have."
         ),
         substitute_status=IMPOSSIBLE_HERE,
+    ),
+    BlindSpot(
+        id="ledger_device_provenance",
+        defect=(
+            "A proven form claimed on a device no proof run ever touched. Every one of "
+            "the 74 ledger entries records `\"device\": \"device0\"` — the RTX 4060 — and "
+            "the verification predicate is the shader digest alone. `device` is written "
+            "into the record and never read back."
+        ),
+        why_ci_is_blind=(
+            "The demonstration is one command: run the harness probe on Windows with "
+            "ONNXRUNTIME_EP_VULKAN_DEVICE=1 (Intel Iris Xe). The EP claims the form and "
+            "prints its own provenance while doing it — 'proven by "
+            "evidence/cases/matmulnbits_f16_scales.onnx ON DEVICE0'. The banner states "
+            "that the proof came from a different device and claims the form anyway. No "
+            "lane can see this, because no lane compares the two. Not one form in this "
+            "project has ever been proven on Iris Xe, and not one on lavapipe.\n\n"
+            "The digest constrains the wrong axis. It is a hash of the embedded SPIR-V "
+            "bytes, so it moves when the glslc that compiled them changes — which is why "
+            "every entry faults on Linux, where nothing about the kernel differs — and it "
+            "does not move when the device changes, which is the only axis a correctness "
+            "proof about a GPU kernel actually varies along. So the ledger over-constrains "
+            "the build machine and under-constrains the device, and both halves are "
+            "failures of the same design fact rather than two separate bugs."
+        ),
+        substitute=(
+            "NONE. ci/check_ledger_portability.py covers only the loud half — the digest "
+            "disagreeing — which is the half that fails safe: the form is declined and "
+            "the work goes to the CPU EP, which is always right. The silent half is the "
+            "dangerous one and nothing watches it: digest agrees, device never proven, "
+            "form claimed. Closing it needs the ledger's predicate to include the device "
+            "(making every entry per-device and demanding Linux/lavapipe proof runs of "
+            "its own), or an explicit written statement that shader-level correctness is "
+            "held to be device-independent — which would be a claim about every driver we "
+            "have never run on. That is a design decision for Morpheus and Mouse, not a "
+            "screen for me to add. Recorded here so the choice is made rather than "
+            "inherited.\n\n"
+            "Do NOT resolve it with `gen_proof_ledger.py --reprove` on each platform. "
+            "That makes the digest a per-machine build fingerprint, deletes the one thing "
+            "it does do (a kernel edit invalidating its proofs), and the flag's own "
+            "destructive default rewrote the ledger from 74 entries to 1 while printing "
+            "PASS."
+        ),
+        substitute_status=UNDEMONSTRATED,
     ),
     BlindSpot(
         id="conversion_call_sites",
