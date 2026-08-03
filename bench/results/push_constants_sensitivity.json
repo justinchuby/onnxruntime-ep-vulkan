@@ -1,0 +1,31 @@
+{
+  "dll_sha256_16": "44D21A451D269F82",
+  "device_selector_requested": "0",
+  "device_reported_by_run": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "child_exit_code": 0,
+  "boundary_seen": true,
+  "dispatches_executed": 355,
+  "claimed_nodes": 355,
+  "device_losses": 0,
+  "messenger_lines_in_frame": 14,
+  "in_frame_vuid_count": 0,
+  "push_constant_lines": 6,
+  "push_constant_lines_teardown": 0,
+  "shortfall_bytes_observed": [
+    4,
+    20,
+    36,
+    72,
+    88,
+    104
+  ],
+  "sample_lines": [
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 104 bytes were never set with vkCmdPushConstants.",
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 88 bytes were never set with vkCmdPushConstants.",
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 72 bytes were never set with vkCmdPushConstants.",
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 36 bytes were never set with vkCmdPushConstants.",
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 20 bytes were never set with vkCmdPushConstants.",
+    "\u0000[vulkan-ep] WARN: [Vulkan validation] vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but 4 bytes were never set with vkCmdPushConstants."
+  ],
+  "role": "sensitivity \u2014 a build expected to exhibit the defect"
+}

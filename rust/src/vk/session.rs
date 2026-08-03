@@ -20,7 +20,7 @@ use super::{
     cmd::{CommandPool, create_and_submit, wait_fence_then_destroy},
     device::{Device, register_ep_device},
     instance::{CapableDevice, Instance},
-    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
+    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey, PUSH_CONSTANT_RANGE_BYTES},
     timestamp::GpuQueryPool,
 };
 use crate::{
@@ -1873,13 +1873,65 @@ impl VulkanSession {
                     &[desc_set],
                     &[],
                 );
-                if !eff_push_constants.is_empty() {
+                // Push the FULL declared range, zero-padded.
+                //
+                // Every pipeline layout in this engine declares one 128-byte push-constant range
+                // (ENGINE.md §4.4, `pipeline.rs`), but each kernel packs only the scalars it
+                // needs — 24, 40, 92 bytes and so on. The bytes in between were never written,
+                // and unwritten push-constant bytes are UNDEFINED, not zero.
+                //
+                // Found in frame by Trinity on both devices, 2026-08-02:
+                //   "Pipeline uses a push constant range with offset 0 and size 128, but 104
+                //    bytes were never set with vkCmdPushConstants"
+                // also at 88, 72, 36, 20 and 4.
+                //
+                // It is not a VUID and nothing observably misbehaves today, because no shader
+                // reads past the block it declares. That is a property of the shaders, not of
+                // the API contract, and it is worth exactly nothing the moment a shader grows a
+                // field: the new field would read undefined memory and produce plausible wrong
+                // numbers on one driver and correct ones on another.
+                //
+                // Padding here rather than shrinking the declared range: the range is a constant
+                // 128 for every pipeline, and the pipeline cache is keyed on (shader,
+                // spec_constants) with no push size in it. A per-kernel range would have to be
+                // threaded into that key, and a layout that disagreed with its dispatch's push
+                // size would be a hard error rather than a warning. Padding cannot desynchronise.
+                // Unconditional: a kernel that packs nothing would otherwise leave all 128
+                // declared bytes unwritten, which is the same defect at its maximum.
+                {
+                    let mut pc = [0u8; PUSH_CONSTANT_RANGE_BYTES];
+                    let n = eff_push_constants.len().min(PUSH_CONSTANT_RANGE_BYTES);
+                    pc[..n].copy_from_slice(&eff_push_constants[..n]);
+                    if eff_push_constants.len() > PUSH_CONSTANT_RANGE_BYTES {
+                        // A pack larger than the declared range cannot be delivered by any
+                        // path — before this change `vkCmdPushConstants` would have been an
+                        // out-of-range call; after it, the excess is dropped. Neither is
+                        // acceptable silently: a truncated pack means the kernel reads
+                        // scalars it never received.
+                        static PC_OVERFLOW: std::sync::Once = std::sync::Once::new();
+                        let shader_name = eff_shader;
+                        let packed = eff_push_constants.len();
+                        PC_OVERFLOW.call_once(|| {
+                            log::error!(
+                                "[VulkanEP] shader '{shader_name}' packed {packed} \
+                                 push-constant bytes but the declared range is \
+                                 {PUSH_CONSTANT_RANGE_BYTES} — the excess is DROPPED and this \
+                                 dispatch's results are not to be trusted"
+                            );
+                        });
+                    }
+                    debug_assert!(
+                        eff_push_constants.len() <= PUSH_CONSTANT_RANGE_BYTES,
+                        "kernel packed {} push-constant bytes but the declared range is {}",
+                        eff_push_constants.len(),
+                        PUSH_CONSTANT_RANGE_BYTES
+                    );
                     self.device.ash().cmd_push_constants(
                         cmd,
                         entry.pipeline_layout,
                         vk::ShaderStageFlags::COMPUTE,
                         0,
-                        eff_push_constants,
+                        &pc,
                     );
                 }
                 // GPU timestamp BEFORE this dispatch — placed after push_constants so
