@@ -629,6 +629,77 @@ pub(crate) struct VulkanSession {
     zero_elem_placeholder: Option<GpuBuffer>,
 }
 
+/// Is the output-side device bind requested for this process?
+///
+/// Default OFF. `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1` turns it on.
+///
+/// It is a flag rather than a behaviour because of an unresolved fact, not because of nerves.
+/// `transfer`'s own documentation states that a device-backed span keeps its host staging block
+/// and that **the staging block stays authoritative** — the device buffer is a mirror. If that
+/// still holds for outputs, then writing only the device side leaves ORT's consumer reading the
+/// previous inference's bytes: correct-looking, wrong, and reproducible. That is the same shape
+/// as the stale input cache, and it would be certified by any test that reads a single
+/// inference. So the flag ships OFF and the question gets settled by comparing armed output
+/// against the CPU EP, not by reasoning about the comment.
+fn output_bind_requested() -> bool {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let on = matches!(
+        std::env::var("ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+    );
+    if on {
+        ONCE.call_once(|| {
+            log::warn!(
+                "[VulkanEP] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1: fused-node outputs are bound \
+                 directly to ORT's device buffers. MEASURED 2026-08-02 on Phi-3.5: this returns \
+                 ALL ZEROS to the caller, because a device-backed span's host staging block is \
+                 authoritative and nothing writes it on this path \
+                 (bench/results/probe_bound_output_correctness.py -> \
+                 HOST_STAGING_IS_AUTHORITATIVE). This flag exists to re-run that falsifier, not \
+                 to make anything faster. Any number taken with it on is wrong."
+            );
+        });
+    }
+    on
+}
+
+/// Materialise ORT's output tensor `i` and return a writable pointer to it, or `None`.
+///
+/// Called *before* the dispatch so the buffer ORT allocated can be bound as the kernel's output.
+/// `KernelContext_GetOutput` is idempotent for a given index, so the later call in
+/// `write_outputs_to_ort` — which still runs for every unbound output — sees the same tensor.
+///
+/// Returns `None` rather than a status on every failure: a declined bind costs one download,
+/// which is exactly the behaviour that shipped before this seam existed.
+///
+/// # Safety
+/// `api` and `kernel_ctx` must be live; `shape` must be the actual output shape for index `i`.
+unsafe fn ort_output_ptr(
+    api: *const ort::OrtApi,
+    kernel_ctx: *mut ort::OrtKernelContext,
+    i: usize,
+    shape: &[i64],
+) -> Option<*mut u8> {
+    // SAFETY: `api` is live per the fn contract; plain field reads of the process-wide table.
+    let get_output = unsafe { (*api).KernelContext_GetOutput }?;
+    // SAFETY: as above.
+    let get_data = unsafe { (*api).GetTensorMutableData }?;
+    let mut ort_out: *mut ort::OrtValue = std::ptr::null_mut();
+    // SAFETY: `kernel_ctx` is live; `i` is in range (checked by `check_bound_counts` in `ep.rs`);
+    // `shape` is a live local slice and `&mut ort_out` a valid out-pointer.
+    let st = unsafe { get_output(kernel_ctx, i, shape.as_ptr(), shape.len(), &mut ort_out) };
+    if !st.is_null() || ort_out.is_null() {
+        return None;
+    }
+    let mut p: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `ort_out` was just allocated by a successful `KernelContext_GetOutput`.
+    let st = unsafe { get_data(ort_out, &mut p) };
+    if !st.is_null() || p.is_null() {
+        return None;
+    }
+    Some(p.cast::<u8>())
+}
+
 impl VulkanSession {
     /// Create a session, selecting the best device respecting `EpOptions`.
     ///
@@ -1321,6 +1392,56 @@ impl VulkanSession {
             staging_ups.push(stg);
         }
 
+        // ── Step 1c: bind ORT's own output tensors where ORT placed them in this EP's memory ──
+        //
+        // The mirror image of Step 1a, and the seam Tank identified as missing: `bind_target_for`
+        // was called on inputs only, so no configuration could decline the `present.*` readback.
+        //
+        // MEASURED 2026-08-02 (`probe_output_residency.py`), because reading ORT's headers cannot
+        // settle it — the placement is a run-time decision:
+        //
+        //     device allocator OFF   195 outputs seen, 195 host-resident,   frame=OFF
+        //     device allocator ON    195 outputs seen, 195 DEVICE-resident, frame=SHARED
+        //
+        // So ORT does allocate every fused-node output through this EP's provider, and today we
+        // download all 65 of them to host staging and then memcpy them into a pointer that is
+        // itself device memory. That is a device→host→device round trip.
+        //
+        // DEFAULT OFF, and the reason is a hazard, not caution. `transfer`'s own documentation
+        // says the host staging block stays **authoritative** and the device buffer is a mirror.
+        // If that is still true for outputs, dispatching straight into the device buffer leaves
+        // the host side holding the previous inference's bytes — stale-but-plausible, which is
+        // the failure mode that survives a smoke test and is exactly the defect class that has
+        // cost this project five separate incidents. The flag exists so the claim can be
+        // falsified against the CPU EP before it is believed.
+        let mut bound_outputs: Vec<Option<(vk::Buffer, u64)>> =
+            vec![None; actual_output_byte_sizes.len()];
+        if output_bind_requested() {
+            for (i, &sz) in actual_output_byte_sizes.iter().enumerate() {
+                // Zero-size outputs have no buffer; aliased outputs already borrow their input's
+                // buffer and would need a device→device copy into ORT's tensor, which is a
+                // separate change with a separate proof.
+                if sz == 0 || aliased_output_to_input.contains_key(&i) {
+                    continue;
+                }
+                // SAFETY: `api` and `kernel_ctx` are live for this call per `dispatch_ort`'s
+                // contract; `i` is in range because `check_bound_counts` in `ep.rs` verified the
+                // context's output count equals the compiled output count; `actual_output_shapes`
+                // is index-parallel to `actual_output_byte_sizes` and was finalised by the
+                // dynamic-shape pre-pass above.
+                let Some(ptr) = (unsafe {
+                    ort_output_ptr(api, kernel_ctx, i, &actual_output_shapes[i])
+                }) else {
+                    continue;
+                };
+                bound_outputs[i] =
+                    crate::vk::host_device_memory::bind_target_for(ptr, sz as usize);
+                if bound_outputs[i].is_some() {
+                    crate::counters::record_output_bound();
+                }
+            }
+        }
+
         for (i, &sz) in actual_output_byte_sizes.iter().enumerate() {
             // Zero-element output (e.g., GQA KV-cache on first-token prefill).
             // Same constraint as inputs: Vulkan requires a non-null buffer handle and
@@ -1336,6 +1457,20 @@ impl VulkanSession {
                     4,
                     MemClass::DeviceLocal,
                 ));
+                staging_dls.push(GpuBuffer::borrowed_ref(
+                    vk::Buffer::null(),
+                    0,
+                    MemClass::Download,
+                ));
+                continue;
+            }
+            // Bound to ORT's own device buffer in Step 1c: the kernel writes the result straight
+            // into the tensor ORT allocated, so there is no device→host download and no host
+            // memcpy afterwards. `borrowed_ref` keeps `free_all` from freeing memory ORT owns,
+            // and the borrowed staging sentinel makes the download loop skip this slot — it
+            // already skips on `stg.borrowed`.
+            if let Some((buf, size)) = bound_outputs[i] {
+                gpu_outputs.push(GpuBuffer::borrowed_ref(buf, size, MemClass::DeviceLocal));
                 staging_dls.push(GpuBuffer::borrowed_ref(
                     vk::Buffer::null(),
                     0,
@@ -2011,12 +2146,24 @@ impl VulkanSession {
                 &staging_dls,
                 &actual_output_byte_sizes,
                 &actual_output_shapes,
+                &bound_outputs,
             )
         };
         // CROSS-OWNER EDIT (Tank, declared): same removal of the `if t.active()` gate as on the
         // upload path above, for the same reason — the readback byte count is the other half of
         // the per-inference boundary traffic and must exist without a tracing flag.
-        let readback_bytes: u64 = actual_output_byte_sizes.iter().sum();
+        //
+        // Bound outputs are excluded, and this is load-bearing rather than tidy. An output the
+        // kernel wrote straight into ORT's device buffer never crossed the boundary, so counting
+        // it would make the readback axis report traffic that did not happen — and the readback
+        // axis is the instrument by which this change is judged. A counter that cannot go down
+        // when the bytes stop moving cannot show that they stopped.
+        let readback_bytes: u64 = actual_output_byte_sizes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| bound_outputs.get(*i).copied().flatten().is_none())
+            .map(|(_, &sz)| sz)
+            .sum();
         t.record_transfer(Transfer::Readback, readback_bytes, readback_t0.elapsed());
 
         // Cleanup regardless of output-write outcome.
@@ -2088,8 +2235,16 @@ impl VulkanSession {
         staging_dls: &[GpuBuffer],
         output_byte_sizes: &[u64],
         output_shapes: &[Vec<i64>],
+        bound_outputs: &[Option<(vk::Buffer, u64)>],
     ) -> *mut ort::OrtStatus {
         for (i, (stg, shape)) in staging_dls.iter().zip(output_shapes.iter()).enumerate() {
+            // Bound in Step 1c: the kernel wrote this output directly into ORT's own device
+            // buffer. There is no staging block to read from and nothing to copy. The
+            // `KernelContext_GetOutput` call that materialised the tensor already happened in
+            // Step 1c, so the slot is allocated.
+            if bound_outputs.get(i).copied().flatten().is_some() {
+                continue;
+            }
             // Ask ORT to allocate a CPU output buffer of the right shape.
             let mut ort_out: *mut ort::OrtValue = std::ptr::null_mut();
             // SAFETY: `api` is live per the fn contract; reading a member of the immutable,
@@ -2163,7 +2318,15 @@ impl VulkanSession {
             // device memory is an opaque handle, not writable memory. Resolve it to its backing
             // before copying, or the write below would fault on a reserved page.
             let out_handle = out_ptr;
-            match crate::transfer::host_backing_for(out_ptr.cast::<u8>(), byte_size) {
+            // The KV-arena question, asked at the only place that can answer it. `host_backing_for`
+            // returns `None` when the pointer is ordinary host memory and `Some` when ORT allocated
+            // this output through the EP's own device-memory provider. Counting it is how we find
+            // out whether an output-side `bind_target_for` has anything to bind — reading the ORT
+            // headers cannot settle it, because the answer is a placement decision ORT makes at
+            // run time.
+            let residency = crate::transfer::host_backing_for(out_ptr.cast::<u8>(), byte_size);
+            crate::counters::record_output_residency(residency.is_some());
+            match residency {
                 None => {}
                 Some(Ok(backing)) => out_ptr = backing.cast::<std::ffi::c_void>(),
                 Some(Err(why)) => {
