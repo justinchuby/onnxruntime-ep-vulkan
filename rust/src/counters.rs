@@ -2881,6 +2881,7 @@ mod tests {
     /// sum them, or mistake an absent override for a zero-valued one.
     #[test]
     fn the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly() {
+        // Process-global statics: serialise with every other test that touches them.
         let _g = crate::allocator::ledger::test_lock();
         reset();
         assert_eq!(net_benefit_override_reason(), "UNOBSERVABLE");
@@ -3059,6 +3060,10 @@ mod tests {
 
     #[test]
     fn extract_equivalence_parses_the_five_states() {
+        // Process-global statics: serialise with every other test that touches them.
+        // This one only *reads* the snapshot, but a concurrent `reset()` still changes the
+        // document it parses, and a reader is as much a party to a race as a writer.
+        let _g = crate::allocator::ledger::test_lock();
         let match_doc = snapshot().to_json_with_equiv(EQUIVALENCE_MATCH);
         let div_doc = snapshot().to_json_with_equiv(EQUIVALENCE_DIVERGENT);
         let unm_doc = snapshot().to_json_with_equiv(EQUIVALENCE_UNMEASURED);

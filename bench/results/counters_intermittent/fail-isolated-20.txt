@@ -1,0 +1,94 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running unittests src\lib.rs (target\debug\deps\onnxruntime_vulkan_ep-eb71a5888fd71be8.exe)
+
+running 21 tests
+test allocator::tests::a_failed_lookup_reaches_the_process_wide_counters ... ok
+test allocator::tests::quarantine_exhaustion_reaches_the_process_wide_counters ... ok
+test counters::tests::the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly ... ok
+test counters::tests::verdict_vocabulary_cannot_drift_from_the_python_harness ... ok
+test counters::tests::the_verdict_record_survives_a_rebuild_and_is_not_confused_by_nesting ... ok
+test counters::tests::a_lost_device_is_recorded_and_reaches_the_json_artifact ... ok
+test counters::tests::an_override_reports_which_verdict_it_overrode ... FAILED
+test counters::tests::extract_equivalence_parses_the_five_states ... ok
+test counters::tests::a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable ... ok
+test counters::tests::a_variant_is_named_by_its_spec_constants_and_not_by_its_stem ... ok
+test counters::tests::a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero ... ok
+test counters::tests::the_staging_sentence_separates_itself_from_the_allocator_upload_counters ... ok
+test counters::tests::the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else ... ok
+test counters::tests::staging_bytes_are_recorded_without_any_tracing_flag ... ok
+test counters::tests::the_ledger_miss_token_names_which_of_three_things_happened ... ok
+test counters::tests::the_dispatch_path_dump_carries_the_allocator_keys_too ... ok
+test counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero ... ok
+test counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame ... ok
+test counters::tests::counters_record_what_they_claim_to_record ... ok
+test counters::tests::variants_are_a_set_and_reach_the_json_as_typed_values ... ok
+test counters::tests::zero_staging_bytes_refuses_to_claim_residency ... ok
+
+failures:
+
+---- counters::tests::an_override_reports_which_verdict_it_overrode stdout ----
+
+thread 'counters::tests::an_override_reports_which_verdict_it_overrode' (36516) panicked at src\counters.rs:2425:9:
+two overrides with different reasons must not collapse onto one token; got:
+{
+  "abi_version": 4,
+  "compile_calls": 0,
+  "subgraphs_live": 0,
+  "subgraphs_stub": 0,
+  "compute_calls": 0,
+  "compute_failures": 0,
+  "device_losses": 0,
+  "outputs_device_resident": 0,
+  "outputs_host_resident": 0,
+  "outputs_device_bound": 0,
+  "dispatches_executed": 0,
+  "claimed_nodes": 0,
+  "islands_offered": 0,
+  "viable_islands_retained": 0,
+  "net_benefit_gate": "EVALUATED",
+  "net_benefit_gate_clusters_seen": 1,
+  "net_benefit_gate_evaluations": 1,
+  "net_benefit_gate_bypasses": 0,
+  "net_benefit_sole_island_overrides": 1,
+  "net_benefit_override_reason": "TRANSFER_DOMINATED",
+  "broken_commitments": "UNOBSERVABLE",
+  "broken_commitment_warns_to_ort_sink": 0,
+  "broken_commitment_warn_channel": "UNOBSERVABLE",
+  "compute_failures_injected": 0,
+  "fault_injection": "NONE",
+  "proven_key_lookups": 0,
+  "ledger_hits": "UNWIRED",
+  "ledger_gate": "UNWIRED",
+  "ledger_miss": "NEVER-ATTEMPTED",
+  "ledger_entries": 103,
+  "ledger_faults": 0,
+  "unproven_declines": 0,
+  "unproven_forms_claimed": 0,
+  "unproven_forms_enabled": [],
+  "reproof_forms_admitted": [],
+  "shaders_dispatched": [],
+  "shaders_dispatched_digest": "NONE-DISPATCHED",
+  "pipeline_variants": [],
+  "gemv_packed_spec_constant": "UNOBSERVABLE",
+  "session_disclosures": 0,
+  "claimed_forms_proven": 0,
+  "claimed_forms_unmeasured": 0,
+  "claimed_forms_divergent": 0,
+  "claimed_forms_ledger_faulted": 0,
+  "claimed_form_evidence": "UNOBSERVABLE",
+  "session_disclosure_warns": 0,
+  "session_disclosure_warns_to_ort_sink": 0,
+  "session_disclosure_channel": "UNOBSERVABLE",
+  "model_output_equivalence": "UNMEASURED"
+}
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    counters::tests::an_override_reports_which_verdict_it_overrode
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 484 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`
+

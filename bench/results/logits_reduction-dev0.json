@@ -1,0 +1,499 @@
+{
+ "arm_a_full_model_tap": {
+  "attribution": "ATTRIBUTED",
+  "attribution_note": "claimed_nodes is process-cumulative; this is the delta since the previous arm",
+  "chain_hop_by_hop_median_ulp": [
+   {
+    "median_ulp_diff": 0.0,
+    "where": "residual stream, layer 0"
+   },
+   {
+    "median_ulp_diff": 3.0,
+    "where": "residual stream, layer 31"
+   },
+   {
+    "median_ulp_diff": 6.0,
+    "where": "final RMSNorm output (feeds lm_head)"
+   },
+   {
+    "median_ulp_diff": 12.0,
+    "where": "logits"
+   }
+  ],
+  "claimed_nodes_process_cumulative": 355,
+  "claimed_nodes_this_arm": 355,
+  "curve_reading": "H_depth predicts this climbs with depth while the 64 KV outputs stay flat at 1 ULP. A flat residual stream would leave the 6-ULP hidden state unexplained and this conclusion unsupported.",
+  "device_name": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "device_name_source": "counters alloc_device_frame_session_devices",
+  "dispatches_executed_process_cumulative": 355,
+  "dispatches_executed_this_arm": 355,
+  "hidden_shape": [
+   1,
+   1,
+   3072
+  ],
+  "hidden_state": {
+   "elements": 3072,
+   "max_abs_diff": 0.0859375,
+   "max_ulp_diff": 6438.0,
+   "median_ulp_diff": 6.0,
+   "p99_ulp_diff": 451.9649999999997,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "kv_writeback_route": "host_staging",
+  "logits": {
+   "elements": 32064,
+   "max_abs_diff": 0.0625,
+   "max_ulp_diff": 255658.0,
+   "median_ulp_diff": 12.0,
+   "p99_ulp_diff": 587.5549999999985,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "outputs_device_bound": 0,
+  "outputs_host_resident": 99,
+  "outputs_in_session_order": [
+   "logits",
+   "present.0.key",
+   "..."
+  ],
+  "residual_stream_depth_curve": [
+   {
+    "layer": 0,
+    "max_abs_diff": 6.103515625e-05,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 2.0
+   },
+   {
+    "layer": 1,
+    "max_abs_diff": 0.0003662109375,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 16.0
+   },
+   {
+    "layer": 2,
+    "max_abs_diff": 0.0078125,
+    "median_ulp_diff": 1.0,
+    "p99_ulp_diff": 80.0
+   },
+   {
+    "layer": 3,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 117.15999999999985
+   },
+   {
+    "layer": 4,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 145.79999999999927
+   },
+   {
+    "layer": 5,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 100.86999999999989
+   },
+   {
+    "layer": 6,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 125.15999999999985
+   },
+   {
+    "layer": 7,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 96.0
+   },
+   {
+    "layer": 8,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 68.0
+   },
+   {
+    "layer": 9,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 92.0
+   },
+   {
+    "layer": 10,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 81.86999999999989
+   },
+   {
+    "layer": 11,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 82.31999999999971
+   },
+   {
+    "layer": 12,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 85.15999999999985
+   },
+   {
+    "layer": 13,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 75.28999999999996
+   },
+   {
+    "layer": 14,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 80.57999999999993
+   },
+   {
+    "layer": 15,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 91.44999999999982
+   },
+   {
+    "layer": 16,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 89.73999999999978
+   },
+   {
+    "layer": 17,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 71.47999999999956
+   },
+   {
+    "layer": 18,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 86.57999999999993
+   },
+   {
+    "layer": 19,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 64.0
+   },
+   {
+    "layer": 20,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 121.15999999999985
+   },
+   {
+    "layer": 21,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 96.0
+   },
+   {
+    "layer": 22,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 103.53999999999905
+   },
+   {
+    "layer": 23,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 84.0
+   },
+   {
+    "layer": 24,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 77.15999999999985
+   },
+   {
+    "layer": 25,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 96.0
+   },
+   {
+    "layer": 26,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 74.02999999999975
+   },
+   {
+    "layer": 27,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 74.57999999999993
+   },
+   {
+    "layer": 28,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 2.0,
+    "p99_ulp_diff": 106.31999999999971
+   },
+   {
+    "layer": 29,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 1.0,
+    "p99_ulp_diff": 82.31999999999971
+   },
+   {
+    "layer": 30,
+    "max_abs_diff": 3.0,
+    "median_ulp_diff": 3.0,
+    "p99_ulp_diff": 177.44999999999982
+   },
+   {
+    "layer": 31,
+    "max_abs_diff": 2.0,
+    "median_ulp_diff": 3.0,
+    "p99_ulp_diff": 228.0
+   }
+  ],
+  "residual_stream_first_median": 0.0,
+  "residual_stream_largest_layer_to_layer_step": 2.0,
+  "residual_stream_last_median": 3.0,
+  "residual_stream_layers_measured": 32,
+  "residual_stream_monotone_nondecreasing": false,
+  "status": "MEASURED"
+ },
+ "arm_b_isolated_lm_head": {
+  "attribution": "ATTRIBUTED",
+  "attribution_note": "claimed_nodes is process-cumulative; this is the delta since the previous arm",
+  "claimed_nodes_process_cumulative": 356,
+  "claimed_nodes_this_arm": 1,
+  "device_name": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "device_name_source": "counters alloc_device_frame_session_devices",
+  "dispatches_executed_process_cumulative": 356,
+  "dispatches_executed_this_arm": 1,
+  "elements": 32064,
+  "input_identical_on_both_eps": true,
+  "kv_writeback_route": "host_staging",
+  "max_abs_diff": 0.00390625,
+  "max_ulp_diff": 12.0,
+  "median_ulp_diff": 0.0,
+  "note": "the SAME fp16 hidden state is fed to both EPs, so nothing upstream of this node can contribute to the residual",
+  "outputs_device_bound": 0,
+  "outputs_host_resident": 100,
+  "p99_ulp_diff": 0.0,
+  "status": "MEASURED",
+  "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+ },
+ "arm_c_float64_reference": {
+  "cpu_ep_vs_float64": {
+   "elements": 32064,
+   "max_abs_diff": 0.00390625,
+   "max_ulp_diff": 11.0,
+   "median_ulp_diff": 0.0,
+   "p99_ulp_diff": 0.0,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "reference_liveness": {
+   "check": "the float64 reference must reproduce the CPU EP to a few ULP",
+   "cpu_median_ulp_vs_reference": 0.0,
+   "if_not_live": "the dequantisation is wrong, not the EPs; no verdict is drawn from this arm",
+   "live": true,
+   "threshold": 8.0
+  },
+  "status": "MEASURED",
+  "vulkan_ep_vs_float64": {
+   "elements": 32064,
+   "max_abs_diff": 0.000244140625,
+   "max_ulp_diff": 2.0,
+   "median_ulp_diff": 0.0,
+   "p99_ulp_diff": 0.0,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "which_is_further_from_true": "neither (equal)"
+ },
+ "arm_d_accumulation_order_envelope": {
+  "each_vs_float64": {
+   "pairwise": 0.0,
+   "per_block": 0.0,
+   "reversed": 0.0,
+   "sequential": 0.0,
+   "strided_lanes": 0.0
+  },
+  "envelope_max_ulp": 27.0,
+  "envelope_median_ulp": 0.0,
+  "orders": [
+   "sequential",
+   "reversed",
+   "per_block",
+   "pairwise",
+   "strided_lanes"
+  ],
+  "pairwise_median_ulp": {
+   "pairwise__vs__strided_lanes": {
+    "max_ulp_diff": 10.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "per_block__vs__pairwise": {
+    "max_ulp_diff": 7.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "per_block__vs__strided_lanes": {
+    "max_ulp_diff": 3.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "reversed__vs__pairwise": {
+    "max_ulp_diff": 27.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "reversed__vs__per_block": {
+    "max_ulp_diff": 20.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "reversed__vs__strided_lanes": {
+    "max_ulp_diff": 17.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "sequential__vs__pairwise": {
+    "max_ulp_diff": 19.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "sequential__vs__per_block": {
+    "max_ulp_diff": 21.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "sequential__vs__reversed": {
+    "max_ulp_diff": 13.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   },
+   "sequential__vs__strided_lanes": {
+    "max_ulp_diff": 22.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0
+   }
+  },
+  "reading": "a residual inside this envelope is not evidence of a defect however large the number is; it is how far two correct kernels may sit apart. An envelope of 0 at the median says something stronger and unexpected: for THIS reduction, fp16 storage rounding swamps accumulation order entirely, so order cannot manufacture a residual here at all.",
+  "status": "MEASURED",
+  "what": "five legitimate accumulation orders for the same reduction, each with an fp32 accumulator as both implementations use, each rounded to fp16"
+ },
+ "arm_e_falsifier_other_inputs": {
+  "all_medians_including_arm_b": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "cases": {
+   "hidden_scaled_2em4": {
+    "elements": 32064,
+    "max_abs_diff": 0.000244140625,
+    "max_ulp_diff": 2.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0,
+    "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+   },
+   "hidden_scaled_2ep4": {
+    "elements": 32064,
+    "max_abs_diff": 0.0625,
+    "max_ulp_diff": 12.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0,
+    "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+   },
+   "random_fp16": {
+    "elements": 32064,
+    "max_abs_diff": 0.001953125,
+    "max_ulp_diff": 5.0,
+    "median_ulp_diff": 0.0,
+    "p99_ulp_diff": 0.0,
+    "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+   }
+  },
+  "falsifier_fired": false,
+  "reading": "falsifier_fired == true would void the conclusion: the lm_head's residual would then depend on which vector it was handed, so arm B measured an input.",
+  "status": "MEASURED"
+ },
+ "arm_f_isolated_final_rmsnorm": {
+  "attribution": "ATTRIBUTED",
+  "attribution_note": "claimed_nodes is process-cumulative; this is the delta since the previous arm",
+  "claimed_nodes_process_cumulative": 360,
+  "claimed_nodes_this_arm": 4,
+  "cpu_ep_vs_float64": {
+   "elements": 3072,
+   "max_abs_diff": 0.0001220703125,
+   "max_ulp_diff": 1.0,
+   "median_ulp_diff": 0.0,
+   "p99_ulp_diff": 0.0,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "device_name": "1=NVIDIA GeForce RTX 4060 Laptop GPU",
+  "device_name_source": "counters alloc_device_frame_session_devices",
+  "dispatches_executed_process_cumulative": 360,
+  "dispatches_executed_this_arm": 4,
+  "epsilon": 9.999999747378752e-06,
+  "input_identical_on_both_eps": true,
+  "kv_writeback_route": "host_staging",
+  "node": "/model/layers.32/final_norm_layernorm/SkipLayerNorm",
+  "op_type": "com.microsoft::SkipSimplifiedLayerNormalization",
+  "outputs_device_bound": 0,
+  "outputs_host_resident": 104,
+  "reference_liveness": {
+   "cpu_median_ulp_vs_reference": 0.0,
+   "if_not_live": "the RMSNorm reference is wrong, not the EPs; no verdict here",
+   "live": true,
+   "threshold": 8.0
+  },
+  "status": "MEASURED",
+  "vk_vs_cpu": {
+   "elements": 3072,
+   "max_abs_diff": 0.0001220703125,
+   "max_ulp_diff": 1.0,
+   "median_ulp_diff": 0.0,
+   "p99_ulp_diff": 0.0,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "vulkan_ep_vs_float64": {
+   "elements": 3072,
+   "max_abs_diff": 0.0,
+   "max_ulp_diff": 0.0,
+   "median_ulp_diff": 0.0,
+   "p99_ulp_diff": 0.0,
+   "ulp_basis": "ULP of float16 at the CPU oracle's value; spacing floors at 5.96e-08 in the denormal region, so a near-zero element cannot inflate the count the way it inflates relative error"
+  },
+  "which_is_further_from_true": "neither (equal)"
+ },
+ "conclusion": {
+  "verdict": "H_depth",
+  "why": "the lm_head alone, on an identical input, is 0.0 median ULP -- like any other MatMulNBits here. The 12 ULP in the full model is inherited, not made at this node."
+ },
+ "device_selector_requested": "0",
+ "ep_registration": {
+  "lib": "C:\\Users\\justinchu\\dev\\ep-vulkan-trinity\\rust\\target\\release\\onnxruntime_vulkan_ep.dll",
+  "registered": true
+ },
+ "falsifier": {
+  "also": "arm C's verdict is void if the reference liveness check fails, and that check is reported rather than assumed.",
+  "reachable": true,
+  "what_would_fail_if_this_is_wrong": "arm B is the whole conclusion, so the run that fails it is arm B measured against a DIFFERENT hidden state. If the residual at the lm_head depends on which input it is fed, then 'the node is clean' was a property of one vector and not of the kernel. Re-running arm B on (i) a random fp16 vector of the same shape and (ii) the hidden state scaled by 2**-4 must give the same median ULP; if it does not, this conclusion is void."
+ },
+ "finished": "2026-08-03T02:13:55",
+ "hidden_tensor": "/model/layers.32/final_norm_layernorm/output_0",
+ "lm_head_node": "/lm_head/MatMul_Q4",
+ "not_done_here": [
+  "atol is not moved; the tolerance unit is Morpheus's ruling and was already filed",
+  "no criterion-10 row is closed; the verdict stays DIVERGENT"
+ ],
+ "predictions": {
+  "H_depth": "the lm_head node run ALONE on an identical fp16 input shows a median ULP residual of 0-2 -- like every other MatMulNBits in this graph -- and the 12 ULP seen in the full model is inherited from the final hidden state",
+  "H_proj": "the lm_head node run ALONE on an identical fp16 input reproduces ~12 median ULP with the whole chain removed, locating the residual at that kernel's reduction",
+  "discriminating_observation": "arm_b_isolated_lm_head.median_ulp_diff -- the two hypotheses predict disjoint values for this single number (0-2 vs ~12)",
+  "neither_if": "arm B lands in 3-8 ULP; the record says INCONCLUSIVE rather than rounding",
+  "registered_before_measuring": true
+ },
+ "probe": "logits_reduction",
+ "question": "is the logits' 12-ULP step chain depth, or the lm_head reduction?",
+ "started": "2026-08-03T02:12:20"
+}

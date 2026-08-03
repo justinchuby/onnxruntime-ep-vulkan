@@ -377,3 +377,56 @@ pre-Switch control); `cargo test --lib` 492 passed; clippy exit 0, no warnings.
 Reported not fixed: one intermittent `counters::tests` failure (1 in 6, no rust diff on this
 branch, failure text not kept — said so anyway); `bench/phi35.py` still owes Niobe's
 `model_output_equivalence_authority` stamp.
+
+---
+
+## Round 36 — the logits step is inherited, and the intermittent was real
+
+**The premise I was handed was false again, and in the same direction as last round.** The
+brief described the logits as "the top of a smooth climb" up the 32 layers. **There is no
+climb.** Tapping the residual stream at every block gives medians
+`[0,0,1,2,2,...,2,1,3,3]` — flat at ~2, largest step 2, and **not monotone** (it dips at layer
+29). The number only moves in the last two hops: stream L31 `3` → final RMSNorm out `6` →
+logits `12`.
+
+**Named the distinguishing observation before running either arm.** `H_proj` predicts the 12
+ULP survives isolation of `lm_head`; `H_depth` predicts it vanishes. Isolated `lm_head` on
+bit-identical fp16 input both EPs: **median 0.0 ULP**, attributed, both vendors. `H_proj`
+refuted. The five-order accumulation envelope is median 0.0 — fp16 storage rounding swamps
+fp32 order over K=3072, so order cannot manufacture this residual at all. My own named
+falsifier did not fire.
+
+**First float64 reference the criterion has ever had.** At `lm_head`: `neither (equal)`. At
+the final RMSNorm: **Vulkan is bit-exact and the CPU EP is the 1-ULP one.** "The Vulkan EP is
+wrong until proven otherwise" is, at that node, backwards. Worth carrying: `divergent` has
+never once been asked *which* of the two is wrong.
+
+**I built and nearly shipped a false located defect of exactly the Round 35 shape.** My first
+arm F compared a float64 reference built from the *CPU EP's* tapped inputs against the Vulkan
+EP's *in-situ* output — arm A's 6 ULP wearing a reference's clothes, reporting
+`which_is_further_from_true: "vulkan"` **by construction**, and it would have named a node the
+EP executes bit-exactly. The rule that caught it: **isolation means identical inputs on both
+sides or it means nothing.** Kept the discarded version in a comment rather than deleting it.
+Same family: `claimed_nodes` is process-cumulative (arm A 355, arm B 356 for one node), so
+attribution is now a **delta**, and delta 0 marks the arm UNATTRIBUTED — an isolated run the EP
+declined is CPU-vs-CPU and reports 0 ULP, the most convincing possible way to measure nothing.
+
+**`atol` untouched again.** If a relative or ULP bound is correct that is Morpheus's ruling;
+I filed the measurement that makes it arguable and applied nothing.
+
+**The intermittent was three defects across three modules, and one had a false-pass mode.**
+Isolated arm 8/20 failed, full arm ~0% — **the narrower filter was the more sensitive
+instrument**, because a 21-test pool aligns on the contended statics far more often than a
+505-test pool. Four different tests at four different assertion sites → a race. Three
+`counters.rs` tests and two `logging.rs` tests touched process-global statics / the ORT logger
+pointers without `ledger::test_lock()`; the logging one made a WARN that *did* reach ORT record
+as `warn_reached_ort_sink: false`. A reader is as much a party to a race as a writer. My first
+auditor had a hand-written two-file list and was structurally blind to the third module —
+Mouse's anti-pattern; it now scans all 43 sources, resolves lock aliases, and has a selftest
+that proves it can go red. After: **25/25 isolated + 15/15 full green.**
+
+**Verified:** 12 new device-free falsifiers green (one of which I had to *make* able to go red
+— my first separating case used a 2²⁰ pivot whose fp32 spacing is 0.0625, far too small to
+absorb unit terms); criterion 10 lane 62 pass / 1 fail, the fail being the known open
+`DIVERGENT` verdict, unchanged; `cargo test --lib` **501 passed, 0 failed**; clippy exit 0;
+auditor 0/0 with selftest 3/3.

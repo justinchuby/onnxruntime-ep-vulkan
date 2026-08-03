@@ -1,0 +1,44 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src\lib.rs (target\debug\deps\onnxruntime_vulkan_ep-eb71a5888fd71be8.exe)
+
+running 21 tests
+test allocator::tests::a_failed_lookup_reaches_the_process_wide_counters ... ok
+test counters::tests::the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly ... ok
+test counters::tests::a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable ... FAILED
+test counters::tests::a_gemv_vector_too_short_to_hold_the_field_says_unrecorded_not_zero ... ok
+test counters::tests::staging_bytes_are_recorded_without_any_tracing_flag ... ok
+test counters::tests::verdict_vocabulary_cannot_drift_from_the_python_harness ... ok
+test counters::tests::the_verdict_record_survives_a_rebuild_and_is_not_confused_by_nesting ... ok
+test counters::tests::an_override_reports_which_verdict_it_overrode ... ok
+test counters::tests::extract_equivalence_parses_the_five_states ... ok
+test counters::tests::the_dispatch_path_dump_carries_the_allocator_keys_too ... ok
+test counters::tests::the_ledger_miss_token_names_which_of_three_things_happened ... ok
+test counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero ... ok
+test counters::tests::two_frames_in_one_process_are_never_reported_as_one_frame ... ok
+test counters::tests::a_lost_device_is_recorded_and_reaches_the_json_artifact ... ok
+test allocator::tests::quarantine_exhaustion_reaches_the_process_wide_counters ... ok
+test counters::tests::a_variant_is_named_by_its_spec_constants_and_not_by_its_stem ... ok
+test counters::tests::counters_record_what_they_claim_to_record ... ok
+test counters::tests::the_staging_sentence_separates_itself_from_the_allocator_upload_counters ... ok
+test counters::tests::variants_are_a_set_and_reach_the_json_as_typed_values ... ok
+test counters::tests::the_claimed_form_evidence_token_is_unobservable_before_it_is_anything_else ... ok
+test counters::tests::zero_staging_bytes_refuses_to_claim_residency ... ok
+
+failures:
+
+---- counters::tests::a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable stdout ----
+
+thread 'counters::tests::a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable' (31424) panicked at src\counters.rs:2505:9:
+assertion `left == right` failed
+  left: []
+ right: ["ew_binary_add_f32:256,1"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    counters::tests::a_pipeline_that_is_not_a_gemv_leaves_the_gemv_field_unobservable
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 484 filtered out; finished in 0.27s
+
+error: test failed, to rerun pass `--lib`
+
