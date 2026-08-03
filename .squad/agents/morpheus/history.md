@@ -434,3 +434,65 @@ It wrote its own obituary and nobody read it back to it.
   PROVEN-ELSEWHERE with a model run, this is the thing to point at.
 - Third time in two sessions that a paragraph of mine failed R9 — the amplification probe was
   someone else's instrument, this one was my own reasoning. The rate is the signal, not the instance.
+
+## 2026-08-03T05:05:00-07:00 — The schema I should have written the first time, and a ruling that discharges itself
+
+**Link handed me the case my §8.9.17 ruling was written for, and he found it without it.** Ubuntu ships
+shaderc 2023.8, the Windows SDK v2026.2, the SPIR-V differs, the digest faults all 97 entries. I had
+argued TOOLCHAIN-CHANGED was ledger-wide by nature and would become a total fault on some future glslc
+bump. It is not future. It is the current state of the second platform, and it is why Linux cannot
+produce an op-correctness number at all.
+
+**What I got wrong before, and it is a wording failure with teeth.** In §8.9.17 I wrote "the device
+belongs" — and left it ambiguous between *belongs in the key* and *belongs in the entry*. The
+coordinator was right that two rulings had to become one schema. It is: **key = the form, and nothing
+else ever; frame = device, driver, ort_build, toolchain, tolerance; subject = what code was proven. You
+look up by key. You compare frame after you have looked up. A subject mismatch means the proof is about
+something else.** Once that is written down, the device question and the toolchain question are the
+same question and both have the same answer.
+
+**And "keyed per toolchain" turned out not to be a design at all.** parse_ledger `continue`s past a
+digest mismatch, so the entry never enters `entries`, so `Ledger::get` returns the same None it returns
+for a form nobody ever proved. **A frame mismatch is indistinguishable from a key absence.** That is the
+whole Linux symptom, and it is one `continue`. I had already ordered the fix for a different reason
+(fault scope) — the same edit, one level up, is the unblocker. That was luck, not foresight; the fault-
+scope ruling was about a hypothetical glslc bump and it happens to be the repair for a real one.
+
+**The trap the coordinator flagged is a real trap and I nearly walked into it.** The cheap way to say
+"same form, different compiler" is to compare GLSL source text — and a comment-only edit does not move
+the SPIR-V digest, so source and digest already disagree about what "the same shader" means. The honest
+statement is that **no single hash can be sensitive to the kernel and blind to the compiler, because the
+compiler is a function whose output is the only thing that runs.** So: two digests, and their
+*disagreement* is the instrument. spirv-differs/source-same is Linux. Both differ is a kernel change.
+Both same is nothing moved. And spirv-same/source-differs is the fourth row — SOURCE-COSMETIC, PROVEN
+and *named* — which is the row that proves the pair is doing work rather than restating one digest
+twice.
+
+I made myself write what the pair is blind to, because I grade other people for rulings that do not name
+their residual. It is blind to a compiler bug. That is exactly why row two is disclosed rather than
+silent, and it is not closed by this ruling.
+
+**The thing I am most pleased with is structural rather than clever: the ruling discharges itself.** It
+grants a Linux run just enough claim to run the op suite, and the op suite is a *per-form* differential,
+so every key it passes earns a Linux entry on its own per-key evidence. No model run anywhere near it —
+which is §8.9.18 part 1's refutation still holding, in a case that arrived through a different door.
+The grant is temporary by construction. I did not have to promise that it would be reviewed later.
+
+**And I did not mint an R number for either of Link's other two findings**, though both are good and one
+of them (a suite whose verdict is not a function of its assertions) generalises further than most things
+I have numbered. Numbering follows citation now, and the count is Fact Checker's. Writing two new
+numbers into the same document that hands the counting away would have been the old habit wearing the
+new rule. I noticed I wanted to.
+
+**Link retired his own Session-13 method** — six builds, six DLL hashes, while the Linux .so was
+byte-identical across four. A fingerprint witnesses its input only if the production is a function, and
+MSVC linking is not one. Identical hash means nothing relinked; differing hash means nothing at all.
+That is the second self-withdrawal on this team in two days and it should stay unremarkable.
+
+**Carry forward**
+- Mouse's blocking pair: entry survival, then source_digest. Items 3-5 make the number honest rather
+  than possible.
+- Runtime-chosen specialisation values are outside both digests, and Switch's spec-constant selectors
+  are making that residual grow. Nobody owns it. I named it rather than fixing it and that is a debt.
+- I should re-read my own §8.9.17 wording for other places where "belongs" is doing work that "in the
+  key" or "on the entry" should be doing.
