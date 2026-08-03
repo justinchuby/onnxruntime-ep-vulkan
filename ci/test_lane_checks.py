@@ -17,6 +17,8 @@ lane where the thing they check is broken.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2157,3 +2159,242 @@ def test_the_shape_inference_module_no_longer_imports_its_optional_dep_at_module
         "during COLLECTION, taking all 665 tests in tests/ops with it"
     )
     assert "def _report()" in src, "the lazy accessor is the repair; keep it named"
+
+
+# ===========================================================================
+# ci/check_flake_witness.py and ci/check_build_precondition.py — two polarities
+# each, plus the one bug a negative control found in a screen on its first run.
+# ===========================================================================
+
+FLAKE_WITNESS = CI_DIR / "check_flake_witness.py"
+BUILD_PRECONDITION = CI_DIR / "check_build_precondition.py"
+
+
+def _witness(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(FLAKE_WITNESS), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+_LIBTEST_GREEN = (
+    "     Running unittests src/lib.rs (target/debug/deps/x-1)\n"
+    "\n"
+    "running 2 tests\n"
+    "test vk::barrier::tests::backend_probe_writes_legacy_token ... ok\n"
+    "test ops::norm::tests::other ... ok\n"
+    "\n"
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+    " finished in 0.10s\n"
+)
+
+_LIBTEST_RED = _LIBTEST_GREEN.replace(
+    "test vk::barrier::tests::backend_probe_writes_legacy_token ... ok",
+    "test vk::barrier::tests::backend_probe_writes_legacy_token ... FAILED",
+).replace(
+    "test result: ok. 2 passed; 0 failed;",
+    "test result: FAILED. 1 passed; 1 failed;",
+)
+
+
+def test_one_id_failing_and_not_failing_at_one_commit_is_the_flake_and_two_commits_is_not(tmp_path):
+    """The pair that IS the mechanism.
+
+    Same two logs, same two outcomes, same test id. The only difference is whether the
+    two observations sit at one commit or two, and that difference is exactly the
+    difference between "it does that" and "your change broke it".
+    """
+    red = tmp_path / "red.log"
+    red.write_text(_LIBTEST_RED, encoding="utf-8")
+    green = tmp_path / "green.log"
+    green.write_text(_LIBTEST_GREEN, encoding="utf-8")
+
+    same = tmp_path / "same.jsonl"
+    _witness("--harness", "libtest", "--suite", "lib", "--lane", "l", "--commit", "AAAA",
+             "--run-id", "1", "--ledger", str(same), str(red))
+    rc, out = _witness("--harness", "libtest", "--suite", "lib", "--lane", "l",
+                       "--commit", "AAAA", "--run-id", "2", "--ledger", str(same), str(green))
+    assert rc == 1, "both polarities at ONE commit is an intermittent and must be red"
+    assert "FAIL(condition=intermittent)" in out
+    assert "backend_probe_writes_legacy_token" in out, "a red with no subject is the defect"
+    assert "THE COMMIT IS EXONERATED AND THE TEST IS NOT" in out
+
+    across = tmp_path / "across.jsonl"
+    _witness("--harness", "libtest", "--suite", "lib", "--lane", "l", "--commit", "AAAA",
+             "--run-id", "1", "--ledger", str(across), str(red))
+    rc, out = _witness("--harness", "libtest", "--suite", "lib", "--lane", "l",
+                       "--commit", "BBBB", "--run-id", "2", "--ledger", str(across), str(green))
+    assert rc == 0, "the same two outcomes at TWO commits is a regression that got fixed"
+    assert "FLAKE-WITNESS: PASS" in out
+
+
+def test_the_failing_name_is_printed_last_so_a_truncated_head_cannot_lose_it(tmp_path):
+    """The coordinator's actual failure: one red, six greens, and no name."""
+    red = tmp_path / "red.log"
+    red.write_text(_LIBTEST_RED, encoding="utf-8")
+    rc, out = _witness("--harness", "libtest", "--suite", "lib", "--lane", "linux",
+                       "--commit", "CCCC", "--ledger", str(tmp_path / "l.jsonl"), str(red))
+    assert rc == 0
+    tail = out.strip().splitlines()[-6:]
+    assert any("backend_probe_writes_legacy_token" in line for line in tail), (
+        "the name must be in the TAIL. GitHub truncates the middle of a long step log, "
+        "and a name that does not survive the transport is a red with no subject."
+    )
+
+
+def test_an_annotation_is_emitted_where_log_truncation_cannot_reach_it(tmp_path, monkeypatch):
+    """::error:: lines become check-run annotations, which are not log bytes."""
+    red = tmp_path / "red.log"
+    red.write_text(_LIBTEST_RED, encoding="utf-8")
+    env = dict(os.environ, FLAKE_WITNESS_FORCE_ANNOTATE="1")
+    proc = subprocess.run(
+        [sys.executable, str(FLAKE_WITNESS), "--harness", "libtest", "--suite", "lib",
+         "--lane", "linux", "--commit", "DDDD", "--ledger", str(tmp_path / "l.jsonl"), str(red)],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), env=env,
+    )
+    assert "::error title=FAILED on linux::" in proc.stdout
+    assert "backend_probe_writes_legacy_token" in proc.stdout
+
+
+def test_a_not_failed_from_a_much_smaller_run_is_incomparable_and_not_a_flake(tmp_path):
+    """NOT_FAILED includes skipped. A test that stopped running is a different defect."""
+    tiny = tmp_path / "tiny.log"
+    tiny.write_text(
+        "     Running unittests src/lib.rs (target/debug/deps/x-1)\n\n"
+        "running 1 test\n"
+        "test vk::barrier::tests::backend_probe_writes_legacy_token ... FAILED\n\n"
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 500 filtered out;"
+        " finished in 0.01s\n",
+        encoding="utf-8",
+    )
+    green = tmp_path / "green.log"
+    green.write_text(_LIBTEST_GREEN, encoding="utf-8")
+    led = tmp_path / "l.jsonl"
+    _witness("--harness", "libtest", "--suite", "lib", "--lane", "l", "--commit", "EEEE",
+             "--run-id", "1", "--ledger", str(led), str(tiny))
+    rc, out = _witness("--harness", "libtest", "--suite", "lib", "--lane", "l",
+                       "--commit", "EEEE", "--run-id", "2", "--ledger", str(led), str(green))
+    assert rc == 0
+    assert "INCOMPARABLE" in out
+    assert "check_suite_productivity" in out, "it must name whose defect class that is"
+
+
+def test_a_log_it_could_not_parse_is_unobservable_and_never_a_pass(tmp_path):
+    """The repo's standing rule: UNOBSERVABLE is not zero."""
+    p = tmp_path / "nothing.log"
+    p.write_text("collecting ...\ntests/ops/test_x.py ....\n", encoding="utf-8")
+    rc, out = _witness("--harness", "pytest", "--suite", "ops",
+                       "--ledger", str(tmp_path / "l.jsonl"), str(p))
+    assert rc == 4
+    assert "ERROR(instrument=log_unparsed)" in out
+
+
+def test_a_join_over_too_few_runs_refuses_a_verdict_rather_than_giving_a_green(tmp_path):
+    """A 1-in-40 is invisible in one run BY CONSTRUCTION; a green from one run is noise."""
+    green = tmp_path / "green.log"
+    green.write_text(_LIBTEST_GREEN, encoding="utf-8")
+    rc, out = _witness("--harness", "libtest", "--suite", "lib", "--lane", "l",
+                       "--commit", "FFFF", "--ledger", str(tmp_path / "l.jsonl"),
+                       "--require-history", "5", str(green))
+    assert rc == 4
+    assert "ERROR(instrument=history_too_short)" in out
+
+
+def test_the_flake_witness_names_no_counts_in_its_ledger(tmp_path):
+    """R13: no count without its text. The ledger's key is a NAME, never a number."""
+    red = tmp_path / "red.log"
+    red.write_text(_LIBTEST_RED, encoding="utf-8")
+    led = tmp_path / "l.jsonl"
+    _witness("--harness", "libtest", "--suite", "lib", "--lane", "l", "--commit", "GGGG",
+             "--ledger", str(led), str(red))
+    records = [json.loads(line) for line in led.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert records, "the ledger must be written"
+    assert all(r["test_id"] for r in records)
+    assert any(r["outcome"] == "FAILED" for r in records)
+
+
+def _precondition(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(BUILD_PRECONDITION), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_build_precondition_is_green_on_this_tree_and_red_on_the_bytes_it_was_written_for(tmp_path):
+    """The pair, with the red arm REPLAYED out of this repository's own history."""
+    rc, out = _precondition(
+        str(REPO_ROOT / ".github" / "workflows" / "ci.yml"),
+        str(REPO_ROOT / ".github" / "workflows" / "conformance.yml"),
+    )
+    assert rc == 0, out
+    assert "BUILD-PRECONDITION: PASS" in out
+
+    bad = tmp_path / "bad.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  x:\n"
+        "    steps:\n"
+        "      - name: Build the thing\n"
+        "        run: |\n"
+        "          if [ ! -f rust/Cargo.toml ]; then\n"
+        "            echo \"BUILD_SKIPPED=1\" >> $GITHUB_ENV\n"
+        "            exit 0\n"
+        "          fi\n"
+        "          cargo build --release\n"
+        "      - name: Test\n"
+        "        if: env.BUILD_SKIPPED != '1'\n"
+        "        run: cargo test\n",
+        encoding="utf-8",
+    )
+    rc, out = _precondition(str(bad))
+    assert rc == 1, "one missing tracked file must not be able to turn a lane green"
+    assert "FAIL(condition=skip_flag_with_exit_zero)" in out
+
+
+def test_the_build_precondition_screen_prints_its_condition_token_when_it_goes_red(tmp_path):
+    """The bug its own negative control caught on the control's FIRST run.
+
+    ``screen()`` returned exit 1 and never printed ``FAIL(condition=...)``: ``_fail()``
+    existed and was never called. A red step with no condition name is precisely what the
+    R13 vocabulary exists to prevent, and the screen enforcing it had the defect.
+    """
+    bad = tmp_path / "dead.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  x:\n"
+        "    steps:\n"
+        "      - name: Test\n"
+        "        if: env.NOBODY_WRITES_THIS != '1'\n"
+        "        run: cargo test\n",
+        encoding="utf-8",
+    )
+    rc, out = _precondition(str(bad))
+    assert rc == 1
+    assert re.search(r"FAIL\(condition=\w+\)", out), (
+        "a non-zero exit with no R13 condition token is a red with no subject"
+    )
+    assert "dead_guard" in out
+
+
+def test_a_dormant_guard_is_not_inert_and_the_screen_says_why(tmp_path):
+    """My own 2026-08-02 decision, corrected by the screen on its first run over this tree."""
+    bad = tmp_path / "dormant.yml"
+    bad.write_text(
+        "jobs:\n"
+        "  x:\n"
+        "    steps:\n"
+        "      - name: Test\n"
+        "        if: env.BUILD_SKIPPED != '1'\n"
+        "        run: cargo test\n",
+        encoding="utf-8",
+    )
+    rc, out = _precondition(str(bad))
+    assert rc == 1
+    assert "dead_guard" in out
+    assert "BUILD_SKIPPED" in out

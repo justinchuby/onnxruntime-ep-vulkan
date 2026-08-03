@@ -59,6 +59,15 @@ jobs:
           fi
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo build --release --manifest-path rust/Cargo.toml
+          # The .so is asserted, not assumed: this step publishes VULKAN_EP_LIB as a PATH
+          # STRING into $GITHUB_ENV, and a path string is written whether or not anything
+          # is at the end of it. `cargo build` exits 0 on a [lib] crate-type edit, a
+          # renamed target and a cached no-op against a stale target dir. Rule BP3 of
+          # ci/check_build_precondition.py; this step was the screen's first real finding.
+          test -f rust/target/release/libonnxruntime_vulkan_ep.so || {
+            echo "::error::cdylib not found after build — check [lib] crate-type in Cargo.toml. Publishing VULKAN_EP_LIB now would hand every step below a path to a file that does not exist."
+            exit 1
+          }
           echo "VULKAN_EP_LIB=$PWD/rust/target/release/libonnxruntime_vulkan_ep.so" \
             >> "$GITHUB_ENV"
 
@@ -83,6 +92,16 @@ jobs:
         # DESIGN.md §10.0 means it reports nothing about this EP. The gate steps below
         # are what make the lane's own health readable, and they are NOT
         # continue-on-error.
+        #
+        # ACCEPTANCE AMENDED 2026-08-03 (Link). The zero-work sweep accepted this step
+        # because it is declared non-evidence. Re-examined once the pattern was clearer,
+        # the acceptance holds for the step and NOT for its artifact: `conformance.out`
+        # is an input to `check_fatal_log` two steps below, so an all-skipped census
+        # produced a green fatal-log step that had scanned a file with no tests in it —
+        # a blind witness reported as a scanned log. The distinction the acceptance
+        # always rested on is now enforced rather than assumed: FAILURES in the census
+        # are tolerated (that is what continue-on-error buys), a census that DID NOT RUN
+        # is not. See the productivity step below.
         continue-on-error: true
         env:
           VULKAN_EP_LIB: ${{ env.VULKAN_EP_LIB }}
@@ -95,6 +114,8 @@ jobs:
         run: |
           python3 -m pip install --quiet pytest
           export LD_LIBRARY_PATH="$ORT_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p bench/results/ci-lane
+          touch bench/results/ci-lane/.conformance-reached
           python3 -m pytest tests/conformance/test_conformance.py -v \
             --junitxml=tests/conformance/conformance-junit.xml \
             2>&1 | tee tests/conformance/conformance.out || true
@@ -105,6 +126,24 @@ jobs:
             tail -n 40 tests/conformance/conformance.out
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The census ran at all (productivity floor — NOT continue-on-error)
+        # The one thing about this lane that is not diagnostic. `continue-on-error` above
+        # buys tolerance for FAILING conformance cases; it must not also buy tolerance
+        # for a census that collected nothing, because those two are the same green and
+        # only one of them is a census. A collection error in onnx-tests, a pixi env that
+        # installed nothing, an `ops` input that matches no test — all of them produce a
+        # step that is green by design and an artifact that the fatal-log step downstream
+        # then reports as "scanned".
+        #
+        # Deliberately NOT continue-on-error, and deliberately floored at 1: no
+        # measurement is needed to know that zero is not a census.
+        if: always()
+        run: |
+          python3 ci/check_suite_productivity.py \
+            --suite tests/conformance/test_conformance.py --lane conformance \
+            --lane-marker=bench/results/ci-lane/.conformance-reached \
+            tests/conformance/conformance.out
 
       # -------------------------------------------------------
       # CRITERION 10 — the same gate the CI lanes carry, so that a

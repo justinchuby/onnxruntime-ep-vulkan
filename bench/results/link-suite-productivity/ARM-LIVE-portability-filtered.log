@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 1.00s
+     Running tests\portability.rs (rust\target\release\deps\portability-575719251a1ed99a.exe)
+
+running 2 tests
+test detects_the_spelled_width_that_blocked_the_linux_lane ... ok
+test width_varying_abi_values_are_carried_as_the_alias ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 4.81s
+

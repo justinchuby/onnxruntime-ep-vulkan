@@ -48,6 +48,10 @@ the lane published rather than re-running anything):
    xfailed. Skipped is not executed; deselected is not executed; an error is not an
    assertion. Executed floors are calibrated per lane because skip counts legitimately
    differ between a GPU lane and a lavapipe lane.
+6. **(libtest only) Every target block executed something, and there were enough of
+   them.** A ``cargo test --test a --test b --test c --test d`` step is four claims
+   under one exit code. The aggregate floor cannot see one of the four going silent;
+   ``target_ran_nothing`` and ``min_target_blocks`` can, and they name the target.
 
 Floors live in ``ci/suite_floor.json`` — committed, with provenance per entry. A floor
 that can be lowered by a command-line flag is a waiver with a flag, so there is no
@@ -66,6 +70,8 @@ Terminal states (R13):
     1  SUITE-PRODUCTIVITY: FAIL(condition=collection_error)
     1  SUITE-PRODUCTIVITY: FAIL(condition=no_tests_ran)
     1  SUITE-PRODUCTIVITY: FAIL(condition=asserted_nothing)
+    1  SUITE-PRODUCTIVITY: FAIL(condition=target_ran_nothing)
+    1  SUITE-PRODUCTIVITY: FAIL(condition=targets_below_floor)
     1  SUITE-PRODUCTIVITY: FAIL(condition=collected_below_floor)
     1  SUITE-PRODUCTIVITY: FAIL(condition=executed_below_floor)
     4  SUITE-PRODUCTIVITY: ERROR(instrument=...)
@@ -127,6 +133,13 @@ _LIBTEST_RESULT_RE = re.compile(
     re.MULTILINE,
 )
 
+#: cargo announces each target binary before running it. Captured so a block that ran
+#: nothing can be reported BY TARGET NAME. A sum cannot: four targets summing to 11 and
+#: three targets summing to 11 with the fourth silent are the same number.
+_LIBTEST_TARGET_RE = re.compile(
+    r"^\s*(?:Running|Doc-tests)\s+(.+?)(?:\s+\(([^)]*)\))?\s*$", re.MULTILINE
+)
+
 #: The three ways pytest announces that it gave up before running anything.
 _COLLECTION_ERROR_MARKERS = (
     "errors during collection",
@@ -145,6 +158,10 @@ class Totals:
         self.summary_line: str | None = None
         self.no_tests_ran: bool = False
         self.unknown_words: list[str] = []
+        #: One entry per libtest ``test result:`` block, in file order:
+        #: ``{"target": str, "passed": int, "failed": int, "ignored": int,
+        #:   "filtered": int, "executed": int}``. Empty for pytest.
+        self.blocks: list[dict] = []
 
     @property
     def executed(self) -> int:
@@ -226,23 +243,61 @@ def parse_libtest_log(text: str) -> Totals:
     ``failed`` are executed, ``ignored`` is a skip, ``filtered out`` is a deselection.
 
     A ``cargo test`` invocation can produce SEVERAL ``test result:`` blocks (one per
-    target, plus doc-tests). They are summed: the step's claim is about the invocation,
-    not about one of its binaries.
+    target, plus doc-tests). They are summed for the floor comparison — the step's claim
+    is about the invocation, not about one of its binaries — but each block is ALSO kept
+    separately, because a sum hides the case this check exists for: four `--test` targets
+    where one of them ran zero tests still sums to a number above any floor the other
+    three can carry.
     """
     totals = Totals()
     blocks = _LIBTEST_RESULT_RE.findall(text)
     if not blocks:
         return totals
+    # Pair each `test result:` block with the `Running <target>` line above it and the
+    # `running N tests` count between them. Positional, because cargo prints them in that
+    # order and nothing else in the stream matches these anchors.
+    targets: list[str] = []
+    running_counts: list[int] = []
+    result_index = 0
+    pending_target: str | None = None
+    pending_running: int | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _LIBTEST_TARGET_RE.match(line)
+        if m and (stripped.startswith("Running") or stripped.startswith("Doc-tests")):
+            pending_target = m.group(1).strip()
+            continue
+        m = _LIBTEST_RUNNING_RE.match(stripped)
+        if m:
+            pending_running = int(m.group(1))
+            continue
+        if "test result:" in line:
+            targets.append(pending_target or f"<unnamed target #{result_index + 1}>")
+            running_counts.append(pending_running if pending_running is not None else -1)
+            pending_target = None
+            pending_running = None
+            result_index += 1
+
     passed = failed = ignored = filtered = 0
-    for _status, p, f, i, _m, fo in blocks:
+    for idx, (_status, p, f, i, _m, fo) in enumerate(blocks):
         passed += int(p)
         failed += int(f)
         ignored += int(i)
         filtered += int(fo)
+        totals.blocks.append(
+            {
+                "target": targets[idx] if idx < len(targets) else f"<block #{idx + 1}>",
+                "passed": int(p),
+                "failed": int(f),
+                "ignored": int(i),
+                "filtered": int(fo),
+                "executed": int(p) + int(f),
+            }
+        )
     totals.by_outcome = {"passed": passed, "failed": failed, "skipped": ignored}
     if filtered:
         totals.by_outcome["deselected"] = filtered
-    running = [int(n) for n in _LIBTEST_RUNNING_RE.findall(text)]
+    running = [n for n in running_counts if n >= 0]
     totals.collected = (sum(running) + filtered) if running else (passed + failed + ignored)
     totals.summary_line = (
         f"cargo test: {len(blocks)} target block(s); {passed} passed; {failed} failed; "
@@ -398,6 +453,7 @@ def main(argv: list[str]) -> int:
                     "reported_total": totals.reported_total,
                     "summary_line": totals.summary_line,
                     "no_tests_ran": totals.no_tests_ran,
+                    "target_blocks": totals.blocks,
                 },
                 indent=2,
             )
@@ -468,6 +524,55 @@ def main(argv: list[str]) -> int:
             "check exists.",
         )
 
+    # ---- 3b. per-target productivity (libtest, multi-target invocations) ------
+    # A `cargo test --test a --test b --test c --test d` step is FOUR claims wearing one
+    # exit code. Summing them is what an aggregate floor does, and a sum cannot see the
+    # case this whole check exists for: target `d` runs zero tests while a+b+c still
+    # clear any floor `d` could have contributed to. The floor is on the invocation; this
+    # is on each binary the invocation ran.
+    if args.harness == "libtest" and totals.blocks:
+        empty = [b for b in totals.blocks if b["executed"] == 0]
+        if empty:
+            return _fail(
+                "target_ran_nothing",
+                f"{args.suite}: {len(empty)} of {len(totals.blocks)} cargo test target(s) "
+                "executed ZERO tests.\n"
+                + "\n".join(
+                    f"  {b['target']}: 0 executed "
+                    f"({b['ignored']} ignored, {b['filtered']} filtered out)"
+                    for b in empty
+                )
+                + "\n"
+                "libtest prints `running 0 tests` / `test result: ok.` and exits ZERO for "
+                "each of these, and the invocation's own exit code cannot see it. A target "
+                "whose tests were all #[cfg]-ed out, whose file stopped being listed in "
+                "Cargo.toml's [[test]] section, or whose filter stopped matching is a "
+                "SILENT deletion of a lane's coverage — the step keeps its name, keeps its "
+                "green, and asserts nothing about the target it is named for.",
+            )
+
+    min_blocks = entry.get("min_target_blocks")
+    if min_blocks is not None:
+        if args.harness != "libtest":
+            return _error(
+                "min_target_blocks_on_pytest",
+                f"{args.suite!r} sets min_target_blocks but was read with the pytest "
+                "harness. `test result:` blocks are a libtest concept; applying the floor "
+                "here would compare against a number that is always zero.",
+            )
+        if len(totals.blocks) < min_blocks:
+            return _fail(
+                "targets_below_floor",
+                f"{args.suite}: {len(totals.blocks)} cargo test target block(s) ran, floor "
+                f"is {min_blocks}.\n"
+                f"Targets seen: {[b['target'] for b in totals.blocks] or '(none)'}\n"
+                f"Floor provenance: {_provenance(entry)}\n"
+                "A `--test <name>` argument that was dropped from the step, or a [[test]] "
+                "target removed from Cargo.toml, deletes a whole binary's worth of "
+                "assertions while every remaining test still passes. The count of targets "
+                "is the only thing in the log that can see it.",
+            )
+
     # ---- 4. collected floor (environment-independent) -------------------------
     min_collected = entry.get("min_collected")
     if min_collected is not None:
@@ -511,6 +616,23 @@ def main(argv: list[str]) -> int:
         )
 
     print("SUITE-PRODUCTIVITY: PASS", flush=True)
+    if totals.blocks:
+        print(
+            "Target blocks (each one a separate claim under this step's single exit "
+            "code):\n"
+            + "\n".join(
+                f"  {b['target']}: {b['executed']} executed "
+                f"({b['passed']} passed, {b['failed']} failed, {b['ignored']} ignored, "
+                f"{b['filtered']} filtered out)"
+                for b in totals.blocks
+            )
+            + (
+                f"\n{len(totals.blocks)} block(s), floor {min_blocks}."
+                if min_blocks is not None
+                else f"\n{len(totals.blocks)} block(s), no min_target_blocks floor set."
+            ),
+            flush=True,
+        )
     print(
         f"{args.suite} on lane {lane_key!r}: {totals.describe()}.\n"
         f"Executed (passed+failed+xpassed+xfailed): {totals.executed} "

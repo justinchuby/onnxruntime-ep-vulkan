@@ -2622,6 +2622,236 @@ the vague order-dependence I recorded.  Fix is one line per test; test bodies in
 
 ---
 
+## 7.23 Session 17 — the six closed, the general case, and a category error corrected
+
+*Link, 2026-08-03. Windows local + WSL Ubuntu/lavapipe. No timing figure appears
+below; the box is permanently contended (`PERF.md` §20).*
+
+### 7.23.0 The headline: Mouse's two-digest merge repaired the Linux lane
+
+§7.22 reported the Linux device lane at `50 failed / 272 passed / 292 skipped`
+with **42** occurrences of `no proof ledger entry for`.  That was the blocker.
+Re-run at `d46327b` with the two-digest schema merged:
+
+| | §7.22 (session 16) | §7.23 (session 17) |
+|---|---|---|
+| Linux pytest | 50 failed / 272 passed / 292 skipped | **23 failed / 592 passed / 45 skipped / 3 xfailed** |
+| `no proof ledger entry for` | 42 | **3** |
+| Windows pytest | 14 failed / 568 passed / 30 skipped | **8 failed / 624 passed / 28 skipped / 3 xfailed** |
+| Windows-only failures | 12 | **1** |
+
+The three surviving ledger misses are the `Cast` op that arrived in the same
+merge and has no proof entry yet — the mechanism working, not failing.  **320
+Linux tests that were skipped are now executed.**
+
+### 7.23.1 "Windows-only" was a category error, and it was mine
+
+§7.22.5 corrected the numerator and left a shape behind: *Windows red in 12
+places, Linux red in more*.  Both halves of that were wrong.
+
+The 12 became 1 because other agents' merges repaired the ops, not because
+anything about Windows changed.  And the one survivor —
+`test_criterion_10_three_consecutive_attributed_match` — is Windows-only for a
+reason that inverts the reading: **Windows is the only lane with a device that
+actually executes phi-3.5.**  Linux/lavapipe declines to CPU and never reaches
+the comparison.  "Windows-only" meant *only observable on Windows*, never
+*broken on Windows*.
+
+Characterised, since nobody had:
+
+- **Not an instrument error** (unlike the 4 `ERROR(instrument)` on my WSL box).
+  It is `DIVERGENT`, deterministic: 3 of 3 runs DISAGREE, cross-run identical.
+- **Not intermittent.**  Same bytes every run.
+- **A real fp16 accumulation finding.**  Real NVIDIA RTX 4060, argmax matches
+  CPU (30751), top-10 10/10, median ULP 1.0, worst `max_abs_diff = 0.0625`.
+  The per-layer KV ULP table rises **monotonically with depth**, L0 `0.0` →
+  L31 `4.0`, and **only layer 31 key/value exceeds the predicted 3.0 ULP band.**
+  Monotone-by-depth is the signature of accumulation, not of a wrong kernel.
+
+Routed to Mouse/Switch.  It is a numerics finding wearing a portability label,
+and it sat unexamined for a round because everyone including me had decided
+which platform was the good one.
+
+### 7.23.2 Both lanes still mix three kinds of thing in one number
+
+§7.22.5's point reproduces on both platforms, and it is not a WSL artifact:
+
+- Linux 23 = **8 `FAIL(condition)` + 15 `ERROR(instrument)`**
+- Windows 8 = **6 `FAIL(condition)` + 2 `ERROR(instrument)`**
+
+An instrument that could not observe and a subject that disagreed are different
+objects, and the lane summary adds them.  Anyone quoting a single failure count
+from either lane is quoting a sum over incommensurables.
+
+### 7.23.3 A defect introduced by the repair, which outranks the rest
+
+`test_the_writer_refuses_a_run_with_no_subject_witness` and
+`test_the_writer_refuses_a_multi_inference_proof_run` now raise
+`SystemExit: REFUSING to write an entry for ai.onnx::Add/... : the run reported
+source_digest=''`.  **It occurs on both platforms**, so it is not environmental.
+The two-digest schema landed correctly and its writer's refusal path now trips
+on a legitimate run.  Routed to Mouse as a mechanism defect, not a test defect.
+
+Separately, `epctl --check-counters` exits 3 with `counters ABI 4, but this
+epctl understands 8` against the tracked
+`bench/results/link-linux-downstream/counters-linux.json` — the file is stale
+from a round in which the EP claimed nothing and never rewrote it.  Recorded,
+not diagnosed.
+
+### 7.23.4 The six open lanes are closed, and one rule is doing most of the work
+
+The six were `Layering lint` ×2, `Portability lint` ×2, `Remaining integration
+targets` ×2.  Each now has a productivity-floor step with a measured,
+committed floor.  Floors measured on Windows **and confirmed on Linux**
+(`ci/link-linux-repro/link_linux_target_counts.sh`), because a number measured
+on one platform and asserted on two is one platform wearing the label of two:
+
+| target | measured | Linux | floor |
+|---|---|---|---|
+| `--test layering` | 26 | 26 | 24 |
+| `--test portability` | 14 | 14 | 12 |
+| `--test cdylib_load,dump_capabilities,host_registration,validation_control` | 1+6+1+3 = 11 in **4 blocks** | 11 in 4 | 10, **`min_target_blocks` 4** |
+
+**The load-bearing addition is per-target, not the sum.**  Four targets share
+one step and one exit code, and three of them are small: `cdylib_load` and
+`host_registration` are one test each.  A floor of 10 against 11 leaves one
+test of headroom, and `cdylib_load` — the only thing in either lane proving the
+shipped cdylib can be `dlopen`'d — fits in it.  So
+`check_suite_productivity.py` gained `target_ran_nothing` (any block executed
+zero, **named by target**) and `min_target_blocks` (a `--test` argument dropped
+or a `[[test]]` removed).
+
+Demonstrated in the positive state with the subject genuinely absent, each with
+**`cargo` exiting 0**:
+
+- `cdylib_load` `#[cfg]`-ed out → `FAIL(condition=target_ran_nothing)` naming
+  `tests\cdylib_load.rs`.  **The aggregate would have PASSED: 10 executed
+  against a floor of 10.**  That arm is the proof the per-target rule is the
+  one that matters.
+- all 26 layering tests `#[cfg]`-ed out → `FAIL(condition=asserted_nothing)`.
+- portability filtered to 2 of 14 → `FAIL(condition=executed_below_floor)`.
+
+### 7.23.5 The accepted instance, re-examined — and amended
+
+§7.22 accepted `conformance.yml`'s bounded subset: `continue-on-error: true`
+plus `|| true`, declared non-evidence and diagnostic-only.
+
+**The acceptance holds for the step and not for its artifact.**  The step is
+allowed to be red and still let the lane continue — that is what
+`continue-on-error` is for and the reason is on record.  But the step writes
+`conformance.out`, and `check_fatal_log` reads it downstream.  An all-skipped
+census therefore produced a **green fatal-log step that had "scanned" a file
+with no tests in it** — a positive report from a step whose subject was empty.
+
+So: a new step, `The census ran at all (productivity floor — NOT
+continue-on-error)`, with `min_collected: 1` and provenance that says the number
+is **not measured**: *no measurement is needed to know that zero is not a
+census, and inventing a tighter number would read exactly like a measured one.*
+
+One line for whoever comes next: **the acceptance covers the step's colour, not
+its output; the moment an output is read by something else, it is evidence
+whatever the step is called.**
+
+### 7.23.6 `BUILD_SKIPPED` is a class, and the general fix found the next instance immediately
+
+`ci/check_build_precondition.py` — a static screen over workflow YAML, three
+rules:
+
+- **BP1 `skip_flag_with_exit_zero`** — a script that writes a gated env name
+  **and** exits 0 in the same body.  A *conjunction*, not a string match: two
+  planted arms assert each half alone stays clean, because a rule that reddens
+  ordinary provisioning steps trains people to ignore it.
+- **BP2 `dead_guard`** — an `if: env.X != '1'` whose writer does not exist.
+- **BP3 `build_step_does_not_verify_its_artifact`** — a `Build ` step that
+  publishes a path without asserting the path exists.
+
+**BP2 fired on my own tree on its first run, 38 times.**  §7.22 left the
+downstream `BUILD_SKIPPED` guards in place "so the change reads as one deletion
+rather than thirty".  That was wrong and I am recording it as wrong: a guard
+whose writer does not exist is not inert, it is **dormant**.  It reads in review
+exactly like a live guard, and one added line writing that name re-arms all 38
+at once.  All 38 are deleted.
+
+**BP3 found a second real defect**: `conformance.yml`'s Build step published
+`VULKAN_EP_LIB` without asserting `libonnxruntime_vulkan_ep.so` exists.  Fixed.
+
+No YAML parser, deliberately — the `lane-checks` job installs only
+pytest/onnx/numpy, and *a screen skipped because an import failed is a screen
+that does not exist*.  If the block structure it keys on stops matching it
+reports `ERROR(instrument=no_steps_parsed)`, never `PASS`.
+
+`ci/negative_control_build_precondition.py`: 16 arms, **1 LIVE / 2 REPLAYED /
+13 PLANTED**.  The REPLAYED pair reads the real `BUILD_SKIPPED=1; exit 0` bytes
+out of `git show 607056a:.github/workflows/ci.yml` rather than planting them.
+
+**The control caught a bug in the screen on its first run.**  `screen()`
+returned exit 1 and never printed a `FAIL(condition=...)` token — `_fail()`
+existed and was never called.  A red step with no condition name is exactly what
+the R13 vocabulary exists to prevent, and the screen enforcing it had the
+defect.
+
+### 7.23.7 Flake witness: the name must survive the transport
+
+An intermittent failed the coordinator's merge gate — one red, six greens, and
+**the failing test's name was lost to a truncated log tail**.  A red with no
+subject is worse than no signal: it teaches people to press re-run.
+
+Two separate failures there, so two mechanisms in
+`ci/check_flake_witness.py`:
+
+1. **Transport.**  Every failing test id is re-emitted as a
+   `::error title=...::` workflow annotation, which GitHub stores as check-run
+   metadata rather than log bytes and therefore **cannot truncate**, and is
+   reprinted in a tail block (log tails survive when heads do not).
+2. **Accumulation.**  A 1-in-40 is invisible to any single run *by
+   construction* — every individual run of it is an ordinary red or an ordinary
+   green.  It exists only in the join across runs, and nothing was doing that
+   join.  An append-only ledger keyed by (commit, lane, suite, run, test id)
+   answers one question: **did one id, at one commit, in one suite, both fail
+   and not-fail?**  If yes: `FAIL(condition=intermittent)`, and *the commit is
+   exonerated and the test is not*.
+
+Three shapes that look like a flake and are not, each kept green deliberately:
+a **regression** (two commits), a **portability difference** (two lanes), and a
+**test that stopped running** (`INCOMPARABLE`, and it names
+`check_suite_productivity` as whose defect class that is).  pytest names only
+its failures, so the complement is recorded as `NOT_FAILED`, never `PASSED` —
+the inference is stated rather than hidden.
+
+`ci/negative_control_flake_witness.py`: 13 arms, **1 LIVE / 1 REPLAYED / 11
+PLANTED**, all fire.
+
+**And the hunt produced a finding of its own.**  §7.22.8 recorded
+`vk::barrier::tests::backend_probe_writes_legacy_token` failing about **1 run in
+9** on Linux.  Forty consecutive `cargo test --lib` runs at `d46327b`:
+**zero failures, 40/40 green.**  Under the old rate that is p ≈ 0.009.
+Something fixed it and nobody recorded fixing it — which is precisely the state
+the ledger exists to end.  Two of those forty logs are tracked under
+`ci/fixtures/flake-witness/` so the control's only non-planted arm cannot
+quietly vanish on a hosted runner.
+
+### 7.23.8 What this section does not claim
+
+- **It does not claim any of it works in GitHub Actions.**  Nothing here ran in
+  a runner.  Local runs are not lanes and the inventory statuses say so.
+- **It does not claim the flake witness can find a flake yet.**  It buys the
+  *second* observation cheaply; it does not buy the first.  On a hosted runner
+  with no cache the ledger holds one run and the check can only annotate, never
+  conclude.  `--require-history` exists so a lane can refuse to pretend
+  otherwise, and **no lane sets it yet.**
+- **It does not claim `backend_probe_*` is fixed.**  It claims 40 runs did not
+  reproduce it and that nobody has recorded a repair.  Trinity owns that global.
+- **It does not claim the criterion-10 divergence is understood.**  It claims it
+  is deterministic, monotone by depth, confined to layer 31 key/value, and not
+  an instrument error.  Why is Mouse's and Switch's.
+- **It does not claim the floors are tight.**  A floor is a lower bound on
+  *work* and every lower bound below the current value has slack by
+  construction.  There is still no `--relax`: lowering one is an edit to a
+  tracked file with a reason beside it.
+- **No timing figure appears above and none is quotable from any of it.**
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---

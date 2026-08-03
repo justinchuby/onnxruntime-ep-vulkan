@@ -1,0 +1,76 @@
+   Compiling onnxruntime-ep-vulkan v0.28.0 (C:\Users\justinchu\dev\ep-vulkan-link\rust)
+warning: unexpected `cfg` condition value: `a-feature-that-does-not-exist`
+  --> tests\cdylib_load.rs:55:7
+   |
+55 | #[cfg(feature = "a-feature-that-does-not-exist")]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+   |
+   = note: no expected values for `feature`
+   = help: consider adding `a-feature-that-does-not-exist` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused imports: `CreateEpFactoriesFn`, `LogProbe`, `ReleaseEpFactoryFn`, and `run_registration_scenario`
+  --> tests\cdylib_load.rs:25:16
+   |
+25 | use mock_ort::{CreateEpFactoriesFn, LogProbe, ReleaseEpFactoryFn, run_registration_scenario};
+   |                ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `library_file_name` is never used
+  --> tests\cdylib_load.rs:28:4
+   |
+28 | fn library_file_name() -> &'static str {
+   |    ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `locate_library` is never used
+  --> tests\cdylib_load.rs:44:4
+   |
+44 | fn locate_library() -> Option<PathBuf> {
+   |    ^^^^^^^^^^^^^^
+
+warning: function `check_counters_export` is never used
+   --> tests\cdylib_load.rs:138:4
+    |
+138 | fn check_counters_export(lib: &libloading::Library, path: &Path) {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `onnxruntime-ep-vulkan` (test "cdylib_load") generated 5 warnings (run `cargo fix --test "cdylib_load" -p onnxruntime-ep-vulkan` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 21.68s
+     Running tests\cdylib_load.rs (rust\target\release\deps\cdylib_load-b6caf1b7c59ba806.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\dump_capabilities.rs (rust\target\release\deps\dump_capabilities-b1505621ad37e834.exe)
+
+running 6 tests
+test json_output_is_well_formed_enough_to_diff ... ok
+test every_contrib_row_is_printed_with_a_real_baseline ... ok
+test no_arguments_is_an_error_not_an_empty_success ... ok
+test an_unrecognised_argument_is_rejected ... ok
+test dump_lists_every_registered_row_with_a_schema_baseline_column ... ok
+test dump_reports_the_ort_version_window ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running tests\host_registration.rs (rust\target\release\deps\host_registration-8908e3e155052870.exe)
+
+running 1 test
+test a_mock_ort_host_can_register_use_and_release_the_plugin ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.68s
+
+     Running tests\validation_control.rs (rust\target\release\deps\validation_control-8809626ec2b9846c.exe)
+
+running 3 tests
+test the_require_flag_turns_an_unavailable_layer_into_a_failure ... ok
+test a_planted_vulkan_violation_is_caught_by_the_validation_layer ... ok
+test a_clean_run_produces_no_validation_errors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s
+

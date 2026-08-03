@@ -1,0 +1,22 @@
+   Compiling onnxruntime-ep-vulkan v0.28.0 (/mnt/c/Users/justinchu/dev/ep-vulkan-link/rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running tests/portability.rs (/home/justinchu/link-linux-target/debug/deps/portability-c21a2182905a1a24)
+
+running 14 tests
+test a_cast_is_not_accepted_as_a_fix ... ok
+test a_module_that_never_touches_the_alias_may_spell_whatever_it_likes ... ok
+test accepts_the_gated_alias_that_fixed_it ... ok
+test detects_a_planted_one_armed_fork ... ok
+test accepts_the_alias_that_fixed_it_and_the_abi_s_own_c_int ... ok
+test detects_the_spelled_width_that_blocked_the_linux_lane ... ok
+test detects_the_ungated_binding_that_broke_the_linux_lane ... ok
+test ignores_mentions_in_comments_and_docs ... ok
+test p3_does_not_read_literals_or_identifiers_as_type_positions ... ok
+test p3_module_spans_do_not_leak_into_the_next_module ... ok
+test platform_forks_have_both_arms ... ok
+test platform_conditional_bindings_are_cfg_gated ... ok
+test width_varying_abi_values_are_carried_as_the_alias ... ok
+test platform_fork_inventory_is_small_enough_to_review ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.90s
+

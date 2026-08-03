@@ -1,0 +1,398 @@
+
+[ORACLE STATUS] Q/DQ-23 ReferenceEvaluator: SAFE (raises): ReferenceEvaluator raises TypeError for DQ-23 output_dtype in this environment (onnx 1.22.0). The fallback is live but detectable. Detail: Issues with types [<class 'numpy.ndarray'>, <class 'numpy.float32'>, <class 'numpy.uint8'>] and attributes ['axis', 'block_size', 'output_dtype'] and linked attributes=[] (operator 'DequantizeLinear_21').
+F.                                                                       [100%]
+================================== FAILURES ===================================
+____________ test_criterion_10_three_consecutive_attributed_match _____________
+
+phi35_model_path = WindowsPath('C:/Users/justinchu/.foundry/cache/models/Microsoft/Phi-3.5-mini-instruct-cuda-gpu/cuda-int4-rtn-block-32/phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx')
+require_vulkan = None
+tmp_path = WindowsPath('C:/Users/justinchu/AppData/Local/Temp/pytest-of-justinchu/pytest-291/test_criterion_10_three_consec0')
+
+    @pytest.mark.slow
+    def test_criterion_10_three_consecutive_attributed_match(
+        phi35_model_path: pathlib.Path,
+        require_vulkan,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """One session, three consecutive runs, every one compared and the series attributed.
+    
+        This is the criterion-10 record. It asserts, in this order:
+    
+          1. the EP is in the session at create time (Guard A — necessary, never sufficient);
+          2. three consecutive runs of the *same* session on identical feeds are bit-identical
+             to one another across all 65 outputs (an output that differs between runs was
+             never written — a memory hazard, not an arithmetic result, and not a MATCH);
+          3. each run agrees with a CPU-only run of the same artifact on argmax and top-10;
+          4. **the series is attributed** — ORT's own profiler reports a positive multiple of
+             three ``VulkanExecutionProvider`` fused-island executions;
+          5. the derived series verdict is ``MATCH``, which by construction it cannot be if
+             (4) failed: it would be ``UNATTRIBUTED``.
+        """
+        device_index = os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0")
+        feeds = _build_phi35_feeds()
+    
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        opts.enable_profiling = True
+        opts.profile_file_prefix = str(tmp_path / f"criterion10_dev{device_index}")
+    
+        # The claim log is armed before session creation because it is written during
+        # GetCapability.  It is the second source for per-output coverage, used only where it
+        # accuses us: an ancestor we did not claim is not ours.  The DLL caches env vars at
+        # load on Windows, but CLAIM_LOG is read per session, so setting it here is enough —
+        # and the join count is asserted downstream rather than assumed.
+        claim_log_path = tmp_path / f"criterion10_claims_dev{device_index}.jsonl"
+        os.environ["ONNXRUNTIME_EP_VULKAN_CLAIM_LOG"] = str(claim_log_path)
+        try:
+            vk_sess = ort.InferenceSession(str(phi35_model_path), opts, providers=m.EP_PROVIDERS)
+        finally:
+            os.environ.pop("ONNXRUNTIME_EP_VULKAN_CLAIM_LOG", None)
+        counters_path = os.environ.get("ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE")
+    
+        if m.EP_NAME not in vk_sess.get_providers():
+            m.write_unmeasured_verdict(
+                counters_path,
+                f"{m.EP_NAME} absent from get_providers(); criterion-10 series not run.",
+                device_index=device_index,
+                artifact=str(phi35_model_path),
+            )
+            pytest.fail(
+                f"[Device {device_index}] {m.EP_NAME} not registered: {vk_sess.get_providers()}. "
+                "A criterion-10 series measured without the EP in the session is CPU-vs-CPU."
+            )
+    
+        vk_runs = m.run_session_n_times(vk_sess, feeds, REQUIRED_RUNS)
+    
+        # Attribution first, and unconditionally: the verdict below cannot be built without it.
+        profile_path = vk_sess.end_profiling()
+        try:
+            attribution = m.attribution_with_coverage_from_profile(
+                profile_path, str(phi35_model_path), claim_log=claim_log_path
+            )
+        except m.InstrumentError as exc:
+            # ERROR(instrument), R13. No verdict is written: an instrument outage is not a
+            # detection and must not be recorded as one.
+            raise m.InstrumentError(
+                f"[Device {device_index}] criterion-10 attribution instrument failure "
+                f"(fix the harness, not the EP): {exc}"
+            ) from exc
+        _counters_value, _counters_reason = m.read_counters_witness(counters_path)
+        attribution = attribution.with_counters_witness(_counters_value, reason=_counters_reason)
+    
+        # CPU oracle: a CPU-only run of the same artifact (§10.0 point 4 — not a golden file).
+        cpu_opts = ort.SessionOptions()
+        cpu_opts.log_severity_level = 3
+        cpu_sess = ort.InferenceSession(
+            str(phi35_model_path), cpu_opts, providers=["CPUExecutionProvider"]
+        )
+        cpu_out = cpu_sess.run(None, feeds)
+    
+        # Cross-run identity across all outputs. A run that differs from run 1 contains an
+        # output nobody wrote; that run did not agree with anything and is DISAGREE.
+        #
+        # And, since 2026-08-02, the CPU oracle over **all** outputs rather than the logits
+        # alone. Cross-run identity proves determinism; only the oracle proves correctness, and
+        # a deterministically wrong KV write passes the first while failing nothing. The two
+        # counts are recorded under two names because they were once read off one:
+        # `outputs_compared: 65` counted cross-run comparisons and was quoted as sixty-five
+        # oracle comparisons.
+        comparisons: list[str] = []
+        per_run_facts: list[dict] = []
+        cross_run_report: list[str] = []
+        for i, run in enumerate(vk_runs):
+            identical, differing = m.outputs_bit_equal(vk_runs[0], run)
+            outcome, facts = _compare_run_to_cpu(run, cpu_out)
+            oracle_outcome, oracle_facts = m.compare_all_outputs_to_cpu(run, cpu_out)
+            facts.update(oracle_facts)
+            # The unit, per output, in depth order.  §10.0.4 prefers the ratio, and `atol` is
+            # an absolute bound applied to tensors whose scale grows with layer depth — so the
+            # absolute residual rises for a *correct* implementation and the curve is a plot of
+            # magnitude, not of error.  ULPs denominate the residual in the representation's
+            # own spacing, which is the quantity that should be flat if nothing is wrong.
+            #
+            # `median_ulp_diff` is the headline and `max_ulp_diff` is not: a cancellation
+            # element inflates the ULP max by exactly the mechanism that inflates
+            # `max_rel_diff`, so promoting one max over another would have reinstated the
+            # artefact in a new unit (R11).  All four are recorded so a real step cannot hide
+            # behind a robust average.
+            facts["ulp_curve"] = [
+                {
+                    "output_index": e.get("index", j),
+                    "name": e.get("name"),
+                    "median_ulp_diff": e.get("median_ulp_diff"),
+                    "p99_ulp_diff": e.get("p99_ulp_diff"),
+                    "max_ulp_diff": e.get("max_ulp_diff"),
+                    "ulp_cancellation_elements": e.get("ulp_cancellation_elements"),
+                    "max_abs_diff": e.get("max_abs_diff"),
+                }
+                for j, e in enumerate(oracle_facts.get("per_output", []))
+            ]
+            _meds = [
+                c["median_ulp_diff"]
+                for c in facts["ulp_curve"]
+                if c["median_ulp_diff"] is not None
+            ]
+            facts["ulp_curve_median_over_outputs"] = (
+                float(np.median(_meds)) if _meds else _ULP_UNOBSERVABLE
+            )
+            facts["ulp_curve_worst_median"] = float(max(_meds)) if _meds else _ULP_UNOBSERVABLE
+            facts["ulp_curve_headline"] = "median_ulp_diff"
+            facts["ulp_predicted_ceiling"] = m.ULP_PREDICTED_CEILING
+            facts["ulp_outliers"] = m.ulp_outliers([c["median_ulp_diff"] for c in facts["ulp_curve"]])
+            facts["ulp_prediction_on_record"] = (
+                "bench/results/criterion10-ulp-prediction.md: flat at 1-3 ULP across all 32 "
+                "layers. Flat => no defect; a step => a located one. Recorded before measuring."
+            )
+            facts["logits_oracle_outcome"] = outcome
+            facts["all_output_oracle_outcome"] = oracle_outcome
+    
+            # The all-output oracle can only make the outcome stricter, never laxer: a logits
+            # AGREE with a KV DISAGREE is a DISAGREE.
+            if oracle_outcome != m.COMPARISON_AGREE:
+                outcome = oracle_outcome
+            if not identical:
+                outcome = m.COMPARISON_DISAGREE
+                facts["cross_run_differing_outputs"] = differing[:10]
+            facts["cross_run_identical_to_run1"] = identical
+            facts["cross_run_outputs_compared"] = len(run)
+    
+            # The fifth costume, per run.  `oracle_outputs_within_tolerance = 65` counts
+            # agreements; it does not count *evidence*.  An output no claimed node reaches was
+            # compared against itself, and 65 of those is 0.0 == 0.0 in a fifth costume: not
+            # zeros, not constants, but two sides of one computation, which no degeneracy
+            # guard can see.  These two numbers are recorded under two names because they were
+            # once read off one.
+            _cov = attribution.output_coverage
+            if _cov is None:
+                facts["oracle_outputs_attributed"] = m.OUTPUT_COVERAGE_NOT_COMPUTED
+                facts["oracle_outputs_vacuous"] = m.OUTPUT_COVERAGE_NOT_COMPUTED
+            else:
+                names = [o.name for o in vk_sess.get_outputs()]
+                tokens = [_cov.token_for(n) for n in names[: len(run)]]
+                facts["oracle_outputs_attributed"] = tokens.count(m.OUTPUT_EP_COVERED)
+                facts["oracle_outputs_vacuous"] = tokens.count(m.OUTPUT_CPU_ONLY)
+                facts["oracle_outputs_coverage_unobservable"] = tokens.count(
+                    m.OUTPUT_UNOBSERVABLE
+                )
+                failing = [
+                    names[j] for j in oracle_facts.get("oracle_failing_indices", [])
+                    if j < len(names)
+                ]
+                facts["coverage_instrument_refuted_by"] = _cov.refuted_by(failing)
+    
+            comparisons.append(outcome)
+            per_run_facts.append(facts)
+            cross_run_report.append(
+                f"    run {i + 1}: {outcome}  argmax={facts['argmax_vk']} "
+                f"(cpu {facts['argmax_cpu']})  top10={facts['top10_overlap']}/10  "
+                f"cross-run identical (all {len(run)}): {identical}\n"
+                f"             oracle: {oracle_outcome} over "
+                f"{oracle_facts['oracle_outputs_compared']}/{oracle_facts['oracle_outputs_total']} "
+                f"outputs, {oracle_facts['oracle_outputs_degenerate']} degenerate, "
+                f"worst max_abs_diff="
+                f"{oracle_facts['oracle_max_abs_diff_over_all_outputs']:.6g} "
+                f"at output {oracle_facts['oracle_worst_output_index']}\n"
+                f"             ULP (headline): median-over-outputs="
+                f"{facts['ulp_curve_median_over_outputs']}, "
+                f"worst per-output median={facts['ulp_curve_worst_median']}, "
+                f"worst max_ulp={oracle_facts.get('oracle_max_ulp_diff_over_all_outputs')} "
+                f"at output {oracle_facts.get('oracle_worst_ulp_output_index')} "
+                f"(max is cancellation-sensitive; read the median)"
+            )
+    
+        _counters_doc = _read_counters_doc(counters_path)
+        _device_name = device_name_from_run(_counters_doc)
+        _route = kv_writeback_route(_counters_doc)
+        # The order the SESSION reports, taken from the session, never from a stored container.
+        _output_names = [o.name for o in vk_sess.get_outputs()]
+        _kv_depth.assert_names_are_session_order(_output_names)
+        _depth_curve = _kv_depth.depth_curve(
+            [c["median_ulp_diff"] for c in per_run_facts[0]["ulp_curve"]], _output_names
+        )
+        _depth_exceedances = _kv_depth.depth_exceedances(_depth_curve)
+    
+        series = m.AttributedRunSeries.from_runs(
+            comparisons=comparisons,
+            attribution=attribution,
+            artifact=str(phi35_model_path),
+            device_index=device_index,
+            device_name=_device_name,
+        )
+    
+        print(f"\n[M0 criterion 10 / Device {device_index}] {phi35_model_path.name}")
+        print(f"    device (read off the run, not the selector): {_device_name}")
+        print(
+            f"    KV writeback route: {_route['route']} "
+            f"(device-bound {_route.get('outputs_device_bound')}, "
+            f"host-resident {_route.get('outputs_host_resident')}, "
+            f"authority grants {_route.get('alloc_device_authority_grants')})"
+        )
+        print("\n".join(cross_run_report))
+        print(f"    attribution: {series.describe()}")
+        print(f"    executed_by: {attribution.executed_by}")
+        print(f"    output coverage: {attribution.coverage_state}")
+        _cov = attribution.output_coverage
+        if _cov is not None and _cov.cpu_only_count:
+            print(
+                f"    WARNING: {_cov.cpu_only_count} of {len(_cov.output_names)} outputs are "
+                "CPU-ONLY — their oracle comparison is our-CPU against ORT's-CPU and is not "
+                "evidence.  First few: " + ", ".join(_cov.cpu_only_names[:5])
+            )
+        print(f"    series verdict: {series.verdict}")
+        print(
+            "    KV residual by LAYER (median ULP, key/value, depth order — not the "
+            "alphabetised order in the record's per_output dict):"
+        )
+        print(
+            "      "
+            + "  ".join(
+                f"L{row['layer']}:{row['key']}/{row['value']}" for row in _depth_curve
+            )
+        )
+        print(
+            f"    layers over the predicted {_kv_depth.LAYER_PREDICTED_CEILING} ULP band: "
+            f"{_depth_exceedances or 'none'}"
+        )
+    
+        # The verdict travels with the artifact it was measured on, into the counters JSON
+        # that epctl, bench/ and the census read.  A caveat in a pytest caveat is not attached
+        # to the number (§10.0 clause 5).
+        if counters_path:
+            try:
+                m.write_equivalence_record(counters_path, series.as_verdict())
+            except Exception as exc:  # noqa: BLE001
+                print(f"    WARNING: could not write equivalence record: {exc}")
+    
+        # The lane artifact.  Written before the assertion so a failing series is recorded too:
+        # a criterion whose evidence only exists when it passes is not evidence.
+        try:
+            _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            record = series.to_record()
+            record["per_run"] = per_run_facts
+            record["required_runs"] = REQUIRED_RUNS
+            record["kv_writeback_route"] = _route
+            # The output order, explicitly, in the order the SESSION reports it.  The record is
+            # written with `sort_keys=True`, so `output_coverage.per_output` is alphabetised —
+            # and this model's session order is *not* its own sort (`present.10` sorts before
+            # `present.2`).  A consumer that took that dict's key order for the output order
+            # would attribute every KV residual to the wrong layer, reproducibly and on every
+            # device.  It nearly did.
+            record["output_names"] = _output_names
+            record["output_names_order"] = (
+                "session order (sess.get_outputs()); NOT the alphabetised key order of "
+                "output_coverage.per_output, which sort_keys=True produces"
+            )
+            record["kv_depth_curve"] = _depth_curve
+            record["kv_depth_exceedances"] = _depth_exceedances
+            record["kv_depth_largest_step"] = {
+                "key": _kv_depth.largest_step(_depth_curve, "key"),
+                "value": _kv_depth.largest_step(_depth_curve, "value"),
+            }
+            record["device_name_source"] = (
+                "counters alloc_device_frame_session_devices — the name the run reported, not "
+                "the ONNXRUNTIME_EP_VULKAN_DEVICE selector that requested it"
+            )
+            out = _RESULTS_DIR / f"criterion10-dev{device_index}.json"
+            out.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+            print(f"    record: {out}")
+        except OSError as exc:
+            print(f"    WARNING: could not write criterion-10 record: {exc}")
+    
+        # The coverage instrument's own falsifier, checked before anything is read off it
+        # (R9).  Both sides of a CPU-ONLY output are the same computation, so a disagreement
+        # there refutes the labelling — a finding about the harness, never about the EP.
+        _refuted = sorted(
+            {n for f in per_run_facts for n in f.get("coverage_instrument_refuted_by", [])}
+        )
+        if _refuted:
+            raise m.InstrumentError(
+                f"[Device {device_index}] outputs {_refuted} were labelled CPU-ONLY yet "
+                "disagree with the CPU oracle.  The per-output coverage instrument is wrong "
+                "(topology/trace join, or ORT eliminated a node whose event we relied on).  "
+                "ERROR(instrument): nothing about the EP may be read off this run (R13)."
+            )
+    
+>       series.assert_closes_criterion_10(required_runs=REQUIRED_RUNS)
+
+tests\ops\test_criterion10.py:552: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <_verdict.AttributedRunSeries object at 0x0000012287DFD9E0>
+
+    def assert_closes_criterion_10(
+        self,
+        *,
+        required_runs: int = 3,
+        require_second_witness: bool = True,
+    ) -> None:
+        """Assert the M0 criterion-10 condition, quoting what was observed either way.
+    
+        ``AssertionError`` here is a **finding**; every path that could fail without an
+        observation raises :class:`InstrumentError` upstream instead (R13).
+    
+        ``require_second_witness`` (default **True**, round 26): the canonical M0 record
+        may not be produced by a run in which the split-frame check was never performable.
+        Failing to arm the counters is a harness outage, so it raises
+        :class:`InstrumentError` — ``ERROR(instrument)``, never a detection about the EP.
+        """
+        v = self.as_verdict()
+        att = self._attribution
+        assert self._runs >= required_runs, (
+            f"[criterion 10] series has {self._runs} run(s), needs {required_runs}. "
+            f"Observed: {self.describe()}"
+        )
+        # Verdict before uniformity: UNATTRIBUTED is the more informative red and must not
+        # be reported as a uniformity complaint.  Clause 4 — the two are never folded.
+>       assert v.verdict == VERDICT_MATCH, (
+            f"[criterion 10] series verdict is {v.verdict}, not MATCH.\n{v.explain()}\n"
+            f"Per-run comparisons: {self._comparisons}"
+        )
+E       AssertionError: [criterion 10] series verdict is DIVERGENT, not MATCH.
+E       model_output_equivalence = DIVERGENT — this EP executed and an output disagrees with the CPU oracle. Our kernels computed the wrong answer. 3 fused-island executions by VulkanExecutionProvider — NOT 3 graph nodes; one island can cover hundreds of graph nodes (Phi-3.5: 355 of 363 in a single island as of 2026-08-01, so 1 per run is healthy; the claimed count moves, the island count does not). Other providers: CPUExecutionProvider=24. Presence signal only — read coverage from the counters JSON, never from this number. The triple and the wall-clock ratio may not be reported. Owner: Mouse/Switch.
+E       Per-run comparisons: ['DISAGREE', 'DISAGREE', 'DISAGREE']
+
+tests\ops\_verdict.py:1710: AssertionError
+---------------------------- Captured stderr setup ----------------------------
+
+[EP smoke] ctypes.CDLL(onnxruntime_vulkan_ep.dll): OK — DLL dependencies resolved.
+[EP smoke] Calling ort.register_execution_provider_library('VulkanExecutionProvider') ...
+[EP smoke] ort.register_execution_provider_library: OK.
+[vulkan-ep] INFO: [§8.9.18] proof ledger: 103/103 entries live, 0 demoted
+[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [§10.0.1 R12]: com.microsoft::MatMulNBits x1 [com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/static/scales] DEVICE-UNATTRIBUTED: proven by evidence/cases/matmulnbits_f16_scales.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+---------------------------- Captured stdout call -----------------------------
+
+[M0 criterion 10 / Device 0] phi-3.5-mini-instruct-cuda-int4-rtn-block-32.onnx
+    device (read off the run, not the selector): UNOBSERVABLE
+    KV writeback route: UNOBSERVABLE (device-bound None, host-resident None, authority grants None)
+    run 1: DISAGREE  argmax=30751 (cpu 30751)  top10=10/10  cross-run identical (all 65): True
+             oracle: DISAGREE over 65/65 outputs, 0 degenerate, worst max_abs_diff=0.0625 at output 0
+             ULP (headline): median-over-outputs=1.0, worst per-output median=12.0, worst max_ulp=255658.0 at output 0 (max is cancellation-sensitive; read the median)
+    run 2: DISAGREE  argmax=30751 (cpu 30751)  top10=10/10  cross-run identical (all 65): True
+             oracle: DISAGREE over 65/65 outputs, 0 degenerate, worst max_abs_diff=0.0625 at output 0
+             ULP (headline): median-over-outputs=1.0, worst per-output median=12.0, worst max_ulp=255658.0 at output 0 (max is cancellation-sensitive; read the median)
+    run 3: DISAGREE  argmax=30751 (cpu 30751)  top10=10/10  cross-run identical (all 65): True
+             oracle: DISAGREE over 65/65 outputs, 0 degenerate, worst max_abs_diff=0.0625 at output 0
+             ULP (headline): median-over-outputs=1.0, worst per-output median=12.0, worst max_ulp=255658.0 at output 0 (max is cancellation-sensitive; read the median)
+    attribution: 3 VulkanExecutionProvider fused-island execution(s) across 3 consecutive run(s) of one session = 1 island(s) per run. This counts ISLAND EXECUTIONS, not graph nodes: Phi-3.5 fuses 355 of 363 graph nodes into one island, so 3 run(s) of a healthy session report exactly 3. A reader who takes this for a graph-node count will read a catastrophe where the record says success.
+    executed_by: {'CPUExecutionProvider': 24, 'VulkanExecutionProvider': 3}
+    output coverage: 65 output(s) reach VulkanExecutionProvider, 0 are CPU-only (their oracle comparison is vacuous), 0 unobservable; over 65 graph output(s), from 9 named node event(s) and a claim log joining 355 node(s)
+    series verdict: DIVERGENT
+    KV residual by LAYER (median ULP, key/value, depth order — not the alphabetised order in the record's per_output dict):
+      L0:0.0/0.0  L1:0.0/1.0  L2:0.0/1.0  L3:1.0/1.0  L4:1.0/1.0  L5:1.0/1.0  L6:1.0/1.0  L7:1.0/1.0  L8:1.0/1.0  L9:1.0/1.0  L10:1.0/1.0  L11:1.0/1.0  L12:1.0/1.0  L13:1.0/1.0  L14:1.0/1.0  L15:0.0/1.0  L16:1.0/1.0  L17:2.0/1.0  L18:1.0/1.0  L19:1.0/1.0  L20:1.0/1.0  L21:1.0/1.0  L22:1.0/1.0  L23:1.0/1.0  L24:2.0/2.0  L25:1.0/1.0  L26:2.0/2.0  L27:2.0/2.0  L28:2.0/2.0  L29:2.0/2.0  L30:3.0/3.0  L31:4.0/4.0
+    layers over the predicted 3.0 ULP band: [{'layer': 31, 'part': 'key', 'median_ulp_diff': 4.0}, {'layer': 31, 'part': 'value', 'median_ulp_diff': 4.0}]
+    record: C:\Users\justinchu\dev\ep-vulkan-link\bench\results\criterion10-dev0.json
+---------------------------- Captured stderr call -----------------------------
+[vulkan-ep] INFO: [§8.9.18] proof ledger: 103/103 entries live, 0 demoted
+[vulkan-ep] INFO: session claims 8 form(s) whose proof frame is UNATTRIBUTED [§10.0.1 R12]: Gather x1 [ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/gather_f16_dyn.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; Mul x64 [ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/mul_f16_dyn.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; Sigmoid x32 [ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1] DEVICE-UNATTRIBUTED: proven by evidence/cases/sigmoid_f16_dyn.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; SimplifiedLayerNormalization x1 [ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/simplified_layer_norm_f16.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; com.microsoft::GroupQueryAttention x32 [com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache] DEVICE-UNATTRIBUTED: proven by evidence/cases/group_query_attention_f16.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; com.microsoft::MatMulNBits x161 [com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales] DEVICE-UNATTRIBUTED: proven by evidence/cases/matmulnbits_f16_scales_dyn.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; com.microsoft::SkipSimplifiedLayerNormalization x63 [com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none] DEVICE-UNATTRIBUTED: proven by evidence/cases/skip_simplified_layer_norm_f16_slot3.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity; com.microsoft::SkipSimplifiedLayerNormalization x1 [com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none] DEVICE-UNATTRIBUTED: proven by evidence/cases/skip_simplified_layer_norm_f16.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU — the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity. The proofs are sound; what cannot be checked is whether they were obtained on the hardware this run opened, because the entry records a selector ordinal and a selector is a request rather than an identity. Re-prove with gen_proof_ledger.py --append on this device to replace the ordinal with a device name.
+
+=== R13 LANE SUMMARY — one token per terminal state ===
+PASS               : 1
+FAIL(condition)    : 1
+ERROR(instrument)  : 0
+XPASS(stale expect): 0
+  FAIL(condition)   tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match
+                    AssertionError: [criterion 10] series verdict is DIVERGENT, not MATCH.
+=== end R13 lane summary ===
+=========================== short test summary info ===========================
+FAILED tests/ops/test_criterion10.py::test_criterion_10_three_consecutive_attributed_match
+1 failed, 1 passed in 8.88s

@@ -178,6 +178,31 @@ jobs:
         # was made lazy, green after, same environment both times.
         run: python ci/negative_control_suite_productivity.py
 
+      - name: Build-precondition screen (a lane that could not build must not report)
+        # The general case of the BUILD_SKIPPED defect, screened statically so it fires
+        # on the pull request that introduces the next one rather than on the incident
+        # that reveals it. BP1: no step may write a gating env name and exit 0 in the
+        # same script. BP2: no `if: env.NAME` may read a name nothing writes -- a dormant
+        # guard is re-armable by one line. BP3: a `Build *` step must assert its own
+        # artifact exists.
+        run: |
+          python ci/check_build_precondition.py \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            .github/workflows/ci.yml .github/workflows/conformance.yml
+
+      - name: Build-precondition negative control (demand red on each rule)
+        # Includes a REPLAYED arm: the real `BUILD_SKIPPED=1; exit 0` text read out of
+        # this repository's own history at 607056a, not a plant.
+        run: python ci/negative_control_build_precondition.py
+
+      - name: Flake-witness negative control (demand red on an intermittent)
+        # A flake witness on a repo with no reproducing flake is silent, and silence from
+        # a check is indistinguishable from silence from no check. This control makes it
+        # go red on demand and — just as importantly — makes it STAY GREEN on the three
+        # shapes that look like a flake and are not: a regression across commits, a
+        # portability difference across lanes, and a test that stopped running.
+        run: python ci/negative_control_flake_witness.py
+
       - name: Tautological-assertion screen (no GPU, whole tree)
         # Scans Rust and Python sources for assertions that pass without reading their
         # subject. It reports 0 detections over the tree today and exists as a regression
@@ -389,17 +414,23 @@ jobs:
       # -D warnings: warning-clean is a CI requirement.
       #
       # THE ESCAPE THAT USED TO BE HERE. Until 2026-08-03 a missing `rust/Cargo.toml`
-      # set `BUILD_SKIPPED=1`, and every subsequent step in this lane carries
+      # set `BUILD_SKIPPED=1`, and every subsequent step in this lane carried
       # `if: env.BUILD_SKIPPED != '1'`. So the whole lane -- build, clippy, every cargo
       # test, the pytest suite, all three Criterion 10 gates and both negative controls
       # -- would no-op and the job would report SUCCESS. That was correct while the crate
       # was Tank's work in progress and there was nothing to build. The crate has been
       # tracked in git for a week: `rust/Cargo.toml` is not a state the tree can be in,
       # it is a broken checkout. Leaving the escape in meant one bad path or one
-      # sparse-checkout filter could turn both device lanes into green no-ops, which is
-      # the exact defect class this round is closing one layer up. It is now a hard
-      # failure, and `BUILD_SKIPPED` is left set to nothing rather than removed from the
-      # downstream `if:` expressions, so this reads as one deletion rather than thirty.
+      # sparse-checkout filter could turn both device lanes into green no-ops. It is now
+      # a hard failure.
+      #
+      # THE THIRTY GUARDS ARE ALSO GONE, and leaving them was a mistake I made in the
+      # same commit that removed the writer. The stated reason was that the change should
+      # "read as one deletion rather than thirty" -- but a guard whose writer does not
+      # exist is not inert, it is DORMANT: it reads in review exactly like a live guard,
+      # and the next person to add one line writing that name re-arms all thirty at once.
+      # ci/check_build_precondition.py rule BP2 fires on exactly that state and found this
+      # one on the tree that introduced it. BP1 makes the writer itself unaddable.
       # -------------------------------------------------------
       - name: Build Vulkan EP (cargo build --release)
         run: |
@@ -443,13 +474,11 @@ jobs:
       # different findings. Warnings remain clippy's to enforce.
       # -------------------------------------------------------
       - name: Compile all targets (cargo check --all-targets — compile errors, not lints)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo check --release --manifest-path rust/Cargo.toml --all-targets
 
       - name: Clippy (all warnings as errors)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo clippy --release --manifest-path rust/Cargo.toml \
@@ -462,14 +491,29 @@ jobs:
       #
       # No `if [ ! -f rust/Cargo.toml ] ... exit 0` escape: removed 2026-08-03 with the
       # one in the build step it depended on. It had become unreachable -- the build step
-      # set BUILD_SKIPPED on exactly that condition and this step is gated on it -- and an
-      # unreachable green-for-nothing branch reads in a diff exactly like a live waiver.
+      # set BUILD_SKIPPED on exactly that condition and this step was gated on it -- and
+      # an unreachable green-for-nothing branch reads in a diff exactly like a live
+      # waiver.
+      #
+      # Captured and floored 2026-08-03: `cargo test --test layering` prints
+      # `running 0 tests` / `test result: ok.` and exits ZERO if every test in the target
+      # is #[cfg]-ed out or the [[test]] entry is dropped from Cargo.toml. For a LINT
+      # that is the worst possible failure mode -- the step keeps its name and its green
+      # and stops asserting the thing it is named for.
       # -------------------------------------------------------
       - name: Layering lint (cargo test --test layering)
-        if: env.BUILD_SKIPPED != '1'
         run: |
+          set -o pipefail
+          mkdir -p bench/results/ci-lane
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
-            cargo test --test layering --manifest-path rust/Cargo.toml
+            cargo test --test layering --manifest-path rust/Cargo.toml \
+            2>&1 | tee bench/results/ci-lane/cargo-test-layering-linux.log
+
+      - name: Layering lint asserted something (productivity floor, libtest)
+        if: always()
+        run: python ci/check_suite_productivity.py
+          --suite "cargo test --test layering" --harness libtest --lane build-test-linux
+          bench/results/ci-lane/cargo-test-layering-linux.log
 
       # -------------------------------------------------------
       # Rust unit tests — 440 of them, and until 2026-08-01 NONE of
@@ -495,7 +539,6 @@ jobs:
       # a test-runner setting.
       # -------------------------------------------------------
       - name: Rust unit tests (cargo test --lib)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           set -o pipefail
           mkdir -p bench/results/ci-lane
@@ -509,7 +552,7 @@ jobs:
         # --strict flag for it. The 510 tests above are the ONLY thing in either lane that
         # can see the timestamp-period 52x blind spot, and they arrived in CI three days
         # ago; a filter typo that left three of them running would look identical here.
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: python ci/check_suite_productivity.py
           --suite "cargo test --lib" --harness libtest --lane build-test-linux
           bench/results/ci-lane/cargo-test-lib-linux.log
@@ -522,21 +565,47 @@ jobs:
       # rust/tests/portability.rs and had never been run by CI.
       # -------------------------------------------------------
       - name: Portability lint (cargo test --test portability)
-        if: env.BUILD_SKIPPED != '1'
         run: |
+          set -o pipefail
+          mkdir -p bench/results/ci-lane
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
-            cargo test --test portability --release --manifest-path rust/Cargo.toml
+            cargo test --test portability --release --manifest-path rust/Cargo.toml \
+            2>&1 | tee bench/results/ci-lane/cargo-test-portability-linux.log
+
+      - name: Portability lint asserted something (productivity floor, libtest)
+        # This lint is the one that catches a defect on the lane it does NOT affect —
+        # MSVC types OrtLoggingLevel c_int and GCC c_uint, so a spelled i32 compiles here
+        # and dies there, hours later, behind everything else. A silently-empty
+        # portability lint restores exactly the state that cost a day on 2026-08-02.
+        if: always()
+        run: python ci/check_suite_productivity.py
+          --suite "cargo test --test portability" --harness libtest --lane build-test-linux
+          bench/results/ci-lane/cargo-test-portability-linux.log
 
       # -------------------------------------------------------
       # The remaining integration targets, also never run in CI.
+      #
+      # FOUR CLAIMS UNDER ONE EXIT CODE. cdylib_load and host_registration are ONE test
+      # each; an aggregate floor cannot see either of them go silent behind the other
+      # two. So the floor entry for this step sets min_target_blocks = 4 and the checker
+      # fails, BY TARGET NAME, if any single `test result:` block executed zero.
       # -------------------------------------------------------
       - name: Remaining integration targets (cdylib_load, dump_capabilities, host_registration, validation_control)
-        if: env.BUILD_SKIPPED != '1'
         run: |
+          set -o pipefail
+          mkdir -p bench/results/ci-lane
           ORT_INCLUDE_DIR="$ORT_HOME/include" \
             cargo test --release --manifest-path rust/Cargo.toml \
             --test cdylib_load --test dump_capabilities \
-            --test host_registration --test validation_control
+            --test host_registration --test validation_control \
+            2>&1 | tee bench/results/ci-lane/cargo-test-integration-linux.log
+
+      - name: Integration targets asserted something (productivity floor, libtest)
+        if: always()
+        run: python ci/check_suite_productivity.py
+          --suite "cargo test --test cdylib_load,dump_capabilities,host_registration,validation_control"
+          --harness libtest --lane build-test-linux
+          bench/results/ci-lane/cargo-test-integration-linux.log
 
       # -------------------------------------------------------
       # Probe Vulkan loader — hard failure if no capable device.
@@ -546,7 +615,6 @@ jobs:
       # skipped for some reason" into a named red step that says why.
       # -------------------------------------------------------
       - name: Probe Vulkan loader (epctl --probe-loader)
-        if: env.BUILD_SKIPPED != '1'
         # Captured as well as printed. The capture is what lets the proof-ledger
         # portability screen below distinguish "no Vulkan device" from "a Vulkan device
         # that passed the gate and whose work the EP then declined". Without a loader
@@ -569,7 +637,6 @@ jobs:
       # ran without it and got a clean lavapipe baseline.
       # -------------------------------------------------------
       - name: Op-correctness + barrier-parity tests (pytest, lavapipe)
-        if: env.BUILD_SKIPPED != '1'
         env:
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
@@ -611,12 +678,38 @@ jobs:
       # same red on the step above and are not the same finding.
       # -------------------------------------------------------
       - name: Op-correctness step asserted something (productivity floor)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: python ci/check_suite_productivity.py
           --suite tests/ops --lane build-test-linux
           --lane-marker=bench/results/ci-lane/.lane-reached
           --emit-json bench/results/ci-lane/suite-productivity-linux.json
           bench/results/ci-lane/pytest-linux.log
+
+      # -------------------------------------------------------
+      # FLAKE WITNESS — the coordinator lost a failing test name to a truncated log on
+      # 2026-08-03: one red, six greens, and no subject. Two mechanisms, one step.
+      # (a) every failing id is re-emitted as a ::error:: annotation, which GitHub stores
+      #     as check-run metadata rather than log bytes and therefore cannot truncate;
+      # (b) the ids are appended to a ledger so the SECOND observation of a 1-in-40 is
+      #     cheap, since no single run can ever see an intermittent by construction.
+      # It runs on both harnesses and reports the WORSE of the two, so a red libtest
+      # cannot be hidden behind a green pytest.
+      # -------------------------------------------------------
+      - name: Flake witness (name the failure where truncation cannot reach it)
+        if: always()
+        run: |
+          rc=0
+          python ci/check_flake_witness.py \
+            --harness libtest --suite "cargo test --lib" --lane build-test-linux \
+            --ledger bench/results/ci-lane/flake-ledger-linux.jsonl \
+            --lane-marker bench/results/ci-lane/.lane-reached \
+            bench/results/ci-lane/cargo-test-lib-linux.log || rc=$?
+          python ci/check_flake_witness.py \
+            --harness pytest --suite tests/ops --lane build-test-linux \
+            --ledger bench/results/ci-lane/flake-ledger-linux.jsonl \
+            --lane-marker bench/results/ci-lane/.lane-reached \
+            bench/results/ci-lane/pytest-linux.log || rc=$?
+          exit $rc
 
       # -------------------------------------------------------
       # CRITERION 10 — the gate this lane did not carry until
@@ -653,11 +746,9 @@ jobs:
         # cannot load it" (a lane defect; token verdict_vocabulary_broken), prints the
         # module's sha256 and git-tracked status so two lanes can be diffed, and writes
         # the answer to the job summary instead of leaving it in a log.
-        if: env.BUILD_SKIPPED != '1'
         run: python ci/check_vocabulary.py --github-summary
 
       - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ${{ github.workspace }}/bench/results/ci-lane/counters-linux.json
         run: |
@@ -668,11 +759,9 @@ jobs:
             --workdir bench/results/ci-lane
 
       - name: Criterion 10 verdict gate (independent reader)
-        if: env.BUILD_SKIPPED != '1'
         run: python ci/check_verdict.py bench/results/ci-lane/verdict-linux.json
 
       - name: Criterion 10 verdict gate (epctl --check-counters)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           rust/target/release/epctl --check-counters \
             bench/results/ci-lane/counters-linux.json --require-dispatches 1
@@ -681,7 +770,7 @@ jobs:
         # Runs even when an earlier gate failed: when the EP falls back, the log line
         # is the most legible evidence in the whole lane and it must reach the reader
         # rather than being cancelled by the failure it explains.
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci/check_fatal_log.py \
             --lane-marker=bench/results/ci-lane/.lane-reached \
@@ -689,7 +778,7 @@ jobs:
             bench/results/ci-lane/gate_chain_fp32_ort_stderr.log
 
       - name: Device-loss screen on this lane's own evidence (Linux)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         # --run-log NAMES these files as one run's evidence, which turns on the three
         # conditions a tree-wide scan reports UNOBSERVABLE (controls on this project emit
         # those texts deliberately). This step and check_fatal_log above have DIFFERENT
@@ -739,7 +828,6 @@ jobs:
       # identical, and require UNATTRIBUTED.
       # -------------------------------------------------------
       - name: Gate negative control — no ICD must produce UNATTRIBUTED
-        if: env.BUILD_SKIPPED != '1'
         env:
           VK_ICD_FILENAMES: /nonexistent/lvp_icd.json
           VK_DRIVER_FILES: /nonexistent/lvp_icd.json
@@ -811,7 +899,6 @@ jobs:
       # one that was live on 2026-07-30.
       # -------------------------------------------------------
       - name: Gate negative control — a declined artifact must produce UNATTRIBUTED
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
         run: |
@@ -855,7 +942,7 @@ jobs:
       # by a broken run is the one most likely to be quoted later.
       # -------------------------------------------------------
       - name: No duration without a device-state record (§10.0 obligation 8)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci/check_device_state.py \
             --scan bench/results/ci-lane \
@@ -989,14 +1076,12 @@ jobs:
       # Windows-only compile error is also reported as a compile error.
       # -------------------------------------------------------
       - name: Compile all targets (cargo check --all-targets — compile errors, not lints)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           cargo check --release --manifest-path rust\Cargo.toml --all-targets
           exit $LASTEXITCODE
 
       - name: Clippy (all warnings as errors)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           cargo clippy --release --manifest-path rust\Cargo.toml `
@@ -1013,7 +1098,6 @@ jobs:
       # See ci/lane_inventory.py :: BLIND_SPOTS['timestamp_period_52x'].
       # -------------------------------------------------------
       - name: Rust unit tests (cargo test --lib)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
           New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
@@ -1024,7 +1108,7 @@ jobs:
       - name: Rust unit tests asserted something (productivity floor, libtest)
         # See the Linux lane. `test result: ok. 0 passed` exits ZERO, so the exit code
         # above cannot tell a suite that passed from one that ran nothing.
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci\check_suite_productivity.py `
             --suite "cargo test --lib" --harness libtest --lane build-test-windows `
@@ -1032,26 +1116,60 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Portability lint (cargo test --test portability)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
-          cargo test --test portability --release --manifest-path rust\Cargo.toml
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          cargo test --test portability --release --manifest-path rust\Cargo.toml 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\cargo-test-portability-windows.log
+          exit $LASTEXITCODE
+
+      - name: Portability lint asserted something (productivity floor, libtest)
+        # See the Linux lane. The floor is the same number on both lanes deliberately:
+        # every test in this target is a SOURCE screen needing no device, ICD or ORT, so
+        # if the two lanes ever disagree here that disagreement is itself the finding.
+        if: always()
+        run: |
+          python ci\check_suite_productivity.py `
+            --suite "cargo test --test portability" --harness libtest --lane build-test-windows `
+            bench\results\ci-lane\cargo-test-portability-windows.log
           exit $LASTEXITCODE
 
       - name: Layering lint (cargo test --test layering)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
-          cargo test --test layering --release --manifest-path rust\Cargo.toml
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
+          cargo test --test layering --release --manifest-path rust\Cargo.toml 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\cargo-test-layering-windows.log
+          exit $LASTEXITCODE
+
+      - name: Layering lint asserted something (productivity floor, libtest)
+        if: always()
+        run: |
+          python ci\check_suite_productivity.py `
+            --suite "cargo test --test layering" --harness libtest --lane build-test-windows `
+            bench\results\ci-lane\cargo-test-layering-windows.log
           exit $LASTEXITCODE
 
       - name: Remaining integration targets (cdylib_load, dump_capabilities, host_registration, validation_control)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           $env:ORT_INCLUDE_DIR = "$env:ORT_HOME\include"
+          New-Item -ItemType Directory -Force -Path bench\results\ci-lane | Out-Null
           cargo test --release --manifest-path rust\Cargo.toml `
             --test cdylib_load --test dump_capabilities `
-            --test host_registration --test validation_control
+            --test host_registration --test validation_control 2>&1 |
+            Tee-Object -FilePath bench\results\ci-lane\cargo-test-integration-windows.log
+          exit $LASTEXITCODE
+
+      - name: Integration targets asserted something (productivity floor, libtest)
+        # min_target_blocks = 4. cdylib_load is ONE test and it is the only thing in
+        # either lane that proves the shipped cdylib can be loaded at all; a sum-only
+        # floor cannot see it disappear behind dump_capabilities' six.
+        if: always()
+        run: |
+          python ci\check_suite_productivity.py `
+            --suite "cargo test --test cdylib_load,dump_capabilities,host_registration,validation_control" `
+            --harness libtest --lane build-test-windows `
+            bench\results\ci-lane\cargo-test-integration-windows.log
           exit $LASTEXITCODE
 
       # -------------------------------------------------------
@@ -1140,7 +1258,6 @@ jobs:
       # Hard failure if no capable device after registry registration.
       # -------------------------------------------------------
       - name: Probe Vulkan loader (epctl --probe-loader)
-        if: env.BUILD_SKIPPED != '1'
         run: rust\target\release\epctl.exe --probe-loader
 
       # -------------------------------------------------------
@@ -1149,7 +1266,6 @@ jobs:
       # ORT DLL on PATH so the EP DLL resolves onnxruntime.dll at load time.
       # -------------------------------------------------------
       - name: Run op-correctness + barrier-parity tests (lavapipe)
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
           VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
@@ -1175,7 +1291,7 @@ jobs:
       # skip count climbing on the lane that is always green.
       # -------------------------------------------------------
       - name: Op-correctness step asserted something (productivity floor)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci\check_suite_productivity.py `
             --suite tests/ops --lane build-test-windows `
@@ -1183,6 +1299,29 @@ jobs:
             --emit-json bench\results\ci-lane\suite-productivity-windows.json `
             bench\results\ci-lane\pytest-windows.log
           exit $LASTEXITCODE
+
+      # -------------------------------------------------------
+      # FLAKE WITNESS — see the Linux lane for the full rationale. Same two mechanisms:
+      # annotate the failing name where truncation cannot reach it, and accumulate a
+      # ledger so the second observation of an intermittent is cheap.
+      # -------------------------------------------------------
+      - name: Flake witness (name the failure where truncation cannot reach it)
+        if: always()
+        run: |
+          $rc = 0
+          python ci\check_flake_witness.py `
+            --harness libtest --suite "cargo test --lib" --lane build-test-windows `
+            --ledger bench\results\ci-lane\flake-ledger-windows.jsonl `
+            --lane-marker bench\results\ci-lane\.lane-reached `
+            bench\results\ci-lane\cargo-test-lib-windows.log
+          if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
+          python ci\check_flake_witness.py `
+            --harness pytest --suite tests/ops --lane build-test-windows `
+            --ledger bench\results\ci-lane\flake-ledger-windows.jsonl `
+            --lane-marker bench\results\ci-lane\.lane-reached `
+            bench\results\ci-lane\pytest-windows.log
+          if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
+          exit $rc
 
       # -------------------------------------------------------
       # CRITERION 10 — see the Linux lane for the full rationale.
@@ -1194,13 +1333,11 @@ jobs:
         # tests/ops/_verdict.py" (repository state) from "the file is here and this job
         # cannot import it" (lane defect) — two situations that otherwise produce the
         # identical ERROR(instrument=verdict_vocabulary_unavailable) in every step below.
-        if: env.BUILD_SKIPPED != '1'
         run: |
           python ci\check_vocabulary.py --github-summary
           exit $LASTEXITCODE
 
       - name: Criterion 10 gate artifact (gate_chain_fp32, lavapipe)
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
           ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ${{ github.workspace }}\bench\results\ci-lane\counters-windows.json
@@ -1213,20 +1350,18 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Criterion 10 verdict gate (independent reader)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           python ci\check_verdict.py bench\results\ci-lane\verdict-windows.json
           exit $LASTEXITCODE
 
       - name: Criterion 10 verdict gate (epctl --check-counters)
-        if: env.BUILD_SKIPPED != '1'
         run: |
           rust\target\release\epctl.exe --check-counters `
             bench\results\ci-lane\counters-windows.json --require-dispatches 1
           exit $LASTEXITCODE
 
       - name: Known-fatal log line is a lane failure (R13 second witness)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci\check_fatal_log.py `
             --lane-marker=bench\results\ci-lane\.lane-reached `
@@ -1235,7 +1370,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Device-loss screen on this lane's own evidence (Windows)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         # See the Linux lane for the rationale. Windows matters more here, not less:
         # VK_ERROR_DEVICE_LOST on Windows is usually a TDR, and both device losses this
         # project has recorded happened on this OS.
@@ -1299,7 +1434,6 @@ jobs:
       # was not wrong, the subject was absent (§10.0 clause 4).
       # -------------------------------------------------------
       - name: Gate negative control — no ICD must produce UNATTRIBUTED
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
         run: |
@@ -1378,7 +1512,6 @@ jobs:
       # the one a green lane hid.
       # -------------------------------------------------------
       - name: Gate negative control — a declined artifact must produce UNATTRIBUTED
-        if: env.BUILD_SKIPPED != '1'
         env:
           ONNXRUNTIME_VULKAN_EP_LIB: ${{ github.workspace }}\rust\target\release\onnxruntime_vulkan_ep.dll
           ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE: ""
@@ -1410,7 +1543,7 @@ jobs:
       # telemetry is that loophole at scale.
       # -------------------------------------------------------
       - name: No duration without a device-state record (§10.0 obligation 8)
-        if: env.BUILD_SKIPPED != '1' && always()
+        if: always()
         run: |
           python ci\check_device_state.py `
             --scan bench\results\ci-lane `

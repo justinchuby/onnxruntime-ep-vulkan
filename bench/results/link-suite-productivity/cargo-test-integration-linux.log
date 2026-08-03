@@ -1,0 +1,70 @@
+   Compiling onnxruntime-ep-vulkan v0.28.0 (/mnt/c/Users/justinchu/dev/ep-vulkan-link/rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.53s
+     Running tests/cdylib_load.rs (/home/justinchu/link-linux-target/debug/deps/cdylib_load-471e7adb2ec6a7c8)
+
+running 1 test
+[vulkan-ep] INFO: VulkanExecutionProvider v0.28.0 loaded (built against ORT API 28, negotiated 28)
+[vulkan-ep] INFO: [loader-probe] Before vkCreateInstance — loader version 1.3.275:
+[vulkan-ep] INFO:   VK_ICD_FILENAMES = <not set>
+[vulkan-ep] INFO:   VK_DRIVER_FILES = <not set>
+[vulkan-ep] INFO:   VK_INSTANCE_LAYERS = <not set>
+[vulkan-ep] INFO:   loader version = 1.3.275
+[vulkan-ep] INFO:   available layers (3) = VK_LAYER_MESA_device_select, VK_LAYER_INTEL_nullhw, VK_LAYER_MESA_overlay
+[vulkan-ep] INFO:   instance extensions visible to loader = 24 (0 or small values suggest no ICD loaded)
+[vulkan-ep] INFO: VulkanExecutionProvider: advertised device memory `VulkanExecutionProvider:0` for device #0 — ORT may now allocate through this EP
+[vulkan-ep] INFO: VulkanExecutionProvider advertising device #0 `llvmpipe (LLVM 20.1.2, 256 bits)` (vendor 0x10005, Vulkan 1.4.318, correlated by device_type_fallback)
+[vulkan-ep] WARN: CreateEp: ORT passed no `vulkan.device_index` metadata, so the device it bound is unknown here. Falling back to the ONNXRUNTIME_EP_VULKAN_DEVICE / ep.device_index selector; if it names a device other than the one ORT bound, the device-memory provider will report SPLIT-DEVICE.
+[vulkan-ep] INFO: [loader-probe] Before vkCreateInstance — loader version 1.3.275:
+[vulkan-ep] INFO:   VK_ICD_FILENAMES = <not set>
+[vulkan-ep] INFO:   VK_DRIVER_FILES = <not set>
+[vulkan-ep] INFO:   VK_INSTANCE_LAYERS = <not set>
+[vulkan-ep] INFO:   loader version = 1.3.275
+[vulkan-ep] INFO:   available layers (3) = VK_LAYER_MESA_device_select, VK_LAYER_INTEL_nullhw, VK_LAYER_MESA_overlay
+[vulkan-ep] INFO:   instance extensions visible to loader = 24 (0 or small values suggest no ICD loaded)
+[vulkan-ep] INFO: VulkanSession: selected 'llvmpipe (LLVM 20.1.2, 256 bits)' (kind=Cpu api=1.4.318 uma=true subgroup_sz=8 ts_period=1.0000ns ts_bits=64)
+[vulkan-ep] INFO: §6.5: offered the EP VkDevice for 'llvmpipe (LLVM 20.1.2, 256 bits)' under device index 0 (physical enumerate index). The device-memory provider adopts it only if ORT asks for an allocator on that same index; a different index means ORT selected a different EP device than this session opened, and the run correctly reports SPLIT-DEVICE.
+[vulkan-ep] INFO: VulkanExecutionProvider session created — Vulkan device ready, claiming will begin
+[vulkan-ep] INFO: VulkanExecutionProvider: per-op host time NOT WIRED — Tracer::record_op_meta() has no production caller, so there is no per-op breakdown for this run. This is a missing instrument, not a run without slow ops.
+[vulkan-ep] INFO: [loader-probe] Before vkCreateInstance — loader version 1.3.275:
+[vulkan-ep] INFO:   VK_ICD_FILENAMES = <not set>
+[vulkan-ep] INFO:   VK_DRIVER_FILES = <not set>
+[vulkan-ep] INFO:   VK_INSTANCE_LAYERS = <not set>
+[vulkan-ep] INFO:   loader version = 1.3.275
+[vulkan-ep] INFO:   available layers (3) = VK_LAYER_MESA_device_select, VK_LAYER_INTEL_nullhw, VK_LAYER_MESA_overlay
+[vulkan-ep] INFO:   instance extensions visible to loader = 24 (0 or small values suggest no ICD loaded)
+[vulkan-ep] INFO: VulkanExecutionProvider: advertised device memory `VulkanExecutionProvider:0` for device #0 — ORT may now allocate through this EP
+[vulkan-ep] INFO: VulkanExecutionProvider advertising device #0 `llvmpipe (LLVM 20.1.2, 256 bits)` (vendor 0x10005, Vulkan 1.4.318, correlated by device_type_fallback)
+[vulkan-ep] INFO: VulkanExecutionProvider counters: 0 dispatch(es) executed across 0 Compute call(s) (0 failed); 0 subgraph(s) compiled live, 0 stub, from 0 Compile call(s)
+[vulkan-ep] WARN: VulkanExecutionProvider executed ZERO dispatches in this process. If a test lane expected GPU work, this is a failure that would otherwise be invisible: every node ran somewhere else.
+test ort_can_load_the_shipped_library_and_resolve_its_entry_points ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/dump_capabilities.rs (/home/justinchu/link-linux-target/debug/deps/dump_capabilities-34311b3202b7923e)
+
+running 6 tests
+test no_arguments_is_an_error_not_an_empty_success ... ok
+test an_unrecognised_argument_is_rejected ... ok
+test json_output_is_well_formed_enough_to_diff ... ok
+test dump_reports_the_ort_version_window ... ok
+test every_contrib_row_is_printed_with_a_real_baseline ... ok
+test dump_lists_every_registered_row_with_a_schema_baseline_column ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/host_registration.rs (/home/justinchu/link-linux-target/debug/deps/host_registration-aeeddebaf5e38dc0)
+
+running 1 test
+test a_mock_ort_host_can_register_use_and_release_the_plugin ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/validation_control.rs (/home/justinchu/link-linux-target/debug/deps/validation_control-1537c8e9b9af0c32)
+
+running 3 tests
+test a_planted_vulkan_violation_is_caught_by_the_validation_layer ... ok
+test a_clean_run_produces_no_validation_errors ... ok
+test the_require_flag_turns_an_unavailable_layer_into_a_failure ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

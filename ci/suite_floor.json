@@ -17,7 +17,14 @@
     "",
     "HOW TO RE-MEASURE.  Run the suite, then read the number this check itself reports:",
     "  python -m pytest tests/ops -q --tb=short -p no:randomly 2>&1 | tee run.log",
-    "  python ci/check_suite_productivity.py --suite tests/ops run.log"
+    "  python ci/check_suite_productivity.py --suite tests/ops run.log",
+    "",
+    "`min_target_blocks` (libtest only).  A `cargo test --test a --test b` step is several",
+    "claims under one exit code, and a SUM cannot see one of them going silent: four small",
+    "targets summing to 11 and three of them summing to 11 with the fourth printing",
+    "`running 0 tests` are the same number.  `min_target_blocks` floors the count of",
+    "`test result:` blocks, and the checker separately fails — by target name — if any",
+    "single block executed zero.  Set it wherever a step names more than one `--test`."
   ],
   "version": 1,
   "suites": {
@@ -71,6 +78,7 @@
       "min_executed_by_lane": {
         "*": 500
       },
+      "min_target_blocks": 1,
       "provenance": [
         "2026-08-03, Link, measured on Windows at main 607056a merged into squad/link:",
         "`test result: ok. 510 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out`.",
@@ -84,6 +92,119 @@
         "floor is 500 against 510 executed — the same ~1% headroom as tests/ops, for the",
         "same reason. Only the --lib step is wired today; the five integration-target steps",
         "are a NAMED, OPEN gap recorded in the sweep, not an oversight."
+      ]
+    },
+    "cargo test --test layering": {
+      "min_collected": 24,
+      "min_executed_by_lane": {
+        "*": 24
+      },
+      "min_target_blocks": 1,
+      "provenance": [
+        "2026-08-03, Link, measured on Windows at main d46327b merged into squad/link:",
+        "`test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`",
+        "(bench/results/link-suite-productivity/cargo-test-layering-windows.log).",
+        "",
+        "This is Tank's architectural lint: ops code must never import sys::, the ORT C",
+        "ABI, ash::, vk::, or use unsafe. Every one of its 26 tests is a SOURCE screen —",
+        "it needs no device, no ICD and no ORT, so the same number is expected on every",
+        "lane and the executed floor is set equal to the collected floor. If Linux and",
+        "Windows ever disagree here, that disagreement is itself the finding. Confirmed",
+        "on Linux (WSL Ubuntu) 2026-08-03: 26, the same number.",
+        "",
+        "Floor 24 against 26: two tests of headroom. A lint whose tests were all",
+        "#[cfg]-ed out prints `running 0 tests` and exits 0, and the step's own exit code",
+        "cannot tell that from a clean tree — which is the entire content of a lint step."
+      ]
+    },
+    "cargo test --test portability": {
+      "min_collected": 12,
+      "min_executed_by_lane": {
+        "*": 12
+      },
+      "min_target_blocks": 1,
+      "provenance": [
+        "2026-08-03, Link, measured on Windows at main d46327b merged into squad/link:",
+        "`test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`",
+        "(bench/results/link-suite-productivity/cargo-test-portability-windows.log).",
+        "",
+        "Rules P1/P3. This lint is the reason the OrtLoggingLevel width defect is caught",
+        "on the lane that is NOT affected by it: MSVC types the enum c_int and GCC c_uint,",
+        "so a spelled i32 compiles on Windows and fails on Linux hours later, behind",
+        "everything else. A portability lint that silently ran zero tests would restore",
+        "exactly the state that cost a day on 2026-08-02.",
+        "",
+        "8 -> 14 tests on 2026-08-02 when P3 was added. The floor is 12, so the four",
+        "P3 tests cannot be removed without an edit here.",
+        "",
+        "Confirmed on Linux (WSL Ubuntu) 2026-08-03: 14, the same number",
+        "(bench/results/link-suite-productivity/cargo-test-portability-linux.log)."
+      ]
+    },
+    "cargo test --test cdylib_load,dump_capabilities,host_registration,validation_control": {
+      "min_collected": 10,
+      "min_executed_by_lane": {
+        "*": 10
+      },
+      "min_target_blocks": 4,
+      "provenance": [
+        "2026-08-03, Link, measured on Windows at main d46327b merged into squad/link",
+        "(bench/results/link-suite-productivity/cargo-test-integration-windows.log):",
+        "  cdylib_load          1 passed",
+        "  dump_capabilities    6 passed",
+        "  host_registration    1 passed",
+        "  validation_control   3 passed",
+        "                      -- 11 executed across 4 target blocks.",
+        "",
+        "min_target_blocks = 4 IS THE LOAD-BEARING NUMBER HERE, not min_collected. This",
+        "step is four claims under one exit code, and three of the four targets are small",
+        "enough that an aggregate floor cannot see one of them go silent: cdylib_load and",
+        "host_registration are ONE test each. A floor of 10 against 11 executed leaves",
+        "exactly one test of headroom, and if that headroom were widened at all,",
+        "cdylib_load — the only thing in either lane that proves the shipped cdylib can be",
+        "dlopen'd — could vanish under it without changing the step's colour.",
+        "",
+        "So the per-target rule does the work instead: check_suite_productivity.py fails",
+        "with condition=target_ran_nothing if ANY block executed zero, naming the target,",
+        "and with condition=targets_below_floor if a --test argument is dropped from the",
+        "step or a [[test]] target is removed from Cargo.toml. Those two are the shapes a",
+        "silent deletion actually takes; the sum is not.",
+        "",
+        "These four targets load the cdylib and query Vulkan capabilities, so the counts",
+        "are in principle host-dependent -- but every one of them is written to report a",
+        "capability rather than require it. Confirmed on Linux (WSL Ubuntu, llvmpipe) by",
+        "ci/link-linux-repro/link_linux_target_counts.sh: the same 1/6/1/3 = 11 across 4",
+        "target blocks (bench/results/link-suite-productivity/cargo-test-integration-",
+        "linux.log). An earlier draft of this string credited link_linux_downstream.sh",
+        "for that number before any Linux run had produced it; it had not, and a",
+        "provenance string asserting a measurement nobody took is the same defect this",
+        "whole file exists to prevent. The script above is the one that took it."
+      ]
+    },
+    "tests/conformance/test_conformance.py": {
+      "min_collected": 1,
+      "min_executed_by_lane": {
+        "*": 1,
+        "conformance": 1
+      },
+      "provenance": [
+        "2026-08-03, Link. NOT MEASURED, and saying so is the point: this floor is 1",
+        "because no measurement is needed to know that zero is not a census. The",
+        "conformance lane is workflow_dispatch-only and its pytest step is deliberately",
+        "`continue-on-error: true` plus `|| true` — it is declared non-evidence under",
+        "DESIGN.md 10.0 because it carries no attribution.",
+        "",
+        "The zero-work sweep ACCEPTED that step on those grounds and the acceptance was",
+        "half right. It holds for the step; it does not hold for the artifact. The step's",
+        "`conformance.out` is an input to ci/check_fatal_log.py two steps later, so an",
+        "all-skipped or never-collected census produced a green fatal-log step reporting",
+        "that it had scanned a log — a blind witness counted as a witness.",
+        "",
+        "So this floor enforces exactly the distinction the acceptance always rested on",
+        "and never checked: conformance cases that FAIL are tolerated, a census that DID",
+        "NOT RUN is not. A real floor here would need a measured onnx-tests run on the",
+        "runner, which nobody has done; inventing a tighter number would read exactly",
+        "like a measured one."
       ]
     },
     "ci/test_lane_checks.py": {

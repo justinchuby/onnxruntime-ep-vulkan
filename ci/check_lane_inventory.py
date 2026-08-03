@@ -77,6 +77,19 @@ def is_provisioning(step_name: str) -> tuple[bool, str | None]:
 #: a distinctive fragment, because step names carry expression syntax and section numbers
 #: that change more often than the thing the step does.
 STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
+    # ORDER IS LOAD-BEARING: first fragment that substrings the step name wins.
+    # The productivity floors must precede the lints they guard, or
+    # "Layering lint asserted something (productivity floor, libtest)" silently
+    # maps to build.layering_lint and the floor becomes invisible to the
+    # inventory while still appearing classified. A wrong mapping reads exactly
+    # like a right one; that is why these four are first.
+    ("Flake-witness negative control", "hostfree.flake_witness_negative_control"),
+    ("Flake witness", "device.flake_witness"),
+    ("Layering lint asserted something", "build.layering_lint_productivity"),
+    ("Portability lint asserted something", "build.portability_lint_productivity"),
+    ("Integration targets asserted something", "build.integration_targets_productivity"),
+    ("Build-precondition negative control", "hostfree.build_precondition_negative_control"),
+    ("Build-precondition screen", "hostfree.build_precondition"),
     ("Two-polarity tests", "hostfree.lane_check_tests"),
     ("Two-polarity suite asserted something", "hostfree.lane_check_productivity"),
     ("Suite-productivity negative control", "hostfree.suite_productivity_negative_control"),

@@ -566,10 +566,281 @@ CHECKS: tuple[Check, ...] = (
         misses=(
             "It counts outcomes; it cannot see a test that ran and asserted something "
             "vacuous. That is ci/check_tautological_assertions.py's extent.",
-            "Only `cargo test --lib` is wired. The five integration-target steps "
-            "(layering, portability, cdylib_load, dump_capabilities, host_registration, "
-            "validation_control) can still pass with zero tests and are a NAMED open gap "
-            "from the 2026-08-03 sweep, not an oversight.",
+            "GAP CLOSED 2026-08-03 (session 17). The six integration-target steps that "
+            "this line used to name as a NAMED open gap — layering, portability, "
+            "cdylib_load, dump_capabilities, host_registration, validation_control — are "
+            "now covered by build.layering_lint_productivity, "
+            "build.portability_lint_productivity and "
+            "build.integration_targets_productivity. The last of those three is the "
+            "interesting one: four targets share ONE step, so a per-block rule "
+            "(min_target_blocks / target_ran_nothing) was needed. An aggregate floor "
+            "cannot see one of four targets go silent.",
+        ),
+    ),
+    Check(
+        id="build.layering_lint_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane="both",
+        step="Layering lint asserted something (productivity floor, libtest)",
+        watches=(
+            "That `cargo test --test layering` actually RAN its tests. The lint step "
+            "above it exits ZERO on `running 0 tests`, so a target that compiles to "
+            "nothing reports the same green as one that proved ash stays inside "
+            "rust/src/vk/."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "#[cfg(any())] every test fn in rust/tests/layering.rs, run the real cargo "
+            "command, and check the real log. Not a synthesised log — the subject "
+            "genuinely absent."
+        ),
+        arm_healthy=(
+            "SUITE-PRODUCTIVITY: PASS — 26 executed in 1 target block, floor 24 "
+            "(bench/results/link-suite-productivity/cargo-test-layering-windows.log)"
+        ),
+        arm_broken=(
+            "SUITE-PRODUCTIVITY: FAIL(condition=asserted_nothing) — and `cargo` itself "
+            "exited 0 on that same run, which is the whole reason this step exists "
+            "(bench/results/link-suite-productivity/ARM-LIVE-layering-empty.log)"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "The floor is 24 against a measured 26, so two layering tests could be "
+            "deleted without changing this step's colour. A floor is a lower bound on "
+            "work, and any lower bound below the current value has slack by "
+            "construction; the alternative is a floor that turns every legitimate "
+            "deletion into a red step and gets raised by whoever is inconvenienced.",
+            "It cannot see a layering test that runs and asserts something vacuous.",
+        ),
+    ),
+    Check(
+        id="build.portability_lint_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane="both",
+        step="Portability lint asserted something (productivity floor, libtest)",
+        watches=(
+            "That `cargo test --test portability` ran. Same failure shape as layering: "
+            "libtest exits zero on an empty target."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Run the real cargo command with a filter that matches 2 of the 14 tests — "
+            "the shape a stray `--` argument or a renamed test module leaves behind, "
+            "which is NOT `running 0 tests` and so escapes the asserted_nothing rule."
+        ),
+        arm_healthy=(
+            "SUITE-PRODUCTIVITY: PASS — 14 executed in 1 target block, floor 12 "
+            "(bench/results/link-suite-productivity/cargo-test-portability-windows.log)"
+        ),
+        arm_broken=(
+            "SUITE-PRODUCTIVITY: FAIL(condition=executed_below_floor) — 2 executed, "
+            "floor 12, cargo exit 0 "
+            "(bench/results/link-suite-productivity/ARM-LIVE-portability-filtered.log)"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "12 of 14 is the floor, so the filtered arm had to drop to 2 to be caught. "
+            "A filter that left 12 running would pass. The rule catches collapse, not "
+            "erosion.",
+        ),
+    ),
+    Check(
+        id="build.integration_targets_productivity",
+        falsifier=FALSIFIER_PLANTED,
+        lane="both",
+        step="Integration targets asserted something (productivity floor, libtest)",
+        watches=(
+            "That ALL FOUR of cdylib_load, dump_capabilities, host_registration and "
+            "validation_control ran — not that their sum cleared a number. One step "
+            "invokes four targets, and a sum cannot see one of four go silent."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "#[cfg(any())] the single test in rust/tests/cdylib_load.rs — the only test "
+            "that proves the shipped cdylib can be dlopen'd — and run the real command."
+        ),
+        arm_healthy=(
+            "SUITE-PRODUCTIVITY: PASS — 11 executed across 4 target blocks "
+            "(cdylib_load 1, dump_capabilities 6, host_registration 1, "
+            "validation_control 3), floor 10, min_target_blocks 4 "
+            "(bench/results/link-suite-productivity/cargo-test-integration-windows.log)"
+        ),
+        arm_broken=(
+            "SUITE-PRODUCTIVITY: FAIL(condition=target_ran_nothing) naming "
+            "`tests\\cdylib_load.rs`. THE AGGREGATE WOULD HAVE PASSED: 10 executed "
+            "against a floor of 10. The per-target rule is the load-bearing one and "
+            "this arm is the proof "
+            "(bench/results/link-suite-productivity/ARM-LIVE-integration-cdylib-empty.log)"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "If a whole target stops being COMPILED — removed from Cargo.toml rather "
+            "than emptied — `Running tests/x.rs` never appears and the block count "
+            "drops. That is what min_target_blocks=4 is for, and it is the arm not yet "
+            "run live: targets_below_floor is demonstrated on a synthesised log only.",
+            "It counts blocks and outcomes. host_registration still talks to "
+            "tests/mock_ort, so proving it ran proves nothing about the real ORT host.",
+        ),
+    ),
+    Check(
+        id="hostfree.build_precondition",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Build-precondition screen (a lane that could not build must not report)",
+        watches=(
+            "Workflow steps that convert a failed or skipped BUILD into a green lane. "
+            "BP1: a script that writes a gated env name AND exits 0 in the same body "
+            "(`BUILD_SKIPPED=1; exit 0` — one missing tracked Cargo.toml turned thirty "
+            "steps green on both device lanes). BP2: a dormant `if: env.X != '1'` guard "
+            "whose writer no longer exists — inert today, re-armed by one added line, "
+            "and indistinguishable in review from a live one. BP3: a build step that "
+            "publishes an artifact path without asserting the artifact exists."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None needed for the primary arm. BP2 FIRED ON THE REAL TREE on its first "
+            "run: 38 dormant guards left behind by my own 2026-08-02 decision to keep "
+            "them 'so the change reads as one deletion'. BP1 is falsified by REPLAY — "
+            "`git show 607056a:.github/workflows/ci.yml`, the real bytes that carried "
+            "the defect on main."
+        ),
+        arm_healthy=(
+            "BUILD-PRECONDITION: PASS — 99 steps across 2 workflow files, 0 findings "
+            "(after the 38 guards were deleted and conformance.yml's Build step was "
+            "taught to assert its .so)"
+        ),
+        arm_broken=(
+            "BUILD-PRECONDITION: FAIL(condition=dead_guard) ×38 on my own tree, and "
+            "FAIL(condition=skip_flag_with_exit_zero) on the replayed 607056a bytes, and "
+            "FAIL(condition=build_step_does_not_verify_its_artifact) on conformance.yml"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "It is a STATIC screen over YAML text with no YAML parser, by choice: the "
+            "lane-checks job installs only pytest/onnx/numpy, and a screen skipped "
+            "because an import failed is a screen that does not exist. The cost is that "
+            "if the block structure it keys on ever stops matching it reports "
+            "ERROR(instrument=no_steps_parsed) rather than PASS — UNOBSERVABLE is not "
+            "zero — but it cannot reason about `uses:` actions or composite steps at "
+            "all.",
+            "BP1 is a conjunction (writes a gated name AND exits 0 in one script). A "
+            "build that writes the flag in step A and exits 0 in step B is invisible to "
+            "it. Two PLANTED arms assert each half alone stays clean, because a rule "
+            "that reddens ordinary provisioning steps trains people to ignore it.",
+            "BP3 knows one artifact-shaped thing: a step named `Build ` that exports a "
+            "path. It does not know what every lane's build is supposed to produce.",
+        ),
+    ),
+    Check(
+        id="hostfree.build_precondition_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Build-precondition negative control (demand red on each rule)",
+        watches=(
+            "That the build-precondition screen still goes RED on each of its three "
+            "rules. A screen that has stopped firing is indistinguishable from a clean "
+            "tree, and this repo now has a clean tree, so the screen's own silence is "
+            "no longer evidence of anything."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "16 arms: 1 LIVE (the current tree must be clean), 2 REPLAYED (real ci.yml "
+            "bytes from 607056a, asserting BP1 and NOT BP2 catches them), 13 PLANTED "
+            "(each rule, plus each half of BP1's conjunction alone, which must stay "
+            "clean)."
+        ),
+        arm_healthy="16/16 arms fire as specified, exit 0",
+        arm_broken=(
+            "Caught a real bug in the screen on its first run: screen() returned exit 1 "
+            "without ever printing the R13 FAIL(condition=...) token — _fail() existed "
+            "and was never called. Four arms went red. A red step with no condition name "
+            "is the exact defect the R13 vocabulary exists to prevent, and the screen "
+            "had it."
+        ),
+        observed="2026-08-03",
+        misses=(
+            "REPLAYED arms pin a commit hash. If 607056a is ever unreachable (a squashed "
+            "history, a fresh shallow clone) those two arms cannot run. They "
+            "ERROR(instrument=...) rather than passing quietly, but that still leaves "
+            "BP1's only non-planted evidence unavailable.",
+        ),
+    ),
+    Check(
+        id="device.flake_witness",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="Flake witness (name the failure where truncation cannot reach it)",
+        watches=(
+            "Two things a single run cannot see. (1) A failing test NAME that does not "
+            "survive the transport: the coordinator's merge gate went red once in seven "
+            "on 2026-08-03 and the name was lost to a truncated log tail, leaving a red "
+            "with no subject — a signal that teaches people to press re-run. (2) An "
+            "INTERMITTENT: one test id that both fails and does not fail at the SAME "
+            "commit, in the same suite, on the same lane. That fact exonerates the "
+            "commit and indicts the test, and it is the fact the person staring at one "
+            "red and six greens actually needs."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "Flip one outcome in the ledger built from 42 real captured `cargo test "
+            "--lib` logs and demand red; plus eleven planted arms covering the shapes "
+            "that LOOK like a flake and are not (a regression across commits, a "
+            "portability difference across lanes, a test that stopped running)."
+        ),
+        arm_healthy=(
+            "FLAKE-WITNESS: PASS — 42 real Linux run logs at d46327b, 0 intermittent "
+            "(ci/negative_control_flake_witness.py LIVE arm)"
+        ),
+        arm_broken=(
+            "FLAKE-WITNESS: FAIL(condition=intermittent) naming the id, the commit, the "
+            "lane, and both sets of run ids — 'THE COMMIT IS EXONERATED AND THE TEST IS "
+            "NOT'"
+        ),
+        observed="2026-08-03",
+        misses=(
+            "AN INTERMITTENT NEEDS TWO OBSERVATIONS AND THIS BUYS THE SECOND ONE CHEAPLY; "
+            "it does not buy the first. A 1-in-40 needs roughly forty runs at one commit "
+            "before the join can see it, so on a hosted runner with no cache across runs "
+            "the ledger has ONE run in it and this check can only annotate, never "
+            "conclude. --require-history exists so a lane can refuse to pretend "
+            "otherwise, and no lane sets it yet.",
+            "pytest names only its failures, so the complement is INFERRED (NOT_FAILED, "
+            "not PASSED) and NOT_FAILED includes skipped and deselected. Where two runs' "
+            "executed counts differ by more than the tolerance it says INCOMPARABLE "
+            "rather than claiming a flake — a test that stopped running is "
+            "check_suite_productivity's defect class, not this one.",
+            "It names WHICH test is intermittent, never WHY. "
+            "vk::barrier::tests::backend_probe_* was 1-in-9 on Linux a round ago because "
+            "backend_probe_* is a PROCESS-GLOBAL env var the tests race for; that is "
+            "Trinity's env-var auditor. NOTE: 40 consecutive runs at d46327b produced "
+            "ZERO failures, so that particular flake no longer reproduces here "
+            "(p ~= 0.009 under the old 1-in-9 rate). Something fixed it and nobody "
+            "recorded fixing it.",
+            "It cannot see an intermittent that differs BETWEEN commits rather than "
+            "within one. Keying on the commit is the whole point — it is what separates "
+            "'your change broke it' from 'it does that' — and it is also the limit.",
+        ),
+    ),
+    Check(
+        id="hostfree.flake_witness_negative_control",
+        falsifier=FALSIFIER_PLANTED,
+        lane=LANE_HOSTFREE,
+        step="Flake-witness negative control (demand red on an intermittent)",
+        watches=(
+            "That the flake witness still fires. It is silent on a repo with no "
+            "reproducing flake, and silence from a check is indistinguishable from "
+            "silence from no check."
+        ),
+        status=DEMONSTRATED,
+        mutation="13 arms: 1 LIVE, 1 REPLAYED (a flipped outcome in the real ledger), 11 PLANTED.",
+        arm_healthy="13/13 arms fire as specified, exit 0",
+        arm_broken="exit 1 with the misfiring arm's full output, per arm",
+        observed="2026-08-03",
+        misses=(
+            "The LIVE arm's subject is two TRACKED logs under ci/fixtures/flake-witness/ "
+            "plus whatever untracked runs happen to be present. Without the tracked pair "
+            "the control would quietly become all-planted on a hosted runner, which is "
+            "the exact defect it exists to catch.",
         ),
     ),
     Check(

@@ -1,0 +1,34 @@
+   Compiling onnxruntime-ep-vulkan v0.28.0 (/mnt/c/Users/justinchu/dev/ep-vulkan-link/rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 32s
+     Running tests/layering.rs (/home/justinchu/link-linux-target/debug/deps/layering-fc419d1d29cbe952)
+
+running 26 tests
+test a_realistic_planted_op_module_is_rejected ... ok
+test barrier_rs_and_caps_rs_are_not_false_positived_by_the_barrier_lint ... ok
+test clean_op_source_passes ... ok
+test clean_recording_code_passes_barrier_lint ... ok
+test detects_a_planted_domain_wide_claim_predicate ... ok
+test detects_a_planted_variant_comparison ... ok
+test detects_planted_barrier_violations ... ok
+test detects_planted_ort_abi_violations ... ok
+test detects_planted_sync2_field_violation ... ok
+test documentation_naming_forbidden_tokens_is_not_a_violation ... ok
+test every_contrib_row_records_the_ort_release_it_was_written_against ... ok
+test detects_planted_vulkan_violations ... ok
+test no_recorded_baseline_claims_a_newer_ort_than_we_build_against ... ok
+test no_default_domain_row_carries_a_contrib_schema_baseline ... ok
+test qualified_contrib_op_names_are_not_c1_violations ... ok
+test test_modules_are_out_of_scope_for_c1 ... ok
+test the_domain_definition_site_is_exempt_but_nothing_else_in_that_file_is ... ok
+test word_boundaries_are_respected ... ok
+test c2_surface_is_covered_by_the_dump_capabilities_suite ... ok
+test the_c1_lint_reads_a_file_that_actually_mentions_the_domain ... ok
+test the_lint_actually_reads_the_ops_directory ... ok
+test boundary_and_registry_modules_contain_no_raw_vulkan ... ok
+test ops_layer_contains_no_ort_abi_and_no_raw_vulkan ... ok
+test synchronization2_field_read_is_confined_to_barrier_and_caps ... ok
+test no_domain_wide_contrib_opt_in_exists_in_the_crate ... ok
+test barrier_api_is_confined_to_vk_barrier ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.65s
+

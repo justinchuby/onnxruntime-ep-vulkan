@@ -336,3 +336,65 @@ explicit path, not pushed. No wall-clock figure quoted.
 **Worktree note:** `squad/link` carried eleven untracked `bench/results/*.json` files from
 a sibling on arrival. Left untouched and unstaged rather than committed or cleaned — an
 untracked artifact of unknown provenance is somebody's evidence until they say otherwise.
+
+---
+
+## Session 17 — 2026-08-03
+
+**Task:** close the six open lanes from the sweep, re-examine the one accepted, build the
+general fix for `BUILD_SKIPPED`, characterise the 12 Windows-only failures, re-run Linux
+after Mouse's two-digest merge, and make an intermittent visible to someone merging.
+
+### What surprised me
+
+* **"Windows-only" was a category error and it was mine.** The 12 became **1**, and the
+  survivor is Windows-only because **Windows is the only lane with a device that executes
+  phi-3.5** — lavapipe declines to CPU. It meant *only observable on Windows*, never
+  *broken on Windows*. The survivor is a deterministic fp16 accumulation finding: ULP
+  rises monotonically L0 `0.0` → L31 `4.0`, only layer 31 key/value over the 3.0 band.
+  Not an instrument error, not intermittent. Routed to Mouse/Switch.
+* **My own screen convicted my own previous decision.** BP2 (`dead_guard`) fired **38
+  times on my tree**. Session 16 left the `BUILD_SKIPPED` guards in "so the change reads
+  as one deletion rather than thirty". A guard whose writer does not exist is not inert,
+  it is **dormant** — it reads like a live guard and one added line re-arms all 38. Deleted.
+* **The negative control caught a bug in the screen on the control's first run.**
+  `screen()` returned exit 1 and never printed its `FAIL(condition=...)` token; `_fail()`
+  existed and was never called. A red with no condition name is the exact defect R13
+  exists to prevent.
+* **The flake I went hunting has vanished.** `backend_probe_writes_legacy_token` was
+  1-in-9 last round. **40/40 green** at `d46327b` (p ≈ 0.009 under the old rate). Somebody
+  fixed it and nobody recorded fixing it.
+* **The aggregate floor would have passed the LIVE arm.** With `cdylib_load` `#[cfg]`-ed
+  out, 10 executed against a floor of 10. Only `target_ran_nothing` caught it.
+
+### Numbers
+
+Linux `23 failed / 592 passed / 45 skipped / 3 xfailed` (was 50/272/292); `no proof ledger
+entry for` **42 → 3** (all the new `Cast` op). Windows `8 failed / 624 passed / 28 skipped
+/ 3 xfailed` (was 14/568/30). Both lanes still mix kinds: Linux 23 = 8 `FAIL(condition)` +
+15 `ERROR(instrument)`; Windows 8 = 6 + 2.
+
+### Built
+
+`ci/check_build_precondition.py` (BP1/BP2/BP3) + 16-arm control (1 LIVE / 2 REPLAYED / 13
+PLANTED, one REPLAYED reading the real defect out of `607056a`).
+`ci/check_flake_witness.py` (annotate the name where truncation cannot reach it; join
+across runs at one commit) + 13-arm control (1 LIVE / 1 REPLAYED / 11 PLANTED).
+`check_suite_productivity.py` gained per-target parsing, `target_ran_nothing`,
+`min_target_blocks`/`targets_below_floor`. Six new floor steps, floors measured on Windows
+**and confirmed on Linux**. Conformance census floor, not `continue-on-error`.
+
+### State
+
+Windows `cargo test --lib` **521/0/4** and `clippy --all-targets -D warnings` exit 0.
+`ci/test_lane_checks.py` **132 passed, 3 failed** (the same known census reds; was 116
+passed). `check_lane_inventory.py` PASS. `check_build_precondition.py` PASS over both
+workflows. `PLATFORMS.md` §7.23. Five decision records in the inbox. Committed on
+`squad/link`, staged by explicit path, **not pushed**. No wall-clock figure quoted.
+
+**Mistake worth recording:** `[IO.File]::WriteAllText` with a relative path resolves
+against the **process** CWD, which is the *main* repo, not PowerShell's `cd`. I wrote into
+`onnxruntime-ep-vulkan/.github/workflows/ci.yml` by accident, caught it with `git status`
+and reverted. Always pass absolute paths to .NET file APIs from this harness.
+
+**Worktree note:** 23 sibling untracked artifacts present on arrival, left untouched.
