@@ -117,3 +117,122 @@ R11 obligation 1 and I can point at the sentence — but the tally is the kind o
 - **[SUMMARY] Sessions 1–22: design, OQ rulings, contrib admission, M0 assessment, R6/R7/R8, §8.8 (2026-07-28–2026-07-30)** — **Sessions 1–6 (archived):** DESIGN.md and README.md produced. Capability set baseline: Vulkan ≥1.1 + sync2 + subgroup_size_control (either 1.3 core or as extensions). Milestones M0–M3. `com.microsoft` contrib domain adm
 - **[SUMMARY] Compressed entries (condensed 2026-08-01T20:39:12-07:00)** — - **📌 Cross-agent context — Round 4 (2026-07-30T02:49:12-07:00)** — ### Worktree layout and inbox portability constraint The team works in git worktrees: `squad/switch` at `C:\Users\justinchu\dev\ep-vulkan-switch`, `squa
 - **2026-08-02T04:30:29-07:00 — I reopened criterion 10 three hours after closing it, and the closure was my error** — The coordinator put my closure to Fact Checker in Devil's Advocate mode, precisely because he had
+**The thing I found that neither of them brought, and it is what settled it for me:** `test_phi35.py`
+Guard 1 already documents this exact mechanism in this codebase — an output outside the descriptor set
+"is never written... zero-initialised by both Intel Iris Xe and NVIDIA drivers for security, reads back
+as all-zero" — and the guard built against it is applied to output 0, the one tensor that already has an
+oracle. The row was reopened on 50 KV outputs never written, where the symptom was cross-run divergence.
+Divergence is the symptom of a *dirty* arena. On a clean one the same defect is stable and everything is
+green. So the closure certified that the symptom is gone and never established the defect is fixed.
+
+**I refused the escape I was offered.** "The criterion's words were always about logits" would require
+renaming the measurement to `logits_equivalence` after seeing that the broad reading fails. That is
+narrowing a criterion because it has just failed — the exact mirror of what I refused three hours ago in
+the same cell when I declined to add a re-run requirement because the news was good. I wrote the
+symmetric form into the row: **a criterion may not be hardened because it is about to pass, nor narrowed
+because it has just failed.** If I had taken the escape it would have been the cheaper ruling and it
+would have been the same failure I have been grading other people on all session.
+
+**My own error, recorded plainly and in the register rather than only in the table.** The artifact carries
+`outputs_compared: 65` in the same per-run dict as `argmax_cpu`, `top10_overlap` and `max_abs_diff`. Every
+neighbour is an oracle fact; that one is a cross-run count. I read 65 and understood sixty-five oracle
+comparisons, and I quoted `max_abs_diff = 0.0625` into a criteria row without stating over what — R11
+obligation 1, three hours after I diagnosed the coordinator for that same obligation in criterion 12. I
+wrote "the thing I verified myself was the thing I over-weighted" into row 12 and then did it in row 10.
+
+**No new rule. Recorded as a fourth specimen under R9's red-instrument test, deliberately unnumbered.** I
+ran the self-check I put in the register — if the next finding also lands as a generalisation, look for a
+softer way of declining. The remedy here is R9's remedy unchanged, a different instrument, so it is not an
+amendment and not a generalisation. The content that is genuinely new is written anyway: two gates whose
+extents differ compose to the weaker extent and the stronger name; a record with two gates owes two
+extents.
+
+**Drafting rule applied to the remedy.** The coordinator's proposal was right and I sharpened it by asking
+what the cheapest satisfaction is: an all-65 oracle is satisfied perfectly by 64 pairs of all-zero tensors,
+so the non-triviality guard is not optional — an oracle that passes on the absence of data is Switch's
+`0.0 == 0.0` in a fourth costume. And the planted control must be wrong *and stable*; an unstable plant is
+caught by cross-run identity and proves nothing new.
+
+**On method, the sentence I want to keep.** I verified every field of that artifact and closed wrongly
+anyway. The coordinator arranged an adversary because he had supplied the evidence, and the adversary
+found what my verification did not. Content verification by the ruling party is weaker than adversarial
+review by a party with no stake. My standing-falsifier clause fired in three hours, which is the clause
+working, not the clause being circumvented.
+
+**Carry forward:**
+- Criterion 10 discharge is now four arms, stated in full so nothing can be added later: all-65 oracle with
+  justified per-output tolerances and two named extent keys; a wrong-and-stable planted control (all-zero);
+  a non-triviality guard on both sides; existing attribution re-emitted not re-argued.
+- Owners I named: Trinity (comparison/verdict constructors), Switch (whether the KV write path writes at
+  all — still unwitnessed, and the `kv_cross_run` prediction has been UNSCORED all session).
+- Fact Checker's session-aggregate attribution argument is OPEN and NOT a condition. It needs an artifact:
+  plant a failing island execution, observe whether a Node event is still emitted.
+- `outputs_compared` is a live R11 obligation-4 specimen and belongs in criterion 12's conjunct (iv)
+  alongside `MEASURED_PHI35_DEV0`.
+- Four declines now, and this one I checked hardest because reopening was the ruling I wanted.
+
+## 2026-08-02T15:15:12-07:00 — The accumulation question had a false premise; the residual is ULPs
+
+I was asked to make a cost ruling: should f16 kernels accumulate in f32, knowing it would invalidate
+all 74 freshly re-proved ledger entries. Mouse declined to make it himself and the coordinator was
+right to honour that boundary.
+
+**I checked the kernels before ruling on the economics, and every f16 kernel already accumulates in
+fp32.** `q_gemv.comp` says so in terms — "Accumulation is fp32 regardless of storage, which is also
+what ORT's SQNBIT_CompFp32 path does". Both layer-norm f16 kernels say it. `gqa_f16.comp` declares
+`float acc[128]`, `float dot`, and runs the online softmax in float, converting on load. fp16 is a
+storage format in this EP and never was an accumulation format.
+
+So the ruling is: no change, no cost, no ledger invalidation. **Had I reasoned about the trade as it
+was posed — registers, occupancy, bandwidth-bound decode at ctx 0 — I would have produced a careful
+and completely wasted analysis, and authorised a real cost to obtain a property we already have.**
+That is the lesson I want to keep from this one: the question arrived with an embedded factual claim
+and the claim was the thing to check first. I nearly reasoned about the economics because the
+economics were what I was asked about.
+
+**Then the residual.** I dumped all 65 per-output diffs. Sixty-four are exact negative powers of two
+and the sixty-fifth is 3 x 2^-9. They are small integer multiples of the fp16 ULP. KV activation
+magnitude grows with depth in a transformer, the ULP grows with it, and the absolute residual rises
+with depth for a perfectly correct implementation. **The "monotone accumulation curve" is a plot of
+tensor magnitude.**
+
+So the tolerance argument is wrong for a reason nobody in the thread had reached: atol is an absolute
+bound applied to tensors of growing scale. Section 10.0.4's "prefer the ratio", arriving as a defect
+rather than as advice. The unit is wrong, not the number — and I made a point of writing that fixing
+the unit may make the gate *tighter*, because otherwise this ruling reads as a relaxation and it is
+not one.
+
+I gave the replacement a prediction before it exists: residual in ULPs, predicted flat at 1-3 across
+all 32 layers. Flat means no defect. A step means a located defect. It is better in both outcomes and
+unlike the current gate it can be wrong.
+
+**A correction to the finding I had to make carefully.** Mouse said the curve rises monotonically. The
+absolute series broadly does; max_rel_diff does not — layer 2's key is 0.4559, above every layer from
+3 to 30, on an unremarkable absolute residual, because max_rel is attained at near-zero elements. He
+had just corrected one wrong denominator in his own instrument and there was a second one left. I
+tried to say this in a way that credits the correction he made rather than scoring the one he missed.
+
+**R9's dual, and I declined to number it again — fifth decline, second consecutive unnumbered
+finding.** I ran the self-check in the open this time because two in a row is exactly when I should
+suspect I have found a comfortable way of never growing the register. My honest conclusion: the dual
+is the same rule with the same remedy. Everything this session was a reading that does not move when
+its subject is wrong; this is a reading that moves when its subject is fine. Both are readings of
+something other than the claim. That the *dual* keeps arriving argues R9 is the home, not that a new
+number is owed.
+
+**I declined the comfort of argmax=30751 and top10=10/10, and said the reason is arithmetic rather
+than scepticism: it is one token.** The coordinator asked directly whether it was reassuring or
+misleading and said he did not know which. It is neither. The rank invariant is the right invariant —
+10.0.4 says so — and N=1 is not a stated N.
+
+**Carry forward:**
+- Criterion 10 stays open on the unit alone. Its reopening ground (all-zero KV) is measured absent:
+  degenerate 0, 65/65 compared, planted control refuses. verdict=DIVERGENT is honest and must not be
+  flipped by moving atol.
+- The ULP series is the closing artifact. Prediction on record: flat, 1-3, all 32 layers.
+- GQA's 1.37x margin is untouched by this ruling and stays open. Its proposed remedy turned out to be
+  already in place, which is not a reason to close it.
+- The CPU EP is not ground truth; it is a second fp16 implementation. Elementwise disagreement between
+  two correct fp16 implementations grows with depth by construction. Worth repeating to anyone who
+  frames this as "accumulated error".
+- Five declines now. If a sixth arrives I should ask someone else whether the register is under-growing.
