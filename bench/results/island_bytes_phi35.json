@@ -1,81 +1,184 @@
 {
   "by_context_length": [
     {
-      "floor_ms_at_spec_peak": 8.2180345,
-      "intermediate_share": 0.00474304409405923,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 8.2180825,
+      "intermediate_share": 0.004748857169540462,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 0.0,
       "kv_share": 0.0,
       "past_sequence_length": 0,
-      "total_MiB": 2006.3560791015625,
+      "total_MiB": 2006.3677978515625,
       "weight_MiB": 1996.83984375
     },
     {
-      "floor_ms_at_spec_peak": 8.4146425,
-      "intermediate_share": 0.004632222937575779,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 8.4146905,
+      "intermediate_share": 0.004637900823565644,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 48.0,
-      "kv_share": 0.023364985499978164,
+      "kv_share": 0.023364852218866517,
       "past_sequence_length": 128,
-      "total_MiB": 2054.3560791015625,
+      "total_MiB": 2054.3677978515625,
       "weight_MiB": 1996.83984375
     },
     {
-      "floor_ms_at_spec_peak": 9.004466500000001,
-      "intermediate_share": 0.00432879615910615,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 9.004514499999999,
+      "intermediate_share": 0.0043341037431834884,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 192.0,
-      "kv_share": 0.08733798943002342,
+      "kv_share": 0.08733752386094774,
       "past_sequence_length": 512,
-      "total_MiB": 2198.3560791015625,
+      "total_MiB": 2198.3677978515625,
       "weight_MiB": 1996.83984375
     },
     {
-      "floor_ms_at_spec_peak": 11.3637625,
-      "intermediate_share": 0.003430069926223819,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 11.3638105,
+      "intermediate_share": 0.0034342793731028864,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 768.0,
-      "kv_share": 0.2768209912869967,
+      "kv_share": 0.27681982201304745,
       "past_sequence_length": 2048,
-      "total_MiB": 2774.3560791015625,
+      "total_MiB": 2774.3677978515625,
       "weight_MiB": 1996.83984375
     },
     {
-      "floor_ms_at_spec_peak": 14.5094905,
-      "intermediate_share": 0.0026864141094409895,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 14.5095385,
+      "intermediate_share": 0.002689713390953131,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 1536.0,
-      "kv_share": 0.4336097122087092,
+      "kv_share": 0.43360827775466465,
       "past_sequence_length": 4096,
-      "total_MiB": 3542.3560791015625,
+      "total_MiB": 3542.3677978515625,
       "weight_MiB": 1996.83984375
     },
     {
-      "floor_ms_at_spec_peak": 20.800946500000002,
-      "intermediate_share": 0.0018738810755558647,
-      "intermediates_MiB": 9.5162353515625,
+      "floor_ms_at_spec_peak": 20.800994499999998,
+      "intermediate_share": 0.001876184333398098,
+      "intermediates_MiB": 9.5279541015625,
       "kv_cache_MiB": 3072.0,
-      "kv_share": 0.6049201655318905,
+      "kv_share": 0.6049187696290195,
       "past_sequence_length": 8192,
-      "total_MiB": 5078.3560791015625,
+      "total_MiB": 5078.3677978515625,
       "weight_MiB": 1996.83984375
     }
   ],
+  "graph_measurements": {
+    "FFN": 8192,
+    "FP16": 2,
+    "HEAD_DIM": 96,
+    "HIDDEN": 3072,
+    "KV_HEADS": 32,
+    "LAYERS": 32,
+    "VOCAB": 32064,
+    "WEIGHT_STREAM_BYTES": 2093838336,
+    "scale_bytes": 232648704,
+    "weight_bytes": 1861189632
+  },
   "intermediate_breakdown_bytes": {
-    "GroupQueryAttention q/k/v/out": 786432,
-    "MatMulNBits activations (5/layer)": 3342336,
-    "Mul (2/layer)": 3145728,
-    "Sigmoid (1/layer)": 1048576,
-    "SkipSimplifiedLayerNormalization (2/layer)": 1572864,
-    "final norm + lm_head output + embed gather": 82560
+    "Gather (2, embedding row)": 12288,
+    "GroupQueryAttention q/k/v/out (32)": 786432,
+    "MatMulNBits activations (161 nodes)": 3412608,
+    "Mul (64)": 3145728,
+    "Sigmoid (32)": 1048576,
+    "SimplifiedLayerNormalization (1)": 12288,
+    "SkipSimplifiedLayerNormalization (64)": 1572864
+  },
+  "op_counts": {
+    "Cast": 2,
+    "Constant": 3,
+    "Gather": 2,
+    "Greater": 1,
+    "GroupQueryAttention": 32,
+    "If": 1,
+    "MatMulNBits": 161,
+    "Mul": 64,
+    "ReduceSum": 1,
+    "Shape": 1,
+    "Sigmoid": 32,
+    "SimplifiedLayerNormalization": 1,
+    "SkipSimplifiedLayerNormalization": 64,
+    "Sub": 1
   },
   "probe": "whole_island_bytes_phi35_decode",
+  "provenance": {
+    "LAYERS, HIDDEN, FFN, VOCAB, KV_HEADS, HEAD_DIM, FP16": {
+      "class": "MEASUREMENT",
+      "source": "the ONNX graph: MatMulNBits K/N attributes, past_key_values.N.key shape and elem_type, GroupQueryAttention node count",
+      "wrong_when": "the model changes -- previously literals, which is why this file would have gone on printing Phi-3.5 numbers for any other model"
+    },
+    "PEAK_BYTES_PER_S": {
+      "class": "SPECIFICATION",
+      "source": "128-bit GDDR6 @ 16.0 Gbps, published for NVIDIA GeForce RTX 4060 Laptop GPU",
+      "wrong_when": "the run used a different part -- so the part name is checked against the run's timestamp fingerprint, not assumed"
+    },
+    "SPEC_PART": {
+      "class": "MEASUREMENT",
+      "source": "phi35-certified-dev0.json -> device_identity.observed_from_trace",
+      "wrong_when": "a run on another device is quoted against this peak; the check fires"
+    },
+    "WEIGHT_STREAM_BYTES": {
+      "class": "MEASUREMENT",
+      "source": "sum of B and scales initializer sizes over the graph's MatMulNBits nodes",
+      "wrong_when": "the quantisation or the model changes; was a literal restating probe_roofline.py, so the two could drift apart silently"
+    },
+    "intermediate_breakdown_bytes": {
+      "class": "MODEL",
+      "source": "node counts by op_type from the graph (measured) x a per-node traffic rule (assumed): every tensor crossing a dispatch boundary is written once and read once",
+      "wrong_when": "never, by observation -- nothing here observes activation traffic. It is the size of a prize, not a reading, and must not be quoted as one"
+    },
+    "kv_bytes()": {
+      "class": "MODEL",
+      "source": "LAYERS x 2 x past_len x KV_HEADS x HEAD_DIM x FP16 (all inputs measured)",
+      "wrong_when": "never, by observation -- GroupQueryAttention runs on CPU in this EP, so no dispatch of ours reads this cache and no counter of ours sees it"
+    },
+    "weight_reread_amplification": {
+      "class": "MEASUREMENT",
+      "source": "weight_reread_phi35.json, produced by probe_weight_reread.py: a SIMT execution of the compiled SPIR-V located by digest against the proof ledger",
+      "wrong_when": "the kernel re-reads a blob, or two workgroups share one -- both are witnessed positive by controls in that probe"
+    }
+  },
+  "specification": {
+    "bus_bits": 128,
+    "device_observed_in_run": {
+      "matches_spec_part": true,
+      "observed_from_trace": "NVIDIA GeForce RTX 4060 Laptop GPU",
+      "ok": true,
+      "reason": "timestamp fingerprint period=1.0 bits=64 matches exactly one device"
+    },
+    "mem_gbps": 16.0,
+    "part": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "peak_bytes_per_s": 256000000000.0
+  },
   "weight_reread_amplification": {
     "amplification": 1.0,
+    "coverage": 1.0,
     "inb_load_instructions_per_inference": 116324352,
     "int4_weight_bytes_from_graph": 1861189632,
-    "load_width_bytes": 16,
+    "load_width_bytes": [
+      16
+    ],
+    "max_loads_naming_one_word": 1,
+    "module": {
+      "digest": "024521d53c2ef5bc",
+      "digest_matches_ledger": true,
+      "module_bytes": 20208,
+      "stem": "q_gemv_matmul_nbits_f16"
+    },
+    "positive_controls": [
+      {
+        "amplification": 1.1076923076923078,
+        "control": "tail_tile_N_not_divisible_by_cols"
+      },
+      {
+        "amplification": 2.0,
+        "control": "deliberately_rereading_variant"
+      },
+      {
+        "amplification": null,
+        "control": "unpacked_path_changes_the_width_not_the_bytes"
+      }
+    ],
     "product_bytes": 1861189632,
-    "verdict": "each weight byte is read exactly once; blocking is not the defect"
+    "verdict": "each weight byte is named by exactly one load instruction",
+    "words_named_by_more_than_one_workgroup": 0
   }
 }
