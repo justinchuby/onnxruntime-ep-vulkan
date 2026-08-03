@@ -364,3 +364,50 @@ both digests. The observing instrument already exists (`pipeline_variants`,
 consume it. Closing it is a dispatch-time frame witness, not a third build-time digest. Cost
 comparable to `source_digest`, smaller because the collection exists. Nobody owns it, and it
 interacts with Switch's selectors.
+
+## Session: §8.9.20 — the dispatch-time frame witness (2026-08-03)
+
+Closed the residual I named last round: runtime-chosen specialisation values sat outside both
+digests. `spec_digest` is a digest over the sorted `(stem, spec_constants)` set the run actually
+bound, computed from the `pipeline_variants` collection that already existed, and audited from the
+**dispatch** path — never the claim path, because a claim is decided before any pipeline exists and
+a witness read there could only ever say `SPEC-UNOBSERVED`. That is my own defect class from last
+round, and I refused to rebuild it a third time. `SpecWitness` has five states; `PARTIAL` exists so
+a part-set digest can never be compared against a recorded full-set one and invent a delta.
+
+`SPEC-UNRECORDED` **claims**, deliberately unlike §8.9.19 row 5: a missing `source_digest` is
+repairable from the tree, a missing `spec_digest` is a fact about a run that has ended. All 103
+entries are `SPEC-UNRECORDED`; their meaning has narrowed to "this kernel's bytes, under a pipeline
+nobody recorded", and that narrowing is disclosed on every session and by `--check`.
+
+Also: whole-file ledger faults are re-emitted at session-disclosure time rather than once from a
+`OnceLock` that fires before the ORT logger attaches (Link's finding — the mechanism half was
+mine); and the decline text no longer claims "nothing has proven it correct" when the ledger merely
+could not be read.
+
+### The positive state, demonstrated
+
+`probe_specialisation_witness.py`: unset and forced-off `GEMV_PACKED` share `shader_digest`
+`4be613c24634ec9e` and `source_digest` `270e8086408f69a4` and differ only in `spec_digest`
+(`776968369d964eb4` vs `776cce369d9931dd`). Forced-on matches unset — the instrument does not move
+when nothing moved. Six checks, PASS.
+
+### Readings
+
+Phi-3.5 claim probe, device 0, release build: **355 claimed / 355 hits / 5 unproven declines**,
+`DEVICE-UNATTRIBUTED-PRESENT`, 103 entries. **A reading moved** — declines 3 → 5. It is not mine: I
+reproduced 5 on unmodified `main` (`d46327b`) in a detached worktree with its own release build.
+The two additions are `ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32`, static and runtime-extent —
+Tank's Cast kernel arriving ahead of its proof. **A fix behaving**, and Tank's to prove.
+
+Establishing that cost a second worktree and a second release build, because `unproven_declines`
+was a bare count with no key list while `subject_changed_forms` has carried its keys since
+§8.9.19. Added `unproven_decline_forms`; it answered the question on its first run.
+
+`cargo test --lib` 527 passed / 0 failed, clippy `--all-targets -D warnings` clean,
+`counters_abi.py --check` PASS at v8 `(8, 0xdf71f4e6a59271b3)` — unchanged, all new fields are
+JSON-only — `gen_proof_ledger.py --check` PASS at 103 entries, digest `493616a874425910`.
+
+**Touched that others own:** one line in `vk/session.rs` (Switch) for the dispatch hook, and the
+claim decline text (Link/Morpheus). If Switch's selector work wants a shared structure for selector
+identity, that is the better answer and mine should fold into it.

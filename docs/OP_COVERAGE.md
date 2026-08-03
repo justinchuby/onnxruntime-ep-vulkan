@@ -4008,6 +4008,85 @@ smaller because the collection instrument is already there.
 which is a schema question. It also interacts directly with Switch's selector work, so whoever owns
 it should own both. Nobody owns it today.
 
+**Closed by §7.23 (§8.9.20).** Built as costed, and the estimate held: a digest over the existing
+collection, one counters field, one entry field, one comparison, one generator refusal.
+
+### 7.23 §8.9.20 — the dispatch-time frame witness
+
+**The hole, demonstrated before it was closed.** `rust/tools/probe_specialisation_witness.py` runs
+one `MatMulNBits` graph three times — with `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` unset, forced off,
+and forced on — and reads all three digests out of the counters artifact:
+
+| case | `shader_digest` | `source_digest` | `spec_digest` |
+|---|---|---|---|
+| unset | `4be613c24634ec9e` | `270e8086408f69a4` | `776968369d964eb4` |
+| forced off | `4be613c24634ec9e` | `270e8086408f69a4` | `776cce369d9931dd` |
+| forced on | `4be613c24634ec9e` | `270e8086408f69a4` | `776968369d964eb4` |
+
+Rows 1 and 2 are the hole: **identical SPIR-V, identical source closure, different kernel.** Both
+build-time digests call these the same frame and the ledger says `PROVEN` about whichever one was
+not measured. Rows 1 and 3 are the control: arming a switch that was already on moves nothing. A
+digest that always moves is a clock, not an instrument, and this section refuses to ship one.
+
+**Why not a third build-time digest.** The value does not exist until `vkCreateComputePipelines`.
+A claim is decided *before* any pipeline is created, so a witness consulted on the claim path would
+report `SPEC-UNOBSERVED` on every run and `specialisation_delta_forms` would be a list whose only
+possible content is empty. That is this project's own recorded defect class — a single-valued state
+wearing the shape of a predicate — so the audit hangs off the **dispatch** path
+(`vk/session.rs` → `registry::audit_dispatch_specialisation`), gated on `record_pipeline_variant`
+returning `true` so it costs one ledger scan per distinct pipeline rather than one per dispatch.
+
+**Five states, because four would lie.** `SpecWitness` is `UNOBSERVED` (nothing bound yet),
+`PARTIAL` (some of the entry's stems bound), `UNRECORDED` (the entry records no specialisation),
+`IDENTICAL`, `DELTA`. `PARTIAL` exists because a digest over *part* of an entry's stem set compared
+against a recorded full-set digest would invent a delta out of a run that has merely not finished
+binding. Only `DELTA` contributes a δ to `entry_state`.
+
+**`SPEC-UNRECORDED` claims — and this is deliberately not §7.21's row 5.** A missing `source_digest`
+is repairable from the tree (`--backfill-frame`), so declining on it buys a fix. A missing
+`spec_digest` is a fact about a **run that has already ended**: no build can recover it and only
+`--reprove` can. Declining would take the EP to zero claims for a repair nobody can perform.
+
+**What an entry now means, and the disclosure that says so.** Every one of the 103 shipped entries
+is `SPEC-UNRECORDED`. Their meaning has narrowed to *"this kernel's bytes, under a pipeline nobody
+recorded"* — and a narrowing that is not disclosed is a quiet demotion of 103 proofs, so it is
+disclosed twice: an INFO line on every session (`disclose_specialisation_frame_of`) and a
+`NOTE(§8.9.20)` line on `gen_proof_ledger.py --check`. `entry_state` is consequently
+**time-dependent** — its answer can change once a pipeline is bound. That is the finding, not a
+defect; no node loses a claim mid-run, because a specialisation delta yields `ProvenElsewhere`,
+which is still claimable.
+
+**The generator refuses rather than backfills.** `entry_line()` will not write a *new* entry whose
+`spec_digest` is absent, `NONE-DISPATCHED` or `PARTIAL-…`; `--backfill-frame` is deliberately not
+extended, because there is nothing in the tree to read it from.
+
+### 7.24 Three things the instrument was saying wrongly
+
+**A warning emitted before anyone is listening was never emitted.** `registry::ledger()` is a
+`OnceLock` initialised by the first key lookup, which happens **before ORT attaches its logger**.
+Its `log::warn!` for a whole-file fault therefore went to a sink that did not exist, and being a
+`OnceLock`, it was never repeated — which is how the log read `0 × "proof ledger fault"` while the
+counters read `ledger_faults` on every entry. Per-entry demotions had already been moved to
+session-disclosure time by §8.9.18; whole-file faults had not. `disclose_ledger_faults_of` now
+re-emits them through the ORT sink every session.
+
+**The decline text was false in every clause on a faulted ledger.** It said *"no proof ledger entry
+for X … nothing has proven it correct on this form"*, when in truth nothing was **known**, and the
+entry proving that form may well have been sitting in the file. `LedgerLookup` has carried the
+Hit/KeyAbsent/Faulted distinction since R13 and nothing read it at the decline site. A blanket in
+the *state* is a safety property; a blanket in the *text* is a false statement, and the two need
+not travel together. `unproven_decline_detail` now names an instrument failure as one.
+
+**A count with no keys cannot be acted on.** `unproven_declines` moved from 3 to 5 between two
+builds of this repository, and nothing in the artifact could say which two forms had joined it;
+establishing that they were not mine cost a second worktree and a second release build.
+`subject_changed_forms` had carried its keys since §8.9.19 for exactly this reason; the older and
+far more common decline had not. `unproven_decline_forms` now does — and answered the question it
+was built for on its first run: the two new declines are
+`ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32` in both its static and runtime-extent forms, i.e.
+Tank's new Cast kernel arriving ahead of its proof. That is the ledger gate behaving: a kernel that
+exists and is unproven declines, and says so by name.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.
