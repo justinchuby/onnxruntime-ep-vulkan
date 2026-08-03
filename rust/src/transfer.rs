@@ -88,6 +88,9 @@ enum Side {
         buffer: Option<crate::engine::BufferView>,
         /// Which device's provider owns `buffer`. `usize::MAX` when unattributed.
         device_index: usize,
+        /// `true` when a dispatch wrote the device buffer directly and the staging block is
+        /// stale. See [`crate::allocator::Span::device_authoritative`].
+        device_authoritative: bool,
     },
 }
 
@@ -225,6 +228,7 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
                     has_device_buffer: r.buffer.is_some(),
                     buffer: r.buffer,
                     device_index: reg.device_index(),
+                    device_authoritative: r.device_authoritative,
                 };
             }
             // In the arena but between spans: a real out-of-bounds, and worth naming here rather
@@ -238,6 +242,7 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
                     has_device_buffer: false,
                     buffer: None,
                     device_index: usize::MAX,
+                    device_authoritative: false,
                 };
             }
             Err(LookupError::NotAHandle { .. }) => {}
@@ -250,19 +255,29 @@ fn classify(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, p: *mut u8) -
 ///
 /// # Why there is no "device only" variant
 ///
-/// A span with a `VkBuffer` **also** keeps its host staging block, and the staging block stays
-/// authoritative. That is not a hedge; it is forced by what the engine can currently do. The
-/// compute session resolves every kernel input through [`host_backing_for`] and writes every
-/// output back the same way, and it binds buffers it allocated itself. If a device-backed handle
-/// had no host address, the session would have nothing to read — measured: with device memory on
-/// and no host address, ORT reported `EP_FAIL ... bytes are unreachable` for input 1 of the first
+/// A span with a `VkBuffer` **also** keeps its host staging block. If a device-backed handle had
+/// no host address, the session would have nothing to read — measured: with device memory on and
+/// no host address, ORT reported `EP_FAIL ... bytes are unreachable` for input 1 of the first
 /// subgraph and fell back to the CPU EP for the whole model.
 ///
-/// So the device buffer is a **mirror**: real `DEVICE_LOCAL` memory, really written across the bus
-/// on every copy into the handle, and therefore a real measurement of what residency costs — but
-/// not yet the only home of the tensor. `alloc_device_authoritative_spans` is 0 and says so. It
-/// stops being a mirror when `vk::session` binds [`device_buffer_for`]'s buffer instead of
-/// allocating and re-uploading its own, and that is an engine-side change, not this one.
+/// # Which copy is real
+///
+/// Both exist; **which one is authoritative is a property of the span, not of the file.** This
+/// used to be a global rule — staging always authoritative, device always a mirror — and the
+/// rule is wrong in one direction each way round:
+///
+/// * reading the **device** buffer of a staging-authoritative span returns a copy the engine may
+///   have made stale by writing an output through [`host_backing_for`];
+/// * reading the **staging** block of a device-authoritative span returns bytes nobody wrote —
+///   this is exactly the all-zero output measured on 2026-08-02 when the engine began binding
+///   output buffers directly (`bench/results/probe_kv_device_residency.py` ->
+///   `DEVICE_BOUND_OUTPUTS_RETURN_NOTHING`).
+///
+/// So [`Endpoint::Mirrored`] carries `device_authoritative` and every reader consults it. A span
+/// becomes device-authoritative when `vk::session` binds its buffer as a dispatch's write target,
+/// and reverts the moment anything writes its staging block, because after a host write the two
+/// copies agree only once the mirror is refreshed — and refreshing the mirror is the path that
+/// already existed.
 #[derive(Debug, Clone, Copy)]
 enum Endpoint {
     /// Host-addressable bytes with no device mirror.
@@ -274,6 +289,15 @@ enum Endpoint {
         view: crate::engine::BufferView,
         offset: usize,
         device_index: usize,
+        /// `true` when the device buffer is the real copy and `host` is stale.
+        device_authoritative: bool,
+        /// Requested size of the whole containing span, not of this endpoint's window.
+        ///
+        /// Carried because authority is a property of the span while a copy is a property of a
+        /// window inside it, and the difference is only visible when the two disagree — a
+        /// distinction that is invisible on every whole-span write and therefore invisible to the
+        /// tests that exercise one.
+        span_size: usize,
     },
 }
 
@@ -314,6 +338,8 @@ fn resolve_endpoint(
             has_device_buffer,
             buffer,
             device_index,
+            device_authoritative,
+            ..
         } => {
             // Bound the copy by the *requested* size of the span, not the padded one. This is the
             // same rule the registry's lookups use and for the same reason: accepting the rounding
@@ -356,8 +382,24 @@ fn resolve_endpoint(
                     view,
                     offset,
                     device_index,
+                    device_authoritative,
+                    span_size,
                 }),
-                _ => Ok(Endpoint::Host(host)),
+                _ => {
+                    if device_authoritative {
+                        // A span that claims the device is authoritative but resolves to a
+                        // host-only endpoint has nowhere real to be read from. Silently
+                        // degrading to the stale staging block is precisely the all-zero
+                        // failure this flag exists to prevent, so it is refused instead.
+                        return Err(format!(
+                            "device handle 0x{base:x} is marked device-authoritative but has no \
+                             usable buffer/provider pair (buffer={}, device_index={device_index}); \
+                             reading its staging block would return bytes nobody wrote",
+                            buffer.is_some()
+                        ));
+                    }
+                    Ok(Endpoint::Host(host))
+                }
             }
         }
     }
@@ -606,6 +648,36 @@ unsafe fn copy_one(
         }
     }
 
+    // ── Refresh a stale staging block before reading it ────────────────────────────────────
+    //
+    // This is the fix for the all-zero output bind. When a dispatch has written the source's
+    // device buffer directly, the staging block underneath `from.host_ptr()` is stale — nobody
+    // wrote it — and the memcpy below would copy those bytes out with complete confidence.
+    // Measured 2026-08-02: 0 nonzero of 32064 logits and 0 of 27648 in each `present` tensor,
+    // scoring a perfect 1.0 against a relative metric because two all-zero tensors agree.
+    //
+    // The download lands in staging rather than straight into `to_p` on purpose. Staging is the
+    // span's own memory and refreshing it makes *every* subsequent reader correct, including the
+    // engine's `host_backing_for` path, rather than only this one copy. It also keeps the two
+    // copies in agreement, which is the state every other branch in this file assumes.
+    refresh_from_device_if_authoritative(from, src_len)?;
+
+    // A partial host write into a device-authoritative span must not revoke authority over bytes
+    // it never wrote.
+    //
+    // Authority is a property of the whole span; a copy is a property of a window inside it. The
+    // upload below pushes only `[offset, offset + dst_len)`, but the revoke that follows declares
+    // the *entire* span to live in staging — including bytes that only ever existed on the device,
+    // because a dispatch wrote them and nothing ever brought them back. A later read of a sibling
+    // tensor in the same planner-subdivided span would then return whatever staging happened to
+    // hold, with no error anywhere.
+    //
+    // This is invisible on every whole-span write, which is the common case and the one the
+    // residency probe exercises, so it would not have been found by running the case that already
+    // passes. Bringing the whole span down first makes staging genuinely authoritative at the
+    // moment authority is handed back to it, which is the claim the revoke makes.
+    refresh_whole_span_before_partial_write(to, dst_len)?;
+
     let from_p = from.host_ptr();
     let to_p = to.host_ptr();
     if from_p != to_p {
@@ -616,17 +688,23 @@ unsafe fn copy_one(
         unsafe { ptr::copy_nonoverlapping(from_p, to_p, src_len) };
     }
 
-    // Mirror into device memory. Only the destination is mirrored: the staging block is
-    // authoritative (see [`Endpoint`]), so reading back from the device would be reading a copy
-    // that the engine may have made stale by writing an output through `host_backing_for`. Doing
-    // the download anyway would look like more device traffic and would be a correctness hazard —
-    // the exact trade this project keeps getting wrong in the flattering direction.
+    // Mirror into device memory, and hand authority back to staging.
+    //
+    // The destination's staging block has just been written by the memcpy above, so it is now the
+    // fresh copy and the device buffer is stale until this upload. Clearing the flag *after* the
+    // upload succeeds is deliberate: between the memcpy and the upload the two copies disagree,
+    // and the flag says "read the device" for exactly as long as that is still true.
+    //
+    // Getting the order wrong here is not a subtle inefficiency — it is a read of the wrong copy
+    // in whichever direction the mistake points, which is the same defect twice.
     if let Endpoint::Mirrored {
         base,
         host,
         view,
         offset,
         device_index,
+        device_authoritative,
+        ..
     } = to
     {
         let provider = provider_for(device_index, base)?;
@@ -635,7 +713,145 @@ unsafe fn copy_one(
         let src = unsafe { std::slice::from_raw_parts(host.cast_const(), dst_len) };
         provider.upload(view, offset, src)?;
         tally::on_device_copy(dst_len as u64, true);
+        if device_authoritative {
+            revoke_device_authority(&me.registries, base);
+        }
     }
+    Ok(())
+}
+
+/// Bring a whole device-authoritative span into staging before a host write that covers only part
+/// of it.
+///
+/// A no-op unless the destination is device-authoritative *and* the write leaves some of the span
+/// untouched — a whole-span write needs no refresh, because every byte is about to be replaced.
+/// See the call site in [`copy_one`] for why the partial case is the dangerous one.
+fn refresh_whole_span_before_partial_write(to: Endpoint, dst_len: usize) -> Result<(), String> {
+    let Endpoint::Mirrored {
+        base,
+        host,
+        view,
+        offset,
+        device_index,
+        device_authoritative: true,
+        span_size,
+    } = to
+    else {
+        return Ok(());
+    };
+    if offset == 0 && dst_len >= span_size {
+        return Ok(());
+    }
+    if span_size == 0 {
+        return Ok(());
+    }
+    let provider = provider_for(device_index, base)?;
+    // SAFETY: `host` is the span's staging base advanced by `offset`, so subtracting `offset`
+    // recovers that base, which addresses at least `span_size` writable bytes — `staging_ptr`
+    // allocates the span's padded size and `span_size` is the requested size, which is no larger.
+    let dst = unsafe { std::slice::from_raw_parts_mut(host.sub(offset), span_size) };
+    provider.download(view, 0, dst)?;
+    tally::on_device_copy(span_size as u64, false);
+    Ok(())
+}
+
+/// Hand authority back to a span's staging block after a host write has refreshed it.///
+/// A failure here is logged rather than propagated: the copy itself succeeded and both copies of
+/// the bytes now agree, so the caller's transfer is complete. What is lost is bookkeeping, and a
+/// span left marked device-authoritative when it is not will be *downloaded* before its next
+/// read — wasteful, and correct. The opposite mistake would not be, which is why this is the
+/// direction the failure mode points.
+fn revoke_device_authority(registries: &HashMap<(u32, u32), Arc<HandleRegistry>>, base: usize) {
+    for reg in registries.values() {
+        if reg.classify(base).is_ok_and(|r| r.base == base) {
+            if let Err(e) = reg.set_device_authoritative(base, false) {
+                log::warn!(
+                    "VulkanExecutionProvider: handle 0x{base:x} was written on the host but its \
+                     authority flag could not be cleared ({e}); its next read will download a \
+                     device copy that now agrees with staging"
+                );
+            }
+            return;
+        }
+    }
+}
+
+/// Declare that a dispatch is about to write this handle's device buffer directly, making the
+/// device buffer the authoritative copy and the staging block stale.
+///
+/// The engine's seam. `vk::session` calls this when it binds an output buffer as a dispatch
+/// target instead of allocating its own and copying back — the change [`Endpoint`] describes as
+/// the thing that stops the device buffer being a mirror.
+///
+/// Returns `false` when the pointer is not a live handle of ours, or when the span has no device
+/// buffer to be authoritative about. **A caller must treat `false` as "do not bind"**: binding a
+/// buffer whose span still reports staging as authoritative produces a tensor that reads as
+/// zeros, which is the failure this whole mechanism exists to remove.
+pub fn mark_device_authoritative(p: *mut u8, on: bool) -> bool {
+    let addr = p as usize;
+    for reg in crate::factory::all_registries().values() {
+        match reg.classify(addr) {
+            Ok(r) if r.offset == 0 => return reg.set_device_authoritative(r.base, on).is_ok(),
+            Ok(r) => {
+                // An interior pointer names a span but not its start. Authority is a property of
+                // the whole span, so silently applying it from an offset would claim more than
+                // the caller asked for. ORT does hand back interior pointers (the planner's
+                // `base + offset`), so this is a real case and not a defensive one.
+                log::warn!(
+                    "VulkanExecutionProvider: refusing to set device authority from an interior \
+                     pointer (0x{addr:x} is offset {} into handle 0x{:x}); authority covers a \
+                     whole span",
+                    r.offset,
+                    r.base
+                );
+                return false;
+            }
+            Err(_) => {}
+        }
+    }
+    false
+}
+
+/// Bring a span's staging block up to date when its device buffer is the authoritative copy.
+///
+/// One definition, called from every read path, for the reason the rest of this file keeps
+/// running into: two implementations of "is this copy stale?" would be two answers, and the
+/// disagreement would show up as a tensor that is correct through one door and zeros through the
+/// other.
+///
+/// A no-op for host endpoints and for mirrored spans whose staging is already authoritative, so
+/// callers do not have to ask first.
+///
+/// # This is a real transfer and it is counted as one
+///
+/// The download is the round trip the binding design exists to remove. It is tallied as device
+/// traffic deliberately: a refresh that did not show up in the counters would remove the transfer
+/// from the measurement rather than from the machine, and this project has been caught by that
+/// shape before. The caller that wants it genuinely gone binds the buffer instead
+/// ([`device_buffer_for`]).
+fn refresh_from_device_if_authoritative(e: Endpoint, len: usize) -> Result<(), String> {
+    let Endpoint::Mirrored {
+        base,
+        host,
+        view,
+        offset,
+        device_index,
+        device_authoritative: true,
+        ..
+    } = e
+    else {
+        return Ok(());
+    };
+    if len == 0 {
+        return Ok(());
+    }
+    let provider = provider_for(device_index, base)?;
+    // SAFETY: `host` addresses at least `len` writable bytes — `resolve_endpoint` rejected any
+    // range extending past the span's requested size. The slice is used only for this
+    // synchronous call and is not retained.
+    let dst = unsafe { std::slice::from_raw_parts_mut(host, len) };
+    provider.download(view, offset, dst)?;
+    tally::on_device_copy(len as u64, false);
     Ok(())
 }
 
@@ -664,6 +880,17 @@ fn provider_for(
 /// * `Some(Err(why))` — it is a handle but the bytes are not reachable this way, and `why` says so
 ///   in prose suitable for an `OrtStatus`.
 ///
+/// # A device-authoritative span is refreshed before its address is handed out
+///
+/// If a dispatch wrote the span's device buffer directly, the staging block this returns is
+/// stale, and the caller has no way to know: it receives a plain `*mut u8` that reads as zeros
+/// with no error anywhere. So the device copy is downloaded into staging first. That is a real
+/// transfer and it is counted as one — it is the round trip this design exists to remove, and
+/// hiding it here would remove it from the counters rather than from the machine.
+///
+/// The caller that wants the transfer *actually* gone should use [`device_buffer_for`] and bind,
+/// which is why that function exists and why its doc says to prefer it.
+///
 /// # Why this exists as a public seam
 ///
 /// Once device memory is advertised, ORT places subgraph inputs and outputs in it, and the pointer
@@ -681,7 +908,10 @@ pub fn host_backing_for(p: *mut u8, len: usize) -> Option<Result<*mut u8, String
     }
     match classify(&registries, p) {
         Side::Host(_) => None,
-        side => Some(resolve_endpoint(&registries, side, len).map(Endpoint::host_ptr)),
+        side => Some(resolve_endpoint(&registries, side, len).and_then(|e| {
+            refresh_from_device_if_authoritative(e, len)?;
+            Ok(e.host_ptr())
+        })),
     }
 }
 
@@ -791,7 +1021,21 @@ fn mirror_in(
             view,
             offset,
             device_index,
+            device_authoritative,
+            ..
         } => {
+            if device_authoritative {
+                // This function pushes the staging block *over* the device buffer. On a
+                // device-authoritative span that would overwrite a dispatch's output with bytes
+                // nobody wrote — the all-zero failure, but destructive and after the fact rather
+                // than merely visible at the read. Refused, and named, because a silent `Ok(false)`
+                // here would be indistinguishable from "there was nothing to mirror".
+                return Err(format!(
+                    "refusing to mirror host staging over handle 0x{base:x}: its device buffer is \
+                     authoritative, so this upload would overwrite a dispatch's output with a \
+                     stale staging block"
+                ));
+            }
             let provider = provider_for(device_index, base)?;
             // SAFETY: `host` addresses at least `len` readable bytes — `resolve_endpoint` rejected
             // any range extending past the span's requested size. The slice is not retained.
@@ -1182,6 +1426,309 @@ mod tests {
             r,
             Ok(false),
             "a host pointer has no device mirror, and that is not a failure"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Device authority
+    //
+    // These cover the invariant this file was built on being *false* for some spans: that the
+    // staging block is always the real copy. The measured failure they stand against is the
+    // residency probe's first EP-side lane, which returned 0 nonzero of 32064 logits and 0 of
+    // 27648 in each `present` tensor, and scored a perfect 1.0 against a relative metric because
+    // two all-zero tensors agree with each other.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// A provider that actually holds device bytes, so a download can return something other than
+    /// what staging already had.
+    ///
+    /// [`RecordingProvider`]'s `download` deliberately errors — it encoded the old invariant, that
+    /// the mirror is never read back. A test written against it could not tell a refresh that
+    /// happened from one that did not, so authority needs its own.
+    #[derive(Default)]
+    struct DeviceHeldProvider {
+        device: std::sync::Mutex<Vec<u8>>,
+        downloads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::engine::DeviceMemoryProvider for DeviceHeldProvider {
+        fn alloc(&self, _size: usize) -> Option<crate::engine::BufferView> {
+            Some(crate::engine::BufferView::from_raw(0xd00d))
+        }
+        fn free(&self, _view: crate::engine::BufferView) {}
+        fn upload(
+            &self,
+            _view: crate::engine::BufferView,
+            offset: usize,
+            src: &[u8],
+        ) -> Result<(), String> {
+            let mut d = self.device.lock().expect("lock");
+            if d.len() < offset + src.len() {
+                d.resize(offset + src.len(), 0);
+            }
+            d[offset..offset + src.len()].copy_from_slice(src);
+            Ok(())
+        }
+        fn download(
+            &self,
+            _view: crate::engine::BufferView,
+            offset: usize,
+            dst: &mut [u8],
+        ) -> Result<(), String> {
+            self.downloads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let d = self.device.lock().expect("lock");
+            if d.len() < offset + dst.len() {
+                return Err(format!(
+                    "device buffer holds {} byte(s); a download of {} from offset {offset} runs \
+                     past it",
+                    d.len(),
+                    dst.len()
+                ));
+            }
+            dst.copy_from_slice(&d[offset..offset + dst.len()]);
+            Ok(())
+        }
+        fn is_unified_memory(&self) -> bool {
+            false
+        }
+    }
+
+    /// Register a `DeviceHeldProvider` on a device index no real registry claims, and hand back a
+    /// registry whose spans resolve to it.
+    type DeviceHeldFixture = (
+        HashMap<(u32, u32), Arc<HandleRegistry>>,
+        Arc<HandleRegistry>,
+        Arc<DeviceHeldProvider>,
+        usize,
+    );
+
+    fn device_held(device_index: usize, span_bytes: usize) -> DeviceHeldFixture {
+        let provider = Arc::new(DeviceHeldProvider::default());
+        crate::engine::register_device_memory_provider(device_index, provider.clone());
+        let regs = registries();
+        let reg = regs.values().next().expect("one registry").clone();
+        reg.set_device_index(device_index);
+        let h = reg.alloc(span_bytes).expect("alloc");
+        reg.attach_buffer(h, crate::engine::BufferView::from_raw(0xd00d))
+            .expect("attach");
+        (regs, reg, provider, h)
+    }
+
+    /// The defect itself: a span a dispatch wrote directly must read as the *device's* bytes.
+    ///
+    /// Staging is left as zeros, exactly as it is in production when nothing ever wrote it, and
+    /// the device holds the real answer. Without the refresh this reads zeros and reports success,
+    /// which is what shipped before this change.
+    #[test]
+    fn a_device_authoritative_span_is_downloaded_before_it_is_read() {
+        let _g = ledger::test_lock();
+        use crate::engine::DeviceMemoryProvider as _;
+        let (regs, reg, provider, h) = device_held(4243, 256);
+
+        let truth: Vec<u8> = (0..256u32).map(|i| (i % 251 + 1) as u8).collect();
+        provider
+            .upload(crate::engine::BufferView::from_raw(0xd00d), 0, &truth)
+            .expect("seed the device");
+        // Staging is untouched: this is the production state after a dispatch wrote the buffer.
+        reg.set_device_authoritative(h, true).expect("mark");
+
+        let side = classify(&regs, h as *mut u8);
+        let e = resolve_endpoint(&regs, side, 256).expect("resolve");
+        refresh_from_device_if_authoritative(e, 256).expect("refresh");
+
+        // SAFETY: `e.host_ptr()` addresses 256 readable bytes of this span's staging, bounds
+        // checked by `resolve_endpoint` above.
+        let got = unsafe { std::slice::from_raw_parts(e.host_ptr().cast_const(), 256) };
+        assert_eq!(
+            got,
+            &truth[..],
+            "a span whose device buffer is authoritative must read as the device's bytes; \
+             reading staging here is the all-zero failure this flag exists to prevent"
+        );
+        assert!(
+            provider.downloads.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "the bytes must have come from a download, not from staging that happened to match"
+        );
+        reg.free(h);
+    }
+
+    /// The same call on a span that is *not* authoritative must not touch the device.
+    ///
+    /// This is the falsifier for the refresh being unconditional. An unconditional download would
+    /// pass the test above, be correct, and quietly reintroduce on every read the round trip this
+    /// whole design exists to remove.
+    #[test]
+    fn a_staging_authoritative_span_is_not_downloaded() {
+        let _g = ledger::test_lock();
+        let (regs, reg, provider, h) = device_held(4244, 128);
+
+        let side = classify(&regs, h as *mut u8);
+        let e = resolve_endpoint(&regs, side, 128).expect("resolve");
+        refresh_from_device_if_authoritative(e, 128).expect("refresh");
+
+        assert_eq!(
+            provider.downloads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the default path must be inert: nothing marked authority, so nothing may be read back"
+        );
+        reg.free(h);
+    }
+
+    /// Authority over a span with no `VkBuffer` is refused, not recorded.
+    ///
+    /// Setting it would aim every subsequent read at memory that does not exist, and the read
+    /// would have no way to notice.
+    #[test]
+    fn authority_over_a_span_with_no_device_buffer_is_refused() {
+        let _g = ledger::test_lock();
+        let regs = registries();
+        let reg = regs.values().next().expect("one registry").clone();
+        let h = reg.alloc(64).expect("alloc");
+
+        assert!(
+            reg.set_device_authoritative(h, true).is_err(),
+            "a span with no VkBuffer has no device copy to be authoritative about"
+        );
+        let side = classify(&regs, h as *mut u8);
+        let e = resolve_endpoint(&regs, side, 64).expect("resolve");
+        assert!(
+            !matches!(e, Endpoint::Mirrored { device_authoritative: true, .. }),
+            "the refusal must leave the span unmarked, not merely return Err"
+        );
+        reg.free(h);
+    }
+
+    /// A partial host write must bring the rest of the span down before authority is handed back.
+    ///
+    /// The window that is written is fine either way. What this covers is the *rest* of the span:
+    /// bytes a dispatch wrote and nothing ever read back, which the revoke that follows a partial
+    /// write declares to live in staging. This is invisible on a whole-span write — the common
+    /// case, and the one the residency probe exercises — so it cannot be found by running the case
+    /// that already passes.
+    #[test]
+    fn a_partial_write_refreshes_the_bytes_it_does_not_write() {
+        let _g = ledger::test_lock();
+        use crate::engine::DeviceMemoryProvider as _;
+        let (regs, reg, provider, h) = device_held(4245, 256);
+
+        let truth: Vec<u8> = (0..256u32).map(|i| (i % 251 + 3) as u8).collect();
+        provider
+            .upload(crate::engine::BufferView::from_raw(0xd00d), 0, &truth)
+            .expect("seed the device");
+        reg.set_device_authoritative(h, true).expect("mark");
+
+        // A 64-byte write at offset 64: neither the head nor the tail of the span is covered.
+        let side = classify(&regs, (h + 64) as *mut u8);
+        let e = resolve_endpoint(&regs, side, 64).expect("resolve");
+        refresh_whole_span_before_partial_write(e, 64).expect("refresh");
+
+        let base = reg.staging_ptr(h).expect("staging");
+        // SAFETY: `staging_ptr` returns the base of an allocation of the span's padded size,
+        // which is at least the 256 requested bytes.
+        let staged = unsafe { std::slice::from_raw_parts(base.cast_const(), 256) };
+        assert_eq!(
+            &staged[0..64],
+            &truth[0..64],
+            "bytes before the written window must come down from the device: the revoke that \
+             follows this write claims the WHOLE span lives in staging"
+        );
+        assert_eq!(
+            &staged[128..256],
+            &truth[128..256],
+            "and bytes after it, for the same reason"
+        );
+        reg.free(h);
+    }
+
+    /// A whole-span write needs no refresh, because every byte is about to be replaced.
+    #[test]
+    fn a_whole_span_write_does_not_download_first() {
+        let _g = ledger::test_lock();
+        let (regs, reg, provider, h) = device_held(4246, 128);
+        reg.set_device_authoritative(h, true).expect("mark");
+
+        let side = classify(&regs, h as *mut u8);
+        let e = resolve_endpoint(&regs, side, 128).expect("resolve");
+        refresh_whole_span_before_partial_write(e, 128).expect("refresh");
+
+        assert_eq!(
+            provider.downloads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "downloading bytes that are about to be overwritten is the round trip this design \
+             removes, paid for nothing"
+        );
+        reg.free(h);
+    }
+
+    /// `mirror_in` must refuse to upload over a device-authoritative span.
+    ///
+    /// That upload is destructive and after the fact: it overwrites a dispatch's output with a
+    /// staging block that was never written, and there is nothing left to recover it from.
+    #[test]
+    fn mirroring_in_over_an_authoritative_span_is_refused_not_performed() {
+        let _g = ledger::test_lock();
+        use crate::engine::DeviceMemoryProvider as _;
+        let (regs, reg, provider, h) = device_held(4247, 128);
+
+        let truth = vec![9u8; 128];
+        provider
+            .upload(crate::engine::BufferView::from_raw(0xd00d), 0, &truth)
+            .expect("seed the device");
+        reg.set_device_authoritative(h, true).expect("mark");
+
+        let r = mirror_in(&regs, h as *mut u8, 128);
+        assert!(
+            r.is_err(),
+            "an upload from stale staging over a dispatch's output must be refused, not performed"
+        );
+        assert_eq!(
+            *provider.device.lock().expect("lock"),
+            truth,
+            "and the refusal must be before the write, not after it"
+        );
+        reg.free(h);
+    }
+
+    /// Authority does not survive the span it was granted over.
+    ///
+    /// The arena's lifetime question in miniature. A construction site cannot inherit a previous
+    /// tenant's authority: the address may be reissued, and a fresh span whose staging is the real
+    /// copy would be read from a device buffer belonging to nothing.
+    #[test]
+    fn a_freed_span_does_not_carry_authority_into_its_successor() {
+        let _g = ledger::test_lock();
+        let (regs, reg, _provider, h) = device_held(4248, 128);
+        reg.set_device_authoritative(h, true).expect("mark");
+        reg.free(h);
+
+        assert!(
+            reg.set_device_authoritative(h, true).is_err(),
+            "a freed handle must not accept authority"
+        );
+        let h2 = reg.alloc(128).expect("second alloc");
+        let side = classify(&regs, h2 as *mut u8);
+        let e = resolve_endpoint(&regs, side, 128).expect("resolve");
+        assert!(
+            !matches!(e, Endpoint::Mirrored { device_authoritative: true, .. }),
+            "a newly allocated span starts with staging authoritative, whatever its address held \
+             before"
+        );
+        reg.free(h2);
+    }
+
+    /// `mark_device_authoritative` refuses a pointer that is not one of ours, and says so by
+    /// returning `false` rather than by succeeding quietly.
+    ///
+    /// The caller's contract is that `false` means "do not bind". A silent `true` here would bind
+    /// a buffer for a span that still reports staging as the real copy, which reads as zeros.
+    #[test]
+    fn marking_a_pointer_that_is_not_a_handle_returns_false() {
+        let _g = ledger::test_lock();
+        let mut buf = [0u8; 64];
+        assert!(
+            !mark_device_authoritative(buf.as_mut_ptr(), true),
+            "ordinary host memory has no span to be authoritative about"
         );
     }
 }

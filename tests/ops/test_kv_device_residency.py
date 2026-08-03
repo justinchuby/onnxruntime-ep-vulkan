@@ -110,24 +110,50 @@ def test_the_eps_gap_against_cpu_is_not_attributed_to_binding() -> None:
 
 
 @pytest.mark.skipif(not EPBIND.is_file(), reason="no recorded ep-bind reading")
-def test_the_ep_side_bind_still_returns_nothing_and_says_so() -> None:
-    """The obstacle, and it is ours: host staging stays authoritative, the device buffer is a
-    mirror, and nothing makes a directly-written device buffer authoritative."""
+def test_the_ep_side_bind_now_returns_the_right_bytes() -> None:
+    """The obstacle was ours and it is closed.
+
+    # This assertion was inverted on 2026-08-02, deliberately, and the old text is kept
+
+    As written the previous round this test asserted `DEVICE_BOUND_OUTPUTS_RETURN_NOTHING` and
+    `all(n == 0 ...)` — it pinned the *defect*. Host staging was authoritative, the device buffer
+    was a mirror, and nothing made a directly-written device buffer authoritative, so a bound
+    output came back as zeros. Marking the bound span device-authoritative closed that, and this
+    test went red on the fix.
+
+    That is the trap this project has already named once: *a falsifier that asserts the exact
+    value of a number it does not own goes red on a fix.* Trinity's liveness control survived my
+    push-constant change because she asserted `> 0` and `!= clean` rather than `== 14`. I asserted
+    the defect itself, so there was no version of this that survived. The honest repair is to
+    re-point it at the property that should now hold — and to say in the file that it moved, since
+    a silently rewritten assertion is indistinguishable from one that never fired.
+    """
     d = _load(EPBIND)
-    assert d["verdict"] == "DEVICE_BOUND_OUTPUTS_RETURN_NOTHING"
+    assert d["verdict"] == "KV_CAN_STAY_DEVICE_RESIDENT"
     assert d["counters"]["outputs_device_bound"] > 0, (
-        "if the bind never fired, the zeros would be about something else entirely"
+        "if the bind never fired, agreement would be about the unbound path and this lane would "
+        "be measuring nothing"
     )
-    assert all(n == 0 for n in d["nonzero_elements_returned"].values())
-    # And the trap, pinned: the score alone would have passed this lane.
-    assert max(d["q4_rel_vs_cpu"].values()) <= 1.0
+    assert all(n > 0 for n in d["nonzero_elements_returned"].values()), (
+        "the degeneracy guard, kept: all-zero outputs used to pass this lane's score perfectly"
+    )
+    assert max(d["q4_rel_vs_unbound_ep"].values()) == 0.0, (
+        "binding the output must not change the answer; it agreed to the digit when captured"
+    )
 
 
 @pytest.mark.skipif(not (CALLER.is_file() and EPBIND.is_file()), reason="need both lanes")
-def test_the_two_lanes_differ_or_neither_measured_anything() -> None:
-    """A control whose reading does not move with its input is a falsifier that cannot fire."""
+def test_the_two_lanes_still_differ_in_what_they_exercise() -> None:
+    """A control whose reading does not move with its input is a falsifier that cannot fire.
+
+    The lanes used to differ in their *verdict*, because one of them was broken. Now both reach
+    `KV_CAN_STAY_DEVICE_RESIDENT`, which is the point of the change — so the discriminator has to
+    be something that is still true: the EP-side lane binds outputs and the caller-side lane does
+    not. If that ever stops differing, the two lanes are one lane run twice.
+    """
     a, b = _load(CALLER), _load(EPBIND)
-    assert a["verdict"] != b["verdict"]
+    assert a["counters"]["outputs_device_bound"] == 0
+    assert b["counters"]["outputs_device_bound"] > 0
     assert a["counters"]["outputs_device_bound"] != b["counters"]["outputs_device_bound"]
 
 

@@ -1559,6 +1559,7 @@ pub fn dump_observations_if_requested() {
              \"alloc_device_authoritative_ceiling\": {},\n  \
              \"alloc_device_residency_evaluations\": {},\n  \
              \"alloc_device_authoritative_spans\": {},\n  \
+             \"alloc_device_authority_grants\": {},\n  \
              \"alloc_device_frame\": \"{}\",\n  \
              \"alloc_device_frame_device\": \"{}\",\n  \
              \"alloc_device_frames_declared\": {},\n  \
@@ -1612,6 +1613,7 @@ pub fn dump_observations_if_requested() {
             t.device_authoritative_ceiling,
             t.device_residency_evaluations,
             authoritative,
+            t.device_authority_grants,
             frame,
             frame_device.replace('\\', "\\\\").replace('"', "\\\""),
             frames_declared,
@@ -1825,6 +1827,7 @@ mod tests {
             "alloc_allocations",
             "alloc_device_backed_spans",
             "alloc_device_authoritative_spans",
+            "alloc_device_authority_grants",
             "alloc_quarantine_retired",
             "alloc_device_frame",
             "alloc_device_frame_device",

@@ -324,6 +324,21 @@ struct Span {
     /// The device memory behind this handle. `None` until Switch's session attaches one — the
     /// handle scheme is deliberately usable, testable and verifiable without a Vulkan device.
     buffer: Option<BufferView>,
+    /// Which copy of this span's bytes is the real one.
+    ///
+    /// `false` (the default) is the historical invariant: the host staging block is
+    /// authoritative and the device buffer is a **mirror** of it. `true` says the device
+    /// buffer has been written directly by a dispatch and the staging block is now **stale** —
+    /// any read that goes to staging returns bytes nobody wrote.
+    ///
+    /// This exists because the invariant is *per span*, not global. Both directions are
+    /// hazardous without it: reading the device buffer of a staging-authoritative span returns
+    /// a copy the engine may have made stale, and reading the staging block of a
+    /// device-authoritative span is what returned all zeros from the output bind (measured
+    /// 2026-08-02, `bench/results/probe_kv_device_residency.py`). A single global rule cannot
+    /// be right for both, which is why the file previously had to pick one and document the
+    /// other as unavailable.
+    device_authoritative: bool,
 }
 
 /// A successful lookup: which handle, and how far into it.
@@ -337,6 +352,9 @@ pub struct Resolved {
     pub size: usize,
     pub generation: u64,
     pub buffer: Option<BufferView>,
+    /// See [`Span::device_authoritative`]. `true` means a reader must go to the device buffer;
+    /// the staging block is stale.
+    pub device_authoritative: bool,
 }
 
 /// Counters describing what the allocator has done. Mouse's P6 high-water assertion reads
@@ -544,6 +562,10 @@ impl HandleRegistry {
                 generation,
                 live: true,
                 buffer: None,
+                // A fresh span has no device buffer, so staging is trivially the only copy.
+                // Reuse of a freed base must not inherit the previous tenant's authority: this
+                // is a construction site, so it cannot.
+                device_authoritative: false,
             },
         );
         inner.stats.total_allocations += 1;
@@ -764,6 +786,7 @@ impl HandleRegistry {
             size: span.requested,
             generation: span.generation,
             buffer: span.buffer,
+            device_authoritative: span.device_authoritative,
         })
     }
 
@@ -795,6 +818,50 @@ impl HandleRegistry {
         }
     }
 
+    /// Declare which copy of a span's bytes is the real one. See [`Span::device_authoritative`].
+    ///
+    /// Called with `true` when a dispatch is about to write the device buffer directly, and with
+    /// `false` whenever the host staging block is written — because after a host write the two
+    /// copies agree only if the mirror is refreshed, and the mirror-refresh path is the one that
+    /// already exists.
+    ///
+    /// # Why this refuses rather than silently succeeding
+    ///
+    /// Declaring the device authoritative for a span that has **no device buffer** would mark
+    /// every future read of it as "go to the device" when there is no device to go to. That is
+    /// not a no-op: it is a span whose bytes have no reachable home, and it would surface as the
+    /// same all-zero result this flag exists to prevent. It is refused loudly instead.
+    pub fn set_device_authoritative(&self, addr: usize, on: bool) -> Result<(), LookupError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| LookupError::NotAHandle { addr })?;
+        match inner.spans.get_mut(&addr) {
+            Some(s) if s.live => {
+                if on && s.buffer.is_none() {
+                    log::error!(
+                        "VulkanExecutionProvider: refusing to make handle 0x{addr:x} \
+                         device-authoritative — it has no VkBuffer, so every subsequent read \
+                         would be directed at memory that does not exist"
+                    );
+                    return Err(LookupError::NotAHandle { addr });
+                }
+                let changed = s.device_authoritative != on;
+                s.device_authoritative = on;
+                if changed && on {
+                    tally::on_device_authority_granted();
+                }
+                Ok(())
+            }
+            Some(s) => Err(LookupError::Freed {
+                addr,
+                base: s.base,
+                freed_at_generation: s.generation,
+            }),
+            None => Err(LookupError::NotAHandle { addr }),
+        }
+    }
+
     /// Host staging bytes behind a handle that has no device buffer, created on first use.
     ///
     /// Returns the base of a zeroed host allocation of exactly `padded` bytes for the span
@@ -809,6 +876,15 @@ impl HandleRegistry {
     ///
     /// See [`HostStaging`] for why staging exists at all, and why a run that uses it is a
     /// correctness run and never a performance one.
+    ///
+    /// # Staging is not unconditionally the real copy
+    ///
+    /// It was, until 2026-08-02, and much of `transfer.rs` was written against that rule. A span
+    /// marked [`Span::device_authoritative`] has had its device buffer written directly by a
+    /// dispatch, so the block this returns is **stale** until something downloads into it.
+    /// `transfer::host_backing_for` does exactly that before handing the address out, which is
+    /// why callers should go through it rather than here; this function returns an address, not a
+    /// promise about what is in it.
     pub(crate) fn staging_ptr(&self, addr: usize) -> Option<*mut u8> {
         let mut inner = self.inner.lock().ok()?;
         let span = inner.spans.get(&addr).filter(|s| s.live)?.clone();
@@ -1042,6 +1118,27 @@ pub mod tally {
     /// Spans whose only home is device memory. See [`Tally::device_authoritative_spans`]. Nothing
     /// increments this yet, and that is the point: it is the claim's falsifier, not a placeholder.
     static DEVICE_AUTHORITATIVE: AtomicU64 = AtomicU64::new(0);
+
+    /// Spans a dispatch was allowed to write directly, making the device buffer the real copy.
+    ///
+    /// Deliberately **not** [`DEVICE_AUTHORITATIVE`], though the words are nearly the same, and
+    /// the distinction is the one this project keeps getting wrong.
+    ///
+    /// * `DEVICE_AUTHORITATIVE` is *structural*: the span has a `VkBuffer` and **no host staging
+    ///   block at all**, so device memory is the only place its bytes could be. It is measured at
+    ///   a span's terminal state, and its two credibility guards are written against that
+    ///   definition — guard 1 is `<= device_backed_spans - staged_spans`.
+    /// * This one is *dynamic*: the span has staging, which is precisely why it needs a flag —
+    ///   there are two copies and the device one is currently ahead. Every span it counts is a
+    ///   `staged_span`, so summing the two would push the total past guard 1's ceiling and make
+    ///   the audit call an honest number dishonest.
+    ///
+    /// Two definitions summed into one counter is the defect this project has now found five
+    /// times (inverted device labels; `dispatches_executed` vs `compute_calls`; the env var's
+    /// index space vs raw enumeration; `alloc_device_frame` vs the offer). Found here by the
+    /// control lane rather than by reading the code: with `BIND_OUTPUTS=0` and zero binds, the
+    /// authoritative count still read 1.
+    static DEVICE_AUTHORITY_GRANTS: AtomicU64 = AtomicU64::new(0);
     /// Times the engine asked for one of our device buffers via `transfer::device_buffer_for`.
     ///
     /// The *only* way an engine can compute from our device memory is to bind a buffer this
@@ -1103,6 +1200,15 @@ pub mod tally {
     /// 2. `device_buffer_binds > 0` — the engine must actually have asked for the buffer.
     pub fn on_device_authoritative() {
         DEVICE_AUTHORITATIVE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A span was granted device authority for a dispatch that writes its buffer directly.
+    ///
+    /// See [`DEVICE_AUTHORITY_GRANTS`] for why this is not [`on_device_authoritative`]. Counted on
+    /// the false→true transition only, so a span re-granted after a host write counts again — the
+    /// number is grants, not distinct spans, and is named for what it counts.
+    pub fn on_device_authority_granted() {
+        DEVICE_AUTHORITY_GRANTS.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A `CopyTensors` endpoint was in device memory and went through the provider.
@@ -1359,6 +1465,13 @@ pub mod tally {
         /// device memory". This counter is the one that would have to move for the second claim,
         /// and it is the instrument that goes red if anyone states it while it is still 0.
         pub device_authoritative_spans: u64,
+        /// Grants of *dynamic* device authority: a dispatch was allowed to write a span's buffer
+        /// directly, so the device copy is ahead of staging until something brings it back.
+        ///
+        /// Distinct from [`Tally::device_authoritative_spans`] and deliberately not summed with
+        /// it: every span this counts still HAS staging, so it is a `staged_span` and sits above
+        /// that counter's ceiling by construction. See `DEVICE_AUTHORITY_GRANTS`.
+        pub device_authority_grants: u64,
         /// The most spans that *could* be authoritative, measured: `device_backed - staged`.
         /// A span with a host staging block is a mirror however the design describes it.
         pub device_authoritative_ceiling: u64,
@@ -1401,6 +1514,7 @@ pub mod tally {
             device_download_bytes: DEVICE_DOWNLOAD_BYTES.load(Ordering::Relaxed),
             unified_memory: UNIFIED_MEMORY.load(Ordering::Relaxed),
             device_authoritative_spans: DEVICE_AUTHORITATIVE.load(Ordering::Relaxed),
+            device_authority_grants: DEVICE_AUTHORITY_GRANTS.load(Ordering::Relaxed),
             device_authoritative_ceiling: DEVICE_BACKED
                 .load(Ordering::Relaxed)
                 .saturating_sub(STAGED_SPANS.load(Ordering::Relaxed)),
@@ -1797,6 +1911,7 @@ pub mod tally {
             &QUARANTINE_RETIRED,
             &FAILED_LOOKUPS,
             &DEVICE_AUTHORITATIVE,
+            &DEVICE_AUTHORITY_GRANTS,
             &DEVICE_BUFFER_BINDS,
             &DEVICE_RESIDENCY_EVALUATIONS,
         ] {
@@ -2634,6 +2749,68 @@ mod tests {
             "with a window of 4 and 16 frees, retirement must have happened and must be visible"
         );
         assert_eq!(s.quarantined_spans, 4, "the window holds exactly its bound");
+    }
+
+    /// A dynamic authority grant must not move the *structural* residency counter.
+    ///
+    /// Measured 2026-08-02: with `BIND_OUTPUTS=0` and zero output binds, the residency probe
+    /// still reported `alloc_device_authoritative_spans: 1`, and with binding on it reported 7
+    /// against 6 binds. Both readings were the same single pre-existing producer
+    /// (`on_residency_evaluated`) summed with a seam that means something else. The two counters
+    /// answer different questions — "this span has no host copy" versus "this span's device copy
+    /// is currently ahead" — and every span the second counts still has staging, so summing them
+    /// pushes the total past the first one's own credibility ceiling.
+    #[test]
+    fn a_dynamic_authority_grant_does_not_move_the_structural_residency_counter() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+
+        let reg = HandleRegistry::new().expect("reservation");
+        reg.set_device_index(4249);
+        let h = reg.alloc(128).expect("alloc");
+        reg.attach_buffer(h, crate::engine::BufferView::from_raw(0xfeed))
+            .expect("attach");
+        reg.set_device_authoritative(h, true).expect("grant");
+
+        let t = tally::snapshot();
+        assert_eq!(
+            t.device_authority_grants, 1,
+            "the grant must be counted, and counted as a grant"
+        );
+        assert_eq!(
+            t.device_authoritative_spans, 0,
+            "a span that still has staging is not structurally device-resident; counting it there \
+             would inflate a number whose guard is `<= device_backed - staged`"
+        );
+        reg.free(h);
+    }
+
+    /// Re-granting after a revoke counts again, and the counter is named for that.
+    #[test]
+    fn authority_grants_count_transitions_not_distinct_spans() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+
+        let reg = HandleRegistry::new().expect("reservation");
+        reg.set_device_index(4250);
+        let h = reg.alloc(128).expect("alloc");
+        reg.attach_buffer(h, crate::engine::BufferView::from_raw(0xfeed))
+            .expect("attach");
+        reg.set_device_authoritative(h, true).expect("grant");
+        reg.set_device_authoritative(h, true).expect("idempotent");
+        assert_eq!(
+            tally::snapshot().device_authority_grants,
+            1,
+            "re-asserting a grant that is already held is not a second grant"
+        );
+        reg.set_device_authoritative(h, false).expect("revoke");
+        reg.set_device_authoritative(h, true).expect("re-grant");
+        assert_eq!(
+            tally::snapshot().device_authority_grants,
+            2,
+            "a span written on the host and then re-bound is genuinely granted twice"
+        );
+        reg.free(h);
     }
 
     /// `alloc_device_authoritative_spans` will be the headline the moment persistent residency

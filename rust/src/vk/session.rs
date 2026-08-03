@@ -649,20 +649,24 @@ fn output_bind_requested() -> bool {
     );
     if on {
         ONCE.call_once(|| {
-            log::warn!(
+            log::info!(
                 "[VulkanEP] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1: fused-node outputs are bound \
-                 directly to ORT's device buffers. MEASURED 2026-08-02 on Phi-3.5 and again on \
-                 the GQA evidence case: this returns ALL ZEROS to the caller, because a \
-                 device-backed span's host staging block is authoritative and the device buffer \
-                 is a mirror (transfer.rs), so nothing writes the block the caller reads \
-                 (bench/results/probe_bound_output_correctness.py, \
-                 bench/results/probe_kv_device_residency.py -> \
-                 DEVICE_BOUND_OUTPUTS_RETURN_NOTHING). The obstacle is ours, not ORT's: with \
-                 this flag OFF a caller CAN hold the KV in EP device memory across run() calls \
-                 and get bit-identical results (KV_CAN_STAY_DEVICE_RESIDENT). Closing this \
-                 means making a directly-written device buffer authoritative. Until then the \
-                 flag exists to re-run that falsifier, not to make anything faster. Any number \
-                 taken with it on is wrong."
+                 directly to ORT's device buffers, and each bound span is marked \
+                 device-authoritative so every later reader downloads it instead of reading a \
+                 staging block nothing wrote. MEASURED 2026-08-02 on the GQA evidence case: \
+                 agrees with the same session run unbound to 0.0 on every output, all outputs \
+                 nonzero, alloc_device_authority_grants = 6 for 6 bound outputs. The reading and \
+                 the DLL hash it was taken against travel together in \
+                 bench/results/kv_device_residency-epbind.json -> KV_CAN_STAY_DEVICE_RESIDENT; \
+                 no hash is quoted here, because a hash embedded in the binary it describes is \
+                 stale the next time that binary is built. This REPLACES the previous warning \
+                 on this flag, which said it returned ALL ZEROS: that was true and is no longer, \
+                 and a record describing a build nobody is running is the defect this project \
+                 has now hit four times. What this flag does NOT yet do is remove the round \
+                 trip: the download is moved to whoever asks for host bytes, and is counted when \
+                 it happens (alloc_device_downloads). A caller that never asks never pays \
+                 (bench/results/probe_kv_chain_readback.py: 1792 -> 0 bytes per step at equal \
+                 dispatch counts, both devices); one that calls copy_outputs_to_cpu still does."
             );
         });
     }
@@ -1443,7 +1447,30 @@ impl VulkanSession {
                 bound_outputs[i] =
                     crate::vk::host_device_memory::bind_target_for(ptr, sz as usize);
                 if bound_outputs[i].is_some() {
-                    crate::counters::record_output_bound();
+                    // Declare the device buffer authoritative BEFORE the dispatch that writes it.
+                    //
+                    // Ordering: the span must be marked while its staging block is merely
+                    // out-of-date, not while a reader might already be looking at it. Between
+                    // this call and the dispatch the two copies agree (nothing has been written
+                    // yet), so a read in that window is correct either way. Marking *after* the
+                    // dispatch would leave a window in which the device holds the new bytes and
+                    // every reader is still being sent to staging — the all-zero bug, narrowed
+                    // to a race instead of removed.
+                    //
+                    // A refusal means the span cannot be made authoritative (no VkBuffer, or an
+                    // interior pointer, or not our handle). `transfer`'s contract says a caller
+                    // must then NOT bind: a bound buffer whose span still reports staging as
+                    // authoritative reads as zeros, which is precisely the measured failure.
+                    if crate::transfer::mark_device_authoritative(ptr, true) {
+                        crate::counters::record_output_bound();
+                    } else {
+                        log::warn!(
+                            "[VulkanEP] output {i}: the device buffer bound but its span could \
+                             not be made authoritative, so a reader would be sent to a stale \
+                             staging block. Unbinding and taking the staged path instead."
+                        );
+                        bound_outputs[i] = None;
+                    }
                 }
             }
         }
