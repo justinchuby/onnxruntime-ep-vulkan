@@ -1,0 +1,58 @@
+{
+  "lanes": [
+    {
+      "arm": "default",
+      "exit": 0,
+      "past_len": 128,
+      "iters": 3,
+      "compute_calls": 3,
+      "dispatches_executed": 1065,
+      "device_losses": 0,
+      "outputs_device_resident": 0,
+      "outputs_host_resident": 195,
+      "alloc_device_frame": "OFF",
+      "raw_keys_with_frame": [
+        "alloc_device_frame",
+        "alloc_device_frame",
+        "alloc_device_frame_allocator_index",
+        "alloc_device_frame_allocator_index",
+        "alloc_device_frame_device",
+        "alloc_device_frame_device",
+        "alloc_device_frame_session_devices",
+        "alloc_device_frame_session_devices",
+        "alloc_device_frame_sides",
+        "alloc_device_frame_sides",
+        "alloc_device_frames_declared",
+        "alloc_device_frames_declared"
+      ]
+    },
+    {
+      "arm": "armed",
+      "exit": 0,
+      "past_len": 128,
+      "iters": 3,
+      "compute_calls": 3,
+      "dispatches_executed": 1065,
+      "device_losses": 0,
+      "outputs_device_resident": 195,
+      "outputs_host_resident": 0,
+      "alloc_device_frame": "SHARED",
+      "raw_keys_with_frame": [
+        "alloc_device_frame",
+        "alloc_device_frame",
+        "alloc_device_frame_allocator_index",
+        "alloc_device_frame_allocator_index",
+        "alloc_device_frame_device",
+        "alloc_device_frame_device",
+        "alloc_device_frame_session_devices",
+        "alloc_device_frame_session_devices",
+        "alloc_device_frame_sides",
+        "alloc_device_frame_sides",
+        "alloc_device_frames_declared",
+        "alloc_device_frames_declared"
+      ]
+    }
+  ],
+  "verdict": "OUTPUTS_ARE_DEVICE_ALLOCATED",
+  "detail": "ORT allocated 195 output tensor(s) through this EP's device provider, so an output-side `bind_target_for` has something to bind. That is NOT the same as the round trip being removable: whether the bound bytes reach the caller is a separate question, answered by probe_bound_output_correctness.py, and the answer measured on 2026-08-02 was HOST_STAGING_IS_AUTHORITATIVE \u2014 the bound lane returns all zeros."
+}

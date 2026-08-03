@@ -42,10 +42,25 @@
 //! (the Vulkan minimum guarantee). Op handlers pack their per-dispatch scalars (tensor
 //! dimensions, strides, etc.) into `KernelRequest::push_constants` and the recorder calls
 //! `vkCmdPushConstants` immediately before `vkCmdDispatch`.
+//!
+//! The recorders push the **entire** [`PUSH_CONSTANT_RANGE_BYTES`], zero-padding whatever the
+//! kernel packed. A declared range that is only partly written leaves the remainder undefined —
+//! see the note at the push site in `session.rs`.
 
 use std::collections::HashMap;
 
 use ash::vk;
+
+/// Size in bytes of the single push-constant range every pipeline layout in this engine declares.
+///
+/// 128 is the Vulkan minimum guarantee for `maxPushConstantsSize`, so a uniform range of this size
+/// is portable to every conformant implementation. It is a constant rather than a per-kernel value
+/// because the pipeline cache is keyed on `(shader, spec_constants)` only; a per-kernel range would
+/// have to become part of that key, and a layout disagreeing with its dispatch would be a hard
+/// error rather than a warning.
+///
+/// Anything that records `vkCmdPushConstants` against these layouts must write all of it.
+pub(crate) const PUSH_CONSTANT_RANGE_BYTES: usize = 128;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Pipeline key
@@ -198,7 +213,7 @@ impl PipelineCache {
         let push_range = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(128)];
+            .size(PUSH_CONSTANT_RANGE_BYTES as u32)];
 
         // 3. Pipeline layout.
         let set_layouts = [descriptor_set_layout];

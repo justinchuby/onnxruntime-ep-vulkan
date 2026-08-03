@@ -472,6 +472,28 @@ pub struct VulkanEpCounters {
     /// than moved to the end is that the published layout has now shipped in a build and moving
     /// it again would make a third layout. See §8.9.15.
     pub device_losses: u64,
+    /// Fused-node outputs ORT allocated in **this EP's own device memory**.
+    ///
+    /// The KV-arena question, made mechanical. `bind_target_for` is called on inputs only, and
+    /// the output path is an unconditional download to host staging followed by a memcpy into
+    /// whatever ORT handed back. Whether an *output-side* bind is even possible depends on a
+    /// fact no amount of reading the ORT headers settles: does ORT ever ask this EP's allocator
+    /// for a fused node's output buffer? These two counters answer it by observation.
+    ///
+    /// `outputs_device_resident + outputs_host_resident` is the number of output tensors seen.
+    /// If the device count is 0 across a real model with the device allocator armed, then ORT
+    /// owns every output as host memory and no arena can be built at this boundary — which is a
+    /// finding about ORT's contract, not a failure of the EP.
+    pub outputs_device_resident: u64,
+    /// Fused-node outputs ORT allocated in host memory. See `outputs_device_resident`.
+    pub outputs_host_resident: u64,
+    /// Fused-node outputs the kernel wrote **directly into ORT's device buffer** (Step 1c).
+    ///
+    /// Counted at the bind, not at the resolve, and separate from `outputs_device_resident`
+    /// because a bound output never reaches the site that records residency — it has no staging
+    /// block to read. Without this counter the change makes its own instrument read zero, which
+    /// is indistinguishable from the change not firing.
+    pub outputs_device_bound: u64,
     /// Dispatches that ran to fence completion. **This is the criterion-8 number.**
     pub dispatches_executed: u64,
     /// Islands that passed `partition::evaluate` (net-benefit gate, §7.0.2) in multi-cluster
@@ -514,6 +536,9 @@ static SUBGRAPHS_STUB: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static COMPUTE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static DEVICE_LOSSES: AtomicU64 = AtomicU64::new(0);
+static OUTPUTS_DEVICE_RESIDENT: AtomicU64 = AtomicU64::new(0);
+static OUTPUTS_HOST_RESIDENT: AtomicU64 = AtomicU64::new(0);
+static OUTPUTS_DEVICE_BOUND: AtomicU64 = AtomicU64::new(0);
 static DISPATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
 /// Successful and failed writes of the JSON snapshot, reported *by the next successful write*.
 ///
@@ -723,6 +748,31 @@ pub fn record_device_lost() {
 /// How many times the device has been lost in this process.
 pub fn device_losses() -> u64 {
     DEVICE_LOSSES.load(ORD)
+}
+
+/// Where ORT put one fused-node output: `true` = this EP's device memory, `false` = host memory.
+///
+/// Called once per output per Compute call, at the one site that already has to ask the
+/// question in order to know whether the pointer is writable.
+pub fn record_output_residency(device_resident: bool) {
+    if device_resident {
+        OUTPUTS_DEVICE_RESIDENT.fetch_add(1, ORD);
+    } else {
+        OUTPUTS_HOST_RESIDENT.fetch_add(1, ORD);
+    }
+}
+
+
+/// One fused-node output bound directly to ORT's device buffer (Step 1c).
+pub fn record_output_bound() {
+    OUTPUTS_DEVICE_BOUND.fetch_add(1, ORD);
+}
+
+pub fn output_residency() -> (u64, u64) {
+    (
+        OUTPUTS_DEVICE_RESIDENT.load(ORD),
+        OUTPUTS_HOST_RESIDENT.load(ORD),
+    )
 }
 
 /// Record a `GetCapability` call's partition results.
@@ -1197,6 +1247,9 @@ pub fn snapshot() -> VulkanEpCounters {
         compute_calls: COMPUTE_CALLS.load(ORD),
         compute_failures: COMPUTE_FAILURES.load(ORD),
         device_losses: DEVICE_LOSSES.load(ORD),
+        outputs_device_resident: OUTPUTS_DEVICE_RESIDENT.load(ORD),
+        outputs_host_resident: OUTPUTS_HOST_RESIDENT.load(ORD),
+        outputs_device_bound: OUTPUTS_DEVICE_BOUND.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
         viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
         proven_key_lookups: LEDGER_LOOKUPS.load(ORD),
@@ -1215,6 +1268,9 @@ pub fn reset() {
     COMPUTE_CALLS.store(0, ORD);
     COMPUTE_FAILURES.store(0, ORD);
     DEVICE_LOSSES.store(0, ORD);
+    OUTPUTS_DEVICE_RESIDENT.store(0, ORD);
+    OUTPUTS_HOST_RESIDENT.store(0, ORD);
+    OUTPUTS_DEVICE_BOUND.store(0, ORD);
     DISPATCHES_EXECUTED.store(0, ORD);
     if let Ok(mut used) = SHADERS_DISPATCHED.lock() {
         used.clear();
@@ -1277,6 +1333,7 @@ impl VulkanEpCounters {
         format!(
             "{{\n  \"abi_version\": {},\n  \"compile_calls\": {},\n  \"subgraphs_live\": {},\n  \
              \"subgraphs_stub\": {},\n  \"compute_calls\": {},\n  \"compute_failures\": {},\n  \"device_losses\": {},\n  \
+             \"outputs_device_resident\": {},\n  \"outputs_host_resident\": {},\n  \"outputs_device_bound\": {},\n  \
              \"dispatches_executed\": {},\n  \"claimed_nodes\": {},\n  \"islands_offered\": {},\n  \
              \"viable_islands_retained\": {},\n  \
              \"net_benefit_gate\": \"{}\",\n  \
@@ -1319,6 +1376,9 @@ impl VulkanEpCounters {
             self.compute_calls,
             self.compute_failures,
             self.device_losses,
+            self.outputs_device_resident,
+            self.outputs_host_resident,
+            self.outputs_device_bound,
             self.dispatches_executed,
             claimed,
             islands,
