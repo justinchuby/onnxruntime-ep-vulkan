@@ -806,7 +806,7 @@ on any of them:
 1. **`ci/gate_chain_fp32.py`** builds the §7.8.1 artifact, writes the verdict record to disk as `UNMEASURED` **before opening any session**, runs it under ORT profiling against a CPU-only run of the same artifact, and constructs the verdict through Trinity's `EquivalenceVerdict.from_comparison()` — which takes a parsed `ExecutionAttribution` as a *required* argument and therefore **cannot emit `MATCH` at a zero own-provider count**. It emits `UNATTRIBUTED` instead, and says which providers did execute.
 2. **`ci/check_verdict.py`** re-reads the record **in a separate process**. A missing record is `FAIL(condition=UNMEASURED)`, not a skip. A `MATCH` with an empty `executed_by`, a zero own-count, or an `attribution_source` that is not `ort_profile` is rejected as `UNATTRIBUTED` — a gate that trusts its input is a gate that trusts whatever replaced its input.
 3. **`epctl --check-counters <file> --require-dispatches 1`** reads the verdict spliced into the counters snapshot. Tank's exit codes: `DIVERGENT` → 1, `UNMEASURED`/absent → 3.
-4. **`ci/check_fatal_log.py`** greps the captured suite output for `Falling back to CPUExecutionProvider`. R13 obligation 3: *a grep cannot `NameError`, and a guard cannot be silenced by a log format change.* The logs are captured with `2>&1` because ORT writes that line from C++ to fd 2 — a tee of stdout alone would scan a log in which its own subject cannot appear, and would agree with everything.
+4. **`ci/check_fatal_log.py`** greps the captured suite output for ORT's real announcement, `Falling back to ['CPUExecutionProvider'] and retrying.` -- a **list repr**, matched with a whitespace-tolerant pattern over the whole text so a wrapped or UTF-16LE announcement still matches (see 7.18.5.1: the earlier literal never matched it). R13 obligation 3: *a grep cannot `NameError`, and a guard cannot be silenced by a log format change.* The logs are captured with `2>&1` because ORT writes that line from C++ to fd 2 — a tee of stdout alone would scan a log in which its own subject cannot appear, and would agree with everything.
 5. **Negative control 1 — the ICD is removed**, the *same* artifact runs through the *same* script, and the step **requires** `FAIL(condition=UNATTRIBUTED)` with a non-zero exit. If the gate ever passes with no ICD present, the step fails the lane with the sentence *"every green in this lane is uninterpretable"* — which it would be. **On Windows this control first checks whether the suppression actually took**, because the LunarG loader silently ignores `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` in elevated processes (§7.4.1) and GitHub's Windows runners are elevated. If the ICD is still there the step reports `ERROR(instrument=icd_suppression_ineffective)` and asserts nothing — rather than blaming the gate for a control that never fired, which would route a finding to the wrong owner.
 6. **Negative control 2 — the loader-independent one**, and the one the Windows lane actually rests on. `--artifact decline_probe` is a single `Det` node: an op this EP does not implement and is not going to. The EP loads, the driver is present, the device passes the §7.2 gate, capability detection succeeds — and the EP claims **nothing**, so the graph runs on CPU and the lane must report `FAIL(condition=UNATTRIBUTED)`. It reproduces the failure that was actually live on 2026-07-30 — a *healthy* EP executing nothing — which the ICD-removal control does not. If the EP ever claims `Det`, this control stops being one; the step's error text says so explicitly and tells the maintainer to re-point it at an op that is still declined, rather than letting the control quietly turn into a positive.
 
@@ -1967,7 +1967,7 @@ The coordinator's instinct was right and this is the ruling. These are **three m
 | Mechanism | Owner | Sees | Cannot see |
 |---|---|---|---|
 | `disable_cpu_ep_fallback` | Trinity | **Planned** fallback: ORT refuses at **session creation** when nodes are assigned to CPU | Anything after session creation. A device loss happens on a session ORT has **already accepted**, so this flag is structurally blind to it. |
-| `ci/check_fatal_log.py` | Link | **ORT's announcement** of a runtime fallback, in a **captured** log with stderr merged | A loss the EP reports and ORT never announces; any artifact that is not the teed pytest log; and — today — the real line itself (§7.18.5). |
+| `ci/check_fatal_log.py` | Link (mechanism: Trinity's `_verdict`) | **ORT's announcement** of a runtime fallback, in a **captured** log with stderr merged. Whitespace-tolerant over the whole text, so a **wrapped** announcement still matches, and NUL-stripped first, so an announcement ORT wrote as **UTF-16LE** still matches. | A loss the EP reports and ORT never announces; any artifact that is not the teed pytest log. **Deliberately** blind to `The logical device has been lost` — widening it there would turn the negative control green-on-both and delete the evidence that `check_device_loss` has reach of its own. |
 | `ci/check_device_loss.py` | Link | **The loss itself** in any artifact, plus **structural truncation** with no text at all | A loss whose run wrote nothing; truncation in an artifact that declared no expectation (158 of 284 artifacts were undecidable); and three of its five conditions unless the caller **names** the file as one run's evidence. |
 
 That last row's middle column is why a second check exists at all rather than a wider marker list, and the difference is **demonstrated, not argued**: the negative control feeds both checks a log carrying the EP's device-lost line and no ORT announcement. `check_device_loss` is red on it; `check_fatal_log` is green on it. If that arm ever stops firing, the second check has no reach of its own and should be deleted.
@@ -1987,6 +1987,30 @@ what ORT actually prints:
 A **list repr**. Neither marker is a substring of it. `_verdict.find_fatal_log_lines()` returns **0 hits** on Tank's artifact, which announces the fallback **twice** — so `ci/check_fatal_log.py` reads that log as clean, and it has been cited as the second witness for five incidents on the strength of a match it cannot make.
 
 `_verdict.py` is Trinity's, and it is **the** vocabulary. So this is reported as its own condition (`marker_list_misses_real_line`) and **not patched here**: a second private marker list in `ci/` is exactly the two-dialect failure the shared vocabulary exists to prevent. The regression test in `ci/test_lane_checks.py` is written to go green when she fixes it.
+
+#### 7.18.5.1 Fixed 2026-08-02 (Trinity) — and it was worse than "returns green"
+
+Measured across the three real logs in the tree **before** rewriting anything:
+
+| log | ORT announcements present | hits from the old markers |
+|---|---|---|
+| `bench/results/ctx512_device_lost.txt` | 2 | **0** |
+| `bench/results/trinity-suite-dev0.log` | 5 | **9** |
+| `bench/results/trinity-suite-dev1.log` | 1 | **3** |
+
+It was not silent. It produced **twelve positive hits, and every one of them was our own prose** — `tests/ops/test_phi35.py`'s docstring saying *"ORT prints 'EP_FAIL ... Falling back to CPUExecutionProvider' during sess.run()"*, echoed into the captured suite log by pytest. **The marker never once matched an ORT announcement.** Every hit it ever produced in this repository was a sentence we wrote describing what we believed ORT prints — which is Link's own line made literal: *a classifier tested only against strings we wrote ourselves is tested against the one input it cannot get wrong.* That is materially worse than silence, because confident positives read as corroboration.
+
+Its only positive test, `test_verdict.py::test_fatal_log_scan_finds_the_line`, constructed the fiction and asserted it was found. It was green for exactly as long as the witness was blind.
+
+**Three properties of the real text that a line-oriented substring grep cannot survive**, each now an executable arm:
+
+1. **List repr** — the provider list is data. Matched over the brackets, so a different fallback set still matches.
+2. **It wraps.** Tank's artifact breaks the companion `EP Error` line mid-list. Matching moved off `splitlines()` onto the whole text.
+3. **It can arrive UTF-16LE.** ORT's C++ sink emits wide characters, so a real captured log is UTF-8 with UTF-16LE regions embedded; read as UTF-8 those are NUL-separated and no substring is findable. `trinity-suite-dev1.log` carries the device-lost message in **both** encodings — had it carried only the wide one, a substring search would have seen an empty log. `_verdict.normalise_log_text()` strips the interleave first.
+
+**And a liveness check, because a marker list that has never been shown to fire is indistinguishable from one that cannot.** `_verdict.assert_fatal_log_check_is_live()` classifies a committed, verbatim positive control red and the extent-boundary control green, and `ci/check_fatal_log.py` calls it **before** any verdict of its own is trusted — reporting `ERROR(instrument=witness_not_live)`, never a pass. Same remedy as `_models.assert_no_cpu_fallback_is_live()` for the silently-swallowed ORT config key, and for the same reason.
+
+Verification: `check_fatal_log` is now **red on Tank's artifact** (the file it read as clean while being cited five times) and `ci/negative_control_device_loss.py` still reports **14/14 arms fired** with `check_fatal_log exit=0` on the EP-reports-loss-ORT-silent input — so `check_device_loss` keeps its reach.
 
 ### 7.18.6 The exclusion list, which is the dangerous part
 
@@ -2023,6 +2047,66 @@ So the obvious closure is wrong. A host-side record of the env var is **not** an
 Merging `main` at `4b5d46b` turned `ci/check_census_completeness.py` red: Trinity had added two census mechanisms (`ep_entrypoints`, `flag_frame`) for which my surface map had **no name claim**. Both branches were complete; the composition was not. Sixth instance of the shape, and the first one caught by an instrument rather than by a person. Name claims added, with `name_verified: false` and a real discriminator each — including the one for `flag_frame` that records why `GEMV_PACKED` cannot have a discrimination arm today.
 
 I have **not** re-dispositioned the twelve gaps on the strength of Trinity's declaration. A mechanism that is declared is not a mechanism that has been observed, and moving a gap to `censused` because the code now names it would be closing a row on a declaration — the exact mistake Morpheus ruled against on criterion 11. They move when an artifact shows them covered.
+
+---
+
+## 7.19 Criterion 3(a) on a run that genuinely executes Phi-3.5 (Trinity, 2026-08-02)
+
+### 7.19.1 Why the existing clean reading did not answer the row
+
+Every clean validation reading this project held was taken over `add_f32_dispatches_end_to_end`: one `Add` and a handful of dispatches. Before today the EP executed **zero** nodes of Phi-3.5, then 33 fragmented islands; only since Switch's GQA fixes does it claim a **single fused island of 355 nodes**. A large fused island is where descriptor lifetime, barrier scope and aliasing defects appear, and that frame had never been under the layer. A clean reading over a graph the EP barely touched is not a reading about the graph it now runs.
+
+### 7.19.2 The problem that had to be solved first: a clean run is silent either way
+
+The EP's messenger (`rust/src/vk/instance.rs`) subscribes to `ERROR|WARNING`, type `VALIDATION`. **On a healthy run it is silent whether the callback is live or dead.** So `in_frame_vuid_count: 0` is worth nothing on its own — R12's `0`-versus-`UNOBSERVABLE` exactly, and the same shape as Niobe's KV-upload hold where refusing to write `0` preserved a real defect.
+
+Neither existing falsifier reaches this frame:
+
+| candidate | why it does not reach |
+|---|---|
+| `ONNXRUNTIME_EP_VULKAN_PLANT_VALIDATION_VIOLATION` | fires only in `run_add_on_device`, a Rust test path the ORT session never takes; its VUID is `VUID-vkDestroyDevice-…`, i.e. **teardown**, out-of-frame by construction |
+| `epctl --probe-validation` | proves the messenger arms, but **in a different process** — R12 gen-4: for a test result, the frame is the binary that ran it |
+| `EP_VALIDATION_ERROR_COUNT` | a process-global `AtomicU32` inside the DLL; not exposed in the counters JSON |
+
+The mechanism used instead is `VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT`. Best-practices messages arrive at **WARNING** severity — which the EP's own messenger already subscribes to — in this process, during this inference, inside this frame. They are prefixed `BestPractices-`, not `VUID-`, so they prove the callback was live **without contaminating the quantity being read**.
+
+### 7.19.3 The reading, both devices
+
+Device identity is read from `counters.alloc_device_frame_session_devices`, **not** from the selector: `ONNXRUNTIME_EP_VULKAN_DEVICE=0` produced `1=NVIDIA GeForce RTX 4060 Laptop GPU` and `=1` produced `0=Intel(R) Iris(R) Xe Graphics`. The selector is a request and its number is not the allocator's enumeration index; "both devices were covered" asserted from the env var would be a claim about what was asked for.
+
+| reading | NVIDIA clean | NVIDIA liveness | Intel clean | Intel liveness |
+|---|---|---|---|---|
+| `in_frame_vuid_count` | **0** | 0 | **0** | 0 |
+| `messenger_lines_in_frame_count` | 0 | **14** | 0 | **14** |
+| `claimed_nodes` | 355 | 355 | 355 | 355 |
+| `viable_islands_retained` | 1 | 1 | 1 | 1 |
+| `dispatches_executed` | 355 | 355 | 355 | 355 |
+| `device_losses` | 0 | 0 | 0 | 0 |
+
+Witnesses: `bench/results/criterion3a_phi35-dev0.json` and `-dev1.json`. Both arms come from one definition of the case (`probe_validation_phi35.run_arm`); two builders would be two definitions and the arms could then differ for a reason nobody wrote down.
+
+`device_losses == 0` is gated before any reading is believed: the intermittent `VK_ERROR_DEVICE_LOST` on this box **exits 0 and writes a complete counters file**, so the exit code screens nothing and a run that died early looks exactly like a run with nothing to report.
+
+### 7.19.4 Three corrections to the brief, recorded rather than adopted
+
+- `ledger_gate` reads **`MIXED`**, not `ALL-PROVEN` — `unproven_declines: 2`.
+- `dispatches_executed` reads **355**, not 8875; the counter is per claimed node, not per `vkCmdDispatch`. No 8875 figure is quoted anywhere.
+- Criterion 10's verdict today is attributed but **DIVERGENT**. Criterion 3(a) is recorded against exactly that and is **not** blocked on it — chaining an unblocked criterion to a blocked one is how criterion 2 was reopened.
+
+### 7.19.5 A finding for Switch, from inside the dispatch window
+
+The liveness arm's output contains, in frame, on both devices:
+
+```
+vkCmdDispatch(): Pipeline uses a push constant range with offset 0 and size 128, but
+104 bytes were never set with vkCmdPushConstants.
+```
+
+(also at 88, 72, 36, 20 and 4 bytes), plus `vkCreateComputePipelines(): … SPIR-V Workgroup built-in which SPIR-V 1.6 deprecated`. These are best-practices messages, not VUIDs; they do **not** fail criterion 3(a). But reading unwritten push-constant bytes is undefined, and the range is declared 128 bytes while far less is written. `rust/src/vk/` is Switch's — routed, not patched.
+
+### 7.19.6 What this does not claim
+
+The reading is a **dispatch-window** reading. The teardown window is `UNOBSERVABLE` and is not read in either direction: the production device is leaked (Switch, 2026-08-01), so anything the layer says at `vkDestroyInstance` is about object lifetimes, not the dispatch path. Any "0 validation errors at shutdown" gate is out-of-frame by construction on this build. It is also one inference, not a soak; and best-practices liveness proves the messenger carries **WARNING**-severity validation output, which is the same subscription an ERROR would arrive on, but no ERROR was planted in this frame because no in-frame plant exists for the ORT session path.
 
 ---
 

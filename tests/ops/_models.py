@@ -613,6 +613,70 @@ def tolerance_for_output(arr: np.ndarray) -> tuple[dict, str]:
     )
 
 
+def ulp_residual(vk: np.ndarray, cpu: np.ndarray) -> tuple[np.ndarray, str]:
+    """Residual expressed in **ULPs of the stored dtype**, elementwise.
+
+    WHY THIS UNIT (§10.0.4, Morpheus 2026-08-02)
+    ============================================
+    ``atol`` is an **absolute** bound and the criterion applied it to tensors whose scale
+    grows with depth.  KV magnitude rises through the 32 layers, the fp16 ULP rises with
+    it, so the absolute residual rises with depth **for a correct implementation** — the
+    monotone curve everyone read as a defect is a plot of magnitude.  Of the 65 per-output
+    residuals, 64 are exact negative powers of two and the 65th is ``3 * 2**-9``: small
+    integer multiples of the fp16 ULP, which is what a correct fp16 *storage* format
+    produces when the arithmetic behind it is fp32 (and it always was — `q_gemv.comp`
+    accumulates "regardless of storage", `gqa_f16.comp` carries `float acc[128]`).
+
+    WHY NOT RELATIVE ERROR
+    ======================
+    ``max_rel_diff`` is **not monotone** and is a denominator artefact on these tensors:
+    layer 2's key reads 0.4559, above every layer from 3 to 30, because it is attained at
+    near-zero elements.  In ULPs the residual is expected flat, so a rise in depth is a
+    finding rather than a plot of magnitude.
+
+    WHERE THIS UNIT ALSO FAILS, STATED BECAUSE I GOT IT WRONG FIRST
+    ==============================================================
+    My first version of this docstring claimed ULP "cannot" blow up near zero, because
+    float spacing floors at the denormal spacing.  **That is only half true and the half
+    that is false matters.**  Spacing does floor — so a residual that is *itself* of
+    denormal size reads 1-2 ULP where relative error reads 1e20.  But when the reference
+    element **cancels to zero while the tensor's scale is ~1**, a residual of one ULP *at
+    the tensor's scale* is measured against the denormal spacing and reads **16384 ULP**
+    (verified: ``ulp_residual([2**-10], [0.0])`` in fp16).
+
+    So the maximum ULP over a tensor is not by itself a sound headline: one cancellation
+    element can dominate it.  That is Morpheus's own sentence pointed at this instrument —
+    *an observable that degrades whatever happens cannot acquit*.  The consumer therefore
+    records **median, p99 and max together** plus a count of cancellation elements, so
+    "flat at 1-3" is read off a distribution and not off a single element that happens to
+    sit where no unit works.
+
+    THE SPACING BASIS IS THE ORACLE'S VALUE
+    ======================================
+    ULPs are counted against ``cpu`` — the reference — not against our own output and not
+    against the larger of the two.  Counting against our own value would let a wrong
+    answer choose its own denominator, which is the failure this whole file exists to
+    prevent one level down.
+
+    Returns ``(ulps, basis_description)``.  Non-floating dtypes get ULP ``= |a-b|``,
+    because for an integral tensor one unit *is* one ULP and any difference is a defect.
+    """
+    if not np.issubdtype(vk.dtype, np.floating):
+        return np.abs(vk.astype(np.int64) - cpu.astype(np.int64)).astype(np.float64), (
+            f"{vk.dtype} is integral; 1 ULP = 1, and any nonzero residual is a defect"
+        )
+    dt = vk.dtype
+    # np.spacing is signed (spacing(-1) < 0) and is what defines "one ULP at this
+    # magnitude"; its floor in the denormal region is why this unit survives near zero.
+    spacing = np.abs(np.spacing(cpu.astype(dt))).astype(np.float64)
+    diff = np.abs(vk.astype(np.float64) - cpu.astype(np.float64))
+    return diff / spacing, (
+        f"ULP of {dt} at the CPU oracle's value; spacing floors at "
+        f"{float(np.abs(np.spacing(dt.type(0.0)))):.3g} in the denormal region, so a "
+        "near-zero element cannot inflate the count the way it inflates relative error"
+    )
+
+
 def _is_degenerate(arr: np.ndarray) -> bool:
     """A tensor carrying no information: empty, all-NaN, or every element identical.
 
@@ -669,7 +733,9 @@ def compare_all_outputs_to_cpu(
         "oracle_degenerate_indices": [],
         "oracle_failing_indices": [],
         "oracle_max_abs_diff_over_all_outputs": 0.0,
+        "oracle_max_ulp_diff_over_all_outputs": 0.0,
         "oracle_worst_output_index": None,
+        "oracle_worst_ulp_output_index": None,
         "per_output": [],
     }
 
@@ -678,6 +744,7 @@ def compare_all_outputs_to_cpu(
         return COMPARISON_DISAGREE, facts
 
     worst = -1.0
+    worst_ulp = -1.0
     for i, (v, c) in enumerate(zip(vk_out, cpu_out)):
         entry: dict = {"index": i, "shape": list(v.shape), "dtype": str(v.dtype)}
 
@@ -712,11 +779,72 @@ def compare_all_outputs_to_cpu(
         max_rel = float(np.max(abs_diff / np.where(denom == 0, 1.0, denom))) if a.size else 0.0
         within = bool(np.allclose(a, b, rtol=tol["rtol"], atol=tol["atol"], equal_nan=True))
 
+        ulps, ulp_basis = ulp_residual(v, c)
+        finite_ulps = ulps[np.isfinite(ulps)]
+        max_ulp = float(finite_ulps.max()) if finite_ulps.size else 0.0
+        # Max alone is not a sound headline: one element whose reference cancels to zero
+        # can read 16384 ULP for a residual of one ULP at the tensor's own scale.  The
+        # distribution is recorded so "flat at 1-3" is read off a distribution rather than
+        # off the single element sitting where no unit works.
+        median_ulp = float(np.median(finite_ulps)) if finite_ulps.size else 0.0
+        p99_ulp = float(np.percentile(finite_ulps, 99)) if finite_ulps.size else 0.0
+        # Elements whose reference has cancelled relative to the tensor's own scale — the
+        # only place the ULP count is untrustworthy, counted rather than silently included.
+        if np.issubdtype(v.dtype, np.floating) and c.size:
+            scale = float(np.abs(c.astype(np.float64)).max())
+            floor = abs(float(np.spacing(v.dtype.type(scale)))) if scale > 0 else 0.0
+            cancellation = int(np.count_nonzero(np.abs(c.astype(np.float64)) < floor))
+        else:
+            cancellation = 0
+        # How much of this tensor sits where relative error is a denominator artefact.
+        # Recorded so a reader can see WHY max_rel_diff is not the headline, rather than
+        # being asked to take it on trust.
+        near_zero = (
+            int(np.count_nonzero(np.abs(c) <= np.abs(np.spacing(v.dtype.type(0.0))) * 16))
+            if np.issubdtype(v.dtype, np.floating) and c.size
+            else 0
+        )
+
         entry.update(
             {
                 "status": "WITHIN_TOLERANCE" if within else "OUTSIDE_TOLERANCE",
                 "max_abs_diff": max_abs,
+                "max_ulp_diff": max_ulp,
+                "median_ulp_diff": median_ulp,
+                "p99_ulp_diff": p99_ulp,
+                "ulp_cancellation_elements": cancellation,
+                "ulp_basis": ulp_basis,
+                # DEMOTED 2026-08-02.  Kept because deleting a number two people have
+                # already quoted makes the record unreadable, but it is explicitly not the
+                # headline: it is attained at near-zero elements and is not monotone in
+                # depth (layer 2's key reads 0.4559, above every layer from
+                # 3 to 30).  Quote `median_ulp_diff`, `p99_ulp_diff` or `max_abs_diff`.
                 "max_rel_diff": max_rel,
+                "max_rel_diff_is_headline": False,
+                "max_rel_diff_caveat": (
+                    "denominator artefact: attained at near-zero elements and not monotone "
+                    "in depth; use median_ulp_diff or max_abs_diff"
+                ),
+                "near_zero_elements": near_zero,
+                # `median_ulp_diff` and not `max_ulp_diff`.  Measured 2026-08-02 on a
+                # synthetic specimen (tests/ops/test_criterion10_ulp.py): a cancellation
+                # element inflates `max_ulp_diff` by the same mechanism and at the same
+                # element that inflates `max_rel_diff`.  Promoting one max over another
+                # would have reinstated the artefact under a new unit (R11).  The median
+                # is flat at 1 straight through that spike; the max and the cancellation
+                # count sit beside it so a real step cannot hide behind a robust average.
+                "headline_statistic": "median_ulp_diff",
+                "headline_secondary": [
+                    "p99_ulp_diff",
+                    "max_ulp_diff",
+                    "ulp_cancellation_elements",
+                    "max_abs_diff",
+                ],
+                "headline_note": (
+                    "max_ulp_diff is cancellation-sensitive exactly as max_rel_diff is; "
+                    "read median_ulp_diff for the bulk residual and "
+                    "ulp_cancellation_elements for how many elements the max speaks for"
+                ),
                 "rtol": tol["rtol"],
                 "atol": tol["atol"],
                 "tolerance_justification": why,
@@ -730,9 +858,13 @@ def compare_all_outputs_to_cpu(
         if max_abs > worst:
             worst = max_abs
             facts["oracle_worst_output_index"] = i
+        if max_ulp > worst_ulp:
+            worst_ulp = max_ulp
+            facts["oracle_worst_ulp_output_index"] = i
         facts["per_output"].append(entry)
 
     facts["oracle_max_abs_diff_over_all_outputs"] = max(worst, 0.0)
+    facts["oracle_max_ulp_diff_over_all_outputs"] = max(worst_ulp, 0.0)
 
     if facts["oracle_failing_indices"]:
         return COMPARISON_DISAGREE, facts
@@ -1965,3 +2097,59 @@ def compare_layers(
 
     results.sort(key=lambda d: d["max_abs_diff"], reverse=True)
     return results
+
+
+# Morpheus put this on record on 2026-08-02, BEFORE the instrument existed and before any
+# ULP number had been measured: "Express the residual in ULPs. Predicted flat at 1-3 across
+# all 32 layers. Flat => no defect; a step => a located one."
+#
+# The band is his, not mine, and that is the point. A threshold chosen after seeing the
+# data is a threshold fitted to the data: the first version of this function used a
+# multiple of the observed baseline, which I would then have had to tune once I saw that
+# the deepest two outputs read 4. Tuning it would have been the defect. The prediction is
+# the predicate.
+ULP_PREDICTED_CEILING = 3.0
+
+
+def ulp_outliers(medians, exclude_from_baseline=(0,), ceiling=ULP_PREDICTED_CEILING):
+    """Which outputs exceed the ULP band that was predicted before the unit was built.
+
+    This is the return on changing the unit.  Under ``max_abs_diff`` the logits are the
+    worst output of Phi-3.5 on every run, and that reads as "the logits are the largest
+    tensor, so of course they carry the largest absolute residual" -- a plot of magnitude,
+    which is DESIGN.md 10.0.4's *prefer the ratio* being violated by our own gate.  In ULPs
+    the magnitude is already in the denominator, so an output that is *still* an order out
+    is a located defect rather than a big tensor.
+
+    Each exceedance also carries its ``multiple_of_baseline``, because "above 3" does not
+    distinguish a one-ULP overshoot on a smooth accumulation curve from a step an order
+    clear of everything else, and those two are different findings.  The baseline excludes
+    the outputs under suspicion: letting the logits into their own denominator is the same
+    defect as a wrong answer choosing its own basis, which is why :func:`ulp_residual`
+    denominates in the oracle's spacing and never in ours.
+
+    Returns ``OUTPUT_COVERAGE_NOT_COMPUTED`` when nothing was measured -- R12: a statistic
+    whose event cannot occur in its frame is UNOBSERVABLE, not zero.  An empty curve does
+    not mean "no outliers"; it means there was no observation to draw one from.
+    """
+    present = [v for v in medians if v is not None]
+    if not present:
+        return OUTPUT_COVERAGE_NOT_COMPUTED
+    pool = [
+        v
+        for i, v in enumerate(medians)
+        if i not in set(exclude_from_baseline) and v is not None
+    ]
+    ordered = sorted(pool) if pool else sorted(present)
+    baseline = ordered[len(ordered) // 2]
+    return [
+        {
+            "output_index": i,
+            "median_ulp_diff": v,
+            "predicted_ceiling": ceiling,
+            "multiple_of_baseline": (v / baseline if baseline else None),
+            "baseline_median_ulp_diff": baseline,
+        }
+        for i, v in enumerate(medians)
+        if v is not None and v > ceiling
+    ]

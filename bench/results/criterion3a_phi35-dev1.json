@@ -1,0 +1,48 @@
+{
+  "arms": {
+    "clean": {
+      "counters": {
+        "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+        "claimed_nodes": 355,
+        "device_losses": 0,
+        "dispatches_executed": 355,
+        "islands_offered": 1,
+        "ledger_gate": "MIXED",
+        "ledger_hits": 355,
+        "model_output_equivalence": "UNMEASURED",
+        "unproven_declines": 2,
+        "viable_islands_retained": 1
+      },
+      "in_frame_vuid_count": 0,
+      "in_frame_vuids": [],
+      "messenger_lines_in_frame_count": 0
+    },
+    "liveness": {
+      "counters": {
+        "alloc_device_frame_session_devices": "0=Intel(R) Iris(R) Xe Graphics",
+        "claimed_nodes": 355,
+        "device_losses": 0,
+        "dispatches_executed": 355,
+        "islands_offered": 1,
+        "ledger_gate": "MIXED",
+        "ledger_hits": 355,
+        "model_output_equivalence": "UNMEASURED",
+        "unproven_declines": 2,
+        "viable_islands_retained": 1
+      },
+      "in_frame_vuid_count": 0,
+      "in_frame_vuids": [],
+      "messenger_lines_in_frame_count": 14
+    }
+  },
+  "criterion": "3(a) \u2014 validation layers clean, messenger armed, real Phi-3.5 execution",
+  "criterion_10_status": "attributed DIVERGENT on the unit (Morpheus's ruling, 2026-08-02).  Criterion 3(a) is recorded against exactly that and is not blocked on it.",
+  "device_name": "Intel(R) Iris(R) Xe Graphics",
+  "device_name_source": "counters.alloc_device_frame_session_devices, read off this run \u2014 not the ONNXRUNTIME_EP_VULKAN_DEVICE selector, which is a request and whose number is not the allocator's enumeration index",
+  "device_selector": "1",
+  "frame_read_at": "dispatch window \u2014 from process start to the instant `sess.run()` returned on a real Phi-3.5 inference, with the instance, device, descriptor sets and command buffers all still live",
+  "in_frame_liveness_demonstrated": true,
+  "liveness_mechanism": "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT \u2014 best-practices messages arrive at WARNING severity, which the EP's messenger already subscribes to, in this process and inside this frame.  They are prefixed BestPractices-, not VUID-, so they do not contaminate the count being read.",
+  "teardown_window": "UNOBSERVABLE \u2014 the production device is leaked (Switch, 2026-08-01), so anything the layer says at teardown is about object lifetimes and not about the dispatch path.  A '0 validation errors at shutdown' gate is out-of-frame by construction on this build and is not read here in either direction.",
+  "verdict": "PASS \u2014 0 in-frame VUID messages in a frame demonstrated to carry validation output"
+}
