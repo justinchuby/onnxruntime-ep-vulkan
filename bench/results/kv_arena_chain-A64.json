@@ -1,0 +1,131 @@
+{
+  "probe": "kv_arena_chain",
+  "arena": 64,
+  "past": 4,
+  "steps": 6,
+  "correctness": {
+    "arena": {
+      "reference_lane": "grow",
+      "logits_bitwise_equal": true,
+      "logits_max_abs": 0.0,
+      "argmax_equal": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "kv_tensors_compared": 64,
+      "kv_tensors_bitwise_equal": 64,
+      "kv_tensors_differing": [],
+      "kv_reference_nonzero_frac": 1.0,
+      "verdict": "BIT_IDENTICAL"
+    },
+    "grow_vs_host_control": {
+      "reference_lane": "host",
+      "note": "CPU fp32 vs device fp16 \u2014 approximate by construction, argmax only",
+      "logits_max_abs": 0.4140625,
+      "argmax_equal": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  "bytes": {
+    "host": {
+      "per_step_link_bytes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "slope_bytes_per_past_token": 0.0,
+      "dispatches": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "kv_cache_convention": null,
+      "alloc_high_water_bytes": null,
+      "session_device_high_water_bytes": null,
+      "alloc_device_attach_failures": null,
+      "compute_failures": null,
+      "device_losses": null,
+      "ep_device": null,
+      "worker_rc": 0
+    },
+    "grow": {
+      "per_step_link_bytes": [
+        0,
+        64128,
+        64128,
+        64128,
+        64128,
+        64128
+      ],
+      "slope_bytes_per_past_token": 9161.142857142857,
+      "dispatches": [
+        355,
+        355,
+        355,
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "GROWING",
+      "alloc_high_water_bytes": 2298774152,
+      "session_device_high_water_bytes": 2304430128,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "worker_rc": 0
+    },
+    "arena": {
+      "per_step_link_bytes": [
+        0,
+        64128,
+        64128,
+        64128,
+        64128,
+        64128
+      ],
+      "slope_bytes_per_past_token": 9161.142857142857,
+      "dispatches": [
+        355,
+        355,
+        355,
+        355,
+        355,
+        355
+      ],
+      "kv_cache_convention": "SHARED",
+      "alloc_high_water_bytes": 2316468872,
+      "session_device_high_water_bytes": 2321993776,
+      "alloc_device_attach_failures": 0,
+      "compute_failures": 0,
+      "device_losses": 0,
+      "ep_device": {
+        "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "vulkan.device_index": "1",
+        "vulkan.vendor_id": "0x10de"
+      },
+      "worker_rc": 0
+    }
+  },
+  "verdict": "ARENA_TAKEN_AND_BIT_IDENTICAL"
+}

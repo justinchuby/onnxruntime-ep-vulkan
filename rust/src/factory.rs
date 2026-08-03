@@ -483,6 +483,54 @@ pub(crate) fn device_memory_enabled() -> bool {
     })
 }
 
+/// The caller's KV-cache convention: does `past` arrive as a fixed **arena** that `present`
+/// may alias, or as a tensor that grows by `seq_len` every step?
+///
+/// ORT's `GroupQueryAttention` has two conventions and they are distinguished only by the
+/// extent of `past`:
+///
+/// * **growing** — `past` is `[B, Nkv, P, D]` for the *true* past length P, `present` is
+///   `[B, Nkv, P + S, D]`, a different and strictly larger allocation. Peak KV memory is
+///   therefore `2 x 393,216 x C` on Phi-3.5, which is why ctx 8192 does not fit in 8 GB.
+/// * **shared buffer (arena)** — `past` is `[B, Nkv, A, D]` for a fixed A that is large
+///   enough for the whole session, the true past length is carried by `seqlens_k` alone, and
+///   `present` **is** `past`. Peak KV memory is `1 x 393,216 x C`.
+///
+/// MEASURED 2026-08-03 (`bench/results/kv_arena_graph_accepts.json`) before any of this code
+/// was written: the Phi-3.5 export accepts an oversized `past` and ORT's own CPU GQA returns
+/// **bit-identical** logits against the tight-shaped run, with the arena tail poisoned to
+/// `0.5` (not zeroed — a filler a wrong reader could consume without changing the answer
+/// proves nothing). So the past extent is read off `seqlens_k`, not off the tensor, and the
+/// convention is a property of what the *caller binds*, not of the graph.
+///
+/// The EP cannot infer which convention is in force. It sees `past`'s extent and `seq_len`;
+/// the true past length lives in `seqlens_k`, which is a device tensor computed inside the
+/// island. Under the growing convention the true past equals the extent; under the arena it
+/// does not — and those two are indistinguishable from the shapes alone. So it is declared,
+/// not guessed, and the declaration is then **checked** at bind time: under the arena the
+/// `present` output must resolve to the same `VkBuffer` as `past`, or the EP declines the
+/// alias and takes the shipping route rather than computing something plausible.
+///
+/// Ships **OFF**, and an unrecognised value means OFF — same polarity rule as
+/// [`ENV_DEVICE_MEMORY`], for the same reason: a typo'd flag must fail towards the path that
+/// ships.
+pub const ENV_KV_ARENA: &str = "ONNXRUNTIME_EP_VULKAN_KV_ARENA";
+
+/// The **one** reader of [`ENV_KV_ARENA`] in this crate.
+///
+/// One function on purpose. `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` had two readers with
+/// different allow-lists and `=off` half-armed the EP; that is not repeated here, and the
+/// unit test below calls this function on the same twelve spellings the device-memory test
+/// uses.
+pub(crate) fn kv_arena_enabled() -> bool {
+    std::env::var(ENV_KV_ARENA).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 /// Advertise device memory for one `OrtEpDevice`.
 ///
 /// This is what puts the allocator in ORT's path: ORT calls `CreateAllocator` only for an

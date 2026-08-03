@@ -274,6 +274,10 @@ impl DispatchContext for CompileRecorder {
         Ok(BufferView::from_raw(self.resolve_token(&r.name)))
     }
 
+    fn kv_arena(&self) -> bool {
+        crate::factory::kv_arena_enabled()
+    }
+
     fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
         let size = desc.byte_size().unwrap_or(0) as u64;
         Ok(BufferView::from_raw(self.bind_token(&o.name, size)))
@@ -441,6 +445,13 @@ impl ShapeOnlyRecorder {
 impl DispatchContext for ShapeOnlyRecorder {
     fn resolve(&mut self, r: &TensorRef) -> EpResult<BufferView> {
         Ok(BufferView::from_raw(self.resolve_token(&r.name)))
+    }
+
+    /// Read through the single crate-wide parser, never a second copy of the allow-list.
+    /// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY` had two readers that disagreed and `=off`
+    /// half-armed the EP; that defect is not reproduced here.
+    fn kv_arena(&self) -> bool {
+        crate::factory::kv_arena_enabled()
     }
 
     fn bind_output(&mut self, o: &OutRef, desc: TensorDesc) -> EpResult<BufferView> {
@@ -1248,6 +1259,13 @@ impl VulkanSession {
                     }
                 }
                 if let (Some(cap), Some(cap_bi)) = (sor.captured, sor.captured_bindings) {
+                    // The KV convention is read off the **effective** push-constant block, not
+                    // off the flag that requested it: `present_len` (offset 24) and
+                    // `past_stride` (offset 28) are what the dispatch was built with, and they
+                    // are equal exactly when `present` aliases `past`. Recorded here, at the
+                    // one site that holds the resolved block, for the same reason Mouse records
+                    // `pipeline_variants` at `get_or_create` — a host-side record of the request
+                    // is a record of the request.
                     dyn_captured[ki] = Some((cap.0, cap.1, cap.2, cap.3, cap_bi));
                 }
                 dyn_temp_sizes[ki] = sor
@@ -1516,12 +1534,25 @@ impl VulkanSession {
             vec![None; actual_output_byte_sizes.len()];
         if output_bind_requested() {
             for (i, &sz) in actual_output_byte_sizes.iter().enumerate() {
-                // Zero-size outputs have no buffer; aliased outputs already borrow their input's
-                // buffer and would need a device→device copy into ORT's tensor, which is a
-                // separate change with a separate proof.
-                if sz == 0 || aliased_output_to_input.contains_key(&i) {
+                // Zero-size outputs have no buffer.
+                if sz == 0 {
                     continue;
                 }
+                // An aliased output (the KV arena) is not skipped any more. It used to be,
+                // with the note "would need a device→device copy into ORT's tensor" — true
+                // when ORT's tensor is a *different* allocation, and exactly wrong when it is
+                // the same one. Under the arena the caller hands the same device buffer in as
+                // `past` and out as `present`, and the dispatch has already written it in
+                // place: binding it costs nothing and skipping it costs a full-arena staging
+                // download every step (3.2 GB per step at ctx 8192).
+                //
+                // The identity is **checked, not assumed**. If ORT's output buffer is not the
+                // same `VkBuffer` as the input the shader wrote, the alias is declined here and
+                // the output takes the staging route below, which is the shipping path and is
+                // correct for any allocation. A wrong answer is the one outcome this must not
+                // produce, and the caller's declaration is not evidence about where ORT put a
+                // tensor.
+                let aliased_in = aliased_output_to_input.get(&i).copied();
                 // Counted here rather than at the bind: `outputs_device_bound == 0` cannot
                 // distinguish "the path is off" from "the path ran and declined everything",
                 // and once the path is on by default the second is the ordinary case.
@@ -1539,6 +1570,21 @@ impl VulkanSession {
                 };
                 bound_outputs[i] =
                     crate::vk::host_device_memory::bind_target_for(ptr, sz as usize);
+                if let Some(in_idx) = aliased_in {
+                    // The alias must land on the buffer the dispatch actually wrote. Recorded
+                    // as a decline here; the **refusal** is the sweep after this loop, which
+                    // catches this path and the three others that can leave it unbound.
+                    let same = match (bound_outputs[i], bound_inputs.get(in_idx).copied().flatten())
+                    {
+                        (Some((ob, _)), Some((ib, _))) => ob == ib,
+                        _ => false,
+                    };
+                    if !same {
+                        crate::counters::record_output_bind_declined();
+                        bound_outputs[i] = None;
+                        continue;
+                    }
+                }
                 if bound_outputs[i].is_some() {
                     // Declare the device buffer authoritative BEFORE the dispatch that writes it.
                     //
@@ -1572,6 +1618,44 @@ impl VulkanSession {
                 } else {
                     crate::counters::record_output_bind_declined();
                 }
+            }
+        }
+
+        // One sweep, after every path above, rather than a check at each of them: an aliased
+        // output that is not bound to its input's buffer is a wrong answer whatever unbound it
+        // — a declined span, a failed authority mark, or `BIND_OUTPUTS=0`, which skips the
+        // whole block above and would otherwise let the arena shorten `present` with nothing
+        // checking where it landed.
+        for (&i, &in_idx) in aliased_output_to_input.iter() {
+            if i >= actual_output_byte_sizes.len() || actual_output_byte_sizes[i] == 0 {
+                continue;
+            }
+            let same = match (
+                bound_outputs.get(i).copied().flatten(),
+                bound_inputs.get(in_idx).copied().flatten(),
+            ) {
+                (Some((ob, _)), Some((ib, _))) => ob == ib,
+                _ => false,
+            };
+            if !same {
+                // The local `bail!` takes a string literal only, so the indices go through the
+                // log. They are diagnostic; the refusal is the finding. `bail!` frees every
+                // buffer itself, so there is no cleanup to do here.
+                log::error!(
+                    "[VulkanEP] KV arena: output[{i}] is an alias of input[{in_idx}] but is not \
+                     bound to that input's device buffer; refusing this Compute."
+                );
+                bail!(
+                    "an output was built as an alias of an input (the KV arena: `present` \
+                     shares `past`'s allocation, so the kernel writes only the new token and \
+                     never materialises the past) but is not bound to that input's device \
+                     buffer. Writing this dispatch's result into ORT's tensor would leave every \
+                     past token unwritten and the answer silently wrong, so this EP refuses \
+                     instead. Bind the same OrtValue as `past_key_values.*` input and \
+                     `present.*` output with ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1 and \
+                     ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS left on, or unset \
+                     ONNXRUNTIME_EP_VULKAN_KV_ARENA."
+                );
             }
         }
 
@@ -1825,6 +1909,28 @@ impl VulkanSession {
                     kernel.bindings.as_slice(),
                 ),
             };
+
+            // The KV convention is read off the **effective** push-constant block of the dispatch
+            // that is about to be recorded — not off the flag that requested it, and not off the
+            // pre-pass, which only sees dynamic kernels. `present_len` (offset 24) and
+            // `past_stride` (offset 28) are equal exactly when `present` aliases `past`; the
+            // kernel's own `copy_leader` predicate is that same comparison, so this reads the
+            // condition the shader reads rather than a parallel restatement of it.
+            if eff_shader == "gqa_f16" && eff_push_constants.len() >= 32 {
+                let present_len = u32::from_le_bytes([
+                    eff_push_constants[24],
+                    eff_push_constants[25],
+                    eff_push_constants[26],
+                    eff_push_constants[27],
+                ]);
+                let past_stride = u32::from_le_bytes([
+                    eff_push_constants[28],
+                    eff_push_constants[29],
+                    eff_push_constants[30],
+                    eff_push_constants[31],
+                ]);
+                crate::counters::record_kv_convention(present_len, past_stride);
+            }
 
             let Some(spirv) = crate::engine::shaders::find(eff_shader) else {
                 // No SPIR-V for this shader — shouldn't happen if GetCapability checked has_any().

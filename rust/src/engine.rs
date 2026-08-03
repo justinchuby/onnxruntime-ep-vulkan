@@ -573,6 +573,23 @@ pub trait DispatchContext {
         self.resolve(input)
     }
 
+    /// Does the caller use the **shared-buffer (arena)** KV-cache convention?
+    ///
+    /// `false` — the default and the shipping answer — means the growing convention: `present`
+    /// is a strictly larger, separate allocation and the past tokens must be materialised into
+    /// it. `true` means `past` is a fixed arena whose extent is a *capacity*, not a length; the
+    /// true past length is carried by `seqlens_k`, and `present` aliases `past`.
+    ///
+    /// This is on the context rather than read from the environment inside `ops/` because
+    /// `ops/` is not allowed to reach configuration or the ABI (`tests/layering.rs`), and
+    /// because a stub context in a unit test must be able to state the convention it is
+    /// testing without setting a process-wide variable.
+    ///
+    /// **Default:** `false`. An op handler that does not consult it keeps shipping behaviour.
+    fn kv_arena(&self) -> bool {
+        false
+    }
+
     // ── Seam 4: indirect dispatch for QMoE (OP_COVERAGE.md §9.5 #2) ─────────────────────
 
     /// Record a dispatch with device-computed workgroup counts.
