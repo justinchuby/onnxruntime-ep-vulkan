@@ -83,6 +83,21 @@ fn staged_reason(spec: &OpSpec) -> Option<&'static str> {
     }
 }
 
+/// The staged blocker, verbatim, for the JSON rendering.
+///
+/// The human table groups these underneath itself because the prose is far too long for a
+/// column. The JSON has no such constraint, and omitting it there had a cost: enumerating the
+/// staged rows by *reason* — which is the only way to tell the cheap bulk apart from real
+/// engineering — meant reading `ops/*.rs` and counting `Staged(...)` by eye. That is a code
+/// reading, and a code reading is not an artifact (R10). It is emitted here so the census is
+/// something the tool produced, and so a CI diff can see a row change its blocker.
+fn staged_reason_json(spec: &OpSpec) -> String {
+    match staged_reason(spec) {
+        Some(why) => format!("\"{}\"", escape_json(why)),
+        None => "null".to_string(),
+    }
+}
+
 fn dump_human() {
     println!("onnxruntime-ep-vulkan {}", env!("CARGO_PKG_VERSION"));
     println!(
@@ -153,13 +168,15 @@ fn dump_json() {
         let comma = if i + 1 == rows.len() { "" } else { "," };
         println!(
             "    {{\"name\": \"{}\", \"opsets\": \"{}\", \"dtypes\": \"{}\", \
-             \"status\": \"{}\", \"live\": {}, \"schema_baseline\": \"{}\"}}{comma}",
+             \"status\": \"{}\", \"live\": {}, \"schema_baseline\": \"{}\", \
+             \"staged_reason\": {}}}{comma}",
             escape_json(&spec.qualified_name()),
             opset_window(spec),
             dtypes(spec),
             status_tag(spec),
             spec.is_live(),
             escape_json(&schema_baseline(spec)),
+            staged_reason_json(spec),
         );
     }
     println!("  ]");

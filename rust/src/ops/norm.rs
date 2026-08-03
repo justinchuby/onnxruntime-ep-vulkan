@@ -31,10 +31,9 @@ use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::FLOAT;
 use crate::ops::common::templates;
-use crate::registry::OpStatus::{Ready, Staged};
+use crate::registry::OpStatus::Ready;
 use crate::registry::{
     ContribSchema, NodeView, OPSET_ANY, OPSET_STD_LLM, OPSET_STD_NORM_MAX, OpSpec, PINNED_BASELINE,
-    UNEXERCISED,
 };
 use crate::require;
 
@@ -142,7 +141,7 @@ crate::op_table! {
     // reduction shader now exists — the blocker is no longer "no kernel", it is "no device has
     // run this row". No graph on this machine emits it, so flipping it would be a claim with no
     // instrument behind it (§8.9, R9).
-    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Staged(UNEXERCISED);
+    "RMSNormalization",                       Ai,     OPSET_STD_LLM ..= OPSET_STD_NORM_MAX, FLOAT,  kernel!(None),  simplified_layer_norm,      templates::simplified_norm, Ready;
 
     // The same op again, in the **default domain**. Not a duplicate and not defensive coding: the
     // ORT GenAI model builder writes `SimplifiedLayerNormalization` with `node.domain == ""`, and
@@ -161,7 +160,7 @@ crate::op_table! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{Domain, OpStatus};
+    use crate::registry::{Domain, OpStatus, UNEXERCISED};
 
     /// RMSNorm is emitted under two different domains by the same producer.
     ///
@@ -219,11 +218,17 @@ mod tests {
     #[test]
     fn the_reduction_blocker_is_retired_and_only_the_unexercised_row_remains() {
         // The shared row-reduction shader now exists (`simplified_layer_norm_{f32,f16}.comp`),
-        // so `NEEDS_REDUCTION` is no longer a true statement about any row. The one remaining
-        // staged row — `RMSNormalization`, the standard-domain spelling — is blocked on evidence,
-        // not on a kernel: no graph on this machine emits it, so it has never run on a device.
-        // Keeping the *reason* accurate is the point of this test. A row staged behind a retired
-        // blocker is a lie the table tells about its own schedule.
+        // so `NEEDS_REDUCTION` is no longer a true statement about any row.
+        //
+        // 2026-08-02: `RMSNormalization` was the one row left, staged behind `UNEXERCISED`
+        // because "no graph on this machine emits it, so it has never run on a device". That
+        // sentence stopped being true when the ledger harness built a one-node case for it and
+        // ran it against the CPU EP — `worst_rel 1.2422319355097775e-07`. The row is now
+        // `Ready`, which claims nothing on its own: the proof ledger decides per form.
+        //
+        // Keeping the *reason* accurate is the point of this test. A row staged behind a
+        // retired blocker is a lie the table tells about its own schedule — and so is a row
+        // staged behind "never executed" after it has executed.
         let staged: Vec<_> = OPS
             .iter()
             .filter(|s| matches!(s.status, OpStatus::Staged(_)))
@@ -232,6 +237,15 @@ mod tests {
         assert!(
             !live.is_empty(),
             "the norm rows backed by a shader should be live"
+        );
+        // The loop below is vacuous once nothing is staged, and a vacuous assertion that
+        // reports PASS is this project's oldest failure mode. Pin the expected set instead, so
+        // "nothing is staged" is a checked fact rather than an empty loop.
+        let staged_names: Vec<&str> = staged.iter().map(|s| s.op_type).collect();
+        assert!(
+            staged_names.is_empty(),
+            "norm rows are all Ready as of 2026-08-02; these are staged again: {staged_names:?}. \
+             If that is intended, update this list and say which blocker applies"
         );
         for s in &staged {
             assert!(

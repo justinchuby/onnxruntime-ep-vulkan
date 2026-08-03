@@ -596,6 +596,19 @@ static UNPROVEN_FORMS_CLAIMED: AtomicU64 = AtomicU64::new(0);
 /// CI check has to be able to *name* what a lane claimed without evidence.
 static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Distinct keys that were named in `ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN` **and were already
+/// proven**, so the hatch was not what admitted them — the ledger was.
+///
+/// Added 2026-08-02 (Mouse) for §8.9.11. `--reprove` offers an already-claimed key through the
+/// hatch so the harness can attribute the run to it. The hatch never fires, because the ledger
+/// hits first, so `unproven_forms_enabled` came back empty and the generator called every
+/// re-proof `UNATTRIBUTED`. The earlier 74-entry re-proof only succeeded because the ledger on
+/// disk had drifted from the baked copy and every lookup was `Faulted` — an accident of state,
+/// not a path. It cannot go in `unproven_forms_enabled`: that list is the §8.9.4 disclosure of
+/// forms claimed *without* evidence, and a proven form named there would be a false statement
+/// that also fails `epctl --check-counters`.
+static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
 /// Added 2026-08-02 (Mouse, cross-owner into Tank's file, declared) for §8.9.11. A proof-ledger
@@ -792,6 +805,16 @@ pub fn record_unproven_form_enabled(key: &str) {
     }
 }
 
+/// Record that an already-proven form was re-offered through the hatch — see
+/// [`REPROOF_KEYS_ADMITTED`]. Counts nothing: it is an attribution witness, not a disclosure.
+pub fn record_reproof_form_admitted(key: &str) {
+    if let Ok(mut used) = REPROOF_KEYS_ADMITTED.lock()
+        && !used.iter().any(|k| k == key)
+    {
+        used.push(key.to_string());
+    }
+}
+
 /// Escape a string for a JSON string literal. Proof keys are `[A-Za-z0-9:./,+_-]` by
 /// construction, so this exists to keep a malformed key from producing malformed JSON rather
 /// than because one is expected.
@@ -855,6 +878,19 @@ fn ledger_gate_state() -> &'static str {
 /// is the value `epctl --check-counters` fails on when it is non-empty.
 fn unproven_forms_enabled_json() -> String {
     let Ok(used) = UNPROVEN_KEYS_USED.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
+/// `reproof_forms_admitted` — the attribution witness for `gen_proof_ledger.py --reprove`.
+///
+/// Deliberately *not* folded into `unproven_forms_enabled`: these forms were admitted on
+/// evidence. `epctl --check-counters` does not fail on this list, because a re-measurement of a
+/// proven form is the ledger working, not the gate being bypassed.
+fn reproof_forms_admitted_json() -> String {
+    let Ok(used) = REPROOF_KEYS_ADMITTED.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
     let body: Vec<String> = used.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
@@ -1209,6 +1245,7 @@ impl VulkanEpCounters {
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
+             \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
@@ -1255,6 +1292,7 @@ impl VulkanEpCounters {
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
+            reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
             SESSION_DISCLOSURES.load(ORD),

@@ -156,7 +156,35 @@ def _child_main(spec_path: str) -> int:
         if domain == "ge_one":
             # acosh is real only for x >= 1.
             return 1.0 + np.abs(v)
+        if domain == "discrete":
+            # A small integer-valued set. `Equal` on two independent normals is all-False —
+            # a constant reference, which proves nothing — so the comparison ops need inputs
+            # that actually collide sometimes. Six values over two operands gives roughly one
+            # element in six equal, which exercises both branches.
+            return rng.integers(-3, 3, shape).astype(np.float64)
+        if domain == "withnan":
+            # `IsNaN` on a finite tensor is all-False, which is the same vacuous case. The
+            # non-finite values are deliberate here and land in the *input*; the output is
+            # boolean and stays finite, so this does not trip the non-finite-reference guard.
+            v = v.copy()
+            flat = v.reshape(-1)
+            if flat.size >= 4:
+                flat[0::4] = np.nan
+                flat[1::4] = np.inf
+            return v
         return v
+
+    def _ints(shape, dtype):
+        """Integer feeds, domain-aware.
+
+        The default `[0, 2)` is right for indices and masks and wrong for bitwise ops: a
+        `BitwiseAnd` fed zeros and ones exercises **one bit of thirty-two**, and a shader that
+        got the other thirty-one wrong would pass. `bits` draws full width.
+        """
+        if domain == "bits":
+            info = np.iinfo(dtype)
+            return rng.integers(info.min, info.max, shape, dtype=np.int64).astype(dtype)
+        return rng.integers(0, 2, shape).astype(dtype)
 
     feeds = {}
     plan = spec.get("feed_plan") or {}
@@ -180,9 +208,9 @@ def _child_main(spec_path: str) -> int:
         elif "float" in dt or "double" in dt:
             feeds[inp.name] = (_floats(shape) * scale).astype(np.float32)
         elif "int64" in dt:
-            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int64)
+            feeds[inp.name] = _ints(shape, np.int64)
         elif "int32" in dt:
-            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int32)
+            feeds[inp.name] = _ints(shape, np.int32)
         elif "uint8" in dt:
             feeds[inp.name] = rng.integers(0, 4, shape).astype(np.uint8)
         elif "bool" in dt:
@@ -449,6 +477,8 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     claimed = c.get("claimed_nodes", 0)
     dispatches = c.get("dispatches_executed", 0)
     hatch = c.get("unproven_forms_enabled", [])
+    reproof = c.get("reproof_forms_admitted", [])
+    admitted_keys = list(dict.fromkeys(list(hatch) + list(reproof)))
     if not claimed or not dispatches:
         return "UNATTRIBUTED", {
             "reason": "the EP claimed or executed nothing; a match against CPU proves nothing "
@@ -476,19 +506,19 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     # sets happened to match; under this one an entry can only exist for a key the run actually
     # claimed under. The number of entries a run can produce is now bounded by what it used
     # rather than by what it intended.
-    if not hatch:
+    if not admitted_keys:
         return "UNATTRIBUTED", {
             "reason": "the run admitted no unproven form; nothing was claimed under any offered "
             "key, so no key was exercised",
             "offered": sorted(keys),
         }
-    unoffered = sorted(set(hatch) - set(keys))
+    unoffered = sorted(set(admitted_keys) - set(keys))
     if unoffered:
         return "UNATTRIBUTED", {
             "reason": "the run claimed under a key that was never offered; the harness cannot "
             "say what it ran",
             "offered": sorted(keys),
-            "admitted": sorted(hatch),
+            "admitted": sorted(admitted_keys),
             "unoffered": unoffered,
         }
 
@@ -496,6 +526,35 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     b = np.load(str(cpu_out))
     rtol, atol = tolerance
     worst = 0.0
+    degenerate = []
+    for name in a.files:
+        x, y = a[name].astype("float64"), b[name].astype("float64")
+        if x.shape != y.shape:
+            return "DIVERGENT", {"reason": f"shape mismatch on {name}: {x.shape} vs {y.shape}"}
+
+        # R13, and the seventh instance of this project's oldest failure mode.
+        #
+        # A **constant** CPU reference makes the comparison vacuous: two constant tensors agree
+        # to any tolerance, so the run reports `MATCH` with `worst_rel 0.0` while having tested
+        # nothing. This guard did not exist while the ledger held only arithmetic ops, whose
+        # references vary by construction. It is added here because the batch that follows is
+        # twelve **boolean-output** ops, where degeneracy is the default rather than the
+        # accident: `Equal` on two independent normals is all-False, and so is `IsNaN`. Without
+        # this, the cheapest way to "prove" twelve ops would have been to prove none of them.
+        #
+        # It is ERROR(instrument), not DIVERGENT: the kernel has not been shown wrong, the case
+        # model has been shown inadequate. ERROR neither proves nor demotes — repair, re-run.
+        if y.size > 1 and np.all(y == y.flat[0]):
+            degenerate.append(name)
+    if degenerate:
+        return "ERROR", {
+            "reason": (
+                f"CPU reference output(s) {sorted(degenerate)} are constant, so the comparison "
+                f"over them is vacuous: two constant tensors agree to any tolerance. The case "
+                f"model does not exercise this op — repair its input domain and re-run"
+            ),
+            "instrument": "case_model_degenerate_reference",
+        }
     for name in a.files:
         x, y = a[name].astype("float64"), b[name].astype("float64")
         if x.shape != y.shape:
@@ -542,8 +601,12 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         # digest, both taken from the EP's own dispatch record rather than re-derived here.
         "shaders_dispatched": c.get("shaders_dispatched", []),
         "shaders_dispatched_digest": c.get("shaders_dispatched_digest", ""),
-        # The keys this run actually claimed under. Entries are written for these and no others.
-        "admitted": sorted(hatch),
+        # The keys this run actually claimed under — through the escape hatch (unproven forms) or
+        # through the ledger while being deliberately re-offered (`--reprove`). Entries are
+        # written for these and no others.
+        "admitted": sorted(admitted_keys),
+        "admitted_via_hatch": sorted(hatch),
+        "admitted_via_reproof": sorted(reproof),
     }
 
 
@@ -731,6 +794,13 @@ def main() -> int:
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--append", action="store_true")
     ap.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="DISCARD every existing entry and write only what this run proved. Without this "
+        "the ledger is always carried forward: the default write used to be destructive and "
+        "reported PASS over the file it had just emptied.",
+    )
+    ap.add_argument(
         "--reprove",
         action="store_true",
         help="re-measure forms that are ALREADY claimed and replace their entries. Without this "
@@ -760,12 +830,31 @@ def main() -> int:
     now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
     existing: list[str] = []
-    if args.append and out.is_file():
+    if out.is_file():
         existing = [
             l for l in (x.strip() for x in out.read_text(encoding="utf-8").splitlines())
             if l and not l.startswith("#")
         ][1:]
-    have = {json.loads(l)["key"] for l in existing}
+    on_disk = {json.loads(l)["key"] for l in existing}
+    # THE DEFAULT WRITE USED TO BE DESTRUCTIVE (fixed 2026-08-02, after it destroyed 95 entries).
+    #
+    # `existing` was loaded only under `--append`. Without it the generator rewrote the file with
+    # nothing but what this invocation proved, so a single-model run reduced the ledger to that
+    # model's entries — and then printed `PASS`, because `check_ledger` was asked whether the
+    # file it had just written was internally consistent, which an empty file is. Two halves of a
+    # report describing different things, exactly the §8.9.11 shape one level out.
+    #
+    # Entries are now always carried forward. Discarding them is `--rebuild`, which has to be
+    # asked for, and `--append` is retained as a no-op alias so existing lanes keep working.
+    if not args.append and not args.rebuild and existing:
+        print(
+            f"[carry]    {len(existing)} existing entr(ies) carried forward from {out.name}; "
+            f"pass --rebuild to discard them deliberately"
+        )
+    if args.rebuild:
+        print(f"[rebuild]  discarding {len(existing)} existing entr(ies) on request")
+        existing = []
+    have = set(on_disk) if not args.rebuild else set()
 
     planted = _planted_control_key()
     planted_case = getattr(

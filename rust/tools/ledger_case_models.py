@@ -143,6 +143,101 @@ def _binary_dyn(op: str, elem: int, opset: int = 21) -> onnx.ModelProto:
     return model
 
 
+def _typed_binary(
+    op: str, in_elem: int, out_elem: int, shape=(4, 8), opset: int = 21
+) -> onnx.ModelProto:
+    """A one-node binary whose **output dtype differs from its input dtype**.
+
+    The comparison ops need this and `_binary` cannot express it: `Greater` takes floats and
+    returns bools. The output dtype is a key component, so getting it wrong does not produce a
+    slightly-off case — it produces a proof of a form the model does not contain.
+    """
+    a = helper.make_tensor_value_info("A", in_elem, list(shape))
+    b = helper.make_tensor_value_info("B", in_elem, list(shape))
+    c = helper.make_tensor_value_info("C", out_elem, list(shape))
+    node = helper.make_node(op, ["A", "B"], ["C"], name=f"{op.lower()}0")
+    graph = helper.make_graph([node], f"{op}_graph", [a, b], [c])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _typed_unary(
+    op: str, in_elem: int, out_elem: int, shape=(4, 8), opset: int = 21
+) -> onnx.ModelProto:
+    """A one-node unary whose output dtype differs from its input dtype (`IsNaN`)."""
+    x = helper.make_tensor_value_info("X", in_elem, list(shape))
+    y = helper.make_tensor_value_info("Y", out_elem, list(shape))
+    node = helper.make_node(op, ["X"], ["Y"], name=f"{op.lower()}0")
+    graph = helper.make_graph([node], f"{op}_graph", [x], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _variadic(op: str, elem: int, n: int = 3, shape=(4, 8), opset: int = 21) -> onnx.ModelProto:
+    """`Sum` / `Mean` / `Max` / `Min` with **three** inputs.
+
+    Three, not two. With two inputs a variadic op is indistinguishable from a binary one, so a
+    two-input case would prove the binary path and leave the fold that makes these ops variadic
+    completely unexercised while reporting `MATCH`.
+    """
+    names = [chr(ord("A") + i) for i in range(n)]
+    ins = [helper.make_tensor_value_info(nm, elem, list(shape)) for nm in names]
+    out = helper.make_tensor_value_info("Y", elem, list(shape))
+    node = helper.make_node(op, names, ["Y"], name=f"{op.lower()}0")
+    graph = helper.make_graph([node], f"{op}_graph", ins, [out])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _where(elem: int, shape=(4, 8), opset: int = 21) -> onnx.ModelProto:
+    cond = helper.make_tensor_value_info("C", TensorProto.BOOL, list(shape))
+    x = helper.make_tensor_value_info("X", elem, list(shape))
+    y = helper.make_tensor_value_info("Y", elem, list(shape))
+    out = helper.make_tensor_value_info("Z", elem, list(shape))
+    node = helper.make_node("Where", ["C", "X", "Y"], ["Z"], name="where0")
+    graph = helper.make_graph([node], "Where_graph", [cond, x, y], [out])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _prelu(elem: int, shape=(4, 8), opset: int = 21) -> onnx.ModelProto:
+    """`PRelu` with a **per-channel** slope, which is the form real graphs carry.
+
+    A slope shaped like `X` would exercise the plain elementwise path and leave the broadcast
+    the op exists for untested.
+    """
+    x = helper.make_tensor_value_info("X", elem, list(shape))
+    slope = helper.make_tensor_value_info("slope", elem, [shape[-1]])
+    y = helper.make_tensor_value_info("Y", elem, list(shape))
+    node = helper.make_node("PRelu", ["X", "slope"], ["Y"], name="prelu0")
+    graph = helper.make_graph([node], "PRelu_graph", [x, slope], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _rms_norm(elem: int, shape=(4, 8), opset: int = 23) -> onnx.ModelProto:
+    """`RMSNormalization`, the standard-domain norm the mobius builder emits (opset 23)."""
+    x = helper.make_tensor_value_info("X", elem, list(shape))
+    scale = helper.make_tensor_value_info("scale", elem, [shape[-1]])
+    y = helper.make_tensor_value_info("Y", elem, list(shape))
+    node = helper.make_node("RMSNormalization", ["X", "scale"], ["Y"], name="rmsnorm0", axis=-1)
+    graph = helper.make_graph([node], "RMSNormalization_graph", [x, scale], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _clip(elem: int, opset: int = 21) -> onnx.ModelProto:
     """`Clip` with **both** optional inputs populated.
 
@@ -469,6 +564,58 @@ BUILDERS.update({
     ),
 })
 
+# ---------------------------------------------------------------------------
+# The 22 `Staged(UNEXERCISED)` rows (census: `epctl --dump-capabilities`, 2026-08-02).
+#
+# `UNEXERCISED` means the shader compiles and nothing has ever run it. That is the one staging
+# reason the proof machinery can discharge on its own: the other four — 13 XL kernels whose
+# shaders are still being written, 3 `NEEDS_PARAMS`, 2 `NEEDS_CAST_MATRIX`, 1 `NO_SHADER` — are
+# missing code, not missing evidence, and no proof run can conjure a kernel.
+#
+# Half of these return **bool**, which is why the degeneracy guard in `gen_proof_ledger.py`
+# had to land first. `Equal` on two independent normals is all-False; `IsNaN` on a finite
+# tensor is all-False. Both would have reported `MATCH  worst_rel 0.0` and proven nothing.
+# ---------------------------------------------------------------------------
+
+_BOOL_BINARY = ["And", "Or", "Xor"]                     # bool  , bool   -> bool
+_BITWISE_BINARY = ["BitwiseAnd", "BitwiseOr", "BitwiseXor"]   # i32, i32 -> i32
+_COMPARE = ["Equal", "Greater", "GreaterOrEqual", "Less", "LessOrEqual"]  # f32,f32 -> bool
+_VARIADIC_F32 = ["Sum", "Mean", "Max", "Min"]
+
+for _op in _BOOL_BINARY:
+    BUILDERS[f"{_op.lower()}_bool"] = (
+        lambda o=_op: _typed_binary(o, TensorProto.BOOL, TensorProto.BOOL)
+    )
+for _op in _BITWISE_BINARY:
+    BUILDERS[f"{_op.lower()}_i32"] = (
+        lambda o=_op: _typed_binary(o, TensorProto.INT32, TensorProto.INT32, opset=18)
+    )
+for _op in _COMPARE:
+    BUILDERS[f"{_op.lower()}_f32"] = (
+        lambda o=_op: _typed_binary(o, TensorProto.FLOAT, TensorProto.BOOL)
+    )
+for _op in _VARIADIC_F32:
+    BUILDERS[f"{_op.lower()}_f32_v3"] = (lambda o=_op: _variadic(o, TensorProto.FLOAT))
+    # The two-input form, which is a *different key* — arity rides the last key component, so
+    # `.../n2` can never be returned for an `.../n3` node. That is what makes proving the pair
+    # safe rather than a shortcut: the 3-input lowering is genuinely not written (the translate
+    # handler says so), and the key prevents the 2-input proof from covering for it.
+    BUILDERS[f"{_op.lower()}_f32_v2"] = (lambda o=_op: _variadic(o, TensorProto.FLOAT, n=2))
+
+BUILDERS.update({
+    "not_bool": lambda: _typed_unary("Not", TensorProto.BOOL, TensorProto.BOOL, opset=21),
+    "bitwisenot_i32": lambda: _typed_unary(
+        "BitwiseNot", TensorProto.INT32, TensorProto.INT32, opset=18
+    ),
+    "isnan_f32": lambda: _typed_unary("IsNaN", TensorProto.FLOAT, TensorProto.BOOL),
+    "where_f32": lambda: _where(TensorProto.FLOAT),
+    "prelu_f32": lambda: _prelu(TensorProto.FLOAT),
+    "rmsnormalization_f32": lambda: _rms_norm(TensorProto.FLOAT),
+    # `Swish` is ai.onnx **opset 24**, and the row's window is opset 24 exactly. Whether this
+    # environment can even build it is the case's first question, not an assumption.
+    "swish_f32": lambda: _unary("Swish", TensorProto.FLOAT, opset=24),
+})
+
 # The domain each case must sample from.
 #
 # An op that is a partial function is not exercised by an input distribution that leaves its
@@ -504,6 +651,21 @@ INPUT_DOMAIN.update({
     # Acosh is real only for x >= 1.
     "acosh_f32": "ge_one",
     "pow_f32": "positive",
+})
+
+# The 22 UNEXERCISED cases. Two of the three constraints here exist because the *reference*
+# would otherwise be constant, which is a vacuous comparison rather than a lenient one.
+INPUT_DOMAIN.update({
+    # Full-width integers. The default `[0, 2)` exercises one bit of thirty-two, and a shader
+    # that got the other thirty-one wrong would pass.
+    "bitwiseand_i32": "bits",
+    "bitwiseor_i32": "bits",
+    "bitwisexor_i32": "bits",
+    "bitwisenot_i32": "bits",
+    # `Equal` on two independent normals is all-False: a constant reference.
+    "equal_f32": "discrete",
+    # `IsNaN` on a finite tensor is all-False, likewise.
+    "isnan_f32": "withnan",
 })
 
 def input_domain(name: str) -> str:

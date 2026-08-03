@@ -261,10 +261,58 @@ def test_the_two_arms_disagree(require_vulkan, _ledger_keys):
     )
 
 
+def test_the_degeneracy_guard_fires_and_stays_silent(require_vulkan, tmp_path):
+    """The case-model degeneracy guard, in both polarities, in the lane.
+
+    Twelve of the ops proved on 2026-08-02 return **bool**. A comparison whose CPU reference is
+    constant is vacuous — two constant tensors agree to any tolerance — so `Equal` sampled from
+    two independent normals is all-False and would have reported `MATCH worst_rel 0.0` having
+    tested nothing. That is the cheapest possible way to "prove" twelve ops, and it is the same
+    failure this project has hit seven times.
+
+    Rai's rule is that a control which must be opted into is not in the lane, so this runs here
+    rather than as a script: mutate `equal_f32`'s input domain away from `discrete` and the
+    generator must return `ERROR(case_model_degenerate_reference)`; leave it as shipped and it
+    must return `MATCH`. Both arms, because a guard that always fires is as useless as one that
+    never does.
+    """
+    import gen_proof_ledger as g
+    import ledger_case_models as lcm
+
+    case = "equal_f32"
+    tolerance = (1e-3, 1e-5)
+    model = str(lcm.build(case, tmp_path))
+
+    saved = lcm.INPUT_DOMAIN.pop(case, None)
+    assert saved is not None, (
+        f"ERROR(instrument): {case} declares no input domain, so the mutation below is a no-op "
+        f"and this test would pass without testing anything"
+    )
+    try:
+        keys, _ = g.discover_keys(model, reprove=True)
+        mutated_verdict, mutated_detail = g.prove(model, keys, tolerance)
+    finally:
+        lcm.INPUT_DOMAIN[case] = saved
+
+    keys, _ = g.discover_keys(model, reprove=True)
+    shipped_verdict, shipped_detail = g.prove(model, keys, tolerance)
+
+    assert mutated_verdict == "ERROR", (
+        f"the guard did not fire on a deliberately degenerate reference; it returned "
+        f"{mutated_verdict} {mutated_detail}"
+    )
+    assert mutated_detail.get("instrument") == "case_model_degenerate_reference", (
+        f"the guard fired for some other reason: {mutated_detail}"
+    )
+    assert shipped_verdict == "MATCH", (
+        f"the case as shipped no longer proves; the guard may be firing on everything, which "
+        f"reads the same as a guard that works: {shipped_verdict} {shipped_detail}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The CI check — the second half of RAI-008(a)
 # ---------------------------------------------------------------------------
-
 
 def test_check_ledger_passes_on_the_shipped_artifact():
     """`gen_proof_ledger.py --check` is the CI check RAI-008(a) requires.

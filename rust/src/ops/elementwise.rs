@@ -42,7 +42,7 @@ use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC, dtype_suffix};
 use crate::ops::common::templates;
-use crate::registry::OpStatus::{Live, Staged};
+use crate::registry::OpStatus::{Live, Ready, Staged};
 use crate::registry::{NodeView, OPSET_ANY, OPSET_STD_SWISH, OpSpec, UNEXERCISED};
 
 /// `Equal` compares booleans as well as numbers.
@@ -341,19 +341,19 @@ crate::op_table! {
     "Div",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "div"),    ew_binary_f32,      templates::ew_binary,   Live;
     "Pow",            Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "pow"),    ew_binary_f32,      templates::ew_binary,   Live;
     "Mod",            Ai,     10 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "mod"),    claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
-    "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Xor",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "xor"),    claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "BitwiseAnd",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitand"), claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "BitwiseOr",      Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitor"),  claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "BitwiseXor",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitxor"), claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "And",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "and"),    claim::ew_binary,   templates::ew_binary,   Ready;
+    "Or",             Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "or"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "Xor",            Ai,     7 ..= OPSET_ANY,    BOOL,     kernel!(EwBinary, "xor"),    claim::ew_binary,   templates::ew_binary,   Ready;
+    "BitwiseAnd",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitand"), claim::ew_binary,   templates::ew_binary,   Ready;
+    "BitwiseOr",      Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitor"),  claim::ew_binary,   templates::ew_binary,   Ready;
+    "BitwiseXor",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitxor"), claim::ew_binary,   templates::ew_binary,   Ready;
     "BitShift",       Ai,     11 ..= OPSET_ANY,   INT,      kernel!(EwBinary, "bitshift"), claim::never,     templates::unimplemented, Staged(NEEDS_PARAMS);
-    "Equal",          Ai,     7 ..= OPSET_ANY,    EQ_CAPS,  kernel!(EwBinary, "eq"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Greater",        Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "gt"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "GreaterOrEqual", Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "ge"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "Less",           Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "lt"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "LessOrEqual",    Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "le"),     claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
-    "PRelu",          Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "prelu"),  claim::ew_binary,   templates::ew_binary,   Staged(UNEXERCISED);
+    "Equal",          Ai,     7 ..= OPSET_ANY,    EQ_CAPS,  kernel!(EwBinary, "eq"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "Greater",        Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "gt"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "GreaterOrEqual", Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "ge"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "Less",           Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "lt"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "LessOrEqual",    Ai,     12 ..= OPSET_ANY,   NUMERIC,  kernel!(EwBinary, "le"),     claim::ew_binary,   templates::ew_binary,   Ready;
+    "PRelu",          Ai,     7 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "prelu"),  claim::ew_binary,   templates::ew_binary,   Ready;
 
     // ---------------------------------------------------------------------------------------
     // Unary maths — the longest run of pure table rows in the crate.
@@ -381,9 +381,9 @@ crate::op_table! {
     "Round",          Ai,     11 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "round"),   ew_unary_f32,       templates::ew_unary,    Live;
     "Sign",           Ai,     9 ..= OPSET_ANY,    NUMERIC,  kernel!(EwUnary, "sign"),    ew_unary_f32,       templates::ew_unary,    Live;
     "Erf",            Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "erf"),     ew_unary_f32,       templates::ew_unary,    Live;
-    "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
-    "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Staged(UNEXERCISED);
+    "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Ready;
+    "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Ready;
+    "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Ready;
     "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
     "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), ew_unary_f32,      templates::ew_unary,    Live;
 
@@ -416,15 +416,15 @@ crate::op_table! {
     // ---------------------------------------------------------------------------------------
     // Variadic elementwise — composed from the binary template, never an N-input shader.
     // ---------------------------------------------------------------------------------------
-    "Sum",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
-    "Mean",           Ai,     8 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "mean"),   claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
-    "Max",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "max"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
-    "Min",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "min"),    claim::ew_variadic, templates::ew_variadic, Staged(UNEXERCISED);
+    "Sum",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    claim::ew_variadic, templates::ew_variadic, Ready;
+    "Mean",           Ai,     8 ..= OPSET_ANY,    FLOAT,    kernel!(EwBinary, "mean"),   claim::ew_variadic, templates::ew_variadic, Ready;
+    "Max",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "max"),    claim::ew_variadic, templates::ew_variadic, Ready;
+    "Min",            Ai,     8 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "min"),    claim::ew_variadic, templates::ew_variadic, Ready;
 
     // ---------------------------------------------------------------------------------------
     // Selection and type conversion.
     // ---------------------------------------------------------------------------------------
-    "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Staged(UNEXERCISED);
+    "Where",          Ai,     9 ..= OPSET_ANY,    ANY,      kernel!(EwSelect, "where"),  claim::ew_select,   templates::ew_select,   Ready;
     "Clip",           Ai,     11 ..= OPSET_ANY,   NUMERIC,  kernel!(EwSelect, "clip"),   clip_f32,           templates::ew_clip,     Live;
     "Cast",           Ai,     6 ..= OPSET_ANY,    ANY,      kernel!(None),               claim::cast,        templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
     "CastLike",       Ai,     15 ..= OPSET_ANY,   ANY,      kernel!(None),               claim::never,       templates::unimplemented, Staged(NEEDS_CAST_MATRIX);
@@ -578,15 +578,28 @@ mod tests {
         );
     }
 
-    /// The families that are *not* a one-line body change stay staged.
+    /// The families that are *not* a one-line body change each carry their own evidence.
     ///
     /// Deliberate, and worth a test rather than a comment. `Equal`/`Greater`/… write a bool from a
     /// float input, which is a different store path in the template, not a different expression.
     /// `Sum`/`Mean`/`Max`/`Min` issue several dispatches through `ew_variadic`. `Where` is a third
     /// template. `And`/`Or`/`BitwiseAnd` are not f32 at all, so the narrowing that justifies the
-    /// live rows says nothing about them. Each is a distinct bet and each needs its own evidence.
+    /// live rows says nothing about them. Each is a distinct bet.
+    ///
+    /// 2026-08-02: each of them was taken through a proof run of its own, so the assertion moved
+    /// from *status* to *evidence*. `Staged` was only ever a stand-in for "nothing has measured
+    /// this"; now that a ledger exists, asserting the stand-in would let a row be flipped to
+    /// `Ready` and pass while nothing had measured it — and would fail after a genuine proof,
+    /// which is the wrong way round. The invariant that survives is that none of these families
+    /// rides `add_f32`'s evidence: each names itself in a ledger key.
     #[test]
-    fn families_that_are_not_a_one_line_body_change_are_still_staged() {
+    fn families_that_are_not_a_one_line_body_change_carry_their_own_evidence() {
+        let ledger = crate::registry::ledger();
+        assert!(
+            ledger.faults.is_empty(),
+            "ERROR(instrument): the ledger is faulted, so this test can read nothing: {:?}",
+            ledger.faults
+        );
         for op in [
             "Equal",
             "Greater",
@@ -607,10 +620,43 @@ mod tests {
             let row = OPS.iter().find(|s| s.op_type == op).unwrap();
             assert_eq!(
                 row.status,
-                OpStatus::Staged(UNEXERCISED),
-                "{op} is not a one-line body change away from add_f32; it needs its own evidence"
+                OpStatus::Ready,
+                "{op} has been proven, so its row should be Ready and let the ledger decide"
+            );
+            let needle = format!("::{op}/");
+            assert!(
+                ledger.entries().iter().any(|e| e.key.0.contains(&needle)),
+                "{op} is Ready with no ledger entry naming it; it would be claiming on the \
+                 strength of another op's evidence"
             );
         }
+    }
+
+    /// `Swish` is the one row of the 2026-08-02 batch that stayed staged, and it is a finding.
+    ///
+    /// Its shader `ew_unary_swish_f32.spv` exists and compiles, but the row declines
+    /// `[dtype] Swish is live for no dtype` — from [`EXERCISED`], a **second, hand-written**
+    /// evidence list that gates independently of the proof ledger. So no proof run can reach it:
+    /// the generator offers the key, the claim fails before the ledger is consulted, and the
+    /// case reports no key at all. Adding `("Swish", "f32")` to `EXERCISED` by hand would make
+    /// that list say something no run has shown, which is the thing the ledger exists to stop.
+    ///
+    /// It is not a coverage hole in practice — ORT decomposes opset-24 `Swish` into
+    /// `Sigmoid` + `Mul`, both of which we claim and both of which are proven.
+    #[test]
+    fn swish_stays_staged_because_a_second_evidence_list_gates_it() {
+        let row = OPS.iter().find(|s| s.op_type == "Swish").unwrap();
+        assert_eq!(
+            row.status,
+            OpStatus::Staged(UNEXERCISED),
+            "Swish was reverted to Staged deliberately: EXERCISED vetoes it before the ledger \
+             is consulted, so it cannot be proven without changing that list by hand"
+        );
+        assert!(
+            !EXERCISED.contains(&("Swish", "f32")),
+            "EXERCISED now names Swish/f32. If a run proved it, say which one here; if it was \
+             added by hand, the list is asserting something nothing measured"
+        );
     }
 
     /// `Swish` is new at opset 24 and is the SwiGLU activation `onnxruntime/mobius` emits.
