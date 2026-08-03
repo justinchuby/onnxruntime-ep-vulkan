@@ -1207,11 +1207,15 @@ pub fn record_unproven_decline(key: &str) {
 }
 
 /// The proof keys behind `unproven_declines`, deduplicated, first-seen order.
-pub fn unproven_decline_forms() -> Vec<String> {
-    UNPROVEN_DECLINE_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+///
+/// `None` is a **poisoned lock**, not an empty list. Every one of these accessors used to end
+/// `.unwrap_or_default()`, which turns an instrument that cannot be read into an instrument
+/// reporting nothing — the single-valued-state defect this project keeps finding. The
+/// `*_json` emitters already distinguished the two and said `INSTRUMENT-ERROR`; they were
+/// reading the statics directly, so the accessors beside them were a second, worse reader with
+/// no callers. Now there is one reader and it keeps the distinction.
+pub fn unproven_decline_forms() -> Option<Vec<String>> {
+    UNPROVEN_DECLINE_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// Record that the §8.9.4 escape hatch let one node through, and which key did it.
@@ -1321,51 +1325,49 @@ pub fn record_specialisation_unrecorded(key: &str) {
 }
 
 /// The `SPECIALISATION-DELTA` rows recorded so far, deduplicated, first-seen order.
-pub fn specialisation_delta_forms() -> Vec<String> {
-    SPECIALISATION_DELTA_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn specialisation_delta_forms() -> Option<Vec<String>> {
+    SPECIALISATION_DELTA_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// The forms claimed on an entry that records no specialisation, deduplicated.
-pub fn specialisation_unrecorded_forms() -> Vec<String> {
-    SPECIALISATION_UNRECORDED_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn specialisation_unrecorded_forms() -> Option<Vec<String>> {
+    SPECIALISATION_UNRECORDED_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// The unattributable-device disclosure rows recorded so far, deduplicated, first-seen order.
-pub fn device_unattributed_forms() -> Vec<String> {
-    DEVICE_UNATTRIBUTED_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn device_unattributed_forms() -> Option<Vec<String>> {
+    DEVICE_UNATTRIBUTED_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// The out-of-frame claim rows recorded so far, deduplicated, first-seen order.
-pub fn proven_elsewhere_forms() -> Vec<String> {
-    PROVEN_ELSEWHERE_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn proven_elsewhere_forms() -> Option<Vec<String>> {
+    PROVEN_ELSEWHERE_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// The `SOURCE-COSMETIC` claim rows recorded so far, deduplicated, first-seen order.
-pub fn source_cosmetic_forms() -> Vec<String> {
-    SOURCE_COSMETIC_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn source_cosmetic_forms() -> Option<Vec<String>> {
+    SOURCE_COSMETIC_FORMS.lock().ok().map(|v| v.clone())
 }
 
 /// The `SUBJECT-CHANGED` decline rows recorded so far, deduplicated, first-seen order.
-pub fn subject_changed_forms() -> Vec<String> {
-    SUBJECT_CHANGED_FORMS
-        .lock()
-        .map(|v| v.clone())
-        .unwrap_or_default()
+/// `None` = poisoned lock; see [`unproven_decline_forms`].
+pub fn subject_changed_forms() -> Option<Vec<String>> {
+    SUBJECT_CHANGED_FORMS.lock().ok().map(|v| v.clone())
+}
+
+/// Render one form list as a JSON array fragment, or `"INSTRUMENT-ERROR"` when it cannot be
+/// read. The single place that decides how an unreadable list is spelt.
+fn forms_json(rows: Option<Vec<String>>) -> String {
+    let Some(rows) = rows else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = rows.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
 }
 
 /// Record that an already-proven form was re-offered through the hatch — see
@@ -1455,20 +1457,12 @@ fn unproven_forms_enabled_json() -> String {
 /// A list rather than a count, for the same reason `unproven_forms_enabled` is one: the reader of
 /// a divergence on a new device needs a suspect list, and a count of 97 is not one.
 fn device_unattributed_forms_json() -> String {
-    let Ok(seen) = DEVICE_UNATTRIBUTED_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(device_unattributed_forms())
 }
 
 /// `proven_elsewhere_forms` — one row per form CLAIMED out of frame, carrying its δ set.
 fn proven_elsewhere_forms_json() -> String {
-    let Ok(seen) = PROVEN_ELSEWHERE_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(proven_elsewhere_forms())
 }
 /// `reproof_forms_admitted` — the attribution witness for `gen_proof_ledger.py --reprove`.///
 /// Deliberately *not* folded into `unproven_forms_enabled`: these forms were admitted on
@@ -2123,53 +2117,37 @@ fn shaders_dispatched_json() -> (String, String, String) {
 
 /// `source_cosmetic_forms` — one row per form claimed on an edit that produced identical SPIR-V.
 fn source_cosmetic_forms_json() -> String {
-    let Ok(seen) = SOURCE_COSMETIC_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(source_cosmetic_forms())
 }
 
 /// `unproven_decline_forms` — one row per form declined for want of a proof.
 fn unproven_decline_forms_json() -> String {
-    let Ok(seen) = UNPROVEN_DECLINE_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(unproven_decline_forms())
 }
 
 /// `subject_changed_forms` — one row per form declined because its subject moved.
 fn subject_changed_forms_json() -> String {
-    let Ok(seen) = SUBJECT_CHANGED_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(subject_changed_forms())
 }
 
 /// `specialisation_delta_forms` — one row per form whose proof was taken under a different
 /// runtime specialisation than this run bound (§8.9.20).
 fn specialisation_delta_forms_json() -> String {
-    let Ok(seen) = SPECIALISATION_DELTA_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(specialisation_delta_forms())
 }
 
 /// `specialisation_unrecorded_forms` — one row per form claimed on an entry naming no
 /// specialisation.
 fn specialisation_unrecorded_forms_json() -> String {
-    let Ok(seen) = SPECIALISATION_UNRECORDED_FORMS.lock() else {
-        return "\"INSTRUMENT-ERROR\"".to_string();
-    };
-    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
-    format!("[{}]", body.join(", "))
+    forms_json(specialisation_unrecorded_forms())
 }
 
 /// Current values. Not a consistent cross-counter snapshot; see [`ORD`].
 pub fn snapshot() -> VulkanEpCounters {
+    // One reader for the residency pair. Two `load`s here and two more in `output_residency`
+    // is two readers of one fact, which is how the pair could have been swapped in one of them
+    // and stayed plausible in both.
+    let (outputs_device_resident, outputs_host_resident) = output_residency();
     VulkanEpCounters {
         struct_size: std::mem::size_of::<VulkanEpCounters>() as u32,
         abi_version: COUNTERS_ABI_VERSION,
@@ -2179,8 +2157,8 @@ pub fn snapshot() -> VulkanEpCounters {
         compute_calls: COMPUTE_CALLS.load(ORD),
         compute_failures: COMPUTE_FAILURES.load(ORD),
         device_losses: DEVICE_LOSSES.load(ORD),
-        outputs_device_resident: OUTPUTS_DEVICE_RESIDENT.load(ORD),
-        outputs_host_resident: OUTPUTS_HOST_RESIDENT.load(ORD),
+        outputs_device_resident,
+        outputs_host_resident,
         outputs_device_bound: OUTPUTS_DEVICE_BOUND.load(ORD),
         dispatches_executed: DISPATCHES_EXECUTED.load(ORD),
         viable_islands_retained: VIABLE_ISLANDS_RETAINED.load(ORD),
@@ -3968,7 +3946,7 @@ mod tests {
         let _g = crate::allocator::ledger::test_lock();
 
         reset();
-        assert!(unproven_decline_forms().is_empty());
+        assert_eq!(unproven_decline_forms(), Some(vec![]));
 
         record_unproven_decline("ai.onnx::Cast/6+/f16>f32/ew_cast_f16_f32/static/n1");
         record_unproven_decline("ai.onnx::Cast/6+/f32>f16/ew_cast_f32_f16/static/n1");
@@ -3978,7 +3956,7 @@ mod tests {
 
         assert_eq!(snapshot().unproven_declines, 3);
         assert_eq!(
-            unproven_decline_forms(),
+            unproven_decline_forms().expect("the form list must be readable"),
             vec![
                 "ai.onnx::Cast/6+/f16>f32/ew_cast_f16_f32/static/n1".to_string(),
                 "ai.onnx::Cast/6+/f32>f16/ew_cast_f32_f16/static/n1".to_string(),
@@ -3993,7 +3971,7 @@ mod tests {
 
         reset();
         assert!(
-            unproven_decline_forms().is_empty(),
+            unproven_decline_forms().is_some_and(|v| v.is_empty()),
             "a list that survives reset() reports one session's forms against another's counts"
         );
     }

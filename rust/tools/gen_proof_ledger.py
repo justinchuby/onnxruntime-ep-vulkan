@@ -902,8 +902,29 @@ def write_ledger(out: pathlib.Path, lines: list[str], *, allow_shrink: bool = Fa
     return 0
 
 
-def check_ledger(path: pathlib.Path) -> int:
-    """The regeneration check.  PASS / FAIL(condition) / ERROR(instrument), R13."""
+def check_ledger(
+    path: pathlib.Path,
+    lib: pathlib.Path | None = None,
+    *,
+    allow_unverified_subject: bool = False,
+    expect_rebuild: bool = False,
+) -> int:
+    """The regeneration check.  PASS / FAIL(condition) / ERROR(instrument), R13.
+
+    **`--check` verifies the ledger against the build, not against itself.**
+
+    Everything below the `SELF-CONSISTENCY` banner asks the file about the file: does the header
+    digest match the body, do the counts agree, is every field shaped like a proof. Those
+    questions have exactly one answer available to them and it is never "the shaders moved".
+    Switch's 2026-08-03 case is the demonstration and it is not hypothetical: a shader edit, no
+    regeneration, 32 GQA nodes declined for the whole run, and `PASS` on every invocation.
+
+    `lib` is the artifact. Without one, this returns `ERROR(instrument)` rather than `PASS` —
+    a check that cannot see its subject has not checked anything, and saying `PASS` there is the
+    dangling-reference class: not broken, resolves anyway. `allow_unverified_subject` is the
+    deliberate escape for a lane with no build, and it changes the printed verdict to
+    `PASS(SELF-CONSISTENT-ONLY)` so that nobody can quote it as evidence about a binary.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1025,16 +1046,77 @@ def check_ledger(path: pathlib.Path) -> int:
         for f in failures:
             print(f"  - {f}")
         return 1
-    print(f"PASS: {path} — {len(lines) - 1} entr(ies), digest {digest}")
+
+    # ---------------------------------------------------------------- the build half
+    #
+    # Everything above this line is the file arguing with itself, and it is the half that said
+    # PASS while 32 GQA nodes declined. Nothing below it can be answered from the file.
+    if lib is None:
+        if not allow_unverified_subject:
+            print(
+                f"ERROR(instrument): {path} is self-consistent, but no built EP was found, so "
+                f"nothing here has compared it against the shaders that are about to ship. "
+                f"A ledger can be internally perfect and describe a binary nobody built — that "
+                f"is the only failure it is ever read to exclude. Pass --lib, set "
+                f"ONNXRUNTIME_VULKAN_EP_LIB, or say --allow-unverified-subject and accept that "
+                f"the result is not evidence about any binary."
+            )
+            return 3
+        print(f"PASS(SELF-CONSISTENT-ONLY): {path} — {len(lines) - 1} entr(ies), digest {digest}")
+        print(
+            "  NOTE: no artifact was compared. This says the file agrees with itself and says "
+            "NOTHING about the shaders in any build. Do not quote it as merge evidence."
+        )
+        _print_spec_note(spec_unrecorded, len(lines) - 1)
+        return 0
+
+    stale = check_baked_vs_disk(path, lib)
+    subject_failures, notes = check_against_build(path, lib)
+    build_failures = list(subject_failures)
+    if stale and expect_rebuild:
+        # Immediately after a generation run the two copies differ *by construction* — that is
+        # what writing the file means. Failing here would fail every successful proof run, which
+        # is how a check gets switched off. It is still the loudest line in the output, because
+        # the entries that were just written are not in force and the run that wrote them cannot
+        # make them so.
+        notes.append(
+            "REBUILD REQUIRED — "
+            + " ".join(stale)
+        )
+    else:
+        build_failures = stale + build_failures
+    if build_failures:
+        print(f"FAIL(condition=LEDGER_DOES_NOT_DESCRIBE_THE_BUILD): {path} vs {lib}")
+        for f in build_failures:
+            print(f"  - {f}")
+        # R13: the self-consistency result is still true and is still printed, because a reader
+        # who is told only "FAIL" cannot tell a corrupt file from a stale one, and they have
+        # different repairs.
+        print(
+            f"  (the file is internally consistent: {len(lines) - 1} entr(ies), digest {digest} "
+            f"— that was never the question)"
+        )
+        return 1
+
+    print(
+        f"PASS: {path} — {len(lines) - 1} entr(ies), digest {digest}; "
+        f"every entry's shader_digest agrees with {lib.name}"
+    )
+    for n in notes:
+        print(f"  NOTE: {n}")
+    _print_spec_note(spec_unrecorded, len(lines) - 1)
+    return 0
+
+
+def _print_spec_note(spec_unrecorded: list[str], total: int) -> None:
     if spec_unrecorded:
         # R13: the count is printed on a PASS, because a narrowing nobody is told about is a
         # quiet demotion. These entries prove their form under a specialisation nobody recorded.
         print(
-            f"  NOTE(§8.9.20): {len(spec_unrecorded)} of {len(lines) - 1} entr(ies) record no "
+            f"  NOTE(§8.9.20): {len(spec_unrecorded)} of {total} entr(ies) record no "
             f"spec_digest and prove their form under an UNRECORDED runtime specialisation. "
             f"They claim and are disclosed as SPEC-UNRECORDED; --reprove is the only repair."
         )
-    return 0
 
 
 def _shader_subject(lib: pathlib.Path, stems: list[str]) -> dict:
@@ -1060,6 +1142,188 @@ def _shader_subject(lib: pathlib.Path, stems: list[str]) -> dict:
             k, _, v = line.partition("=")
             out[k.strip()] = v.strip()
     return out
+
+
+def _ledger_identity(lib: pathlib.Path) -> dict:
+    """Ask the built EP which ledger is **baked into it** (`OrtEpVulkanGetLedgerIdentity`).
+
+    Returns `{}` when the export is absent, which is itself the finding: a build older than
+    §8.9.21 cannot be asked, and a caller must say so rather than assume agreement.
+    """
+    import ctypes
+
+    dll = ctypes.CDLL(str(lib))
+    try:
+        fn = dll.OrtEpVulkanGetLedgerIdentity
+    except AttributeError:
+        return {}
+    fn.restype = ctypes.c_size_t
+    fn.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    n = fn(None, 0)
+    buf = ctypes.create_string_buffer(n + 1)
+    fn(buf, n)
+    out = {}
+    for line in buf.raw[:n].decode("utf-8", "replace").splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _find_lib(explicit: str = "") -> pathlib.Path | None:
+    """Locate the built EP. `--lib`, then `ONNXRUNTIME_VULKAN_EP_LIB`, then the target dirs.
+
+    Newest by mtime wins when both profiles are present. Preferring `release` by name was the
+    first thing this function did and it was wrong within one run: a stale release artifact from
+    an earlier session outranked a debug build made thirty seconds ago, and the check reported
+    the *old* binary's disagreement as the ledger's. The build being asked about is always named
+    in the output, so the choice is falsifiable rather than assumed.
+    """
+    if explicit:
+        p = pathlib.Path(explicit)
+        return p if p.is_file() else None
+    cands = list((REPO / "rust" / "target" / "release").glob("*onnxruntime_vulkan_ep*")) + list(
+        (REPO / "rust" / "target" / "debug").glob("*onnxruntime_vulkan_ep*")
+    )
+    cands = [c for c in cands if c.suffix in (".dll", ".so", ".dylib")]
+    if not cands:
+        return None
+    return max(cands, key=lambda c: c.stat().st_mtime)
+
+
+def check_against_build(path: pathlib.Path, lib: pathlib.Path) -> tuple[list[str], list[str]]:
+    """Compare the ledger on disk against the **binary that is about to ship**.
+
+    Returns `(failures, notes)`.
+
+    WHY THIS IS THE HALF THAT WAS MISSING
+    -------------------------------------
+    `check_ledger` below checks the file against *itself*: the header digest against the body, the
+    counts against the lines, every field against a shape. All of that can be true of a ledger
+    that describes a binary nobody built. On 2026-08-03 Switch edited a shader, did not
+    regenerate, and the EP declined all 32 GQA nodes for the whole run — while `--check` printed
+    `PASS: 103 entr(ies)` throughout, because every one of its questions was about the file.
+
+    §8.9.11's comment said agreement is checked "in `registry.rs::parse_ledger`, which is the only
+    place the compiled SPIR-V exists", and that was true of a *running session*. It is not a
+    reason for the gate to be silent: the artifact publishes its own digests through
+    `OrtEpVulkanGetShaderSubject`, so this asks the binary rather than re-deriving anything. There
+    is still exactly one implementation of the hashing rule and it is not this one.
+
+    WHAT FAILS AND WHAT ONLY NOTES
+    ------------------------------
+    This mirrors `registry.rs::subject_verdict` deliberately: the gate must go red exactly where
+    the runtime declines, or it is a second, disagreeing opinion about the same fact.
+
+      * SPIR-V moved (or the build has no such module) → **FAIL**. That is `SUBJECT-CHANGED`,
+        and the runtime declines the form.
+      * source moved, SPIR-V identical → **NOTE**. That is `SOURCE-COSMETIC`; the runtime claims,
+        and so does this.
+      * toolchain differs, SPIR-V identical → **NOTE**, for the same reason.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = [l for l in (x.strip() for x in text.splitlines()) if l and not l.startswith("#")]
+    entries = [json.loads(l) for l in lines[1:]]
+    failures: list[str] = []
+    notes: list[str] = []
+
+    build_toolchain = ""
+    changed: list[str] = []
+    cosmetic: list[str] = []
+    absent: list[str] = []
+    for e in entries:
+        key = e.get("key", "")
+        stems = sorted(e.get("shaders") or [])
+        subject = _shader_subject(lib, stems)
+        build_toolchain = subject.get("toolchain", build_toolchain)
+        recorded = e.get("shader_digest") or ""
+        current = subject.get("spirv_digest")
+        if current is None:
+            absent.append(key)
+            failures.append(
+                f"entry {key} names shaders {stems}, which this build does not embed; the proof "
+                f"has no subject in the artifact that is about to ship"
+            )
+            continue
+        if current != recorded:
+            changed.append(key)
+            failures.append(
+                f"entry {key}: recorded shader_digest {recorded} != this build's {current} "
+                f"(shaders {stems}). The ledger describes a kernel this binary does not contain; "
+                f"the form will decline as SUBJECT-CHANGED at run time. Repair: "
+                f"rust/tools/gen_proof_ledger.py --reprove"
+            )
+            continue
+        recorded_source = e.get("source_digest") or ""
+        current_source = subject.get("source_digest")
+        if recorded_source and current_source and current_source != recorded_source:
+            cosmetic.append(key)
+
+    if cosmetic:
+        notes.append(
+            f"{len(cosmetic)} entr(ies) are SOURCE-COSMETIC against this build — identical "
+            f"SPIR-V, moved source. The runtime claims them and so does this check; they are "
+            f"named so a reader can see the edit landed: {sorted(cosmetic)[:8]}"
+        )
+    if build_toolchain:
+        others = sorted({e.get("toolchain", "") for e in entries} - {"", build_toolchain})
+        if others:
+            notes.append(
+                f"this build's toolchain is {build_toolchain!r}; entries also record {others}. "
+                f"Bytes agree, so the frame difference is disclosed, not failed (§8.9.19)."
+            )
+    if changed or absent:
+        failures.append(
+            f"SUBJECT SUMMARY: {len(changed)} entr(ies) describe moved kernels, "
+            f"{len(absent)} name shaders this build has no module for, "
+            f"{len(entries) - len(changed) - len(absent)} agree"
+        )
+    return failures, notes
+
+
+def check_baked_vs_disk(path: pathlib.Path, lib: pathlib.Path) -> list[str]:
+    """Fail when the ledger baked into `lib` is not the ledger in `path`.
+
+    THE SECOND DEFECT, WHICH IS NOT THE FIRST ONE
+    ---------------------------------------------
+    `registry.rs` takes the ledger by `include_str!`, on purpose: a running process must not be
+    able to have its evidence swapped out from under it. The consequence is that `--reprove`
+    rewrites a file the binary is not reading, prints its success, and changes nothing until
+    somebody happens to rebuild. **A command whose effect is invisible until an unrelated action
+    is taken is a command that will be trusted wrongly.**
+
+    Two repairs were available and only one of them is right.
+
+      (a) Read the ledger from disk at run time. Rejected: that is precisely the property baking
+          exists to deny, and it would let a shipped binary's claims be widened by dropping a file
+          next to it. The threat `check_baked_against_disk` was written for is real.
+      (b) **Refuse when the two copies differ.** Taken. The baking stays; the staleness stops
+          being invisible, because the tool that writes the file is the tool that reports it.
+
+    So the tool's contract is now: the ledger you edited is not in force until you rebuild, and
+    the tool will tell you that instead of letting you find out from a claim count.
+    """
+    ident = _ledger_identity(lib)
+    if not ident:
+        return [
+            f"{lib.name} does not export OrtEpVulkanGetLedgerIdentity, so the ledger baked into "
+            f"it cannot be compared with {path.name}. The binary may be claiming from an older "
+            f"copy of this file and nothing can tell. Rebuild the EP."
+        ]
+    text = path.read_text(encoding="utf-8")
+    lines = [l for l in (x.strip() for x in text.splitlines()) if l and not l.startswith("#")]
+    body = "".join(l + "\n" for l in lines[1:])
+    on_disk = f"{fnv1a64(body.encode('utf-8')):016x}"
+    baked = ident.get("baked_digest", "")
+    if baked == on_disk:
+        return []
+    return [
+        f"the ledger baked into {lib.name} hashes to {baked}; {path.name} on disk hashes to "
+        f"{on_disk} ({ident.get('entry_count', '?')} baked entr(ies) vs {len(lines) - 1} on "
+        f"disk). The binary is claiming from a DIFFERENT ledger than the one being checked — "
+        f"it is `include_str!`d, so the file takes effect only at the next build. "
+        f"Rebuild the EP, then re-run --check."
+    ]
 
 
 def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
@@ -1170,6 +1434,13 @@ def main() -> int:
     )
     ap.add_argument("--check", action="store_true")
     ap.add_argument(
+        "--allow-unverified-subject",
+        action="store_true",
+        help="permit --check to report PASS(SELF-CONSISTENT-ONLY) with no built EP to compare "
+             "against. The verdict text changes so it cannot be quoted as evidence about a "
+             "binary. Without it, a --check that cannot find an artifact is ERROR(instrument).",
+    )
+    ap.add_argument(
         "--backfill-frame",
         action="store_true",
         help="stamp source_digest/toolchain (§8.9.19) onto entries proven before those fields "
@@ -1205,10 +1476,34 @@ def main() -> int:
             lib = str(cands[0])
         return backfill_frame(out, pathlib.Path(lib))
     if args.check:
-        return check_ledger(out)
+        return check_ledger(
+            out,
+            _find_lib(args.lib),
+            allow_unverified_subject=args.allow_unverified_subject,
+        )
 
     if not args.model:
         ap.error("--model is required unless --check")
+
+    # §8.9.21 part 3: `--reprove` rewrites a file the running EP is not reading. Refuse before
+    # spending forty minutes measuring, not after — the *replacement* entries would be written
+    # against this build's shaders and then compared, by the next session, against a binary baked
+    # with the old ones. Refusing here is the whole answer to "a command whose effect is
+    # invisible until an unrelated action is taken".
+    if args.reprove and out.is_file():
+        lib = _find_lib(args.lib)
+        if lib is None:
+            print(
+                "ERROR(instrument): --reprove needs the built EP to re-measure against, and "
+                "none was found. Pass --lib or set ONNXRUNTIME_VULKAN_EP_LIB."
+            )
+            return 3
+        stale = check_baked_vs_disk(out, lib)
+        if stale:
+            print("REFUSING --reprove: the EP is not reading the ledger you are about to rewrite")
+            for s in stale:
+                print(f"  - {s}")
+            return 1
 
     os.environ["ONNXRUNTIME_EP_VULKAN_DEVICE"] = str(args.device)
     import onnxruntime as ort
@@ -1324,7 +1619,14 @@ def main() -> int:
         # A report whose two halves describe different things is the defect, not the format.
         return rc_write
     print(f"[write]    {out}: {len(new_lines)} entr(ies)")
-    rc = check_ledger(out)
+    # §8.9.21: verified against the artifact, with the baked-vs-disk half downgraded to a NOTE —
+    # a run that has just rewritten the file has, by construction, made the binary stale, and
+    # only a rebuild can close that. `--allow-unverified-subject` here because a proof run that
+    # produced entries against a build it then could not locate is a lost artifact, not a lost
+    # proof, and the entries are already on disk.
+    rc = check_ledger(
+        out, _find_lib(args.lib), allow_unverified_subject=True, expect_rebuild=True
+    )
     if rc == 0 and not measured_any:
         # The ledger is valid AND this run measured nothing. Both are true, and reporting only
         # the first is how `PASS` came to sit under `UNMEASURED`.

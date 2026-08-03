@@ -244,12 +244,29 @@ def survey() -> list[dict]:
     rows: list[dict] = []
     for rel in INSTRUMENT_FILES:
         path = SRC / rel
-        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        src_lines = path.read_text(encoding="utf-8").splitlines()
+        for line_no, line in enumerate(src_lines, 1):
             m = FN.match(line)
             if not m:
                 continue
             name = m.group(1)
             if EXEMPT.search(name):
+                continue
+            # A `#[cfg(test)]` item is not production code, wherever it sits in the file.
+            #
+            # The split above is positional — everything before `#[cfg(test)] mod tests` is
+            # "production" — so a test-only helper declared beside the thing it exercises reads
+            # as an instrument with no production caller, forever. `allocator.rs::
+            # clear_session_devices` sat in the baseline on exactly that footing: it is
+            # `#[cfg(test)]`, it is documented "**Tests only**", it has three test callers, and
+            # the screen could not see any of that. Scoring it `uninvoked` is a false positive
+            # by construction, and a screen that mis-scores in the dead direction is the one
+            # thing this file says it must not do.
+            if any(
+                "#[cfg(test)]" in src_lines[i]
+                for i in range(max(0, line_no - 6), line_no - 1)
+                if not src_lines[i].lstrip().startswith("///")
+            ):
                 continue
             call = re.compile(rf"\b{re.escape(name)}\s*\(")
             bare = re.compile(rf"\b{re.escape(name)}\b")

@@ -61,30 +61,6 @@
       "timeout": 600
     },
     {
-      "id": "audit_instruments_census",
-      "cmd": ["python", "rust/tools/audit_instruments.py", "--check"],
-      "expect": "red",
-      "signature": "9 NEW uninvoked instrument(s)",
-      "owner": "mouse",
-      "opened": "2026-08-03",
-      "review_by": "2026-11-01",
-      "reason": "Nine `pub fn` accessors arrived on rust/src/counters.rs and rust/src/allocator.rs with the two-digest schema and NOTHING CALLS ANY OF THEM: clear_session_devices, device_unattributed_forms, output_residency, proven_elsewhere_forms, source_cosmetic_forms, specialisation_delta_forms, specialisation_unrecorded_forms, subject_changed_forms, unproven_decline_forms. The JSON emitter reads the statics directly and never goes through the accessors, so the accessors are a public surface with no reader. This red is TRUE and must not be baselined: audit_instruments.py's own comment says baselining an open item 'would turn an open item into a green tick, which is the one thing a census must never do'. The frame arm of the same check (two undeclared bench/ modules, spirv_simt.py and test_weight_reread.py) WAS mine and is fixed, so the only remaining red is this one.",
-      "closes_when": "Mouse gives each of the nine accessors a caller, or removes it, and then runs `python rust/tools/audit_instruments.py --write-baseline`. At that moment this entry becomes FAIL(condition=stale_acceptance) and must be deleted.",
-      "timeout": 900
-    },
-    {
-      "id": "harness_census_drift",
-      "cmd": ["python", "-m", "pytest", "tests/ops/test_harness_census.py::test_census_baseline_has_no_drift", "-q", "-p", "no:cacheprovider"],
-      "expect": "red",
-      "signature": "FAIL(drift)",
-      "owner": "mouse",
-      "opened": "2026-08-03",
-      "review_by": "2026-11-01",
-      "reason": "The same defect as `audit_instruments_census`, reported a second time through pytest. Registered separately rather than folded in, because they are two different gates reading one condition and folding them would hide the day one of them stops reading it.",
-      "closes_when": "Closes with `audit_instruments_census`, same event, same commit.",
-      "timeout": 900
-    },
-    {
       "id": "kv_caller_bind_reading",
       "cmd": ["python", "-m", "pytest", "tests/ops/test_kv_device_residency.py::test_the_python_binding_hardcodes_gpu_to_cuda", "-q", "-p", "no:cacheprovider"],
       "expect": "red",
@@ -94,18 +70,6 @@
       "review_by": "2026-11-01",
       "reason": "A test whose subject is a TRACKED ARTIFACT, `bench/results/kv_device_residency-callerbind.json`. The test asserts the reading contains 'CUDA' — i.e. that `device_type='gpu'` is routed to CUDA regardless of vendor and a plugin EP is therefore unaddressable by the documented spelling. The artifact was re-taken at 872d739 and now records `by_device_type_and_vendor: 'OK'`. So either the obstacle went away and the assertion is stale, or the re-take was made under conditions that do not answer the same question. Exactly one of the two readings is right and I cannot tell which from the artifact alone — which is why this is an owned red and not a fix.",
       "closes_when": "Switch re-takes the caller-bind reading and either updates the assertion (the obstacle is gone) or restores the reading (the re-take answered a different question). Either way the entry is deleted and the screen reports stale_acceptance until it is.",
-      "timeout": 900
-    },
-    {
-      "id": "proof_ledger_writer_refuses",
-      "cmd": ["python", "-m", "pytest", "tests/ops/test_proof_ledger.py", "-q", "-p", "no:cacheprovider", "-k", "refuses_a_run_with_no_subject_witness or refuses_a_multi_inference_proof_run"],
-      "expect": "red",
-      "signature": "the run reported source_digest=''",
-      "owner": "mouse",
-      "opened": "2026-08-03",
-      "review_by": "2026-11-01",
-      "reason": "Both tests now raise `SystemExit: REFUSING to write an entry ... the run reported source_digest=''` on BOTH platforms. This is a defect INTRODUCED BY the two-digest repair, not one it failed to fix: the writer's new subject-witness precondition fires inside tests that were written to exercise the refusal path with a synthetic run. They are ERROR(instrument) in the R13 lane summary, not FAIL(condition) — a lane with an instrument error is not a lane that ran — and this register keeps that distinction rather than counting them as two more reds.",
-      "closes_when": "Mouse either gives the synthetic runs a source_digest or teaches the writer to distinguish a run with no witness from a run whose witness is deliberately absent. Filed alongside RAI-012.",
       "timeout": 900
     }
   ]
