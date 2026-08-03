@@ -3615,6 +3615,115 @@ without a new field — which is the durable part. But the remaining env switche
 specialization constants, so each needs its own EP-side observable and none of them gets one for
 free here. They stay with Link.
 
+### 7.19 The mirrors are gone, the layout is compiler-checked, and `PROVEN-ELSEWHERE` exists in code (2026-08-02)
+
+Artifacts: `rust/tools/counters_abi.py`, `tests/ops/test_counters_abi_singleton.py`,
+`bench/results/phi35_claim_reading_summary.json`. **No timing figure.**
+
+#### (a) The generator did not stop the second occurrence, and the reason is structural
+
+§7.18 filed `counters_abi.py` as "the real fix, built but not yet installed", and routed the three
+call sites elsewhere because four agents were live in the tree. That reasoning was sound about
+concurrency and wrong about safety: **a generator that co-exists with the thing it replaces is a
+fourth mirror.** Between `a52024f` and `898a2ba` the tool existed and the defect recurred anyway,
+because the tests still read through the hand mirrors. Nothing in the tree made writing a fourth one
+harder than writing the first three.
+
+Verified count, rather than the reported one: **exactly three** offset-keyed mirrors —
+`tests/ops/test_phi35.py` (two) and `tests/ops/test_wiring_census.py` (one). The JSON emission and
+`snapshot()` are name-keyed and compiler-exhaustive, so they are not mirrors and were left alone.
+All three are deleted; every call site reads `counters_abi.read_counters()` or
+`counters_abi.counters_from_dll()`.
+
+`tests/ops/test_counters_abi_singleton.py` fails if any file outside `counters.rs` and
+`counters_abi.py` declares two or more counter field names inside a `_fields_` block. Two, not one:
+a file that *reads* `dispatches_executed` is a consumer, and consumers are the point of having a
+generator; it is the ordered **list** that carries layout. The lane carries both controls — a
+planted mirror it must name, and a consumer it must not — because a detector that has never been
+seen red is indistinguishable from one that cannot go red.
+
+#### (b) The version discipline is computed, not remembered
+
+A version bump is itself hand-maintained, so it fails the same way the mirrors did — `898a2ba` is
+the proof, leaving `COUNTERS_ABI_VERSION` at 4 so that one number named two layouts.
+
+`counters.rs` now declares the field list **once**, inside `counters_abi_struct!`, which emits both
+`VulkanEpCounters` and `COUNTERS_LAYOUT: &[CounterField]` with offsets from `std::mem::offset_of!`.
+`COUNTERS_LAYOUT_HASH` is const-evaluated from that (FNV-1a/64 over `name:offset:size;`), and a
+`const _: () = assert!(…)` fails the **build** unless `(COUNTERS_ABI_VERSION, COUNTERS_LAYOUT_HASH)`
+appears in `COUNTERS_LAYOUT_REGISTRY`. A compile-time assertion rather than a test, because a test
+can be filtered out by the person inserting the field.
+
+The DLL also exports `OrtEpVulkanGetCountersLayout`, a per-field offset manifest — the item my
+2026-08-02 note asked for. A size check says *that* two layouts differ; only the manifest says
+*how*, and `dispatches_executed reads outputs_device_resident` is the sentence a reader of a red
+lane needs. `counters_abi.py` recomputes the same hash from the parsed source, so Python's `repr(C)`
+model and rustc's `offset_of!` cross-check each other; if they ever disagree the struct has padding
+and every ctypes reading in the tree is wrong.
+
+**Acceptance, run and not reasoned about.** The exact `898a2ba` edit — three `u64` fields between
+`device_losses` and `dispatches_executed`, version untouched — applied to `counters.rs`:
+
+```
+error[E0080]: evaluation panicked: VulkanEpCounters changed layout and COUNTERS_LAYOUT_REGISTRY
+does not know about it. The compiler computed COUNTERS_LAYOUT_HASH from the field offsets; it does
+not match the row for COUNTERS_ABI_VERSION. Run `python rust/tools/counters_abi.py` …
+   --> src\counters.rs:709:5
+```
+
+and the tool, run as instructed, prints the repair:
+
+```
+FAIL(layout undeclared): VulkanEpCounters has layout hash 0x9ffcf374a1ca0e2b and
+COUNTERS_LAYOUT_REGISTRY has no such row under COUNTERS_ABI_VERSION=5.
+  Repair: bump COUNTERS_ABI_VERSION to 6 and append
+      (6, 0x9ffcf374a1ca0e2b),
+```
+
+Reverted afterwards. Note what the build error also shows: `E0063 missing fields … in initializer`.
+The struct is exhaustively initialised in five places, so *appends* were already compiler-checked;
+what was never checked was the **meaning** of a version number, and that is what the registry adds.
+
+#### (c) `PROVEN-ELSEWHERE` is code now, and was observed in its positive state
+
+Morpheus's three-state table (§10.0.1 R12) is implemented as `registry::ProofState`:
+
+| state | condition | claimable |
+|---|---|---|
+| `PROVEN` | entry exists, `MATCH`, witnesses present, **and its `device` matches the running device** | yes |
+| `PROVEN-ELSEWHERE` | entry exists and is sound, obtained on another device | yes — counted in `proven_elsewhere_claims`, named in `proven_elsewhere_forms` with `proved-on`/`running-on`, disclosed at session creation |
+| `UNPROVEN` | no entry, or a demoted one | no |
+
+A missing key is `UNPROVEN` and declines; it never falls back to `PROVEN-ELSEWHERE`. The count is
+taken where the claim is granted, not where the lookup happens, so it counts claims rather than
+lookups some later check declined.
+
+Both polarities on real hardware, same build, same ledger (`eb7c4e1f90cd7ec2`, 97 entries):
+
+| reading | device 0 | device 1 |
+|---|---|---|
+| `claimed_nodes` | 355 | 355 |
+| `ledger_hits` | 355 | 355 |
+| `proven_elsewhere_claims` | 0 | 355 |
+| `claimed_forms_proven_elsewhere` | 0 | 8 |
+| `claimed_form_evidence` | `ALL-PROVEN` | `PROVEN-ELSEWHERE-PRESENT` |
+
+The device-1 column is the extrapolation that was already happening and had no word. It is now a
+named suspect list of eight forms — which is Morpheus's own test of whether this is a strengthening.
+
+**The ABI repair changed no reading.** The Phi-3.5 claim probe on device 0 reports the same ledger
+digest, the same 97 entries, the same 355 claimed nodes and the same `ALL-PROVEN` as before the
+change. That is the expected answer here and it is neither a fix nor a new defect: the probe reads
+the **name-keyed JSON** counters file, which was never subject to the offset defect. The offset
+defect lived in the ctypes readers, and there the change *is* a fix — `ledger_entries` read through
+the derived mirror is 97, where the stale mirror read 0.
+
+**Disclosed weakness.** The device identity is the ledger's own `device{N}` label, i.e. a *selector
+index*, and Trinity established that a selector is a request and not an identity — `DEVICE=0` has
+run on `1=NVIDIA`. `device_frame_matches` therefore also accepts a physical-name match against
+`session_devices()`. I deliberately did not add an environment override for the frame: that would be
+a fail-open lever on the one predicate whose failure mode is fail-open.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.

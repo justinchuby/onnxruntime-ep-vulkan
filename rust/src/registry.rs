@@ -1953,8 +1953,28 @@ impl Ledger {
         self.entries.iter().find(|e| &e.key == key)
     }
 
-    /// The non-`MATCH` verdict recorded for this key, if the file carried one.
+    /// What this ledger says about `key` **on the running device** — the three-state answer.
     ///
+    /// A method on the ledger rather than a free function so a test can plant one. A predicate
+    /// that can only be exercised against the baked 97 entries can only ever be seen in the state
+    /// those entries happen to produce.
+    pub fn state_for(&self, key: &ProofKey) -> ProofState {
+        if !self.faults.is_empty() {
+            // R13: the ledger failing is an instrument error, not a finding about this form. It
+            // is `Unproven` because `Unproven` is the safe state, and the *reason* stays
+            // available through `LedgerLookup::Faulted`.
+            return ProofState::Unproven;
+        }
+        match self.get(key) {
+            None => ProofState::Unproven,
+            Some(e) if device_frame_matches(&e.device) => ProofState::Proven,
+            Some(e) => ProofState::ProvenElsewhere {
+                proved_on: e.device.clone(),
+            },
+        }
+    }
+
+    /// The non-`MATCH` verdict recorded for this key, if the file carried one.    ///
     /// Never grants a claim; see [`Ledger::demoted`]. Read by the §8.9.7 session disclosure so a
     /// form the evidence measured and rejected does not read as a form nothing has measured.
     pub fn demotion_for(&self, key: &ProofKey) -> Option<&str> {
@@ -2377,6 +2397,101 @@ pub fn lookup_key(key: &ProofKey) -> LedgerLookup {
     }
 }
 
+/// The device label this run would write into a ledger entry if it proved something now.
+///
+/// It is deliberately **the same string `rust/tools/gen_proof_ledger.py` writes** — `device{N}`
+/// from `ONNXRUNTIME_EP_VULKAN_DEVICE`, defaulting to `device0` — because a comparison between two
+/// labels produced by two different rules is not a comparison. If the generator's rule changes,
+/// this one changes with it or the predicate silently starts answering `PROVEN-ELSEWHERE`
+/// everywhere, which is a fail-*safe* drift but still a wrong reading.
+///
+/// **What this label is not, stated because R12 is the rule this whole mechanism serves.** A
+/// selector index is not a device identity: `device0` on this desk is an RTX 4060 and `device0` on
+/// a CI box is whatever that box enumerates first. So `PROVEN` here means *the same selector on
+/// the same kind of machine*, and the honest strengthening is a physical device name in the entry,
+/// which `gen_proof_ledger.py --device-name` already supports and [`device_frame_matches`] already
+/// accepts. Until every entry carries one, this predicate closes the fail-open Link found — a run
+/// on `DEVICE=1` claiming a `device0` proof in silence — and does not close more than that.
+pub fn running_device_frame() -> String {
+    let selector = std::env::var("ONNXRUNTIME_EP_VULKAN_DEVICE").unwrap_or_default();
+    if selector.is_empty() {
+        return "device0".to_string();
+    }
+    match selector.parse::<usize>() {
+        Ok(idx) => format!("device{idx}"),
+        // A substring pin (`ONNXRUNTIME_EP_VULKAN_DEVICE=Intel`). It does not name an index, so it
+        // cannot be compared to one: it gets its own spelling rather than being rounded to
+        // `device0`, which would claim a same-frame proof on a frame nobody established.
+        Err(_) => format!("device:{selector}"),
+    }
+}
+
+/// Whether a ledger entry's `device` describes the device this run is on.
+///
+/// Two ways to match, and neither is a fallback for the other: the selector label (what the
+/// generator writes by default), or the physical device name (what `--device-name` writes, and
+/// what the session reports once it has opened a device).
+pub fn device_frame_matches(entry_device: &str) -> bool {
+    if entry_device.is_empty() {
+        // An entry with no device names no frame. It is not a match — an unlabelled proof is the
+        // state this ruling exists to stop being read as a local one.
+        return false;
+    }
+    if entry_device == running_device_frame() {
+        return true;
+    }
+    let names = crate::allocator::tally::session_devices();
+    if names == "none" || names == "unknown" {
+        return false;
+    }
+    names
+        .split("; ")
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(_, name)| name == entry_device)
+}
+
+/// What the ledger says about one form **on this device** (§10.0.1 R12, Morpheus's ruling).
+///
+/// Three states, because two could not express what the predicate was doing: an entry proven on
+/// another device was indistinguishable, in every artifact, from one proven here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProofState {
+    /// A sound entry exists and its `device` is this device. Claimable, silently.
+    Proven,
+    /// A sound entry exists and it was obtained on another device. **Claimable on purpose** —
+    /// counted and disclosed, never silent. Carries the device it was proven on, because a
+    /// disclosure that cannot name the frame it extrapolated from is a count, not a disclosure.
+    ProvenElsewhere { proved_on: String },
+    /// No entry, a demoted one, or a ledger that did not parse. Not claimable.
+    ///
+    /// **This is the state a missing key lands in, and it must stay that way.** If an absent key
+    /// could ever produce `ProvenElsewhere`, the extrapolation would be a silent fallback rather
+    /// than a claim on evidence, and the counter that discloses it would be evidence for the
+    /// opposite of what it says.
+    Unproven,
+}
+
+impl ProofState {
+    /// The single token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            ProofState::Proven => "PROVEN",
+            ProofState::ProvenElsewhere { .. } => "PROVEN-ELSEWHERE",
+            ProofState::Unproven => "UNPROVEN",
+        }
+    }
+
+    /// Whether this state admits a claim. `PROVEN-ELSEWHERE` does; that is the ruling.
+    pub fn claimable(&self) -> bool {
+        !matches!(self, ProofState::Unproven)
+    }
+}
+
+/// Resolve one key to its [`ProofState`] on the running device.
+pub fn proof_state(key: &ProofKey) -> ProofState {
+    ledger().state_for(key)
+}
+
 /// The process-wide ledger, parsed once.
 pub fn ledger() -> &'static Ledger {
     static LEDGER: std::sync::OnceLock<Ledger> = std::sync::OnceLock::new();
@@ -2478,7 +2593,12 @@ pub struct ClaimAudit {
     /// Whether the ledger held a proof under that key. Always `false` for a `Staged` row, which
     /// is not a finding about evidence: the lookup does not happen because a row with no kernel
     /// cannot be claimed on any evidence.
+    ///
+    /// **True for `PROVEN-ELSEWHERE` as well as `PROVEN`** — it answers "did evidence admit this",
+    /// which both states do. Read [`ClaimAudit::proof_state`] for which one.
     pub ledger_hit: bool,
+    /// `PROVEN` / `PROVEN-ELSEWHERE` / `UNPROVEN` for this node on **this device** (§10.0.1 R12).
+    pub proof_state: ProofState,
 }
 
 impl ClaimAudit {
@@ -2524,6 +2644,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
             predicate_ok_with_runtime_extents: false,
             proof_key: None,
             ledger_hit: false,
+            proof_state: ProofState::Unproven,
         };
     };
 
@@ -2579,16 +2700,20 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     // `gen_proof_ledger.py` reads to learn which keys a run would need. A key computed only for
     // nodes that already pass is a key that can never bootstrap.
     let proof_key = ProofKey::from_node(view, spec);
-    let ledger_hit = if spec.is_live() {
+    let form_state = if spec.is_live() {
         // RAI-008(d): the outcome, not a `bool`. A miss that was the ledger failing and a miss
         // that was this form being absent are two findings with two different repairs, and the
         // counters artifact has to be able to say which one happened.
         let outcome = lookup_key(&proof_key);
         crate::counters::record_ledger_lookup(outcome);
-        outcome == LedgerLookup::Hit
+        // R12: the entry's frame, read rather than merely recorded. `lookup_key` answers "is
+        // there an entry"; this answers "is there an entry *for this device*", and the two used
+        // to be the same question because nothing consulted `.device`.
+        proof_state(&proof_key)
     } else {
-        false
+        ProofState::Unproven
     };
+    let ledger_hit = form_state.claimable();
     let hatch = if spec.is_live() && !ledger_hit {
         let enabled = claim_unproven_keys().contains(&proof_key);
         if enabled {
@@ -2630,6 +2755,22 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         (spec.claim)(view, spec).is_ok()
     };
 
+    // The `PROVEN-ELSEWHERE` disclosure, recorded **only when the node is actually claimed**.
+    //
+    // Counting it at the lookup instead would count nodes that the ledger admitted and something
+    // else declined, and a disclosure that overstates what was claimed is as wrong as one that
+    // understates it. `failures.is_empty()` is the claim, and this is the last thing before the
+    // audit is returned so that it is read after every check has had its say.
+    if failures.is_empty()
+        && let ProofState::ProvenElsewhere { proved_on } = &form_state
+    {
+        crate::counters::record_proven_elsewhere(
+            &proof_key.0,
+            proved_on,
+            &running_device_frame(),
+        );
+    }
+
     ClaimAudit {
         primary: failures.first().cloned(),
         failures,
@@ -2639,6 +2780,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         predicate_ok_with_runtime_extents,
         proof_key: Some(proof_key),
         ledger_hit,
+        proof_state: form_state,
     }
 }
 
@@ -3339,8 +3481,124 @@ mod tests {
         );
     }
 
-    /// A `DIVERGENT` ledger line is **remembered as a demotion**, not merely rejected.
+    /// **§10.0.1 R12 — all three states, each seen in its own polarity, on one planted ledger.**
     ///
+    /// The defect Link found was not that the wrong answer was returned; it was that `.device` was
+    /// never read, so the predicate had no state in which it could answer differently. A test that
+    /// only asserts `PROVEN` on the baked ledger would reproduce exactly that: one input, one
+    /// answer, no demonstrated sensitivity. So the same ledger is read twice — once with the run
+    /// on the device that proved it and once with the run elsewhere — and the answers must differ.
+    #[test]
+    fn a_proof_is_a_property_of_a_form_on_a_device() {
+        let _guard = crate::allocator::ledger::test_lock();
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        const ABSENT: &str = "ai.onnx::Sub/7+/f32,f32>f32/ew_binary_sub_f32/static/n2";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let absent = ProofKey::validate(ABSENT).expect("valid key");
+
+        let digest_now = shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
+        let ledger_proved_on = |device: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"{device}\",\
+                 \"ort_build\":\"1\",\"tolerance\":\"t\",\"artifact\":\"a\",\
+                 \"generated_at\":\"now\",\"claimed_nodes\":1,\"dispatches_executed\":1,\
+                 \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\"}}"
+            );
+            let digest = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            let header = format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{digest}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}"
+            );
+            parse_ledger(&format!("{header}\n{entry}\n"))
+        };
+
+        let restore = std::env::var("ONNXRUNTIME_EP_VULKAN_DEVICE").ok();
+        // SAFETY: the test lock serialises env mutation across this crate's tests.
+        unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_DEVICE", "0") };
+        assert_eq!(running_device_frame(), "device0");
+
+        let here = ledger_proved_on("device0");
+        assert!(here.faults.is_empty(), "faults: {:?}", here.faults);
+        assert_eq!(
+            here.state_for(&key),
+            ProofState::Proven,
+            "an entry proven on the running device is PROVEN"
+        );
+
+        let there = ledger_proved_on("device1");
+        assert_eq!(
+            there.state_for(&key),
+            ProofState::ProvenElsewhere {
+                proved_on: "device1".to_string()
+            },
+            "an entry proven on another device must say so — this is the fail-open Link found: \
+             before this predicate existed, both readings answered the same"
+        );
+        assert!(
+            there.state_for(&key).claimable(),
+            "PROVEN-ELSEWHERE is claimable on purpose. Refusing it is the horn the ruling rejects"
+        );
+
+        // The condition the ruling is most explicit about: never a silent fallback on a miss.
+        assert_eq!(
+            there.state_for(&absent),
+            ProofState::Unproven,
+            "a key with no entry must be UNPROVEN. If an absent key could reach \
+             PROVEN-ELSEWHERE, the state would be a fallback rather than a claim on evidence"
+        );
+
+        // And the same entry read from the other device: the *run* moved, the file did not.
+        // SAFETY: as above.
+        unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_DEVICE", "1") };
+        assert_eq!(running_device_frame(), "device1");
+        assert_eq!(
+            there.state_for(&key),
+            ProofState::Proven,
+            "the device1 entry is a same-device proof when the run is on device1"
+        );
+        assert_eq!(
+            here.state_for(&key),
+            ProofState::ProvenElsewhere {
+                proved_on: "device0".to_string()
+            },
+            "and the device0 entry is now the extrapolation. Both directions, one ledger each"
+        );
+
+        // An entry with no device names no frame, and an unlabelled proof is not a local one.
+        let unlabelled = ledger_proved_on("");
+        assert!(
+            !matches!(unlabelled.state_for(&key), ProofState::Proven),
+            "an entry with an empty device must not read as proven here"
+        );
+
+        match restore {
+            // SAFETY: the process-wide env lock (`test_lock`) is held for this whole test, so no
+            // other thread in this binary is reading or writing the environment concurrently.
+            Some(v) => unsafe { std::env::set_var("ONNXRUNTIME_EP_VULKAN_DEVICE", v) },
+            // SAFETY: as above.
+            None => unsafe { std::env::remove_var("ONNXRUNTIME_EP_VULKAN_DEVICE") },
+        }
+    }
+
+    /// The token vocabulary is three tokens, and they are distinct.
+    #[test]
+    fn proof_state_tokens_are_three_distinct_strings() {
+        let tokens = [
+            ProofState::Proven.token(),
+            ProofState::ProvenElsewhere {
+                proved_on: "device9".to_string(),
+            }
+            .token(),
+            ProofState::Unproven.token(),
+        ];
+        let mut sorted = tokens.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3, "two states share a spelling: {tokens:?}");
+        assert!(!ProofState::Unproven.claimable());
+    }
+
+    /// A `DIVERGENT` ledger line is **remembered as a demotion**, not merely rejected.    ///
     /// The falsifier for §8.9.7: without `Ledger::demoted`, a form the evidence measured and found
     /// wrong and a form nothing has ever measured both reach the session disclosure as "no proof",
     /// and RAI-008 names those as two states. The digest is deliberately absent from the header so

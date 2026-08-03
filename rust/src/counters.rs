@@ -57,9 +57,15 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// Bumped when a field is **added**. Fields are never removed or reordered, so a reader that
-/// knows version *n* can read the first *n* generations' worth of a version *n+k* struct.
-pub const COUNTERS_ABI_VERSION: u32 = 4;
+/// Bumped when the layout changes in any way — added, inserted, removed, reordered, retyped.
+///
+/// **This number is not trusted to be maintained by hand, because it was not.** `a52024f`
+/// inserted `device_losses` mid-struct and left it at 3; `898a2ba` inserted three more fields and
+/// left it at 4. Both readings were stable, plausible and wrong. The version is now *checked* by
+/// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
+/// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
+/// See [`counters_layout_hash`].
+pub const COUNTERS_ABI_VERSION: u32 = 5;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -433,12 +439,57 @@ pub mod weights {
     }
 }
 
+/// One field of [`VulkanEpCounters`], as the **compiler** sees it.
+///
+/// `offset` is `std::mem::offset_of!`, not a number anyone typed. This is the manifest my
+/// 2026-08-02 note asked for: *"a per-field offset manifest published by the DLL would be strictly
+/// better"*. A reader no longer has to infer a layout from a size — it can be told the layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CounterField {
+    pub name: &'static str,
+    pub offset: usize,
+    pub size: usize,
+}
+
+/// Declare the C ABI struct **and** its offset manifest from one field list.
+///
+/// The list appears exactly once in this repository. Every other reader — Rust, Python, the DLL's
+/// published manifest — is derived from it. A generator that co-exists with the thing it replaces
+/// is another mirror, so there is nothing left to co-exist with.
+macro_rules! counters_abi_struct {
+    (
+        $(#[$sm:meta])*
+        pub struct $sname:ident {
+            $( $(#[$fm:meta])* pub $fname:ident : $fty:ty, )*
+        }
+    ) => {
+        $(#[$sm])*
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+        pub struct $sname {
+            $( $(#[$fm])* pub $fname : $fty, )*
+        }
+
+        /// Every field of [`VulkanEpCounters`] with the offset the compiler assigned it.
+        pub const COUNTERS_LAYOUT: &[CounterField] = &[
+            $( CounterField {
+                name: stringify!($fname),
+                offset: std::mem::offset_of!($sname, $fname),
+                size: std::mem::size_of::<$fty>(),
+            }, )*
+        ];
+    };
+}
+
+counters_abi_struct! {
 /// The wire format of [`snapshot`], and the C ABI `OrtEpVulkanGetExecutionCounters` fills in.
 ///
 /// `#[repr(C)]` with `struct_size` and `abi_version` first so a reader can validate before it
-/// trusts any other field. Growth is additive: append only.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// trusts any other field. Growth is additive: append only — and the append-only rule is now
+/// *enforced by nothing*, deliberately: [`COUNTERS_LAYOUT_HASH`] does not care whether a change
+/// was an append or an insertion, it only requires that the change be declared. An append that
+/// forgets the version bump is caught for the same reason an insertion is, which is the point,
+/// because from a stale reader's side the two are told apart only by luck.
 pub struct VulkanEpCounters {
     /// `size_of::<VulkanEpCounters>()` as the *library* knows it.
     pub struct_size: u32,
@@ -528,7 +579,140 @@ pub struct VulkanEpCounters {
     /// Forms claimed through the `CLAIM_UNPROVEN` escape hatch rather than on evidence.
     /// **ABI version 3.**  Non-zero means this run's claims are not fully backed by proofs.
     pub unproven_forms_claimed: u64,
+    /// Forms claimed on a proof obtained on a **different device** — §10.0.1 R12's
+    /// `PROVEN-ELSEWHERE`. **ABI version 5.**
+    ///
+    /// Claimable on purpose, never silently: this counter is the "counted" half of the ruling,
+    /// and `proven_elsewhere_devices` in the JSON artifact is the "disclosed with the device it
+    /// was proven on" half. Zero on a run whose ledger entries were all obtained here; equal to
+    /// the claimed-form count on a run that is entirely extrapolating. It is **not** a failure
+    /// signal — `epctl --check-counters` does not fail on it — because refusing the extrapolation
+    /// is the horn Morpheus's ruling explicitly rejects.
+    pub proven_elsewhere_claims: u64,
 }
+}
+
+/// The manifest [`crate::OrtEpVulkanGetCountersLayout`] publishes: this build's field offsets.
+///
+/// Derived from [`COUNTERS_LAYOUT`], which the macro derived from the struct, which is the only
+/// declaration of the field list in this repository.
+pub fn layout_manifest() -> String {
+    let mut s = format!(
+        "abi_version={COUNTERS_ABI_VERSION}\nlayout_hash=0x{COUNTERS_LAYOUT_HASH:016x}\nstruct_size={}\n",
+        std::mem::size_of::<VulkanEpCounters>()
+    );
+    for f in COUNTERS_LAYOUT {
+        s.push_str(&format!("{} {} {}\n", f.offset, f.size, f.name));
+    }
+    s
+}
+
+/// FNV-1a/64 over `name:offset:size;` for every field, **computed by the compiler**.///
+/// Not a version number: a version number is hand-maintained and was forgotten twice in one day.
+/// This value cannot be forgotten because nobody writes it — it changes the moment a field is
+/// added, inserted, removed, renamed or retyped, because those are the only inputs.
+///
+/// `rust/tools/counters_abi.py` computes the same value from the same field list, so the Python
+/// side can check a loaded DLL against the checkout that is supposed to have produced it.
+pub const COUNTERS_LAYOUT_HASH: u64 = counters_layout_hash();
+
+/// The const-evaluated hash behind [`COUNTERS_LAYOUT_HASH`].
+pub const fn counters_layout_hash() -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < COUNTERS_LAYOUT.len() {
+        let f = COUNTERS_LAYOUT[i];
+        h = fnv_bytes(h, f.name.as_bytes());
+        h = fnv_bytes(h, b":");
+        h = fnv_usize(h, f.offset);
+        h = fnv_bytes(h, b":");
+        h = fnv_usize(h, f.size);
+        h = fnv_bytes(h, b";");
+        i += 1;
+    }
+    h
+}
+
+const fn fnv_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    let mut i = 0;
+    while i < bytes.len() {
+        h ^= bytes[i] as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    h
+}
+
+const fn fnv_usize(h: u64, mut v: usize) -> u64 {
+    // Decimal, most-significant digit first, so the hash covers the number a human would read.
+    let mut buf = [0u8; 20];
+    let mut n = 0;
+    if v == 0 {
+        return fnv_bytes(h, b"0");
+    }
+    while v > 0 {
+        buf[n] = b'0' + (v % 10) as u8;
+        v /= 10;
+        n += 1;
+    }
+    let mut h = h;
+    while n > 0 {
+        n -= 1;
+        h ^= buf[n] as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Every layout this ABI has ever published, `(version, layout hash)`, append-only.
+///
+/// **This is the version discipline, and the discipline is not "remember to bump".** The compiler
+/// computes the hash; the build fails if the current `(COUNTERS_ABI_VERSION, COUNTERS_LAYOUT_HASH)`
+/// pair is not in this table. Changing the struct therefore has exactly one green path: bump the
+/// version and append the new pair. Leaving the version alone is not a path — the entry for the
+/// old version carries the old hash and no longer matches.
+///
+/// Historic rows are kept rather than replaced so that a reader holding an artifact from an older
+/// build can say *which* layout produced it. Versions 1–3 predate the manifest and are recorded as
+/// `None`: their hashes were never computed, and inventing them now would be a fabricated
+/// measurement (R6).
+pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
+    // v4 = the layout after `898a2ba` inserted the three `outputs_*` fields without a bump. It is
+    // recorded so an artifact written by that build is identifiable, and so the first thing this
+    // mechanism ever did was name the drift it was built for. **Version 4 named two different
+    // layouts** — the one before that insertion and this one — which is exactly the failure this
+    // table makes unrepresentable from here on; the earlier one has no row because it can no
+    // longer be produced.
+    (4, 0xcfc7_f82e_9e62_c5ef),
+    (5, 0x63c4_641d_754f_2443),
+];
+
+/// The build fails here when the struct changed and the version did not.
+///
+/// A `const` assertion rather than a test on purpose: a test can be skipped, filtered, or simply
+/// not run by whoever inserted the field, and the two incidents this mechanism exists for were
+/// both landed by someone who had no reason to think they were touching the counters ABI. There is
+/// no way to produce a DLL whose layout is undeclared.
+const _: () = {
+    let mut i = 0;
+    let mut found = false;
+    while i < COUNTERS_LAYOUT_REGISTRY.len() {
+        let (v, h) = COUNTERS_LAYOUT_REGISTRY[i];
+        if v == COUNTERS_ABI_VERSION && h == COUNTERS_LAYOUT_HASH {
+            found = true;
+        }
+        i += 1;
+    }
+    assert!(
+        found,
+        "VulkanEpCounters changed layout and COUNTERS_LAYOUT_REGISTRY does not know about it. \
+         The compiler computed COUNTERS_LAYOUT_HASH from the field offsets; it does not match the \
+         row for COUNTERS_ABI_VERSION. Run `python rust/tools/counters_abi.py` — it prints the \
+         offset table and the exact row to append — then bump COUNTERS_ABI_VERSION and add \
+         (version, hash) to COUNTERS_LAYOUT_REGISTRY. Do not edit an existing row: the old layout \
+         shipped, and an artifact written by it is still readable only if its row survives."
+    );
+};
 
 static COMPILE_CALLS: AtomicU64 = AtomicU64::new(0);
 static SUBGRAPHS_LIVE: AtomicU64 = AtomicU64::new(0);
@@ -674,6 +858,15 @@ static UNPROVEN_KEYS_USED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// that also fails `epctl --check-counters`.
 static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Forms claimed on a proof obtained on another device (§10.0.1 R12 `PROVEN-ELSEWHERE`).
+static PROVEN_ELSEWHERE_CLAIMS: AtomicU64 = AtomicU64::new(0);
+/// `key proven-on=<device> running-on=<device>` for each distinct extrapolation, first-seen order.
+///
+/// The count says an extrapolation happened; this says what it extrapolated from. Morpheus's
+/// ruling asks for both, and the second is the one that turns a later divergence on a new device
+/// into a named suspect list.
+static PROVEN_ELSEWHERE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
 /// Added 2026-08-02 (Mouse, cross-owner into Tank's file, declared) for §8.9.11. A proof-ledger
@@ -695,6 +888,8 @@ static BROKEN_COMMITMENT_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 static SESSION_DISCLOSURES: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms backed by a ledger `MATCH`.
 static CLAIMED_FORMS_PROVEN: AtomicU64 = AtomicU64::new(0);
+/// Distinct claimed forms admitted on a proof obtained on **another device** (R12).
+static CLAIMED_FORMS_PROVEN_ELSEWHERE: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms with no proof at all.
 static CLAIMED_FORMS_UNMEASURED: AtomicU64 = AtomicU64::new(0);
 /// Distinct claimed forms whose recorded verdict is not `MATCH`.
@@ -907,6 +1102,34 @@ pub fn record_unproven_form_enabled(key: &str) {
     }
 }
 
+/// Record a form claimed on a proof obtained on **another device** (§10.0.1 R12,
+/// `PROVEN-ELSEWHERE`).
+///
+/// `proved_on` is the device the entry names; `running_on` is this run's device. Both are kept,
+/// because the ruling's disclosure obligation is *"named in the run record with the device it was
+/// proven on"* — a count alone says an extrapolation happened, not what it extrapolated from.
+///
+/// Never called on a miss. A key with no entry at all is `UNPROVEN` and declines; if this counter
+/// could move on an absent key, `PROVEN-ELSEWHERE` would be the silent fallback the ruling
+/// forbids, and the counter would be evidence for exactly the wrong proposition.
+pub fn record_proven_elsewhere(key: &str, proved_on: &str, running_on: &str) {
+    PROVEN_ELSEWHERE_CLAIMS.fetch_add(1, ORD);
+    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
+        let row = format!("{key} proven-on={proved_on} running-on={running_on}");
+        if !seen.iter().any(|r| r == &row) {
+            seen.push(row);
+        }
+    }
+}
+
+/// The `PROVEN-ELSEWHERE` disclosure rows recorded so far, deduplicated, in first-seen order.
+pub fn proven_elsewhere_forms() -> Vec<String> {
+    PROVEN_ELSEWHERE_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
 /// Record that an already-proven form was re-offered through the hatch — see
 /// [`REPROOF_KEYS_ADMITTED`]. Counts nothing: it is an attribution witness, not a disclosure.
 pub fn record_reproof_form_admitted(key: &str) {
@@ -986,8 +1209,18 @@ fn unproven_forms_enabled_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
-/// `reproof_forms_admitted` — the attribution witness for `gen_proof_ledger.py --reprove`.
+/// `proven_elsewhere_forms` — one row per distinct extrapolation, naming the device that proved it.
 ///
+/// A list rather than a count, for the same reason `unproven_forms_enabled` is one: the reader of
+/// a divergence on a new device needs a suspect list, and a count of 97 is not one.
+fn proven_elsewhere_forms_json() -> String {
+    let Ok(seen) = PROVEN_ELSEWHERE_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+/// `reproof_forms_admitted` — the attribution witness for `gen_proof_ledger.py --reprove`.///
 /// Deliberately *not* folded into `unproven_forms_enabled`: these forms were admitted on
 /// evidence. `epctl --check-counters` does not fail on this list, because a re-measurement of a
 /// proven form is the ledger working, not the gate being bypassed.
@@ -1093,6 +1326,7 @@ pub fn record_injected_compute_failure() {
 /// out-of-frame by construction. Read it at the instant of the event instead.
 pub fn record_session_disclosure(
     proven: usize,
+    proven_elsewhere: usize,
     unmeasured: usize,
     divergent: usize,
     ledger_faulted: usize,
@@ -1101,6 +1335,7 @@ pub fn record_session_disclosure(
 ) {
     SESSION_DISCLOSURES.fetch_add(1, ORD);
     CLAIMED_FORMS_PROVEN.fetch_add(proven as u64, ORD);
+    CLAIMED_FORMS_PROVEN_ELSEWHERE.fetch_add(proven_elsewhere as u64, ORD);
     CLAIMED_FORMS_UNMEASURED.fetch_add(unmeasured as u64, ORD);
     CLAIMED_FORMS_DIVERGENT.fetch_add(divergent as u64, ORD);
     CLAIMED_FORMS_LEDGER_FAULTED.fetch_add(ledger_faulted as u64, ORD);
@@ -1133,6 +1368,11 @@ fn claimed_form_evidence() -> &'static str {
         "DIVERGENT-PRESENT"
     } else if CLAIMED_FORMS_UNMEASURED.load(ORD) > 0 {
         "UNMEASURED-PRESENT"
+    } else if CLAIMED_FORMS_PROVEN_ELSEWHERE.load(ORD) > 0 {
+        // Below the three findings and above `ALL-PROVEN`, because it is not a fault and it is
+        // not the same statement as a proof obtained here. Its own token, per §10.0: every way of
+        // not knowing gets a name a machine can print.
+        "PROVEN-ELSEWHERE-PRESENT"
     } else if CLAIMED_FORMS_PROVEN.load(ORD) > 0 {
         "ALL-PROVEN"
     } else {
@@ -1382,6 +1622,7 @@ pub fn snapshot() -> VulkanEpCounters {
         unproven_declines: UNPROVEN_DECLINES.load(ORD),
         ledger_entries: crate::registry::ledger().len() as u64,
         unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
+        proven_elsewhere_claims: PROVEN_ELSEWHERE_CLAIMS.load(ORD),
     }
 }
 
@@ -1419,6 +1660,7 @@ pub fn reset() {
     BROKEN_COMMITMENT_WARNS_TO_ORT.store(0, ORD);
     SESSION_DISCLOSURES.store(0, ORD);
     CLAIMED_FORMS_PROVEN.store(0, ORD);
+    CLAIMED_FORMS_PROVEN_ELSEWHERE.store(0, ORD);
     CLAIMED_FORMS_UNMEASURED.store(0, ORD);
     CLAIMED_FORMS_DIVERGENT.store(0, ORD);
     CLAIMED_FORMS_LEDGER_FAULTED.store(0, ORD);
@@ -1431,6 +1673,10 @@ pub fn reset() {
     LEDGER_FAULTED_LOOKUPS.store(0, ORD);
     UNPROVEN_DECLINES.store(0, ORD);
     UNPROVEN_FORMS_CLAIMED.store(0, ORD);
+    PROVEN_ELSEWHERE_CLAIMS.store(0, ORD);
+    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
+        seen.clear();
+    }
     if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
         used.clear();
     }
@@ -1484,6 +1730,9 @@ impl VulkanEpCounters {
              \"unproven_declines\": {},\n  \
              \"unproven_forms_claimed\": {},\n  \
              \"unproven_forms_enabled\": {},\n  \
+             \"proven_elsewhere_claims\": {},\n  \
+             \"proven_elsewhere_forms\": {},\n  \
+             \"running_device_frame\": \"{}\",\n  \
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
              \"shaders_dispatched_digest\": \"{}\",\n  \
@@ -1491,6 +1740,7 @@ impl VulkanEpCounters {
              \"gemv_packed_spec_constant\": \"{}\",\n  \
              \"session_disclosures\": {},\n  \
              \"claimed_forms_proven\": {},\n  \
+             \"claimed_forms_proven_elsewhere\": {},\n  \
              \"claimed_forms_unmeasured\": {},\n  \
              \"claimed_forms_divergent\": {},\n  \
              \"claimed_forms_ledger_faulted\": {},\n  \
@@ -1537,6 +1787,9 @@ impl VulkanEpCounters {
             UNPROVEN_DECLINES.load(ORD),
             UNPROVEN_FORMS_CLAIMED.load(ORD),
             unproven_forms_enabled_json(),
+            PROVEN_ELSEWHERE_CLAIMS.load(ORD),
+            proven_elsewhere_forms_json(),
+            json_escape(&crate::registry::running_device_frame()),
             reproof_forms_admitted_json(),
             shaders_list,
             shaders_digest,
@@ -1544,6 +1797,7 @@ impl VulkanEpCounters {
             gemv_packed_spec_constant(),
             SESSION_DISCLOSURES.load(ORD),
             CLAIMED_FORMS_PROVEN.load(ORD),
+            CLAIMED_FORMS_PROVEN_ELSEWHERE.load(ORD),
             CLAIMED_FORMS_UNMEASURED.load(ORD),
             CLAIMED_FORMS_DIVERGENT.load(ORD),
             CLAIMED_FORMS_LEDGER_FAULTED.load(ORD),
@@ -1835,6 +2089,119 @@ pub unsafe fn fill(out: *mut c_void, out_bytes: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// The layout table is the struct's, field for field, and the offsets are the compiler's.
+    ///
+    /// A cheap test with an expensive job: it is the readable half of the `const` assertion above,
+    /// which can only say "no". If this ever fails, the manifest and the struct have drifted,
+    /// which is not supposed to be expressible — they come from one macro invocation.
+    #[test]
+    fn the_layout_manifest_describes_the_struct_it_is_generated_from() {
+        assert_eq!(
+            COUNTERS_LAYOUT.first().map(|f| f.name),
+            Some("struct_size"),
+            "a reader validates before it reads, so struct_size must be first"
+        );
+        assert_eq!(COUNTERS_LAYOUT.get(1).map(|f| f.name), Some("abi_version"));
+        let total: usize = COUNTERS_LAYOUT.iter().map(|f| f.size).sum();
+        assert_eq!(
+            total,
+            std::mem::size_of::<VulkanEpCounters>(),
+            "the manifest's fields do not add up to the struct: a reader sized from this manifest \
+             would read past the end or stop short"
+        );
+        let mut expected = 0usize;
+        for f in COUNTERS_LAYOUT {
+            assert_eq!(
+                f.offset, expected,
+                "field `{}` is not where a packed repr(C) reader would look for it. This is not a \
+                 bug in the test: it means the struct has padding, and every ctypes mirror in the \
+                 tree computes offsets by summing sizes.",
+                f.name
+            );
+            expected += f.size;
+        }
+    }
+
+    /// The version discipline, exercised in its **positive** state.
+    ///
+    /// My own rule from the elementwise gate: a control never seen in its positive state has no
+    /// demonstrated positive state. The `const` assertion can only be seen failing by breaking the
+    /// build, so the same predicate is evaluated here at runtime against a *simulated* mid-struct
+    /// insertion — the exact shape of `898a2ba` — and must reject it.
+    #[test]
+    fn a_mid_struct_insertion_that_forgets_the_version_is_rejected() {
+        fn hash_of(fields: &[(&str, usize)]) -> u64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut offset = 0usize;
+            for (name, size) in fields {
+                h = fnv_bytes(h, name.as_bytes());
+                h = fnv_bytes(h, b":");
+                h = fnv_usize(h, offset);
+                h = fnv_bytes(h, b":");
+                h = fnv_usize(h, *size);
+                h = fnv_bytes(h, b";");
+                offset += size;
+            }
+            h
+        }
+        fn declared(version: u32, hash: u64) -> bool {
+            COUNTERS_LAYOUT_REGISTRY
+                .iter()
+                .any(|(v, h)| *v == version && *h == hash)
+        }
+
+        // The layout as it actually is, hashed by the same rule the compiler used.
+        let current: Vec<(&str, usize)> =
+            COUNTERS_LAYOUT.iter().map(|f| (f.name, f.size)).collect();
+        assert_eq!(
+            hash_of(&current),
+            COUNTERS_LAYOUT_HASH,
+            "the runtime restatement of the hash disagrees with the const one, so this test is \
+             measuring something other than the mechanism (R13: an instrument error)"
+        );
+        assert!(
+            declared(COUNTERS_ABI_VERSION, COUNTERS_LAYOUT_HASH),
+            "the shipped layout must be declared — this is the const assertion, seen passing"
+        );
+
+        // `898a2ba` again: three u64 fields inserted between `device_losses` and
+        // `dispatches_executed`, version left alone.
+        let at = current
+            .iter()
+            .position(|(n, _)| *n == "device_losses")
+            .expect("device_losses is in the struct") + 1;
+        let mut mutated = current.clone();
+        for (i, name) in ["inserted_a", "inserted_b", "inserted_c"].iter().enumerate() {
+            mutated.insert(at + i, (name, 8));
+        }
+        let mutated_hash = hash_of(&mutated);
+        assert_ne!(
+            mutated_hash, COUNTERS_LAYOUT_HASH,
+            "an insertion must change the hash, or the hash is not a layout hash"
+        );
+        assert!(
+            !declared(COUNTERS_ABI_VERSION, mutated_hash),
+            "a mid-struct insertion that did not bump COUNTERS_ABI_VERSION was accepted. This is \
+             the exact defect (a52024f, 898a2ba) the registry exists to make unbuildable."
+        );
+
+        // And the other polarity that matters: a pure *append* is caught too. From a stale
+        // reader's side an append and an insertion are told apart only by luck, so the mechanism
+        // deliberately does not distinguish them.
+        let mut appended = current.clone();
+        appended.push(("appended_field", 8));
+        assert!(
+            !declared(COUNTERS_ABI_VERSION, hash_of(&appended)),
+            "an append that did not bump the version was accepted"
+        );
+
+        // The green path exists: bump the version, append the row.
+        assert!(
+            !declared(COUNTERS_ABI_VERSION + 1, mutated_hash),
+            "sanity: the mutated layout is not already declared under the next version"
+        );
+    }
+
     /// A lost device must be visible in the artifact a harness reads, not only in a log line.
     ///
     /// Found 2026-08-02: at ctx 512 the device was lost, ORT re-ran the island on the CPU EP,
@@ -2004,7 +2371,7 @@ mod tests {
             "a channel with no traffic is not a proven channel. Got:\n{doc}"
         );
 
-        record_session_disclosure(3, 0, 0, 0, false, false);
+        record_session_disclosure(3, 0, 0, 0, 0, false, false);
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"ALL-PROVEN\""),
@@ -2015,7 +2382,7 @@ mod tests {
             "no WARN was emitted, so the WARN channel is still unexercised. Got:\n{doc}"
         );
 
-        record_session_disclosure(1, 1, 0, 0, true, true);
+        record_session_disclosure(1, 0, 1, 0, 0, true, true);
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"UNMEASURED-PRESENT\""),
@@ -2026,7 +2393,7 @@ mod tests {
             "the WARN reached ORT's logger and must say so. Got:\n{doc}"
         );
 
-        record_session_disclosure(0, 0, 1, 0, true, false);
+        record_session_disclosure(0, 0, 0, 1, 0, true, false);
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"DIVERGENT-PRESENT\""),
@@ -2038,7 +2405,7 @@ mod tests {
              and the artifact must say so. Got:\n{doc}"
         );
 
-        record_session_disclosure(0, 0, 0, 1, true, true);
+        record_session_disclosure(0, 0, 0, 0, 1, true, true);
         let doc = snapshot().to_json();
         assert!(
             doc.contains("\"claimed_form_evidence\": \"LEDGER-FAULTED\""),
@@ -2397,6 +2764,9 @@ mod tests {
     /// declining a graph we ship. This pins that they no longer read alike.
     #[test]
     fn an_override_reports_which_verdict_it_overrode() {
+        // These counters are process-global; without the lock this test races any other test that
+        // calls `reset()`, and it has been observed red on `main` roughly one run in four.
+        let _g = crate::allocator::ledger::test_lock();
         reset();
         let json = snapshot().to_json();
         assert!(
@@ -2443,6 +2813,7 @@ mod tests {
     /// sum them, or mistake an absent override for a zero-valued one.
     #[test]
     fn the_override_reason_is_typed_so_arithmetic_on_it_fails_loudly() {
+        let _g = crate::allocator::ledger::test_lock();
         reset();
         assert_eq!(net_benefit_override_reason(), "UNOBSERVABLE");
         assert!(net_benefit_override_reason().parse::<u64>().is_err());

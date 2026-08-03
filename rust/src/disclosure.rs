@@ -54,8 +54,15 @@ pub const TARGET: &str = "VulkanEP";
 /// as `Unmeasured` would be reporting an instrument error as a detection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormEvidence {
-    /// The ledger holds a `MATCH` for this key, with provenance.
+    /// The ledger holds a `MATCH` for this key, with provenance, **obtained on this device**.
     Proven(&'static LedgerEntry),
+    /// The ledger holds a sound `MATCH` for this key that was obtained on **another device**
+    /// (§10.0.1 R12). Claimable on purpose; disclosed by name, with the device that proved it.
+    ///
+    /// It is a fifth state rather than a flavour of `Proven` for the same reason `Unmeasured` and
+    /// `Divergent` are two: the reader's action differs. A divergence seen here first suspects
+    /// this list.
+    ProvenElsewhere(&'static LedgerEntry),
     /// No entry under this key. Nothing has ever compared this form against the CPU EP.
     Unmeasured,
     /// An entry exists and its verdict is not `MATCH`. Carries that verdict verbatim.
@@ -69,6 +76,7 @@ impl FormEvidence {
     pub fn token(&self) -> &'static str {
         match self {
             FormEvidence::Proven(_) => "PROVEN",
+            FormEvidence::ProvenElsewhere(_) => "PROVEN-ELSEWHERE",
             FormEvidence::Unmeasured => "UNMEASURED",
             FormEvidence::Divergent(_) => "DIVERGENT",
             FormEvidence::LedgerFaulted => "LEDGER-FAULTED",
@@ -76,8 +84,16 @@ impl FormEvidence {
     }
 
     /// Whether this evidence obliges the session-creation WARN.
+    ///
+    /// **`ProvenElsewhere` does not**, and that is the ruling, not a softening: refusing the
+    /// extrapolation is the horn Morpheus's ruling rejects, and a WARN that fires on all 97 forms
+    /// of a routine second-device run is a WARN a reader learns to filter — which would cost the
+    /// `UNMEASURED` WARN its audience. It is disclosed at INFO, by name, with its device.
     pub fn warrants_warning(&self) -> bool {
-        !matches!(self, FormEvidence::Proven(_))
+        !matches!(
+            self,
+            FormEvidence::Proven(_) | FormEvidence::ProvenElsewhere(_)
+        )
     }
 }
 
@@ -93,7 +109,11 @@ pub fn evidence_for(key: &ProofKey) -> FormEvidence {
         return FormEvidence::Divergent(verdict.to_string());
     }
     if let Some(entry) = ledger.get(key) {
-        return FormEvidence::Proven(entry);
+        return if registry::device_frame_matches(&entry.device) {
+            FormEvidence::Proven(entry)
+        } else {
+            FormEvidence::ProvenElsewhere(entry)
+        };
     }
     if !ledger.faults.is_empty() {
         return FormEvidence::LedgerFaulted;
@@ -117,8 +137,10 @@ pub struct ClaimedForm {
 /// What one disclosure did, returned so a test can assert on it without reading a log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Disclosure {
-    /// Distinct claimed forms whose evidence is a ledger `MATCH`.
+    /// Distinct claimed forms whose evidence is a ledger `MATCH` obtained on this device.
     pub proven: usize,
+    /// Distinct claimed forms admitted on a `MATCH` obtained on **another device** (R12).
+    pub proven_elsewhere: usize,
     /// Distinct claimed forms with no evidence at all.
     pub unmeasured: usize,
     /// Distinct claimed forms whose recorded verdict is not `MATCH`.
@@ -152,6 +174,7 @@ impl Disclosure {
 pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
     let mut d = Disclosure::default();
     let mut proven_lines: Vec<String> = Vec::new();
+    let mut elsewhere_lines: Vec<String> = Vec::new();
     let mut unproven_lines: Vec<String> = Vec::new();
 
     for form in forms {
@@ -171,6 +194,20 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                 proven_lines.push(format!(
                     "{} x{} [{}] proven by {} on {} against {}",
                     form.op_type, form.nodes, key.0, entry.artifact, entry.device, entry.ort_build
+                ));
+            }
+            FormEvidence::ProvenElsewhere(entry) => {
+                d.proven_elsewhere += 1;
+                elsewhere_lines.push(format!(
+                    "{} x{} [{}] PROVEN-ELSEWHERE: proven by {} on {} against {}, and this run is \
+                     on {}. The proof is sound and it was not obtained here",
+                    form.op_type,
+                    form.nodes,
+                    key.0,
+                    entry.artifact,
+                    entry.device,
+                    entry.ort_build,
+                    registry::running_device_frame(),
                 ));
             }
             FormEvidence::Unmeasured => {
@@ -210,6 +247,22 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         );
     }
 
+    if !elsewhere_lines.is_empty() {
+        // INFO, not WARN — see `FormEvidence::warrants_warning`. It is its own message rather
+        // than a suffix on the proven one because the two make different statements and a reader
+        // grepping for what this build vouched for *here* must not have to parse a joined list.
+        logging::info_through_ort_sink(
+            TARGET,
+            &format!(
+                "session claims {} form(s) PROVEN-ELSEWHERE [§10.0.1 R12]: {}. These are claimed \
+                 deliberately: the proof establishes the form, and this run extrapolates it to \
+                 this device. Promote them with a per-device ULP check.",
+                elsewhere_lines.len(),
+                elsewhere_lines.join("; ")
+            ),
+        );
+    }
+
     if !unproven_lines.is_empty() {
         // Quote the condition, never only the count (R13). A reader who is told "3 forms are
         // unproven" cannot act; a reader who is told which three, and why each, can.
@@ -228,6 +281,7 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
 
     counters::record_session_disclosure(
         d.proven,
+        d.proven_elsewhere,
         d.unmeasured,
         d.divergent,
         d.ledger_faulted,
@@ -268,7 +322,7 @@ pub fn disclose_zero_claims(
              Leading reasons: {detail}"
         ),
     );
-    counters::record_session_disclosure(0, 0, 0, 0, false, false);
+    counters::record_session_disclosure(0, 0, 0, 0, 0, false, false);
 }
 
 #[cfg(test)]

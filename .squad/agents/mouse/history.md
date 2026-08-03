@@ -160,3 +160,62 @@ dangerous reading is not the wrong-looking one.
 Link. Does generalise across all kernels.
 
 📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it — demonstrated by forcing Intel Iris Xe on Windows, where the EP claims a form "proven ... on device0" though nothing has been proven there. Morpheus has ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — the predicate change (read `device`), the states, and the demotion split are named as still owed to you. Do not resolve by re-proving per platform: that turns the digest into a per-machine fingerprint and `--reprove` without `--append` was destructive at the time it was checked. — decided by Link, Morpheus
+
+---
+
+## 2026-08-02 — The mirrors are gone, the layout is compiler-checked, and `PROVEN-ELSEWHERE` runs
+
+**What I got wrong yesterday, in one sentence.** I built `counters_abi.py`, called it "the real fix,
+built but not yet installed", routed the three call sites to Trinity because four agents were live in
+the tree, and the same defect bit again. The concurrency reasoning was fine. The safety reasoning was
+not: **a generator that co-exists with the thing it replaces is a fourth mirror.** Filing the removal
+of a hazard is not removing the hazard.
+
+**Verified three mirrors, not assumed three** — `test_phi35.py` x2, `test_wiring_census.py` x1. The
+JSON emission and `snapshot()` are name-keyed and compiler-exhaustive, so they are not mirrors.
+All three deleted; `tests/ops/test_counters_abi_singleton.py` fails on any file outside
+`counters.rs` and `counters_abi.py` that declares two or more counter names in a `_fields_` block,
+and carries both a planted-mirror control and a consumer control.
+
+**Version discipline is now computed.** One field list in `counters_abi_struct!`, offsets from
+`offset_of!`, `COUNTERS_LAYOUT_HASH` const-evaluated, and a `const _` assertion that fails the build
+unless `(version, hash)` is in `COUNTERS_LAYOUT_REGISTRY`. A compile-time assertion rather than a
+test, because a test can be filtered out by the person inserting the field. The DLL now also exports
+`OrtEpVulkanGetCountersLayout` — the per-field offset manifest I said last time would be strictly
+better; it is, and it took an afternoon, and I should have built it then.
+
+**Acceptance run, not reasoned about.** Applied the exact `898a2ba` insertion; the build died with
+`error[E0080]` naming the registry and the repair, and the tool exited 1 printing the row to append.
+Reverted.
+
+**Three surprises.**
+
+1. **The build error also showed `E0063 missing fields ... in initializer`.** Appends were *already*
+   compiler-checked, in five places. What was never checked was the meaning of the version number.
+   I had been treating the whole struct as unguarded when only the numbering was.
+2. **The Phi-3.5 probe never saw the defect and never could.** It reads the name-keyed JSON counters
+   file. The offset defect lived only in the ctypes readers. So "the probe reads the same" is not
+   evidence the ABI repair is safe — it is evidence the probe was never in the blast radius. Same
+   digest `eb7c4e1f90cd7ec2`, same 97 entries, same 355 claimed nodes, `ALL-PROVEN`: unchanged, and
+   neither a fix nor a new defect. The fix shows up where the mirrors were: `ledger_entries` reads
+   97 through the derived mirror where the stale one read 0.
+3. **`cargo test --lib` was already racy on `main`** — 2 failures in 6 full runs before I touched
+   anything. Several `counters::tests` call `reset()` on process-global statics without
+   `allocator::ledger::test_lock()`. Added the missing guards; 8/8 clean runs after. Not my defect,
+   but it was quietly eating the signal I needed to trust my own change.
+
+**`PROVEN-ELSEWHERE` observed in both polarities** on real hardware: device 0 `ALL-PROVEN`,
+`proven_elsewhere_claims=0`; device 1 `PROVEN-ELSEWHERE-PRESENT`, 355 claims across 8 named forms,
+each disclosed with `proved-on=device0 running-on=device1`. A missing key stays `UNPROVEN` and
+declines.
+
+**Two honest gaps, recorded rather than papered over.** `docs/DESIGN.md` §8.9 contains no four
+numbered discharge conditions — §8.9 ends at §8.9.7; the ruling is R12 in §10.0.1, and I implemented
+four obligations taken verbatim from its text. And `PROVEN-ELSEWHERE` discloses at INFO rather than
+WARN, because on a non-`device0` run every form is elsewhere-proven and a WARN per form would cost
+the `UNMEASURED` WARN its audience.
+
+**Standing weakness, unmitigated by design.** The device identity is a *selector index*, and Trinity
+established a selector is a request and not an identity. `device_frame_matches` also accepts a
+physical-name match. I did not add an env override for the frame: that is a fail-open lever on the
+one predicate whose failure mode is fail-open.
