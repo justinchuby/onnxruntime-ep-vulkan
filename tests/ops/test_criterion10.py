@@ -83,6 +83,7 @@ import onnxruntime as ort
 import pytest
 
 import _models as m
+import _kv_depth
 from test_phi35 import _ONNX_FILE, _build_phi35_feeds
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -95,6 +96,95 @@ REQUIRED_RUNS = 3
 # R12: a counter whose event cannot occur in its frame reports UNOBSERVABLE, never 0.
 # An empty ULP curve means no output was comparable, not that the residual was zero.
 _ULP_UNOBSERVABLE = "UNOBSERVABLE"
+
+#: Tokens for **which route the 65 outputs took out of the fused island**.  Added
+#: 2026-08-02T23:xx after Switch's `872d739` made a directly-written device buffer
+#: authoritative: the same 65 tensors can now leave the island by two different paths, and
+#: a record that does not say which one it measured describes a run nobody can identify.
+ROUTE_HOST_STAGING = "HOST_STAGING"
+ROUTE_DEVICE_AUTHORITATIVE = "DEVICE_AUTHORITATIVE"
+ROUTE_MIXED = "MIXED"
+#: R12: a property whose witness was never armed is UNOBSERVABLE, never "the default".
+ROUTE_UNOBSERVABLE = "UNOBSERVABLE"
+
+
+def _read_counters_doc(counters_path: "str | None") -> dict | None:
+    if not counters_path or not os.path.exists(str(counters_path)):
+        return None
+    try:
+        doc = json.loads(pathlib.Path(counters_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def device_name_from_run(counters: dict | None) -> str:
+    """The physical device this run used, **as the run itself reported it**.
+
+    ``ONNXRUNTIME_EP_VULKAN_DEVICE`` is a *request*.  The two are demonstrably not the
+    identity on this box — selector 0 reports ``1=NVIDIA GeForce RTX 4060 Laptop GPU`` and
+    selector 1 reports ``0=Intel(R) Iris(R) Xe Graphics``, because the allocator's
+    enumeration index is not the selector — and this project has already published a set
+    of results with the two vendor labels swapped.  Same rule as
+    ``test_validation_phi35.device_name``; kept as a separate reader here because this one
+    must never raise: a criterion-10 record is written on the failing path too, and an
+    instrument outage while *labelling* a reading must not destroy the reading.
+    """
+    raw = (counters or {}).get("alloc_device_frame_session_devices")
+    if not isinstance(raw, str) or "=" not in raw:
+        return ROUTE_UNOBSERVABLE
+    return raw.split("=", 1)[1].strip()
+
+
+def kv_writeback_route(counters: dict | None) -> dict:
+    """Which path the outputs took out of the fused island, with the numbers behind it.
+
+    Criterion 10 says every output agrees with the CPU oracle.  Since `872d739` there are
+    **two** ways an output can reach ORT — the host staging block, and a device buffer the
+    dispatch wrote and which is then marked authoritative — and the criterion is a claim
+    about the run, not about the code.  A run down one route says nothing about the other,
+    so the route belongs in the record beside the verdict.
+
+    The route is read off the counters the run emitted, never off the environment
+    variable that requested it: ``ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1`` is a request, and
+    a request that the EP declined (no VkBuffer for the span, so the bind is refused and
+    unbound) would otherwise be recorded as a route that was never taken.
+    """
+    if counters is None:
+        return {"route": ROUTE_UNOBSERVABLE, "why": "no counters file was armed for this run"}
+    bound = counters.get("outputs_device_bound")
+    host = counters.get("outputs_host_resident")
+    if not isinstance(bound, (int, float)) or not isinstance(host, (int, float)):
+        return {
+            "route": ROUTE_UNOBSERVABLE,
+            "why": "the counters file does not carry outputs_device_bound/outputs_host_resident",
+        }
+    bound, host = int(bound), int(host)
+    if bound and host:
+        route = ROUTE_MIXED
+    elif bound:
+        route = ROUTE_DEVICE_AUTHORITATIVE
+    else:
+        route = ROUTE_HOST_STAGING
+    return {
+        "route": route,
+        "outputs_device_bound": bound,
+        "outputs_host_resident": host,
+        "outputs_device_resident": counters.get("outputs_device_resident"),
+        # Switch split this from `alloc_device_authoritative_spans` because two producers
+        # with different definitions were being summed into one counter.  Grants are the
+        # dynamic sense: one per span a dispatch wrote and which was then made
+        # authoritative.  Absent on any binary built before `872d739`.
+        "alloc_device_authority_grants": counters.get("alloc_device_authority_grants"),
+        "alloc_device_downloads": counters.get("alloc_device_downloads"),
+        "alloc_device_download_bytes": counters.get("alloc_device_download_bytes"),
+        "alloc_device_frame": counters.get("alloc_device_frame"),
+        "why": (
+            "read off the counters the run emitted, not off the env var that requested it: "
+            "a bind the EP declined would otherwise be recorded as a route that was taken"
+        ),
+    }
+
 
 @pytest.fixture(scope="module")
 def phi35_model_path() -> pathlib.Path:
@@ -347,14 +437,33 @@ def test_criterion_10_three_consecutive_attributed_match(
             f"(max is cancellation-sensitive; read the median)"
         )
 
+    _counters_doc = _read_counters_doc(counters_path)
+    _device_name = device_name_from_run(_counters_doc)
+    _route = kv_writeback_route(_counters_doc)
+    # The order the SESSION reports, taken from the session, never from a stored container.
+    _output_names = [o.name for o in vk_sess.get_outputs()]
+    _kv_depth.assert_names_are_session_order(_output_names)
+    _depth_curve = _kv_depth.depth_curve(
+        [c["median_ulp_diff"] for c in per_run_facts[0]["ulp_curve"]], _output_names
+    )
+    _depth_exceedances = _kv_depth.depth_exceedances(_depth_curve)
+
     series = m.AttributedRunSeries.from_runs(
         comparisons=comparisons,
         attribution=attribution,
         artifact=str(phi35_model_path),
         device_index=device_index,
+        device_name=_device_name,
     )
 
     print(f"\n[M0 criterion 10 / Device {device_index}] {phi35_model_path.name}")
+    print(f"    device (read off the run, not the selector): {_device_name}")
+    print(
+        f"    KV writeback route: {_route['route']} "
+        f"(device-bound {_route.get('outputs_device_bound')}, "
+        f"host-resident {_route.get('outputs_host_resident')}, "
+        f"authority grants {_route.get('alloc_device_authority_grants')})"
+    )
     print("\n".join(cross_run_report))
     print(f"    attribution: {series.describe()}")
     print(f"    executed_by: {attribution.executed_by}")
@@ -367,6 +476,20 @@ def test_criterion_10_three_consecutive_attributed_match(
             "evidence.  First few: " + ", ".join(_cov.cpu_only_names[:5])
         )
     print(f"    series verdict: {series.verdict}")
+    print(
+        "    KV residual by LAYER (median ULP, key/value, depth order — not the "
+        "alphabetised order in the record's per_output dict):"
+    )
+    print(
+        "      "
+        + "  ".join(
+            f"L{row['layer']}:{row['key']}/{row['value']}" for row in _depth_curve
+        )
+    )
+    print(
+        f"    layers over the predicted {_kv_depth.LAYER_PREDICTED_CEILING} ULP band: "
+        f"{_depth_exceedances or 'none'}"
+    )
 
     # The verdict travels with the artifact it was measured on, into the counters JSON
     # that epctl, bench/ and the census read.  A caveat in a pytest caveat is not attached
@@ -384,6 +507,28 @@ def test_criterion_10_three_consecutive_attributed_match(
         record = series.to_record()
         record["per_run"] = per_run_facts
         record["required_runs"] = REQUIRED_RUNS
+        record["kv_writeback_route"] = _route
+        # The output order, explicitly, in the order the SESSION reports it.  The record is
+        # written with `sort_keys=True`, so `output_coverage.per_output` is alphabetised —
+        # and this model's session order is *not* its own sort (`present.10` sorts before
+        # `present.2`).  A consumer that took that dict's key order for the output order
+        # would attribute every KV residual to the wrong layer, reproducibly and on every
+        # device.  It nearly did.
+        record["output_names"] = _output_names
+        record["output_names_order"] = (
+            "session order (sess.get_outputs()); NOT the alphabetised key order of "
+            "output_coverage.per_output, which sort_keys=True produces"
+        )
+        record["kv_depth_curve"] = _depth_curve
+        record["kv_depth_exceedances"] = _depth_exceedances
+        record["kv_depth_largest_step"] = {
+            "key": _kv_depth.largest_step(_depth_curve, "key"),
+            "value": _kv_depth.largest_step(_depth_curve, "value"),
+        }
+        record["device_name_source"] = (
+            "counters alloc_device_frame_session_devices — the name the run reported, not "
+            "the ONNXRUNTIME_EP_VULKAN_DEVICE selector that requested it"
+        )
         out = _RESULTS_DIR / f"criterion10-dev{device_index}.json"
         out.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
         print(f"    record: {out}")

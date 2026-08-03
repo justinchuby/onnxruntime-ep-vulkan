@@ -327,3 +327,53 @@ Widening buys coverage by destroying a demonstration. Extent stated in PLATFORMS
 negative control 14/14, 1 LIVE / 3 REPLAYED / 10 PLANTED; `ci/test_lane_checks.py` 5 red -> 3
 (exactly Link's known census reds); lane set **140 PASS / 0 FAIL / 0 ERROR on both devices**.
 Edited two of Link's files as direct consequences -- flagged for his review.
+
+## Round 35 — 2026-08-02 — criterion 10 after `872d739`: the route, the axis, the run that fails it
+
+**What surprised me, first:** the premise I was handed was false. The brief said Switch's
+device-authoritative KV spans had changed the path the 64 KV outputs take under criterion 10.
+The counters said `outputs_device_bound = 0`, `outputs_host_resident = 196`. The new route is
+behind `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`, which ships OFF — a second path appeared **beside**
+the criterion, not underneath it. Forced onto it (`outputs_device_bound = 196`,
+`alloc_device_authority_grants = 196`), all 65 per-output residuals are **identical** on both
+vendors. Switch's writeback delivers the same bytes. The route is now in the record, read off
+the counters the run emitted, never off the env var that requested it: Step 1c unbinds on
+refusal, so a declined bind would be recorded as a route that was taken.
+
+**What surprised me, second, and it nearly cost this project a fictitious defect.** I had a
+drafted finding placing the residual peak at **layer 9** — smooth, plausible, reproducible,
+and identical on both vendors. It was an artifact of reading output names out of the record,
+which is serialised `sort_keys=True`, so `present.10` precedes `present.2`. `present.9.value`
+landed at index 64. Caught by asking the **session** for its order instead of the file:
+`sess.get_outputs()` returns depth order, and this model's true order is not its own sort —
+which is exactly what makes the refusal cheap and sound. Now three defences: names in session
+order in the record, `assert_names_are_session_order()`, and a test that pins both orders
+against the same medians and asserts they reach **different conclusions**.
+R12 one level out: *the frame of a name is the run that produced it, not the file that stored it.*
+
+**The measurement.** 65 compared, 62 within tolerance, 0 degenerate, failing `[0, 63, 64]`,
+per-output verdicts and never an aggregate. Morpheus's prediction — flat at 1–3 ULPs across
+all 32 layers — is **confirmed for the KV cache**: largest layer-to-layer step 1 ULP, no
+discontinuity, only exceedance layer 31 key and value at 4. The step is output 0, the logits,
+at 12 ULP, and it is **not a layer**. "Flat at 1–3 across all 32 layers" is true of the layers
+and false of the model.
+
+**The run that would fail it, named before recording anything as met, and reachable:**
+criterion 10 with `BIND_OUTPUTS=1` on `872d739^` returns all 65 outputs all-zero with
+`cross_run_identical_to_run1 = True` — wrong **and stable**, the exact shape the criterion was
+reopened for. Guard fires: 65 degenerate → `NOT_PERFORMED` → `UNMEASURED`. Unplanted, from the
+project's own history. Caveat stated in the record: logits-only catches this *instance* by luck
+of zeros; the *class* stays covered by the synthetic KV-only plant.
+
+**`atol` untouched. Verdict still `DIVERGENT` on both devices and both routes. Criterion 10
+stays open.** The tolerance is genuinely mis-specified — absolute bound, growing scale — but
+that is a change to what the criterion measures, so it went to Morpheus as an argument with
+old-vs-new and what each catches that the other misses. The moment to fix a tolerance is not
+the moment when fixing it turns two of three failing outputs green, and not by the person whose
+measurement made them red.
+
+**Verified:** 61 GPU-free falsifiers green; five real Phi-3.5 runs (2 routes × 2 devices + the
+pre-Switch control); `cargo test --lib` 492 passed; clippy exit 0, no warnings.
+Reported not fixed: one intermittent `counters::tests` failure (1 in 6, no rust diff on this
+branch, failure text not kept — said so anyway); `bench/phi35.py` still owes Niobe's
+`model_output_equivalence_authority` stamp.
