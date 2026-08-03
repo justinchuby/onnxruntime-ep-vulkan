@@ -262,3 +262,62 @@ on purpose, `CENSUS VERDICT: PASS`.
 📌 Team update (2026-08-02T22:37:04-07:00): Mouse's `mouse-counters-abi-mirror-equality` finding — `device_losses` was inserted mid-struct into `VulkanEpCounters` without a `COUNTERS_ABI_VERSION` bump; three ctypes mirrors kept the old layout, so `dispatches_executed` silently read `device_losses` and `unproven_forms_claimed` silently read `ledger_entries` — nothing went red because the wrong number was stable and plausible. Every counter reading you took through a ctypes mirror between `a52024f` and `4d47362` is suspect. Mirrors must now assert exact `struct_size` equality, not `>=`, and declare the ABI version they were written against. — decided by Mouse
 
 📌 Team update (2026-08-02T22:37:04-07:00): Switch's `KV_CAN_STAY_DEVICE_RESIDENT` ruling settles the question your device-memory re-decision (D-T88) opened: ORT does permit binding an `OrtValue` in this EP's device memory as a graph output, bit-identical to unbound — the project was never in the "ORT forbids it" world. The obstacle was `transfer.rs`'s own host-staging-authoritative invariant, now fixed as a per-span `device_authoritative` flag. Your finding that arming the allocator does not touch the KV round trip (input-only bind, unconditional output readback) stands unchanged — the per-span fix is the output-side seam your writeup named as owed to Switch, and it is now landed. — decided by Switch
+
+## Session 24 — 2026-08-02 — the last six ops, and the disclosure half nobody had ever seen
+
+**The six were seven.** The baseline was taken before anything was touched:
+`tests/ops/test_op_table.py` + `test_elementwise.py` = **7 failed / 120 passed**. Mouse had
+counted two suites separately and `test_clip_no_bounds` lived in the other one. Final:
+**0 failed / 127 passed**. `cargo test --lib` 492 -> **505 / 0**. Clippy clean. Ledger 97 -> **106**.
+
+**IsInf and Clip: a selector is a specialisation constant, not a shader variant.** The record's
+premise was right (a selector is not a float and cannot ride `pc.params`) and its conclusion was
+one step too far. `PipelineKey` is already keyed on `(shader_stem, spec_constants)` and
+`build_spec_info_data` already maps index -> `constant_id`; id 2 was free. Declaring it in the
+shared `indexing.glsl` faulted all 97 ledger entries at once (11 lib tests -> ERROR(instrument)) —
+the digest gate catching a one-line header edit made to serve two modules. Scoped into the two
+templates instead. Commit `164f9bf`.
+
+**I re-derived a repair the record had already argued against, and the record was right.** I
+invented a `SelectorError::NoBoundPresent` refusing a bounds-free `Clip`. It contradicts this
+project's own `Identity` precedent. Reversed to `Ok(0)`.
+
+**Cast is a pair-keyed template** (`Template::EwCast`, 6x6 `pair_stems!`, 36 modules, 11 refused
+for `shaderInt64`). Promotion made **two latent defects reachable**: `claim::cast` declined every
+opset-19+ `Cast` because ORT reports a defaulted `saturate` as present, and `variant_key` rendered
+every `Cast` proof key as `metadata`. A `Staged` row's predicate is never really run — **staging
+hides bugs in the code staging says is ready.** Three test feeds were also vacuous
+(`Cast-fp32-to-i32` truncates ~68% of a standard normal to zero). Commit `26fd93f`.
+
+**Flatten/Reshape were not a defect.** A census of the whole Phi-3.5 graph (363 node records) found
+**zero** of either. The rows asserted an *intention* no version of this EP has ever satisfied.
+`claim=False`, argued, with a named reachable falsifier — not deleted.
+
+**RAI-008(b): the INFO half had never been witnessed.** The probe that certifies the §8.9.7
+disclosure ran ORT at WARNING in *both* arms, where an INFO is invisible by construction. Adding
+arm C found that the EP emits the record, ORT's own `Logger_GetLoggingSeverityLevel` reports a
+threshold that admits it, and the line never appears — at any host severity — while the WARN from
+the identical call site always does. Blindness control rules out the boring explanation. Cause is
+inside ORT 1.28 and is **not** established. The channel counter's tokens are therefore
+`OFFERED_TO_ORT` / `BELOW_ORT_THRESHOLD`, never `ORT_SINK`: **a counter that overstates delivery is
+the defect the counter exists to catch, wearing the counter's badge.**
+
+**The planted control had moved out from under two probes.** `mul_f16_unproven` became
+`sub_f16_dyn_unproven` because populating the op-suite ledger *proved the old plant's form* — the
+control fired on its own author. `probe_session_disclosure.py` said ERROR(instrument) and exited 4;
+`tests/ops/probe_ledger_arms.py` had the same dead name and **exited 0 with the arm errored**. Both
+now import `PLANTED_CONTROL_CASE`; the ledger-arms probe exits 4 on any errored arm.
+**A planted control names a condition the team is working to eliminate — it will rot by design.
+Import the plant; never spell it.**
+
+**An OBSERVED arm for criterion 11(c), supplied not tallied.** `Cast` f32->i32 HITs and f32->u8 is
+KEY-ABSENT on models identical but for the `to` attribute. No plant, no environment variable —
+strictly stronger than the arranged control. Trinity's (c) artifacts refreshed from
+`ledger_entries: 9` to 106. The tally is not the artifact-supplier's.
+
+**ABI caution:** no conclusion in this session rests on a ctypes-mirror counter read from the
+`a52024f`..`4d47362` window. The Phi-3.5 census is a claim log, not a counter struct.
+
+**Decisions:** `tank-selectors-are-spec-constants-not-variants.md`,
+`tank-shape-ops-stay-unregistered.md`, `tank-cast-is-a-pair-keyed-template.md`,
+`tank-the-info-half-was-never-witnessed.md`. Commits `164f9bf`, `26fd93f`, `1578fcd` on `squad/tank`.
