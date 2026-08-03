@@ -1524,3 +1524,158 @@ def test_census_completeness_is_registered_and_does_not_close_row_12():
     c = next(x for x in inv.CHECKS if x.id == "hostfree.census_completeness")
     assert c.falsifier == inv.FALSIFIER_PLANTED
     assert any("row 12" in m or "Trinity" in m for m in c.misses)
+
+
+# ---------------------------------------------------------------------------
+# The device-loss screen (ci/check_device_loss.py)
+# ---------------------------------------------------------------------------
+#
+# A lost device that exits 0 does not look like a failure; it looks like a smaller
+# number. These assert on the printed CONDITION, never on a count of findings (R13).
+
+
+DEVICE_LOSS_LINE = (
+    "[vulkan-ep] ERROR: vkWaitForFences failed: The logical device has been lost.\n"
+)
+
+
+def test_device_loss_screen_is_red_on_the_ep_s_own_text():
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "run.log"
+        log.write_text(DEVICE_LOSS_LINE + "EXIT = 0\n", encoding="utf-8")
+        r = run_check("check_device_loss.py", str(log))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "FAIL(condition=device_lost_reported)" in r.stdout
+        assert "The logical device has been lost" in r.stdout
+
+
+def test_device_loss_screen_does_not_take_exit_zero_as_evidence():
+    """The defect IS an exit status of 0, so accepting one would be accepting the
+    defect as a filter. The screen must say so where a reader will see it."""
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "run.log"
+        log.write_text(DEVICE_LOSS_LINE, encoding="utf-8")
+        r = run_check("check_device_loss.py", str(log))
+        assert "no exit status was read" in r.stdout
+
+
+def test_device_loss_structural_rule_needs_no_log_text_at_all():
+    """An artifact that declared 25 inferences and observed 9 is a short run, whatever
+    the log says or fails to say. This is the arm that survives a log-format change."""
+    with tempfile.TemporaryDirectory() as td:
+        art = Path(td) / "points.json"
+        art.write_text(
+            json.dumps({"points": [{"iters": 25, "compute_calls": 9}]}), encoding="utf-8"
+        )
+        r = run_check("check_device_loss.py", str(art))
+        assert r.returncode == EXIT_FAIL_CONDITION, r.stdout
+        assert "FAIL(condition=observation_ended_early)" in r.stdout
+        assert "observation ending early rather than a smaller quantity" in r.stdout
+
+
+def test_device_loss_screen_does_not_punish_a_producer_who_reported_it():
+    """The same truncation under a rejected_* key is the producer reporting a short
+    run, which is the behaviour we want. Counting it would make the honest artifact
+    look like the defective one."""
+    with tempfile.TemporaryDirectory() as td:
+        art = Path(td) / "points.json"
+        art.write_text(
+            json.dumps({"rejected_points": [{"iters": 25, "compute_calls": 9}]}),
+            encoding="utf-8",
+        )
+        r = run_check("check_device_loss.py", str(art))
+        assert r.returncode == EXIT_PASS, r.stdout
+
+
+def test_device_loss_screen_reports_unobservable_not_clean_for_named_run_conditions():
+    """R12 on the screen's own coverage: three conditions are only decidable on a file
+    the caller declares is one run's evidence, because controls here emit those texts
+    on purpose. A tree scan must say it did not look, not that it found nothing."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "arts"
+        d.mkdir()
+        (d / "a.log").write_text("nothing interesting\n", encoding="utf-8")
+        r = run_check("check_device_loss.py", str(d))
+        assert r.returncode == EXIT_PASS, r.stdout
+        assert "UNOBSERVABLE in this run" in r.stdout
+        assert "runtime_fallback_announced" in r.stdout
+        assert "not zero findings" in r.stdout
+
+
+def test_device_loss_screen_reports_an_outage_rather_than_a_pass_when_given_nothing():
+    r = run_check("check_device_loss.py")
+    assert r.returncode == EXIT_ERROR_INSTRUMENT, r.stdout
+    assert "ERROR(instrument=no_paths_given)" in r.stdout
+    assert "NOT a detection" in r.stdout
+
+
+def test_device_loss_exclusion_list_entries_all_carry_a_reason_owner_and_date():
+    """The exclusion list is the most dangerous file in this check. An entry without a
+    reason, an owner and a date is an exclusion nobody can review."""
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    assert doc["records"], "an empty list would make the exclusion machinery untested"
+    for rec in doc["records"]:
+        for field in ("file", "reason", "owner", "date"):
+            assert rec.get(field), rec
+        assert len(rec["reason"]) > 40, rec["file"]
+
+
+def test_device_loss_exclusion_list_has_no_rot():
+    """An entry naming a file that is gone is an exclusion still in force over nothing
+    anyone can inspect."""
+    doc = json.loads(
+        (CI_DIR / "device_loss_incident_records.json").read_text(encoding="utf-8")
+    )
+    for rec in doc["records"]:
+        assert (REPO_ROOT / rec["file"]).exists(), rec["file"]
+
+
+def test_device_loss_screen_and_fatal_log_have_different_extents():
+    """They are two mechanisms and must never be quoted as one guarantee. The evidence
+    is a file one is red on and the other is green on."""
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "ep_only.log"
+        log.write_text(DEVICE_LOSS_LINE, encoding="utf-8")
+        mine = run_check("check_device_loss.py", str(log))
+        theirs = run_check("check_fatal_log.py", str(log))
+        assert mine.returncode == EXIT_FAIL_CONDITION, mine.stdout
+        assert theirs.returncode != EXIT_FAIL_CONDITION, theirs.stdout
+
+
+def test_the_shared_marker_list_still_misses_the_real_ort_line():
+    """Regression guard on a live finding, and it is written to go GREEN when Trinity
+    fixes _verdict.FATAL_LOG_MARKERS -- it asserts the two agree, so it is red today
+    and stays honest afterwards."""
+    real = "Falling back to ['CPUExecutionProvider'] and retrying."
+    hits = _verdict.find_fatal_log_lines(real + "\n")
+    if not hits:
+        pytest.xfail(
+            "KNOWN, ROUTED TO TRINITY: tests/ops/_verdict.py::FATAL_LOG_MARKERS does not "
+            "match the line ORT actually prints, which is a list repr. "
+            "ci/check_fatal_log.py therefore reads a log announcing the fallback twice "
+            "as clean, and it has been cited as a second witness on that basis. Found "
+            "2026-08-02 by ci/check_device_loss.py on "
+            "bench/results/ctx512_device_lost.txt."
+        )
+
+
+def test_device_loss_checks_are_registered_with_honest_reach():
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    screen = next(x for x in inv.CHECKS if x.id == "hostfree.device_loss_screen")
+    assert screen.falsifier == inv.FALSIFIER_OBSERVED
+    assert any("UNOBSERVABLE" in m for m in screen.misses)
+    assert any("exclusion list" in m for m in screen.misses)
+    control = next(
+        x for x in inv.CHECKS if x.id == "hostfree.device_loss_negative_control"
+    )
+    assert any("PLANTED" in m for m in control.misses)
+    lane = next(x for x in inv.CHECKS if x.id == "device.device_loss_screen")
+    assert any("disable_cpu_ep_fallback" in m for m in lane.misses)
+    spot = next(
+        b for b in inv.BLIND_SPOTS if b.id == "runtime_device_loss_exits_zero"
+    )
+    assert "exits 0" in spot.defect
