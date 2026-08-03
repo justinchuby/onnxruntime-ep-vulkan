@@ -651,12 +651,18 @@ fn output_bind_requested() -> bool {
         ONCE.call_once(|| {
             log::warn!(
                 "[VulkanEP] ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS=1: fused-node outputs are bound \
-                 directly to ORT's device buffers. MEASURED 2026-08-02 on Phi-3.5: this returns \
-                 ALL ZEROS to the caller, because a device-backed span's host staging block is \
-                 authoritative and nothing writes it on this path \
-                 (bench/results/probe_bound_output_correctness.py -> \
-                 HOST_STAGING_IS_AUTHORITATIVE). This flag exists to re-run that falsifier, not \
-                 to make anything faster. Any number taken with it on is wrong."
+                 directly to ORT's device buffers. MEASURED 2026-08-02 on Phi-3.5 and again on \
+                 the GQA evidence case: this returns ALL ZEROS to the caller, because a \
+                 device-backed span's host staging block is authoritative and the device buffer \
+                 is a mirror (transfer.rs), so nothing writes the block the caller reads \
+                 (bench/results/probe_bound_output_correctness.py, \
+                 bench/results/probe_kv_device_residency.py -> \
+                 DEVICE_BOUND_OUTPUTS_RETURN_NOTHING). The obstacle is ours, not ORT's: with \
+                 this flag OFF a caller CAN hold the KV in EP device memory across run() calls \
+                 and get bit-identical results (KV_CAN_STAY_DEVICE_RESIDENT). Closing this \
+                 means making a directly-written device buffer authoritative. Until then the \
+                 flag exists to re-run that falsifier, not to make anything faster. Any number \
+                 taken with it on is wrong."
             );
         });
     }

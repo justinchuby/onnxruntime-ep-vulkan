@@ -1,0 +1,75 @@
+{
+  "probe": "can the KV cache stay device-resident across run() calls?",
+  "ort_version": "1.28.0",
+  "ep_device": {
+    "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "vulkan.device_index": "1",
+    "vulkan.vendor_id": "0x10de"
+  },
+  "case": {
+    "inputs": [
+      "packed_qkv",
+      "past_key",
+      "past_value",
+      "seqlens_k",
+      "total_seq",
+      "cos_cache",
+      "sin_cache"
+    ],
+    "outputs": [
+      "attn_out",
+      "present_key",
+      "present_value"
+    ]
+  },
+  "q1_addressable": {
+    "by_device_type_and_vendor": "RuntimeError: Can't allocate memory on the CUDA device using this package of OnnxRuntime. Please use the CUDA package of OnnxRuntime to use this feature.",
+    "by_ep_memory_info": "OK",
+    "memory_info_name": "VulkanExecutionProvider:1",
+    "memory_info_device_id": 1,
+    "ortvalue_device_name_reported": "cuda",
+    "ortvalue_ptr_nonzero": true
+  },
+  "q2_bind_failures": {},
+  "q3_run_with_device_outputs": "OK",
+  "q4_rel_vs_cpu": {
+    "attn_out": 0.11038780212402344,
+    "present_key": 0.0,
+    "present_value": 0.0
+  },
+  "q4_rel_vs_unbound_ep": {
+    "attn_out": 0.0,
+    "present_key": 0.0,
+    "present_value": 0.0
+  },
+  "q4_unbound_ep_rel_vs_cpu": {
+    "attn_out": 0.11038780212402344,
+    "present_key": 0.0,
+    "present_value": 0.0
+  },
+  "nonzero_elements_returned": {
+    "attn_out": 256,
+    "present_key": 320,
+    "present_value": 320
+  },
+  "counters": {
+    "alloc_device_frame": "SHARED",
+    "alloc_device_authoritative_spans": 1,
+    "dispatches_executed": 2,
+    "compute_calls": 2,
+    "compute_failures": 0,
+    "device_losses": 0,
+    "readback_bytes": null,
+    "outputs_device_resident": 6,
+    "outputs_host_resident": 0,
+    "outputs_device_bound": 0
+  },
+  "verdict": "KV_CAN_STAY_DEVICE_RESIDENT",
+  "why": [
+    "outputs allocated in EP device memory and bound through IOBinding; the run succeeded and every output is bit-identical to the same session run unbound",
+    "the EP's own gap against the CPU reference is unchanged by binding: {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} unbound vs {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} bound. That gap is this case's fp16 arithmetic and is not this probe's question",
+    "ORDERING IS LOAD-BEARING: the session must exist before the allocator is asked for memory. Asking first yields alloc_device_frame = SPLIT-DEVICE \u2014 a second VkDevice no dispatch can bind. This probe refused itself for exactly that on its first run"
+  ],
+  "ep_side_step1c_bind": "0",
+  "lane": "callerbind"
+}
