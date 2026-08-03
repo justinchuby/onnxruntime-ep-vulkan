@@ -1902,6 +1902,130 @@ The census scans `rust/src` and `tests/ops` only — **never `bench/`**. Every i
 
 ---
 
+## 7.18 A lost device that exits 0 — added 2026-08-02T17:20-07:00
+
+### 7.18.1 The incident, and why it is not shaped like a failure
+
+Tank, measuring KV bytes at context 512:
+
+```
+vkWaitForFences failed: The logical device has been lost
+  -> CPU fallback -> EXIT = 0
+```
+
+Both of his ctx-512 points were truncated by it, and the consequence is the part worth keeping:
+
+> **Differencing the two truncated points produced an apparent 6.7% KV saving that was an observation ending early.**
+
+Every other gate on this project keys on something a failure changes — an exit code, a raised exception, a verdict token. A runtime device loss changes none of them. `get_providers()` still lists the EP. The harness still writes its artifact. The status is still 0. What changes is that the run is **shorter**, and a shorter run does not read as a failure. **It reads as a smaller number.** That is the same shape as every silent-CPU-fallback incident this project has had, arriving through a new mechanism, and it is the seventh time this class has cost us something.
+
+The **cause** is Switch's (a TDR on Windows; the GQA attention loop's per-token work grows with context). The **reporting defect is mine and survives the cause being fixed**: a lost device that exits 0 is a lane that cannot go red on a class of failure it will encounter again — different kernel, different context, same silence.
+
+### 7.18.2 The signal, and why not the exit code
+
+**The exit status is not one of this check's inputs**, and the check prints that on every run. The defect *is* an exit status of 0, so accepting one as a filter would be accepting the defect as a filter.
+
+Signals in preference order — Tank named the strong ones himself in `bench/results/ctx512_device_lost.txt`:
+
+| # | Signal | Why it ranks here |
+|---|---|---|
+| 1 | **Structural**: an artifact declared `iters` and observed fewer `compute_calls`; or `uploads == readbacks + 1` | Arithmetic on the producer's own declared expectation. **Needs no text at all** and survives any log-format change, any locale, any vendor. |
+| 2 | The EP's device-lost text (`The logical device has been lost`) | Vulkan **specification** language. Stable across vendors and driver versions in a way no ORT-internal wording is. |
+| 3 | The EP's `BROKEN COMMITMENT` warning | Ours, so we control it — but it only prints when the EP notices. |
+| 4 | ORT's fallback announcement, matched form-tolerantly | Weakest: it is ORT's internal wording and it has already changed under us — see §7.18.5. |
+
+There is **no EP counter for device loss**. A monotonic `device_lost` counter would outrank every signal above, because it is structural *and* produced by the mechanism itself. That is an ask to Tank, not a change I make in his file.
+
+### 7.18.3 Both arms, with the provenance stated
+
+`ci/negative_control_device_loss.py`, 14 arms, all fired 2026-08-02. It counts **LIVE / REPLAYED / PLANTED** separately rather than reporting "14 passed", because those three are worth very different amounts and "we tested it" reads the same either way:
+
+| Provenance | Count | What it evidences |
+|---|---|---|
+| **LIVE** | 1 | The screen found it on a file it was not written against, unprompted. |
+| **REPLAYED** | 3 | A real artifact of a real incident, fed to the screen after the fact. Proves it *would have* caught it; does not prove it fires during a live run. |
+| **PLANTED** | 10 | Synthesised to exercise one rule. Proves the rule fires. Proves nothing about whether the rule's event occurs in reality. |
+
+**The red arm on Tank's artifact is REPLAYED, not live.** I did not induce a device loss. Inducing one deliberately is the arm still owed, and it would also answer a question the replay cannot: whether the EP's own text prints at all when the loss is hard enough.
+
+**The LIVE arm is the one to read.** Pointed at the whole artifact tree, the screen found a **second, earlier device loss nobody had reported**:
+
+```
+bench/results/trinity-suite-dev1.log:3216
+[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost.
+  2026-07-31 10:00:04 — Intel Iris Xe (device 1) — inside tests/ops/test_phi35.py:784
+```
+
+It surfaced only as an `AssertionError` and was read as a test failure, not as a lost device. It is **two days earlier than Tank's**, on a **different device**, through a **different call site** (`vkQueueSubmit`, not `vkWaitForFences`). So the class is not one kernel's bug, and the reporting defect outlives whatever Switch fixes. That is the argument for this check made by the check rather than by me.
+
+The green arm is the whole tree today: **284 artifacts read, PASS**, with what it did *not* look at printed in the same breath.
+
+### 7.18.4 Three mechanisms, three extents — never one guarantee
+
+The coordinator's instinct was right and this is the ruling. These are **three mechanisms with different reaches**, and per Morpheus's rule that *two gates whose extents differ compose to the weaker extent and the stronger name*, they must be stated separately and never quoted as "we detect CPU fallback."
+
+| Mechanism | Owner | Sees | Cannot see |
+|---|---|---|---|
+| `disable_cpu_ep_fallback` | Trinity | **Planned** fallback: ORT refuses at **session creation** when nodes are assigned to CPU | Anything after session creation. A device loss happens on a session ORT has **already accepted**, so this flag is structurally blind to it. |
+| `ci/check_fatal_log.py` | Link | **ORT's announcement** of a runtime fallback, in a **captured** log with stderr merged | A loss the EP reports and ORT never announces; any artifact that is not the teed pytest log; and — today — the real line itself (§7.18.5). |
+| `ci/check_device_loss.py` | Link | **The loss itself** in any artifact, plus **structural truncation** with no text at all | A loss whose run wrote nothing; truncation in an artifact that declared no expectation (158 of 284 artifacts were undecidable); and three of its five conditions unless the caller **names** the file as one run's evidence. |
+
+That last row's middle column is why a second check exists at all rather than a wider marker list, and the difference is **demonstrated, not argued**: the negative control feeds both checks a log carrying the EP's device-lost line and no ORT announcement. `check_device_loss` is red on it; `check_fatal_log` is green on it. If that arm ever stops firing, the second check has no reach of its own and should be deleted.
+
+### 7.18.5 A finding in the shared vocabulary, routed not patched
+
+While checking whether the existing instrument would have caught Tank's run:
+
+```
+tests/ops/_verdict.py::FATAL_LOG_MARKERS =
+    ("Falling back to CPUExecutionProvider", "Falling back to CPU")
+
+what ORT actually prints:
+    Falling back to ['CPUExecutionProvider'] and retrying.
+```
+
+A **list repr**. Neither marker is a substring of it. `_verdict.find_fatal_log_lines()` returns **0 hits** on Tank's artifact, which announces the fallback **twice** — so `ci/check_fatal_log.py` reads that log as clean, and it has been cited as the second witness for five incidents on the strength of a match it cannot make.
+
+`_verdict.py` is Trinity's, and it is **the** vocabulary. So this is reported as its own condition (`marker_list_misses_real_line`) and **not patched here**: a second private marker list in `ci/` is exactly the two-dialect failure the shared vocabulary exists to prevent. The regression test in `ci/test_lane_checks.py` is written to go green when she fixes it.
+
+### 7.18.6 The exclusion list, which is the dangerous part
+
+`bench/results/ctx512_device_lost.txt` **is** a device loss — kept deliberately, as evidence. A directory scan finds it forever, so without an exclusion the check would be permanently red on an incident it did not catch live, and **a check that is always red is a check nobody reads**. `ci/device_loss_incident_records.json` names seven such files. It is an exclusion list, so it is the easiest place on this project to hide a defect. Four rules hold it honest:
+
+1. Every entry carries a **reason, an owner and a date**. An exclusion nobody can review is an exclusion nobody will review.
+2. Excluded files are **counted and printed in the frame line of every run**, with their reasons. The check never says "clean" without also saying what it did not look at.
+3. An entry naming a file that **no longer exists** is itself a finding (`incident_record_rot`), never a silent no-op.
+4. Naming a file **explicitly** on the command line overrides its exclusion, so the red arm can still read them.
+
+Two entries carry work owed rather than history: `kv_bytes_earned-armed.json` and `-default.json` still hold the truncated ctx-512 points under `points`. The roll-up correctly moved them to `rejected_points`; **the per-lane files did not**, so a reader differencing those files gets the ghost 6.7% again. Owed by Tank.
+
+The screen also does **not** count a truncated point the producer already filed under `rejected_*`. Counting it would make the one artifact that did the right thing look like the defective one.
+
+### 7.18.7 What this does not claim
+
+* It says nothing about whether the EP **executed**. A run can be device-loss-free and still be pure CPU output; that is the verdict's job.
+* Its structural rule is **UNOBSERVABLE**, not clean, on any artifact that declares no expectation.
+* Three of its conditions are **UNOBSERVABLE on a tree scan** by design, because controls on this project emit those texts on purpose; they need `--run-log`.
+* It reads artifacts **after the fact**. It cannot stop a run, and it cannot see a loss whose run wrote nothing.
+
+### 7.18.8 `GEMV_PACKED` — investigated, not closed
+
+Of the twelve instrumented Rust surfaces no census mechanism observed, `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` was the one to take first, because it **selects a different kernel** and so every kernel observation we hold is silent about which kernel it observed.
+
+What the source says: the switch resolves in `rust/src/ops/quant.rs:345` and enters the program as **specialization constant index 5** of `q_gemv.comp`; `rust/src/vk/pipeline.rs` keys its pipeline cache on `(shader_stem, spec_constants)`. So the two settings genuinely are two different pipelines.
+
+What no artifact says: **nothing we produce records a pipeline key or a spec constant.** `trace.rs`'s `Phase` set has `PipelineLookup` with no payload, and no counter names the variant.
+
+So the obvious closure is wrong. A host-side record of the env var is **not** an R10 observation: R10 asks for an artifact the mechanism **produced** whose content varies with its input, and reading `env::var` from a harness proves nothing about what the EP did with it. Trinity's new `flag_frame` mechanism can **disclose** the nine switches, which is real and worth having, but disclosure is not the falsifier. **Closing this requires an EP-side change** — emit the resolved `gemv_packed` value, or the spec-constant vector, into the trace or the counters. Owed by Mouse (`ops/`) with Switch (`vk/pipeline.rs`). Recorded in `ci/census_surface_map.json`.
+
+### 7.18.9 A sixth union defect, caught by my own screen
+
+Merging `main` at `4b5d46b` turned `ci/check_census_completeness.py` red: Trinity had added two census mechanisms (`ep_entrypoints`, `flag_frame`) for which my surface map had **no name claim**. Both branches were complete; the composition was not. Sixth instance of the shape, and the first one caught by an instrument rather than by a person. Name claims added, with `name_verified: false` and a real discriminator each — including the one for `flag_frame` that records why `GEMV_PACKED` cannot have a discrimination arm today.
+
+I have **not** re-dispositioned the twelve gaps on the strength of Trinity's declaration. A mechanism that is declared is not a mechanism that has been observed, and moving a gap to `censused` because the code now names it would be closing a row on a declaration — the exact mistake Morpheus ruled against on criterion 11. They move when an artifact shows them covered.
+
+---
+
 *This document is owned by Link. Updates to the support matrix should be proposed via the decisions inbox and reviewed by the Fact Checker before merging. Hardware additions require CI coverage or explicit "untested" marking.*
 
 ---
