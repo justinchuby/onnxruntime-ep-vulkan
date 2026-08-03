@@ -223,6 +223,13 @@ pub struct Disclosure {
     /// the §8.9.7 pair was delivered, so an artifact could show a fully-proven claim set and say
     /// nothing about whether the user was ever told what proved it.
     pub info_reached_ort_sink: bool,
+    /// Whether that INFO was accepted by this process's stderr — the channel a console user
+    /// actually reads, and on a default host (ORT threshold WARNING) the only one that carries an
+    /// INFO at all.
+    pub info_reached_stderr: bool,
+    /// Whether the INFO was re-emitted at WARNING because no quiet channel would carry it, and
+    /// that re-emission was delivered.
+    pub info_escalated: bool,
 }
 
 impl Disclosure {
@@ -406,13 +413,18 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
     // moving is worse than no counter, because it is cited as evidence.
     //
     // `info_reached_ort_sink` is ANDed, not ORed: it is a claim about the disclosure's INFO half
-    // as a whole, and one record the threshold refused makes that half incomplete.
-    let mut note_info = |reached: bool| {
-        d.info_reached_ort_sink = if d.informed {
-            d.info_reached_ort_sink && reached
+    // as a whole, and one record the threshold refused makes that half incomplete. The stderr arm
+    // is ANDed for the same reason, and it is tracked *separately* rather than folded into one
+    // "delivered" bit, because RAI-013's question is which channel the user was on: on a default
+    // host ORT's threshold refuses every INFO and the console carries all of them.
+    let mut note_info = |reached: logging::Delivery| {
+        if d.informed {
+            d.info_reached_ort_sink &= reached.ort_sink;
+            d.info_reached_stderr &= reached.stderr;
         } else {
-            reached
-        };
+            d.info_reached_ort_sink = reached.ort_sink;
+            d.info_reached_stderr = reached.stderr;
+        }
         d.informed = true;
     };
 
@@ -459,8 +471,10 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
             unproven_lines.join("; ")
         );
         d.warned = true;
-        d.warn_reached_ort_sink = logging::warn_through_ort_sink(TARGET, &msg);
+        d.warn_reached_ort_sink = logging::warn_through_ort_sink(TARGET, &msg).ort_sink;
     }
+
+    d.info_escalated = escalate_if_unreachable(&d);
 
     counters::record_session_disclosure(counters::SessionDisclosure {
         proven: d.proven,
@@ -472,8 +486,64 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
         warn_reached_ort_sink: d.warn_reached_ort_sink,
         informed: d.informed,
         info_reached_ort_sink: d.info_reached_ort_sink,
+        info_reached_stderr: d.info_reached_stderr,
+        info_escalated: d.info_escalated,
     });
     d
+}
+
+/// Re-emit the INFO half at WARNING when **no channel a default user sees** would carry it.
+///
+/// §8.9.7 obliges a disclosure, and a disclosure is a statement about a channel, not about an
+/// emission. Three candidate repairs were weighed against Rai's standard — what the user is
+/// entitled to be told — rather than against convenience:
+///
+/// * **Raise our severity unconditionally.** Rejected. A routine, fully-proof-backed claim set is
+///   not a warning, and a WARNING that fires on every healthy session is how the WARNING that
+///   matters — the `UNMEASURED` one twenty lines up — stops being read. The user is entitled to be
+///   told *accurately*, and severity is part of the message.
+/// * **A session-completion summary.** Rejected. The moment the user is entitled to the
+///   disclosure is before the session runs anything, and a session that claims a form it cannot
+///   back is by construction one that may not reach completion — the same R12 argument that makes
+///   `record_session_disclosure` write the artifact at the event instead of at shutdown.
+/// * **A returnable field on the EP.** Kept as a *supplement*, not as this repair: it discharges
+///   nothing for a user who does not know to ask, and "we would have told you if you had called
+///   the getter" is not a disclosure.
+///
+/// So the disclosure travels quietly on the two channels a default user has (ORT's sink when its
+/// threshold admits INFO; this process's stderr, which is what a console renders), and escalates
+/// to WARNING **only when both have been measured to refuse it** — loud exactly once the quiet
+/// path is known to have failed, and never on the strength of a severity constant.
+///
+/// Returns whether the escalation was needed *and* delivered. `false` covers both "not needed"
+/// and "needed and also lost"; those are separated by `session_disclosure_info_reach`, which is
+/// the observable that has to carry the distinction.
+fn escalate_if_unreachable(d: &Disclosure) -> bool {
+    if !d.informed || d.info_reached_ort_sink || d.info_reached_stderr {
+        return false;
+    }
+    // The escalation can fail too, and it is counted when it does — the same generalisation the
+    // INFO's own channel counter rests on: this stays a statement about the channel rather than
+    // about which branch happened to run.
+    logging::warn_through_ort_sink(
+        TARGET,
+        &format!(
+            "[§8.9.7] the session-creation disclosure could not be delivered on any channel a \
+             user sees by default: ORT's own severity threshold excludes INFO and this process's \
+             stderr refused the write. It is repeated here at WARNING because that is the one \
+             severity ORT's default threshold admits — this is a delivery escalation, not a fault \
+             report. This session claims {} proof-backed form(s) ({} proven here, {} \
+             device-unattributed, {} proven elsewhere) and {} form(s) whose correctness is not \
+             established. Set the host logger to INFO, or read \
+             ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE, for the per-form detail.",
+            d.proof_backed(),
+            d.proven,
+            d.device_unattributed,
+            d.proven_elsewhere,
+            d.unproven()
+        ),
+    )
+    .reached_user()
 }
 
 /// Disclose that this session claimed **nothing**, and the leading reasons why.
@@ -510,9 +580,22 @@ pub fn disclose_zero_claims(
     // A zero-claims disclosure is still a disclosure, and it is still an INFO whose delivery can
     // fail. Counting it keeps `session_disclosure_info_channel` a statement about the channel
     // rather than about which branch of §8.9.7 happened to run.
+    let d = Disclosure {
+        informed: true,
+        info_reached_ort_sink: reached.ort_sink,
+        info_reached_stderr: reached.stderr,
+        ..Default::default()
+    };
+    // The zero-claims branch is the one a user is *most* likely to be looking for an explanation
+    // from — they asked for a Vulkan EP and got none of it — so it escalates on the same terms as
+    // the claiming branch. Escalating one branch and not the other would make the reach token a
+    // statement about which branch ran.
+    let escalated = escalate_if_unreachable(&d);
     counters::record_session_disclosure(counters::SessionDisclosure {
         informed: true,
-        info_reached_ort_sink: reached,
+        info_reached_ort_sink: reached.ort_sink,
+        info_reached_stderr: reached.stderr,
+        info_escalated: escalated,
         ..Default::default()
     });
 }
@@ -702,6 +785,101 @@ mod tests {
             doc.contains(expected),
             "the counters artifact and the disclosure disagree about the INFO half; expected \
              {expected} for {d:?}. Got:\n{doc}"
+        );
+    }
+
+    /// **The positive state, observed rather than inferred (RAI-013).**
+    ///
+    /// A disclosure that reaches the user must be observable *as having reached them*. Before
+    /// this, the only delivery observable was ORT's threshold, which refuses every INFO on a
+    /// default host — so `to_ort_sink: 0` was the whole account of a channel that had in fact
+    /// printed the disclosure to the console the user was looking at. This arm asserts the state
+    /// a real default run is in: no ORT sink attached (the test harness), stderr accepted it,
+    /// and the artifact says `REACHED_USER`.
+    #[test]
+    fn a_proof_backed_disclosure_reaches_the_user_on_some_channel() {
+        let _g = test_lock();
+        counters::reset();
+        let d = disclose_claimed_forms(&[ClaimedForm {
+            op_type: "ai.onnx::Proven".to_string(),
+            key: Some(a_proven_key()),
+            nodes: 7,
+        }]);
+        assert!(
+            d.informed && d.proof_backed() >= 1,
+            "ERROR(instrument): no INFO was due, so reachability is unobservable here: {d:?}"
+        );
+        assert!(
+            d.info_reached_stderr,
+            "the §8.9.7 INFO was emitted and this process's stderr did not accept it, on a box \
+             whose stderr works. That is the channel a console user reads: {d:?}"
+        );
+        assert!(
+            !d.info_escalated,
+            "the disclosure escalated to WARNING on a run where a quiet channel carried it. The \
+             escalation must fire only after quiet delivery has been *measured* to fail, or every \
+             healthy session emits a warning and the warning that matters stops being read: {d:?}"
+        );
+        let doc = counters::snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_reach\": \"REACHED_USER\""),
+            "the disclosure reached the user and the artifact does not say so:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_infos_to_stderr\": 1,")
+                && doc.contains("\"session_disclosure_stderr_failures\": 0,"),
+            "the per-channel counts do not agree with the reach token:\n{doc}"
+        );
+    }
+
+    /// The escalation's own two polarities, driven through the function that decides it.
+    ///
+    /// The firing state cannot be produced in-process — `stderr_fault_active` is a `OnceLock` over
+    /// an environment variable, deliberately, because the state it simulates (a host with no
+    /// usable handle 2) is a property of the process and not of a call. So the *decision* is
+    /// tested here from constructed states, and the *delivery* is tested on the shipping binary by
+    /// `rust/tools/probe_disclosure_reachability.py --arm escalation`, which arms the variable in
+    /// a child. Neither half stands alone and both are named here so a reader can find the other.
+    #[test]
+    fn the_escalation_fires_only_when_no_quiet_channel_carried_the_info() {
+        let _g = test_lock();
+        counters::reset();
+
+        // Not needed: stderr carried it. This is the state every default run is in.
+        let carried = Disclosure {
+            informed: true,
+            info_reached_stderr: true,
+            ..Default::default()
+        };
+        assert!(
+            !escalate_if_unreachable(&carried),
+            "escalated a disclosure the console had already carried"
+        );
+
+        // Not needed: ORT's own sink took it (a host that asked for INFO).
+        let ort_took_it = Disclosure {
+            informed: true,
+            info_reached_ort_sink: true,
+            ..Default::default()
+        };
+        assert!(!escalate_if_unreachable(&ort_took_it));
+
+        // Nothing was due: silence about a channel nothing travelled on.
+        let nothing_due = Disclosure::default();
+        assert!(!escalate_if_unreachable(&nothing_due));
+
+        // Needed. With no ORT logger attached the escalation can still only reach stderr, and on
+        // this box it does — which is the return value being asserted. The arm that matters is
+        // that it *fired*: `info_reached_ort_sink` and `info_reached_stderr` are both false.
+        let lost = Disclosure {
+            informed: true,
+            proven: 1,
+            ..Default::default()
+        };
+        assert!(
+            escalate_if_unreachable(&lost),
+            "a disclosure no quiet channel carried was not escalated, so a user on such a host is \
+             told nothing at all"
         );
     }
 
