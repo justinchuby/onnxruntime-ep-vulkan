@@ -929,6 +929,12 @@ static SUBJECT_CHANGED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// took a second worktree and a second release build. `subject_changed_forms` had carried its
 /// keys since §8.9.19 for exactly this reason; the older and much more common decline had not.
 static UNPROVEN_DECLINE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The subset of `UNPROVEN_DECLINE_FORMS` a proof run cannot clear (see
+/// [`record_unprovable_decline`]). A separate list rather than a flag on the first because the
+/// two answer different questions: "which forms have no entry" and "which of those is worth a
+/// proof run". Deriving the second from the first at read time would put a capability lookup in
+/// the artifact writer, which runs after the claim path it would be describing.
+static UNPROVABLE_DECLINE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// `key recorded=<spec digest> current=<spec digest>` for each specialisation delta (§8.9.20).
 ///
 /// The dispatch-time frame witness's firing state. It is populated from the dispatch path, not
@@ -981,6 +987,26 @@ static SESSION_DISCLOSURE_WARNS_TO_ORT: AtomicU64 = AtomicU64::new(0);
 static SESSION_DISCLOSURE_INFOS: AtomicU64 = AtomicU64::new(0);
 /// Of those, the ones whose INFO reached ORT's own logging sink.
 static SESSION_DISCLOSURE_INFOS_TO_ORT: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose INFO this process's **stderr** accepted.
+///
+/// RAI-013: `..._TO_ORT` alone made the artifact unable to distinguish "nobody was told" from
+/// "ORT's default threshold refused it and the console printed it anyway". On a default host the
+/// second is what happens, and the artifact said `BELOW_ORT_THRESHOLD` — true about ORT, silent
+/// about the user.
+static SESSION_DISCLOSURE_INFOS_TO_STDERR: AtomicU64 = AtomicU64::new(0);
+/// Disclosures whose INFO was accepted by **at least one** channel a default user can see.
+///
+/// Stored rather than derived: `to_ort + to_stderr` cannot reconstruct an OR taken per
+/// disclosure, and a sum that looks like a count of reached users would be exactly the kind of
+/// number that reads plausibly while meaning something else.
+static SESSION_DISCLOSURE_INFOS_REACHED: AtomicU64 = AtomicU64::new(0);
+/// Disclosures whose INFO no quiet channel would carry, re-emitted at WARNING and delivered.
+static SESSION_DISCLOSURE_INFO_ESCALATIONS: AtomicU64 = AtomicU64::new(0);
+/// Disclosure records this process's stderr refused, either half of the pair.
+///
+/// A channel statement rather than a branch statement, for the same reason
+/// `session_disclosure_info_channel` is: which half happened to run is not the subject.
+static SESSION_DISCLOSURE_STDERR_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// ORT's own severity threshold, sampled at the instant of the session-creation disclosure.
 ///
 /// Stored as `threshold + 1` so that `0` means *never sampled* and cannot be confused with
@@ -1209,6 +1235,30 @@ pub fn record_unproven_decline(key: &str) {
 /// The proof keys behind `unproven_declines`, deduplicated, first-seen order.
 pub fn unproven_decline_forms() -> Vec<String> {
     UNPROVEN_DECLINE_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// Record a form that declined `[unproven]` and that **no proof run can clear**, because its
+/// module declares a SPIR-V capability the engine does not enable.
+///
+/// `unproven_declines` is a true count of forms with no ledger entry, and it reads as a backlog of
+/// forms somebody could go and prove. Two of Phi-3.5's five are not: they need a device feature,
+/// and a proof run against them reports "no unlockable keys". The count is not moved — it is not
+/// wrong — but a reader can now subtract, which is the difference between a number that is honest
+/// and a number that can be acted on.
+pub fn record_unprovable_decline(key: &str) {
+    if let Ok(mut seen) = UNPROVABLE_DECLINE_FORMS.lock()
+        && !seen.iter().any(|r| r == key)
+    {
+        seen.push(key.to_string());
+    }
+}
+
+/// The subset of [`unproven_decline_forms`] that no proof run can clear.
+pub fn unprovable_decline_forms() -> Vec<String> {
+    UNPROVABLE_DECLINE_FORMS
         .lock()
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -1596,6 +1646,13 @@ pub struct SessionDisclosure {
     /// Whether that INFO was handed to ORT's logger at a level its threshold admits. Note this is
     /// *offered*, never *delivered*; see [`session_disclosure_info_channel`].
     pub info_reached_ort_sink: bool,
+    /// Whether this process's stderr accepted that INFO — the channel a console user reads.
+    pub info_reached_stderr: bool,
+    /// Whether the INFO had to be re-emitted at WARNING because no quiet channel would carry it,
+    /// **and that re-emission was itself delivered**. False when no escalation was needed and
+    /// false when the escalation also failed; the two are told apart by
+    /// [`session_disclosure_info_reach`], never by this flag alone.
+    pub info_escalated: bool,
 }
 
 /// Record one §8.9.7 session-creation disclosure.
@@ -1619,6 +1676,8 @@ pub fn record_session_disclosure(d: SessionDisclosure) {
         warn_reached_ort_sink,
         informed,
         info_reached_ort_sink,
+        info_reached_stderr,
+        info_escalated,
     } = d;
     SESSION_DISCLOSURES.fetch_add(1, ORD);
     // Sample ORT's threshold while a logger is certainly attached. `+ 1` keeps `VERBOSE` (0)
@@ -1643,8 +1702,24 @@ pub fn record_session_disclosure(d: SessionDisclosure) {
         if info_reached_ort_sink {
             SESSION_DISCLOSURE_INFOS_TO_ORT.fetch_add(1, ORD);
         }
+        if info_reached_stderr {
+            SESSION_DISCLOSURE_INFOS_TO_STDERR.fetch_add(1, ORD);
+        }
+        if info_reached_ort_sink || info_reached_stderr {
+            SESSION_DISCLOSURE_INFOS_REACHED.fetch_add(1, ORD);
+        } else if info_escalated {
+            SESSION_DISCLOSURE_INFO_ESCALATIONS.fetch_add(1, ORD);
+        }
     }
     dump_if_requested();
+}
+
+/// Record one disclosure record this process's stderr refused.
+///
+/// Plain increment, deliberately: this is called from inside the emitters, and dumping the
+/// artifact here would write a file from the middle of a failing write path.
+pub fn record_disclosure_stderr_failure() {
+    SESSION_DISCLOSURE_STDERR_FAILURES.fetch_add(1, ORD);
 }
 
 /// The evidence standing of every form this process's sessions claimed, as one token.
@@ -1730,6 +1805,42 @@ fn session_disclosure_info_channel() -> &'static str {
         "OFFERED_TO_ORT"
     } else {
         "BELOW_ORT_THRESHOLD"
+    }
+}
+
+/// Whether the INFO half **reached a user**, which is a different question from which channel
+/// ORT accepted it on, and is the one §8.9.7 actually obliges (RAI-013).
+///
+/// `session_disclosure_info_channel` is a true statement about ORT's threshold and an *incomplete*
+/// statement about the obligation: on a default host it reads `BELOW_ORT_THRESHOLD` on every run,
+/// including the runs where the console printed the disclosure in full. Measured on 2026-08-03,
+/// ORT default severity, no environment variable set: zero disclosure lines on ORT's sink, the
+/// whole disclosure on this process's stderr. An honestly-labelled emission a user never sees is
+/// not "the user was told" — and an honestly-labelled emission the user *did* see must not read
+/// the same way.
+///
+/// * `"UNOBSERVABLE"` — no INFO was due; nothing is known and nothing is claimed.
+/// * `"REACHED_USER"` — every INFO due was accepted by ORT's sink, or by this process's stderr,
+///   or both. This is the positive state, and it is observed per disclosure rather than inferred
+///   from a severity comparison.
+/// * `"ESCALATED_TO_WARNING"` — at least one INFO was refused by every quiet channel and was
+///   re-emitted at WARNING, the one severity ORT's default threshold admits, and that re-emission
+///   was delivered. Loud, and only after quiet has been *measured* to fail.
+/// * `"UNREACHABLE"` — an INFO was due and nothing carried it, not even the escalation. The user
+///   was not told, and this is the token that says so.
+fn session_disclosure_info_reach() -> &'static str {
+    let infos = SESSION_DISCLOSURE_INFOS.load(ORD);
+    if infos == 0 {
+        return "UNOBSERVABLE";
+    }
+    let reached = SESSION_DISCLOSURE_INFOS_REACHED.load(ORD);
+    let escalated = SESSION_DISCLOSURE_INFO_ESCALATIONS.load(ORD);
+    if reached == infos {
+        "REACHED_USER"
+    } else if reached + escalated == infos {
+        "ESCALATED_TO_WARNING"
+    } else {
+        "UNREACHABLE"
     }
 }
 
@@ -2139,6 +2250,15 @@ fn unproven_decline_forms_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
+/// `unprovable_decline_forms` — the subset of the above that no proof run can clear.
+fn unprovable_decline_forms_json() -> String {
+    let Ok(seen) = UNPROVABLE_DECLINE_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
 /// `subject_changed_forms` — one row per form declined because its subject moved.
 fn subject_changed_forms_json() -> String {
     let Ok(seen) = SUBJECT_CHANGED_FORMS.lock() else {
@@ -2239,6 +2359,10 @@ pub fn reset() {
     SESSION_DISCLOSURE_WARNS_TO_ORT.store(0, ORD);
     SESSION_DISCLOSURE_INFOS.store(0, ORD);
     SESSION_DISCLOSURE_INFOS_TO_ORT.store(0, ORD);
+    SESSION_DISCLOSURE_INFOS_TO_STDERR.store(0, ORD);
+    SESSION_DISCLOSURE_INFOS_REACHED.store(0, ORD);
+    SESSION_DISCLOSURE_INFO_ESCALATIONS.store(0, ORD);
+    SESSION_DISCLOSURE_STDERR_FAILURES.store(0, ORD);
     ORT_SINK_SEVERITY_SAMPLED.store(0, ORD);
     COMPUTE_FAILURES_INJECTED.store(0, ORD);
     LEDGER_LOOKUPS.store(0, ORD);
@@ -2263,6 +2387,9 @@ pub fn reset() {
         seen.clear();
     }
     if let Ok(mut seen) = UNPROVEN_DECLINE_FORMS.lock() {
+        seen.clear();
+    }
+    if let Ok(mut seen) = UNPROVABLE_DECLINE_FORMS.lock() {
         seen.clear();
     }
     if let Ok(mut seen) = SPECIALISATION_DELTA_FORMS.lock() {
@@ -2334,6 +2461,7 @@ impl VulkanEpCounters {
              \"source_cosmetic_forms\": {},\n  \
              \"subject_changed_forms\": {},\n  \
              \"unproven_decline_forms\": {},\n  \
+             \"unprovable_decline_forms\": {},\n  \
              \"ledger_subject_changed_entries\": {},\n  \
              \"ledger_toolchain_delta_entries\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
@@ -2362,6 +2490,12 @@ impl VulkanEpCounters {
              \"session_disclosure_infos\": {},\n  \
              \"session_disclosure_infos_to_ort_sink\": {},\n  \
              \"session_disclosure_info_channel\": \"{}\",\n  \
+             \"session_disclosure_infos_to_stderr\": {},\n  \
+             \"session_disclosure_infos_reached_user\": {},\n  \
+             \"session_disclosure_info_escalations\": {},\n  \
+             \"session_disclosure_stderr_failures\": {},\n  \
+             \"session_disclosure_info_reach\": \"{}\",\n  \
+             \"stderr_fault_injection\": \"{}\",\n  \
              \"ort_sink_severity_threshold\": \"{}\",\n  \
              \"model_output_equivalence\": \"{}\"\n}}\n",
             self.abi_version,
@@ -2413,6 +2547,7 @@ impl VulkanEpCounters {
             source_cosmetic_forms_json(),
             subject_changed_forms_json(),
             unproven_decline_forms_json(),
+            unprovable_decline_forms_json(),
             crate::registry::ledger().subject_changed_entries().count(),
             crate::registry::ledger().toolchain_delta_entries().count(),
             json_escape(&crate::registry::running_device_names().join("; ")),
@@ -2443,6 +2578,16 @@ impl VulkanEpCounters {
             SESSION_DISCLOSURE_INFOS.load(ORD),
             SESSION_DISCLOSURE_INFOS_TO_ORT.load(ORD),
             session_disclosure_info_channel(),
+            SESSION_DISCLOSURE_INFOS_TO_STDERR.load(ORD),
+            SESSION_DISCLOSURE_INFOS_REACHED.load(ORD),
+            SESSION_DISCLOSURE_INFO_ESCALATIONS.load(ORD),
+            SESSION_DISCLOSURE_STDERR_FAILURES.load(ORD),
+            session_disclosure_info_reach(),
+            if crate::logging::stderr_fault_active() {
+                "ACTIVE"
+            } else {
+                "NONE"
+            },
             ort_sink_severity_threshold(),
             equiv,
         )
@@ -3201,6 +3346,125 @@ mod tests {
                 .to_json()
                 .contains("\"session_disclosure_channel\": \"UNOBSERVABLE\""),
             "no WARN was emitted in this frame; the INFO half may not discharge the WARN half."
+        );
+        reset();
+    }
+
+    /// **The reach token: whether the *user* was told, which is not the same as which channel
+    /// ORT accepted (RAI-013).**
+    ///
+    /// `session_disclosure_info_channel` is honest and incomplete. On a default host ORT's
+    /// threshold is WARNING, so it reads `BELOW_ORT_THRESHOLD` on every run — including the runs
+    /// where the console printed the whole disclosure, which is what a measurement on
+    /// 2026-08-03 (ORT 1.28, no environment variable set) found actually happens: zero disclosure
+    /// lines on ORT's sink, the complete disclosure on this process's stderr. A token that reads
+    /// the same when the user was told and when they were not cannot discharge §8.9.7, so the
+    /// reach question gets its own observable, with all four of its states pinned here.
+    #[test]
+    fn the_info_reach_token_says_whether_a_user_was_reachable() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_reach\": \"UNOBSERVABLE\""),
+            "no INFO was due, so nothing is known about whether a user could be reached. \
+             Got:\n{doc}"
+        );
+
+        // The default-host state: ORT refused it, the console took it. The user WAS told, and the
+        // artifact must be able to say so while `..._info_channel` goes on truthfully reporting
+        // that ORT's threshold excluded it. Both statements are true and neither implies the
+        // other.
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            info_reached_stderr: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_channel\": \"BELOW_ORT_THRESHOLD\"")
+                && doc.contains("\"session_disclosure_info_reach\": \"REACHED_USER\""),
+            "an INFO ORT's threshold refused and the console carried must read BELOW_ORT_THRESHOLD \
+             on the ORT channel and REACHED_USER on the reach. Got:\n{doc}"
+        );
+
+        // Neither quiet channel, escalation delivered.
+        reset();
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            info_escalated: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_escalations\": 1,")
+                && doc.contains("\"session_disclosure_info_reach\": \"ESCALATED_TO_WARNING\""),
+            "an INFO no quiet channel carried, re-emitted at WARNING and delivered, is neither \
+             REACHED_USER nor UNREACHABLE and must have its own name. Got:\n{doc}"
+        );
+
+        // Nothing carried it, and the escalation was lost too. This is the state the token exists
+        // for: the user was not told, and no other state may be spelled this way.
+        reset();
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_reach\": \"UNREACHABLE\""),
+            "an INFO that no channel and no escalation carried must read UNREACHABLE. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"session_disclosure_infos_reached_user\": 0,"),
+            "the reach count must agree with the token. Got:\n{doc}"
+        );
+
+        // Mixed, and pessimistic for the same reason the channel token is: one disclosure the
+        // user saw and one they did not is not a channel that reaches them.
+        record_session_disclosure(SessionDisclosure {
+            proven: 1,
+            informed: true,
+            info_reached_stderr: true,
+            ..Default::default()
+        });
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_info_reach\": \"UNREACHABLE\""),
+            "one reached and one lost must take the worse of the two. Got:\n{doc}"
+        );
+        reset();
+    }
+
+    /// A refused stderr write is counted, so the escalation is a statement about the channel.
+    ///
+    /// Tank's own generalisation, applied to the channel this session added: counting the failure
+    /// keeps `session_disclosure_info_reach` about the channel rather than about which branch of
+    /// §8.9.7 happened to run. The count moves through the emitter, not through a test-only path.
+    #[test]
+    fn a_refused_stderr_write_is_counted() {
+        let _g = crate::allocator::ledger::test_lock();
+        reset();
+        assert!(
+            snapshot()
+                .to_json()
+                .contains("\"session_disclosure_stderr_failures\": 0,"),
+            "a fresh frame has refused nothing"
+        );
+        record_disclosure_stderr_failure();
+        record_disclosure_stderr_failure();
+        let doc = snapshot().to_json();
+        assert!(
+            doc.contains("\"session_disclosure_stderr_failures\": 2,"),
+            "two refused writes must be two. Got:\n{doc}"
+        );
+        assert!(
+            doc.contains("\"stderr_fault_injection\": \"NONE\""),
+            "the planted control is not armed in this process, and a run that does not say so \
+             could have its refusals read as suffered ones. Got:\n{doc}"
         );
         reset();
     }
@@ -3996,5 +4260,41 @@ mod tests {
             unproven_decline_forms().is_empty(),
             "a list that survives reset() reports one session's forms against another's counts"
         );
+    }
+
+    /// The backlog and the subset of it nobody can work on are two different lists.
+    ///
+    /// Tank, 2026-08-03. Two of Phi-3.5's five unproven declines need a device feature, not
+    /// evidence; a run that publishes only the union reads as five forms awaiting a proof run.
+    #[test]
+    fn the_unprovable_subset_is_published_beside_the_backlog() {
+        let _g = crate::allocator::ledger::test_lock();
+
+        reset();
+        assert!(unprovable_decline_forms().is_empty());
+
+        record_unproven_decline("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2");
+        record_unproven_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+        record_unprovable_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+        record_unprovable_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+
+        assert_eq!(
+            snapshot().unproven_declines,
+            2,
+            "the count is not moved: the form really does lack an entry"
+        );
+        assert_eq!(
+            unprovable_decline_forms(),
+            vec!["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()],
+            "deduplicated, and a strict subset of the backlog"
+        );
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"unprovable_decline_forms\": [\"ai.onnx::Cast/6+/i64>i32/"),
+            "a subset that never reaches the artifact cannot be subtracted by a reader: {json}"
+        );
+
+        reset();
+        assert!(unprovable_decline_forms().is_empty());
     }
 }

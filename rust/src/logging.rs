@@ -25,6 +25,17 @@
 //! | `ONNXRUNTIME_EP_VULKAN_TRACE=<path>` | `Debug` |
 //! | `ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG=1` | `Debug` |
 //! | `RUST_LOG=onnxruntime_ep_vulkan=<level>` | explicit (highest precedence) |
+//!
+//! `ONNXRUNTIME_EP_VULKAN_FORCE_STDERR_FAILURE=1` is not a level: it is a planted control that
+//! makes [`stderr_line`] refuse every write, so the disclosure path's fallback can be observed in
+//! its firing state on a shipping binary. It never changes what a real run emits.
+//!
+//! # Reachability
+//!
+//! The two sinks are not interchangeable and neither is guaranteed. ORT's sink applies the *host's*
+//! severity threshold — at ORT 1.28's default (Warning) it carries no `Info` at all — and stderr can
+//! be closed or redirected to a full device. An emitter therefore reports [`Delivery`], which says
+//! which channels took the record, rather than returning `()` and leaving the caller to assume.
 
 use std::ffi::CString;
 use std::sync::Once;
@@ -40,6 +51,16 @@ pub const ENV_VERBOSE: &str = "ONNXRUNTIME_EP_VULKAN_VERBOSE";
 pub const ENV_TRACE: &str = "ONNXRUNTIME_EP_VULKAN_TRACE";
 /// Env var: print per-op claim/decline reasons from `GetCapability`; implies `Debug`.
 pub const ENV_CLAIM_DEBUG: &str = "ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG";
+/// Env var: make every write to this process's stderr report failure **without writing**.
+///
+/// The planted control for the disclosure-reachability path (RAI-013), and the same shape as
+/// [`crate::ep::ENV_FORCE_COMPUTE_FAILURE`]: the escalation that fires when no quiet channel can
+/// carry the §8.9.7 INFO is only a repair if it can be shown to fire, and a host whose stderr is
+/// closed (a Windows GUI process, a service with no console, a redirect to a full disk) cannot be
+/// produced on demand on a working box. Every run under this variable is marked
+/// `"stderr_fault_injection": "ACTIVE"` in the counters artifact, so a refused write can never be
+/// read as a suffered one.
+pub const ENV_FORCE_STDERR_FAILURE: &str = "ONNXRUNTIME_EP_VULKAN_FORCE_STDERR_FAILURE";
 
 static INIT: Once = Once::new();
 
@@ -79,7 +100,7 @@ impl Log for EpLogger {
             Level::Trace => "TRACE",
         };
         let message = record.args().to_string();
-        eprintln!("[vulkan-ep] {tag}: {message}");
+        stderr_line(tag, &message);
         let _ = forward_to_ort(
             record.level(),
             record.target(),
@@ -162,8 +183,67 @@ fn forward_to_ort(
     }
 }
 
+/// Which channels accepted one disclosure record.
+///
+/// Two independent booleans and no summary bit, because "ORT's threshold refused it and the
+/// console got it" and "both carried it" are different findings about the channel and a single
+/// `bool` can only spell one of them. [`Self::reached_user`] is the *derived* summary; it is a
+/// method rather than a field so nothing can store a reachability that disagrees with its parts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Delivery {
+    /// The record was handed to `Logger_LogMessage` and ORT's own threshold admits its level.
+    pub ort_sink: bool,
+    /// This process's stderr accepted the bytes.
+    pub stderr: bool,
+}
+
+impl Delivery {
+    /// Whether *some* channel a default user can see carried the record.
+    ///
+    /// This is the question RAI-013 asks. `ort_sink` alone is what the artifact used to report,
+    /// and on a default host (ORT threshold WARNING) it is `false` for every INFO — which was
+    /// read as "the user was not told" when the console had in fact printed it.
+    pub fn reached_user(self) -> bool {
+        self.ort_sink || self.stderr
+    }
+}
+
+/// Whether the planted stderr-failure control is armed for this process.
+pub fn stderr_fault_active() -> bool {
+    static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        std::env::var_os(ENV_FORCE_STDERR_FAILURE).is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// Write one line to this process's own stderr, reporting whether the bytes were accepted.
+///
+/// # Why this is not `eprintln!`
+///
+/// Two reasons, and the second is the one that matters here.
+///
+/// 1. `eprintln!` **panics** when the write fails (`failed printing to stderr`). Every call site
+///    below is reached from an `extern "C"` entry point, and a panic there is UB in the host —
+///    the rule this crate holds everywhere else at the boundary. A host with a closed handle 2 is
+///    not exotic: a Windows GUI process has one by default.
+/// 2. `eprintln!` returns `()`, so a disclosure written this way is *unfalsifiable*. Until
+///    2026-08-03 the §8.9.7 INFO went out through `eprintln!` and the artifact reported only the
+///    ORT half, so `session_disclosure_infos_to_ort_sink: 0` was the whole account of a channel
+///    that had in fact delivered — and would have read identically on a run where nobody was
+///    told.
+pub fn stderr_line(tag: &str, message: &str) -> bool {
+    use std::io::Write;
+    if stderr_fault_active() {
+        return false;
+    }
+    let mut err = std::io::stderr().lock();
+    writeln!(err, "[vulkan-ep] {tag}: {message}")
+        .and_then(|()| err.flush())
+        .is_ok()
+}
+
 /// Emit one WARNING into **ORT's own logging sink**, bypassing this crate's `log` facade
-/// entirely. Returns `true` when the message actually reached `Logger_LogMessage`.
+/// entirely. Returns which channels accepted it.
 ///
 /// # Why this exists when `log::warn!` already forwards to ORT
 ///
@@ -176,13 +256,19 @@ fn forward_to_ort(
 /// The stderr line is emitted too, but it is deliberately the *second* witness: a WARN in this
 /// project's private log is invisible to exactly the audience that matters — a host with ORT
 /// logging configured, watching the channel that already carries ORT's own `Falling back` line.
-/// The boolean return is what lets the counters artifact say which channel actually carried it,
-/// so `PRIVATE_LOG_ONLY` can never be read as a delivered disclosure.
-pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
-    eprintln!("[vulkan-ep] WARN: {message}");
+/// The returned [`Delivery`] is what lets the counters artifact say which channel actually carried
+/// it, so `PRIVATE_LOG_ONLY` can never be read as a delivered disclosure.
+pub fn warn_through_ort_sink(target: &str, message: &str) -> Delivery {
+    let stderr = stderr_line("WARN", message);
+    if !stderr {
+        crate::counters::record_disclosure_stderr_failure();
+    }
     let handed = forward_to_ort(Level::Warn, target, message, Some(UNKNOWN_FILE), 0);
     // Handing it over is not delivery. See `ort_sink_severity`.
-    handed && ort_sink_accepts(Level::Warn).unwrap_or(true)
+    Delivery {
+        ort_sink: handed && ort_sink_accepts(Level::Warn).unwrap_or(true),
+        stderr,
+    }
 }
 
 /// Emit one INFO into **ORT's own logging sink**, bypassing this crate's `log` facade, for the
@@ -195,11 +281,19 @@ pub fn warn_through_ort_sink(target: &str, message: &str) -> bool {
 ///
 /// ORT's own severity filter still applies at its end, and that is correct: ORT's INFO tier is
 /// the host's to configure. What must not be switchable is *ours*, because a disclosure that our
-/// own environment can suppress is a disclosure whose absence means nothing.
-pub fn info_through_ort_sink(target: &str, message: &str) -> bool {
-    eprintln!("[vulkan-ep] INFO: {message}");
+/// own environment can suppress is a disclosure whose absence means nothing. That is why the
+/// returned [`Delivery`] carries the stderr arm as well: on a default host ORT's threshold refuses
+/// every INFO, and the console is the channel that actually reaches the user.
+pub fn info_through_ort_sink(target: &str, message: &str) -> Delivery {
+    let stderr = stderr_line("INFO", message);
+    if !stderr {
+        crate::counters::record_disclosure_stderr_failure();
+    }
     let handed = forward_to_ort(Level::Info, target, message, Some(UNKNOWN_FILE), 0);
-    handed && ort_sink_accepts(Level::Info).unwrap_or(true)
+    Delivery {
+        ort_sink: handed && ort_sink_accepts(Level::Info).unwrap_or(true),
+        stderr,
+    }
 }
 
 /// Stand-in `file_path` for a record with no source location. Never empty, never null.

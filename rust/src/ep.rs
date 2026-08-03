@@ -2318,8 +2318,11 @@ pub(crate) unsafe fn disclose_broken_commitment(
     // take ownership of. `status_message` handles the null-api case itself.
     let error_text = unsafe { sys::status_message(api, status) };
     let message = broken_commitment_message(subgraph_id, nodes, &error_text);
+    // `.ort_sink` keeps `broken_commitment_channel`'s meaning exactly as it was: that token is a
+    // statement about ORT's sink, and RAI-013 changed the INFO half's reachability, not this one's
+    // subject. The stderr arm of the same `Delivery` is counted inside the emitter.
     let delivered = logging::warn_through_ort_sink("onnxruntime_ep_vulkan::compute", &message);
-    counters::record_broken_commitment(delivered);
+    counters::record_broken_commitment(delivered.ort_sink);
     true
 }
 

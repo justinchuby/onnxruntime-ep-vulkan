@@ -292,6 +292,22 @@ def _cast(in_elem: int, to_elem: int, shape=(4, 8), opset: int = 21) -> onnx.Mod
     return model
 
 
+def _cast_dyn(in_elem: int, to_elem: int, opset: int = 21) -> onnx.ModelProto:
+    """`Cast` with a *symbolic* leading extent, so it classifies `runtime-extent`.
+
+    `shape_class` is a component of the proof key, so the static `Cast` proof does not describe
+    this form — the EP reaches it through a different specialisation and the key differs.
+    """
+    x = helper.make_tensor_value_info("X", in_elem, [_DYN, 8])
+    y = helper.make_tensor_value_info("Y", to_elem, [_DYN, 8])
+    node = helper.make_node("Cast", ["X"], ["Y"], name="cast0", to=int(to_elem))
+    graph = helper.make_graph([node], "Cast_dyn_graph", [x], [y])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
 def _isinf(elem: int, opset: int = 21, **attrs) -> onnx.ModelProto:
     """`IsInf`, whose two `detect_*` attributes select four different predicates.
 
@@ -592,6 +608,19 @@ BUILDERS.update({
     "cast_f32_to_i32": lambda: _cast(TensorProto.FLOAT, TensorProto.INT32),
     "cast_i32_to_f32": lambda: _cast(TensorProto.INT32, TensorProto.FLOAT),
     "cast_f32_to_bool": lambda: _cast(TensorProto.FLOAT, TensorProto.BOOL),
+    # `i64 -> i32` is the pair a real graph carries and the op suite did not: Phi-3.5 casts its
+    # position/attention indices down, and the EP claimed the form in both shape classes with no
+    # entry describing either. Both are listed because `shape_class` is part of the key.
+    #
+    # STAGED, NOT YET PROVABLE. Measured 2026-08-03: the decline that binds on these two is
+    # `[dtype]`, not `[unproven]` — `ew_cast_i64_to_i32.spv` is generated but declares
+    # `OpCapability Int64`, and `ENGINE_ENABLED_CAPABILITIES` does not carry it, so no pipeline can
+    # be created and `gen_proof_ledger.py` correctly reports `no unlockable keys`. These cases are
+    # the proof the day the three edits named in `ops/common/variants.rs` land (enable the feature
+    # in the chain, probe it in `vk::caps`, decline the variant on devices that lack it); until
+    # then they cost two files and answer a question that otherwise takes a second build.
+    "cast_i64_to_i32": lambda: _cast(TensorProto.INT64, TensorProto.INT32),
+    "cast_i64_to_i32_dyn": lambda: _cast_dyn(TensorProto.INT64, TensorProto.INT32),
     # Pow is a partial function in its *first* argument: a negative base with a non-integral
     # exponent has no real value, and standard_normal supplies both. Sampled positive.
     "pow_f32": lambda: _binary("Pow", TensorProto.FLOAT, opset=21),
@@ -759,6 +788,13 @@ INPUT_DOMAIN.update({
     # the vacuous case `isnan_f32` gets `withnan` for. `discrete` is integer-valued and includes
     # zero, so both polarities of `x != 0` appear.
     "cast_f32_to_bool": "discrete",
+    # `i64 -> i32` is a *narrowing*: the interesting failure is a kernel that reads the wrong half
+    # of the 64-bit word. The default `[0, 2)` draw leaves the high word zero, where a wrong-half
+    # read is invisible. `spread` includes negatives, whose high word is `0xFFFFFFFF`, so reading
+    # the wrong half yields -1 and the mismatch shows. It stays inside i32, so nothing here turns
+    # on out-of-range Cast, which ONNX leaves undefined.
+    "cast_i64_to_i32": "spread",
+    "cast_i64_to_i32_dyn": "spread",
 })
 
 def input_domain(name: str) -> str:

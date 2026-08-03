@@ -492,6 +492,17 @@ fn declared_capabilities_impl(spv: &[u8]) -> Vec<u32> {
 /// enables cannot be created on any device we run on, and claiming a node it would serve is a
 /// promise we cannot keep whatever the ledger says.
 ///
+/// Did the build generate a module under this stem at all?
+///
+/// [`variant_is_loadable`] answers `false` for both "no such module" and "the module declares a
+/// capability we do not enable", which is right for its question and wrong for any caller that
+/// wants to know *why*. A composite row's key carries `metadata` in the variant slot — no module
+/// has ever been named that — so a caller reading loadability off a proof key must be able to tell
+/// a placeholder from a refusal.
+pub fn variant_is_generated(stem: &str) -> bool {
+    crate::engine::shaders::SHADER_MODULES.iter().any(|(name, _)| *name == stem)
+}
+
 /// `false` for an unknown stem: a variant the build did not generate is not loadable either.
 pub fn variant_is_loadable(stem: &str) -> bool {
     let Some((_, spv)) = crate::engine::shaders::SHADER_MODULES

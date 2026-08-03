@@ -680,7 +680,13 @@ def main() -> int:
     doc["lanes"] = lanes
 
     rc = _score(doc, lanes)
-    (HERE / "phi35_kv_chain.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    # `--out` names the top-level record in parent mode too. Without this the artifact path was a
+    # constant, so any re-run on a different device or context length silently overwrote the
+    # committed record of a run nobody re-took -- the file kept the name of the evidence and the
+    # contents of the last invocation. Observed: a ctx-512 run on the UMA device replaced the
+    # committed RTX 4060 seed_past=4 record.
+    out_path = pathlib.Path(args.out) if args.out else (HERE / "phi35_kv_chain.json")
+    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(json.dumps(doc, indent=2))
     return rc
 

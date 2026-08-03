@@ -1,0 +1,140 @@
+{
+  "device": 0,
+  "ort_version": "1.28.0",
+  "pure": {
+    "env_added": [],
+    "lines_total": {
+      "ort": 2,
+      "ep_stderr": 6,
+      "other": 9
+    },
+    "disclosure_lines": {
+      "ort": 0,
+      "ep_stderr": 2,
+      "other": 0
+    },
+    "escalation_lines": {
+      "ort": 0,
+      "ep_stderr": 0,
+      "other": 0
+    },
+    "ort_disclosure_sample": [],
+    "ep_stderr_disclosure_sample": [
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a"
+    ],
+    "ort_lines_sample": [
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })",
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u0014  the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })"
+    ],
+    "ep_stderr_all": [
+      "[vulkan-ep] INFO: [\u00a78.9.18] proof ledger: 103/103 entries live, 0 demoted",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] WARN: GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })",
+      "[vulkan-ep] INFO: [\u00a78.9.18] proof ledger: 103/103 entries live, 0 demoted",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] WARN: GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })"
+    ]
+  },
+  "instrumented": {
+    "env_added": [
+      "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE"
+    ],
+    "lines_total": {
+      "ort": 2,
+      "ep_stderr": 6,
+      "other": 9
+    },
+    "disclosure_lines": {
+      "ort": 0,
+      "ep_stderr": 2,
+      "other": 0
+    },
+    "escalation_lines": {
+      "ort": 0,
+      "ep_stderr": 0,
+      "other": 0
+    },
+    "ort_disclosure_sample": [],
+    "ep_stderr_disclosure_sample": [
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a"
+    ],
+    "ort_lines_sample": [
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })",
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u0014  the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })"
+    ],
+    "ep_stderr_all": [
+      "[vulkan-ep] INFO: [\u00a78.9.18] proof ledger: 103/103 entries live, 0 demoted",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] WARN: GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })",
+      "[vulkan-ep] INFO: [\u00a78.9.18] proof ledger: 103/103 entries live, 0 demoted",
+      "[vulkan-ep] INFO: session claims 1 form(s) whose proof frame is UNATTRIBUTED [\u00a710.0.1 R12]: Add x1 [ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2] DEVICE-UNATTRIBUTED: proven by evidence/cases/add_f32.onnx against 1.28.0, entry-device=device0, running-device=NVIDIA GeForce RTX 4060 Laptop GPU \u2014 the entry records a selector ordinal, which names no hardware \u2014 a selector is a request, not a",
+      "[vulkan-ep] WARN: GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })"
+    ]
+  },
+  "escalation": {
+    "env_added": [
+      "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE",
+      "ONNXRUNTIME_EP_VULKAN_FORCE_STDERR_FAILURE"
+    ],
+    "lines_total": {
+      "ort": 4,
+      "ep_stderr": 0,
+      "other": 8
+    },
+    "disclosure_lines": {
+      "ort": 0,
+      "ep_stderr": 0,
+      "other": 0
+    },
+    "escalation_lines": {
+      "ort": 2,
+      "ep_stderr": 0,
+      "other": 0
+    },
+    "ort_disclosure_sample": [],
+    "ep_stderr_disclosure_sample": [],
+    "ort_lines_sample": [
+      "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\u00a78.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u2014 this is a delivery escalation, not a fault report. This ses",
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u2014 the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })",
+      "[W:onnxruntime:, <onnxruntime-ep-vulkan>:0 VulkanEP] [\ufffd8.9.7] the session-creation disclosure could not be delivered on any channel a user sees by default: ORT's own severity threshold excludes INFO and this process's stderr refused the write. It is repeated here at WARNING because that is the one severity ORT's default threshold admits \u0014  this is a delivery escalation, not a fault report. This se",
+      "[W:onnxruntime:, ep.rs:1241 onnxruntime_vulkan_ep::ep] GetCapability: sole-island override \u0014  the net-benefit gate REJECTED the graph's only island (1 nodes, 0 anchors, 384 boundary bytes across 0 fabricated-extent slots, 64 est. FLOPs) and the rejection was overridden because there is no alternative partition. Gate's own verdict: Reject(TooSmall { nodes: 1, min_nodes: 4 })"
+    ],
+    "ep_stderr_all": []
+  },
+  "counters": {
+    "session_disclosures": 1,
+    "session_disclosure_infos": 1,
+    "session_disclosure_infos_to_ort_sink": 0,
+    "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+    "session_disclosure_infos_to_stderr": 1,
+    "session_disclosure_infos_reached_user": 1,
+    "session_disclosure_info_escalations": 0,
+    "session_disclosure_stderr_failures": 0,
+    "session_disclosure_info_reach": "REACHED_USER",
+    "stderr_fault_injection": "NONE",
+    "ort_sink_severity_threshold": "WARNING",
+    "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+    "claimed_forms_proven": 0,
+    "claimed_forms_device_unattributed": 1
+  },
+  "counters_escalation_arm": {
+    "session_disclosures": 1,
+    "session_disclosure_infos": 1,
+    "session_disclosure_infos_to_ort_sink": 0,
+    "session_disclosure_info_channel": "BELOW_ORT_THRESHOLD",
+    "session_disclosure_infos_to_stderr": 0,
+    "session_disclosure_infos_reached_user": 0,
+    "session_disclosure_info_escalations": 1,
+    "session_disclosure_stderr_failures": 3,
+    "session_disclosure_info_reach": "ESCALATED_TO_WARNING",
+    "stderr_fault_injection": "ACTIVE",
+    "ort_sink_severity_threshold": "WARNING",
+    "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+    "claimed_forms_proven": 0,
+    "claimed_forms_device_unattributed": 1
+  },
+  "verdict": "PASS",
+  "failures": []
+}

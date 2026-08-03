@@ -1543,6 +1543,16 @@ impl ProofKey {
         ProofKey(s.trim().to_owned())
     }
 
+    /// The `variant` component — the SPIR-V module stem this form would dispatch.
+    ///
+    /// Component 3 of `domain::op_type/opset_bucket/dtypes/variant/shape_class/inputs`. `None` for
+    /// a key that does not have six components, because a malformed key must not be answered with
+    /// a plausible substring.
+    pub fn variant_stem(&self) -> Option<&str> {
+        let parts: Vec<&str> = self.0.split('/').collect();
+        (parts.len() >= 5).then(|| parts[3])
+    }
+
     /// Derive the key for one node against the row that would dispatch it.
     ///
     /// **This function is the whole of §8.7's expression-vs-path distinction.** Two nodes that
@@ -3201,6 +3211,24 @@ pub fn unproven_decline_detail(outcome: LedgerLookup, key: &ProofKey) -> String 
             key.0
         );
     }
+    if !form_is_provable(key) {
+        // The same defect Link found, one axis over: the sentence below asserts "the kernel
+        // exists" and names a proof run as the repair. For a form whose module declares a
+        // capability the engine does not enable, the module exists and **no pipeline can be
+        // created from it on any device we run on**, so a proof run has nothing to measure and
+        // the advice sends the reader to a tool that will report "no unlockable keys". Measured
+        // 2026-08-03 on `ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32` in both shape classes.
+        return format!(
+            "no proof ledger entry for `{}`, and no proof run can produce one: the module `{}` \
+             declares a SPIR-V capability this engine does not enable, so no pipeline can be \
+             created from it on any device we run on and there is nothing for a proof run to \
+             measure. This form needs a device feature, not evidence — see \
+             ops/common/variants.rs::ENGINE_ENABLED_CAPABILITIES. The node is also declined \
+             [dtype] for the same reason, which is the decline that binds.",
+            key.0,
+            key.variant_stem().unwrap_or("?"),
+        );
+    }
     format!(
         "no proof ledger entry for `{}`. The kernel exists; nothing has proven it correct on this \
          form, so it runs on the CPU EP, which is always right. Prove it with \
@@ -3208,6 +3236,31 @@ pub fn unproven_decline_detail(outcome: LedgerLookup, key: &ProofKey) -> String 
          ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
         key.0, key.0
     )
+}
+
+/// Could a proof run ever clear this form's `[unproven]` decline?
+///
+/// Reads [`variant_is_loadable`], which is a pure function of the checked-in SPIR-V and the
+/// engine's enabled-capability list — **no device handle and no global**, so it answers the same
+/// way before and after device creation. That matters here: this runs on the claim path, where a
+/// value that changed once a device existed would be the time-dependent-global defect this
+/// project has now shipped three times.
+///
+/// **It answers `true` whenever it is not sure**, which is a deliberate under-claim in two places:
+/// a key whose variant component cannot be read, and a key whose variant names no module at all.
+/// The second is not hypothetical — a composite row keys its form as `metadata`, and the first
+/// version of this predicate called `variant_is_loadable("metadata")`, got `false`, and reported
+/// `ai.onnx::Gather/1+/i64,i64>i64/metadata/static/n2` as unprovable on the strength of a stem
+/// that names no module. Composite forms *are* provable; several are proven in the ledger today.
+/// So the published list is a **lower bound** on what no proof run can clear: everything on it has
+/// a generated module that cannot be created, and a form may be unreachable for other reasons
+/// without appearing.
+fn form_is_provable(key: &ProofKey) -> bool {
+    let Some(stem) = key.variant_stem() else {
+        return true;
+    };
+    !crate::ops::common::variants::variant_is_generated(stem)
+        || crate::ops::common::variants::variant_is_loadable(stem)
 }
 
 /// Whether the ledger holds a proof for this key.
@@ -3442,6 +3495,12 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     };
     if spec.is_live() && !ledger_hit && !hatch {
         crate::counters::record_unproven_decline(&proof_key.0);
+        if !form_is_provable(&proof_key) {
+            // Recorded beside the count, not instead of it: the form really does lack an entry.
+            // What it also lacks is any way to acquire one, and a backlog that mixes the two
+            // reads as work somebody could do.
+            crate::counters::record_unprovable_decline(&proof_key.0);
+        }
         match &form_state {
             ProofState::SubjectChanged {
                 recorded,
@@ -3961,6 +4020,75 @@ mod tests {
         assert!(
             faulted.contains("--check"),
             "the repair for a damaged artifact is not re-proving one form: {faulted}"
+        );
+    }
+
+    /// **A form nothing can prove must not be declined by naming a proof run as the repair.**
+    ///
+    /// Tank, 2026-08-03. Phi-3.5's `unproven_declines` moved 3 → 5 and the two new forms are
+    /// `Cast i64 -> i32` in both shape classes. The `[unproven]` text told the reader "the kernel
+    /// exists; nothing has proven it correct … prove it with gen_proof_ledger.py" — and a proof
+    /// run against that key reports `no unlockable keys`, because every `_i64` module declares
+    /// `OpCapability Int64` and the engine enables no such feature. Same shape as the faulted-
+    /// ledger defect above: a sentence asserting a fact about the kernel that nothing checked.
+    ///
+    /// Both arms, against each other, on keys that differ *only* in the variant component.
+    #[test]
+    fn a_form_with_no_creatable_module_is_not_declined_by_asking_for_a_proof() {
+        let provable = ProofKey::parse("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2");
+        let unprovable = ProofKey::parse("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+        assert!(form_is_provable(&provable), "f32 add is loadable");
+        assert!(
+            !form_is_provable(&unprovable),
+            "every _i64 variant declares Int64, which ENGINE_ENABLED_CAPABILITIES does not carry"
+        );
+
+        let ok = unproven_decline_detail(LedgerLookup::KeyAbsent, &provable);
+        let no_kernel = unproven_decline_detail(LedgerLookup::KeyAbsent, &unprovable);
+        assert!(ok.contains("gen_proof_ledger.py"), "{ok}");
+        assert!(
+            !no_kernel.contains("gen_proof_ledger.py"),
+            "naming a tool that will answer `no unlockable keys` is advice that cannot be \
+             followed: {no_kernel}"
+        );
+        assert!(
+            !no_kernel.contains("The kernel exists"),
+            "the module exists and no pipeline can be created from it; those are not the same \
+             claim: {no_kernel}"
+        );
+        assert!(
+            no_kernel.contains("ew_cast_i64_to_i32") && no_kernel.contains("capability"),
+            "the decline has to name the module and the reason, or the reader is back to \
+             guessing: {no_kernel}"
+        );
+    }
+
+    /// An unparseable key is not evidence that a form is unprovable.
+    #[test]
+    fn a_key_whose_variant_cannot_be_read_gets_the_ordinary_message() {
+        let malformed = ProofKey::parse("not-a-key");
+        assert_eq!(malformed.variant_stem(), None);
+        assert!(form_is_provable(&malformed));
+    }
+
+    /// **A composite form's `metadata` stem is a placeholder, not a refusal.**
+    ///
+    /// The first version of this predicate reported `Gather/…/metadata/static/n2` as unprovable
+    /// because `variant_is_loadable("metadata")` is `false` for an unknown stem. Composite forms
+    /// are provable — the ledger holds proven `metadata` entries today — so the classifier was
+    /// asserting a capability finding on a string that names no module.
+    #[test]
+    fn a_composite_forms_metadata_stem_is_not_read_as_an_unloadable_module() {
+        let composite = ProofKey::parse("ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2");
+        assert_eq!(composite.variant_stem(), Some("metadata"));
+        assert!(
+            !crate::ops::common::variants::variant_is_generated("metadata"),
+            "no module is named `metadata`; that is the point"
+        );
+        assert!(
+            form_is_provable(&composite),
+            "this exact key is proven in the shipped ledger — a classifier that calls it \
+             unprovable is reporting its own blind spot as a finding about the form"
         );
     }
 
