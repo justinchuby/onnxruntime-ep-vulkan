@@ -240,3 +240,99 @@ Committed `d8fce9f` on `squad/link`, staged by explicit path. Not pushed. No wal
 **Worktree hazard, reported:** the other `link` instance committed to `ci/test_lane_checks.py` between two of my commands, so my saved diff of its uncommitted state came back empty. No work lost, and only because their commit landed first. The failure mode is silent — an empty patch reads exactly like a clean file.
 
 📌 Team update (2026-08-02T22:37:04-07:00): Trinity's `trinity-fatal-log-witness-was-blind` finding — `_verdict.FATAL_LOG_MARKERS` never matched ORT's real list-repr fallback text; all twelve historical hits were `test_phi35.py`'s own docstring echoed back by pytest. `ci/check_fatal_log.py` was cited as second witness alongside your device-loss work for five incidents on the strength of a match it could not make — those five should be re-read as single-witness (yours) until her liveness-gated fix is reviewed. She deliberately did not widen the markers to also catch device-lost text, because doing so would have reddened your own negative control (the arm proving `check_device_loss` has reach `check_fatal_log` does not). — decided by Trinity
+
+
+---
+
+## Session 14 — 2026-08-02 — The eleven errors repaired, the seven steps run, and a method of mine retired
+
+Merged `main` (fast-forward to `6ef62bb`, Switch's `872d739` device-authoritative KV spans included).
+
+### The defect was a binding's width, not a signedness bug — and that determined the shape of the fix
+
+Read both generated `ort.rs` files rather than inferring: MSVC emits
+`OrtLoggingLevel = c_int`, GCC emits `c_uint`, because a C enum with no negative
+enumerator is signed for one and unsigned for the other. Values `0..=4` on both. No
+arithmetic anywhere, and the value arrives typed as the alias from ORT's own callback.
+**Representational, not a real signedness bug.** So: three declarations in `ep.rs`'s test
+tree now carry `ort::OrtLoggingLevel` instead of a spelled `i32`. Eleven errors, three
+lines. **I rejected the eleven-cast form on principle** — `as i32` compiles on both
+platforms while preserving the exact assumption that caused the bug — and then made that
+rejection executable: portability rule **P3** has an arm that goes red on the cast form
+specifically. P1 catches *a name that is not there*; P3 catches *a name that is there and
+is a different width*. Portability lint 8 → 14 tests, green on both platforms.
+
+P3's scope is a `mod` block, not a file, and the limit is stated in the source rather than
+hidden: `logging.rs` and `mock_ort/mod.rs` handle severities at top level and also carry a
+vendor id and a line number as `u32`, and **a lint that reports those trains people to
+ignore it.** P3 is an early warning. The decisive second-platform check is the new compile
+step.
+
+### The split, and the class
+
+`cargo build --release` compiles the **lib only**, so clippy was the lane's first
+`--all-targets` invocation and therefore the first thing that ever compiled the tests.
+`Compile all targets (cargo check --all-targets — compile errors, not lints)` now runs
+ahead of it on both lanes, deliberately without `-D warnings` so the two reds are
+different findings. Inventory entry `build.compile_all_targets` added — and the lane
+checker caught the missing entry itself, which is the mechanism working.
+
+The general form, worth more than the incident: **the audit question is not "is this step
+named well" but "what is this step the *first* thing in its job to do".** Both names were
+defensible in isolation; the gap between them was not.
+
+### The seven steps: run, and mostly still red — which is the finding
+
+PASS: layering (26), portability (14), the four integration targets, `epctl
+--probe-loader`, `check_fatal_log`. FAIL: `cargo test --lib` 481/492, op-correctness 50
+failed / 272 passed / **292 skipped** (Windows skips 30), Criterion 10 + both verdict
+readers `UNATTRIBUTED` with 0 dispatches, and — correctly — `check_ledger_portability`
+`FAIL(condition=claimed_nothing)`.
+
+**All of it is the ledger digest, and I demonstrated that rather than arguing it:**
+perturbing one GLSL template *on Windows* so the digest stops matching reproduces the same
+eleven `cargo test --lib` names Linux shows, plus one — a superset. 48 of the 50 pytest
+failures do not occur on Windows. A platform-specific symptom with a platform-independent
+cause, and the ledger-keying decision is now the *only* thing between Linux and a
+meaningful op-correctness result.
+
+### A method of mine was unsound, and I had written it down as evidence
+
+Session 13: *"DLL SHA-256 identical either side of the rebuild — the falsifiable form of
+'no Rust changed'."* Measured: the Linux `.so` is byte-identical across four forced
+rebuilds; the Windows `.dll` gave **six distinct hashes from six builds of an unchanged
+tree.** On Windows an identical hash means **cargo did not relink** — which is exactly what
+a fingerprint-fresh tree produces, and reads exactly like "the bytes are the same". Same
+shape as the empty patch. The no-shipped-code-changed claim is now structural instead:
+every edited line is inside `#[cfg(test)] mod tests` (`ep.rs:2681`), which the cdylib does
+not contain. I found this only because I went to hash the two artifacts as the brief
+asked; had the brief not asked, I would have quoted the old method again.
+
+### Surprises
+
+* **Clippy was never the problem and is green on Linux today** — it had nothing to say
+  about a crate that could not compile.
+* **A comment-only shader edit does not change the digest** (comments are stripped), so my
+  first attempt at faulting the ledger silently proved nothing. Needed a semantically inert
+  *statement*.
+* **One optional Python dependency zeroes the whole op-correctness step.**
+  `test_shape_inference_delta.py` raises `ImportError` at **collection**, so pytest reports
+  `Interrupted: 1 error during collection` and the directory asserts nothing. CI installs
+  `tests/requirements.txt` and never sees it.
+* `vk::barrier::tests::backend_probe_writes_legacy_token` failed **once in nine** full
+  Linux runs, passes in isolation. Order-dependent. Recorded, not diagnosed.
+
+### State
+
+Windows `cargo test --lib` 492/0/4 and `clippy --all-targets -D warnings` exit 0, before
+and after. Linux `cargo check --all-targets` and clippy both exit 0. `ci/` 113 passed, 3
+failed (the same known census reds). `check_lane_inventory.py` PASS with the union against
+`main`. `PLATFORMS.md` §7.21. Reproducers under `ci/link-linux-repro/` with a README
+stating the WSL constraints (`HOME`, `CARGO_TARGET_DIR`, LF endings), explicitly **not**
+lane checks. Two decision records: `link-misnamed-is-a-defect-class`,
+`link-ortlogginglevel-width-and-the-seven-steps`. Committed on `squad/link`, staged by
+explicit path, not pushed. No wall-clock figure quoted.
+
+**Worktree note:** `squad/link` carried eleven untracked `bench/results/*.json` files from
+a sibling on arrival. Left untouched and unstaged rather than committed or cleaned — an
+untracked artifact of unknown provenance is somebody's evidence until they say otherwise.

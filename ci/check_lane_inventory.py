@@ -93,6 +93,7 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     ("Portability lint", "build.portability_lint"),
     ("Remaining integration targets", "build.integration_targets"),
     ("Lane inventory", "SELF"),
+    ("Compile all targets", "build.compile_all_targets"),
     ("Clippy", "build.clippy"),
     ("op-correctness", "device.op_correctness"),
     ("Criterion 10", "device.criterion10_gate"),

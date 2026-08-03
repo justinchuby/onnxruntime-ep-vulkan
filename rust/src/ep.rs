@@ -2700,7 +2700,17 @@ mod tests {
         use crate::registry::ProofKey;
 
         /// Run one disclosure with the fake ORT sink attached and return what reached it.
-        fn run_arm(forms: &[ClaimedForm]) -> (crate::disclosure::Disclosure, Vec<(i32, String)>) {
+        ///
+        /// The severity is carried as `ort::OrtLoggingLevel`, never as a spelled-out integer:
+        /// bindgen emits that alias as `c_int` under MSVC and `c_uint` under GCC (portability
+        /// rule P1, same reason as `OrtChar` below), so any concrete width here compiles on
+        /// exactly one platform.
+        fn run_arm(
+            forms: &[ClaimedForm],
+        ) -> (
+            crate::disclosure::Disclosure,
+            Vec<(ort::OrtLoggingLevel, String)>,
+        ) {
             let _guard = broken_commitment::serialize();
             let api = broken_commitment::fake_api();
             broken_commitment::CAPTURED
@@ -2873,7 +2883,13 @@ mod tests {
         use std::sync::{Mutex, MutexGuard};
 
         /// Everything the fake sink has been handed, as `(severity, message)`.
-        pub(super) static CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+        ///
+        /// The severity keeps the ABI's own type. `ort::OrtLoggingLevel` is `c_int` on MSVC and
+        /// `c_uint` on GCC — the enum's values are 0..=4 on both, so this is a representational
+        /// difference in the binding, not a signed value we are truncating. Storing the alias
+        /// rather than a concrete width is the same portability rule as `OrtChar` below.
+        pub(super) static CAPTURED: Mutex<Vec<(ort::OrtLoggingLevel, String)>> =
+            Mutex::new(Vec::new());
 
         /// The ORT logger pointers **and** the counters are process-global, so a polarity must not
         /// run at the same time as anything else that logs or records. This is the same lock the
@@ -2956,7 +2972,7 @@ mod tests {
         /// Drive `disclose_broken_commitment` with a fake ORT sink attached and report what
         /// reached the sink. `status` is opaque to us — it is only ever passed back to the fake
         /// `GetErrorMessage` — so a dangling-looking non-null value is never dereferenced.
-        fn run_polarity(status: ort::OrtStatusPtr) -> (bool, Vec<(i32, String)>) {
+        fn run_polarity(status: ort::OrtStatusPtr) -> (bool, Vec<(ort::OrtLoggingLevel, String)>) {
             let _guard = serialize();
             let api = fake_api();
             CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clear();
