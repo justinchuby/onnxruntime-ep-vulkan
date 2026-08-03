@@ -133,8 +133,23 @@ def _build_add_session_child() -> None:
     ort.InferenceSession(model, opts, providers=m.EP_PROVIDERS)
 
 
-def test_build_session_for_claim_debug() -> None:
-    """Child process entry point: just build the session to trigger claim logging."""
+def test_build_session_for_claim_debug(register_vulkan_ep) -> None:
+    """Child process entry point: just build the session to trigger claim logging.
+
+    Takes ``register_vulkan_ep`` for a reason that cost a red lane. It did not, and the child
+    therefore created its session with an unregistered provider name; ORT logged
+    ``Falling back to ['CPUExecutionProvider'] and retrying`` and returned a CPU session. That
+    was invisible until `801a331`/`9cd55aa` made a known-fatal ORT log line a lane failure inside
+    subprocesses too — at which point the child exited 1 and the parent's `rc == 0` assertion
+    went red.
+
+    The red is correct and the test was wrong: a claim-debug probe that runs on the CPU EP is
+    observing decline reasons from an EP that was never asked. Ruled out explicitly: this has
+    nothing to do with the counters ABI mismatch of the same hour — that defect was in ctypes
+    struct offsets, this one is provider registration in a child interpreter.
+    """
+    if not register_vulkan_ep:
+        pytest.skip("Vulkan EP could not be registered in this child process")
     _build_add_session_child()
 
 
