@@ -351,38 +351,55 @@ def _worker(lane: str, backend: str, bits: int, gran: str | None, steps: int,
 
 
 def _stats(np, m, vk, cpu) -> dict:
-    """One output's residual, in Trinity's unit and with Trinity's distribution."""
-    ulps, basis = m.ulp_residual(vk, cpu)
-    finite = ulps[np.isfinite(ulps)]
-    a = vk.astype(np.float64)
+    """One output's residual, in Trinity's unit and with Trinity's distribution.
+
+    EDITED 2026-08-03 by Trinity — flagged for Switch's review.
+    ==========================================================
+    This function used to re-implement the distribution beside ``m.ulp_residual``, which
+    is what the docstring below warns against ("a second ULP instrument would be a second
+    answer nobody could reconcile") — and it then drifted exactly as predicted.  Its
+    ``cancellation_elements`` counted **exact zeros** and its
+    ``near_zero_reference_elements`` counted **subnormals**; on the logits both read 0
+    while ``max_ulp`` read 337,178.  0.1953125 / 337178 = 5.79e-7, which is fp16's
+    spacing at a reference of ~4.9e-4 — eight times *above* the smallest normal, so a
+    subnormal test cannot see it and neither counter could ever have explained that max.
+
+    The distribution now comes from ``m.ulp_distribution``, which is the single
+    implementation.  Both of the narrower counts are still published under their original
+    key names so no number already quoted from this probe's artifacts moves; what changes
+    is that ``cancellation_elements`` is now the scale-relative count that actually
+    accounts for the max, and the at-scale basis and the two-basis disagreement verdict
+    are added.
+    """
+    d = m.ulp_distribution(vk, cpu)
     b = cpu.astype(np.float64)
-    # A cancellation element: the oracle collapses towards zero while the tensor's scale does
-    # not.  Trinity's R11 on her own instrument — max ULP alone cannot acquit, so it is counted.
-    #
-    # My first version of this counted `b == 0.0` **exactly**, and on the real tensors it
-    # returned 0 everywhere while `max_ulp` read 6.3e6 — so the counter that exists to explain
-    # the max explained nothing, and a reader would have concluded the max was real.  The
-    # spacing floor is what produces those counts, and it is reached by any reference below the
-    # smallest fp16 normal (6.104e-5), not only by an exact zero.  Both are recorded: the exact
-    # count is the honest subset, the subnormal count is the one that explains the max.
-    scale = float(np.abs(b).max()) if b.size else 0.0
-    tiny = float(np.finfo(np.float16).tiny)  # 6.104e-5
-    exact_zero = int(np.sum((b == 0.0) & (a != 0.0))) if scale > 0 else 0
-    subnormal_ref = int(np.sum(np.abs(b) < tiny)) if scale > 0 else 0
-    cancellations = exact_zero
+    subnormal_ref = d["subnormal_reference_elements"]
     return {
         "near_zero_reference_elements": subnormal_ref,
         "near_zero_reference_fraction": (subnormal_ref / b.size) if b.size else 0.0,
-        "tensor_scale": scale,
-        "median_ulp": float(np.median(finite)) if finite.size else 0.0,
-        "p99_ulp": float(np.percentile(finite, 99)) if finite.size else 0.0,
-        "max_ulp": float(finite.max()) if finite.size else 0.0,
-        "max_abs": float(np.abs(a - b).max()) if a.size else 0.0,
-        "cancellation_elements": cancellations,
+        "exact_zero_reference_elements": d["exact_zero_reference_elements"],
+        "tensor_scale": d["tensor_scale"],
+        "one_ulp_at_scale": d["one_ulp_at_scale"],
+        "median_ulp": d["median_ulp"],
+        "p99_ulp": d["p99_ulp"],
+        "max_ulp": d["max_ulp"],
+        # Use THIS to rank lanes against the same oracle.  `max_ulp` above is attained at
+        # whichever element has the smallest reference, and on this probe's own logits it
+        # ranked the shipping fp16 path (337,178) 47x worse than a simulated int4 KV cache
+        # (7,110).  At the tensor's scale the same residuals rank fp16 145x better
+        # (6.25 vs 908).  Blind where `max_ulp` is sharp; read both.
+        "median_ulp_at_scale": d["median_ulp_at_scale"],
+        "p99_ulp_at_scale": d["p99_ulp_at_scale"],
+        "max_ulp_at_scale": d["max_ulp_at_scale"],
+        "max_abs": d["max_abs"],
+        "cancellation_elements": d["cancellation_elements"],
+        "ulp_basis_ratio": d["ulp_basis_ratio"],
+        "ulp_basis_verdict": d["ulp_basis_verdict"],
         "bitwise_equal": bool(np.array_equal(vk, cpu)),
         "vk_degenerate": bool(m._is_degenerate(vk)),
         "cpu_degenerate": bool(m._is_degenerate(cpu)),
-        "ulp_basis": basis,
+        "ulp_basis": d["ulp_basis"],
+        "ulp_at_scale_basis": d["ulp_at_scale_basis"],
     }
 
 
