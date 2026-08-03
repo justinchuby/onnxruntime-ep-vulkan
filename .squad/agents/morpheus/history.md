@@ -579,3 +579,80 @@ disagreement — second witness, different failure mode, free.
   reason it does not get a number is the same reason four others did not — which is either a
   consistent test or a comfortable one, and I cannot tell from inside. Fact Checker can.
 - §7 needs an index by *question answered*, not by API surface. I could not find my own ruling.
+
+## 2026-08-03T11:56:18-07:00 — The measurement I commissioned refuted the finding I accepted, and that is the instrument working
+
+**I was wrong about the register and the thing that proved it is the thing I built to prove it.** I
+accepted "under-numbered, therefore a navigability defect, repairable by numbering." The derived count
+says `§8.9.x` is cited 339 times externally — **80 in `registry.rs` alone** — against ~1,337 for
+`R1`–`R13`. **Nobody was ever lost.** There are two namespaces, `R#` names an obligation and `§8.9.x`
+names a location, and I was counting one of them while the codebase used both.
+
+The thing I want to keep is not the correction, it is the shape of it: **I handed the count away
+specifically because both the coordinator and I were biased the same way, and the first thing the
+independent count did was overturn a concession I had made *against* myself.** I expected it to cost
+me. It did — five of eight declines — but it also refunded a diagnosis I had accepted too readily.
+**An instrument that only ever takes is not independent either**, and I had not thought about that
+direction at all.
+
+**Five of eight declines fell, and every one fell because someone else was using the principle.**
+Trinity named a test after D5. D6 is a shipped state token seven times over in `registry.rs`. Mouse
+copied D7 into `OP_COVERAGE.md` verbatim, with attribution. **The failure mode I was worried about was
+principles going missing; what actually happened is that they went into other people's code under my
+name and I was scoring that as restraint.** Fact Checker's sentence is the whole diagnosis and it is
+better than mine: *"did I mint a number?" and "did the project acquire a new binding obligation?" are
+different questions, and only the first one had a counter on it.*
+
+So the tally is retired. And I caught myself doing it again this morning — "fifth decline", written in
+§8.9.21 out of pure habit, hours after ruling that scoring is not mine. **The ruling was made and the
+behaviour did not change, which is the gap between a decision and a mechanism, and I have been grading
+other people on exactly that gap all week.**
+
+**The one structural thing I take from it, and it is not the numbering.** A location can be re-cut
+while an obligation cannot — §8.9.19 already had to restate §8.9.17. So anchor phrases at ruling time.
+That is §5.4.1(a)'s line-number rule one level up, which means I wrote the general form of this
+obligation months ago for line numbers and did not see that section numbers are the same reference.
+**Second time today a rule I already wrote turned out to answer a question I was treating as new.**
+
+**Switch's tolerance filing, and he did it in the right order.** He measured the budget before writing
+a kernel, rejected "widen the band" in advance, and named the shape the data supports without ruling
+it. The fact that makes it mine: **a max-ULP criterion ranks the fp16 GPU path at 337,178 ULP as worse
+than every int8 lane.** Criterion 10 is measured with that. It is a defect in the observable and it is
+true whether or not int8 ever ships.
+
+He also found the mechanism, in a finding filed against his own instrument: the spacing floor is
+reached by any reference below the smallest fp16 normal, not only an exact zero. **So the max sits, by
+construction, on the values carrying the least information in the tensor.** Keep the unit, fix the
+statistic — and Trinity's float64 result is why that ordering is forced rather than chosen, since at
+the final RMSNorm we are the exact side and ORT's CPU EP carries the ULP.
+
+**The half I checked hardest is the half that says the fix admits nothing.** I have refused a
+narrowing-after-failure in this exact criterion once already, and the cheapest way to launder one is to
+fix a real defect that happens to also let the blocked thing through. So I ran it: under the split
+observable int8 is still 6–7× the fp16 control, and **Switch's `NO_ULP_BAND_ADMITS_INT8` verdict
+survives the repair his own data motivated.** *A change that makes nothing pass which did not pass
+before is a repair; one that admits the thing whose measurement prompted it is a narrowing.* Having
+that test available meant I did not have to rely on my own account of my motives.
+
+**And I left int8 open, explicitly, because the silence would otherwise read as a grant.** It needs
+Trinity's observable and a byte figure of class MEASUREMENT. Switch already refuses to quote his
+modelled 1.40× as measured, and the ledger's 2.21×/3.17×/4.06× reproduce from nothing in this tree —
+a disagreement he wrote down *before* the first run, which is the only reason it is a finding.
+
+**The number I am most pleased to have in the register is not mine.** An 8-step slope extrapolated to
+ctx 8192 predicts ~13,000 ULP; the measured value is 29. **Wrong by ~450×, in the direction that kills
+the lever.** This project has refused to extrapolate slopes on principle for two weeks. Now it has a
+magnitude, from its own tree, for one lockstep run. **A principle survives being disagreed with; a
+number does not.**
+
+**Carry forward**
+- Anchor phrase per ruling, at ruling time. §8.9.22 complies by rule, §8.9.21 by luck.
+- I do not score my own declines. Written down twice now; the second time is the one that counts.
+- int8 KV admission is OPEN and is my scope call. It does not move until there is a MEASUREMENT-class
+  byte figure and Trinity's observable has landed.
+- The spec constant on an int8 KV kernel is **load-bearing for correctness** — the first here. That is
+  the §8.9.19/§8.9.21 specialisation debt returning with a correctness face, and it is still unowned
+  as a residual even though Mouse owns the witness.
+- Third and fourth times this week that a rule already in the record answered a question I was
+  treating as new (§7.5 this morning, §5.4.1(a) this afternoon). The register is under-*indexed by
+  question*, and that is the version of the navigability complaint that survives the refutation.
