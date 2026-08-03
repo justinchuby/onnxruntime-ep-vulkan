@@ -252,27 +252,35 @@ void main() {
     }
 
     // ------------------------------------------------------------------
-    // 3a. Growing cache: copy the past tokens into present.
+    // 3a. Growing cache: the past tokens must appear in `present`.
     //     ORT's present_key/value output is the WHOLE cache, past ++ new. Under the
     //     shared-buffer convention present IS past and the tokens are already there; under
-    //     the growing convention present is a separate, larger allocation and nothing else
+    //     the growing convention present is a separate, LARGER allocation and nothing else
     //     puts the past in it.
-    //     One invocation per (b, kv_h) does the copy — the first query head of each group
-    //     at the first query position — so the work is not repeated by every query head.
-    //     Nothing reads these positions from `present` during attention (step 4 reads
-    //     `past_k`/`past_v` directly for t < past_len), so this adds no cross-invocation
-    //     ordering requirement.
+    //
+    //     This used to be a standalone loop here that re-read the entire past cache purely
+    //     to relocate it. That read was pure waste: step 4 below already reads every one of
+    //     those same elements, for the same (b, kv_h), in the same invocation whenever this
+    //     invocation is the copy leader. Two reads of the same bytes, one dispatch apart.
+    //
+    //     The copy is now FUSED into step 4: the leader writes each past element to
+    //     `present` at the moment it loads it for the attention sum. Loads drop from 2x the
+    //     cache to 1x; the writes are unchanged, because ORT's contract requires the past
+    //     region of `present` to be materialised and no arrangement of ours avoids that.
+    //     Per-token KV traffic goes from (Nq/Nkv + 2) x cache to (Nq/Nkv + 1) x cache.
+    //
+    //     Note what this does NOT do: it does not remove the write, and the write cannot be
+    //     removed by aliasing `present` onto `past`, because on a growing cache `present` is
+    //     strictly larger than `past` and an alias cannot put the larger tensor in the
+    //     smaller allocation. That lever needs a different declared convention, not a
+    //     different kernel.
     // ------------------------------------------------------------------
-    if (pc.present_len != pc.past_stride && s_local == 0u && (h % (Nq / Nkv)) == 0u) {
-        for (uint t = 0u; t < past_len; t++) {
-            uint src = (b * Nkv + kv_h) * pc.past_stride  * D + t * D;
-            uint dst = (b * Nkv + kv_h) * pc.present_len * D + t * D;
-            for (uint d = 0u; d < D; d++) {
-                wr_presk(dst + d, f16_pk(src + d));
-                wr_presv(dst + d, f16_pv(src + d));
-            }
-        }
-    }
+    bool copy_leader =
+        pc.present_len != pc.past_stride && s_local == 0u && (h % (Nq / Nkv)) == 0u;
+    // The leader's own attention loop runs t over [0, past_len] inclusive, so it covers
+    // every past position exactly once. Any other s_local would too, but only s_local == 0
+    // is guaranteed to, and one writer per (b, kv_h) is what keeps the writes unduplicated.
+    uint copy_dst = (b * Nkv + kv_h) * pc.present_len * D;
 
     // ------------------------------------------------------------------
     // 4. Online softmax attention: softmax(Q K^T * scale) V, causal mask.
@@ -297,7 +305,16 @@ void main() {
         uint kv_base;
         if (t < past_len) {
             kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
-            for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
+            if (copy_leader) {
+                // Fused step 3a: the element is loaded once and used twice.
+                for (uint d = 0u; d < D; d++) {
+                    float kv = f16_pk(kv_base + d);
+                    dot += q[d] * kv;
+                    wr_presk(copy_dst + t * D + d, kv);
+                }
+            } else {
+                for (uint d = 0u; d < D; d++) dot += q[d] * f16_pk(kv_base + d);
+            }
         } else if (t == tok_pos) {
             // self-key — use rotated k_new directly
             for (uint d = 0u; d < D; d++) dot += q[d] * k_new[d];
@@ -347,7 +364,15 @@ void main() {
         // Accumulate e * V[t]
         if (t < past_len) {
             kv_base = (b * Nkv + kv_h) * pc.past_stride * D + t * D;
-            for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
+            if (copy_leader) {
+                for (uint d = 0u; d < D; d++) {
+                    float vv = f16_pv(kv_base + d);
+                    acc[d] += e * vv;
+                    wr_presv(copy_dst + t * D + d, vv);
+                }
+            } else {
+                for (uint d = 0u; d < D; d++) acc[d] += e * f16_pv(kv_base + d);
+            }
         } else if (t == tok_pos) {
             for (uint d = 0u; d < D; d++) acc[d] += e * v_new[d];
         } else {

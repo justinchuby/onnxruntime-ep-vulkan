@@ -131,6 +131,7 @@ COUNTERS = (
     "session_device_allocs",
     "dispatches_executed",
     "compute_calls",
+    "compute_failures",
     "subgraphs_live",
 )
 
@@ -208,6 +209,41 @@ def run_point(past_len: int, iters: int, scratch: Path) -> dict:
             f"ERROR(instrument): counters file lacks {missing}; cannot difference what "
             "was not recorded."
         )
+    # The run must have RUN. Found 2026-08-02: at past_len=512, iters=25 the worker exited 0,
+    # wrote a well-formed counters file, and had `compute_failures=1`, `compute_calls=1`,
+    # `dispatches_executed=0` — it failed on its first inference and did nothing thereafter.
+    # Differenced against the 5-iteration point this produced NEGATIVE bytes per inference and
+    # a readback ratio of -0.670453, and the probe printed it. A counter file is evidence that
+    # counters were written, not that work was done.
+    if c["compute_failures"] != 0:
+        raise SystemExit(
+            f"ERROR(instrument): worker past_len={past_len} iters={iters} recorded "
+            f"compute_failures={c['compute_failures']}. A partial run cannot be differenced "
+            "against a complete one; the slope would attribute the missing work to the axis."
+        )
+    if c["compute_calls"] < iters:
+        raise SystemExit(
+            f"ERROR(instrument): worker past_len={past_len} iters={iters} completed only "
+            f"{c['compute_calls']} compute calls. Refusing to divide by an iteration count "
+            "the run did not reach."
+        )
+    if c["dispatches_executed"] == 0:
+        raise SystemExit(
+            f"ERROR(instrument): worker past_len={past_len} iters={iters} executed 0 "
+            "dispatches — nothing ran on the device, so no byte it reports is ours."
+        )
+    # A lost device is not just another Compute failure: the EP may lose it, ORT may re-run the
+    # island on the CPU EP, and the process still exits 0 with a *complete-looking* file. The
+    # three guards above are all necessary but none of them names the mechanism, and a run that
+    # recovered on the CPU can satisfy all three while reporting device byte counts that stopped
+    # early. `device_losses` is checked separately so the refusal says what actually happened.
+    if c.get("device_losses"):
+        raise SystemExit(
+            f"ERROR(instrument): worker past_len={past_len} iters={iters} recorded "
+            f"device_losses={c['device_losses']}. The device was lost during this point; every "
+            "byte count in it describes a run that ended when the device did. Re-run it; do "
+            "not difference it."
+        )
     return {"past_len": past_len, "iters": iters, **{k: c[k] for k in COUNTERS}}
 
 
@@ -224,22 +260,35 @@ def main() -> int:
     ap.add_argument("--past-len", type=int, default=0)
     ap.add_argument("--iters", type=int, default=5)
     ap.add_argument("--out", type=Path, default=HERE / "kv_bytes_earned.json")
+    ap.add_argument(
+        "--past-lens",
+        type=str,
+        default=None,
+        help="comma-separated past lengths, overriding PAST_LENS. Narrowing the extent is a "
+        "statement about what the box permitted, not about the model; say so in the report.",
+    )
     args = ap.parse_args()
 
     if args.worker:
         return worker(args.past_len, args.iters)
 
+    past_lens = (
+        tuple(int(x) for x in args.past_lens.split(","))
+        if args.past_lens
+        else PAST_LENS
+    )
+
     scratch = BENCH / "_scratch"
     scratch.mkdir(parents=True, exist_ok=True)
 
     points: list[dict] = []
-    for past_len in PAST_LENS:
+    for past_len in past_lens:
         for iters in ITER_POINTS:
             print(f"[kv-bytes] past_len={past_len} iters={iters} ...", flush=True)
             points.append(run_point(past_len, iters, scratch))
 
     by_context = []
-    for past_len in PAST_LENS:
+    for past_len in past_lens:
         lo, hi = (p for p in points if p["past_len"] == past_len)
         by_context.append({
             "past_len": past_len,

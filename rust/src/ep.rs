@@ -1622,6 +1622,35 @@ unsafe fn plan_for_fused_node(
     plan.inputs = fused.inputs;
     plan.outputs = fused.outputs;
 
+    // Recover constancy for the island's boundary inputs from the body nodes.
+    //
+    // MEASURED 2026-08-02 on Phi-3.5 (`ONNXRUNTIME_EP_VULKAN_DEBUG_CONSTANTS`): the fused node
+    // has 457 inputs and `ValueInfo_IsConstantInitializer` answers **false for every one of
+    // them**, while the body nodes of the same island report 388 constant inputs. ORT surfaces
+    // an island's initializers as fused-node inputs but does not re-mark them constant on the
+    // boundary value_info. Asking the fused node is therefore not "no initializers here"; it is
+    // "this question is not answered at this level".
+    //
+    // The join is by name, which is sound because value names are graph-unique. A name that
+    // appears constant on one body node and non-constant on another is a contradiction we
+    // resolve toward `false`: the cost of a false negative is an upload, the cost of a false
+    // positive is a stale answer.
+    let const_names: std::collections::HashSet<&str> = plan
+        .nodes
+        .iter()
+        .flat_map(|n| n.inputs.iter())
+        .filter(|t| t.is_initializer)
+        .map(|t| t.name.as_str())
+        .collect();
+    let const_flags: Vec<bool> = plan
+        .inputs
+        .iter()
+        .map(|t| t.is_initializer || const_names.contains(t.name.as_str()))
+        .collect();
+    for (t, is_const) in plan.inputs.iter_mut().zip(const_flags) {
+        t.is_initializer = is_const;
+    }
+
     Ok(plan)
 }
 
@@ -1867,6 +1896,15 @@ unsafe fn compile_impl(
             .iter()
             .map(|r| r.desc.as_ref().and_then(|d| d.byte_size()).unwrap_or(0) as u64)
             .collect();
+        // Which subgraph inputs are graph initializers, in `KernelContext_GetInput` order.
+        //
+        // This is ORT's own answer (`GraphViewer::input_is_constant` on the fused node), and it
+        // is the only correct predicate for "may this tensor's device copy be reused across
+        // inferences". `dispatch_ort` previously inferred it from `(cpu_ptr, byte_size)` plus a
+        // 32 KiB size floor, which is a different question: an address identifies storage, not
+        // contents. See the comment at the cache site.
+        let input_is_constant: Vec<bool> =
+            plan.inputs.iter().map(|r| r.is_initializer).collect();
         let output_byte_sizes: Vec<u64> = plan
             .outputs
             .iter()
@@ -1904,6 +1942,7 @@ unsafe fn compile_impl(
                 plan,
                 kernels,
                 input_byte_sizes,
+                input_is_constant,
                 output_byte_sizes,
                 output_shapes,
                 n_intermediates,
@@ -1976,6 +2015,12 @@ struct SubgraphComputeInfo {
     kernels: Vec<CompiledKernel>,
     /// Byte size of each subgraph input, in `KernelContext_GetInput` index order.
     input_byte_sizes: Vec<u64>,
+    /// Whether each subgraph input is a graph initializer (a constant), same order.
+    ///
+    /// This is the predicate the device-buffer cache must key on. A constant's bytes cannot
+    /// change for the life of the session, so its device copy is reusable; a non-constant's
+    /// can change on every `Run` even when ORT hands back the same address.
+    input_is_constant: Vec<bool>,
     /// Byte size of each subgraph output, in `KernelContext_GetOutput` index order.
     output_byte_sizes: Vec<u64>,
     /// Concrete shape of each subgraph output, same order.
@@ -2028,6 +2073,7 @@ impl SubgraphComputeInfo {
         plan: crate::engine::Plan,
         kernels: Vec<CompiledKernel>,
         input_byte_sizes: Vec<u64>,
+        input_is_constant: Vec<bool>,
         output_byte_sizes: Vec<u64>,
         output_shapes: Vec<Vec<i64>>,
         n_intermediates: usize,
@@ -2044,6 +2090,7 @@ impl SubgraphComputeInfo {
             plan,
             kernels,
             input_byte_sizes,
+            input_is_constant,
             output_byte_sizes,
             output_shapes,
             n_intermediates,
@@ -2073,6 +2120,7 @@ impl SubgraphComputeInfo {
             plan,
             kernels: Vec::new(),
             input_byte_sizes: Vec::new(),
+            input_is_constant: Vec::new(),
             output_byte_sizes: Vec::new(),
             output_shapes: Vec::new(),
             n_intermediates: 0,
@@ -2166,6 +2214,20 @@ fn failure_condition_token(error_text: &str) -> &'static str {
         "panic"
     } else if t.contains("planted") || t.contains("fault-injection") {
         "planted-control"
+    } else if t.contains("device was lost")
+        || t.contains("device_lost")
+        || t.contains("device has been lost")
+    {
+        // Checked before the size/shape family: the message names byte counts and the device
+        // in the same sentence, and "the device is gone" is the fact that decides whether any
+        // number from this run may be read at all.
+        //
+        // All three spellings are load-bearing. The driver's own text is "The logical device
+        // has been lost" — it contains neither "device was lost" nor "device_lost", so the
+        // first version of this branch classified the real message as `shape` (it contains
+        // "bytes" further along). The token is only useful if it fires on the text that
+        // actually arrives, not on the text we chose to write ourselves.
+        "device-lost"
     } else if t.contains("alloc") || t.contains("out of memory") || t.contains("oom") {
         "allocator"
     } else if t.contains("shape")
@@ -2402,6 +2464,7 @@ unsafe fn compute_impl(
         (*info.session).dispatch_ort(
             &info.kernels,
             &info.input_byte_sizes,
+            &info.input_is_constant,
             &info.output_byte_sizes,
             &info.output_shapes,
             info.n_intermediates,
@@ -3008,6 +3071,31 @@ mod tests {
                 failure_condition_token("planted control (…): synthetic Compute failure"),
                 "planted-control"
             );
+        }
+
+        /// A lost device must be named as a lost device.
+        ///
+        /// Found 2026-08-02 at ctx 512: `vkWaitForFences failed: The logical device has been
+        /// lost` reached ORT, ORT re-ran the island on the CPU EP, and the process exited 0.
+        /// A run that dies partway and exits 0 does not look like a failure; it looks like a
+        /// smaller number — differencing a truncated pair produced an apparent 6.7% KV saving
+        /// that was an observation ending early. The token exists so that a lost device is
+        /// distinguishable from every other Compute failure without parsing prose, and it is
+        /// tested against the *verbatim* driver text because that text is the only thing the
+        /// classifier ever sees.
+        #[test]
+        fn a_lost_device_is_classified_as_a_lost_device_and_not_as_a_shape_error() {
+            for text in [
+                "vkWaitForFences failed: The logical device has been lost",
+                "vkWaitForFences failed: the Vulkan device was lost (VK_ERROR_DEVICE_LOST)",
+                "vkQueueSubmit failed: ERROR_DEVICE_LOST",
+            ] {
+                assert_eq!(
+                    failure_condition_token(text),
+                    "device-lost",
+                    "device loss must not be classified as anything else: {text}"
+                );
+            }
         }
 
         /// A fused island of 355 nodes must not print 355 node names into a host's log: the WARN

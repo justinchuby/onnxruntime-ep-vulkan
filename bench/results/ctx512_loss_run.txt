@@ -1,0 +1,17 @@
+[ctx-loss] gqa past=512 iters=200 ...
+[ctx-loss] gqa past=2048 iters=100 ...
+[ctx-loss] phi past=512 iters=25 ...
+
+==============================================================================
+CTX DEVICE LOSS: which arm, which mechanism, and does it exit non-zero
+==============================================================================
+  gqa  past=  512  iters= 200  exit=  0  lost=False  device_losses=0  calls=200  dispatches=200  events=UNDETERMINED
+  gqa  past= 2048  iters= 100  exit=  0  lost=False  device_losses=0  calls=100  dispatches=100  events=UNDETERMINED
+  phi  past=  512  iters=  25  exit=  0  lost=False  device_losses=0  calls=25  dispatches=8875  events=UNDETERMINED
+
+
+  NO_LOSS — no arm lost the device in this session. The defect is intermittent,
+  so this is NOT evidence that it is fixed; it is evidence this pass missed it.
+
+
+  record: C:\Users\justinchu\dev\ep-vulkan-switch\bench\results\ctx_device_loss.json
