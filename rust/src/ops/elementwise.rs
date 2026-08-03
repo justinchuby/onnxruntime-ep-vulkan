@@ -163,10 +163,16 @@ fn gelu(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     only_loadable_variants(view, spec)
 }
 
-/// `Clip` — the three-input form only, f32. See [`claim::ew_clip`] for why the shorter forms
-/// decline rather than defaulting the omitted bound.
+/// `Clip` — one to three inputs, the bounds optional. See [`claim::ew_clip`] for how an omitted
+/// bound reaches the shader as a selector bit rather than as a substituted sentinel.
 fn clip_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_clip(view, spec)?;
+    only_loadable_variants(view, spec)
+}
+
+/// `IsInf` — `detect_positive`/`detect_negative` carried in the selector specialisation constant.
+fn ew_unary_selector_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    claim::ew_unary_selector(view, spec)?;
     only_loadable_variants(view, spec)
 }
 
@@ -232,7 +238,7 @@ crate::op_table! {
     "Not",            Ai,     1 ..= OPSET_ANY,    BOOL,     kernel!(EwUnary, "not"),     claim::ew_unary,    templates::ew_unary,    Ready;
     "BitwiseNot",     Ai,     18 ..= OPSET_ANY,   INT,      kernel!(EwUnary, "bitnot"),  claim::ew_unary,    templates::ew_unary,    Ready;
     "IsNaN",          Ai,     9 ..= OPSET_ANY,    FLOAT,    kernel!(EwUnary, "isnan"),   claim::ew_unary,    templates::ew_unary,    Ready;
-    "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   claim::never,       templates::unimplemented, Staged(NEEDS_PARAMS);
+    "IsInf",          Ai,     10 ..= OPSET_ANY,   FLOAT,    kernel!(EwUnary, "isinf"),   ew_unary_selector_f32, templates::ew_unary, Ready;
     "Identity",       Ai,     1 ..= OPSET_ANY,    ANY,      kernel!(EwUnary, "identity"), ew_unary_f32,      templates::ew_unary,    Live;
 
     // ---------------------------------------------------------------------------------------
@@ -620,23 +626,49 @@ mod tests {
         }
     }
 
-    /// The blocker `NEEDS_PARAMS` still means what it says, now that the *unary* half of it has
-    /// been retired by the push-constant tail.
+    /// The blocker `NEEDS_PARAMS` still means what it says, now that both halves of it have moved.
     ///
-    /// The tail carries floats. `Mod`'s `fmod`, `BitShift`'s `direction` and `IsInf`'s two detect
-    /// flags are not floats — they select a different expression, so each needs a shader variant
-    /// rather than a value, and they keep the blocker. Recording that here stops the next reader
-    /// from concluding that because `LeakyRelu` moved, these were simply overlooked.
+    /// The push-constant tail carries **floats**. `Mod`'s `fmod`, `BitShift`'s `direction` and
+    /// `IsInf`'s two detect flags are not floats — they select a different expression, not a
+    /// different coefficient — so none of them may ride the tail. That much was always right.
+    ///
+    /// What was wrong, until 2026-08-02, was the conclusion drawn from it: that a selector
+    /// therefore needs its own SPIR-V module. Specialisation constant 2 (`ops::common::selector`)
+    /// carries a selector, folds its branch at pipeline creation, and is already part of the
+    /// pipeline cache key. `IsInf` moved out on that mechanism. `Mod` and `BitShift` did not,
+    /// because neither has a *shader body* for the form the selector would choose — `Mod`'s
+    /// integer remainder and `BitShift`'s opposite shift are unwritten, and a selector that
+    /// selects between one implemented case and one absent one is a wrong answer with extra steps.
+    ///
+    /// The assertion below is therefore about the property, not the state: an op whose attribute
+    /// is a selector must never appear in the float slot table, whatever its status is. That
+    /// remains true of `IsInf` now it is `Ready`, which is why it is still checked here.
     #[test]
-    fn parameterised_ops_are_staged_behind_their_own_reason() {
+    fn a_selector_attribute_never_rides_the_float_parameter_tail() {
         for op in ["Mod", "BitShift", "IsInf"] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
-            assert_eq!(
-                s.status,
-                OpStatus::Staged(NEEDS_PARAMS),
+            assert!(
+                crate::ops::common::params::slots_for(s.op_type).is_none(),
                 "{op}'s attribute is a selector, not a float; it cannot ride the parameter tail"
             );
         }
+        // The two that are still staged are staged for the reason the table names, and it is the
+        // absence of a shader body rather than the absence of a carrier.
+        for op in ["Mod", "BitShift"] {
+            let s = OPS.iter().find(|s| s.op_type == op).unwrap();
+            assert_eq!(s.status, OpStatus::Staged(NEEDS_PARAMS), "{op}");
+        }
+        // `IsInf` rides the selector constant instead, and its row must say so on both sides:
+        // a `Ready` row wired to `claim::never` would be dead, and a selector row wired to the
+        // plain unary predicate would claim `detect_negative = 0` and answer as if it were 1.
+        let isinf = OPS.iter().find(|s| s.op_type == "IsInf").unwrap();
+        assert_eq!(isinf.status, OpStatus::Ready);
+        assert!(crate::ops::common::selector::source_for("IsInf").is_some());
+        assert!(std::ptr::fn_addr_eq(
+            isinf.claim,
+            ew_unary_selector_f32 as crate::registry::ClaimPredicate
+        ));
+
         for op in ["Cast", "CastLike"] {
             let s = OPS.iter().find(|s| s.op_type == op).unwrap();
             assert_eq!(s.status, OpStatus::Staged(NEEDS_CAST_MATRIX), "{op}");

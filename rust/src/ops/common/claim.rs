@@ -364,8 +364,18 @@ fn check_single_output(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 /// carry the `dim_param` name). The handler must therefore select the general broadcast path.
 /// That is a performance choice, not a correctness one.
 fn check_broadcast(view: &NodeView<'_>, spec: &OpSpec, n: usize) -> ClaimResult {
+    let indices: Vec<usize> = (0..n).collect();
+    check_broadcast_of(view, spec, &indices)
+}
+
+/// [`check_broadcast`] over an explicit input list rather than a prefix.
+///
+/// `Clip` needs this: its bounds are optional, so the inputs that participate in the broadcast are
+/// whichever slots the node actually supplies, not `0..n`.
+fn check_broadcast_of(view: &NodeView<'_>, spec: &OpSpec, indices: &[usize]) -> ClaimResult {
+    let n = indices.len();
     let mut shapes: Vec<Vec<i64>> = Vec::with_capacity(n);
-    for i in 0..n {
+    for &i in indices {
         let edge = input_edge(view, spec, i)?;
         let Some(s) = edge.shape else {
             deny!(
@@ -473,6 +483,30 @@ pub fn ew_unary(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     elementwise(view, spec, 1, 0)
 }
 
+/// One input, one output, shape-preserving, **with a selector in specialisation constant 2**.
+///
+/// `IsInf`. Its `detect_positive`/`detect_negative` attributes choose which comparison the shader
+/// makes rather than supplying a value to it, so they cannot ride the float parameter tail — the
+/// reason the row was staged behind `NEEDS_PARAMS`. That reason was sound about the tail and
+/// wrong about the conclusion: a specialisation constant carries a selector, folds the branch at
+/// pipeline creation, and is already part of the pipeline cache key, so two `IsInf` nodes with
+/// different flags cannot share a pipeline. See `ops::common::selector`.
+///
+/// The predicate is the plain unary one plus a resolve of the selector table, so an attribute the
+/// shader cannot evaluate declines with `[attribute]` naming it rather than dispatching the ONNX
+/// default in its place — which would answer a graph asking for `detect_negative = 0` with
+/// `detect_negative = 1`, a wrong answer rather than an error.
+pub fn ew_unary_selector(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+    ew_unary(view, spec)?;
+    crate::ops::common::selector::resolve(spec.op_type, view).map_err(|e| {
+        crate::registry::decline(
+            crate::registry::DeclineCode::Attribute,
+            format_args!("`{}` {e}", spec.op_type),
+        )
+    })?;
+    Ok(())
+}
+
 /// One input, one output, shape-preserving, **with attributes carried in push constants**.
 ///
 /// `LeakyRelu`, `Elu`, `Selu`, `Celu`, `ThresholdedRelu`, `Shrink`, `HardSigmoid`, `Swish`. These
@@ -494,21 +528,75 @@ pub fn ew_unary_params(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     Ok(())
 }
 
-/// `Clip` in its three-input form — value, min, max, all present and all the same dtype.
+/// `Clip` — value plus **whichever bounds the node supplies**, all of the value's dtype.
 ///
-/// `Clip`'s bounds are **optional inputs** from opset 11 on, not attributes, so the
-/// push-constant route this module's `ew_unary_params` uses does not apply: a bound may be a
-/// graph initializer or a value computed at runtime, and we cannot read either at Compile time.
-/// The three-input form needs neither — the bounds are ordinary tensors that broadcast against
-/// the value with a stride of zero, which is exactly what the shared indexing helper already
-/// does — so it is claimed and the other forms are declined.
+/// `Clip`'s bounds are **optional inputs** from opset 11 on, not attributes, so the push-constant
+/// route this module's `ew_unary_params` uses does not apply: a bound may be a graph initializer
+/// or a value computed at runtime, and we cannot read either at Compile time. The bounds are
+/// ordinary tensors that broadcast against the value with a stride of zero, which is exactly what
+/// the shared indexing helper already does.
 ///
-/// A one- or two-input `Clip` declines `[arity]`. That is a real loss (a min-only `Clip` is
-/// common) and the fix is a shader variant that substitutes ±infinity for the omitted bound, not
-/// a widening of this predicate: an omitted bound is a different *dispatch shape*, not a
-/// different value, and claiming it here would bind a buffer that does not exist.
+/// # The arity, and the repair as recorded vs as landed
+///
+/// This predicate used to require exactly three inputs and decline the one- and two-input forms
+/// `[arity]`, recording the repair as "a shader variant that substitutes ±infinity for the omitted
+/// bound". That was right about the diagnosis — an omitted bound is a different *dispatch shape*,
+/// not a different value, so widening the predicate alone would bind a buffer with no producer —
+/// and one step wrong about the remedy: this row's caps are `NUMERIC`, and **±infinity is not
+/// representable at i32 or i64**, so the substitution would have needed a dtype-conditional
+/// sentinel. `ops::common::selector` guards the *comparison* instead, in a specialisation constant
+/// that folds at pipeline creation, and the absent bound's binding is filled with input 0 as an
+/// inert placeholder that the folded branch never reads.
+///
+/// A `Clip` with **neither** bound is claimed too, as the identity. Declining it while this table
+/// registers `Identity` — a row that exists to weld an island, not to compute anything — would be
+/// the same graph decided two ways by which op name the exporter happened to emit.
 pub fn ew_clip(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
-    elementwise(view, spec, 3, 0)
+    let n = view.num_inputs();
+    require!(
+        (1..=3).contains(&n),
+        Arity,
+        "`{}` has {n} inputs; ONNX allows 1 to 3",
+        spec.op_type
+    );
+    let sel = match crate::ops::common::selector::resolve(spec.op_type, view) {
+        Ok(s) => s,
+        Err(e) => deny!(Attribute, "`{}` {e}", spec.op_type),
+    };
+    check_single_output(view, spec)?;
+
+    // Only the slots the selector says are real are checked and only they are dispatched — an
+    // absent bound has no edge to check and no buffer to bind.
+    let mut present = vec![0usize];
+    for (bit, idx) in [(1u32, 1usize), (2u32, 2usize)] {
+        if sel & bit != 0 {
+            present.push(idx);
+        }
+    }
+
+    let mut common = None;
+    for &i in &present {
+        let edge = input_edge(view, spec, i)?;
+        check_shape(spec, &edge, &format!("input {i}"))?;
+        check_dtype(spec, &edge, &format!("input {i}"))?;
+        check_subword_tail(spec, &edge, &format!("input {i}"))?;
+        match (common, edge.dtype) {
+            (None, dt) => common = dt,
+            (Some(a), Some(b)) if a != b => {
+                deny!(
+                    DType,
+                    "`{}` mixes {} and {} across its inputs; ONNX requires one element type and \
+                     this EP does not insert casts",
+                    spec.op_type,
+                    dtype_suffix(a),
+                    dtype_suffix(b)
+                );
+            }
+            _ => {}
+        }
+    }
+
+    check_broadcast_of(view, spec, &present)
 }
 
 /// Two inputs with numpy broadcasting. `Add`, `Mul`, `Pow`, `Greater`, `And`, ...

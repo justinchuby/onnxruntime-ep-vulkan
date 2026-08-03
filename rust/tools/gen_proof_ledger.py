@@ -172,6 +172,17 @@ def _child_main(spec_path: str) -> int:
                 flat[0::4] = np.nan
                 flat[1::4] = np.inf
             return v
+        if domain == "withinf":
+            # `IsInf`'s four predicates differ only on the sign of an infinity, so the input has
+            # to carry both. NaN is here too because it is the value most likely to be confused
+            # with an infinity by a shader that tested `x != x` or `abs(x) > large`.
+            v = v.copy()
+            flat = v.reshape(-1)
+            if flat.size >= 4:
+                flat[0::4] = np.inf
+                flat[1::4] = -np.inf
+                flat[2::4] = np.nan
+            return v
         return v
 
     def _ints(shape, dtype):

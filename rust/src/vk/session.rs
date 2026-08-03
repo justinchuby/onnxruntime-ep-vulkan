@@ -662,11 +662,17 @@ fn output_bind_requested() -> bool {
                  stale the next time that binary is built. This REPLACES the previous warning \
                  on this flag, which said it returned ALL ZEROS: that was true and is no longer, \
                  and a record describing a build nobody is running is the defect this project \
-                 has now hit four times. What this flag does NOT yet do is remove the round \
-                 trip: the download is moved to whoever asks for host bytes, and is counted when \
-                 it happens (alloc_device_downloads). A caller that never asks never pays \
-                 (bench/results/probe_kv_chain_readback.py: 1792 -> 0 bytes per step at equal \
-                 dispatch counts, both devices); one that calls copy_outputs_to_cpu still does."
+                 has now hit four times. What this flag does NOT do is make the transfer \
+                 disappear: the download is MOVED to whoever asks for host bytes, and is counted \
+                 when it happens (alloc_device_downloads). A caller that never asks never pays. \
+                 MEASURED 2026-08-03 on the real Phi-3.5-mini graph (355-node island, 64 KV \
+                 outputs, 6-step decode chain, past 4 -> 9, NVIDIA RTX 4060 Laptop and Intel \
+                 Iris Xe, both read off the run): shipping path 393,216 B per past token; with \
+                 the 64 presents bound in device memory and fed back as the next step's past, \
+                 the slope is FLAT at 0 B per past token and the whole per-step link cost is \
+                 the caller's own 64,128 B of logits. Bit-identical to the unbound lane on all \
+                 6 steps, same token chain as the CPU EP. See \
+                 bench/results/probe_kv_chain_phi35.py -> ROUND_TRIP_REMOVED."
             );
         });
     }
@@ -1252,6 +1258,27 @@ impl VulkanSession {
         // overflow check — `len > available` is trivially false for len=0 — allowing an upload
         // of `actual_input_byte_sizes[i]` bytes from a span that may be too short.
         for (i, p) in input_cpu_ptrs.iter_mut().enumerate() {
+            // Already bound in Step 1a: the dispatch will read the span's `VkBuffer` directly, so
+            // its host bytes are never touched and asking for them is a download nobody wanted.
+            //
+            // MEASURED 2026-08-03 on the real Phi-3.5 decode chain (`probe_kv_chain_phi35.py`):
+            // without this guard, feeding step N's `present.*` back as step N+1's
+            // `past_key_values.*` cost 64 downloads per step — one per KV input, growing at
+            // 393,216 B per past token, i.e. Niobe's whole readback slope, re-paid on the input
+            // side after the output side had stopped paying it. `host_backing_for` refreshes a
+            // device-authoritative span before handing out its address, which is exactly right
+            // for a reader and exactly wrong for a caller that is not going to read.
+            //
+            // Correctness: a span is bound here only when `bind_target_for` proved it has a
+            // `VkBuffer` on the device this dispatch runs on at offset 0. Whichever copy is
+            // authoritative, the device buffer is current — `CopyTensors` mirrors every host
+            // write into the device buffer before handing authority back to staging, and a
+            // device-authoritative span is by definition newest on the device. What we skip is
+            // the *refresh of staging*, which no reader in this dispatch consults; the next
+            // reader that does consult it refreshes then, and pays then.
+            if bound_inputs[i].is_some() {
+                continue;
+            }
             let want = actual_input_byte_sizes.get(i).copied().unwrap_or(0) as usize;
             match crate::transfer::host_backing_for(p.cast_mut().cast::<u8>(), want) {
                 None => {}
@@ -1463,6 +1490,10 @@ impl VulkanSession {
                     // authoritative reads as zeros, which is precisely the measured failure.
                     if crate::transfer::mark_device_authoritative(ptr, true) {
                         crate::counters::record_output_bound();
+                        log::debug!(
+                            "[VulkanEP] bound output[{i}] ({sz} B) to ORT's device buffer at \
+                             {ptr:p} and marked the span device-authoritative"
+                        );
                     } else {
                         log::warn!(
                             "[VulkanEP] output {i}: the device buffer bound but its span could \

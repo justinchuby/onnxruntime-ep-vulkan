@@ -1727,11 +1727,26 @@ fn dtype_signature(view: &NodeView<'_>) -> String {
     format!("{}>{}", ins.join(","), outs.join(","))
 }
 
-/// The kernel variant that will actually be dispatched: the SPIR-V module stem.
+/// The kernel variant that will actually be dispatched: the SPIR-V module stem, plus any
+/// specialisation constant that changes the code the driver emits from it.
 ///
-/// The stem encodes template, template-op and dtype, which is the emitted code's identity. A row
-/// with no shader (metadata-only, e.g. a shape op handled on the host) reports `metadata` rather
-/// than an empty string, so that "no variant" is a value and not a hole.
+/// The stem encodes template, template-op and dtype, which is most of the emitted code's identity.
+/// A row with no shader (metadata-only, e.g. a shape op handled on the host) reports `metadata`
+/// rather than an empty string, so that "no variant" is a value and not a hole.
+///
+/// # The selector suffix
+///
+/// `ops::common::selector` carries an op's *expression selector* in specialisation constant 2, and
+/// a specialisation constant is resolved at pipeline creation — so two nodes with different
+/// selectors run different code out of one module. This key's own doc comment already required
+/// that ("`kernel_variant_key` — including any spec-constant value that changes the emitted
+/// code"); the suffix is what makes the implementation match it. `IsInf(detect_negative=0)` and
+/// `IsInf(detect_negative=1)` are different paths and must not share a proof.
+///
+/// **Only attribute-derived selectors are appended.** An input-presence selector (`Clip`'s) is
+/// already recorded, exactly and independently, by [`populated_input_set`]; appending it too would
+/// write the same fact into the key twice and change every existing `Clip` key for no distinction
+/// gained.
 fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
     let dispatch_dtype = view
         .input_types()
@@ -1744,9 +1759,21 @@ fn variant_key(view: &NodeView<'_>, spec: &'static OpSpec) -> String {
                 .first()
                 .and_then(|t| t.as_ref().and_then(|e| e.dtype))
         });
-    match dispatch_dtype.and_then(|d| spec.kernel.stem(d)) {
+    let stem = match dispatch_dtype.and_then(|d| spec.kernel.stem(d)) {
         Some(stem) if !stem.is_empty() => stem.to_string(),
         _ => "metadata".to_string(),
+    };
+    match crate::ops::common::selector::source_for(spec.op_type) {
+        Some(crate::ops::common::selector::SelectorSource::Attrs(_)) => {
+            // An unresolvable selector is a node the predicate declines; the key still has to be a
+            // distinct, total string, so the failure renders as its own tag rather than collapsing
+            // onto a real selector's.
+            match crate::ops::common::selector::resolve(spec.op_type, view) {
+                Ok(sel) => format!("{stem}@sel{sel}"),
+                Err(_) => format!("{stem}@sel-unresolved"),
+            }
+        }
+        _ => stem,
     }
 }
 

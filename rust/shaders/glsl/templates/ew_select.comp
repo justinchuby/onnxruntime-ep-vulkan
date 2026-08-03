@@ -54,6 +54,12 @@ layout(set = 0, binding = 3) writeonly buffer Out { SCALAR_T data[]; } outb;
 EW_DEFINE_STORE(store_out, outb)
 #endif
 
+#if EW_OP == OP_CLIP
+// Declared here rather than in `indexing.glsl` so only the `clip` modules change shape — see the
+// header note there.
+layout(constant_id = 2) const uint EW_SELECTOR = 0;
+#endif
+
 void main() {
     uint gid = gl_GlobalInvocationID.x;
     if (gid >= pc.elem_count) {
@@ -66,13 +72,28 @@ void main() {
     COMPUTE_T y = load2(ew_index(2u, gid));
     store_out(gid, cond != 0u ? x : y);
 #elif EW_OP == OP_CLIP
-    // The three-input form: min and max are tensors, not attributes. The row is still staged —
-    // `Clip` may omit either bound, and an omitted bound is a different dispatch shape, not a
-    // different value, so it needs the parameterised template rather than this one.
+    // `Clip`'s bounds are optional *inputs* from opset 11 on, so which of them exist is a property
+    // of the node, not a value. It arrives in `EW_SELECTOR` (bit 0 = `min` present, bit 1 = `max`
+    // present) and both tests fold at pipeline creation, so the short forms cost no branch.
+    //
+    // An absent bound's binding is filled with input 0 as an inert placeholder — the descriptor
+    // set is always the three-input shape this module declares — and the guard below means that
+    // placeholder is never read, so no sentinel value is needed. Substituting ±infinity for the
+    // omitted bound (the repair as first recorded in `claim::ew_clip`) would have worked at f32
+    // and f16 and had nothing to substitute at i32 and i64, which this row's `NUMERIC` caps admit.
+    //
+    // `EW_SELECTOR == 0` (neither bound) never reaches here: `selector::resolve` refuses it and
+    // the claim predicate declines, because a `Clip` with no bounds is the identity.
     COMPUTE_T v = load0(ew_index(0u, gid));
-    COMPUTE_T lo = load1(ew_index(1u, gid));
-    COMPUTE_T hi = load2(ew_index(2u, gid));
-    store_out(gid, v < lo ? lo : (v > hi ? hi : v));
+    if ((EW_SELECTOR & 1u) != 0u) {
+        COMPUTE_T lo = load1(ew_index(1u, gid));
+        v = v < lo ? lo : v;
+    }
+    if ((EW_SELECTOR & 2u) != 0u) {
+        COMPUTE_T hi = load2(ew_index(2u, gid));
+        v = v > hi ? hi : v;
+    }
+    store_out(gid, v);
 #else
 #error "ew_select.comp has no case for this EW_OP"
 #endif

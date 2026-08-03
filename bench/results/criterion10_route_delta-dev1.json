@@ -1,0 +1,22 @@
+{
+  "degenerate_a": 0,
+  "degenerate_b": 0,
+  "failing_a": [
+    0,
+    63,
+    64
+  ],
+  "failing_b": [
+    0,
+    63,
+    64
+  ],
+  "label_a": "dev1 HOST_STAGING",
+  "label_b": "dev1 DEVICE_AUTHORITATIVE",
+  "moved": [],
+  "outputs_a": 65,
+  "outputs_b": 65,
+  "outputs_moved": 0,
+  "within_tolerance_a": 62,
+  "within_tolerance_b": 62
+}
