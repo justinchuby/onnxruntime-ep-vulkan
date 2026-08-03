@@ -1,0 +1,66 @@
+{
+  "probe": "does device residency remove the KV round trip, or only move it?",
+  "ort_version": "1.28.0",
+  "steps": 6,
+  "ep_device": {
+    "vulkan.device_name": "Intel(R) Iris(R) Xe Graphics",
+    "vulkan.device_index": "0",
+    "vulkan.vendor_id": "0x8086"
+  },
+  "host_lane_download_bytes_per_step": [
+    0,
+    1792,
+    1792,
+    1792,
+    1792,
+    1792
+  ],
+  "resident_lane_download_bytes_per_step": [
+    3584,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "host_lane_dispatches_per_step": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "resident_lane_dispatches_per_step": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "resident_vs_host_final": {
+    "attn_out": 0.0,
+    "present_key": 0.0,
+    "present_value": 0.0
+  },
+  "nonzero_final": {
+    "attn_out": 256,
+    "present_key": 320,
+    "present_value": 320
+  },
+  "host_lane_total_bytes": 8960,
+  "resident_lane_total_bytes": 3584,
+  "bytes_removed_from_the_link": 5376,
+  "counter_sample_lag_steps": 1,
+  "host_lane_steady_bytes_per_step": 1792,
+  "resident_lane_steady_bytes_per_step": 0,
+  "verdict": "ROUND_TRIP_REMOVED",
+  "why": [
+    "6 steps ran with the KV in device memory and agree with the host lane to 0",
+    "link traffic fell from 8960 to 3584 byte(s) over the measured steps",
+    "steady slope 1792 -> 0 byte(s) per step, at identical dispatch counts (6 each). A slope cannot be beaten by a lane that does less work",
+    "no wall-clock is quoted: the box is permanently contended (PERF.md \u00a720). This is a byte count and byte counts are exact",
+    "6 steps at a FIXED past extent of 4: this case's graph rejects any other, so the growing-context term is not measured here"
+  ]
+}

@@ -236,3 +236,65 @@ misleading and said he did not know which. It is neither. The rank invariant is 
   two correct fp16 implementations grows with depth by construction. Worth repeating to anyone who
   frames this as "accumulated error".
 - Five declines now. If a sixth arrives I should ask someone else whether the register is under-growing.
+
+## 2026-08-02T21:24:34-07:00 — The ledger fails open across devices; the dichotomy was false
+
+Link found that the EP prints "proven ... on device0" and claims the form anyway when running on
+DEVICE=1. I verified it before ruling: LedgerEntry carries device, ort_build and tolerance — the entry
+records its frame in full — and there is not one use of an entry's .device anywhere in registry.rs.
+Not in get, not in lookup_key, not in ledger_contains. The field is on 74 of 75 entries and is inert.
+
+The sentence I want to keep from this one: **recording a frame is not carrying it. A field no
+predicate reads is not a guard, it is a comment with a schema.** That is the third costume this
+session of the same defect — RAI-011's early return, the always-absent screen, and now a frame that is
+written down and never consulted. Not an instrument that goes red and changes nothing; one that
+cannot go red at all while looking exactly like one that could.
+
+**The coordinator put a dichotomy to me and I refused both horns, and I think this is the most useful
+thing I did today.** Per-device proofs make a new GPU unusable until ninety-five forms are proved on
+it — fatal for a cross-platform EP. Device-independent proofs assert proven-anywhere-is-correct-
+everywhere, which timestampPeriod already falsified on Intel. Both costings are right. The choice is
+not required, because one entry is answering for two jobs with one bit: that the form is implemented
+correctly, and that the form is correct here.
+
+So: a proof is a property of a form on a device, and the remedy is R12's remedy — carry the frame,
+name the extrapolation. PROVEN / PROVEN-ELSEWHERE / UNPROVEN, with PROVEN-ELSEWHERE claimable on
+purpose. I was careful to say why that is not a softening: the extrapolation already happens on every
+non-device0 run, silently, and is indistinguishable in every artifact from a real proof. Naming it
+costs nothing at bring-up and removes the silence.
+
+**And I found the thing that actually dissolves the cost argument, which the dichotomy hid.** Device-
+dependence, when it is real, is subgroup width and fp16 rounding and driver behaviour — and my own
+ruling six hours ago established that those move a residual by ULPs. So the ULP series is the cheap
+per-device instrument that promotes PROVEN-ELSEWHERE without re-running ninety-five differentials.
+The expensive proof establishes the form; the cheap invariant establishes the port. I did not expect
+the accumulation ruling to pay for itself this fast.
+
+**The toolchain half I ruled R13 and refused to fix the obvious way.** Hashing the GLSL instead of the
+SPIR-V would remove the strictness — and would go blind to a compiler that miscompiles correct source,
+which is a real correctness event. The digest is over-broad, not fabricated; the breadth is
+protective. Declare, do not narrow: the compiler enters the frame, and SUBJECT-CHANGED splits from
+TOOLCHAIN-CHANGED. Both demote. Neither becomes claimable. But seventy-four entries faulting on a
+glslc upgrade must not look like seventy-four kernels changed.
+
+**Link's governance finding is the sharpest thing anyone brought me this week and I gave it its own
+drafting rule.** I had said: do not make a red lane green by narrowing it. He found that fixing an
+unrelated clippy error would have made op-correctness green having asserted nothing — the lane already
+reports 2 passed, 36 skipped. "The narrowing you forbade, reached without anyone narrowing anything."
+A prohibition on an act is blind to the state that act would have produced when that state is already
+the default. State prohibitions as invariants over states with a count. That is a correction to how I
+write, not to how anyone else works, and I wrote it beside my own drafting rule for that reason.
+
+Endorsed GATED_NEVER_RUN as R7 — a red step skips the seven behind it, so op_correctness was never
+"never observed to fail", it has never run. Deleting the observed date was the better half: a date is
+a claim that something happened.
+
+**Carry forward:**
+- Mouse owns the ledger change: three states, device in the predicate, PROVEN-ELSEWHERE counted and
+  disclosed in the run record. Fail-open first, fail-strict second — the asymmetry sets the order.
+- The digest's frame gains the compiler; demotion splits SUBJECT-CHANGED / TOOLCHAIN-CHANGED.
+- The ULP series now has a second consumer: it is the promotion instrument for PROVEN-ELSEWHERE.
+  Worth telling whoever builds it that it is load-bearing in two places.
+- No mint again. Six declines. I said last time that if a sixth arrived I should ask someone else
+  whether the register is under-growing, and I am asking: this one genuinely individuates by remedy
+  (R12 carry-the-frame, R13 third-token) but I would rather be checked than trust my own count.

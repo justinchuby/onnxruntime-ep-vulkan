@@ -125,6 +125,31 @@ def main() -> int:
     mi = None
     try:
         mi = d.memory_info(ort.OrtDeviceMemoryType.DEFAULT)
+        # `memory_info()` returns None — it does not raise — when the EP registered no device
+        # allocator, which is what happens whenever ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY is unset.
+        # That is a fact about THIS PROCESS'S ENVIRONMENT, not about ORT's contract, and the two
+        # must not share a verdict.  Measured 2026-08-02: an earlier version of this probe read
+        # None here and printed CALLER_CANNOT_ADDRESS_EP_MEMORY -- a claim that ORT forbids
+        # device-resident KV -- when the only thing that had happened was a missing env var.  A
+        # probe that reports the strongest possible finding when its own precondition is absent
+        # is not a probe.
+        if mi is None:
+            q1["by_ep_memory_info"] = (
+                "PRECONDITION_ABSENT: the EP registered no DEFAULT allocator, so there is "
+                "nothing for a caller to address; set ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1"
+            )
+            q1["device_memory_env"] = os.environ.get(
+                "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY", "<unset>"
+            )
+            doc["q1_addressable"] = q1
+            doc["verdict"] = "ERROR(instrument)"
+            doc["why"] = [
+                "this probe asks whether ORT PERMITS a caller-allocated device output; with no "
+                "EP allocator registered there is no device memory to offer, and the question "
+                "was never put to ORT. Refusing rather than answering it in the negative."
+            ]
+            print(json.dumps(doc, indent=2))
+            return 2
         ov = ort.OrtValue.ortvalue_from_shape_and_type([2, 3], np.float16, memory_info=mi)
         q1["by_ep_memory_info"] = "OK"
         q1["memory_info_name"] = mi.name

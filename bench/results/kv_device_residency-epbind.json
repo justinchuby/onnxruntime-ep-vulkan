@@ -33,9 +33,9 @@
   "q2_bind_failures": {},
   "q3_run_with_device_outputs": "OK",
   "q4_rel_vs_cpu": {
-    "attn_out": 1.0,
-    "present_key": 1.0,
-    "present_value": 1.0
+    "attn_out": 0.11038780212402344,
+    "present_key": 0.0,
+    "present_value": 0.0
   },
   "q4_rel_vs_unbound_ep": {
     "attn_out": 0.0,
@@ -43,14 +43,14 @@
     "present_value": 0.0
   },
   "q4_unbound_ep_rel_vs_cpu": {
-    "attn_out": 1.0,
-    "present_key": 1.0,
-    "present_value": 1.0
+    "attn_out": 0.11038780212402344,
+    "present_key": 0.0,
+    "present_value": 0.0
   },
   "nonzero_elements_returned": {
-    "attn_out": 0,
-    "present_key": 0,
-    "present_value": 0
+    "attn_out": 256,
+    "present_key": 320,
+    "present_value": 320
   },
   "counters": {
     "alloc_device_frame": "SHARED",
@@ -64,9 +64,11 @@
     "outputs_host_resident": 0,
     "outputs_device_bound": 6
   },
-  "verdict": "DEVICE_BOUND_OUTPUTS_RETURN_NOTHING",
+  "verdict": "KV_CAN_STAY_DEVICE_RESIDENT",
   "why": [
-    "outputs returned all zeros: ['attn_out', 'present_key', 'present_value'] \u2014 the same host-staging-authoritative shape as the EP-side bind, now reached from the caller side"
+    "outputs allocated in EP device memory and bound through IOBinding; the run succeeded and every output is bit-identical to the same session run unbound",
+    "the EP's own gap against the CPU reference is unchanged by binding: {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} unbound vs {'attn_out': 0.11038780212402344, 'present_key': 0.0, 'present_value': 0.0} bound. That gap is this case's fp16 arithmetic and is not this probe's question",
+    "ORDERING IS LOAD-BEARING: the session must exist before the allocator is asked for memory. Asking first yields alloc_device_frame = SPLIT-DEVICE \u2014 a second VkDevice no dispatch can bind. This probe refused itself for exactly that on its first run"
   ],
   "ep_side_step1c_bind": "1",
   "lane": "epbind"

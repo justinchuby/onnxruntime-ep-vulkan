@@ -19,7 +19,7 @@
     "viable_islands_retained": 1,
     "ledger_gate": "MIXED",
     "ledger_hits": 355,
-    "unproven_declines": 2,
+    "unproven_declines": 3,
     "device_losses": 0,
     "dispatches_executed": 355,
     "model_output_equivalence": "UNMEASURED",

@@ -10,7 +10,7 @@
         "ledger_gate": "MIXED",
         "ledger_hits": 355,
         "model_output_equivalence": "UNMEASURED",
-        "unproven_declines": 2,
+        "unproven_declines": 3,
         "viable_islands_retained": 1
       },
       "in_frame_vuid_count": 0,
@@ -27,7 +27,7 @@
         "ledger_gate": "MIXED",
         "ledger_hits": 355,
         "model_output_equivalence": "UNMEASURED",
-        "unproven_declines": 2,
+        "unproven_declines": 3,
         "viable_islands_retained": 1
       },
       "in_frame_vuid_count": 0,

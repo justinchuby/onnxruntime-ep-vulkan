@@ -35,603 +35,43 @@
 
 <!-- SUMMARIZED by Scribe 2026-08-02T02:34:23-07:00 -- older entries condensed below; full text lives in git history -->
 
-## 2026-08-01T21:15:16-07:00 — criterion 11: the proof ledger, and the last `UNWIRED` is closed
 
-**The census has no `UNWIRED` line left.** `ledger_lookup` now reads, byte-identically on device 0
-and device 1:
-
-```
-ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9 unproven_declines=0
-unproven_forms_enabled=[] (hits is typed: 'UNWIRED'/'UNOBSERVABLE'/int)
-```
-
-The artifact is `evidence/proof_ledger.jsonl` — 9 entries, digest `e4436e93c19c8744`, written by
-`rust/tools/gen_proof_ledger.py`, never hand-edited, baked in with `include_str!` so a build cannot
-claim a form whose proof is absent from the binary doing the claiming.
-
-**What I predicted before running, and what happened.** Written to
-`bench/results/proof_ledger_prediction.json` before any run, per R10:
-
-- **P1** (the gate discriminates: proven arm `ledger_hits=1 ALL-PROVEN`, unproven arm
-  `ledger_hits=0 ALL-DECLINED unproven_declines=1`) — **confirmed byte-exactly, both devices.**
-- **P4** (Phi-3.5 355 → 0) — **confirmed exactly.** `claimed_nodes=0`,
-  `proven_key_lookups=357`, `unproven_declines=357`, and the claim-log histogram shows 355 nodes
-  declining with `('unproven',)` **and nothing else** — no second reason riding along.
-- **P5** (two forms, two keys) — confirmed.
-- **P8** (the `MatMulNBits` `zero_points` pair produces keys differing *only* in the optional-input
-  component) — **confirmed on substance, and I got the variant token wrong.** I predicted
-  `qgemv_f16`; it is `q_gemv_matmul_nbits_f16`. Recorded as a miss because a prediction that is
-  only scored on the part I got right is not a prediction.
-
-**Two real defects my own controls caught, and neither was the one I was looking for.**
-
-The first attributed generator run returned `UNATTRIBUTED {'claimed_nodes': 0,
-'dispatches_executed': 0}`. The earlier `MATCH` had been **CPU against CPU**. Root cause: proof keys
-contain `,` (`f32,f32>f32`) and the `CLAIM_UNPROVEN` hatch split its list on `,`, shredding every
-key into invalid fragments. The list was *correctly* discarded, the run claimed nothing, and the
-comparison still said `MATCH`. **Only the attribution check caught it** — the mechanism that exists
-because of 2026-07-30 caught the successor of 2026-07-30. Separator is now `;`.
-
-Then the regression test I wrote for *that* found the second one: `ai.onnx::Add/7+/f32` — the first
-comma-fragment of a real key — **passed `ProofKey::validate`**, which only required a `/`. A
-truncated key matches nothing and reads exactly like a key that matches something. `validate()` now
-demands `::`, five `/`, and no empty component.
-
-**One ERROR(instrument), and R13 says it is never a detection.** `sqrt_f32` returned `DIVERGENT`
-with `worst_rel: 0.0` — self-contradictory on its face, which is the tell. `standard_normal` inputs
-meant `Sqrt` of a negative gave NaN on *both* sides; `np.allclose` calls NaN≠NaN a divergence while
-`max(0.0, nan)` returns `0.0`. I fixed both halves rather than the loud one: an `ERROR` verdict when
-the **reference** output is non-finite (EP-only non-finite stays a genuine `DIVERGENT`), plus an
-`INPUT_DOMAIN` table so `Sqrt` samples positive and `Div` non-zero.
-
-**Rai's planted control is in the lane, not behind `#[ignore]`.** `mul_f16_unproven` is deliberately
-never proven and its sibling `mul_f32` is, so the pair is two-armed and the arms are *asserted* to
-differ — Switch's `arms_must_differ` lesson applied directly, because a ledger probe whose two arms
-return the same key is a perfectly stable, perfectly wrong answer. `tests/ops/test_proof_ledger.py`:
-**10 passed, 0 skipped, 0 ignored.**
-
-**A lane bug the gate exposed, worth keeping.** The first lane run was 7 passed / **3 skipped**: the
-suite's `_probe_vulkan_device()` requires a *claim*, and MatMulNBits was now unproven, so **"no
-device" and "no proof" read as the same silent SKIP.** I fixed it by proving the op that matters —
-which is the right fix for today and not for the shape of the problem. The fragility remains: remove
-that proof and the two states collapse again. Flagged for Trinity.
-
-**The price, paid and not softened. Phi-3.5: 355 → 0.** Exactly what Morpheus accepted when he ruled
-§8.9. **The fall is temporary and the work is bounded** — the 355 nodes reduce to **8 distinct proof
-obligations**, mechanically discoverable because every claim-log audit line now carries `proof_key`;
-`bench/results/_phi35_keys.txt` came out of one gated run, not out of my head. Populating them from
-existing differential runs is a harness job, not a design one.
-
-**The 104,116× estimator defect: it was two defects, and I can only close one honestly.**
-
-- *Closed.* Internal island edges were counted as boundary. A whole-graph per-value consumer map in
-  `ep.rs` fixed it — **89,199,100,032 → 13,936,509,056 B**, and `net_benefit_sole_island_overrides`
-  went **1 → 0**: Phi-3.5's island is now claimed on the gate's own economics, not on the
-  no-alternative override. That is the more interesting half of the result.
-- *Open.* `slot_bytes` substitutes **128 for every unknown dim**, and every Phi-3.5 boundary tensor
-  is `runtime-extent`. Residual ~16,268×. This is a **fabricated** input, not an over-broad one, and
-  R9 amendment 5 applies: the number moves *with* the reader's confidence, so it cannot be repaired
-  by tightening a threshold. Different fix — resolve the extents or decline to answer. Until then it
-  is **self-disclosing**: `Island::symbolic_boundary_slots` travels with the number and the WARN
-  reports the fabricated-slot count.
-
-**Also landed:** `epctl --check-counters` now exits 1 on a non-empty `unproven_forms_enabled`, with
-`--allow-unproven` that **downgrades and never erases** — it still names the forms, because a flag
-that deletes the finding is how a run with unproven claims reads as clean three weeks later. A
-scalar hatch (`1`, `true`, `*`) is pinned as *not a list* — C1's shape, named in §8.9.
-
-**State:** `cargo test --release --lib` 446 passed / 0 failed / 2 ignored; `epctl` 15 passed;
-census 3 passed on each device; ledger lane 10 passed. Counters ABI **2 → 3** (five appended fields,
-size-versioned so old readers are safe). Decision record in
-`.squad/decisions/inbox/mouse-proof-ledger.md`, including the declared crossings into Trinity's
-`tests/` and Tank's `counters.rs`/`epctl.rs`.
-
-**Disclosed, not hidden:** `counters::tests::a_pinned_authoritative_counter_reports_unobservable_and_never_zero`
-failed once in four full lib runs and passes in isolation — it `set_var`s a process-global env var
-shared with sibling tests. **ERROR(instrument), not a detection.** Pre-existing, Tank's file, and
-recorded so nobody rediscovers it as new.
-
-
----
-
-## 2026-08-02 — criterion 11 reopened over my own write-up; provenance, the digest refusal, and the three-token miss (Mouse)
-
-Four items from the coordinator, in his priority order.
-
-**1. BLOCKING — clippy at the union.** Ran `cargo clippy --release --all-targets -- -D warnings` at
-the merged state and got **five errors, not the one quoted**: `registry.rs:2261` `manual-contains`
-(the union defect), plus unused import in `transfer.rs:1130`, `manual RangeInclusive::contains` in
-`ops/quant.rs:888`, and fn-item-to-integer casts in `ops/norm.rs:270` and `ops/indexing.rs:118`.
-Fixed all five. **The other four pre-exist on `origin/main`** — verified with
-`git show origin/main:<file>` — so only `registry.rs` was a union defect and *the quoted CI command
-was already red on main independently of my merge*. Whatever was green at Switch's commit cannot
-have been this command at this scope. Two further violations appeared from my own new tests
-(`cloned_ref_to_slice_refs`, two `undocumented_unsafe_blocks`) and were fixed. **Green at the final
-state, not mid-way.**
-
-**2. The rename.** `Island::MEASURED_PHI35_DEV0` → `ESTIMATED_PHI35_DEV0_INTERNAL_EDGES_COUNTED`,
-via `MEASURED_PHI35_DEV0(?!_)` so `..._REAL_BYTES` was untouched. Two test names that had become
-ambiguous about *which* estimate went with it, and
-`the_override_carries_the_verdict_it_overrode` gained a note explaining in one place why its
-`TransferDominated` assertion is consistent with `overrides 1 → 0` shipping. Morpheus's reason is
-the part I kept: **names outlive doc comments**, and keeping both constants was correct.
-
-**3. The bound, held as an assertion rather than prose.** I had said the economics arm *concurs*
-with the exemption; Morpheus refused it — *"agreement between two things fed the same fabricated
-input is not a second opinion."* What survives is an inequality:
-`the_claim_survives_an_adversarial_inflation_of_the_term_opposing_it` asserts monotonicity of
-`transfer_ns` in bytes over six sizes incl. `u64::MAX/4`, that the gate **claims** at the inflated
-13,936,509,056 B, that measured (856,720 B) is smaller, and therefore the truthful island claims
-**a fortiori** — the claim survives a **16,268× adversarial inflation of the term opposing it**.
-§10.0.4's third form: **prefer the bound you can sign.** The narrow half is a standing falsifier of
-its own: `the_substituted_extent_under_counts_on_a_long_prefill_and_the_bound_evaporates` — 128
-over-counts at decode extent 1 and **under-counts** at prefill extent 4096, where the inequality
-reverses and the bound *evaporates rather than weakening*. Both mutation-tested in both polarities.
-
-**4. Criterion 11 — reopened, and I agree with the call against me.** My row said MET; Morpheus's
-said *not met — scaffolding only*; the coordinator took his. His argument is one I could not answer:
-the cheapest satisfaction is a ledger derived from the same enumeration that produces the claims,
-under which `ledger_hits == proven_key_lookups` forever and **`6/6` reads identically under both
-stories**. Mine is not that shape — but *nothing in the artifact distinguished the two shapes*,
-which is R11 on my own mechanism.
-
-- **(a) provenance — done.** Every entry carries `claimed_nodes`, `dispatches_executed`, `worst_rel`.
-  A dispatch count only exists after a session executed; an enumeration cannot forge one. The
-  generator **raises** rather than writing an unattributed entry, `--check` fails on one, and
-  `parse_ledger` **faults** it. **Absent is treated exactly like zero**, and a **quoted** count like
-  absent. Four ledgers differing only in those fields, four outcomes.
-- **(b)(iii) the digest refusal — done.** `ONNXRUNTIME_EP_VULKAN_LEDGER_FILE`; disagreement (or a
-  named file that cannot be read) → `Ledger::faults` → **every form declines**. This is a *second*
-  threat from the header-vs-body digest: that catches a hand-edit before the build, this catches the
-  file changing after it — the case where the artifact a reviewer reads is not the one the binary
-  claimed from. Three arms, including the identical-file arm, **which is what makes the other arm a
-  detection rather than a check that fails on everything**.
-- **(d) the three-token miss — done.** `LedgerLookup::{Hit,KeyAbsent,Faulted,NeverAttempted}`;
-  `record_ledger_lookup` takes the outcome, not a `bool`; counters carry `"ledger_miss"`.
-  `LEDGER-FAULTED` **outranks** `KEY-ABSENT` (R13: a run with no reading about any form must not
-  spell an outage the way it spells a detection). `NEVER-ATTEMPTED` is derived, never counted —
-  recording it would be a lookup, which is what it asserts did not happen.
-- (b)(i) `mul_f16_unproven` and (b)(ii) the `MatMulNBits` `zero_points` pair were already in the
-  lane and in the ledger. **(c) and lane membership are Trinity's.** I did not close the row.
-
-**Ledger digest `e4436e93c19c8744` → `331003e0ff88df3f`** on regeneration with provenance; 9 entries,
-all re-attributed `MATCH` at `claimed_nodes=1 dispatches_executed=1`.
-
-**Predicted before running** (`bench/results/proof_ledger_prediction.json`, R10): the `mul_f16`
-decline, both `MatMulNBits` keys hitting, `HIT`/`LEDGER-FAULTED`/`NEVER-ATTEMPTED` in their three
-frames, and a provenance-stripped entry faulting. All confirmed.
-
-**State:** `cargo test --release` **455 lib passed / 0 failed / 3 ignored**, epctl 15, all bins green;
-clippy green at the merged state; `test_proof_ledger.py` 10 passed; census 3 passed on Intel, and
-`ledger_lookup` still reads `ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=9
-unproven_declines=0` — unchanged by all of the above, which is the point.
-
-**ERROR(instrument), recorded so nobody rediscovers it:** `Copy-Item` preserves the source file's
-`LastWriteTime`, so cargo's fingerprint does not notice a restore-from-backup and silently re-runs
-the **previously compiled mutated** test binary. This produced a persistent false failure I nearly
-"fixed" by weakening a correct assertion. Touch the mtime after any restore. The assertion now
-**quotes its numbers**, because I could not diagnose what it would not tell me.
-
-**Declared crossings:** `rust/src/transfer.rs` (Switch — one unused import), `rust/src/counters.rs`
-(Tank — `record_ledger_lookup` signature, two statics, `ledger_miss`), `docs/DESIGN.md` criterion 11
-row. **Collision to sequence:** I edited `partition.rs` this session, which collides with sibling
-instance `mouse`'s held `Verdict::Claim` return-site change.
-
-📌 Team update (2026-08-02T02:03:46-07:00): Morpheus named R12's fourth generalisation — for a test result, the frame is the binary that ran it — from two of Mouse's self-caught near-misses this session: a build in a shared worktree that linked a sibling's in-flight file (nearly reported as a false ALL-DECLINED finding), and Copy-Item preserving LastWriteTime, which let cargo silently keep running a mutated binary after a restore-from-backup. Your own union-check work independently reproduced the same failure shape (a stale DLL in a shared worktree nearly read as an UNWIRED §8.9 ledger) — worth checking any mutation harness you build touches or hashes a restored file and asserts the rebuild happened before reading a result as a control. — decided by Scribe
-
----
-
-## 2026-08-02 — Populating the ledger: 154 reds cleared with proofs, and GQA is DIVERGENT
-
-**Suite: 154 failed / 276 passed -> 37 failed / 393 passed. Ledger 9 -> 73 entries, digest `331003e0ff88df3f` -> `e3ea94196b4fd84f`.** Census on both devices, byte-identical: `ledger_lookup: ALL-PROVEN proven_key_lookups=6 ledger_hits=6 ledger_entries=73 unproven_declines=0 unproven_forms_enabled=[]`. `cargo test --release --lib` 469/0/4-ignored; `cargo clippy --release --all-targets -- -D warnings` green.
-
-No guard relaxed, no tolerance widened, no entry derived from the claim table.
-
-### The enumeration instrument under-counts, and I believed it once
-
-The claim log is **truncated by whichever process opens it**, and several tests spawn a child that loads the DLL. A whole-suite run gives **786** records; the same tests run **per file** give **3,140**. My first residual triage used the whole-suite log and concluded the residual was one form. The per-file triage found five. This is the same defect class as the `§` decode that swallowed child stderr: an instrument that fails quietly turns a FAIL into a wrong number rather than a mystery, which is worse. Enumerate per file.
-
-### Predictions, written before the run (`bench/results/skipsln_static_prediction.json`)
-
-- **S1 confirmed** — all four static SkipSLN cases MATCH (`worst_rel` 0.0 for f16, 1.86e-07 for f32).
-- **S2 confirmed** — four entries, four distinct keys, no collision with the 69.
-- **S3 falsified** — I predicted `test_skipnorm` would go 7 -> 1, keeping `test_skip_norm_f16_phi35_shape` red because a run-time `INVALID_ARGUMENT: input is expected to have 3 or 2 dimensions, got 1` is not something a ledger entry can fix. It went 7 -> **0**. The shape rejection was itself downstream of the node not being claimed. I read a symptom of the decline as an independent defect.
-- **S4 falsified in method, confirmed in outcome** — I predicted no single-node case model in this generator could produce the GQA key honestly. It can, once `feed_plan` exists. GQA still did not enter the ledger, but for a completely different reason than I gave.
-- **S5 falsified** — I predicted `test_op_table` would not move. It went 28 -> 26. I did not retain the earlier per-name list, so I cannot say which two, and I am not going to reconstruct a number I did not record.
-
-Three of five falsified. The two confirmed were the ones about the key algebra; the three falsified were all about *what else the decline was causing downstream*. I am consistently over-confident about second-order effects of the gate.
-
-### GQA: DIVERGENT, and that is the finding
-
-`DIVERGENT {'reason': 'output o0 outside tolerance', 'worst_rel': 16.72642029784887}` — reproducible to the digit across two runs, on a case model whose discovered key matches the residual key exactly. It corroborates the pre-existing strict-`xfail` `_GQA_COMPUTE_BUG` in `tests/ops/test_gqa.py`, from a second independent instrument. Phi-3.5's five tests and criterion 10 stay red **for the correct reason**.
-
-A non-MATCH verdict cannot go in `proof_ledger.jsonl`: `parse_ledger` pushes it to `Ledger::faults` and a faulted ledger refuses *every* claim. So attempts now append to **`evidence/proof_attempts.jsonl`** — grants nothing, not baked in. Generator-side counterpart to Tank's `Ledger::demoted`.
-
-### An outage that was mine
-
-The criterion-5 shader-less witness builds from a copy of `rust/` alone, and the crate `include_str!`s the ledger from **outside** `rust/`:
-
-`error: couldn't read `src\..\..\evidence/proof_ledger.jsonl`: The system cannot find the path specified.`
-
-It reported `ERROR(instrument)` and was right to. Fixed in `tests/ops/_shaderless.py` (cross-owner, Trinity): the scratch tree carries the ledger, and the ledger's mtime joins the staleness check so a regenerated ledger cannot be witnessed against the previous binary.
-
-### Answered Tank
-
-**Yes** to `net_benefit_single_island` as `UNOBSERVABLE`/`BYPASSED`/`EVALUATED`. `sole_island_overrides=1` tells a reader an override happened but not whether the single-island path reached the gate; those are R12's two states sharing one reading.
-
-### Residual, by decline code and not by count
-
-37 red: **26** `test_op_table` (`[staged]`/`[not-registered]`/`[dtype]`/`[attribute]`/`[opset]` — the ledger has no authority over any of them), **5** Phi-3.5 behind the GQA divergence, **3** `Min`/`Max`/`Clip`-no-bounds, **1** criterion 10 behind the same divergence, **0** instrument errors.
-
-## 2026-08-02 — Phi-3.5 at runtime extent: the count moved, the ledger did not
-
-**Request:** prove the five `runtime-extent` keys behind Phi-3.5's `0/363`, on the premise that
-everything the ledger proves is `static`.
-
-**The premise was stale.** It was taken against the pre-`e97b186` ledger. At the merged state four
-of the five keys were already present at `runtime-extent`; only `GroupQueryAttention` was missing.
-I did not mint keys to satisfy it — evidence whose effect is already achieved is indistinguishable,
-in the artifact, from progress.
-
-### R10 first, then the run
-
-`bench/results/phi35_runtime_extent_prediction.json`, written **before** loading the real model:
-five predictions, five falsifiers. All five CONFIRMED; P2 and P5 exactly.
-
-- **0 → 323/363 nodes claimed**, `33/33` islands retained, `ledger_hits=323`,
-  `unproven_forms_claimed=0`, `claimed_form_evidence=ALL-PROVEN`, `ledger_gate=MIXED`.
-- **Ledger unchanged at 73 entries**, digest `e3ea94196b4fd84f`.
-
-The guard I was handed was "a ledger that grows without the claimed count moving." What happened is
-its **inverse**. That asymmetry is the whole result.
-
-### GQA is a finding, not an obstacle
-
-`DIVERGENT`, `worst_rel=16.72642029784887`, reproducible to the digit. Not written to the ledger — a
-non-`MATCH` entry becomes a `Ledger::fault` and a faulted ledger refuses *every* claim. Recorded in
-`evidence/proof_attempts.jsonl`. The handler claims the form and then disagrees by 16.7×;
-**claiming-then-diverging is the defect**, and declining would not be.
-
-### What I unblocked, and what it revealed
-
-323 claimed nodes and ORT still fell back wholesale. Tank's broken-commitment WARN fired on fused
-subgraph #15. A five-line R13 change in `vk/session.rs` (Switch's) — bind the translate `Result`,
-log `err()` instead of "translate failed" — produced the text in one run:
-
-`Unsupported("`SimplifiedLayerNormalization` input 0 has no element type at compile time")`
-
-from `common_dtype(node, 0, 2)` in `ops/common/templates.rs::simplified_norm`, on the **dynamic**
-re-run. Island #15's SLN input 0 is island-internal; the `patched_node` has a shape and no dtype.
-The handler is right to refuse — the caller's construction is the defect, and `vk/` is Switch's.
-
-**The consequence to not read past:** islands execute zero times, so
-`own_provider_execution_count: 0` and `executed_by: {CPUExecutionProvider: 1377}`. The all-65 oracle
-arm has **still** had no real reading; `oracle_outputs_degenerate: 0` was measured CPU-versus-CPU.
-
-### Union defect: my deletion, Trinity's new controls
-
-Her criterion-11(c) tests referenced `mul_f16_unproven.onnx`, deleted in `e97b186` because a proof
-run had entered that very form. **Restoring it would have restored a control that passes for the
-wrong reason.** Control 1 (dtype) is now `Abs` f32 proven vs `Abs` f16 unproven, the f16 arm built in
-`tmp_path` so the generator cannot disarm it; if it is ever proven the readings converge and the test
-goes **red**. Control 2 gained its own static `Mul` arm — two different ops in two arms is not a
-shape-class control. And the `MatMulNBits` test asserted `len(nbits) == 2` over all entries; the
-ledger grew to five, so it selects by form now. A control keyed to a total goes red when the artifact
-it guards improves: R9 amendment 5, on my own test.
-
-**Green at this state:** census + ledger lanes `16 passed / 0 failed / 0 ERROR(instrument)` on both
-device 0 and device 1.
-
-## 2026-08-02 (later) — ORT's refusal, and the one `else` that holds the flagship
-
-**Escalated as "the EP claims 0/363, your ledger is the critical path for the project."** At the
-build in my worktree the reading is **323/363**. This is the third routing of a `0/363` diagnostic
-taken against an older binary, so I answered it with an artifact instead of a reply:
-`rust/tools/probe_phi35_claim_reading.py` records claimed count, ledger digest and DLL mtime
-together. The frame of a result is the binary that produced it.
-
-I minted no keys. Four of the five escalated forms were already proven at `runtime-extent`, and
-evidence whose effect is already achieved is indistinguishable in the artifact from progress.
-
-### The one genuinely new thing in the request, taken and wired
-
-`session.disable_cpu_ep_fallback = 1` on the EP arm of `prove()`. Our attribution counters are all
-written by the thing being audited; this is ORT refusing from outside our code. Raised as
-`CpuFallbackRefusal`, distinct from `InstrumentError`, and turned into `UNATTRIBUTED` with the text
-quoted — a reading and an outage must not spell the same.
-
-Not set on discovery: there the node is declined by design and a refusal is the expected state.
-It also conflicts with naming the CPU EP explicitly (`Conflicting session configuration`), which is
-`ERROR(instrument)` and says nothing about our EP; the strict arm offers this EP alone.
-
-**Mutation-tested before trusted.** Two arms on the planted control, whose key the generator refuses
-to write under any circumstance: real key → `MATCH`, ORT silent; nonexistent key → `UNATTRIBUTED`,
-ORT refused. The probe asserts the arms *differ*. A guard that fires in both arms is worse than none.
-
-### GQA: the best hypothesis for "it was vacuous" is now excluded
-
-Re-run under the guard, ORT did not refuse — the EP took the node and executed — and the verdict is
-`DIVERGENT`, `worst_rel = 16.72642029784887`, identical to the digit for the third time. It stays
-out. Claiming-then-diverging is the defect; declining would not be.
-
-### What actually holds Phi-3.5, measured rather than inferred
-
-An instrumented build (reverted; the finding is now a comment) named the branch:
-
-    node=/model/layers.0/input_layernorm/LayerNorm op=SimplifiedLayerNormalization
-    slot=0 token=5 n_plan_inputs=5 n_plan_outputs=2 branch=island-output-consumed-internally
-
-The patch loop in `vk/session.rs` handles external inputs and prior-kernel intermediates and leaves
-the middle range — island outputs also consumed internally — as `None`, under a comment saying it is
-"unusual" and the handler "will degrade gracefully". It is island #15's normal shape, and the handler
-does not degrade: it refuses, correctly. **323 claimed nodes execute zero times because of one
-`else`.** Switch's.
-
-### The shortcut I did not take
-
-`common_dtype` could infer the missing dtype from a sibling input and the number would have moved
-today, under real schedule pressure. That is a check moving with the reader's confidence rather than
-with its subject (R9 amendment 5) — the caller lost the information, and a handler that fabricates it
-can no longer detect that the caller lost it. This was the same shape as the ledger-from-claim-table
-shortcut, arriving at the same moment for the same reason.
-
-**Green:** census + ledger lanes 16/16 on both devices; `cargo test --release --lib` 469/0; clippy
-clean.
-
-## Session 27 — 2026-08-02 — What fraction of the model's work runs on the CPU EP
-
-**Asked:** per-EP FLOPs and boundary bytes as a fraction of a graph-derived whole, as a function of
-context length, with the fabricated-`128` exposure disclosed. Clock-free.
-
-**Built** `rust/tools/roofline_split.py`. Prediction written first to
-`bench/results/roofline_split-prediction.md`; all six predictions held (one under-predicted).
-
-**Answer.** CPU share of bytes: **0.07% at ctx=0, 4.26% at 128, 14.95% at 512, 41.21% at 2048,
-73.77% at 8192.** FLOPs: 0.00% → 30.20%. Identical on both devices. Not 3%, not 30% — a curve, and
-the regime we had been quoting (ctx=0) is the one that hides it.
-
-**Counterfactual on the same instrument:** claiming the 32 GQA nodes (323 → 355 claimed, the island
-we quote) drops CPU bytes to ≤0.29% everywhere. So Switch's GQA fix is worth 41.2 points at ctx=2048
-and 73.5 at 8192, and it collapses **33 islands into 1** — the fragmentation is a consequence of the
-GQA decline, not a separate lever.
-
-**Retired two numbers.** `{CPU: 120, Vulkan: 99}` reproduces nothing in this build (366 = 363 + 3
-folded Constants; 363 = 323 + 40; profile = 33 Vulkan partitions + 40 CPU nodes). And `ep.rs`'s FLOP
-estimator reports **16.58% at every context** — which is `32/193`, the anchor ratio. Its FLOP number
-is a node count wearing a FLOP's clothes; it is blind to the only axis this model's cost varies on.
-
-**Fabricated extents: zero.** Shape inference resolves everything once ctx is stated. The one
-unresolved extent (`cos_cache`/`sin_cache` `[None, 48]`) is *conditional*, not unknown — the `If`
-predicate is `total_sequence_length > 4096` and the branches are `[4096,48]` / `[131072,48]`
-Constants. Read it, don't invent it.
-
-**R13 against myself.** First run said `UNOBSERVABLE(fabricated extents carry 73.69% of the bytes)`.
-That was ERROR(instrument): fabrication flagged per node instead of per tensor, so one 48-wide
-operand condemned a 50 MB node. The tell was that the fabricated fraction equalled the CPU fraction
-to two decimals at every ctx — an identity with no reason to hold. **Fifth time this week that the
-alarming number was the broken instrument.** Check the coincidence before you check the conclusion.
-
-**Left standing:** Switch's 60.5% KV share at 8192 vs my 73.5% GQA share. Different quantities, but
-not obviously 13 points different. Both recorded, neither adjusted.
-
-**Touched:** `rust/tools/roofline_split.py` (new), `docs/OP_COVERAGE.md` §7.17, `bench/results/`.
-**No gate, `partition.rs`, `registry.rs` or `ops/` change** — `mouse-1` is in the same worktree, so
-everything was staged by explicit path.
-
----
-
-## 2026-08-02 — the ledger had no re-proof path (Switch's find), and the first real reading
-
-**The hole.** `gen_proof_ledger.py --append` printed `UNMEASURED … no unlockable keys` then `PASS`,
-writing nothing: an already-claimed form is skipped as an optimisation and never re-measured. GQA's
-entry therefore outlived *two* shader rewrites made the same day. Morpheus's shape from an unguarded
-direction — not a ledger derived from the claim table, but **an entry that silently outlives its
-subject**. `ledger_hits == proven_key_lookups` stays true forever while the kernel drifts out from
-under it. **Nothing caught it.** Switch proved GQA correct himself; the ledger agreed, and would have
-agreed identically had he broken it.
-
-**Fix (four parts).** `shaders` + `shader_digest` (FNV-1a/64 over the SPIR-V the run *dispatched*)
-in every entry, recomputed at parse against this binary; `--reprove`; no `PASS` over a run that
-measured nothing; and two per-entry demotion tokens `STALE-SHADER` / `NO-SUBJECT-WITNESS`. Demotion
-is per entry — a blanket refusal lets one shader edit disable every claim, and that is the blunt
-shape that gets switched off in a hurry.
-
-**The frame I was asked to state rather than assume.** Covers dispatched SPIR-V bytes only. Does
-*not* cover: shaders the run did not dispatch (a whole-set digest costs 73 re-proofs per unrelated
-edit, and a gate that expensive gets relaxed); **host-side code — named residual, exact falsifier:
-a host-only numeric change leaves the entry green**; comment-only GLSL edits, which do not reach
-SPIR-V. One relaxation, taken because the compiler verifies it rather than me asserting it.
-
-**No grandfathering.** Every shipped entry lacked the witness and faulted. Admitting them "for
-compatibility" would exempt exactly the entries with longest to drift. Re-proved the whole thing:
-**74 entries, digest `d07643b0c4cd2e8f`, key set byte-identical — nothing lost, nothing gained.**
-The claims did not change; they became falsifiable. That is the right outcome to be able to state
-plainly, because I ran it hoping it would invalidate something.
-
-**GQA's margin, recorded not smoothed.** `0.00072939` vs `rtol 0.001` = 1.37×. Next-tightest entry
-in the ledger is **160× further from its bound**. Switch called it out himself rather than letting
-a thin margin read as comfort; he was right to.
-
-**Then the bill.** Phi-3.5: **355/363 claimed**, `ledger_hits 355`, `unproven_forms_claimed 0`,
-`ALL-PROVEN`. Morpheus's own honest-cost number, reached from the other side. The guard held: the
-ledger grew by one entry and the claimed count moved by 32 — not a ledger growing while `0/363`
-stands still.
-
-**Criterion 10's first real reading: DISAGREE.** 65/65 compared, **0 degenerate**, 0 CPU-only, 0
-unobservable, bit-identical across three runs. So the reopened all-zero-KV defect is *not*
-reproducing. Failures are `[0, 63, 64]` — logits, `present.31.key`, `present.31.value`.
-
-**R11 on my own diagnostic.** My first per-output table quoted `max_rel/rtol` and reported `24.6x`
-for outputs that *passed* — the facts divide by `atol+|b|`, the pass criterion by `atol+rtol·|b|`.
-Fixed before quoting anything. **Sixth time the alarming number was my instrument.** With the honest
-ratio the picture inverts: 0.044 at layer 0 rising monotonically to 0.81/0.85 at layer 30 and
-1.66/1.17 at layer 31. **The pass/fail line falls mid-curve, not at a discontinuity** — layer 30
-passing at 0.85 is the same phenomenon as layer 31 failing. So the 62 passes are not 62 clean
-results, and relaxing the tolerance would only move the crossing point. Logits diverge at 46.9× but
-`argmax 30751` and top-10 agree exactly. Changed no tolerance and relaxed no gate; handed it on.
-
-**Attribution before blame.** 43 op-suite reds remain; read the text and they are `[staged]`, not
-`[unproven]` — ops deliberately not enabled in the op table. Nothing to do with the ledger.
-
-**Touched:** `registry.rs`, `gen_proof_ledger.py`, `probe_phi35_oracle_detail.py` (new),
-`evidence/proof_ledger.jsonl`, `docs/OP_COVERAGE.md` §8.9.11–§8.9.12; declared cross-owner edits in
-`counters.rs` (Tank) and one line in `vk/session.rs` (Switch). Rust 476/0, clippy clean, census
-`ALL-PROVEN` on both devices. **Still the actual blocker on the last 8 nodes:** the
-`island-output-consumed-internally` branch in `vk/session.rs`, which is Switch's.
-
-📌 Team update (2026-08-02T14-42-30-07-00): Switch found the proof ledger's `--append` mode skips already-claimed forms — fixing the GQA prefill race required changing a shader the ledger had already marked `PASS` for a different bug, and re-running `--append` afterward printed `PASS` having measured nothing against the new shader. "A proof that cannot be invalidated by changing its subject is not a proof of that subject." You (Mouse) fixed it: `shader_digest`/`shaders` fields, a `--reprove` flag, two new tokens `STALE-SHADER` (digest changed since last proof) and `NO-SUBJECT-WITNESS` (nothing to compare against); all 74 ledger entries re-proved under the new scheme. — decided by Switch, Mouse
-
-
----
-
-## 2026-08-02 — The staged-op sweep: 21 promoted, 3 refused, two holes in my own harness
-
-**The census was sharper than the brief.** `epctl --dump-capabilities` gave 91 rows, 50 live, 41
-staged, and **five** staging reasons, not four. Only **22 of the 41 were dischargeable by a proof
-run**; the other 19 are missing code. The 13 `XL_KERNEL` rows are almost exactly the
-`com.microsoft` contrib set — MoE, QMoE, MultiHeadAttention, RotaryEmbedding, CausalConvWithState,
-LinearAttention, GatherBlockQuantized, Attention, Q/DQ. **The contrib-op commitment cannot be
-advanced by proof runs at all.** Said so before promoting anything, not after. The JSON dump did
-not carry the staging reason, so I added `staged_reason` first — otherwise the table would have
-been a code reading (R10).
-
-**Promotion grants nothing.** `Live` is deprecated in favour of `Ready` = "kernel exists,
-claimability is derived from the ledger". So a 22-row flip is safe by construction; the proof run
-is the gate.
-
-**I found a hole in the harness before I used it.** 12 of the 22 return bool, and `compare()` had
-no guard on the CPU reference. `Equal` on two normals is all-False; `IsNaN` on a finite tensor is
-all-False; both would have reported `MATCH worst_rel 0.0` having tested nothing. **The cheapest way
-to prove twelve ops was to prove none of them.** Guard added as `ERROR(instrument)` — the kernel
-was not shown wrong, the case model was shown inadequate — and mutation-tested in both polarities
-**in the lane**, not as a script.
-
-**Two predictions written down before the runs turned out wrong, which is what the file is for.**
-I predicted MATCH for `Sum`/`Mean`/`Max`/`Min` and for `Swish`.
-
-* The variadics raised `EP_FAIL … 'Sum' with 3 inputs needs the chained-dispatch lowering, which
-  is not written yet`. My deliberate **3-input** case caught a claim/translate invariant
-  violation: the predicate allowed 1..=8, the lowering handled ≤2. A 2-input case would have
-  proved the binary path and left the fold untested, and a real 3-input node would have been
-  claimed and then failed at session creation. Fixed by construction —
-  `MAX_VARIADIC_INPUTS_LOWERED`, read by both sides. Proved them at `n2` only; arity rides the
-  key, so `n3` stays unclaimable and declines honestly. §8.9's key vindicated a second time.
-* `Swish` offered no key at all: a **second, hand-written evidence list** (`EXERCISED`) vetoes it
-  before the ledger is consulted. Reverted to `Staged` and reported rather than papered over. I
-  did not add `("Swish","f32")` by hand — that would make the list assert something no run has
-  shown.
-
-**Then I broke the ledger and it taught me two things.** Probing the re-proof path, I ran the
-generator without `--append` and it **rewrote 95 entries down to 1, then printed `PASS`** — because
-`--check` was asked whether the file it had just written was self-consistent, which an empty file
-is. Two halves of a report describing different things: Scribe's health report, one level out.
-Entries are now always carried forward; `--rebuild` has to be asked for. I restored them by
-**re-running all 21 proof runs**, not by reconstructing entries from the attempts log.
-
-The second thing is worse. **`--reprove` never re-measured anything against a healthy ledger.**
-`claim_audit` records `unproven_forms_enabled` only when the ledger *misses*, so an already-proven
-key offered through the hatch produced an empty admission set and `UNATTRIBUTED`. **The 74-entry
-re-proof I reported yesterday succeeded only because the on-disk ledger had drifted from the baked
-copy and every lookup was `Faulted`** — an accident of state, not a path. That is §8.9.11's own
-defect one level up: a re-proof that silently measures nothing. Fixed with a distinct witness,
-`reproof_forms_admitted`, deliberately **not** folded into `unproven_forms_enabled` — that list is
-the §8.9.4 disclosure of forms claimed *without* evidence, and a proven form named there would be
-false and would fail `--check-counters`. The two arms now differ observably.
-
-**The falsifier is the op-suite red count, not Phi-3.5's** — none of these 22 ops appears in
-Phi-3.5, so quoting 355/363 would be dishonest. **43 → 18**, and I read all 18:
-7 were `XPASS(stale)` on Switch's GQA `xfail(strict)` whose own removal condition was met (marker
-removed, file now 7 green); 1 is `test_census_baseline_has_no_drift`, drift `- bench/phases.py::load`,
-**pre-existing** — I stashed and re-ran rather than assuming; 8 are documented refusals.
-
-**The refusals, which I would rather have than 8 more claims:** `Swish`/f32, `Add`/i32, `Mul`/i32
-are all blocked by `EXERCISED`, the hand-written list, even though `ew_binary_add_i32.spv` and
-`ew_binary_mul_i32.spv` exist and compile — **a named criterion-11 residual**, a flag its author
-set standing beside an artifact-derived ledger, and because it runs inside the predicate no proof
-run can reach those forms. `IsInf` needs a shader variant; `Cast` ×3 needs a template;
-**`Flatten` and `Reshape` have no row in the op table at all.** The same 8, byte-for-byte, are the
-only op-table reds on device 1, so the 21 promotions hold on the Intel conformance oracle too.
-
-**A test of mine asserted a stand-in.** `families_..._are_still_staged` asserted `Staged` for the
-15 families; after each got its own proof that was backwards — it would have passed for a row
-flipped to `Ready` with nothing measuring it, and failed after a genuine proof. It now asserts that
-none of the 15 rides `add_f32`'s evidence, because each names itself in a ledger key.
-
-**Touched:** `epctl.rs`, `counters.rs` (cross-owner, Tank, declared), `registry.rs`,
-`ops/elementwise.rs`, `ops/norm.rs`, `ops/common/claim.rs`, `ops/common/templates.rs`,
-`gen_proof_ledger.py`, `ledger_case_models.py`, `tests/ops/test_proof_ledger.py`,
-`tests/ops/test_gqa.py` (cross-owner, Switch, stale marker removal),
-`evidence/proof_ledger.jsonl` (74 → 95), `docs/OP_COVERAGE.md` §8.9.13. Rust **477/0**, clippy
-clean, ledger+census lanes green on **both** devices. **No timing figure quoted.**
+<!-- SUMMARIZED by Scribe 2026-08-02T22:37:04-07:00 -- entries from 2026-08-01T21:15:16 through the roofline-split and re-proof-path/staged-op-sweep sessions condensed below; full text lives in git history -->
+
+### [SUMMARY] 2026-08-01T21:15:16 through 2026-08-02 (pre-Switch's-round): criterion 11 closes then reopens, the ledger is populated 9->95, runtime extents, roofline split, and the reprove-path defects
+
+- **Criterion 11, first close (2026-08-01T21:15:16):** proof ledger wired end-to-end (`ledger_lookup` ALL-PROVEN, 9 entries, digest baked in via `include_str!`). Two real defects self-caught: `CLAIM_UNPROVEN`'s hatch split proof keys on `,` (keys contain commas), shredding them — separator moved to `;`; and a truncated key fragment (`ai.onnx::Add/7+/f32`) passed `ProofKey::validate`, which only checked for a `/` — validate now requires `::`, five `/`, no empty component. `sqrt_f32` false-DIVERGENT (NaN≠NaN vs `max(0,nan)=0`) fixed with an `INPUT_DOMAIN` table and an ERROR-on-non-finite-reference rule. Estimator defect (89.2 GB vs measured 856,720 B, a 104,116× miss) split into a closed half (internal island edges wrongly counted as boundary, fixed) and an open, self-disclosing half (`slot_bytes` substitutes 128 for every unknown runtime-extent dim — a fabricated input, not an over-broad one, ~16,268× residual).
+- **Criterion 11 reopened (2026-08-02):** Morpheus ruled MET was wrong — the ledger was scaffolding, indistinguishable in the artifact from one derived from the claim table itself (R11 on Mouse's own mechanism). Repaired: every entry now carries `claimed_nodes`/`dispatches_executed`/`worst_rel` (absent treated like zero, quoted-zero treated like absent); a header-vs-file digest refusal (`Ledger::faults` on any mismatch or unreadable file); and a three-token `LedgerLookup::{Hit,KeyAbsent,Faulted,NeverAttempted}` replacing a bool, with `LEDGER-FAULTED` outranking `KEY-ABSENT`. The economics bound was converted from prose ("concurs with") to an assertion (`the_claim_survives_an_adversarial_inflation_of_the_term_opposing_it`) — the claim survives even a 16,268× adversarial inflation of the opposing term, with a standing falsifier where the substituted 128 under-counts at long prefill and the bound evaporates.
+- **Populating the ledger (9->73 entries):** op suite 154 failed -> 37 failed. GQA entered as `DIVERGENT worst_rel=16.726`, reproducible to the digit, corroborating the pre-existing `xfail`. A non-MATCH verdict cannot enter `proof_ledger.jsonl` (would fault the whole ledger) — added `evidence/proof_attempts.jsonl` as a no-grant append log. Self-caught an enumeration instrument that silently truncated the claim log when read whole-suite vs per-file (786 vs 3,140 records) — read per file from then on. 3 of 5 pre-written predictions falsified, all on second-order effects of a decline, none on the key algebra itself.
+- **Phi-3.5 at runtime extent (0->323/363):** the "0/363" premise being escalated was already stale (four of five runtime-extent keys were already proven); GQA was the only real gap. Unblocking further claims exposed the actual remaining blocker: `vk/session.rs`'s island-output-consumed-internally branch (an `else` left as `None` under a comment calling the case "unusual") — Switch's, not the ledger's. `session.disable_cpu_ep_fallback` wired into `prove()` so ORT's own refusal (`CpuFallbackRefusal`) is distinguished from an instrument error, mutation-tested to differ from `UNATTRIBUTED`.
+- **Roofline split (Session 27):** CPU share of bytes/FLOPs as a function of context (0.07%/0%→73.77%/30.2%, both devices identical) is a curve, not the flat "~3%"/"~30%" figures previously quoted at ctx=0. Claiming GQA (323->355 nodes, 33 islands->1) is what collapses the CPU share, not a separate lever. `ep.rs`'s FLOP estimator was found to report a constant 16.58% at every context — a node-count ratio wearing a FLOP's clothes. A first cut mis-flagged fabricated-extent share at exactly the CPU-byte share (an identity with no reason to hold) — fifth time this week the alarming number was the broken instrument.
+- **The ledger had no re-proof path (Switch's find):** `--append` silently skipped already-claimed forms, so GQA's ledger entry outlived two same-day shader rewrites with nothing catching it. Fixed with per-entry `shader_digest` (FNV-1a/64 over dispatched SPIR-V) recomputed at parse, `--reprove`, and demotion tokens `STALE-SHADER`/`NO-SUBJECT-WITNESS` — frame stated explicitly: covers dispatched SPIR-V bytes only, not host-side numeric changes (named residual). No grandfathering: all 74 shipped entries re-proved from scratch, key set byte-identical. Criterion 10's first real reading: `DISAGREE`, 65/65 compared, 0 degenerate — a self-caught tolerance-ratio bug (dividing by the wrong denominator) had been reporting false 24.6× errors on outputs that actually passed; honest ratio shows a smooth mid-curve crossing (layer 30 passing at 0.85, layer 31 failing at 1.17), not a discontinuity.
+- **Staged-op sweep (21 promoted, 3 refused):** census found 5 staging reasons, not 4; only 22 of 41 staged rows were dischargeable by proof (19 need code, the 13 `XL_KERNEL`/contrib rows cannot be advanced by proof runs at all). Found a harness hole before using it: 12 of 22 ops return bool and `compare()` had no non-degenerate-reference guard, so `Equal`/`IsNaN` could have reported false MATCH having tested nothing — fixed as `ERROR(instrument)`, mutation-tested both polarities. `Sum`/`Mean`/`Max`/`Min` 3-input case caught a real claim/lowering-arity mismatch (predicate allowed 1..8, lowering handled <=2) before it could have shipped as a claim-then-crash. `Swish` blocked by the first `EXERCISED` hand-written evidence list (not added by hand — would assert something unmeasured). Two ledger-mechanics defects found by breaking things on purpose: default (non-`--append`) write silently discarded 94 of 95 entries while `--check` reported PASS on the empty result ("the same defect Scribe's health report had, one level out" — entries now always carried forward, `--rebuild` required to discard); and `--reprove` never re-measured against a healthy ledger (`unproven_forms_enabled` only fires on a ledger *miss*, so an already-proven key offered through the hatch produced nothing) — yesterday's reported 74-entry re-proof only worked because the on-disk ledger had drifted from the DLL's baked copy, an accident of state rather than a real path; fixed with a distinct `reproof_forms_admitted` witness. Op-suite reds 43->18, all attributed to pre-existing or documented refusals, none to the ledger.
+- 📌 Team update (2026-08-02T02:03:46-07:00, from Scribe): Morpheus's R12 fourth generalisation — for a test result, the frame is the binary that ran it — drawn partly from two of Mouse's self-caught near-misses this session (a shared-worktree build linking a sibling's in-flight file; `Copy-Item` preserving `LastWriteTime` letting cargo silently re-run a mutated binary after a restore).
+- 📌 Team update (2026-08-02T14:42:30-07:00, from Switch/Mouse): the re-proof-path fix above (`shader_digest`, `--reprove`, `STALE-SHADER`/`NO-SUBJECT-WITNESS`) landed in response to Switch's finding that the ledger could not be invalidated by changing its own subject; all 74 entries re-proved under the new scheme.
 
 ---
 
 ## 2026-08-02 — Switch's round: a destructive success, a witness, a staleness the digest cannot see, and an ABI eight bytes off
 
-Commit `4d47362` on `squad/mouse` (merge `572d49c` of `origin/main` @ `2397f5a` first). DLL
-`5F3977CB2260737E` before, `74FA8018ABDAFE36` after.
+Commit `4d47362` on `squad/mouse`. DLL `5F3977CB2260737E` before, `74FA8018ABDAFE36` after.
 
-**1. `--reprove` shrank the ledger and printed `PASS`.** Second time this file has learned the
-same lesson, and the second time it arrived through the flag added to fix the first. Carry-forward
-made a drop *unlikely*; it did not make it a *detection*. `write_ledger()` now reads what is on
-disk first, refuses a shrink, names the dropped keys, and writes nothing. `--rebuild` is the
-deliberate instruction. The half I care about more: on a refusal `main()` returns immediately and
-does **not** run `--check` — running it would ask about the old file and answer `PASS`. The repair
-for a two-halved report is to stop producing the second half, not to reword it.
+**1. `--reprove` shrank the ledger and printed `PASS`** — second time this file learned the same lesson, this time via the flag added to fix the first instance. `write_ledger()` now refuses a shrink, names the dropped keys, writes nothing, and skips `--check` on refusal (asking it would answer PASS about the stale file). `--rebuild` is the deliberate override.
 
-**2. `NO-SUBJECT-WITNESS` was reachable and refused — but I only knew that by reading the source.**
-Three guards already catch Switch's `calls=0 dispatches=0` state (ORT's `disable_cpu_ep_fallback`,
-`prove()`'s `UNATTRIBUTED`, `entry_line()`'s refusal), and his hand-read was a fourth. R10 says a
-code reading is not a falsifier, so both shapes are planted in the lane now, with a healthy
-control that must still be written — a test that refuses everything passes for free. Worth
-keeping straight: his arm was a **probe**, and probes have no writer to refuse them. The guards
-protect the ledger, not every script that touches the EP.
+**2. `NO-SUBJECT-WITNESS` was already reachable** via three existing guards (`disable_cpu_ep_fallback`, `prove()`'s `UNATTRIBUTED`, `entry_line()`'s refusal); Switch's hand-read of the source was a fourth, but R10 says a code reading is not a falsifier — both shapes are now planted in the lane with a healthy control.
 
-**3. Stale input cache: none of the 95 entries affected, and I am willing to say it flatly.**
-Every proof arm is a fresh subprocess with one session and one `sess.run`; the EP's own counters
-read `compute_calls: 1`, `weight_cache_release_buffers: 0`, `weight_cache_bytes_resident: 0`. The
-defect needs a *second* `Compute()` in one session. That is a fact about today's harness, so it is
-now a field rather than a habit: `compute_calls` is recorded per entry and `entry_line()` refuses
-a run that computed more than once. A future KV-cache case would otherwise inherit the immunity by
-looking the same.
+**3. Stale input cache does not affect any of the 95 entries** — every proof arm is a fresh subprocess with exactly one `sess.run` (`compute_calls: 1` verified), and the defect needs a *second* `Compute()` in-session. Made durable as a field: `compute_calls` is recorded per entry and `entry_line()` refuses a run that computed more than once, so a future multi-inference form cannot inherit today's immunity by coincidence.
 
-**4. What I actually found: `device_losses` was inserted mid-struct and three ctypes mirrors kept
-reading the old layout.** The census said `partitioner: UNWIRED (dispatches_executed delta = 0 —
-EP ran nothing)` on a run that also reported `claimed=1`, `compile_calls=1`, `compute_calls=1`.
-Two artifacts from one run disagreeing is a reader fault. `a52024f` inserted the field between
-`compute_failures` and `dispatches_executed` — which the struct's own doc comment forbids one line
-above — without bumping `COUNTERS_ABI_VERSION`. Everything below shifted eight bytes:
-`dispatches_executed` was reading `device_losses` (always 0 on a healthy run), and
-`unproven_forms_claimed` was reading `ledger_entries` (95) — a counter that is supposed to be 0
-and whose being non-zero is what `epctl --check-counters` fails on.
+**4. The actual find: `device_losses` inserted mid-struct, three ctypes mirrors reading the old layout.** Census read `partitioner: UNWIRED (dispatches_executed delta = 0)` on a run that also reported `claimed=1`/`compile_calls=1`/`compute_calls=1` — two artifacts from one run disagreeing is a reader fault. `a52024f` inserted the field between `compute_failures` and `dispatches_executed` (against the struct's own doc comment) without bumping `COUNTERS_ABI_VERSION`; everything below shifted eight bytes, so `dispatches_executed` silently read `device_losses` (always 0 healthy) and `unproven_forms_claimed` silently read `ledger_entries` (95 — exactly what `--check-counters` fails on). Nothing went red because the wrong number was stable and plausible. ABI bumped to 4, all three mirrors repaired, reader now raises outside the `try` that returns `{}` (an empty dict reads as delta-0, which reads as `UNWIRED`).
 
-Nothing went red because the wrong number was stable and plausible. Switch's `STEADY 21.4×`, one
-level down in a struct offset. ABI bumped to 4, all three mirrors repaired, and the census reader
-raises on a layout mismatch — deliberately *outside* the `try` that returns `{}`, because `{}`
-becomes a delta of 0 and a delta of 0 reads as `UNWIRED`.
+**Judgement call on record:** the lane now asserts `struct_size` equality, not `>=`, forfeiting documented forward-compatibility, because an append and an insertion are indistinguishable from the reader's side and only one is safe. Cost: a red lane on every counter added, until a per-field offset manifest exists.
 
-**The judgement call I want on record.** The new lane test asserts `struct_size` **equality**, not
-`>=`, which throws away the struct's documented forward-compatibility. From the reader's side an
-append and an insertion are indistinguishable and only one is safe, so a check that cannot tell
-them apart must assume the dangerous one. Cost: a red lane on every counter added. A per-field
-offset manifest published by the DLL would be strictly better and equality can be relaxed the day
-it exists.
+**Filed, not done:** three hand-maintained ctypes mirrors of one C ABI is the real defect (two in `test_phi35.py` repaired but unguarded; one shared reader is the honest fix, not mine to land unilaterally). **Every ctypes reading between `a52024f` and `4d47362` is suspect.**
 
-**Filed, not done.** Three hand-maintained ctypes mirrors of one C ABI is the real defect; the two
-in `test_phi35.py` are repaired but unguarded. One shared reader is the honest fix and it is not
-mine to land unilaterally. Every ctypes reading taken between `a52024f` and `4d47362` is suspect,
-including the Phi-3.5 lane's `dispatches_executed`.
-
-**Audit taken on the way past.** Switch's *"a classifier tested only against strings we wrote
-ourselves is tested against the one input it cannot get wrong"* turned on my own harness's only
-foreign-string matcher, the ORT CPU-fallback refusal. It holds for a statable reason rather than a
-lucky one: its miss produces `ERROR(instrument)`, never a verdict. A classifier whose miss
-produces a verdict is the one to distrust.
-
-Verified: 479 lib tests, clippy clean, ledger lane 14/14 and both census lanes green on device 0,
-`--check PASS 95 entr(ies)`, shrink guard and ABI guard both mutation-tested in both polarities.
+Verified: 479 lib tests, clippy clean, ledger lane 14/14, both census lanes green on device 0, `--check PASS 95 entr(ies)`, shrink guard and ABI guard both mutation-tested in both polarities.
 
 ---
+
 
 ## 2026-08-02 — The second evidence list (§8.9.16). Op suite 11 red -> 6 red.
 
@@ -678,3 +118,45 @@ model's.
 Verified: 478 lib tests, clippy clean, ledger `--check PASS 97 entr(ies)` digest `eb7c4e1f90cd7ec2`,
 ledger + diagnostics lanes 22/22, census + elementwise 42 pass / 1 expected red, op table 85/6.
 DLL `A61DC855FF85FCAD` (pre) -> `96C19E95C16E4295` (post).
+
+---
+
+## Session 28 — 2026-08-02 — kernel identity for GEMV, and `a52024f` again
+
+**Ask:** `ONNXRUNTIME_EP_VULKAN_GEMV_PACKED` selects a different kernel and no artifact records
+whether it was in force, so every kernel reading we hold is silent about its own subject.
+
+**Merged `main` (`2c1e2c7`) -> merge `d3f79eb`. Rebuilt. DLL hashed either side:**
+before `96C19E95...FBA1FF`, after `F2A1D728...36DD9C33`.
+
+**Done.** `counters.rs` emits `pipeline_variants` and `gemv_packed_spec_constant`, recorded in
+`vk/session.rs` from `eff_shader`/`eff_spec_constants` -- the effective pair, not the request.
+**JSON-only, no ABI bump**, following the `model_output_equivalence` precedent, so the three-mirror
+hazard is not enlarged. Five-state string token; `UNOBSERVABLE` when no GEMV pipeline was built,
+which is the common case and would have been a lying `0`.
+
+**Falsifier:** `probe_gemv_kernel_identity.py`, 5 arms predicted before running, **PASS on both
+devices, 5/5**. Arm B is the one that matters -- env untouched, block 16, token moves `1 -> 0` by
+shape alone. `shaders_dispatched` is byte-identical across the packed/unpacked arms; the old field
+cannot name the kernel, the new one can.
+
+**Found while validating:** `898a2ba` inserted three fields mid-struct without an ABI bump. Three
+stale ctypes mirrors, seven fields of shift, `ledger_entries` stale-reads **0** against a true
+**97**. One defect, three red tests -- and **not mine**: my diff adds no struct field. My own
+equality guard is what caught it; the older `<` guard cannot see a grow.
+
+**Built the real fix:** `counters_abi.py` derives the mirror by parsing `counters.rs`. Not wired
+into Trinity's three call sites -- four agents live in this tree, routed to her instead.
+
+**Own error, disclosed:** first `--compare` run crashed because I called the export without its
+length argument. ERROR(instrument), mine, fixed. Then checked all three test call sites pass the
+length correctly -- they do, so the drift is misattribution only, not memory unsafety.
+
+**Fourth time this week the invisible bug was the plausible one.** `dispatches_executed` landing on
+`outputs_device_resident` reads 0 on every healthy run. I keep learning the same lesson: the
+dangerous reading is not the wrong-looking one.
+
+**Scope:** does not generalise to the other eight env switches (not spec constants) -- they stay with
+Link. Does generalise across all kernels.
+
+📌 Team update (2026-08-02T22:37:04-07:00): Link's `link-ledger-toolchain-not-device` finding — it's your ledger, and Morpheus's ruling is pending. `registry::shader_digest_for` hashes SPIR-V bytes, so Ubuntu's `glslc` faults all 74 entries with no kernel change; meanwhile `"device": "device0"` is recorded on 74 of 75 entries and no predicate reads it — demonstrated by forcing Intel Iris Xe on Windows, where the EP claims a form "proven ... on device0" though nothing has been proven there. Morpheus has ruled a three-state remedy (`PROVEN`/`PROVEN-ELSEWHERE`/`UNPROVEN`, plus `SUBJECT-CHANGED` vs `TOOLCHAIN-CHANGED` demotion) — the predicate change (read `device`), the states, and the demotion split are named as still owed to you. Do not resolve by re-proving per platform: that turns the digest into a per-machine fingerprint and `--reprove` without `--append` was destructive at the time it was checked. — decided by Link, Morpheus

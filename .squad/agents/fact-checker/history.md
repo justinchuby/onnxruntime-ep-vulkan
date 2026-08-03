@@ -113,6 +113,52 @@ session as a standing cache-exhaustion falsifier, not as a retroactive replaceme
 
 ---
 
+## Verification and Devil's Advocate Audit: Morpheus's six declines — 2026-08-02
+
+**Task:** Verify Morpheus's “six declines” tally, determine whether the declined rules survived as
+unnumbered obligations, test for later loss/re-derivation, and attack the `PROVEN-ELSEWHERE` ruling.
+
+**Finding:** The audit does **not fully clear** the policy claim.
+
+1. ✅ Six self-declared tally transitions are recoverable: R9 anti-correlation; R13 defaulting
+   lookup; classifier scope under R13; criterion-12 witness/discharge under R11; R9's dual; and the
+   proof-ledger device-frame ruling.
+2. ❌ Six is not a reproducible count of all deliberate non-numberings. “Coverage does not compose”
+   is explicitly “DELIBERATELY NOT NUMBERED,” adds a universal two-gate/two-extent obligation, and
+   leaves the tally unchanged at four. The sixth ruling also adds a separate drafting obligation.
+3. The declines are mostly honest **top-level deduplication by remedy**, but several are not
+   restraint from normative growth: R9 gained rule 5, R13 gained amendment 1, and
+   `PROVEN-ELSEWHERE` adds claim semantics, promotion, counting, and disclosure.
+4. ⚠️ No principle was observed to disappear. The unnumbered text is in `DESIGN.md` and gets reused.
+   Re-derivation did occur: anti-correlation returns as R9's dual, and differing instrument extents
+   return in the expensive-proof/cheap-port composition. That is a navigability cost.
+5. ✅ `LedgerEntry.device` is currently inert: the claim path asks only whether `lookup_key` is a
+   `Hit`. The diagnosis and the need to name cross-device extrapolation are verified.
+6. ⚠️ `PROVEN-ELSEWHERE` is prose at `d28a04a`; no predicate, counter, disclosure artifact, or
+   planted control implements the promised guard. A claimable warning state can become an ignored
+   default.
+7. ❌ A model-level ULP series cannot promote every per-form ledger entry. Trinity's independent
+   two-device ULP measurement removes the same-author circularity, but promotion must be limited to
+   exact proof keys attributed as executed in that run. Otherwise the expensive proof and cheap
+   invariant compose to their weaker shared extent.
+8. ⚠️ Governance is structurally single-writer. Adversarial review has corrected Morpheus before,
+   but the register has no formal second-reader gate for binding unnumbered obligations.
+
+**Settlement:** Mechanically index all normative obligations, not only `R#` headings; require a
+non-Morpheus reviewer for additions; implement three ledger states with per-run counts and exact
+keys; plant a mismatched-device control; and bind ULP promotion to device, attribution, and exact
+exercised keys.
+
+**Correction captured:** A spawned agent cannot observe the coordinator canary because coordinator
+agent instructions are not propagated into its context. Absence is therefore `UNOBSERVABLE`, not
+evidence of truncation. Recorded separately for the coordinator/skill owner.
+
+**Outputs:**
+- `.squad/decisions/inbox/fact-checker-six-declines-audit.md`
+- `.squad/decisions/inbox/fact-checker-subagent-canary-instrument.md`
+
+---
+
 ## Audit: OQ-12 figure currency, legacy-path justification, opset-26 reality, ORT 1.28 ceiling, no-bump class — 2026-07-30T07:05:09-07:00
 
 **Task:** Verify two load-bearing claims: (1) the 31.43% Android figure behind the OQ-12 legacy barrier path decision; (2) the ONNX opset-26 claim and associated no-bump errata.
