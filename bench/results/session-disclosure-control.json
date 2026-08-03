@@ -27,16 +27,17 @@
       },
       "arm_b": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
         "session_disclosure_channel": "UNOBSERVABLE",
         "claimed_nodes": 1,
-        "claimed_forms_proven": 1,
-        "ort_sink_warns": []
+        "claimed_forms_proven": 0,
+        "ort_sink_warns": [],
+        "claimed_forms_device_unattributed": 1
       },
       "arm_c": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
-        "claimed_forms_proven": 1,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "claimed_forms_proven": 0,
         "claimed_nodes": 1,
         "session_disclosure_infos": 1,
         "session_disclosure_infos_to_ort_sink": 1,
@@ -44,6 +45,7 @@
         "ort_sink_severity_threshold": "INFO",
         "ort_sink_infos": [],
         "ort_decorated_lines_seen": 2,
+        "claimed_forms_device_unattributed": 1,
         "content_witness": "EP_STDERR",
         "ort_console_delivery": "NOT_OBSERVED",
         "ort_console_delivery_note": "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."
@@ -78,16 +80,17 @@
       },
       "arm_b": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
         "session_disclosure_channel": "UNOBSERVABLE",
         "claimed_nodes": 1,
-        "claimed_forms_proven": 1,
-        "ort_sink_warns": []
+        "claimed_forms_proven": 0,
+        "ort_sink_warns": [],
+        "claimed_forms_device_unattributed": 1
       },
       "arm_c": {
         "returncode": 0,
-        "claimed_form_evidence": "ALL-PROVEN",
-        "claimed_forms_proven": 1,
+        "claimed_form_evidence": "DEVICE-UNATTRIBUTED-PRESENT",
+        "claimed_forms_proven": 0,
         "claimed_nodes": 1,
         "session_disclosure_infos": 1,
         "session_disclosure_infos_to_ort_sink": 1,
@@ -95,6 +98,7 @@
         "ort_sink_severity_threshold": "INFO",
         "ort_sink_infos": [],
         "ort_decorated_lines_seen": 2,
+        "claimed_forms_device_unattributed": 1,
         "content_witness": "EP_STDERR",
         "ort_console_delivery": "NOT_OBSERVED",
         "ort_console_delivery_note": "The EP offered the INFO to Logger_LogMessage and ORT reports its own threshold as 'INFO', which admits INFO; 2 ORT-decorated line(s) were seen in the same run, so the witness is not blind. The record is nevertheless absent from ORT's console. RAI-008(b)'s INFO half is therefore EMITTED and OFFERED but NOT WITNESSED on ORT's own channel. Falsifier: an ORT build or host configuration in which an INFO from a plugin EP does appear on the console \u2014 then this line is delivered and this note is withdrawn."

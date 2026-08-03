@@ -321,3 +321,51 @@ strictly stronger than the arranged control. Trinity's (c) artifacts refreshed f
 **Decisions:** `tank-selectors-are-spec-constants-not-variants.md`,
 `tank-shape-ops-stay-unregistered.md`, `tank-cast-is-a-pair-keyed-template.md`,
 `tank-the-info-half-was-never-witnessed.md`. Commits `164f9bf`, `26fd93f`, `1578fcd` on `squad/tank`.
+
+## Session 25 — the merge that found the seam
+
+**Merged `origin/main` (`607056a`) into `squad/tank` as `5cd5507`.** The coordinator refused to
+guess the union of my `SessionDisclosure` struct and Mouse's positional `device_unattributed`, and
+was right to. Resolution: struct form, `device_unattributed` as a **field**; Mouse's
+`ledger_faulted` leg and his `DEVICE-UNATTRIBUTED-PRESENT` rung kept verbatim.
+
+**Two right changes; the join was wrong.** `disclose_claimed_forms` has two INFO branches. Mine set
+`informed`; Mouse's DEVICE-UNATTRIBUTED branch discarded the return of its own
+`info_through_ort_sink` call, because when he wrote it there was no INFO counter to feed. **Every
+baked ledger entry is DEVICE-UNATTRIBUTED**, so the unjoined branch is the *only* INFO a real
+session emits — and `session_disclosure_info_channel` read `UNOBSERVABLE` on runs that had just
+emitted one. A channel counter reporting no traffic while traffic moves is worse than no counter,
+because it is cited as evidence. Both branches now feed the pair; `info_reached_ort_sink` is ANDed,
+because it is a claim about the INFO half as a whole.
+
+**My own probe was asserting the defect.** `probe_session_disclosure.py` went FAIL on both devices
+after the merge: it demanded `claimed_forms_proven >= 1` and `claimed_form_evidence == "ALL-PROVEN"`
+— the token Mouse deleted *precisely because* it asserted a device frame nothing had checked.
+Repaired to assert the property (proof-backed = proven + device_unattributed; the device is
+reachable from the disclosure, in either branch's wording) rather than one author's phrasing.
+PASS both devices.
+
+**Both fixes proved by mutation, not by assertion.** Dropping `device_unattributed` from the struct:
+caught by a new `device_unattributed: 1` rung in the `claimed_form_evidence` ladder test. Un-joining
+the INFO branches: caught by `a_proof_backed_disclosure_informs_whichever_branch_carried_it`. Before
+those arms, the obvious merge resolution would have compiled, passed, cleared clippy, and silently
+re-promoted every claim in the repository to `ALL-PROVEN`.
+
+**The ABI guard did not fire, and that is correct.** `counters_abi.py --check`: v7, 20 fields,
+152 bytes, `0x16eacc53e6e18d97`, PASS. The guard covers the mirrored C struct; `SessionDisclosure`
+is a Rust-side call shape and `session_disclosure_*` are JSON-only. Mouse's rename fired it because
+it renamed a *mirrored* field and the hash covers names. **The guard fires on exactly what a
+name-keyed ctypes reader would misread — no more, no less.**
+
+**Census artifacts regenerated, not hand-merged.** Producer recorded:
+`onnxruntime_vulkan_ep.dll` SHA-256
+`5D457FBBB5B68EC7B75FDB84476C1B8EF0C8FC606D7119DB2979B516C18D2305`, release build of the `5cd5507`
+tree, abi_version 7. A hand-merged reading is a reading of nothing, and a reading whose binary is
+not named cannot be re-taken.
+
+**Verified:** `cargo test --lib` 515 passed / 0 failed / 4 ignored (main was 510); clippy
+`--all-targets -D warnings` clean; `tests/ops` 127 passed / 0 failed; `test_wiring_census.py`
+7 passed / 1 xfailed; `probe_session_disclosure.py --devices 0,1` PASS/PASS exit 0;
+`probe_ledger_arms.py` exit 0; `probe_ledger_mutations.py` 3/3 CAUGHT. No clock.
+
+**Decision:** `tank-the-union-of-two-right-changes.md`.

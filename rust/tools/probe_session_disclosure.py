@@ -353,11 +353,28 @@ def judge(device_index: int) -> tuple[str, list[str], dict]:
 
     b_warns = sink_disclosure_warns(b_log)
     report["arm_b"]["ort_sink_warns"] = readable(b_warns[:2])
+    report["arm_b"]["claimed_forms_device_unattributed"] = b_doc.get(
+        "claimed_forms_device_unattributed"
+    )
     # Non-vacuity FIRST. Without this the arm passes for a reason unrelated to what it tests.
-    if not b_doc.get("claimed_forms_proven"):
+    #
+    # "Proof-backed" is `claimed_forms_proven + claimed_forms_device_unattributed`, not
+    # `claimed_forms_proven` alone. §8.9.18 split PROVEN into proven-here and proven-but-the-frame
+    # was-never-checked, and on this hardware *every* baked entry is in the second state — so an
+    # arm keyed on `claimed_forms_proven` alone reports every real run as vacuous. This probe
+    # asked for ALL-PROVEN, which is the token that had been asserting a device frame nothing had
+    # checked; asserting it now would be asserting the defect. What arm B actually tests is that a
+    # claim set with nothing UNMEASURED, DIVERGENT or FAULTED in it does not warn, and that is
+    # what it checks.
+    b_backed = (b_doc.get("claimed_forms_proven") or 0) + (
+        b_doc.get("claimed_forms_device_unattributed") or 0
+    )
+    if not b_backed:
         failures.append(
-            "arm B's silence is vacuous: the run claimed no proven form "
+            "arm B's silence is vacuous: the run claimed no proof-backed form "
             f"(claimed_forms_proven={b_doc.get('claimed_forms_proven')!r}, "
+            f"claimed_forms_device_unattributed="
+            f"{b_doc.get('claimed_forms_device_unattributed')!r}, "
             f"claimed_nodes={b_doc.get('claimed_nodes')!r}), so 'it did not warn' says nothing "
             "about whether it can."
         )
@@ -366,9 +383,13 @@ def judge(device_index: int) -> tuple[str, list[str], dict]:
             "arm B: a session-creation WARN fired on a fully proven claim set, so this WARN "
             f"cannot be shown NOT to fire and is not a detector. WARN: {b_warns[0]!r}"
         )
-    if b_doc.get("claimed_form_evidence") not in ("ALL-PROVEN", None):
+    if b_doc.get("claimed_form_evidence") not in (
+        "ALL-PROVEN",
+        "DEVICE-UNATTRIBUTED-PRESENT",
+        None,
+    ):
         failures.append(
-            "arm B's counters token is not ALL-PROVEN on a proven claim set: "
+            "arm B's counters token reports something unproven on a proof-backed claim set: "
             f"{b_doc.get('claimed_form_evidence')!r}"
         )
 
@@ -410,11 +431,19 @@ def judge(device_index: int) -> tuple[str, list[str], dict]:
         }
     )
 
-    # (1) Non-vacuity, first, as in arm B.
-    if not c_doc.get("claimed_forms_proven"):
+    # (1) Non-vacuity, first, as in arm B — and proof-backed, for the same §8.9.18 reason.
+    c_backed = (c_doc.get("claimed_forms_proven") or 0) + (
+        c_doc.get("claimed_forms_device_unattributed") or 0
+    )
+    report["arm_c"]["claimed_forms_device_unattributed"] = c_doc.get(
+        "claimed_forms_device_unattributed"
+    )
+    if not c_backed:
         failures.append(
-            "arm C claimed no proven form, so there was no INFO due and its presence or absence "
-            f"measures nothing (claimed_forms_proven={c_doc.get('claimed_forms_proven')!r})."
+            "arm C claimed no proof-backed form, so there was no INFO due and its presence or "
+            f"absence measures nothing (claimed_forms_proven={c_doc.get('claimed_forms_proven')!r}, "
+            "claimed_forms_device_unattributed="
+            f"{c_doc.get('claimed_forms_device_unattributed')!r})."
         )
     else:
         # (2) The EP's own observable. This is the half the EP owns and can be held to: it emitted
@@ -486,12 +515,17 @@ def judge(device_index: int) -> tuple[str, list[str], dict]:
             # was claimed; the entry tells them what to go and check, which is the difference
             # between a disclosure and a label. The ledger's own filename is deliberately not a
             # needle — it is a constant this INFO could carry while knowing nothing about the form.
-            for what, needle in (
-                ("the artifact that proved it", "evidence/"),
-                ("the device it was proved on", " on device"),
-                ("the ORT build it was proved against", " against "),
+            # The device needle accepts either spelling because the two INFO branches word it
+            # differently and both name it: the proven-here line says "on <device>", the
+            # DEVICE-UNATTRIBUTED line says "entry-device=<device>" beside the running device it
+            # could not be matched against. The property is that the entry's device is reachable
+            # from the disclosure, not that one branch's phrasing survived.
+            for what, needles in (
+                ("the artifact that proved it", ("evidence/",)),
+                ("the device it was proved on", (" on device", "entry-device=")),
+                ("the ORT build it was proved against", (" against ",)),
             ):
-                if needle not in info:
+                if not any(needle in info for needle in needles):
                     failures.append(
                         f"arm C's INFO does not name {what}, so the ledger entry behind the claim "
                         f"is not reachable from the disclosure: {witness[0]!r}"
