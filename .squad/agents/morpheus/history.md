@@ -499,3 +499,160 @@ That is the second self-withdrawal on this team in two days and it should stay u
   are making that residual grow. Nobody owns it. I named it rather than fixing it and that is a debt.
 - I should re-read my own §8.9.17 wording for other places where "belongs" is doing work that "in the
   key" or "on the entry" should be doing.
+
+## 2026-08-03T11:32:57-07:00 — Two agents chose opposite defaults and were both right; and the rule I needed had three clauses, not one
+
+**The question I was handed was "is device-dependent loadability admissible on the claim path", and
+it is the wrong shape.** Tank's objection had two things fused in it: the device is not in scope, and
+the value would arrive through a global. The second is true and is the whole defect. The first is
+**false** — a `VkDevice` exists before any node is offered, and I checked the order rather than
+accepting the framing. Mouse's `SPEC-UNOBSERVED` refusal this morning was about *ordering*: the
+pipeline genuinely does not exist at claim time, and his own doc comment says so. Treating the two
+cases as one would have imported a real impossibility into a case that only had a plumbing problem.
+
+So the ruling is a three-clause test rather than a verdict: **resolved before the first claim,
+session-immutable, passed in as a value.** It settles Mouse's refusal and Tank's decline in
+**opposite directions** and says why they differ. That is the thing I am most pleased with, and it is
+the same pleasure as §8.9.19's — the structure did the work, not the judgement. Each of the three
+clauses has a specimen on this project, which is the only reason I trust it: (a) is Mouse's this
+morning, (b) is what a lazily-initialised capability set would violate and this codebase has shipped
+a time-dependent global three times by `form_is_provable`'s own count, (c) is Tank's.
+
+**The general answer was already in the document and I did not notice it was general.** `shaderInt64`
+is `synchronization2` with a different name. §7.5's barrier contract — *the branch happens once in
+`Device::new`, no call site reads the feature* — is the treatment of an optional device capability,
+stated for one capability, lint-enforced, and never generalised. I have been quoting §7.5 as a
+layering rule for weeks. **A rule I wrote and enforce turned out to already answer a question I was
+asked as if it were new.** That is the same failure as the six-declines finding wearing different
+clothes: the principle was in the record and could not be found, and this time I am the one who could
+not find it. The register was under-numbered; §7 is under-*indexed*, which is the same disease on a
+different document.
+
+**What surprised me, and it is the part I would not have predicted.** Mouse claims when unsure and
+Tank answers `true` when unsure, and I expected to have to adjudicate. They are the same rule and it
+is R13 — both defaults exist to stop an instrument-side absence being emitted as a subject-side
+finding — and **what differs is which side is silent, which the artifact decides, not the person.**
+Refusal is an aggregate ("all 103 declined", "5/5 unprovable"); the permissive answer is itemised.
+The aggregate is where a form goes to stop being looked at. Neither of them chose permissiveness;
+both chose *loud*, and loud happened to be permissive twice. Two people independently found a rule
+neither had stated, by feel, in one session. I wrote it down and inverted it where the permissive
+side is silent, which is where `PROVEN-ELSEWHERE`'s disclosure obligation already lives.
+
+**Tank's `metadata` stem is R13 amendment 1 in Rust and I want that on the record precisely.**
+`variant_is_loadable`'s early `else { return false }` for an unknown stem is `dict.get(k, sentinel)`.
+I minted that amendment for a Python probe and asserted it generalises past probes; here it is in a
+claim predicate, in a language with no `dict.get`, producing `5/5 unprovable`. **The amendment
+travelled, which is the first time one of mine has been confirmed by a specimen I did not go looking
+for.**
+
+**On "too clean" — I declined the number and I checked the decline harder than usual, because this is
+the fifth.** The observation is real and I stated it as sharply as I could: *a total is the one
+reading under which a mechanism's discriminating behaviour is unexercised.* But the remedy is
+demonstrate-both-polarities, which is in the register three times already (R9 rule 3, R12's
+`refused > 0`, Niobe's `UNWITNESSED`). Remedy-identity says no. What I did take is the **trigger**,
+because R13's own note says advice does not survive transit and *"be suspicious of a clean result"*
+is advice: emit `UNIFORM(n, verdict)`, not quotable until a positive control produces the other arm.
+
+**And I refused to say "fourth time today".** I verified one instance. The other three came to me as
+a count, and §8.9.18 part 2 gave counts to Fact Checker specifically so a tally would stop being kept
+by the person whose argument it strengthens. Declining to repeat a number handed to me in my own
+favour is the cheapest possible application of my own ruling and I still nearly wrote it, because it
+was the best sentence in the brief.
+
+**The merge driver.** `len(ours) < len(base)` is a proxy that resolves anyway when wrong — a branch
+that condenses *and* appends is longer than base, takes the union branch, and resurrects what the
+driver exists to protect. **The first defect surviving inside its own fix.** Declared, not inferred:
+a `CONDENSED-AT` marker. Scribe feared a trade against concurrent-append protection; there is none,
+because an append never carries the marker. Keep the length test as an assertion that fires on
+disagreement — second witness, different failure mode, free.
+
+**Carry forward**
+- The specialisation debt from §8.9.19 is **not** paid. §8.9.21 says why the two cases sit at
+  different boundaries, which is more than I had, but nobody owns the residual and I named it again.
+- The capability-set publication obligation is the one most likely to be skipped: two devices, one
+  binary, different claim sets, and nothing in a decline histogram says so. It is R8 arriving through
+  a second door and it will be found as a comparison somebody already made.
+- Watch for `OnceLock` in `only_loadable_variants`. That is this ruling implemented as its own
+  counterexample and it is the cheapest way to satisfy it.
+- Fifth decline. My standing self-check says look for a softer way of never being wrong about the
+  register's shape. This one I would have enjoyed minting more than any since criterion 10, and the
+  reason it does not get a number is the same reason four others did not — which is either a
+  consistent test or a comfortable one, and I cannot tell from inside. Fact Checker can.
+- §7 needs an index by *question answered*, not by API surface. I could not find my own ruling.
+
+## 2026-08-03T11:56:18-07:00 — The measurement I commissioned refuted the finding I accepted, and that is the instrument working
+
+**I was wrong about the register and the thing that proved it is the thing I built to prove it.** I
+accepted "under-numbered, therefore a navigability defect, repairable by numbering." The derived count
+says `§8.9.x` is cited 339 times externally — **80 in `registry.rs` alone** — against ~1,337 for
+`R1`–`R13`. **Nobody was ever lost.** There are two namespaces, `R#` names an obligation and `§8.9.x`
+names a location, and I was counting one of them while the codebase used both.
+
+The thing I want to keep is not the correction, it is the shape of it: **I handed the count away
+specifically because both the coordinator and I were biased the same way, and the first thing the
+independent count did was overturn a concession I had made *against* myself.** I expected it to cost
+me. It did — five of eight declines — but it also refunded a diagnosis I had accepted too readily.
+**An instrument that only ever takes is not independent either**, and I had not thought about that
+direction at all.
+
+**Five of eight declines fell, and every one fell because someone else was using the principle.**
+Trinity named a test after D5. D6 is a shipped state token seven times over in `registry.rs`. Mouse
+copied D7 into `OP_COVERAGE.md` verbatim, with attribution. **The failure mode I was worried about was
+principles going missing; what actually happened is that they went into other people's code under my
+name and I was scoring that as restraint.** Fact Checker's sentence is the whole diagnosis and it is
+better than mine: *"did I mint a number?" and "did the project acquire a new binding obligation?" are
+different questions, and only the first one had a counter on it.*
+
+So the tally is retired. And I caught myself doing it again this morning — "fifth decline", written in
+§8.9.21 out of pure habit, hours after ruling that scoring is not mine. **The ruling was made and the
+behaviour did not change, which is the gap between a decision and a mechanism, and I have been grading
+other people on exactly that gap all week.**
+
+**The one structural thing I take from it, and it is not the numbering.** A location can be re-cut
+while an obligation cannot — §8.9.19 already had to restate §8.9.17. So anchor phrases at ruling time.
+That is §5.4.1(a)'s line-number rule one level up, which means I wrote the general form of this
+obligation months ago for line numbers and did not see that section numbers are the same reference.
+**Second time today a rule I already wrote turned out to answer a question I was treating as new.**
+
+**Switch's tolerance filing, and he did it in the right order.** He measured the budget before writing
+a kernel, rejected "widen the band" in advance, and named the shape the data supports without ruling
+it. The fact that makes it mine: **a max-ULP criterion ranks the fp16 GPU path at 337,178 ULP as worse
+than every int8 lane.** Criterion 10 is measured with that. It is a defect in the observable and it is
+true whether or not int8 ever ships.
+
+He also found the mechanism, in a finding filed against his own instrument: the spacing floor is
+reached by any reference below the smallest fp16 normal, not only an exact zero. **So the max sits, by
+construction, on the values carrying the least information in the tensor.** Keep the unit, fix the
+statistic — and Trinity's float64 result is why that ordering is forced rather than chosen, since at
+the final RMSNorm we are the exact side and ORT's CPU EP carries the ULP.
+
+**The half I checked hardest is the half that says the fix admits nothing.** I have refused a
+narrowing-after-failure in this exact criterion once already, and the cheapest way to launder one is to
+fix a real defect that happens to also let the blocked thing through. So I ran it: under the split
+observable int8 is still 6–7× the fp16 control, and **Switch's `NO_ULP_BAND_ADMITS_INT8` verdict
+survives the repair his own data motivated.** *A change that makes nothing pass which did not pass
+before is a repair; one that admits the thing whose measurement prompted it is a narrowing.* Having
+that test available meant I did not have to rely on my own account of my motives.
+
+**And I left int8 open, explicitly, because the silence would otherwise read as a grant.** It needs
+Trinity's observable and a byte figure of class MEASUREMENT. Switch already refuses to quote his
+modelled 1.40× as measured, and the ledger's 2.21×/3.17×/4.06× reproduce from nothing in this tree —
+a disagreement he wrote down *before* the first run, which is the only reason it is a finding.
+
+**The number I am most pleased to have in the register is not mine.** An 8-step slope extrapolated to
+ctx 8192 predicts ~13,000 ULP; the measured value is 29. **Wrong by ~450×, in the direction that kills
+the lever.** This project has refused to extrapolate slopes on principle for two weeks. Now it has a
+magnitude, from its own tree, for one lockstep run. **A principle survives being disagreed with; a
+number does not.**
+
+**Carry forward**
+- Anchor phrase per ruling, at ruling time. §8.9.22 complies by rule, §8.9.21 by luck.
+- I do not score my own declines. Written down twice now; the second time is the one that counts.
+- int8 KV admission is OPEN and is my scope call. It does not move until there is a MEASUREMENT-class
+  byte figure and Trinity's observable has landed.
+- The spec constant on an int8 KV kernel is **load-bearing for correctness** — the first here. That is
+  the §8.9.19/§8.9.21 specialisation debt returning with a correctness face, and it is still unowned
+  as a residual even though Mouse owns the witness.
+- Third and fourth times this week that a rule already in the record answered a question I was
+  treating as new (§7.5 this morning, §5.4.1(a) this afternoon). The register is under-*indexed by
+  question*, and that is the version of the navigability complaint that survives the refutation.
