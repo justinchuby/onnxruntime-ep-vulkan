@@ -79,6 +79,29 @@ struct Inner {
     /// Buffers we minted, keyed by the token in the [`BufferView`] we handed out.
     buffers: HashMap<u64, GpuBuffer>,
     next_token: u64,
+    /// Bytes currently held in `buffers`, so [`budget_bytes`] can be enforced against a live
+    /// figure rather than a monotonic one. Padded sizes, as the allocator returned them.
+    live_bytes: u64,
+}
+
+/// The device-memory ceiling this process imposes on itself, in bytes; 0 means uncapped.
+///
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB`. Unparseable or absent is uncapped, which is
+/// the shipped behaviour — same polarity rule as every other hatch here: fail towards the path
+/// that ships.
+///
+/// This is a fault-injection instrument first and a safety valve second. The reason it exists at
+/// all: `try_attach_device_buffer` degrades to host staging when the device refuses an allocation,
+/// and until this knob existed that degradation could only be provoked by genuinely exhausting an
+/// 8 GB card — which is to say it had never been observed in its positive state, and a guard never
+/// seen firing is not a guard.
+pub(crate) fn budget_bytes() -> u64 {
+    const MB: u64 = 1024 * 1024;
+    std::env::var("ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|mb| mb.saturating_mul(MB))
+        .unwrap_or(0)
 }
 
 /// The **exact** surface this provider needs from the EP's device context (§6.5 seam).
@@ -211,6 +234,7 @@ impl HostDeviceMemory {
                 cmd_pool,
                 buffers: HashMap::new(),
                 next_token: 1,
+                live_bytes: 0,
             }),
             ctx,
             is_uma,
@@ -531,6 +555,15 @@ impl HostDeviceMemory {
 impl DeviceMemoryProvider for HostDeviceMemory {
     fn alloc(&self, size: usize) -> Option<BufferView> {
         let mut inner = self.inner.lock().ok()?;
+        // The self-imposed cap, checked before Vulkan is asked. It exists for one reason: an
+        // allocation failure is a *first-class* case of this path, not an edge case — the shipping
+        // (host-staging) route has been measured dying at ctx 4096 on an 8 GB discrete GPU — and a
+        // degradation nobody can reproduce on demand is a degradation nobody has tested. Uncapped
+        // by default; `alloc_device_memory_budget_bytes` labels any run that set it.
+        let budget = budget_bytes();
+        if budget > 0 && inner.live_bytes.saturating_add(size as u64) > budget {
+            return None;
+        }
         // `TRANSFER_SRC | TRANSFER_DST` because the copy runs in both directions, and
         // `STORAGE_BUFFER` so that the engine can bind this buffer once it starts doing so
         // without needing the allocation to be reissued.
@@ -545,6 +578,7 @@ impl DeviceMemoryProvider for HostDeviceMemory {
         }?;
         let token = inner.next_token;
         inner.next_token += 1;
+        inner.live_bytes = inner.live_bytes.saturating_add(buf.size);
         inner.buffers.insert(token, buf);
         Some(BufferView::from_raw(token))
     }
@@ -554,6 +588,7 @@ impl DeviceMemoryProvider for HostDeviceMemory {
             return;
         };
         if let Some(buf) = inner.buffers.remove(&view.as_raw()) {
+            inner.live_bytes = inner.live_bytes.saturating_sub(buf.size);
             // SAFETY: the buffer came from this allocator, and every submission touching it was
             // waited on before its copy returned.
             unsafe { inner.alloc.free(buf) };

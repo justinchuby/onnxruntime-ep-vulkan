@@ -71,7 +71,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::engine::BufferView;
-use crate::factory::ENV_DEVICE_MEMORY;
 use crate::sys::ort;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -595,8 +594,11 @@ impl HandleRegistry {
     /// Off by default. It is a correctness-neutral change — host staging produces the same bytes —
     /// so the gate exists to keep a partially wired path out of everyone's way, not to hide a
     /// wrong answer.
+    ///
+    /// Delegates to [`crate::factory::device_memory_enabled`]: this used to be a second, laxer
+    /// parser of the same variable, and the two disagreed on `off`/`false`/`no`/anything typo'd.
     pub fn device_memory_requested() -> bool {
-        std::env::var(ENV_DEVICE_MEMORY).is_ok_and(|v| v != "0" && !v.is_empty())
+        crate::factory::device_memory_enabled()
     }
 
     /// Give a freshly carved span a real `VkBuffer` if the engine can supply one.
@@ -604,27 +606,41 @@ impl HandleRegistry {
     /// Failure is not an error: falling back to host staging is slower and correct, and
     /// `alloc_device_backed_spans` versus `alloc_staged_spans` reports which happened, so the
     /// distinction can never be lost in a log.
+    ///
+    /// **But "slower and correct" is only a degradation if a reader can see it happened.** There
+    /// were four ways out of this function and all four were the same silent absence of an
+    /// increment: flag off, device unattributed, no provider, and *the device allocation failed*.
+    /// The last is the one that matters at long context on an 8 GB card, and it is the one this
+    /// project has now measured killing the shipping path outright at ctx 4096. It gets counted
+    /// separately, exactly as `outputs_bind_attempted` was split from `outputs_device_bound` when
+    /// a zero had two causes.
     fn try_attach_device_buffer(&self, base: usize, padded: usize) {
         if !Self::device_memory_requested() {
             return;
         }
+        tally::on_device_attach_attempt();
         let idx = self.device_index.load(Ordering::Relaxed);
         if idx == usize::MAX {
+            tally::on_device_attach_unavailable();
             return;
         }
         // Stand the engine's provider up on first use. Idempotent, and its failure is cached, so a
         // machine with no Vulkan device pays for the attempt once rather than per tensor.
         crate::vk::host_device_memory::ensure_registered(idx);
         let Some(provider) = crate::engine::device_memory_provider(idx) else {
+            tally::on_device_attach_unavailable();
             return;
         };
         let Some(view) = provider.alloc(padded) else {
+            tally::on_device_attach_failure();
+            log_degraded_to_staging(padded);
             return;
         };
         if self.attach_buffer(base, view).is_err() {
             // The span vanished between carving and attaching, which should be impossible; free
             // the buffer rather than leak it, and say so.
             provider.free(view);
+            tally::on_device_attach_failure();
             log::warn!(
                 "VulkanExecutionProvider: could not attach a device buffer to handle 0x{base:x} \
                  immediately after allocating it. Falling back to host staging for this span."
@@ -989,6 +1005,25 @@ impl HandleRegistry {
 // The allocation tally
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
+/// Say once, loudly, that device memory ran out and the EP is still correct.
+///
+/// One line per process, not per span: an out-of-VRAM run allocates thousands of spans and a
+/// per-span log would be the only thing in the file. The *count* lives in
+/// `alloc_device_attach_failures`, which is what an artifact quotes; this line exists so a human
+/// reading a log knows why the run got slower without having been told which counter to read.
+fn log_degraded_to_staging(padded: usize) {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SAID.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    log::warn!(
+        "VulkanExecutionProvider: device memory allocation failed for a {padded}-byte span. This \
+         tensor — and any later one that also fails — stays in host staging: the run is correct \
+         and slower, not wrong and not aborted. Count: alloc_device_attach_failures. If this run \
+         was capped on purpose, alloc_device_memory_budget_bytes says so."
+    );
+}
+
 /// A process-global tally of what the allocator actually did, readable after teardown.
 ///
 /// # Why this is separate from [`AllocStats`]
@@ -1011,6 +1046,7 @@ impl HandleRegistry {
 /// A warning is read by a human who is present, remembers it an hour later, and is honest when
 /// quoting the number. A counter is read by `epctl --check-counters`, which is none of those
 /// things and does not need to be. See D-T69.
+/// Process-wide counters for what the allocator did with device memory.
 pub mod tally {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
@@ -1102,6 +1138,30 @@ pub mod tally {
     /// A `VkBuffer` was attached to a handle for the first time: this one is genuinely on device.
     pub(super) fn on_device_backed() {
         DEVICE_BACKED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Spans for which the device-buffer attach was *tried* — the flag was on and we got as far
+    /// as looking for a provider. The denominator `device_backed_spans` never had.
+    static DEVICE_ATTACH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    /// Attaches that reached the device allocator and were refused by it: out of VRAM, out of
+    /// budget, or a Vulkan allocation error. **This is the counter that says a run degraded.**
+    static DEVICE_ATTACH_FAILURES: AtomicU64 = AtomicU64::new(0);
+    /// Attaches that never reached a device allocator at all: the registry was never attributed
+    /// to a device, or no provider could be stood up. Structurally different from a refusal —
+    /// nothing was asked, so nothing ran out — and reading the two as one number is how "we have
+    /// no VRAM problem" gets claimed from a run that never allocated any.
+    static DEVICE_ATTACH_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn on_device_attach_attempt() {
+        DEVICE_ATTACH_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn on_device_attach_failure() {
+        DEVICE_ATTACH_FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn on_device_attach_unavailable() {
+        DEVICE_ATTACH_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn on_staging(bytes: u64) {
@@ -1503,6 +1563,16 @@ pub mod tally {
         /// from `pointers_use_after_free == 0`, because the window that would have caught a stale
         /// handle was reused before the handle could be presented.
         pub quarantine_retired: u64,
+        /// Spans where a device-buffer attach was attempted (the flag was on).
+        pub device_attach_attempts: u64,
+        /// Attempts refused by the device allocator — out of VRAM or out of budget. The run
+        /// degraded to host staging for this many spans and stayed correct.
+        pub device_attach_failures: u64,
+        /// Attempts that never reached a device allocator (unattributed registry, no provider).
+        pub device_attach_unavailable: u64,
+        /// The self-imposed device-memory cap in bytes, 0 when uncapped. Non-zero labels the
+        /// whole artifact: those failures were arranged, not discovered.
+        pub device_memory_budget_bytes: u64,
     }
 
     pub fn snapshot() -> Tally {
@@ -1534,6 +1604,10 @@ pub mod tally {
             failed_lookups: FAILED_LOOKUPS.load(Ordering::Relaxed),
             quarantine_peak_spans: QUARANTINE_PEAK.load(Ordering::Relaxed),
             quarantine_retired: QUARANTINE_RETIRED.load(Ordering::Relaxed),
+            device_attach_attempts: DEVICE_ATTACH_ATTEMPTS.load(Ordering::Relaxed),
+            device_attach_failures: DEVICE_ATTACH_FAILURES.load(Ordering::Relaxed),
+            device_attach_unavailable: DEVICE_ATTACH_UNAVAILABLE.load(Ordering::Relaxed),
+            device_memory_budget_bytes: crate::vk::host_device_memory::budget_bytes(),
         }
     }
 
@@ -1925,6 +1999,9 @@ pub mod tally {
             &DEVICE_AUTHORITY_GRANTS,
             &DEVICE_BUFFER_BINDS,
             &DEVICE_RESIDENCY_EVALUATIONS,
+            &DEVICE_ATTACH_ATTEMPTS,
+            &DEVICE_ATTACH_FAILURES,
+            &DEVICE_ATTACH_UNAVAILABLE,
         ] {
             c.store(0, Ordering::Relaxed);
         }
@@ -3404,6 +3481,150 @@ mod tests {
              first statement. Do NOT reach for `--test-threads=1`: it hides this AND it hides a \
              frame defect in shipping code, which has the same symptom and the opposite fix.",
             offenders.join("\n  ")
+        );
+    }
+
+    /// **One variable, one reader, and a spelling that reads as "off" must be off.**
+    ///
+    /// This was two readers. `factory::device_memory_enabled` took an allow-list; the allocator's
+    /// `device_memory_requested` took "anything non-empty that is not `0`". So
+    /// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=off` armed the device-buffer attach while leaving the
+    /// allocator un-advertised, and every misspelling did the same. The failure mode is not
+    /// hypothetical in this project: it is the exact shape of `disable_cpu_ep_fallback` silently
+    /// accepting a misspelled key.
+    ///
+    /// The falsifier is the disagreement itself, so both functions are called on every input —
+    /// deleting one of them makes this test stop testing what it says it tests, and the equality
+    /// assertion is what would go red if a second parser ever came back.
+    #[test]
+    fn every_spelling_of_the_device_memory_flag_reads_the_same_in_both_places() {
+        let _g = ledger::test_lock();
+        let saved = std::env::var(crate::factory::ENV_DEVICE_MEMORY).ok();
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("ON", true),
+            (" yes ", true),
+            // Everything below reads as "off" or as a typo. This flag ships OFF, so the
+            // unrecognised value must fail towards OFF — the same rule that makes an unrecognised
+            // BIND_OUTPUTS value read ON, applied to a flag whose shipped state is the other one.
+            ("0", false),
+            ("off", false),
+            ("false", false),
+            ("no", false),
+            ("", false),
+            ("yess", false),
+            ("enabled", false),
+            ("2", false),
+        ] {
+            // SAFETY: single-threaded test holding the process-global test lock; the variable is
+            // restored before returning.
+            unsafe { std::env::set_var(crate::factory::ENV_DEVICE_MEMORY, value) };
+            let allocator_side = HandleRegistry::device_memory_requested();
+            let factory_side = crate::factory::device_memory_enabled();
+            assert_eq!(
+                allocator_side, factory_side,
+                "the allocator and the factory disagree about \
+                 ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY={value:?}: the allocator says \
+                 {allocator_side} and the factory says {factory_side}. A process half-armed from \
+                 one spelling is worse than either state."
+            );
+            assert_eq!(
+                allocator_side, expected,
+                "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY={value:?} must read {expected}"
+            );
+        }
+        // SAFETY: see above.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var(crate::factory::ENV_DEVICE_MEMORY, v),
+                None => std::env::remove_var(crate::factory::ENV_DEVICE_MEMORY),
+            }
+        }
+    }
+
+    /// **A degradation nobody can see is not a degradation.**
+    ///
+    /// `try_attach_device_buffer` has four ways out and, before this, all four were the same
+    /// silent absence of an increment: flag off, device unattributed, no provider, and *the device
+    /// refused the allocation*. The last is the one that decides whether a long-context run
+    /// degrades or dies, and it must be readable off the counters — the same split that
+    /// `outputs_bind_attempted` had to make when `outputs_device_bound == 0` had two causes.
+    ///
+    /// Driven through the tally rather than through Vulkan, because the question here is whether
+    /// the three states are *distinguishable in the artifact*; whether real VRAM exhaustion
+    /// reaches them is the probe's job and it is demonstrated there in its positive state.
+    #[test]
+    fn an_allocation_failure_is_distinguishable_from_a_path_that_never_ran() {
+        let _g = ledger::test_lock();
+        tally::reset_for_test();
+
+        let t = tally::snapshot();
+        assert_eq!(
+            (t.device_attach_attempts, t.device_attach_failures, t.device_attach_unavailable),
+            (0, 0, 0),
+            "the flag-off state: nothing was attempted, so nothing can have failed"
+        );
+
+        // The path ran and the device refused: this is the degraded run.
+        tally::on_device_attach_attempt();
+        tally::on_device_attach_failure();
+        // The path ran and never reached a device allocator at all: structurally different, and
+        // reading it as a failure would report a VRAM problem on a machine that has none.
+        tally::on_device_attach_attempt();
+        tally::on_device_attach_unavailable();
+
+        let t = tally::snapshot();
+        assert_eq!(t.device_attach_attempts, 2);
+        assert_eq!(
+            t.device_attach_failures, 1,
+            "an out-of-memory refusal must be countable on its own"
+        );
+        assert_eq!(
+            t.device_attach_unavailable, 1,
+            "`no provider` must not be summed into `out of memory`"
+        );
+        tally::reset_for_test();
+    }
+
+    /// The budget knob parses, and an unparseable value is uncapped.
+    ///
+    /// Uncapped is what ships, so it is where a typo must land. A non-zero value is also a label:
+    /// it reaches `alloc_device_memory_budget_bytes`, so no artifact recorded under an injected
+    /// cap can be quoted as if the failures in it were discovered.
+    #[test]
+    fn the_device_memory_budget_is_uncapped_unless_it_parses() {
+        let _g = ledger::test_lock();
+        const VAR: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY_BUDGET_MB";
+        let saved = std::env::var(VAR).ok();
+        for (value, expected) in [
+            ("64", 64u64 * 1024 * 1024),
+            (" 1 ", 1024 * 1024),
+            ("0", 0),
+            ("", 0),
+            ("lots", 0),
+            ("-1", 0),
+            ("1.5", 0),
+        ] {
+            // SAFETY: single-threaded test under the process-global test lock; restored below.
+            unsafe { std::env::set_var(VAR, value) };
+            assert_eq!(
+                crate::vk::host_device_memory::budget_bytes(),
+                expected,
+                "{VAR}={value:?}"
+            );
+        }
+        // SAFETY: see above.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var(VAR, v),
+                None => std::env::remove_var(VAR),
+            }
+        }
+        assert_eq!(
+            crate::vk::host_device_memory::budget_bytes(),
+            0,
+            "the default is uncapped, which is the shipped behaviour"
         );
     }
 }

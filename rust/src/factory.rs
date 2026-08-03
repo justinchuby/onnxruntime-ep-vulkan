@@ -436,10 +436,45 @@ unsafe fn get_supported_devices_impl(
 /// What arming *does* remove is weight re-upload: 2.29 GB → 1.57 MB over five inferences. That is
 /// the live argument for flipping the default, and it is a weight-residency argument, not a KV one.
 ///
+/// **That statement has itself expired (2026-08-03), and the flag's meaning has changed under it.**
+/// The output-side bind exists and ships ON, so arming *this* flag is now the only thing between a
+/// user and the measured result: with it off, `bind_target_for` declines all 195 outputs
+/// (`outputs_bind_attempted = 195`, `outputs_device_bound = 0`) and the round trip is paid in full.
+/// With it on, the per-step KV readback on the real Phi-3.5 graph goes **393,216 B per past token →
+/// 0**, and — the larger finding — the shipping route **fails to allocate at all** at ctx 4096 and
+/// 6144 on an 8 GB discrete GPU (`alloc failed for output buffer`, `dispatches_executed = 0`)
+/// where the resident route completes. That is a capability difference, not a speedup.
+///
+/// **It is still off, and the reason is now a list rather than a doubt** — see
+/// `bench/results/probe_device_memory_hazards.py`, which runs the caller family a *memory* flag
+/// exposes (allocator-before-session, two sessions on one device, an `OrtValue` outliving its
+/// session, and an allocation that fails partway) and returns `NO_HAZARD_LANE_SEPARATES` on both
+/// vendors, 130/130 outputs byte-identical per lane. What that probe does **not** cover, and what
+/// still gates the default: Tank's intermittent `VK_ERROR_DEVICE_LOST` at ctx 512; two devices in
+/// one process (the `MIXED` frame; `two_allocators_on_two_devices` is still `#[ignore]`);
+/// concurrent sessions on threads; and ctx 8192, the operating point the 82.2%-of-traffic figure
+/// is quoted at, which does not fit in 8 GB by arithmetic (3.0 GiB `past` + 3.0 GiB `present` +
+/// 2.29 GB weights) and has never run here on either route.
+///
 /// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=1` enables it. That is the switch the M2 work runs behind.
 pub const ENV_DEVICE_MEMORY: &str = "ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY";
 
-fn device_memory_enabled() -> bool {
+/// The **one** reader of [`ENV_DEVICE_MEMORY`] in this crate.
+///
+/// It was two, and they disagreed. `allocator::HandleRegistry::device_memory_requested` read
+/// "anything that is neither empty nor `0`" while this one read an allow-list, so
+/// `ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY=off` (and `false`, and `no`, and every typo) armed the
+/// allocator's device-buffer attach while leaving the allocator un-advertised — half-armed, from a
+/// spelling that reads as "off" in English. That is the shape of the trap Trinity found in
+/// `disable_cpu_ep_fallback`, reproduced inside our own flag, and one function is the only fix
+/// that stays fixed.
+///
+/// **Polarity, and it is deliberately the opposite of `ONNXRUNTIME_EP_VULKAN_BIND_OUTPUTS`.**
+/// That flag ships ON, so an unrecognised value there means ON. This flag ships **OFF**, so an
+/// unrecognised value here means OFF. The rule is the same rule in both places — *a typo'd escape
+/// hatch must fail towards the well-tested path* — and the well-tested path is whichever one
+/// ships.
+pub(crate) fn device_memory_enabled() -> bool {
     std::env::var(ENV_DEVICE_MEMORY).is_ok_and(|v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
