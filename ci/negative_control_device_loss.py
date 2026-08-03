@@ -87,6 +87,56 @@ class Arms:
             f"exit={code} " + (f"reported [{condition}]" if ok else f"no [{condition}]"),
         )
 
+    def expect_absent(
+        self, name: str, provenance: str, args: list[str], condition: str
+    ) -> None:
+        """`condition` is NOT among the findings.
+
+        Deliberately not "the run is green": this artifact is a real device loss and must
+        stay red for the conditions that are true of it. Asserting green here would let a
+        check that had gone blind to everything satisfy the arm, which is the defect this
+        control exists to catch, arriving through the control itself.
+        """
+        code, out = run(args)
+        ok = f"[{condition}]" not in out
+        self.arm(
+            name,
+            provenance,
+            ok,
+            f"exit={code} "
+            + (
+                f"no [{condition}] — and still red for the conditions that ARE true of it"
+                if ok
+                else f"still reports [{condition}], which is no longer true of this file"
+            ),
+        )
+
+    def expect_foreign_check(
+        self, name: str, provenance: str, path: "Path", expect_code: int, why: str
+    ) -> None:
+        """Assert an exit code from a *different* check, on the same evidence.
+
+        The extents ruling between this check and ci/check_fatal_log.py is only meaningful
+        if both sides of it are observed. Reading one and asserting the other in a comment
+        is how the two drift into either a gap or a duplicate without anyone seeing it.
+        """
+        fatal_log = REPO_ROOT / "ci" / "check_fatal_log.py"
+        if not fatal_log.exists():
+            self.arm(name, provenance, False, f"{fatal_log} is missing — outage, not a pass")
+            return
+        proc = subprocess.run(
+            [sys.executable, str(fatal_log), str(path)],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        self.arm(
+            name,
+            provenance,
+            proc.returncode == expect_code,
+            f"check_fatal_log exit={proc.returncode}, wanted {expect_code} ({why})",
+        )
+
     def expect_pass(self, name: str, provenance: str, args: list[str]) -> None:
         code, out = run(args)
         ok = code == 0 and ": PASS" in out
@@ -124,11 +174,27 @@ def main() -> int:
             [str(TANK_ARTIFACT)],
             "runtime_fallback_announced",
         )
-        arms.expect_reported(
-            "_verdict.FATAL_LOG_MARKERS misses that log's real line",
+        # The arm that used to sit here required `marker_list_misses_real_line` on this
+        # artifact. Trinity repaired the shared vocabulary on 2026-08-02 and that finding
+        # became FALSE — ci/check_fatal_log.py now goes red on this exact file. The arm
+        # went on firing anyway, because my cross-check was comparing a physical line to a
+        # matched span by string equality; it had stopped being able to tell repair from
+        # breakage while still reading as confident, and it would have turned this control
+        # red if anyone had fixed it. Replaced by the two arms below, which assert the
+        # repair rather than the defect: pinning a defect is how a control outlives its
+        # subject.
+        arms.expect_absent(
+            "the shared vocabulary is NOT blind to this log any more (Trinity, 2026-08-02)",
             "REPLAYED",
             [str(TANK_ARTIFACT)],
             "marker_list_misses_real_line",
+        )
+        arms.expect_foreign_check(
+            "  ...and check_fatal_log IS red on it, which is what that means",
+            "REPLAYED",
+            TANK_ARTIFACT,
+            expect_code=1,
+            why="0 would mean the vocabulary regressed to matching our own sentences",
         )
     else:
         arms.arm(
@@ -219,6 +285,44 @@ def main() -> int:
             f"check_fatal_log exit={proc.returncode} (1 would mean it caught it too, and "
             "this check would then have no reach of its own to justify it)",
         )
+
+    # --- The cross-check must still be able to fire ------------------------
+    # Removing a false positive is only half the work: a divergence detector that can no
+    # longer report anything is quieter and equally useless. These plant the two shapes
+    # the repaired comparison has to get right.
+    diverge = tmp / "vocabulary_blind.log"
+    diverge.write_text(
+        "[ORT] Falling back to CPUExecutionProvider because the EP declined\n",
+        encoding="utf-8",
+    )
+    arms.expect_reported(
+        "a fallback line MY regex sees and the shared vocabulary does not",
+        "PLANTED",
+        [str(diverge)],
+        "marker_list_misses_real_line",
+    )
+
+    # ORT's C++ sink writes UTF-16LE into an otherwise UTF-8 file (Trinity, 2026-08-02).
+    # Read as UTF-8 the message arrives NUL-separated, so an un-normalised scanner sees
+    # nothing. Before today MY side was un-normalised too — and two blind scanners agree
+    # perfectly, so no divergence would have been reported and this would have read as
+    # agreement. The arm is the wide form and nothing else.
+    wide = tmp / "utf16_only.log"
+    wide.write_bytes(
+        "[ORT] Falling back to ['CPUExecutionProvider'] and retrying.\n".encode("utf-16-le")
+    )
+    arms.expect_condition(
+        "the announcement in UTF-16LE only — both sides must still see it",
+        "PLANTED",
+        [str(wide)],
+        "runtime_fallback_announced",
+    )
+    arms.expect_absent(
+        "  ...and that is agreement, not two blind scanners agreeing",
+        "PLANTED",
+        [str(wide)],
+        "marker_list_misses_real_line",
+    )
 
     # --- Instrument-outage arms: an outage is never a pass ------------------
     arms.expect_error("no path named at all", "PLANTED", [], "no_paths_given")

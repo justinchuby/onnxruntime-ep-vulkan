@@ -43,7 +43,7 @@ use super::{
     cmd::{CommandPool, submit_and_wait},
     device::Device,
     instance::{CapableDevice, Instance},
-    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey},
+    pipeline::{DispatchDescriptorPool, PipelineCache, PipelineKey, PUSH_CONSTANT_RANGE_BYTES},
 };
 use crate::ops::common::{shape_plan::ShapePlan, templates::EW_LOCAL_SIZE};
 
@@ -268,12 +268,16 @@ fn run_add_on_device(
             &[desc_set],
             &[],
         );
+        // Push the full declared range, zero-padded — see `pipeline::PUSH_CONSTANT_RANGE_BYTES`.
+        let mut pc = [0u8; PUSH_CONSTANT_RANGE_BYTES];
+        let n = push_consts.len().min(PUSH_CONSTANT_RANGE_BYTES);
+        pc[..n].copy_from_slice(&push_consts[..n]);
         device.ash().cmd_push_constants(
             cmd,
             pipeline_layout,
             vk::ShaderStageFlags::COMPUTE,
             0,
-            &push_consts,
+            &pc,
         );
         // Niobe timestamp injection point (BEFORE dispatch):
         //   device.ash().cmd_write_timestamp(cmd, stage, ts_pool, ts_before_index);

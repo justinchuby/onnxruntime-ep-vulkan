@@ -49,6 +49,16 @@ device_losses              0               0
 So the clean reading is a *measured* 0 and not an UNOBSERVABLE one: the same messenger, in
 the same frame, on the same run shape, demonstrably carried 14 validation messages.
 
+    Update, Switch, 2026-08-02, later the same day: the liveness arm now carries **8**, not
+    14.  Six of those 14 were ``vkCmdDispatch(): ... N bytes were never set with
+    vkCmdPushConstants`` — the engine declared a 128-byte push-constant range on every
+    pipeline layout and each kernel wrote only what it packed, leaving the remainder
+    undefined.  The recorders now write the full declared range, zero-padded, and those six
+    lines are gone (``tests/ops/test_push_constants_written.py``).  The reading above is
+    otherwise unchanged and the assertions in this file are unaffected: they require the
+    liveness count to be ``> 0`` and to differ from the clean arm, never to equal 14.  A
+    control pinned to the exact number would have gone red on a fix.
+
 Corrections to the brief this round, recorded rather than silently adopted
 -------------------------------------------------------------------------
 * `ledger_gate` reads **MIXED**, not `ALL-PROVEN` — `unproven_declines: 2`.

@@ -1674,21 +1674,46 @@ def test_device_loss_screen_and_fatal_log_have_different_extents():
         assert theirs.returncode != EXIT_FAIL_CONDITION, theirs.stdout
 
 
-def test_the_shared_marker_list_still_misses_the_real_ort_line():
-    """Regression guard on a live finding, and it is written to go GREEN when Trinity
-    fixes _verdict.FATAL_LOG_MARKERS -- it asserts the two agree, so it is red today
-    and stays honest afterwards."""
+def test_the_shared_marker_list_matches_the_real_ort_line():
+    """Was `..._still_misses_the_real_ort_line`, an xfail guard on a live finding written
+    to go green when Trinity fixed `_verdict.FATAL_LOG_MARKERS`. She fixed it on
+    2026-08-02 — at which point the test passed by *skipping its only branch* and
+    asserted nothing at all. A guard that goes quiet when its subject is repaired cannot
+    tell repair from a second regression, so it now asserts the agreement it was waiting
+    for, in the three forms a real capture arrives in.
+    """
     real = "Falling back to ['CPUExecutionProvider'] and retrying."
-    hits = _verdict.find_fatal_log_lines(real + "\n")
-    if not hits:
-        pytest.xfail(
-            "KNOWN, ROUTED TO TRINITY: tests/ops/_verdict.py::FATAL_LOG_MARKERS does not "
-            "match the line ORT actually prints, which is a list repr. "
-            "ci/check_fatal_log.py therefore reads a log announcing the fallback twice "
-            "as clean, and it has been cited as a second witness on that basis. Found "
-            "2026-08-02 by ci/check_device_loss.py on "
-            "bench/results/ctx512_device_lost.txt."
-        )
+    assert _verdict.find_fatal_log_lines(real + "\n"), (
+        "The shared vocabulary no longer matches the line ORT actually prints. Between "
+        "2026-07-31 and 2026-08-02 it did not, ci/check_fatal_log.py read a log "
+        "announcing the fallback twice as clean, and every positive it produced in that "
+        "window was test_phi35.py's own docstring echoed by pytest. Do not restore a "
+        "plain substring here."
+    )
+
+    # It wraps. Matching had to move off splitlines() for this reason.
+    wrapped = "Falling back to\n  ['CPUExecutionProvider'] and\n  retrying."
+    assert _verdict.find_fatal_log_lines(wrapped), "a wrapped announcement must match"
+
+    # ORT's C++ sink writes UTF-16LE into an otherwise UTF-8 file; decoded as UTF-8 the
+    # message is NUL-separated and unfindable by substring.
+    wide = (real + "\n").encode("utf-16-le").decode("utf-8", errors="replace")
+    assert _verdict.find_fatal_log_lines(wide), (
+        "the wide-encoded form must match; trinity-suite-dev1.log happens to carry both "
+        "encodings, and had it carried only this one a substring search would have seen "
+        "an empty log"
+    )
+
+    # And the extent that is deliberately NOT covered, asserted so that widening the
+    # markers cannot happen silently: see ci/negative_control_device_loss.py's reach arm,
+    # which requires check_fatal_log to stay green on EP-reported device loss.
+    assert not _verdict.find_fatal_log_lines(
+        "[vulkan-ep] ERROR: vkQueueSubmit failed: The logical device has been lost.\n"
+    ), (
+        "check_fatal_log's extent is ORT's announcement; the EP's own device-lost text is "
+        "ci/check_device_loss.py's. Widening this list buys coverage by destroying the "
+        "demonstration that the two checks have separate reach."
+    )
 
 
 def test_device_loss_checks_are_registered_with_honest_reach():
@@ -1709,3 +1734,239 @@ def test_device_loss_checks_are_registered_with_honest_reach():
         b for b in inv.BLIND_SPOTS if b.id == "runtime_device_loss_exits_zero"
     )
     assert "exits 0" in spot.defect
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# check_ledger_portability — a run that proves nothing must not be a run that passes
+#
+# Added 2026-08-02 after building the EP on Linux (WSL Ubuntu 24.04) at d375a4d and
+# pointing it at lavapipe. Every proof-ledger entry faulted, the session claimed 0/1
+# nodes, all work went to the CPU EP, and the process exited 0. The op harness then
+# reported that EP decision as "No Vulkan device available" and skipped 36 tests on a
+# box where `epctl --probe-loader` had just printed gate PASS.
+#
+# The arms below use the two REAL artifacts wherever they exist, because a screen whose
+# only inputs are ones I wrote is a screen I have only ever proved runs.
+# ──────────────────────────────────────────────────────────────────────────────
+
+LEDGER_SCREEN = "check_ledger_portability.py"
+
+_FAULT = (
+    '[vulkan-ep] WARN: [VulkanEP] proof ledger fault: ledger entry for '
+    '"ai.onnx::Tanh/6+/f32>f32/ew_unary_tanh_f32/static/n1" was proven against shader '
+    "digest 16a64dbeb2dbf63d but this build's modules hash to 8f87214a7ca41ca9."
+)
+_CLAIMS_NOTHING = "[§8.9.7] this session claims 0/1 nodes; all work runs on the CPU EP."
+_CLAIMS_ONE = "session claims 1 proven form(s) [§8.9.7]: com.microsoft::MatMulNBits x1"
+_ABSENT = (
+    "SKIPPED [1] tests/ops/test_elementwise.py:231: No Vulkan device available — either "
+    "no ICD is installed or all devices failed the capability gate."
+)
+_GATE_PASS = "Device 0: llvmpipe (LLVM 20.1.2, 256 bits) [Vulkan 1.4.318]  — gate PASS"
+
+LIVE_LINUX_PROBE = REPO_ROOT / "bench" / "results" / "linux_lavapipe_probe.txt"
+LIVE_LINUX_TESTS = REPO_ROOT / "bench" / "results" / "linux_lavapipe_optests.txt"
+LIVE_LOADER = REPO_ROOT / "bench" / "results" / "linux_lavapipe_loader_probe.txt"
+LIVE_WINDOWS = REPO_ROOT / "bench" / "results" / "windows_nvidia_probe_control.txt"
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def test_ledger_screen_reports_instrument_error_when_given_no_run():
+    """'I was not given a run' is not 'the run was clean' (R12)."""
+    proc = run_check(LEDGER_SCREEN)
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, proc.stdout
+    assert "no_run_named" in proc.stdout
+    assert "PASS" not in proc.stdout.splitlines()[0]
+
+
+def test_ledger_screen_reports_instrument_error_for_a_missing_artifact(tmp_path):
+    proc = run_check(LEDGER_SCREEN, "--run-log", str(tmp_path / "nope.txt"))
+    assert proc.returncode == EXIT_ERROR_INSTRUMENT, proc.stdout
+    assert "artifact_unreadable" in proc.stdout
+    assert "NOT a detection" in proc.stdout
+
+
+def test_ledger_screen_goes_red_on_a_ledger_fault(tmp_path):
+    p = _write(tmp_path, "run.txt", _FAULT + "\n" + _CLAIMS_NOTHING + "\n")
+    proc = run_check(LEDGER_SCREEN, "--run-log", p, "--device-lane")
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout
+    assert "FAIL(condition=ledger_fault)" in proc.stdout
+
+
+def test_ledger_screen_quotes_the_failure_text_not_a_count(tmp_path):
+    """R13: a detector reports the specimen, so a reader can check it."""
+    p = _write(tmp_path, "run.txt", (_FAULT + "\n") * 9)
+    proc = run_check(LEDGER_SCREEN, "--run-log", p, "--device-lane")
+    assert proc.returncode == EXIT_FAIL_CONDITION
+    assert "ew_unary_tanh_f32" in proc.stdout
+    assert "9 " not in proc.stdout
+
+
+def test_claims_nothing_is_unobservable_without_a_declared_device_lane(tmp_path):
+    """A build-only or CPU-only run claims nothing correctly. Say so; do not fail it."""
+    p = _write(tmp_path, "run.txt", _CLAIMS_NOTHING + "\n")
+    proc = run_check(LEDGER_SCREEN, "--run-log", p)
+    assert proc.returncode == EXIT_PASS, proc.stdout
+    assert "UNOBSERVABLE" in proc.stdout
+    assert "claimed_nothing" in proc.stdout
+
+
+def test_claims_nothing_fires_once_the_lane_is_declared(tmp_path):
+    p = _write(tmp_path, "run.txt", _CLAIMS_NOTHING + "\n")
+    proc = run_check(LEDGER_SCREEN, "--run-log", p, "--device-lane")
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout
+    assert "FAIL(condition=claimed_nothing)" in proc.stdout
+
+
+def test_device_absence_is_unobservable_without_a_loader_artifact(tmp_path):
+    """Without a gate PASS on record, an absent device may simply be absent."""
+    p = _write(tmp_path, "run.txt", _ABSENT + "\n")
+    proc = run_check(LEDGER_SCREEN, "--run-log", p, "--device-lane")
+    assert proc.returncode == EXIT_PASS, proc.stdout
+    assert "device_absence_misnamed" in proc.stdout
+    assert "UNOBSERVABLE" in proc.stdout
+
+
+def test_device_absence_fires_when_the_loader_gate_passed(tmp_path):
+    """The two statements cannot both be true, and only one of them silences tests."""
+    p = _write(tmp_path, "run.txt", _ABSENT + "\n")
+    g = _write(tmp_path, "loader.txt", _GATE_PASS + "\n")
+    proc = run_check(
+        LEDGER_SCREEN, "--run-log", p, "--device-lane", "--loader-artifact", g
+    )
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout
+    assert "FAIL(condition=device_absence_misnamed)" in proc.stdout
+
+
+def test_a_clean_device_run_stays_green_with_every_condition_armed(tmp_path):
+    p = _write(tmp_path, "run.txt", _CLAIMS_ONE + "\n")
+    g = _write(tmp_path, "loader.txt", _GATE_PASS + "\n")
+    proc = run_check(
+        LEDGER_SCREEN, "--run-log", p, "--device-lane", "--loader-artifact", g
+    )
+    assert proc.returncode == EXIT_PASS, proc.stdout
+
+
+def test_the_screen_never_reads_an_exit_status(tmp_path):
+    """The defect IS an exit status of 0.
+
+    Accepting one as a filter would be accepting the defect as the filter. The run that
+    produced the Linux artifact exited 0 with 151 lines of ledger faults in it.
+    """
+    src = (CI_DIR / LEDGER_SCREEN).read_text(encoding="utf-8")
+    body = src.split('"""', 2)[-1]
+    for forbidden in ("returncode", "check_call", "CalledProcessError"):
+        assert forbidden not in body, (
+            f"{LEDGER_SCREEN} refers to `{forbidden}` outside its docstring. This screen "
+            "must not take a producing process's exit status as an input."
+        )
+
+
+@pytest.mark.skipif(
+    not LIVE_LINUX_PROBE.exists() or not LIVE_LOADER.exists(),
+    reason="live Linux/lavapipe artifacts absent from this checkout",
+)
+def test_live_red_arm_the_real_linux_lavapipe_run(tmp_path):
+    """LIVE, not planted: the EP built on Linux, ran, claimed nothing, and exited 0."""
+    proc = run_check(
+        LEDGER_SCREEN,
+        "--run-log",
+        str(LIVE_LINUX_PROBE),
+        "--device-lane",
+        "--loader-artifact",
+        str(LIVE_LOADER),
+    )
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout
+    assert "ledger_fault" in proc.stdout
+
+
+@pytest.mark.skipif(
+    not LIVE_LINUX_TESTS.exists() or not LIVE_LOADER.exists(),
+    reason="live Linux/lavapipe artifacts absent from this checkout",
+)
+def test_live_red_arm_the_run_whose_summary_line_says_two_passed():
+    """The artifact this fires on ends '2 passed, 36 skipped'. That is the whole point.
+
+    Nothing in that summary looks like a failure. A lane reading it would call the
+    op-correctness step green, and the step would have asserted nothing at all.
+    """
+    proc = run_check(
+        LEDGER_SCREEN,
+        "--run-log",
+        str(LIVE_LINUX_TESTS),
+        "--device-lane",
+        "--loader-artifact",
+        str(LIVE_LOADER),
+    )
+    assert proc.returncode == EXIT_FAIL_CONDITION, proc.stdout
+    assert "device_absence_misnamed" in proc.stdout
+
+
+@pytest.mark.skipif(
+    not LIVE_WINDOWS.exists(), reason="live Windows control artifact absent"
+)
+def test_live_green_arm_the_real_windows_control():
+    """Same commit, same ledger file, different glslc. Green.
+
+    This is what makes the red arm a portability finding rather than a stale ledger:
+    both artifacts were produced from one tree at one commit, minutes apart.
+    """
+    proc = run_check(LEDGER_SCREEN, "--run-log", str(LIVE_WINDOWS), "--device-lane")
+    assert proc.returncode == EXIT_PASS, proc.stdout
+
+
+def test_the_negative_control_counts_arms_by_provenance_not_as_a_total():
+    """'11 passed' would hide that only 3 arms came from a run nobody staged."""
+    proc = subprocess.run(
+        [sys.executable, str(CI_DIR / "negative_control_ledger_portability.py")],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LIVE" in proc.stdout and "PLANTED" in proc.stdout
+    assert "only the LIVE arms are evidence" in proc.stdout
+
+
+def test_gated_never_run_is_not_the_same_status_as_undemonstrated():
+    """A check that never started and a check that never went red are different facts.
+
+    `device.op_correctness` sat at UNDEMONSTRATED all session, which reads as "runs,
+    never observed to fail" — one demonstration from green. In truth the Linux job dies
+    at clippy and GitHub Actions skips the remaining seven steps, this one among them.
+    """
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    assert inv.GATED_NEVER_RUN not in inv.GREEN_STATUSES
+    assert inv.GATED_NEVER_RUN in inv.RECORDED_GAP_STATUSES
+    check = {c.id: c for c in inv.CHECKS}["device.op_correctness"]
+    assert check.status == inv.GATED_NEVER_RUN
+    assert check.observed is None, (
+        "an `observed` date on a step that has never executed is the overclaim this "
+        "status exists to remove"
+    )
+
+
+def test_the_ledger_device_provenance_blind_spot_is_recorded_and_not_substituted():
+    """The loud half is screened; the silent half is not, and must not read as covered.
+
+    Digest disagrees → form declined → CPU EP, which is always right: fails safe.
+    Digest agrees, device never proven → form claimed: nothing watches this, and all 74
+    entries were proven on device0 alone.
+    """
+    import importlib
+
+    inv = importlib.import_module("lane_inventory")
+    spot = {b.id: b for b in inv.BLIND_SPOTS}["ledger_device_provenance"]
+    assert spot.substitute_status == inv.UNDEMONSTRATED
+    assert "NONE" in spot.substitute
+    assert "--reprove" in spot.substitute, (
+        "the blind spot must carry the warning against per-platform re-proving, which "
+        "is the obvious wrong fix and is also currently destructive"
+    )

@@ -1,0 +1,33 @@
+=== Vulkan Loader Probe ===
+Vulkan library loaded.
+  VK_ICD_FILENAMES = /usr/share/vulkan/icd.d/lvp_icd.json
+  VK_DRIVER_FILES = <not set>
+  VK_INSTANCE_LAYERS = <not set>
+  loader version = 1.3.275
+  available layers (3) = VK_LAYER_MESA_device_select, VK_LAYER_INTEL_nullhw, VK_LAYER_MESA_overlay
+  instance extensions visible to loader = 18 (0 or small values suggest no ICD loaded)
+vkCreateInstance: OK.
+1 physical device(s) found:
+Device 0 [Vulkan enum index 0]: llvmpipe (LLVM 20.1.2, 256 bits) [Vulkan 1.4.318]  — gate PASS
+  R1  Vulkan API version (req. >= 1.1)         1.4.318                PASS
+  R2  compute queue family (req. present)      family 0               PASS
+  R3  maxComputeWorkGroupInvocations (req. >= 256) 1024                   PASS
+  R4  maxComputeSharedMemorySize (req. >= 16384 B) 32768 B (32 KiB)       PASS
+  R6a DEVICE_LOCAL memory heap (req. at least 1) heap 0                 PASS
+  R6b HOST_VISIBLE memory type (req. at least 1) type 0                 PASS
+  --- Capability probe (raw values) ---
+  subgroup_size         : 8
+  subgroup_probe_valid  : true
+  subgroup_stages_raw   : FRAGMENT | COMPUTE | TASK_EXT | MESH_EXT
+  subgroup_basic_in_compute: true
+  subgroup_ops          : BASIC | VOTE | ARITHMETIC | BALLOT | SHUFFLE | SHUFFLE_RELATIVE | CLUSTERED | QUAD | ROTATE_KHR | ROTATE_CLUSTERED_KHR
+  is_uma                : true
+  timestamp_period_ns   : 1.0000 ns/tick
+  timestamp_valid_bits  : 64
+1 device(s) passed the §7.2 capability gate.
+
+ONNXRUNTIME_EP_VULKAN_DEVICE = <not set — best-first (discrete preferred)>
+
+ONNXRUNTIME_EP_VULKAN_DEVICE selector index map (best-first sorted; use these indices for ONNXRUNTIME_EP_VULKAN_DEVICE):
+  [0] 'llvmpipe (LLVM 20.1.2, 256 bits)'  (Vulkan enum index 0)
+Would select: selector index 0 → 'llvmpipe (LLVM 20.1.2, 256 bits)' (Vulkan enum index 0; best-first default; set ONNXRUNTIME_EP_VULKAN_DEVICE=<selector-index|name> to override)

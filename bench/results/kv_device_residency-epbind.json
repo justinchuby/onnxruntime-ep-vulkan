@@ -1,0 +1,73 @@
+{
+  "probe": "can the KV cache stay device-resident across run() calls?",
+  "ort_version": "1.28.0",
+  "ep_device": {
+    "vulkan.device_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "vulkan.device_index": "1",
+    "vulkan.vendor_id": "0x10de"
+  },
+  "case": {
+    "inputs": [
+      "packed_qkv",
+      "past_key",
+      "past_value",
+      "seqlens_k",
+      "total_seq",
+      "cos_cache",
+      "sin_cache"
+    ],
+    "outputs": [
+      "attn_out",
+      "present_key",
+      "present_value"
+    ]
+  },
+  "q1_addressable": {
+    "by_device_type_and_vendor": "RuntimeError: Can't allocate memory on the CUDA device using this package of OnnxRuntime. Please use the CUDA package of OnnxRuntime to use this feature.",
+    "by_ep_memory_info": "OK",
+    "memory_info_name": "VulkanExecutionProvider:1",
+    "memory_info_device_id": 1,
+    "ortvalue_device_name_reported": "cuda",
+    "ortvalue_ptr_nonzero": true
+  },
+  "q2_bind_failures": {},
+  "q3_run_with_device_outputs": "OK",
+  "q4_rel_vs_cpu": {
+    "attn_out": 1.0,
+    "present_key": 1.0,
+    "present_value": 1.0
+  },
+  "q4_rel_vs_unbound_ep": {
+    "attn_out": 0.0,
+    "present_key": 0.0,
+    "present_value": 0.0
+  },
+  "q4_unbound_ep_rel_vs_cpu": {
+    "attn_out": 1.0,
+    "present_key": 1.0,
+    "present_value": 1.0
+  },
+  "nonzero_elements_returned": {
+    "attn_out": 0,
+    "present_key": 0,
+    "present_value": 0
+  },
+  "counters": {
+    "alloc_device_frame": "SHARED",
+    "alloc_device_authoritative_spans": 1,
+    "dispatches_executed": 2,
+    "compute_calls": 2,
+    "compute_failures": 0,
+    "device_losses": 0,
+    "readback_bytes": null,
+    "outputs_device_resident": 0,
+    "outputs_host_resident": 0,
+    "outputs_device_bound": 6
+  },
+  "verdict": "DEVICE_BOUND_OUTPUTS_RETURN_NOTHING",
+  "why": [
+    "outputs returned all zeros: ['attn_out', 'present_key', 'present_value'] \u2014 the same host-staging-authoritative shape as the EP-side bind, now reached from the caller side"
+  ],
+  "ep_side_step1c_bind": "1",
+  "lane": "epbind"
+}

@@ -468,7 +468,15 @@ jobs:
       # -------------------------------------------------------
       - name: Probe Vulkan loader (epctl --probe-loader)
         if: env.BUILD_SKIPPED != '1'
-        run: rust/target/release/epctl --probe-loader
+        # Captured as well as printed. The capture is what lets the proof-ledger
+        # portability screen below distinguish "no Vulkan device" from "a Vulkan device
+        # that passed the gate and whose work the EP then declined". Without a loader
+        # artifact that condition is UNOBSERVABLE, and the screen says so rather than
+        # passing.
+        run: |
+          mkdir -p bench/results/ci-lane
+          rust/target/release/epctl --probe-loader 2>&1 \
+            | tee bench/results/ci-lane/loader-probe.log
 
       # -------------------------------------------------------
       # Op-correctness tests (pytest, Vulkan vs ORT CPU oracle).
@@ -589,6 +597,32 @@ jobs:
             --run-log bench/results/ci-lane/pytest-linux.log \
             --run-log bench/results/ci-lane/gate_chain_fp32_ort_stderr.log \
             bench/results/ci-lane
+
+      - name: Proof-ledger portability screen (Linux device lane)
+        if: always()
+        # THE LINUX LANE'S OWN CROSS-PLATFORM SCREEN, and the reason it exists is that
+        # this lane can pass while asserting nothing. On 2026-08-02, built on Linux at
+        # d375a4d and pointed at lavapipe, EVERY ledger entry faulted: shader_digest is a
+        # hash of the embedded SPIR-V, Ubuntu's glslc (shaderc 2023.8) emits different
+        # bytes than the Vulkan SDK's, so the EP claimed 0/1 nodes, all work went to the
+        # CPU EP, and the process EXITED 0. Downstream, tests/ops/conftest.py reports that
+        # EP decision as "No Vulkan device available" and skips — 2 passed, 36 skipped —
+        # on a box where epctl --probe-loader had just printed gate PASS for llvmpipe.
+        #
+        # So the op-correctness step below would go GREEN HAVING ASSERTED NOTHING. This
+        # step is what makes that state red instead. It does not take the exit status as
+        # an input: the defect IS an exit status of 0.
+        run: |
+          python ci/check_ledger_portability.py \
+            --device-lane \
+            --loader-artifact bench/results/ci-lane/loader-probe.log \
+            --run-log bench/results/ci-lane/pytest-linux.log
+
+      - name: Proof-ledger portability negative control (demand red)
+        if: always()
+        # 11 arms, counted 3 LIVE / 0 REPLAYED / 8 PLANTED. All three conditions have a
+        # LIVE arm, which is unusual here and only because Linux was genuinely broken.
+        run: python ci/negative_control_ledger_portability.py
 
       # -------------------------------------------------------
       # POSITIVE CONTROL FOR THE GATE ITSELF (R9) — see the Windows

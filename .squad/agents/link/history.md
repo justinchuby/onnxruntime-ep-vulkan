@@ -208,3 +208,33 @@ taken by a merge). Decision record:
 **Method note to self:** I bypassed the pytest fixture on my first probe and got a false
 "EP not registered". Caught it by re-running under pytest and seeing `get_ep_devices()`
 list the EP. Confirm the harness's own path before reading a probe as a finding.
+
+---
+
+## Session 13 — 2026-08-02 — Review of Trinity's marker fix: her call upheld, two defects of mine exposed by it
+
+Merged `origin/main` at `57a7f62` (`2e1f133`). Diff was **Python-only**; DLL SHA-256 `A9898AE4…B7379` identical either side of the rebuild — the falsifiable form of "no Rust changed".
+
+### The ruling I was asked to confirm rather than assume
+
+Trinity declined to widen `FATAL_LOG_MARKERS` to `The logical device has been lost`, on the grounds that my negative control proves `check_device_loss` has its own reach by requiring `check_fatal_log` to stay green there. **Confirmed, and it is executed rather than commented** — an arm plants an EP-reports-loss/ORT-silent log, requires `check_device_loss` red, then runs `check_fatal_log` on the same file and requires exit 0. Widening would have flipped it and reddened the control, correctly: `check_device_loss` would then have no *demonstrated* reach beyond `check_fatal_log`, and two checks would rest on an argument. **Coverage bought that way deletes the evidence for the thing buying it.** Upheld, and now asserted from the other side in `ci/test_lane_checks.py` so it cannot be widened quietly in either file.
+
+Her liveness check's placement is also right, and deliberately so: it runs ahead of my `--lane-marker` exit-0 branch. The marker branch avoids a second red about a *subject* that never existed; a blind witness is not a fact about the subject at all but a standing defect invalidating every green the check ever produced. Unconditional is correct.
+
+### Two defects of mine, the same shape as hers, one layer up
+
+1. **`marker_cross_check()` compared a physical line to a matched span by string equality.** Fine while `find_fatal_log_lines` returned whole lines; a form-tolerant matcher returns the *span*, so `...and retrying` never equals a line carrying `...and retrying.`. It had become a test of punctuation, and kept emitting `marker_list_misses_real_line` — *"so check_fatal_log reads this log as clean"* — about a file `check_fatal_log` now exits 1 on, quoting three lines. **And an arm of my own control required that stale finding**, so anyone repairing the cross-check would have reddened my control and been told the repair was the defect. R9 amendment 5 inside a control written to enforce R9 amendment 5.
+   → **An arm must assert the property we want, never the defect we currently have.** A red arm written against a known defect becomes a lock on the broken state the moment it is fixed.
+2. **`check_device_loss.py` scanned un-normalised text — blind to UTF-16LE, including for device-lost text, its own primary condition.** Found by a *new* arm on that arm's first run, not by reading. On a wide-only log it would have reported a clean run and the cross-check would have reported *agreement*, because both scanners were blind. Two blind scanners agree perfectly. Both sides now go through `_verdict.normalise_log_text` — delegated, not copied; if it is unavailable the raw text is returned rather than a private substitute, because a wrong answer from a copy looks maintained.
+
+### A vacuous test, from a habit to drop
+
+`test_the_shared_marker_list_still_misses_the_real_ort_line` was written to go green when Trinity fixed the markers. It did — **by skipping its only branch and asserting nothing.** `xfail`-on-absence goes *quiet* on repair rather than *strict*. Rewritten to assert the agreement in all three forms a real capture arrives in (list repr, wrapped, UTF-16LE) plus the extent deliberately not covered.
+
+### State
+
+`negative_control_device_loss.py`: **18 arms, 1 LIVE / 4 REPLAYED / 13 PLANTED**, all fired (was 14) — the count rose because the fix added falsifiers, which is the only reason a rising count means anything. `ci/` 113 passed, 3 failed (the known census reds, not mine). `check_lane_inventory.py` PASS. Stale arm counts corrected in `lane_inventory.py`, and one exclusion record in `device_loss_incident_records.json` whose stated *reason* was the now-repaired defect.
+
+Committed `d8fce9f` on `squad/link`, staged by explicit path. Not pushed. No wall-clock figure quoted.
+
+**Worktree hazard, reported:** the other `link` instance committed to `ci/test_lane_checks.py` between two of my commands, so my saved diff of its uncommitted state came back empty. No work lost, and only because their commit landed first. The failure mode is silent — an empty patch reads exactly like a clean file.
