@@ -1,0 +1,49 @@
+# Predictions for the 22 `Staged(UNEXERCISED)` promotions — written BEFORE the proof runs
+#
+# R10: the falsifier for "X is wired" is an artifact X produced whose content varies with its
+# input, never a flag its author set. The same discipline applies to a promotion: if I write the
+# expected outcome only after reading the result, the run confirmed nothing.
+#
+# Recorded 2026-08-02, against the merged build (DLL sha256 79EDD25913AF15DB before the flip).
+#
+# Format: case, prediction, why
+
+# --- Expected to PROVE (shader exists, template is the one already live for f32) ---
+and_bool                  MATCH      bool ew_binary, same template as the live f32 family
+or_bool                   MATCH      "
+xor_bool                  MATCH      "
+not_bool                  MATCH      bool ew_unary
+bitwiseand_i32            MATCH      int ew_binary; `bits` domain, full width
+bitwiseor_i32             MATCH      "
+bitwisexor_i32            MATCH      "
+bitwisenot_i32            MATCH      int ew_unary, `bits` domain
+greater_f32               MATCH      f32 in, bool out; two normals split ~50/50, non-degenerate
+greaterorequal_f32        MATCH      "
+less_f32                  MATCH      "
+lessorequal_f32           MATCH      "
+equal_f32                 MATCH      needs the `discrete` domain; on normals the reference is
+                                     all-False and the new guard should ERROR instead of MATCH
+isnan_f32                 MATCH      needs the `withnan` domain, for the same reason
+where_f32                 MATCH      ternary select, no arithmetic
+prelu_f32                 MATCH      per-channel broadcast is the risk, not the arithmetic
+sum_f32_v3                MATCH      3 inputs, so the variadic fold is exercised
+mean_f32_v3               MATCH      "
+max_f32_v3                MATCH      "
+min_f32_v3                MATCH      "
+
+# --- Expected NOT to prove, and these are the interesting ones ---
+swish_f32                 DECLINE    ai.onnx opset 24, and the row's window is opset 24 exactly.
+                                     ORT 1.28's CPU EP is the oracle; if it has no opset-24
+                                     `Swish` kernel there is no oracle and the case cannot prove
+                                     anything. Predicting: the CPU arm raises -> ERROR(instrument),
+                                     not DIVERGENT. Stays Staged either way.
+rmsnormalization_f32      UNCERTAIN  ai.onnx opset 23. Two independent ways to fail: the CPU EP
+                                     may not implement the standard-domain op (ERROR), or the
+                                     reduction may diverge (DIVERGENT). Called out as uncertain
+                                     rather than guessed.
+
+# --- What would falsify the whole exercise ---
+# A ledger that grows while the claimed count does not move. These 22 are not in Phi-3.5, so the
+# Phi-3.5 count is NOT the falsifier here and quoting it would be dishonest. The falsifier is the
+# op-suite red count: 43 reds now, of which the `[staged]` ones should fall. If the ledger gains
+# 20 entries and the red count does not move, the promotions did not reach the suite.

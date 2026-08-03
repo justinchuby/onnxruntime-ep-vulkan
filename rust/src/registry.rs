@@ -2596,6 +2596,15 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         }
         enabled
     } else {
+        if spec.is_live() && claim_unproven_keys().contains(&proof_key) {
+            // §8.9.11 re-proof. The ledger admitted this form, so the hatch is not what let it
+            // through and it must NOT appear in `unproven_forms_enabled`. But the harness still
+            // has to attribute the run to a key, and `--reprove` deliberately offers keys that
+            // are already proven. Without this witness the generator sees an empty admission set
+            // and reports `UNATTRIBUTED`, so a re-proof measures nothing — which is how the
+            // entry outlives its subject, one level up from the hole Switch found.
+            crate::counters::record_reproof_form_admitted(&proof_key.0);
+        }
         false
     };
     if spec.is_live() && !ledger_hit && !hatch {

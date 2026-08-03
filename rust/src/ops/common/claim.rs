@@ -537,12 +537,24 @@ pub fn ew_select(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 ///
 /// `OP_COVERAGE.md` §5.5's compose-before-bespoke rule in its smallest form: N-ary reduction over
 /// the same template rather than an N-input shader. The cap keeps the dispatch chain bounded.
+///
+/// **The enforced bound is what the lowering implements, not what it is designed for.**
+/// [`MAX_VARIADIC_INPUTS`] is 8 because the chain is meant to reach 8; `templates::ew_variadic`
+/// currently returns `Unsupported("… needs the chained-dispatch lowering, which is not written
+/// yet")` for anything above two. Claiming to 8 against a lowering that stops at 2 is a
+/// claim/translate invariant violation — the node is taken and then fails at translate, which is
+/// an `EP_FAIL` at session creation rather than a decline. It was latent only because these rows
+/// were `Staged`; the first promotion made it reachable. Found 2026-08-02 by a proof case built
+/// with three inputs *on purpose*: a two-input case would have proved the binary path, minted an
+/// entry, and left the fold that makes these ops variadic completely unexercised.
 pub fn ew_variadic(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     let n = view.num_inputs();
     require!(
-        (1..=MAX_VARIADIC_INPUTS).contains(&n),
+        (1..=MAX_VARIADIC_INPUTS_LOWERED).contains(&n),
         Arity,
-        "`{}` has {n} inputs; this handler chains between 1 and {MAX_VARIADIC_INPUTS}",
+        "`{}` has {n} inputs; the chained-dispatch lowering handles between 1 and \
+         {MAX_VARIADIC_INPUTS_LOWERED}, so the CPU EP takes the wider forms and is correct \
+         for them",
         spec.op_type
     );
     elementwise(view, spec, n, 0)
@@ -550,6 +562,15 @@ pub fn ew_variadic(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 
 /// Upper bound on the inputs a variadic elementwise op may chain.
 pub const MAX_VARIADIC_INPUTS: usize = 8;
+
+/// Upper bound on the inputs the chained-dispatch lowering **actually implements**.
+///
+/// Kept separate from [`MAX_VARIADIC_INPUTS`] rather than lowering that constant, because the
+/// two say different things and collapsing them would lose one: 8 is the design target the
+/// dispatch chain is bounded by, 2 is what `templates::ew_variadic` can lower today. Raising
+/// this is the single edit that widens the claim once the chain is written — and the proof key
+/// carries arity, so the wider form needs its own proof run and cannot inherit the narrow one's.
+pub const MAX_VARIADIC_INPUTS_LOWERED: usize = 2;
 
 /// `Cast`: one input, one output, and the `to` attribute must name a dtype we store.
 pub fn cast(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {

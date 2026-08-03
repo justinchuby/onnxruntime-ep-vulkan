@@ -156,7 +156,35 @@ def _child_main(spec_path: str) -> int:
         if domain == "ge_one":
             # acosh is real only for x >= 1.
             return 1.0 + np.abs(v)
+        if domain == "discrete":
+            # A small integer-valued set. `Equal` on two independent normals is all-False —
+            # a constant reference, which proves nothing — so the comparison ops need inputs
+            # that actually collide sometimes. Six values over two operands gives roughly one
+            # element in six equal, which exercises both branches.
+            return rng.integers(-3, 3, shape).astype(np.float64)
+        if domain == "withnan":
+            # `IsNaN` on a finite tensor is all-False, which is the same vacuous case. The
+            # non-finite values are deliberate here and land in the *input*; the output is
+            # boolean and stays finite, so this does not trip the non-finite-reference guard.
+            v = v.copy()
+            flat = v.reshape(-1)
+            if flat.size >= 4:
+                flat[0::4] = np.nan
+                flat[1::4] = np.inf
+            return v
         return v
+
+    def _ints(shape, dtype):
+        """Integer feeds, domain-aware.
+
+        The default `[0, 2)` is right for indices and masks and wrong for bitwise ops: a
+        `BitwiseAnd` fed zeros and ones exercises **one bit of thirty-two**, and a shader that
+        got the other thirty-one wrong would pass. `bits` draws full width.
+        """
+        if domain == "bits":
+            info = np.iinfo(dtype)
+            return rng.integers(info.min, info.max, shape, dtype=np.int64).astype(dtype)
+        return rng.integers(0, 2, shape).astype(dtype)
 
     feeds = {}
     plan = spec.get("feed_plan") or {}
@@ -180,9 +208,9 @@ def _child_main(spec_path: str) -> int:
         elif "float" in dt or "double" in dt:
             feeds[inp.name] = (_floats(shape) * scale).astype(np.float32)
         elif "int64" in dt:
-            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int64)
+            feeds[inp.name] = _ints(shape, np.int64)
         elif "int32" in dt:
-            feeds[inp.name] = rng.integers(0, 2, shape).astype(np.int32)
+            feeds[inp.name] = _ints(shape, np.int32)
         elif "uint8" in dt:
             feeds[inp.name] = rng.integers(0, 4, shape).astype(np.uint8)
         elif "bool" in dt:
@@ -329,6 +357,16 @@ def _run_child(
             )
 
 
+# ORT's own wording, observed verbatim on this build — not a string we wrote. Switch's finding of
+# 2026-08-02 applies directly: *a classifier tested only against strings we wrote ourselves is
+# tested against the one input it cannot get wrong*. His device-loss classifier matched
+# `"device was lost"` and `"device_lost"` while the driver says `"The logical device has been
+# lost"`, and fell through to the wrong class.
+#
+# This one is audited against that lesson and fails in the safe direction: if ORT rewords the
+# message, the match misses and the run becomes `InstrumentError` — a raise, never a decline and
+# never a proof. The dangerous version of this classifier would be one whose miss produced a
+# verdict; this one's miss produces an error, so a reword costs a red lane, not a false entry.
 _CPU_FALLBACK_REFUSAL = "fallback to CPU EP has been explicitly disabled"
 
 
@@ -449,6 +487,8 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     claimed = c.get("claimed_nodes", 0)
     dispatches = c.get("dispatches_executed", 0)
     hatch = c.get("unproven_forms_enabled", [])
+    reproof = c.get("reproof_forms_admitted", [])
+    admitted_keys = list(dict.fromkeys(list(hatch) + list(reproof)))
     if not claimed or not dispatches:
         return "UNATTRIBUTED", {
             "reason": "the EP claimed or executed nothing; a match against CPU proves nothing "
@@ -476,19 +516,19 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     # sets happened to match; under this one an entry can only exist for a key the run actually
     # claimed under. The number of entries a run can produce is now bounded by what it used
     # rather than by what it intended.
-    if not hatch:
+    if not admitted_keys:
         return "UNATTRIBUTED", {
             "reason": "the run admitted no unproven form; nothing was claimed under any offered "
             "key, so no key was exercised",
             "offered": sorted(keys),
         }
-    unoffered = sorted(set(hatch) - set(keys))
+    unoffered = sorted(set(admitted_keys) - set(keys))
     if unoffered:
         return "UNATTRIBUTED", {
             "reason": "the run claimed under a key that was never offered; the harness cannot "
             "say what it ran",
             "offered": sorted(keys),
-            "admitted": sorted(hatch),
+            "admitted": sorted(admitted_keys),
             "unoffered": unoffered,
         }
 
@@ -496,6 +536,35 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
     b = np.load(str(cpu_out))
     rtol, atol = tolerance
     worst = 0.0
+    degenerate = []
+    for name in a.files:
+        x, y = a[name].astype("float64"), b[name].astype("float64")
+        if x.shape != y.shape:
+            return "DIVERGENT", {"reason": f"shape mismatch on {name}: {x.shape} vs {y.shape}"}
+
+        # R13, and the seventh instance of this project's oldest failure mode.
+        #
+        # A **constant** CPU reference makes the comparison vacuous: two constant tensors agree
+        # to any tolerance, so the run reports `MATCH` with `worst_rel 0.0` while having tested
+        # nothing. This guard did not exist while the ledger held only arithmetic ops, whose
+        # references vary by construction. It is added here because the batch that follows is
+        # twelve **boolean-output** ops, where degeneracy is the default rather than the
+        # accident: `Equal` on two independent normals is all-False, and so is `IsNaN`. Without
+        # this, the cheapest way to "prove" twelve ops would have been to prove none of them.
+        #
+        # It is ERROR(instrument), not DIVERGENT: the kernel has not been shown wrong, the case
+        # model has been shown inadequate. ERROR neither proves nor demotes — repair, re-run.
+        if y.size > 1 and np.all(y == y.flat[0]):
+            degenerate.append(name)
+    if degenerate:
+        return "ERROR", {
+            "reason": (
+                f"CPU reference output(s) {sorted(degenerate)} are constant, so the comparison "
+                f"over them is vacuous: two constant tensors agree to any tolerance. The case "
+                f"model does not exercise this op — repair its input domain and re-run"
+            ),
+            "instrument": "case_model_degenerate_reference",
+        }
     for name in a.files:
         x, y = a[name].astype("float64"), b[name].astype("float64")
         if x.shape != y.shape:
@@ -542,8 +611,16 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         # digest, both taken from the EP's own dispatch record rather than re-derived here.
         "shaders_dispatched": c.get("shaders_dispatched", []),
         "shaders_dispatched_digest": c.get("shaders_dispatched_digest", ""),
-        # The keys this run actually claimed under. Entries are written for these and no others.
-        "admitted": sorted(hatch),
+        # §8.9.14 input witness — how many inferences this measurement is made of. One is what
+        # makes the entry immune to input-cache staleness; the entry records the number so a
+        # future multi-inference case cannot inherit that immunity by looking the same.
+        "compute_calls": c.get("compute_calls"),
+        # The keys this run actually claimed under — through the escape hatch (unproven forms) or
+        # through the ledger while being deliberately re-offered (`--reprove`). Entries are
+        # written for these and no others.
+        "admitted": sorted(admitted_keys),
+        "admitted_via_hatch": sorted(hatch),
+        "admitted_via_reproof": sorted(reproof),
     }
 
 
@@ -570,6 +647,7 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     """
     claimed = int(proof_run.get("claimed_nodes", 0))
     dispatches = int(proof_run.get("dispatches_executed", 0))
+    compute_calls = proof_run.get("compute_calls")
     shaders = sorted(proof_run.get("shaders_dispatched") or [])
     shader_digest = proof_run.get("shaders_dispatched_digest") or ""
     if claimed <= 0 or dispatches <= 0:
@@ -577,6 +655,29 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             f"REFUSING to write an entry for {key}: attribution is "
             f"claimed_nodes={claimed} dispatches_executed={dispatches}. An entry with no "
             f"attribution witness did not come from a proof run."
+        )
+    # §8.9.14 — ONE INFERENCE PER ARM, AND IT HAS TO BE A FIELD, NOT A HABIT.
+    #
+    # Switch found on 2026-08-02 that the input cache was keyed on `(cpu_ptr, byte_size)` with a
+    # 32 KiB floor and no content check, so every inference after the first in a session read the
+    # first one's inputs. It is invisible to the shader digest — the shaders did not change — so
+    # it is precisely the class of staleness §8.9.11's subject witness does NOT cover.
+    #
+    # Every entry in this ledger is safe from it for a structural reason: each arm is a fresh
+    # subprocess that builds one session and calls `sess.run` exactly once, so there is no second
+    # inference for a stale cache to serve. The counters agree — `compute_calls: 1`.
+    #
+    # That is a true statement about today's harness and a fragile one about tomorrow's. A future
+    # case that needs two inferences (a KV-cache form, say) would silently reintroduce the
+    # exposure, and the entry would look identical. So the count is recorded in the entry and a
+    # run that computed more than once refuses to write one until somebody has decided what a
+    # multi-inference proof means.
+    if compute_calls is not None and int(compute_calls) > 1:
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the proof run made "
+            f"{compute_calls} Compute() calls. Single-inference arms are what makes an entry "
+            f"immune to input-cache staleness, which no shader digest can detect. If this case "
+            f"genuinely needs several inferences, say what its proof means first."
         )
     # §8.9.11 — SUBJECT PROVENANCE.  Attribution says a run happened; it says nothing about what
     # code ran.  An entry that cannot name its shader set cannot be invalidated when that shader
@@ -605,6 +706,8 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             # --- subject provenance: what code this proof is about (§8.9.11) ---
             "shaders": shaders,
             "shader_digest": shader_digest,
+            # --- input provenance: how many inferences this proof is made of (§8.9.14) ---
+            **({} if compute_calls is None else {"compute_calls": int(compute_calls)}),
             "worst_rel": float(proof_run.get("worst_rel", 0.0)),
         },
         separators=(",", ":"),
@@ -612,7 +715,60 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     )
 
 
-def write_ledger(out: pathlib.Path, lines: list[str]) -> None:
+def write_ledger(out: pathlib.Path, lines: list[str], *, allow_shrink: bool = False) -> int:
+    """Write the ledger, refusing to shrink it unless told to. Returns an R13 exit code.
+
+    A DESTRUCTIVE WRITE THAT REPORTS SUCCESS IS THE DEFECT THIS FILE KEEPS RE-LEARNING.
+    ---------------------------------------------------------------------------------
+    2026-08-02, twice in one day. First: `--append` was the only path that loaded existing
+    entries, so a plain run rewrote the file with what that invocation proved and then printed
+    `PASS`, because `--check` was asked whether the file it had just written was internally
+    consistent — which an empty file is. Fixed by always carrying entries forward. Then Switch
+    hit it again through `--reprove`, 74 entries to 1, `PASS`.
+
+    Carrying forward makes a drop *unlikely*. It does not make it a **detection**, and the
+    coordinator's instruction is the right one: an entry-count drop must be `FAIL(condition)`,
+    not something a reader has to notice in a line of output. So the count is compared against
+    what is on disk before the write happens, and a shrink refuses to write at all.
+
+    `allow_shrink` is `--rebuild`, which has to be asked for by name.
+    """
+    before = 0
+    before_keys: set[str] = set()
+    if out.is_file():
+        try:
+            existing = [
+                l for l in (x.strip() for x in out.read_text(encoding="utf-8").splitlines())
+                if l and not l.startswith("#")
+            ]
+            before = max(len(existing) - 1, 0)
+            for line in existing[1:]:
+                try:
+                    before_keys.add(json.loads(line)["key"])
+                except (ValueError, KeyError):
+                    pass
+        except OSError as exc:
+            print(f"ERROR(instrument): cannot read {out} to compare entry counts: {exc}")
+            return 3
+    if before and len(lines) < before and not allow_shrink:
+        keeping: set[str] = set()
+        for line in lines:
+            try:
+                keeping.add(json.loads(line)["key"])
+            except (ValueError, KeyError):
+                pass
+        dropped = sorted(before_keys - keeping)
+        shown = "\n".join(f"    - {k}" for k in dropped[:20])
+        if len(dropped) > 20:
+            shown += f"\n    ... and {len(dropped) - 20} more"
+        print(
+            f"FAIL(condition): refusing to write {out} — it holds {before} entr(ies) and this "
+            f"run would leave {len(lines)}. Entries are evidence; losing them is not a "
+            f"side effect of a successful run. Nothing was written. If the shrink is intended, "
+            f"say so with --rebuild.\n"
+            f"  would have dropped {len(dropped)} key(s):\n{shown}"
+        )
+        return 1
     body = "".join(line + "\n" for line in lines)
     header = json.dumps(
         {
@@ -628,6 +784,7 @@ def write_ledger(out: pathlib.Path, lines: list[str]) -> None:
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(header + "\n" + body, encoding="utf-8")
+    return 0
 
 
 def check_ledger(path: pathlib.Path) -> int:
@@ -731,6 +888,13 @@ def main() -> int:
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--append", action="store_true")
     ap.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="DISCARD every existing entry and write only what this run proved. Without this "
+        "the ledger is always carried forward: the default write used to be destructive and "
+        "reported PASS over the file it had just emptied.",
+    )
+    ap.add_argument(
         "--reprove",
         action="store_true",
         help="re-measure forms that are ALREADY claimed and replace their entries. Without this "
@@ -760,12 +924,31 @@ def main() -> int:
     now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
     existing: list[str] = []
-    if args.append and out.is_file():
+    if out.is_file():
         existing = [
             l for l in (x.strip() for x in out.read_text(encoding="utf-8").splitlines())
             if l and not l.startswith("#")
         ][1:]
-    have = {json.loads(l)["key"] for l in existing}
+    on_disk = {json.loads(l)["key"] for l in existing}
+    # THE DEFAULT WRITE USED TO BE DESTRUCTIVE (fixed 2026-08-02, after it destroyed 95 entries).
+    #
+    # `existing` was loaded only under `--append`. Without it the generator rewrote the file with
+    # nothing but what this invocation proved, so a single-model run reduced the ledger to that
+    # model's entries — and then printed `PASS`, because `check_ledger` was asked whether the
+    # file it had just written was internally consistent, which an empty file is. Two halves of a
+    # report describing different things, exactly the §8.9.11 shape one level out.
+    #
+    # Entries are now always carried forward. Discarding them is `--rebuild`, which has to be
+    # asked for, and `--append` is retained as a no-op alias so existing lanes keep working.
+    if not args.append and not args.rebuild and existing:
+        print(
+            f"[carry]    {len(existing)} existing entr(ies) carried forward from {out.name}; "
+            f"pass --rebuild to discard them deliberately"
+        )
+    if args.rebuild:
+        print(f"[rebuild]  discarding {len(existing)} existing entr(ies) on request")
+        existing = []
+    have = set(on_disk) if not args.rebuild else set()
 
     planted = _planted_control_key()
     planted_case = getattr(
@@ -839,7 +1022,12 @@ def main() -> int:
 
     if reproved:
         print(f"[reprove]  replaced {len(reproved)} entr(ies) with fresh measurements")
-    write_ledger(out, new_lines)
+    rc_write = write_ledger(out, new_lines, allow_shrink=args.rebuild)
+    if rc_write != 0:
+        # R13: the refusal is the terminal state. Do not run `--check` afterwards — it would be
+        # asked about the file on disk, which is now the *old* one, and would answer `PASS`.
+        # A report whose two halves describe different things is the defect, not the format.
+        return rc_write
     print(f"[write]    {out}: {len(new_lines)} entr(ies)")
     rc = check_ledger(out)
     if rc == 0 and not measured_any:

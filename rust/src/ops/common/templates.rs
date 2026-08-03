@@ -182,7 +182,12 @@ pub fn ew_variadic(spec: &OpSpec, node: &NodeDesc, ctx: &mut dyn DispatchContext
             node.op_type
         )));
     }
-    if n <= 2 {
+    // The bound is read from the same constant the claim predicate uses, so the two cannot
+    // drift apart. They were separate numbers until 2026-08-02 — the predicate said 8, this
+    // said 2 — and the gap was an `EP_FAIL` at session creation for any 3-input node: claimed,
+    // then untranslatable. A shared constant makes the invariant hold by construction rather
+    // than by a test that has to remember to exist.
+    if n <= crate::ops::common::claim::MAX_VARIADIC_INPUTS_LOWERED {
         return dispatch_elementwise(spec, node, ctx, n.max(1), 0);
     }
     Err(EpError::Unsupported(format!(

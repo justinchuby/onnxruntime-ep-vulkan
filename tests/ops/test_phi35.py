@@ -278,14 +278,20 @@ def test_phi35_session_loads_and_declines_cleanly(
                 ("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
                 ("compile_calls", ctypes.c_uint64), ("subgraphs_live", ctypes.c_uint64),
                 ("subgraphs_stub", ctypes.c_uint64), ("compute_calls", ctypes.c_uint64),
-                ("compute_failures", ctypes.c_uint64), ("dispatches_executed", ctypes.c_uint64),
+                ("compute_failures", ctypes.c_uint64),
+                # ABI 4 (§8.9.15): device_losses was INSERTED here, not appended. Omitting it
+                # made `dispatches_executed` below read `device_losses` — a stable, plausible 0.
+                ("device_losses", ctypes.c_uint64),
+                ("dispatches_executed", ctypes.c_uint64),
             ]
+
         _c = _Counters()
         _ep_dll.OrtEpVulkanGetExecutionCounters(ctypes.byref(_c), ctypes.sizeof(_c))
         ep_counters = {
             "compile_calls": _c.compile_calls, "subgraphs_live": _c.subgraphs_live,
             "subgraphs_stub": _c.subgraphs_stub, "compute_calls": _c.compute_calls,
-            "compute_failures": _c.compute_failures, "dispatches_executed": _c.dispatches_executed,
+            "compute_failures": _c.compute_failures, "device_losses": _c.device_losses,
+            "dispatches_executed": _c.dispatches_executed,
         }
 
     # ------------------------------------------------------------------
@@ -972,6 +978,8 @@ def test_phi35_multi_run_same_session_interior_pointer_safety(
                 ("subgraphs_stub", ctypes.c_uint64),
                 ("compute_calls", ctypes.c_uint64),
                 ("compute_failures", ctypes.c_uint64),
+                # ABI 4 (§8.9.15) — inserted, not appended; see the note on the other mirror.
+                ("device_losses", ctypes.c_uint64),
                 ("dispatches_executed", ctypes.c_uint64),
             ]
 
@@ -985,6 +993,7 @@ def test_phi35_multi_run_same_session_interior_pointer_safety(
             "subgraphs_stub": _c.subgraphs_stub,
             "compute_calls": _c.compute_calls,
             "compute_failures": _c.compute_failures,
+            "device_losses": _c.device_losses,
             "dispatches_executed": _c.dispatches_executed,
         }
 

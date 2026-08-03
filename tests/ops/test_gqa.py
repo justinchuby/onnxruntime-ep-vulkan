@@ -126,32 +126,26 @@ def _make_inputs(past_seq: int, seed: int = 0) -> dict[str, np.ndarray]:
 # Known-failing guard
 # ---------------------------------------------------------------------------
 
-# GQA Compute-path bug: absent optional inputs (slots 1 and 2 are empty strings in the
-# packed-QKV form) produce size=0 alloc requests at inference time.  The EP correctly
-# claims the node at GetCapability; it fails at Compute because the allocator returns
-# None for a 0-byte buffer, causing ORT to fall back to CPU.
+# GQA Compute-path bug — RETIRED 2026-08-02 (Mouse).
 #
-# Root cause: packed-QKV GQA schema has 9 inputs; slots 1 and 2 ("key", "value") are
-# absent in the Phi-3.5 packed form.  The kernel/allocator path does not skip absent
-# optional inputs.  Owner: Switch (alloc.rs / ops/gqa.rs).
+# What it recorded: absent optional inputs (slots 1 and 2 are empty strings in the packed-QKV
+# form) produced size=0 alloc requests at inference time, so the EP claimed the node at
+# GetCapability and then fell back to CPU at Compute.  `strict=True` was there so the suite would
+# go red (XPASS) the moment it was fixed.
 #
-# strict=True so the suite goes red (XPASS) the moment the bug is fixed — matching
-# Trinity's Phi-3.5 logits gate pattern.
-_GQA_COMPUTE_BUG = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GQA Compute path: absent optional inputs (packed-QKV slots 1/2) produce "
-        "size=0 alloc requests; EP falls back to CPU at inference time. "
-        "Owner: Switch (alloc.rs / ops/gqa.rs). Remove when alloc handles absent "
-        "optional inputs and these tests produce MATCH."
-    ),
-)
+# It did, and this is that red.  Switch's two GQA fixes (index space, then prefill) and the proof
+# ledger entry that lets the form be claimed at all now put every test in this file at MATCH:
+# `FAIL(condition): 0`, seven `XPASS(stale)`.  The marker's own removal condition — "remove when
+# alloc handles absent optional inputs and these tests produce MATCH" — is met, so it is removed
+# rather than relaxed.
+#
+# R13: an XPASS is neither a detection nor an outage. Leaving it in place would keep seven tests
+# red for somebody else's good news, and a red nobody can act on is the one that gets ignored.
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-@_GQA_COMPUTE_BUG
 @pytest.mark.parametrize("past_seq", [0, 4, 16])
 def test_gqa_attn_output_matches_cpu(past_seq: int, vulkan_device_available) -> None:
     """attn_out from Vulkan EP must match CPU EP within f16 tolerance."""
@@ -162,7 +156,6 @@ def test_gqa_attn_output_matches_cpu(past_seq: int, vulkan_device_available) -> 
     m.assert_matches_cpu(model_bytes, feeds, rtol=1e-2, atol=1e-2)
 
 
-@_GQA_COMPUTE_BUG
 @pytest.mark.parametrize("past_seq", [0, 4])
 def test_gqa_present_kv_shape(past_seq: int, vulkan_device_available) -> None:
     """present_key and present_value must have shape [B, Hkv, past+1, D]."""
@@ -178,7 +171,6 @@ def test_gqa_present_kv_shape(past_seq: int, vulkan_device_available) -> None:
     assert outs[2].shape == expected_kv, f"present_value shape {outs[2].shape} != {expected_kv}"
 
 
-@_GQA_COMPUTE_BUG
 @pytest.mark.parametrize("past_seq", [0, 4])
 def test_gqa_present_kv_matches_cpu(past_seq: int, vulkan_device_available) -> None:
     """present_key/value from Vulkan EP must match CPU EP (KV cache correctness)."""

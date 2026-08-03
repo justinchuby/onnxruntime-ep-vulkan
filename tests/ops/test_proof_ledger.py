@@ -261,10 +261,58 @@ def test_the_two_arms_disagree(require_vulkan, _ledger_keys):
     )
 
 
+def test_the_degeneracy_guard_fires_and_stays_silent(require_vulkan, tmp_path):
+    """The case-model degeneracy guard, in both polarities, in the lane.
+
+    Twelve of the ops proved on 2026-08-02 return **bool**. A comparison whose CPU reference is
+    constant is vacuous — two constant tensors agree to any tolerance — so `Equal` sampled from
+    two independent normals is all-False and would have reported `MATCH worst_rel 0.0` having
+    tested nothing. That is the cheapest possible way to "prove" twelve ops, and it is the same
+    failure this project has hit seven times.
+
+    Rai's rule is that a control which must be opted into is not in the lane, so this runs here
+    rather than as a script: mutate `equal_f32`'s input domain away from `discrete` and the
+    generator must return `ERROR(case_model_degenerate_reference)`; leave it as shipped and it
+    must return `MATCH`. Both arms, because a guard that always fires is as useless as one that
+    never does.
+    """
+    import gen_proof_ledger as g
+    import ledger_case_models as lcm
+
+    case = "equal_f32"
+    tolerance = (1e-3, 1e-5)
+    model = str(lcm.build(case, tmp_path))
+
+    saved = lcm.INPUT_DOMAIN.pop(case, None)
+    assert saved is not None, (
+        f"ERROR(instrument): {case} declares no input domain, so the mutation below is a no-op "
+        f"and this test would pass without testing anything"
+    )
+    try:
+        keys, _ = g.discover_keys(model, reprove=True)
+        mutated_verdict, mutated_detail = g.prove(model, keys, tolerance)
+    finally:
+        lcm.INPUT_DOMAIN[case] = saved
+
+    keys, _ = g.discover_keys(model, reprove=True)
+    shipped_verdict, shipped_detail = g.prove(model, keys, tolerance)
+
+    assert mutated_verdict == "ERROR", (
+        f"the guard did not fire on a deliberately degenerate reference; it returned "
+        f"{mutated_verdict} {mutated_detail}"
+    )
+    assert mutated_detail.get("instrument") == "case_model_degenerate_reference", (
+        f"the guard fired for some other reason: {mutated_detail}"
+    )
+    assert shipped_verdict == "MATCH", (
+        f"the case as shipped no longer proves; the guard may be firing on everything, which "
+        f"reads the same as a guard that works: {shipped_verdict} {shipped_detail}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The CI check — the second half of RAI-008(a)
 # ---------------------------------------------------------------------------
-
 
 def test_check_ledger_passes_on_the_shipped_artifact():
     """`gen_proof_ledger.py --check` is the CI check RAI-008(a) requires.
@@ -311,3 +359,101 @@ def test_check_ledger_fails_on_a_tampered_artifact(tmp_path):
     assert r.returncode != 0, (
         f"--check accepted a ledger whose only entry is a wildcard key:\n{r.stdout}\n{r.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# §8.9.14 — the writer's own refusals, planted rather than read
+# ---------------------------------------------------------------------------
+
+
+def _proof_run(**over):
+    """A minimal healthy proof-run record, as `prove()` returns on MATCH."""
+    run = {
+        "worst_rel": 1e-6,
+        "claimed_nodes": 1,
+        "dispatches_executed": 1,
+        "shaders_dispatched": ["ew_binary_add_f32"],
+        "shaders_dispatched_digest": "0123456789abcdef",
+        "compute_calls": 1,
+    }
+    run.update(over)
+    return run
+
+
+def _write_entry(run):
+    import gen_proof_ledger as g
+
+    return g.entry_line(
+        "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2",
+        "device0",
+        "1.20.0",
+        "rtol=1e-3,atol=1e-5",
+        1e-6,
+        "0" * 64,
+        "2026-08-02T00:00:00-07:00",
+        run,
+    )
+
+
+def test_the_writer_refuses_a_run_with_no_subject_witness():
+    """NO-SUBJECT-WITNESS must be reachable *and* refused, not merely nameable.
+
+    Switch's first GQA isolation arm read `calls=0 dispatches=0` — it ran entirely on the CPU EP
+    and would have reported "GQA is innocent" from a run GQA never entered. He caught it by
+    reading the counters by hand. The question the coordinator asked is whether the harness can
+    produce that state, and the honest answer is only worth something as an artifact: so both
+    shapes are planted here and the refusal is required.
+
+    Both polarities: the healthy record must still be written, or this test would pass by
+    refusing everything.
+    """
+    healthy = _write_entry(_proof_run())
+    assert json.loads(healthy)["verdict"] == "MATCH"
+
+    # (a) no attribution witness — the state Switch's arm was in.
+    with pytest.raises(SystemExit) as e:
+        _write_entry(_proof_run(claimed_nodes=0, dispatches_executed=0))
+    assert "attribution" in str(e.value), str(e.value)
+
+    # (b) attribution present but no subject witness — a run that dispatched nothing nameable.
+    with pytest.raises(SystemExit) as e:
+        _write_entry(_proof_run(shaders_dispatched=[], shaders_dispatched_digest=""))
+    assert "subject witness" in str(e.value), str(e.value)
+
+
+def test_the_writer_refuses_a_multi_inference_proof_run():
+    """§8.9.14 — one inference per arm is what makes an entry immune to input-cache staleness.
+
+    Switch's `(cpu_ptr, byte_size)` cache defect made every inference after the first in a
+    session read the first one's inputs, and no shader digest can see it because the shaders do
+    not change. Every entry here is immune because each arm is a fresh subprocess with exactly
+    one `sess.run`. That is a fact about today's harness; this makes it a field, so a future
+    multi-inference case cannot inherit the immunity by looking the same.
+    """
+    assert json.loads(_write_entry(_proof_run(compute_calls=1)))["compute_calls"] == 1
+    with pytest.raises(SystemExit) as e:
+        _write_entry(_proof_run(compute_calls=2))
+    assert "Compute() calls" in str(e.value), str(e.value)
+
+
+def test_a_shrinking_write_is_a_failure_not_a_footnote(tmp_path):
+    """A destructive write that reports success is the defect this file keeps re-learning.
+
+    `--reprove` without `--append` took the ledger from 74 entries to 1 and printed `PASS`. The
+    carry-forward fix makes that unlikely; it does not make it a *detection*. So the writer
+    compares against what is on disk and refuses, and the refusal names what would have gone.
+    """
+    import gen_proof_ledger as g
+
+    p = tmp_path / "proof_ledger.jsonl"
+    lines = [json.dumps({"key": f"k{i}"}, sort_keys=True) for i in range(5)]
+    assert g.write_ledger(p, lines) == 0
+
+    assert g.write_ledger(p, lines[:2]) != 0, "the writer accepted a silent shrink"
+    kept = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()][1:]
+    assert len(kept) == 5, "the refused write still touched the file"
+
+    # ...and it is a refusal, not a ban: --rebuild is the deliberate instruction.
+    assert g.write_ledger(p, lines[:2], allow_shrink=True) == 0
+    kept = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()][1:]
+    assert len(kept) == 2
