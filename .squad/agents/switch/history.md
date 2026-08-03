@@ -1113,3 +1113,79 @@ whatever that path was counting.* Fixed with a separate `outputs_device_bound` c
 recorded at the bind.
 
 Default path re-verified unchanged on the shipped binary. 478 lib tests, 15 epctl, clippy clean.
+
+---
+
+## Session 46k — 2026-08-02 — push constants, then the KV ruling
+
+Merged `main` at `d375a4d` (`ee3648c`). Two commits, neither pushed.
+
+### `abcb9af` — every dispatch writes every byte of the range it declares
+
+Trinity's in-frame reading: `vkCmdDispatch(): Pipeline uses a push constant range with offset 0
+and size 128, but 104 bytes were never set` — six lines, shortfalls `{4,20,36,72,88,104}`, which
+is 128 minus the six distinct pack sizes across 355 dispatches. Not a VUID. Still a defect:
+**unwritten push-constant bytes are undefined, not zero**, and nothing misbehaved only because
+no shader reads past its declared block — a property of the shaders, not of the contract.
+
+Padded rather than shrank the declared range: the pipeline cache is keyed on
+`(shader, spec_constants)` with no push size in it, so a per-kernel range would have to enter
+that key and a layout disagreeing with its dispatch is a hard error, not a warning. Push is now
+unconditional (a kernel packing nothing would leave all 128 unwritten). Over-128 logs ERROR once
+naming the shader.
+
+**The zero is earned twice.** Liveness via Trinity's `BEST_PRACTICES_EXT`, and *sensitivity*:
+the same reading against the **pre-fix binary**. A detector never seen in its positive state has
+no demonstrated positive state — the probe reports `UNPROVEN_DETECTOR` without one, and refuses
+a control whose DLL hash equals the subject's. 6 lines on `44D21A451D269F82`, 0 on
+`A8BAB570AB8BE38D`, both devices, device read off the run.
+
+Liveness count moved 14 → 8 — exactly the six lines removed. Trinity's assertions are `> 0` and
+`!= clean`, never `== 14`, so a fix did not turn her control red. Footnoted her table.
+
+### `ed48f5b` — the KV ruling: ORT does not forbid it, the obstacle is ours
+
+| lane | caller-side bind | + EP-side Step 1c |
+|---|---|---|
+| `alloc_device_frame` | `SHARED` | `SHARED` |
+| `outputs_device_bound` | 0 | 6 |
+| nonzero returned | 256/320/320 | 0/0/0 |
+| rel vs **unbound EP** | 0.0 | 1.0 |
+| verdict | `KV_CAN_STAY_DEVICE_RESIDENT` | `DEVICE_BOUND_OUTPUTS_RETURN_NOTHING` |
+
+A caller **can** allocate an `OrtValue` in our device memory and bind it as a graph output,
+bit-identical to the unbound run. The obstacle is `transfer.rs`'s own invariant: **host staging
+is authoritative, the device buffer is a mirror.** Nothing makes a directly-written device
+buffer authoritative. That is EP-side work, in our hands.
+
+Route: `device_type='gpu'` + our vendor id fails with *"Can't allocate memory on the CUDA
+device"* — ORT 1.28's Python binding maps `gpu`→CUDA, so a plugin EP is unaddressable by the
+documented spelling. `OrtEpDevice.memory_info(DEFAULT)` as `memory_info=` is the escape. The
+binding labels the result `'cuda'`; recorded, never used as evidence.
+
+**Ordering is load-bearing.** Asking for the allocator before the session exists builds a second
+`VkDevice` — `SPLIT-DEVICE`, unbindable by any dispatch. The probe's first run read it and
+refused rather than publishing plausible numbers about a device the kernels never ran on. Any
+arena inherits this.
+
+Ran on the GQA evidence case: seconds per lane instead of six minutes, which is the only reason
+both lanes exist to be compared.
+
+**Not claimed:** the round trip is not removed; `readback_bytes` is not quoted because it is not
+yet expected to have moved.
+
+### Lessons
+- *A property of the shaders as they happen to be written is not a property of the contract.*
+- *A detector never observed in its positive state has no demonstrated positive state* — hence
+  the pre-fix sensitivity record, and the refusal when its hash equals the subject's.
+- *A falsifier that asserts the exact value of a number it does not own goes red on a fix.*
+- The `ep`-vs-`bound` criterion and the degeneracy guard, both minted last round, both fired
+  this round: the epbind lane scores `1.0` and is caught by the nonzero count, not the score.
+
+### State
+478 lib + 15 epctl green, clippy clean, shipped DLL `A9A381602D8B4014`. Decision records filed:
+`switch-ort-permits-device-resident-kv.md`,
+`switch-declared-push-constant-range-must-be-fully-written.md`.
+
+**Next:** make a directly-written device buffer authoritative in `transfer.rs` /
+`host_device_memory.rs`. That is the whole remaining distance to the KV arena, and it is ours.

@@ -563,3 +563,70 @@ none of the 15 rides `add_f32`'s evidence, because each names itself in a ledger
 `tests/ops/test_gqa.py` (cross-owner, Switch, stale marker removal),
 `evidence/proof_ledger.jsonl` (74 → 95), `docs/OP_COVERAGE.md` §8.9.13. Rust **477/0**, clippy
 clean, ledger+census lanes green on **both** devices. **No timing figure quoted.**
+
+---
+
+## 2026-08-02 — Switch's round: a destructive success, a witness, a staleness the digest cannot see, and an ABI eight bytes off
+
+Commit `4d47362` on `squad/mouse` (merge `572d49c` of `origin/main` @ `2397f5a` first). DLL
+`5F3977CB2260737E` before, `74FA8018ABDAFE36` after.
+
+**1. `--reprove` shrank the ledger and printed `PASS`.** Second time this file has learned the
+same lesson, and the second time it arrived through the flag added to fix the first. Carry-forward
+made a drop *unlikely*; it did not make it a *detection*. `write_ledger()` now reads what is on
+disk first, refuses a shrink, names the dropped keys, and writes nothing. `--rebuild` is the
+deliberate instruction. The half I care about more: on a refusal `main()` returns immediately and
+does **not** run `--check` — running it would ask about the old file and answer `PASS`. The repair
+for a two-halved report is to stop producing the second half, not to reword it.
+
+**2. `NO-SUBJECT-WITNESS` was reachable and refused — but I only knew that by reading the source.**
+Three guards already catch Switch's `calls=0 dispatches=0` state (ORT's `disable_cpu_ep_fallback`,
+`prove()`'s `UNATTRIBUTED`, `entry_line()`'s refusal), and his hand-read was a fourth. R10 says a
+code reading is not a falsifier, so both shapes are planted in the lane now, with a healthy
+control that must still be written — a test that refuses everything passes for free. Worth
+keeping straight: his arm was a **probe**, and probes have no writer to refuse them. The guards
+protect the ledger, not every script that touches the EP.
+
+**3. Stale input cache: none of the 95 entries affected, and I am willing to say it flatly.**
+Every proof arm is a fresh subprocess with one session and one `sess.run`; the EP's own counters
+read `compute_calls: 1`, `weight_cache_release_buffers: 0`, `weight_cache_bytes_resident: 0`. The
+defect needs a *second* `Compute()` in one session. That is a fact about today's harness, so it is
+now a field rather than a habit: `compute_calls` is recorded per entry and `entry_line()` refuses
+a run that computed more than once. A future KV-cache case would otherwise inherit the immunity by
+looking the same.
+
+**4. What I actually found: `device_losses` was inserted mid-struct and three ctypes mirrors kept
+reading the old layout.** The census said `partitioner: UNWIRED (dispatches_executed delta = 0 —
+EP ran nothing)` on a run that also reported `claimed=1`, `compile_calls=1`, `compute_calls=1`.
+Two artifacts from one run disagreeing is a reader fault. `a52024f` inserted the field between
+`compute_failures` and `dispatches_executed` — which the struct's own doc comment forbids one line
+above — without bumping `COUNTERS_ABI_VERSION`. Everything below shifted eight bytes:
+`dispatches_executed` was reading `device_losses` (always 0 on a healthy run), and
+`unproven_forms_claimed` was reading `ledger_entries` (95) — a counter that is supposed to be 0
+and whose being non-zero is what `epctl --check-counters` fails on.
+
+Nothing went red because the wrong number was stable and plausible. Switch's `STEADY 21.4×`, one
+level down in a struct offset. ABI bumped to 4, all three mirrors repaired, and the census reader
+raises on a layout mismatch — deliberately *outside* the `try` that returns `{}`, because `{}`
+becomes a delta of 0 and a delta of 0 reads as `UNWIRED`.
+
+**The judgement call I want on record.** The new lane test asserts `struct_size` **equality**, not
+`>=`, which throws away the struct's documented forward-compatibility. From the reader's side an
+append and an insertion are indistinguishable and only one is safe, so a check that cannot tell
+them apart must assume the dangerous one. Cost: a red lane on every counter added. A per-field
+offset manifest published by the DLL would be strictly better and equality can be relaxed the day
+it exists.
+
+**Filed, not done.** Three hand-maintained ctypes mirrors of one C ABI is the real defect; the two
+in `test_phi35.py` are repaired but unguarded. One shared reader is the honest fix and it is not
+mine to land unilaterally. Every ctypes reading taken between `a52024f` and `4d47362` is suspect,
+including the Phi-3.5 lane's `dispatches_executed`.
+
+**Audit taken on the way past.** Switch's *"a classifier tested only against strings we wrote
+ourselves is tested against the one input it cannot get wrong"* turned on my own harness's only
+foreign-string matcher, the ORT CPU-fallback refusal. It holds for a statable reason rather than a
+lucky one: its miss produces `ERROR(instrument)`, never a verdict. A classifier whose miss
+produces a verdict is the one to distrust.
+
+Verified: 479 lib tests, clippy clean, ledger lane 14/14 and both census lanes green on device 0,
+`--check PASS 95 entr(ies)`, shrink guard and ABI guard both mutation-tested in both polarities.

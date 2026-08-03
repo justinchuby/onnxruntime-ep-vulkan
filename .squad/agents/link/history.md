@@ -153,3 +153,58 @@ against ~55 s quiet — a 14x spread, and the reason no gate here has a wall clo
 **GEMV_PACKED.** Investigated, not closed. It enters as specialization constant 5 of `q_gemv.comp` and the pipeline cache keys on `(shader_stem, spec_constants)`, so the two settings really are two pipelines — but nothing we produce records a pipeline key or a spec constant. A host-side record of the env var is not R10 evidence. Needs an EP-side emission; owed by Mouse with Switch.
 
 **Sixth union defect, first caught by an instrument.** Merging main turned my census screen red because Trinity had added two mechanisms my map had no name claim for. Both branches complete, composition not. I did not re-disposition the twelve gaps on the strength of her declaration — a declared mechanism is not an observed one.
+
+---
+
+## Session 16 — 2026-08-02 — Cross-platform: the Linux answer
+
+**Branch:** `squad/link` @ `aa6e5b8`. Merged `origin/main` `d375a4d`, rebuilt, DLL hashed
+either side (`F7E07BE84F278BFC` -> `A9898AE483110CFF`).
+
+**WSL Ubuntu 24.04 is available on this box** and is what made the task answerable for
+real rather than by inference: cargo 1.97.1, Mesa `lvp_icd.json`, python3.12 with
+onnxruntime 1.28.0. Two gotchas: `$HOME` inside `wsl -d Ubuntu -- bash -lc` inherits the
+Windows value and breaks `LD_LIBRARY_PATH` (use absolute `/home/justinchu/...`), and
+`CARGO_TARGET_DIR` must point inside WSL's own filesystem or it clobbers the Windows
+`rust/target` and races `link-1`.
+
+**Q1: builds clean. `cargo test --lib` does not compile** — 11 `i32`/`u32` errors on
+`ort::OrtLoggingLevel_*` in `rust/src/ep.rs`. Routed, not patched.
+
+**The CI "Clippy" step is a portability defect with a lint's name.** That is why it sat
+low-priority for a day. Second `misnamed` specimen after `Phase::Record`.
+
+**A red step skips the rest of its job — seven Linux steps have never run.** My table
+said `UNDEMONSTRATED`, which flatters. New status `GATED_NEVER_RUN`, and I deleted the
+`observed` date from `device.op_correctness`. *Running a while is not the falsifier* has
+an other half: **a check that has never run is not yet a check.**
+
+**Q2: lavapipe passes the gate (`subgroup_size = 8`, measured). The EP claims 0/1 and
+exits 0.**
+
+**Q3, the one that matters: the ledger is keyed per TOOLCHAIN.** `shader_digest` hashes
+the embedded SPIR-V, so Ubuntu's glslc faults all 74 entries with no kernel change; and
+`device` is on 74 of 75 entries and never read by the predicate. On Windows device1 the
+EP prints *"proven ... on device0"* and claims the form anyway. Digest disagreeing fails
+safe; digest agreeing on an unproven device fails **open**, and nothing watches it.
+Blind spot `ledger_device_provenance`, substitute **NONE**. Cross-platform is an
+architecture problem — **it would survive buying every runner, because a bought runner
+brings its own glslc.**
+
+**The reporting defect is mine.** conftest calls the EP's decision "No Vulkan device
+available" on a box whose gate just passed; the run ends `2 passed, 36 skipped`. Fixing
+clippy alone would have made op-correctness green having asserted nothing — the
+narrowing I was told not to do, reached without anyone narrowing anything.
+
+`ci/check_ledger_portability.py` + `ci/negative_control_ledger_portability.py`:
+**3 LIVE / 0 REPLAYED / 8 PLANTED**, all three conditions with a live arm. It never reads
+an exit status and a test asserts the source never mentions `returncode` — the defect is
+an exit status of 0.
+
+13 new lane tests, 111 passing, 3 known census reds. `PLATFORMS.md` §7.20 (§7.19 was
+taken by a merge). Decision record:
+`.squad/decisions/inbox/link-ledger-toolchain-not-device.md`.
+
+**Method note to self:** I bypassed the pytest fixture on my first probe and got a false
+"EP not registered". Caught it by re-running under pytest and seeing `get_ep_devices()`
+list the EP. Confirm the harness's own path before reading a probe as a finding.
