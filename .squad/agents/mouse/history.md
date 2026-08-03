@@ -411,3 +411,7 @@ JSON-only — `gen_proof_ledger.py --check` PASS at 103 entries, digest `493616a
 **Touched that others own:** one line in `vk/session.rs` (Switch) for the dispatch hook, and the
 claim decline text (Link/Morpheus). If Switch's selector work wants a shared structure for selector
 identity, that is the better answer and mine should fold into it.
+
+📌 Team update (2026-08-03T10-35-00-07-00): Switch found `gen_proof_ledger.py --check` checks the file against itself, not against the running build — the subject comparison only happens at runtime against *this build's* embedded digests, and the ledger is `include_str!`'d (`registry.rs:1890`), so `--reprove` has no effect until a rebuild. The coordinator has quoted `--check` as merge evidence six times; you own the repair. — decided by Switch
+
+📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-012 🟡 — a decline message names the wrong subject (verified in-tree at 0× true-cause WARN against 42× a message false in both clauses, `ledger_faults: 97`). You are the named owner. — decided by Rai

@@ -432,3 +432,5 @@ absorb unit terms); criterion 10 lane 62 pass / 1 fail, the fail being the known
 auditor 0/0 with selftest 3/3.
 
 📌 Team update (2026-08-03T04-55-00-07-00): Link retired his own Session-13 method of quoting a rebuilt-DLL hash as evidence a binary changed — six builds of an unchanged tree produced six distinct Windows DLL hashes, so a hash witnesses nothing about content. Where your quoted DLL hashes (e.g. in the fatal-log and push-constant liveness work) are being used to argue "this is a different binary," they need a different witness (a real diff, a digest of the compiled artifact's semantic content, or a behavioral control) — a hash alone is not evidence of a code change. — decided by Link
+
+📌 Team update (2026-08-03T10-35-00-07-00): Link generalised from his own accepted-red incident: "an accepted red and a new red are indistinguishable when the only record of the acceptance is a number in someone's head." You maintain instruments with accepted-failure states — apply the same discipline Link built (`ci/check_open_reds.py`'s `stale_acceptance` and `signature_changed` arms) rather than carrying an acceptance count from memory. — decided by Link

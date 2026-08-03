@@ -1,6 +1,17 @@
-# Squad: union merge for append-only team state files
-.squad/decisions.md merge=union
-.squad/agents/*/history.md merge=union
+# Squad: union merge for append-only team state files.
+#
+# .squad/agents/*/history.md and .squad/decisions.md use the custom
+# `squad-history` driver instead of plain `union`: union merge cannot
+# represent a deletion, so a Scribe condensation (history.md) or archival
+# (decisions.md) gets silently undone the next time a branch that forked
+# before it is merged (see decisions.md, 2026-08-03, "the merge=union
+# condensation defect"). `squad-history` keeps union merge's no-conflict
+# guarantee for concurrent agent appends but respects whichever side
+# removed content. Requires running
+# .squad/tools/setup-merge-drivers.ps1 once per clone/worktree -- driver
+# commands live in .git/config, which git never versions.
+.squad/decisions.md merge=squad-history
+.squad/agents/*/history.md merge=squad-history
 .squad/log/** merge=union
 .squad/orchestration-log/** merge=union
 .squad/rai/audit-trail.md merge=union

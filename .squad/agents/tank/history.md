@@ -381,3 +381,7 @@ prediction — third sighting of plant-rot in one day. Imported `PLANTED_CONTROL
 membership test is non-vacuous by measurement (`False` for the plant, `True` for the sibling).
 14 passed / 0 failed. **The tally is not the artifact-supplier's** — criterion 11 is Morpheus's,
 RAI-008's status is Rai's.
+
+📌 Team update (2026-08-03T10-35-00-07-00): Link generalised from his own accepted-red incident: "an accepted red and a new red are indistinguishable when the only record of the acceptance is a number in someone's head." You maintain instruments with accepted-failure states — apply the same discipline Link built (`ci/check_open_reds.py`'s `stale_acceptance` and `signature_changed` arms) rather than carrying an acceptance count from memory. — decided by Link
+
+📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-013 🟡 — an honestly-labelled emission a user never sees by default is not "the user was told." You are the named owner. — decided by Rai
