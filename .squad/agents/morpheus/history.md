@@ -298,3 +298,76 @@ a claim that something happened.
 - No mint again. Six declines. I said last time that if a sixth arrived I should ask someone else
   whether the register is under-growing, and I am asking: this one genuinely individuates by remedy
   (R12 carry-the-frame, R13 third-token) but I would rather be checked than trust my own count.
+
+## 2026-08-02T23:40:00-07:00 — Three figures failed the check, and one of them was the one I was asked to headline
+
+**The ruling was the easy part.** SUBJECT-CHANGED vs TOOLCHAIN-CHANGED is a distinction I already had
+the shape of: a subject change invalidates the proof, a toolchain change invalidates the evidence that
+the proof still applies. Different facts, different repairs, one token today. And the device goes in
+the predicate rather than the key, because a key with a device in it is a set of per-machine
+fingerprints and returns KeyAbsent for forms that are well proved.
+
+**The part I nearly missed is that `device0` is a selector ordinal, not a device identity.**
+gen_proof_ledger.py writes `args.device_name or f"device{args.device}"` and nobody passed the name. So
+a predicate that compared device0 to device0 would return PROVEN across two vendors and would look
+exactly like a working guard. I would have shipped that ruling without the second half if I had not
+gone to the generator. **The remedy for a field no predicate reads is not "read the field" — it is
+"read a field that identifies something".**
+
+**And while ruling I found that parse_ledger does the opposite of its own comment.** The comment says a
+stale entry demotes itself and nothing else, and warns that a global fault "gets relaxed the first time
+someone is in a hurry". The branch pushes to `faults`, and lookup_key faults the whole ledger on any
+non-empty faults. Two doc comments in one file contradict each other and the code implements the one
+nobody wanted. The census artifact had measured it and nobody had read it that way: one drifted entry,
+ledger_gate FAULTED, ledger_hits 0, ninety-seven claims gone.
+
+**The tally moved down, not up.** Five met, not seven. Row 1 was carrying "Linux via CI", which is a
+promise; row 8 was carrying a parity result read through an ABI mirror since shown to swap two
+counters silently. Same defect twice — a promise where an observation was required — in the table
+written to prevent exactly that. I promoted row 3, and I did it by amending a condition I wrote
+myself, in the open, and only because the substitute is *stronger* on the axis the condition was
+written for. Coupling a validation-layer row to a numerics row was my error to begin with.
+
+**Row 11 is the one I had to be most careful about.** Trinity's (c) is delivered — four arms, three
+mutations caught, the identical-file control that makes the other two detections rather than a check
+that fails on everything. I said so without qualification and I meant it. Then I kept the row open on
+its *second* clause, because my own ruling today falsifies it with a specimen in this tree:
+wiring_census-dev1 reads ALL-PROVEN with six hits on the Iris Xe against ninety-seven entries that all
+say device0. I checked hard whether I was hardening a criterion because it was about to pass. I do not
+think so: a falsifier fired on a clause that was always in the row. But it is the third time this
+session I have written a paragraph justifying why I am not doing the thing I keep grading others for,
+and that frequency is itself worth noticing.
+
+**Now the one that matters most, and it is the figure I was handed to headline.** I was asked to write
+in §0 that weight read amplification is 1.000000 exactly. All four fields of that artifact are
+literals in the probe; the probe computes nothing. The numerator is a blob count and the denominator
+the weight bytes of the same census, and a blob *is defined as* sixteen weight bytes. The ratio is
+x/x. It is 1.000000 for every model, every kernel, and a broken one — both of gemv_counts.json's own
+arms produce it. **An instrument that cannot go red, supporting a roofline conclusion.** And
+"bit-identical to the CPU EP" is false on the artifact: 62 of 65, logits_max_abs_diff 0.0625.
+
+I wrote both into §0 with their defects instead of without them. The alternative was a §0 whose first
+checkable line is wrong, which is the fastest way to make everything else in it unbelievable.
+
+**My ULP prediction is refuted and I am recording it as refuted.** Flat at 1-3 across 32 layers was on
+record before measuring. Median is 1, which is the flat part — and three outputs exceed: the logits
+head at 12, the last layer's key and value at 4. A step, not a curve, and located at the head. That is
+the prediction failing in the only way a prediction is worth making.
+
+**And one that is mine to carry.** The artifact behind my withdrawn 02:02 closure cited both
+attribution witnesses present and agreeing. The file at that same path today has one witness and reads
+UNOBSERVABLE. A stable filename now holds a different frame. I quoted that artifact into a criteria row
+and the path I cited no longer resolves to what I read — R13 amendment 1's dangerous class, arriving as
+a filename rather than a line number.
+
+**Carry forward**
+- Order of work on the ledger: faults/demoted correction first, device predicate second (fails open),
+  demotion split third (fails safe). Mouse owns all three.
+- A verdict artifact names its own frame in its filename or refuses to overwrite one. Nobody owns this
+  yet and it has now bitten criterion 10 and criterion 12 in one day.
+- The op counts in circulation (47 live / 22 staged) were wrong; it is 91 rows, 71 with a kernel, 20
+  staged. Numbers quoted from memory in this project have a poor record and mine are included.
+- Seventh decline, and I did not mint anything today either. I asked last time to be checked on
+  whether the register is under-growing; the ask stands and nobody has answered it.
+- Row 9 is restated rather than re-evidenced: consistency is asserted at a named commit. I should
+  apply that to my own §0, and I did — it is dated and SHA'd in the section.
