@@ -63,7 +63,10 @@ def base_doc() -> dict:
 
 
 def minimal_doc(entry: dict) -> dict:
-    return {"schema": 1, "purpose": "negative control", "checks": [entry]}
+    return {
+        "schema": 1, "purpose": "negative control", "checks": [entry],
+        "subjects": [entry["id"]] if "id" in entry else [], "retired": {},
+    }
 
 
 def green_entry(**over) -> dict:
@@ -191,13 +194,65 @@ def main() -> int:
         r = run_screen(w("baddate.json", minimal_doc(red_entry(review_by="soon"))))
         record("PLANTED", "review_by='soon' -> usage", r.returncode == 2)
 
-        dup = {"schema": 1, "purpose": "c", "checks": [red_entry(), red_entry()]}
+        dup = {"schema": 1, "purpose": "c", "checks": [red_entry(), red_entry()],
+               "subjects": ["always_red"], "retired": {}}
         r = run_screen(w("dup.json", dup))
         record("PLANTED", "duplicate id -> usage", r.returncode == 2 and "duplicate" in (r.stdout + r.stderr))
 
-        r = run_screen(w("empty.json", {"schema": 1, "purpose": "c", "checks": []}))
+        r = run_screen(w("empty.json", {"schema": 1, "purpose": "c", "checks": [],
+                                        "subjects": ["x"], "retired": {}}))
         record("PLANTED", "empty register -> usage; zero checks is not zero findings",
                r.returncode == 2)
+
+        print("\nREPLAYED — the denominator defect, exactly as it happened on 2026-08-03")
+        # Mouse repaired three of five accepted reds and deleted their entries, which the
+        # file told him to do. One was not actually green (7 of 8 accessors wired, an
+        # 8th missed), so the delete removed the CHECK and not just the acceptance: 8
+        # subjects became 5, and the screen printed PASS with a red check in the tree.
+        # These are the real ids from ci/open_reds.json at 9cff913.
+        gone = ["audit_instruments_census", "harness_census_drift", "proof_ledger_writer_refuses"]
+        doc = minimal_doc(green_entry(id="lane_checks_suite"))
+        doc["subjects"] = ["lane_checks_suite", *gone]
+        r = run_screen(w("denominator.json", doc))
+        record("REPLAYED", "three subjects deleted from `checks` -> usage, not PASS",
+               r.returncode == 2 and all(g in (r.stdout + r.stderr) for g in gone),
+               (r.stdout + r.stderr)[-1200:])
+        record("REPLAYED", "and the message says flip to green rather than delete",
+               "does not leave this register by being deleted" in (r.stdout + r.stderr))
+        # The other polarity, same three ids: retiring them deliberately is allowed.
+        doc2 = minimal_doc(green_entry(id="lane_checks_suite"))
+        doc2["subjects"] = ["lane_checks_suite", *gone]
+        doc2["retired"] = {g: {"owner": "mouse", "date": "2026-08-03", "reason": "fixed"}
+                           for g in gone}
+        r = run_screen(w("denominator-ok.json", doc2))
+        record("REPLAYED", "the same three RETIRED with a reason -> PASS",
+               r.returncode == 0 and "RETIRED audit_instruments_census" in r.stdout,
+               (r.stdout + r.stderr)[-800:])
+
+        print("\nPLANTED — the rest of the subjects arithmetic")
+        doc = minimal_doc(green_entry(id="a"))
+        doc.pop("subjects")
+        r = run_screen(w("nosubjects.json", doc))
+        record("PLANTED", "a register with no `subjects` -> usage", r.returncode == 2)
+
+        doc = minimal_doc(green_entry(id="a"))
+        doc["subjects"] = ["a", "b"]
+        doc["retired"] = {"b": {"owner": "x", "date": "2026-08-03"}}
+        r = run_screen(w("noreason.json", doc))
+        record("PLANTED", "a retirement with no reason -> usage",
+               r.returncode == 2 and "reason" in (r.stdout + r.stderr))
+
+        doc = minimal_doc(green_entry(id="a"))
+        doc["retired"] = {"a": {"owner": "x", "date": "2026-08-03", "reason": "y"}}
+        r = run_screen(w("bothlists.json", doc))
+        record("PLANTED", "an id both live and retired -> usage",
+               r.returncode == 2 and "both live and retired" in (r.stdout + r.stderr))
+
+        doc = {"schema": 1, "purpose": "c", "subjects": ["a"], "retired": {},
+               "checks": [green_entry(id="a"), green_entry(id="b")]}
+        r = run_screen(w("undeclared.json", doc))
+        record("PLANTED", "a check absent from `subjects` -> usage",
+               r.returncode == 2 and "'b'" in (r.stdout + r.stderr))
 
         print("\nPLANTED — the instrument arms: an unobserved colour is not a green one")
         r = run_screen(tmp / "does-not-exist.json")
@@ -256,6 +311,10 @@ def main() -> int:
         record("PLANTED", "the suite entry is narrowed, not accepted whole",
                any(i == "lane_checks_suite" for i in ids)
                and any("--deselect" in c["cmd"] for c in doc["checks"] if c["id"] == "lane_checks_suite"))
+        record("PLANTED", "every subject is either live or retired — nothing has fallen out",
+               set(doc["subjects"]) == set(ids) | set(doc.get("retired", {})))
+        record("PLANTED", "the removal instructions say flip, not delete",
+               "DO NOT DELETE" in doc["how_to_remove_an_entry"])
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

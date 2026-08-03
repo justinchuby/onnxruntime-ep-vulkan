@@ -90,6 +90,7 @@ STEP_TO_CHECK: tuple[tuple[str, str], ...] = (
     # luck, not by design, so the control goes first anyway and this comment records why.
     ("Open-reds negative control", "hostfree.open_reds_negative_control"),
     ("Open reds", "hostfree.open_reds"),
+    ("Verification-subject screen", "hostfree.verification_subjects"),
     ("Layering lint asserted something", "build.layering_lint_productivity"),
     ("Portability lint asserted something", "build.portability_lint_productivity"),
     ("Integration targets asserted something", "build.integration_targets_productivity"),

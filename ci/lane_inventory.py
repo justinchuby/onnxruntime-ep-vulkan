@@ -685,6 +685,40 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="hostfree.verification_subjects",
+        falsifier=FALSIFIER_OBSERVED,
+        lane=LANE_HOSTFREE,
+        step="Verification-subject screen (does a check verify itself?)",
+        watches=(
+            "Whether any `--check` mode in this tree verifies its own output rather than "
+            "an independent subject. `gen_proof_ledger.py --check` compared the proof "
+            "ledger against the proof ledger — header digest against body, declared "
+            "count against lines present — so it PASSed on a file that described a "
+            "binary nobody had built."
+        ),
+        status=DEMONSTRATED,
+        mutation=(
+            "None needed: it was written because the defect was found. Its own first run "
+            "classified `gen_proof_ledger.py --check` as SELF; that check was then "
+            "repaired to ask the built artifact through OrtEpVulkanGetLedgerIdentity, "
+            "and the screen now reports CHECKED 22, classified 22, FOUND 0 SELF "
+            "(13 ARTIFACT, 9 EXTERNAL)."
+        ),
+        arm_healthy="CHECKED 22, classified 22, FOUND 0 SELF",
+        arm_broken="the pre-2832526 tree, where gen_proof_ledger.py --check was SELF",
+        observed="2026-08-03",
+        misses=(
+            "It arrived in ci/ AT 2832526 IN NO WORKFLOW STEP and was wired here a few "
+            "hours later. ci/check_lane_inventory.py could not have caught that: it asks "
+            "whether every workflow step has a Check, not whether every check has a "
+            "step. An unwired tool is invisible to the coverage census by construction, "
+            "and the register (ci/open_reds.json) is the screen that closes that gap, "
+            "because the register RUNS things.",
+            "0 SELF is a statement about the 22 subjects it enumerated, not about the "
+            "tree. A check it did not enumerate is not a check it cleared.",
+        ),
+    ),
+    Check(
         id="hostfree.open_reds",
         falsifier=FALSIFIER_OBSERVED,
         lane=LANE_HOSTFREE,

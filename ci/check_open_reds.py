@@ -132,6 +132,9 @@ EXIT_ERROR_INSTRUMENT = 4
 # attached. The register refuses partial entries rather than accepting them and hoping.
 REQUIRED_FIELDS = ("id", "cmd", "expect", "owner", "opened", "review_by", "reason", "closes_when")
 
+# Retiring an entry needs a reason and a name, for the same argument as opening one.
+RETIRED_FIELDS = ("owner", "date", "reason")
+
 # `signature` is required only for expect=red: it is the thing the acceptance is FOR.
 STATE_PASS = "PASS"
 STATE_ACCOUNTED = "ACCOUNTED"
@@ -202,6 +205,7 @@ def load_register(path: Path) -> list[dict]:
     checks = doc.get("checks")
     if not isinstance(checks, list) or not checks:
         raise ValueError(f"{path}: `checks` must be a non-empty list")
+    _check_subjects(path, doc, checks)
     seen: set[str] = set()
     for entry in checks:
         missing = [f for f in REQUIRED_FIELDS if not entry.get(f)]
@@ -224,6 +228,76 @@ def load_register(path: Path) -> list[dict]:
             except ValueError as exc:
                 raise ValueError(f"{path}: entry {entry['id']!r} has bad {key}: {exc}") from exc
     return checks
+
+
+def _check_subjects(path: Path, doc: dict, checks: list[dict]) -> None:
+    """The denominator arm. A subject may not leave this register silently.
+
+    FOUND THE HARD WAY, BY THIS SCREEN'S FIRST REAL USER, ON ITS SECOND DAY.
+
+    Mouse repaired three of the five accepted reds and — correctly, by the protocol this
+    file states — DELETED their entries. But `audit_instruments --check` was not fully
+    green: seven of eight uninvoked accessors had been wired and an eighth,
+    `unprovable_decline_forms`, had not. Deleting the entry did not move that check to
+    `expect: green`; it removed the check from the register altogether. The screen went
+    from ruling on 8 subjects to ruling on 5, and printed PASS — with a red check in the
+    tree that it had stopped looking at.
+
+    That is this repository's `BUILD_SKIPPED` shape reproduced INSIDE the tool written to
+    prevent it, and it is the same defect as `check_suite_productivity.py`'s
+    `target_ran_nothing`: a sum cannot see one of its terms go silent. The frame line
+    printed "8 declared checks" and then "5 declared checks" and nothing compared them.
+
+    So `subjects` is APPEND-ONLY and every name in it must be accounted for, in exactly
+    one of two ways: it is in `checks` (still ruled on, either colour), or it is in
+    `retired` with an owner, a date and a reason. Closing a red now means flipping
+    `expect` to `green` — which keeps the check running and turns any future regression
+    into `unaccounted_red` — and deleting an entry is a deliberate, written act.
+
+    `retired` is not a suppression list: a retired subject is not run and not ruled on.
+    It exists so that the DIFFERENCE between "we decided to stop watching this" and "this
+    fell out of the register" is written down, because those two were indistinguishable
+    and one of them had already happened.
+    """
+    subjects = doc.get("subjects")
+    if not isinstance(subjects, list) or not subjects:
+        raise ValueError(
+            f"{path}: `subjects` must list every id this register has ever ruled on. "
+            "Without it, an entry can leave the register and take its check with it, and "
+            "the verdict line cannot tell a shrinking denominator from a clean tree."
+        )
+    if len(set(subjects)) != len(subjects):
+        raise ValueError(f"{path}: `subjects` has duplicates")
+    retired = doc.get("retired", {})
+    if not isinstance(retired, dict):
+        raise ValueError(f"{path}: `retired` must be an object keyed by id")
+    live = [c.get("id") for c in checks]
+    for ident, rec in retired.items():
+        if ident in live:
+            raise ValueError(f"{path}: {ident!r} is both live and retired")
+        missing = [f for f in RETIRED_FIELDS if not (isinstance(rec, dict) and rec.get(f))]
+        if missing:
+            raise ValueError(
+                f"{path}: retired subject {ident!r} is missing {missing}. Retiring a check "
+                "needs a name and a reason for the same argument as accepting a red does."
+            )
+    accounted = set(live) | set(retired)
+    dropped = [s for s in subjects if s not in accounted]
+    if dropped:
+        raise ValueError(
+            f"{path}: subject(s) {dropped} are in `subjects` but in neither `checks` nor "
+            "`retired`. A check does not leave this register by being deleted. If it is "
+            "fixed, set expect=green and keep running it — that is what turns the next "
+            "regression into an unaccounted_red instead of a silence. If it should stop "
+            "being watched, retire it with an owner, a date and a reason."
+        )
+    undeclared = [i for i in list(live) + list(retired) if i not in subjects]
+    if undeclared:
+        raise ValueError(
+            f"{path}: {undeclared} appear in the register but not in `subjects`. Add them; "
+            "`subjects` is the append-only record of everything this screen has ever been "
+            "responsible for."
+        )
 
 
 def run_entry(entry: dict, repo: Path) -> Outcome:
@@ -320,13 +394,24 @@ def _tail(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else "...\n" + text[-limit:]
 
 
-def _frame(checks: list[dict], register: Path) -> str:
+def _frame(checks: list[dict], register: Path, doc: dict | None = None) -> str:
     reds = [c for c in checks if c["expect"] == "red"]
     greens = [c for c in checks if c["expect"] == "green"]
+    doc = doc or {}
+    subjects = doc.get("subjects", [])
+    retired = doc.get("retired", {})
     lines = [
         "OPEN-REDS: frame (R12 applied to this screen: what it did not look at, said out loud)",
         f"  register: {register}",
-        f"  {len(checks)} declared check(s): {len(greens)} expected green, {len(reds)} accepted red.",
+        f"  {len(subjects)} subject(s) ever declared = {len(checks)} ruled on now "
+        f"({len(greens)} expected green, {len(reds)} accepted red) + {len(retired)} retired.",
+    ]
+    for ident, rec in sorted(retired.items()):
+        lines.append(f"    RETIRED {ident} — {rec['date']}, {rec['owner']}: {rec['reason']}")
+    lines += [
+        "  A subject cannot leave this register by being deleted; the arithmetic above is",
+        "  checked, because a shrinking denominator and a clean tree printed the same line",
+        "  here once already.",
         "  NOT IN FRAME — any guard that is in neither this register nor a workflow lane. This",
         "  screen rules on colour, not on coverage; ci/lane_inventory.py is the coverage census",
         "  and the two are deliberately separate tools over one tree.",
@@ -347,6 +432,7 @@ def screen(argv: list[str] | None = None) -> int:
     repo = Path(args.repo).resolve()
     try:
         checks = load_register(register)
+        doc = json.loads(register.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         print(f"OPEN-REDS: ERROR(instrument=register_absent): {exc}", file=sys.stderr)
         return EXIT_ERROR_INSTRUMENT
@@ -354,7 +440,7 @@ def screen(argv: list[str] | None = None) -> int:
         print(f"OPEN-REDS: usage: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    print(_frame(checks, register))
+    print(_frame(checks, register, doc))
     print()
 
     if args.list:

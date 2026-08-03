@@ -229,6 +229,15 @@ jobs:
         # today's bytes is green, so it is not a constant.
         run: python ci/negative_control_open_reds.py
 
+      - name: Verification-subject screen (does a check verify itself?)
+        # Mouse's sweep, wired here because it arrived in ci/ at 2832526 in NO workflow
+        # step. ci/check_lane_inventory.py could not see that: it asks whether every
+        # workflow step has a Check, not whether every check has a step, so an unwired
+        # tool is invisible to the coverage census by construction. CHECKED 22,
+        # classified 22, FOUND 0 SELF (13 ARTIFACT, 9 EXTERNAL) — after
+        # gen_proof_ledger.py --check stopped comparing the ledger against itself.
+        run: python ci/check_verification_subjects.py
+
       - name: Open reds (every guard is the colour the register declares)
         # THE POINT OF THIS STEP. Three checks were handed to me that fail in main's own
         # checkout -- audit_instruments --check, ci/test_lane_checks.py, tests/union_check
