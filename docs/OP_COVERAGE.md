@@ -3855,6 +3855,159 @@ leave open because the first one looks closed.
    `ledger_hits: 0` — it exercises the *artifact* path, which the ruling leaves exactly where it
    was.
 
+### 7.21 One key, two digests: a frame mismatch is no longer a key absence (§8.9.19, 2026-08-03)
+
+**Supersedes the claimability column of §7.20(b) and the "declines" half of §7.20(c).**
+`PROVEN-ELSEWHERE` **claims and discloses** as of §8.9.19; it still does not *promote*, which is the
+only thing §8.9.18 withdrew. The rows below replace the table in §7.20(b).
+
+#### (a) The defect was one `continue`
+
+`parse_ledger` compared the entry's `shader_digest` against this build's and, on a mismatch,
+`continue`d — so the entry never entered `Ledger::entries` and `Ledger::get` returned the **same
+`None`** it returns for a form nobody ever proved. A frame mismatch and a key absence were the same
+observation with two different repairs, and only one of them actionable.
+
+That is the whole Linux symptom. Ubuntu ships shaderc 2023.8, the Windows SDK ships v2026.2, the
+SPIR-V differs for byte-identical GLSL, and every one of the 103 entries silently ceased to exist.
+Link proved the cause by perturbing one GLSL template *on Windows* and getting a superset of the
+same failing test names.
+
+#### (b) The schema, which is the generating rule for everything else
+
+* **KEY** = the form. `ProofKey::from_node`, nothing else, ever.
+* **SUBJECT** = what code was proven.
+* **FRAME** = device, driver, `ort_build`, toolchain, tolerance.
+
+Look up by key; compare frame **after**; a subject mismatch means the proof is about something
+else. The device and the toolchain belong to the **entry and the predicate, not to the key** —
+Morpheus correcting his own §8.9.17 wording.
+
+#### (c) Two digests, because no single hash can be sensitive to the kernel and blind to the compiler
+
+`shader_digest` hashes SPIR-V, which is a function of the compiler as much as of the kernel.
+`source_digest` hashes the tree: the variant row, the resolved `#include` closure, the `glslc` argv
+minus the version, and the source body. Their **disagreement** is the instrument.
+
+| `shader_digest` | `source_digest` | `SubjectVerdict` | claimable | counted as |
+|---|---|---|---|---|
+| same | same | `IDENTICAL` | yes | — |
+| **differs** | **same** | `TOOLCHAIN-DELTA` → `PROVEN-ELSEWHERE{toolchain}` | **yes, disclosed** | `proven_elsewhere_claims`, `proven_elsewhere_forms` |
+| differs | differs | `SUBJECT-CHANGED` → `UNPROVEN{SUBJECT-CHANGED}` | no | `subject_changed_declines`, `subject_changed_forms` |
+| same | differs | `SOURCE-COSMETIC` | yes, **named** | `source_cosmetic_forms` |
+| differs | *absent* | `INDETERMINATE` → `UNPROVEN{SUBJECT-CHANGED}` | no | `subject_changed_declines` |
+
+The fifth row is **not in the ruling** and is deliberate. Every entry written before §8.9.19 records
+no `source_digest`, so on a second toolchain the pair cannot be evaluated. Guessing `TOOLCHAIN-DELTA`
+there would grant every legacy entry a claim on a possibly-rewritten kernel; the fail-safe reading is
+the other one, and the decline names `--backfill-frame` as the repair.
+
+The pair is **jointly blind to a compiler bug** — identical source, different SPIR-V, and the
+difference is wrong rather than merely different. That is exactly why row 2 is *disclosed* rather
+than silently promoted.
+
+`source_digest` is **platform-independent by construction**, which is the load-bearing property: both
+platforms compute it from the same tree. The `-I` path is hashed as the literal placeholder
+`-I<include>` and the `-o`/source paths are omitted, because the raw argv holds absolute paths that
+differ between two checkouts of one tree — hashing them would turn the digest into a machine
+fingerprint, the exact failure the ruling forbids.
+
+#### (d) Frame and subject are different axes and a single token can carry only one
+
+`ProofState` is single-valued and the frame verdict outranks a cosmetic subject move. Every entry in
+today's ledger is `DEVICE-UNATTRIBUTED`, so a `source_cosmetic` count taken off the state alone could
+only ever read **zero** — a counter whose only observable value is zero is not an instrument. The
+subject verdict is therefore read off the entry and counted and printed **beside** the state, not
+instead of it. This was found by running the acceptance rather than reasoning about it (see (f)).
+
+#### (e) Entry survival, and the second route back
+
+Only a genuinely **absent** subject — a shader set this build has no modules for — still deletes an
+entry into `entry_faults`. A digest mismatch produces a live entry carrying a `SubjectVerdict`, so
+`Ledger::get` returning `None` again means one thing only.
+
+Moving that population out of `entry_faults` opened a second route to the state the ruling closed:
+`parse_ledger` cross-checks the header's `entry_count` against what it parsed, and a stale count
+would have faulted the **whole file**, re-creating the global decline through a different door.
+`registry::tests::a_surviving_subject_mismatch_does_not_trip_the_declared_count` holds it.
+`Ledger::demotion_count()` (entry faults **plus** subject-changed entries) is what the §8.9.18
+disclosure now reads, for the same reason: sourcing it from `entry_faults.len()` would have made the
+obligation read zero the day entry survival landed.
+
+#### (f) The acceptance, run rather than reasoned about
+
+All on this machine, which has exactly one Vulkan SDK:
+
+* **Comment-only edit to `ew_binary.comp`** → SPIR-V byte-identical, `source_digest` moved, the
+  affected entries read `SOURCE-COSMETIC` on the subject axis, all still claim, `cargo test --lib`
+  green. Row 4 in its positive state, which is the row that proves the pair is being consulted at
+  all. The *state* stayed `DEVICE-UNATTRIBUTED` throughout — which is how (d) was found.
+* **Comment-only edit to `shaders/include/indexing.glsl`** (a *transitive* include) →
+  `ew_binary_add_f32` source digest `c96284dee813bf70` → `c7edca19d8bd7644`, SPIR-V
+  `c9f5eddc2471b772` unchanged. The include closure demonstrated in its positive state.
+* **Code edit to `ew_binary.comp`** → both digests moved, 28 entries read
+  `UNPROVEN{SUBJECT-CHANGED}`, **`entries=103, faults=0`**. Before this change those 28 entries
+  would have been *deleted*. Row 3, and entry survival, in one run.
+* **Row 2 is modelled, and says so.** One SDK is installed, so the second compiler cannot be
+  produced locally. `the_digest_pair_separates_a_second_compiler_from_a_second_kernel` plants the
+  artifact Link's lane presents — a SPIR-V digest this build did not produce beside a source digest
+  read *out of* this build — and asserts the claim is granted with δ=`toolchain`. It also asserts
+  the four rows do not agree with each other, without which every arm could be reading a constant.
+
+#### (g) The ledger carries a frame now
+
+`gen_proof_ledger.py` records `source_digest` and `toolchain` on every new entry and **refuses** to
+write one without them. `--backfill-frame` stamps them onto pre-§8.9.19 entries, and the refusal
+condition is the design: an entry is backfilled **only** when its recorded `shader_digest` equals
+what this build hashes its shader set to right now. That equality is the evidence — the SPIR-V is
+byte-identical, so the source that produced it is this source, and the stamp records a fact rather
+than assuming one. Entries whose SPIR-V has moved are skipped and named; the repair for those is
+`--reprove`, which measures.
+
+All 103 baked entries backfilled with **zero skips**, which is itself a finding: the shipped ledger
+is subject-consistent with the shipped binary. `--check` now fails on a frameless entry from the
+Python side and `every_baked_entry_records_a_frame_that_can_be_compared` from the Rust side.
+
+The digests are read **out of the artifact**, never re-derived in Python: `OrtEpVulkanGetShaderSubject`
+answers `(toolchain, spirv_digest, source_digest)` for an arbitrary stem list. A Python
+re-implementation of the hashing rule would have been a fourth mirror of it, and the mirror that
+agrees the day it is written is the one that silently disagrees three weeks later.
+
+#### (h) What is still open
+
+**Runtime-chosen specialisation values sit outside both digests.** Morpheus named this and
+explicitly did not fix it. The *variant row* — the `-D` defines the build bakes in — is hashed; a
+spec-constant value chosen at dispatch time is not, so two runs that select different specialisation
+constants for the same stem have identical digests and different pipelines. Switch's spec-constant
+selectors are enlarging it. See §7.22.
+
+### 7.22 Residual: runtime specialisation is outside both digests (unowned)
+
+Recorded, not closed, and not silently absorbed.
+
+**What the digests cover.** `source_digest` covers the source closure and the compile-time variant
+row; `shader_digest` covers the SPIR-V the build emitted. Both are fixed at build time. What runs is
+a *pipeline*, and a pipeline is `(SPIR-V, specialisation values, layout)`.
+
+**What I saw.** The instrument for it already exists and I built it last round for a different
+reason: the `pipeline_variants` and `gemv_packed_spec_constant` counters record the effective
+`(shader_stem, spec_constants)` pair handed to `get_or_create`. That is precisely the
+runtime-resolved value the digests miss — the observation exists, the digest does not consume it.
+
+**What closing it would cost.** A third digest is the wrong shape, because the value is not known
+until dispatch and a proof written before the dispatch cannot contain it. The cheap and honest
+version is a **dispatch-time frame witness**: hash the sorted `(stem, spec_constants)` set the run
+actually bound, expose it beside `shaders_dispatched_digest`, and record it in the entry. Then a
+proof taken under one specialisation and replayed under another reads as a frame delta with a name
+rather than as agreement. Estimated cost: the counter already accumulates the pairs, so it is a
+digest over an existing collection, one counters field, one entry field, one `SubjectVerdict`-style
+comparison, and one refusal in the generator — comparable to the `source_digest` work, materially
+smaller because the collection instrument is already there.
+
+**Why I did not do it here.** It is not on the blocking pair and it changes what an entry *means*,
+which is a schema question. It also interacts directly with Switch's selector work, so whoever owns
+it should own both. Nobody owns it today.
+
 ## 8. Quantization
 
 Mandatory, not optional (§3.2). The plan.

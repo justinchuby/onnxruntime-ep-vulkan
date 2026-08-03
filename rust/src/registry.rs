@@ -1919,9 +1919,145 @@ pub struct LedgerEntry {
     /// from the claim table, but a ledger whose entries silently stop describing anything.
     ///
     /// **A proof that cannot be invalidated by changing its subject is not a proof of that
-    /// subject.** Recomputed at parse time; a disagreement demotes this entry and only this
-    /// entry.
+    /// subject.** Recomputed at parse time; a disagreement no longer deletes the entry — see
+    /// [`LedgerEntry::subject`].
     pub shader_digest: String,
+    /// **Subject witness — a digest of those modules' SOURCE CLOSURE** (§8.9.19 part 2).
+    ///
+    /// Toolchain-independent by construction, which is the whole point: `shader_digest` moves
+    /// when `glslc` moves, this one does not, and **their disagreement is the instrument**. Empty
+    /// for an entry written before §8.9.19, which is why [`SubjectVerdict::Indeterminate`] exists.
+    pub source_digest: String,
+    /// **Frame — the shader compiler the proof's SPIR-V was built with** (§8.9.19 part 1).
+    ///
+    /// A FRAME component, never a KEY component. Empty for a pre-§8.9.19 entry.
+    pub toolchain: String,
+    /// How this build's shader set compares with the one the entry was proven against.
+    ///
+    /// Computed at parse time, **recorded on the surviving entry rather than used to delete it**.
+    /// §8.9.19 part 1 names the deletion as the mechanical accident that made the ledger read as
+    /// "keyed per toolchain": `parse_ledger` used to `continue` past a digest mismatch, the entry
+    /// never entered [`Ledger::entries`], and [`Ledger::get`] returned the same `None` it returns
+    /// for a form nobody ever proved — **a frame mismatch was indistinguishable from a key
+    /// absence**, which are different facts with different repairs and only one of them
+    /// actionable.
+    pub subject: SubjectVerdict,
+}
+
+/// One component of the FRAME that differs between an entry and the run reading it (§8.9.19).
+///
+/// A **set**, not a growing enum of combinations: a Linux CI run on lavapipe differs from a
+/// Windows proof in both device and toolchain, and under a per-combination enum that would be a
+/// new status. Under a delta set it is `PROVEN-ELSEWHERE{device, toolchain}` and the reader learns
+/// more, not less.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FrameDelta {
+    /// The entry names a physical device that is not the one this run opened.
+    Device,
+    /// The entry's SPIR-V was produced by a different shader compiler, and the **source closure
+    /// is identical** — so the kernel did not move, only the compiler did.
+    Toolchain,
+    /// The entry names a different ONNX Runtime build.
+    ///
+    /// **Enumerated but never produced today, and that is a stated residual rather than an
+    /// oversight**: the running ORT build is not available to this predicate, so the comparison
+    /// cannot be made. It is in the vocabulary because §8.9.19 names it in δ, and a delta set
+    /// whose members are invented one at a time is how a vocabulary becomes two vocabularies.
+    OrtBuild,
+    /// The entry names a different graphics driver. Same residual as [`FrameDelta::OrtBuild`]:
+    /// the ledger records no driver, so nothing can produce this yet.
+    Driver,
+}
+
+impl FrameDelta {
+    /// The token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            FrameDelta::Device => "device",
+            FrameDelta::Toolchain => "toolchain",
+            FrameDelta::OrtBuild => "ort_build",
+            FrameDelta::Driver => "driver",
+        }
+    }
+}
+
+/// How this build's shader set compares with the set an entry was proven against (§8.9.19).
+///
+/// **The table this implements, and the reason there are two digests.** No single hash can be
+/// sensitive to the kernel and blind to the compiler, because the compiler is a function whose
+/// output is the only thing that actually runs:
+///
+/// | `spirv_digest` | `source_digest` | verdict |
+/// |---|---|---|
+/// | same | same | [`SubjectVerdict::Identical`] — `PROVEN` |
+/// | **differs** | **same** | [`SubjectVerdict::ToolchainDelta`] — **the Linux case**, `PROVEN-ELSEWHERE{toolchain}` |
+/// | differs | differs | [`SubjectVerdict::Changed`] — `UNPROVEN{SUBJECT-CHANGED}` |
+/// | same | differs | [`SubjectVerdict::SourceCosmetic`] — `PROVEN`, **and named** |
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubjectVerdict {
+    /// Both digests agree. The proof is about exactly this code.
+    Identical,
+    /// SPIR-V differs, source closure identical. The compiler moved, not the kernel.
+    ToolchainDelta {
+        /// The SPIR-V digest recorded on the entry.
+        recorded: String,
+        /// What this build's modules hash to.
+        current: String,
+    },
+    /// SPIR-V identical, source closure differs — an edit that produced identical SPIR-V.
+    ///
+    /// Claimable, and **named**: this is the row that proves the pair is doing work rather than
+    /// one digest wearing two hats.
+    SourceCosmetic {
+        /// The source-closure digest recorded on the entry.
+        recorded: String,
+        /// What this build's source closure hashes to.
+        current: String,
+    },
+    /// Both differ. The kernel moved and the proof is about something else.
+    Changed {
+        /// The SPIR-V digest recorded on the entry.
+        recorded_spirv: String,
+        /// What this build's modules hash to.
+        current_spirv: String,
+    },
+    /// The SPIR-V differs and the entry carries **no** `source_digest`, so the two rows that a
+    /// differing SPIR-V could mean cannot be told apart.
+    ///
+    /// **Not claimable, and it must not be**: guessing `ToolchainDelta` here would grant every
+    /// pre-§8.9.19 entry a claim on a kernel that may genuinely have changed. The repair is
+    /// mechanical and stated in the message — `gen_proof_ledger.py --backfill-frame` on a machine
+    /// whose SPIR-V *does* match, which is the only machine that can honestly record what source
+    /// produced those bytes.
+    Indeterminate {
+        /// The SPIR-V digest recorded on the entry.
+        recorded_spirv: String,
+        /// What this build's modules hash to.
+        current_spirv: String,
+    },
+}
+
+impl SubjectVerdict {
+    /// The token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            SubjectVerdict::Identical => "IDENTICAL",
+            SubjectVerdict::ToolchainDelta { .. } => "TOOLCHAIN-DELTA",
+            SubjectVerdict::SourceCosmetic { .. } => "SOURCE-COSMETIC",
+            SubjectVerdict::Changed { .. } => "SUBJECT-CHANGED",
+            SubjectVerdict::Indeterminate { .. } => "SUBJECT-INDETERMINATE",
+        }
+    }
+
+    /// Whether the subject is the same code, whatever compiled it.
+    pub fn same_subject(&self) -> bool {
+        matches!(
+            self,
+            SubjectVerdict::Identical
+                | SubjectVerdict::ToolchainDelta { .. }
+                | SubjectVerdict::SourceCosmetic { .. }
+        )
+    }
 }
 
 /// The parsed ledger plus the header facts a checker needs.
@@ -2018,8 +2154,32 @@ impl Ledger {
         }
         match self.get(key) {
             None => ProofState::Unproven,
-            Some(e) => device_state(&e.device),
+            Some(e) => entry_state(e),
         }
+    }
+
+    /// How many entries this build demoted, whatever the reason.
+    ///
+    /// §8.9.18 obliges the session disclosure to print a demotion count on every run. Once a
+    /// subject mismatch stopped deleting its entry (§8.9.19 part 1), `entry_faults.len()` stopped
+    /// being that number — the entries that survive carrying a `SUBJECT-CHANGED` verdict are
+    /// demotions too, and a count that quietly dropped to zero the day entry survival landed
+    /// would be the obligation being satisfied on paper only.
+    pub fn demotion_count(&self) -> usize {
+        self.entry_faults.len() + self.subject_changed_entries().count()
+    }
+
+    /// Entries whose recorded subject is not this build's code, in either unclaimable flavour.
+    pub fn subject_changed_entries(&self) -> impl Iterator<Item = &LedgerEntry> {
+        self.entries.iter().filter(|e| !e.subject.same_subject())
+    }
+
+    /// Entries whose SPIR-V differs from this build's while the source closure is identical —
+    /// **the Linux population**, counted so a run can say how large its out-of-frame claim is.
+    pub fn toolchain_delta_entries(&self) -> impl Iterator<Item = &LedgerEntry> {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e.subject, SubjectVerdict::ToolchainDelta { .. }))
     }
 
     /// The non-`MATCH` verdict recorded for this key, if the file carried one.    ///
@@ -2101,6 +2261,77 @@ pub fn shader_digest_for(stems: &[&str]) -> Option<String> {
         input.push(0);
     }
     Some(format!("{:016x}", fnv1a64(&input)))
+}
+
+/// Digest the **source closure** of exactly the named shader stems — §8.9.19's second digest.
+///
+/// Per-module source digests are computed by `rust/build.rs` (see its `source_digest_for`, which
+/// states the closure in full: the `.comp` text, every file reachable through the `-I` include
+/// directory, the `shader_variants.txt` row, and the `glslc` argv minus the compiler binary and
+/// its version). This aggregates them over a dispatch set exactly as [`shader_digest_for`]
+/// aggregates SPIR-V bytes, so the two are comparable per entry.
+///
+/// **What makes it useful is what it is blind to**: compiler behaviour entirely — a
+/// miscompilation, an optimiser difference, a codegen bug. That blindness is why a differing
+/// `shader_digest` with an identical `source_digest` reads as *the compiler moved* rather than
+/// *the kernel moved*. The pair is jointly blind to a compiler bug, which is precisely why the
+/// resulting claim is **disclosed rather than silent** (§8.9.19 part 2 residual 1).
+pub fn source_digest_for(stems: &[&str]) -> Option<String> {
+    if stems.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<&str> = stems.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut input: Vec<u8> = Vec::new();
+    for stem in &sorted {
+        input.extend_from_slice(stem.as_bytes());
+        input.push(0);
+        match crate::engine::shaders::source_digest(stem) {
+            Some(d) => input.extend_from_slice(d.as_bytes()),
+            // Same rule as `shader_digest_for`: a stem this build no longer embeds must *move*
+            // the digest, not be skipped into looking current.
+            None => input.extend_from_slice(b"\x01MODULE-ABSENT"),
+        }
+        input.push(0);
+    }
+    Some(format!("{:016x}", fnv1a64(&input)))
+}
+
+/// This build's shader-compiler identity — a FRAME component (§8.9.19 part 1).
+pub fn toolchain_identity() -> &'static str {
+    crate::engine::shaders::toolchain()
+}
+
+/// Compare one entry's recorded subject witnesses against this build's — §8.9.19 part 2's table.
+pub fn subject_verdict(recorded_spirv: &str, recorded_source: &str, stems: &[&str]) -> SubjectVerdict {
+    let current_spirv = shader_digest_for(stems).unwrap_or_default();
+    let current_source = source_digest_for(stems).unwrap_or_default();
+    let spirv_same = current_spirv == recorded_spirv;
+    let source_same = !recorded_source.is_empty() && current_source == recorded_source;
+    match (spirv_same, recorded_source.is_empty()) {
+        // Row 1 and row 4 both have identical SPIR-V. An entry with no recorded source digest
+        // and identical bytes is row 1: the bytes *are* the subject, and they match.
+        (true, true) => SubjectVerdict::Identical,
+        (true, false) if source_same => SubjectVerdict::Identical,
+        (true, false) => SubjectVerdict::SourceCosmetic {
+            recorded: recorded_source.to_string(),
+            current: current_source,
+        },
+        // Differing SPIR-V with no source witness cannot be told from a changed kernel.
+        (false, true) => SubjectVerdict::Indeterminate {
+            recorded_spirv: recorded_spirv.to_string(),
+            current_spirv,
+        },
+        (false, false) if source_same => SubjectVerdict::ToolchainDelta {
+            recorded: recorded_spirv.to_string(),
+            current: current_spirv,
+        },
+        (false, false) => SubjectVerdict::Changed {
+            recorded_spirv: recorded_spirv.to_string(),
+            current_spirv,
+        },
+    }
 }
 
 /// Pull a `"field": ["a", "b"]` array of strings out of a JSON object line.
@@ -2294,28 +2525,27 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
             continue;
         };
         let stems: Vec<&str> = shaders.iter().map(String::as_str).collect();
-        let current_digest = shader_digest_for(&stems);
-        match &current_digest {
-            Some(now) if *now == recorded_digest => {}
-            Some(now) => {
-                demoted.push((key.clone(), "STALE-SHADER".to_string()));
-                entry_faults.push(format!(
-                    "ledger entry for {raw_key:?} was proven against shader digest \
-                     {recorded_digest} but this build's modules {shaders:?} hash to {now}. The \
-                     entry describes a kernel that has been replaced; re-prove it with \
-                     `gen_proof_ledger.py --reprove`."
-                ));
-                continue;
-            }
-            None => {
-                demoted.push((key.clone(), "NO-SUBJECT-WITNESS".to_string()));
-                entry_faults.push(format!(
-                    "ledger entry for {raw_key:?} names an empty shader set; a run that \
-                     dispatched no module has no subject to have proven"
-                ));
-                continue;
-            }
+        let source_digest = json_field(line, "source_digest").unwrap_or_default();
+        // §8.9.19 PART 1 — ENTRY SURVIVAL. A subject-or-frame mismatch **records itself on the
+        // entry and leaves the entry findable**. It used to `continue` here, so the entry never
+        // reached `Ledger::entries`, `Ledger::get` returned `None`, and `lookup_key` reported the
+        // same token it reports for a form nobody ever proved. That is why Linux read as "97
+        // forms were never proven" rather than "97 proofs were obtained under a different
+        // compiler" — a frame mismatch was indistinguishable from a key absence. **The predicate,
+        // not the parser, decides what a mismatch licenses.**
+        //
+        // The one thing that still deletes an entry here is an *absent* subject witness, above:
+        // that is not a mismatch, it is an entry that cannot say what it proved, and there is
+        // nothing for a predicate to compare.
+        if shader_digest_for(&stems).is_none() {
+            demoted.push((key.clone(), "NO-SUBJECT-WITNESS".to_string()));
+            entry_faults.push(format!(
+                "ledger entry for {raw_key:?} names an empty shader set; a run that \
+                 dispatched no module has no subject to have proven"
+            ));
+            continue;
         }
+        let subject = subject_verdict(&recorded_digest, &source_digest, &stems);
         entries.push(LedgerEntry {
             key,
             device: json_field(line, "device").unwrap_or_default(),
@@ -2328,6 +2558,9 @@ pub(crate) fn parse_ledger(source: &str) -> Ledger {
             dispatches_executed,
             shaders,
             shader_digest: recorded_digest,
+            source_digest,
+            toolchain: json_field(line, "toolchain").unwrap_or_default(),
+            subject,
         });
     }
 
@@ -2490,45 +2723,74 @@ pub fn is_selector_ordinal(label: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// What the ledger says about one form **on this device**.
+/// What the ledger says about one form **in this run's frame** — §8.9.19 part 1's status lattice.
 ///
-/// §10.0.1 R12 asked for `PROVEN` / `PROVEN-ELSEWHERE` / `UNPROVEN`. `PROVEN-ELSEWHERE` is **not
-/// implemented here**, and the omission is deliberate rather than unfinished: Fact Checker's audit
-/// holed the argument that licensed it (model-level ULP evidence cannot promote a per-form key
-/// that was never exercised on the second device), so a status meaning "sound on another device"
-/// currently has no instrument standing behind it. Its slot in this enum is
-/// [`ProofState::ProvenElsewhere`], which is **not claimable** — the fail-safe reading —
-/// until Morpheus rules on the refutation. See `docs/OP_COVERAGE.md` §7.20 for the specification
-/// of what it would need.
+/// The generating rule: **you look up by KEY; you compare FRAME after you have looked up; a
+/// SUBJECT mismatch means the proof is about something else.** A frame component in the key turns
+/// "I have a proof that does not apply here" into "I have no proof", and only the first of those
+/// is actionable.
 ///
-/// What *is* implemented is the precondition, and it is the part that had no unresolved ruling
-/// behind it: **`LedgerEntry.device` is now read.** Link found it set on 74 of 75 entries and
-/// consulted by nothing.
+/// `PROVEN-ELSEWHERE` **generalises** rather than acquiring siblings: it carries a **delta set**
+/// δ ⊆ {`device`, `driver`, `ort_build`, `toolchain`} instead of the enum growing as a product of
+/// combinations.
+///
+/// **Claiming is not promoting.** §8.9.18 withdrew `PROVEN-ELSEWHERE`'s licence to be *promoted*
+/// to `PROVEN` by a model run, and that withdrawal stands: nothing here promotes anything. What
+/// §8.9.19 grants is the licence to **claim while saying out loud that the claim is out of
+/// frame**, which is what lets Link's op suite run at all — and the suite is a genuine per-form
+/// differential, so it is what removes the need for the grant. The ruling is self-discharging.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProofState {
-    /// A sound entry exists and names, by physical device name, the device this run opened.
-    /// Claimable.
+    /// A sound entry exists, its subject is this build's code, and its frame is this run's frame.
+    /// Claimable, silently.
     Proven,
-    /// A sound entry exists and names a physical device that is **not** this one.
+    /// A sound entry exists about this exact subject, obtained under a frame that differs in
+    /// **exactly** the components named in `deltas`.
     ///
-    /// **Not claimable.** This is the slot `PROVEN-ELSEWHERE` would occupy. Declining is the
-    /// fail-safe answer and the honest one while its promotion instrument is disputed: a claim
-    /// granted here would be a status claimed without the thing it claims.
-    ProvenElsewhere { proved_on: String },
+    /// **Claimable — counted, disclosed, and δ printed in the run record.** Declining it would
+    /// mean a Linux run declines every form and produces no op-correctness number at all, which
+    /// is the state being unblocked; claiming it silently would be the extrapolation §8.9.17
+    /// refused. So it claims, and it says so.
+    ProvenElsewhere {
+        /// Which frame components differ. Sorted and deduplicated.
+        deltas: Vec<FrameDelta>,
+        /// Human-readable specifics, one clause per delta.
+        detail: String,
+    },
+    /// A sound entry whose SPIR-V is byte-identical to this build's while its **source closure**
+    /// differs — an edit that produced identical compiled output.
+    ///
+    /// **Claimable, and named.** This is the row that demonstrates the digest pair is doing work
+    /// rather than one digest wearing two hats: without the source digest it is indistinguishable
+    /// from `Proven`, and without the SPIR-V digest it is indistinguishable from a kernel change.
+    SourceCosmetic { recorded: String, current: String },
     /// A sound entry exists but **no device comparison is possible**: the entry carries a selector
     /// ordinal (so it names no hardware), or this run has not yet opened a device (so it has no
     /// name to be compared against).
     ///
-    /// **Claimable, counted, and disclosed.** Claimable because every one of the 97 baked entries
-    /// is in this class and declining them would take the EP to zero claims on evidence that is
-    /// not actually in question; counted and disclosed because this is exactly the population the
-    /// ledger cannot attribute to hardware, and an unattributable proof that nothing reports is
-    /// the fail-open Link found wearing a different hat.
+    /// **Claimable, counted, and disclosed.** Claimable because declining it would take the EP to
+    /// zero claims on evidence that is not actually in question; counted and disclosed because
+    /// this is exactly the population the ledger cannot attribute to hardware, and an
+    /// unattributable proof that nothing reports is the fail-open Link found wearing a different
+    /// hat.
     DeviceUnattributed { entry_label: String, reason: &'static str },
+    /// An entry exists and **its subject moved** — both digests differ, so the kernel it proves
+    /// has been replaced. Not claimable.
+    SubjectChanged {
+        /// The SPIR-V digest recorded on the entry.
+        recorded: String,
+        /// What this build's modules hash to.
+        current: String,
+        /// Whether the source closure could be compared at all. `false` is
+        /// [`SubjectVerdict::Indeterminate`]: a pre-§8.9.19 entry whose SPIR-V differs, where
+        /// "different compiler" and "different kernel" cannot be told apart and the fail-safe
+        /// reading is the second one.
+        source_comparable: bool,
+    },
     /// No entry, a demoted one, or a ledger that did not parse. Not claimable.
     ///
     /// **This is the state a missing key lands in and it must stay that way.** No absent key may
-    /// ever reach a device-flavoured state, or the device vocabulary becomes a silent fallback
+    /// ever reach a frame-flavoured state, or the frame vocabulary becomes a silent fallback
     /// rather than a reading of evidence.
     Unproven,
 }
@@ -2539,6 +2801,8 @@ impl ProofState {
         match self {
             ProofState::Proven => "PROVEN",
             ProofState::ProvenElsewhere { .. } => "PROVEN-ELSEWHERE",
+            ProofState::SourceCosmetic { .. } => "SOURCE-COSMETIC",
+            ProofState::SubjectChanged { .. } => "UNPROVEN{SUBJECT-CHANGED}",
             ProofState::DeviceUnattributed { .. } => "DEVICE-UNATTRIBUTED",
             ProofState::Unproven => "UNPROVEN",
         }
@@ -2546,18 +2810,36 @@ impl ProofState {
 
     /// Whether this state admits a claim.
     ///
-    /// Two states decline. `Unproven` because there is no evidence; `ProvenElsewhere`
-    /// because the evidence is about other hardware and the mechanism that would port it is the
-    /// one under dispute.
+    /// Two states decline, and both because the evidence is about **something else** rather than
+    /// somewhere else: `Unproven` (there is none) and `SubjectChanged` (it is about a kernel that
+    /// has been replaced). `ProvenElsewhere` claims — §8.9.19 part 1 — because the alternative is
+    /// that a Linux run declines all 97 forms and produces no op-correctness number at all, and
+    /// because claiming *while disclosing δ* is a strictly more informative act than declining.
     pub fn claimable(&self) -> bool {
         matches!(
             self,
-            ProofState::Proven | ProofState::DeviceUnattributed { .. }
+            ProofState::Proven
+                | ProofState::ProvenElsewhere { .. }
+                | ProofState::SourceCosmetic { .. }
+                | ProofState::DeviceUnattributed { .. }
         )
+    }
+
+    /// The δ set this state carries, empty for every state that is not out of frame.
+    pub fn deltas(&self) -> &[FrameDelta] {
+        match self {
+            ProofState::ProvenElsewhere { deltas, .. } => deltas,
+            _ => &[],
+        }
     }
 }
 
 /// Classify one entry's `device` against the device this run opened.
+///
+/// Kept as its own function because the device question is answerable on its own — the disclosure
+/// layer asks it directly — but it is **no longer the whole predicate**: [`entry_state`] composes
+/// it with the subject verdict, since §8.9.19 makes the toolchain a frame component beside the
+/// device rather than a separate mechanism.
 pub fn device_state(entry_device: &str) -> ProofState {
     if entry_device.is_empty() {
         return ProofState::DeviceUnattributed {
@@ -2583,9 +2865,93 @@ pub fn device_state(entry_device: &str) -> ProofState {
         ProofState::Proven
     } else {
         ProofState::ProvenElsewhere {
-            proved_on: entry_device.to_string(),
+            deltas: vec![FrameDelta::Device],
+            detail: format!(
+                "device: entry proved on `{entry_device}`, this run opened `{}`",
+                running.join("; ")
+            ),
         }
     }
+}
+
+/// Resolve one **entry** to its state — subject first, then frame (§8.9.19 part 1).
+///
+/// Order is the ruling's, not a convenience: a subject mismatch means the proof is about
+/// something else, and no amount of frame agreement rescues that. Only once the subject is
+/// established as this build's code does the frame comparison mean anything.
+pub fn entry_state(entry: &LedgerEntry) -> ProofState {
+    let mut deltas: Vec<FrameDelta> = Vec::new();
+    let mut detail: Vec<String> = Vec::new();
+
+    match &entry.subject {
+        SubjectVerdict::Changed {
+            recorded_spirv,
+            current_spirv,
+        } => {
+            return ProofState::SubjectChanged {
+                recorded: recorded_spirv.clone(),
+                current: current_spirv.clone(),
+                source_comparable: true,
+            };
+        }
+        SubjectVerdict::Indeterminate {
+            recorded_spirv,
+            current_spirv,
+        } => {
+            return ProofState::SubjectChanged {
+                recorded: recorded_spirv.clone(),
+                current: current_spirv.clone(),
+                source_comparable: false,
+            };
+        }
+        SubjectVerdict::ToolchainDelta { recorded, current } => {
+            deltas.push(FrameDelta::Toolchain);
+            detail.push(format!(
+                "toolchain: the entry's SPIR-V hashes to {recorded} and this build's to {current} \
+                 from an identical source closure; entry-toolchain={}, running-toolchain={}",
+                if entry.toolchain.is_empty() {
+                    "<unrecorded>"
+                } else {
+                    &entry.toolchain
+                },
+                toolchain_identity()
+            ));
+        }
+        SubjectVerdict::Identical | SubjectVerdict::SourceCosmetic { .. } => {}
+    }
+
+    let device = device_state(&entry.device);
+    match &device {
+        ProofState::ProvenElsewhere {
+            detail: device_detail,
+            ..
+        } => {
+            deltas.push(FrameDelta::Device);
+            detail.push(device_detail.clone());
+        }
+        ProofState::DeviceUnattributed { .. } if deltas.is_empty() => {
+            // Nothing else is out of frame, so the device's incomparability is the whole finding
+            // and it keeps its own state — that population is counted and named separately.
+            return device;
+        }
+        _ => {}
+    }
+
+    if !deltas.is_empty() {
+        deltas.sort_unstable();
+        deltas.dedup();
+        return ProofState::ProvenElsewhere {
+            deltas,
+            detail: detail.join("; "),
+        };
+    }
+    if let SubjectVerdict::SourceCosmetic { recorded, current } = &entry.subject {
+        return ProofState::SourceCosmetic {
+            recorded: recorded.clone(),
+            current: current.clone(),
+        };
+    }
+    device
 }
 
 /// Resolve one key to its [`ProofState`] on the running device.
@@ -2840,34 +3206,45 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     };
     if spec.is_live() && !ledger_hit && !hatch {
         crate::counters::record_unproven_decline();
-        if let ProofState::ProvenElsewhere { proved_on } = &form_state {
-            crate::counters::record_proven_elsewhere_decline(&proof_key.0, proved_on);
-            failures.push(decline(
-                DeclineCode::Unproven,
-                format_args!(
-                    "the proof ledger entry for `{}` was obtained on `{}`, and this run opened \
-                     `{}`. A proof is a property of a form on a device (§10.0.1 R12), so this \
-                     entry is evidence about other hardware and it runs on the CPU EP. There is \
-                     no PROVEN-ELSEWHERE status to claim: the instrument that would promote a \
-                     per-form key onto a second device is disputed (docs/OP_COVERAGE.md §7.20). \
-                     Prove it here with rust/tools/gen_proof_ledger.py --append, which replays \
-                     the recorded per-form case artifact on this device.",
-                    proof_key.0,
-                    proved_on,
-                    running_device_names().join(", ")
-                ),
-            ));
-        } else {
-            failures.push(decline(
-                DeclineCode::Unproven,
-                format_args!(
-                    "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
-                     correct on this form, so it runs on the CPU EP, which is always right. Prove \
-                     it with rust/tools/gen_proof_ledger.py, or enable it for development with \
-                     ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
-                    proof_key.0, proof_key.0
-                ),
-            ));
+        match &form_state {
+            ProofState::SubjectChanged {
+                recorded,
+                current,
+                source_comparable,
+            } => {
+                crate::counters::record_subject_changed_decline(&proof_key.0);
+                let why = if *source_comparable {
+                    "both the SPIR-V and the source closure differ, so the kernel itself moved"
+                } else {
+                    "the SPIR-V differs and the entry records no source_digest, so `different \
+                     compiler` and `different kernel` cannot be told apart — the fail-safe \
+                     reading is the second. Backfill the entry's frame on a machine whose SPIR-V \
+                     does match, with `gen_proof_ledger.py --backfill-frame`"
+                };
+                failures.push(decline(
+                    DeclineCode::Unproven,
+                    format_args!(
+                        "the proof ledger entry for `{}` was obtained against shader digest \
+                         {recorded} and this build's modules hash to {current}: {why}. A proof \
+                         that survives a change to its subject is not a proof of that subject \
+                         (§8.9.19), so this form runs on the CPU EP. Re-prove it with \
+                         rust/tools/gen_proof_ledger.py --reprove.",
+                        proof_key.0
+                    ),
+                ));
+            }
+            _ => {
+                failures.push(decline(
+                    DeclineCode::Unproven,
+                    format_args!(
+                        "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
+                         correct on this form, so it runs on the CPU EP, which is always right. \
+                         Prove it with rust/tools/gen_proof_ledger.py, or enable it for \
+                         development with ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
+                        proof_key.0, proof_key.0
+                    ),
+                ));
+            }
         }
     }
 
@@ -2892,13 +3269,42 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     // claim and named per form in the session disclosure. A field that changes no outcome and
     // appears in no artifact is the thing being repaired; a field that appears in every artifact
     // is not that thing, even while it changes no outcome yet.
-    if failures.is_empty()
-        && let ProofState::DeviceUnattributed {
-            entry_label,
-            reason,
-        } = &form_state
-    {
-        crate::counters::record_device_unattributed(&proof_key.0, entry_label, reason);
+    if failures.is_empty() {
+        match &form_state {
+            ProofState::DeviceUnattributed {
+                entry_label,
+                reason,
+            } => crate::counters::record_device_unattributed(&proof_key.0, entry_label, reason),
+            // §8.9.19: a claim granted out of frame is counted and named at the moment it is
+            // granted. This is the counter that used to be `proven_elsewhere_declines` and could
+            // only ever read zero on a healthy run — a counter whose only observable value is
+            // zero is not an instrument.
+            ProofState::ProvenElsewhere { deltas, detail } => {
+                let delta_tokens: Vec<&str> = deltas.iter().map(FrameDelta::token).collect();
+                crate::counters::record_proven_elsewhere_claim(
+                    &proof_key.0,
+                    &delta_tokens.join(","),
+                    detail,
+                );
+            }
+            ProofState::SourceCosmetic { recorded, current } => {
+                crate::counters::record_source_cosmetic_claim(&proof_key.0, recorded, current);
+            }
+            _ => {}
+        }
+        // THE SUBJECT AXIS IS RECORDED WHATEVER THE FRAME AXIS SAID.
+        //
+        // `ProofState` is single-valued and the frame verdict outranks a cosmetic subject move,
+        // so on today's ledger — every entry device-unattributed — the arm above can never run
+        // and `source_cosmetic_claims` would read zero forever. §8.9.19 names row 4 as the row
+        // that demonstrates the digest *pair* is working, so it cannot be observable only in a
+        // ledger state that does not exist yet.
+        if !matches!(form_state, ProofState::SourceCosmetic { .. })
+            && let Some(entry) = ledger().get(&proof_key)
+            && let SubjectVerdict::SourceCosmetic { recorded, current } = &entry.subject
+        {
+            crate::counters::record_source_cosmetic_claim(&proof_key.0, recorded, current);
+        }
     }
 
     ClaimAudit {
@@ -2963,6 +3369,164 @@ pub fn compile_hook_for(desc: &NodeDesc) -> Option<CompileHook> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The ledger that ships must carry a frame the build that ships can compare.**
+    ///
+    /// `SubjectVerdict::Indeterminate` is the reading for an entry whose SPIR-V moved and which
+    /// records no `source_digest` — every entry written before §8.9.19. On a second toolchain
+    /// that reading is a decline, and it is indistinguishable from a rewritten kernel. This is
+    /// the guard against the baked ledger drifting back into that state through a hand edit or a
+    /// generator that forgets the field; `gen_proof_ledger.py --check` enforces the same thing
+    /// from the other side.
+    #[test]
+    fn every_baked_entry_records_a_frame_that_can_be_compared() {
+        let l = ledger();
+        let frameless: Vec<&str> = l
+            .entries()
+            .iter()
+            .filter(|e| e.source_digest.is_empty() || e.toolchain.is_empty())
+            .map(|e| e.key.0.as_str())
+            .collect();
+        assert!(
+            frameless.is_empty(),
+            "{} baked entr(ies) carry no source_digest/toolchain. On any compiler but the one \
+             that wrote them they read as SUBJECT-CHANGED and decline, which is the Linux \
+             symptom §8.9.19 exists to remove. Repair: rust/tools/gen_proof_ledger.py \
+             --backfill-frame. Offenders: {:?}",
+            frameless.len(),
+            &frameless[..frameless.len().min(5)]
+        );
+    }
+
+    /// **§8.9.19 row 2, the Linux case, in the state that unblocks it.**
+    ///
+    /// Ubuntu's shaderc 2023.8 and the Windows SDK's v2026.2 emit different SPIR-V for identical
+    /// GLSL. This machine has exactly one SDK, so the second compiler is *modelled*: the recorded
+    /// SPIR-V digest is one a different compiler produced and the recorded source digest is this
+    /// tree's, which is precisely the artifact Link's Linux lane presents. Every other value here
+    /// is real — the source digest is read out of this build, not written down.
+    ///
+    /// The three rows are asserted against each other in one test on purpose. A row asserted
+    /// alone passes whenever the predicate collapses to a constant; what makes the *pair* of
+    /// digests an instrument is that the four combinations do not agree.
+    #[test]
+    fn the_digest_pair_separates_a_second_compiler_from_a_second_kernel() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let this_spirv = shader_digest_for(&["ew_binary_add_f32"]).expect("a stem to digest");
+        let this_source = source_digest_for(&["ew_binary_add_f32"]).expect("a stem to digest");
+        let build = |spirv: &str, source: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{spirv}\",\
+                 \"source_digest\":\"{source}\",\"toolchain\":\"shaderc 2023.8\",\
+                 \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            );
+            let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}\n{entry}\n"
+            ))
+        };
+        const OTHER: &str = "dead0000dead0000";
+
+        // Row 1 — both agree.
+        let same = build(&this_spirv, &this_source);
+        assert!(same.state_for(&key).claimable(), "{:?}", same.state_for(&key));
+        assert!(matches!(
+            same.get(&key).expect("entry").subject,
+            SubjectVerdict::Identical
+        ));
+
+        // Row 2 — SPIR-V moved, source did not. THE LINUX CASE.
+        let toolchain = build(OTHER, &this_source);
+        let state = toolchain.state_for(&key);
+        assert!(
+            state.claimable(),
+            "§8.9.19: a proof taken under a different compiler is a proof of THIS kernel; \
+             declining it is what left Linux with no op-correctness number at all. state={state:?}"
+        );
+        assert_eq!(
+            state.deltas(),
+            vec![FrameDelta::Toolchain],
+            "the claim is granted out of frame, so the δ has to be nameable — an undisclosed \
+             out-of-frame claim is the trade §8.9.17 refused. state={state:?}"
+        );
+
+        // Row 3 — both moved. The kernel itself is a different kernel.
+        let changed = build(OTHER, OTHER);
+        assert!(
+            !changed.state_for(&key).claimable(),
+            "both digests moved and the form still claimed: {:?}",
+            changed.state_for(&key)
+        );
+        assert!(matches!(
+            changed.state_for(&key),
+            ProofState::SubjectChanged {
+                source_comparable: true,
+                ..
+            }
+        ));
+
+        // Row 4 — SPIR-V identical, source moved. Cosmetic, claimable, and NAMED.
+        let cosmetic = build(&this_spirv, OTHER);
+        assert!(cosmetic.state_for(&key).claimable());
+        assert!(
+            matches!(
+                cosmetic.get(&key).expect("entry").subject,
+                SubjectVerdict::SourceCosmetic { .. }
+            ),
+            "row 4 has to be distinguishable from row 1, or the source digest is being consulted \
+             only when it agrees — which is not consulting it"
+        );
+
+        // The rows must not agree with each other. Without this the four arms above could all be
+        // reading a predicate that returns the same thing and the test would still pass.
+        let tokens = [
+            same.state_for(&key).token(),
+            toolchain.state_for(&key).token(),
+            changed.state_for(&key).token(),
+        ];
+        assert_eq!(
+            tokens.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            3,
+            "three different frames produced the same verdict {tokens:?}; the digest pair is not \
+             an instrument"
+        );
+    }
+
+    /// **The second route back to the state §8.9.19 part 1 closed.**
+    ///
+    /// Entry survival moved subject-mismatched entries out of `entry_faults` and into `entries`,
+    /// and `parse_ledger` cross-checks the header's `entry_count` against what it parsed. If that
+    /// arithmetic still counted the two populations the old way, a ledger with one drifted entry
+    /// would fault as a WHOLE FILE — re-creating, through a second path, exactly the global
+    /// decline the ruling removed. Same shape as the defect that caused it: a second route to a
+    /// state you thought you had closed.
+    #[test]
+    fn a_surviving_subject_mismatch_does_not_trip_the_declared_count() {
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let entry = format!(
+            "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+             \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+             \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"0000000000000000\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+        );
+        let d = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+        let l = parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{entry}\n"
+        ));
+        assert!(
+            l.faults.is_empty(),
+            "a declared-count mismatch faulted the whole artifact over one drifted entry: {:?}",
+            l.faults
+        );
+        assert_eq!(l.len() + l.entry_faults.len(), 1, "the populations must still sum to 1");
+        assert!(!l.state_for(&key).claimable());
+    }
 
     #[test]
     fn no_live_row_lacks_a_shader_or_dispatch_path() {
@@ -3668,16 +4232,22 @@ mod tests {
         assert_eq!(
             there.state_for(&key),
             ProofState::ProvenElsewhere {
-                proved_on: IRIS.to_string()
+                deltas: vec![FrameDelta::Device],
+                detail: format!("device: entry proved on `{IRIS}`, this run opened `{NV}`"),
             },
             "an entry proven on other hardware must say so — this is the fail-open Link found: \
              before this predicate existed, both readings answered the same"
         );
         assert!(
-            !there.state_for(&key).claimable(),
-            "a proof obtained on other hardware does not admit a claim here. PROVEN-ELSEWHERE \
-             would be the state that does, and it is not implemented: the instrument that would \
-             promote a per-form key onto second hardware is disputed (OP_COVERAGE §7.20)"
+            there.state_for(&key).claimable(),
+            "§8.9.19 turned this from a decline into a disclosed claim: declining it is what made \
+             a run outside the proving frame produce no op-correctness number at all. It claims, \
+             and the δ set says out loud what moved"
+        );
+        assert_eq!(
+            there.state_for(&key).deltas(),
+            &[FrameDelta::Device],
+            "the δ set names exactly the component that differs, and no others"
         );
 
         // Never a silent fallback on a miss: an absent key may not reach a device-flavoured state.
@@ -3750,13 +4320,25 @@ mod tests {
         assert!(!is_selector_ordinal("device0 (NVIDIA)"));
     }
 
-    /// The token vocabulary is four tokens, and they are distinct.
+    /// The token vocabulary is six tokens, and they are distinct.
     #[test]
     fn proof_state_tokens_are_distinct_strings() {
         let tokens = [
             ProofState::Proven.token(),
             ProofState::ProvenElsewhere {
-                proved_on: "device9".to_string(),
+                deltas: vec![FrameDelta::Toolchain],
+                detail: "d".to_string(),
+            }
+            .token(),
+            ProofState::SourceCosmetic {
+                recorded: "a".to_string(),
+                current: "b".to_string(),
+            }
+            .token(),
+            ProofState::SubjectChanged {
+                recorded: "a".to_string(),
+                current: "b".to_string(),
+                source_comparable: true,
             }
             .token(),
             ProofState::DeviceUnattributed {
@@ -3769,13 +4351,25 @@ mod tests {
         let mut sorted = tokens.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 4, "two states share a spelling: {tokens:?}");
+        assert_eq!(sorted.len(), 6, "two states share a spelling: {tokens:?}");
         assert!(!ProofState::Unproven.claimable());
         assert!(
-            !ProofState::ProvenElsewhere {
-                proved_on: "d".to_string()
+            !ProofState::SubjectChanged {
+                recorded: "a".to_string(),
+                current: "b".to_string(),
+                source_comparable: true,
             }
-            .claimable()
+            .claimable(),
+            "a subject that moved is a proof about other code, and no amount of frame agreement \
+             rescues that"
+        );
+        assert!(
+            ProofState::ProvenElsewhere {
+                deltas: vec![FrameDelta::Toolchain],
+                detail: "d".to_string(),
+            }
+            .claimable(),
+            "§8.9.19: out of frame claims, and discloses δ"
         );
     }
 
@@ -3843,13 +4437,18 @@ mod tests {
         }
     }
 
-    /// **§8.9.11, both polarities.** An entry proven against the shaders in this build claims; the
-    /// *same* entry with one byte of its subject changed does not — and it demotes itself alone
-    /// rather than faulting every other form.
+    /// **§8.9.11 and §8.9.19 part 1 together, all polarities.** An entry proven against the
+    /// shaders in this build claims; the *same* entry with one byte of its subject changed does
+    /// not — and it **survives parsing** so that "proven about other code" stays distinguishable
+    /// from "never proven".
     ///
     /// R10: the falsifier varies with the input. Two ledgers differing only in the digest produce
     /// two outcomes. Without the second arm this would be a check that passes because nothing ever
     /// disagrees with it, which is the shape that let the GQA entry survive two shader rewrites.
+    ///
+    /// The `is_none()` this test used to assert was the §8.9.19 defect in test form: it demanded
+    /// that a subject mismatch be **indistinguishable from a key absence**, which is exactly what
+    /// made a Linux run read as "97 forms were never proven".
     #[test]
     fn an_entry_whose_shader_changed_stops_proving_its_form() {
         const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
@@ -3875,24 +4474,36 @@ mod tests {
             fresh.get(&key).is_some(),
             "an entry proven against this build's shaders must claim"
         );
+        assert!(fresh.state_for(&key).claimable());
 
         let stale = build("0000000000000000");
         assert!(
-            stale.get(&key).is_none(),
-            "an entry proven against a shader this build no longer contains still claimed. The \
-             key stayed equal while the kernel was replaced, which is the whole defect."
-        );
-        assert_eq!(
-            stale.demotion_for(&key),
-            Some("STALE-SHADER"),
-            "a stale entry must be distinguishable from one that was never measured and from one \
-             measured and found DIVERGENT; demoted={:?}",
-            stale.demoted
+            stale.get(&key).is_some(),
+            "§8.9.19 part 1: the entry must SURVIVE its mismatch. Deleting it is what made a \
+             frame mismatch indistinguishable from a key absence — two different facts with two \
+             different repairs, and only one of them actionable."
         );
         assert!(
-            stale.entry_faults.iter().any(|f| f.contains("--reprove")),
-            "the fault must name the remedy, not merely the condition: {:?}",
-            stale.entry_faults
+            !stale.state_for(&key).claimable(),
+            "surviving is not claiming: the predicate, not the parser, refuses. state={:?}",
+            stale.state_for(&key)
+        );
+        assert!(
+            matches!(
+                stale.state_for(&key),
+                ProofState::SubjectChanged {
+                    source_comparable: false,
+                    ..
+                }
+            ),
+            "an entry with no source_digest whose SPIR-V differs cannot say whether the compiler \
+             or the kernel moved, and the fail-safe reading is the kernel: {:?}",
+            stale.state_for(&key)
+        );
+        assert_eq!(
+            stale.demotion_count(),
+            1,
+            "a demotion the disclosure cannot count is a proof that silently stopped existing"
         );
         assert!(
             stale.faults.is_empty(),
@@ -3903,8 +4514,8 @@ mod tests {
 
         // arms_must_differ, stated rather than implied.
         assert_ne!(
-            fresh.get(&key).is_some(),
-            stale.get(&key).is_some(),
+            fresh.state_for(&key).claimable(),
+            stale.state_for(&key).claimable(),
             "both arms reached the same outcome; the digest is not being read"
         );
     }
@@ -3942,16 +4553,14 @@ mod tests {
 
         // Non-vacuity: the stale entry must actually be detected, or "the other one still
         // claims" is the trivial statement that nothing went wrong.
-        assert_eq!(
-            l.demotion_for(&stale_key),
-            Some("STALE-SHADER"),
-            "ERROR(instrument): the stale entry was not detected, so the blast-radius assertion \
-             below is vacuous: entry_faults={:?}",
-            l.entry_faults
-        );
-        assert!(l.get(&stale_key).is_none(), "the stale entry still claims");
         assert!(
-            l.get(&sound_key).is_some(),
+            !l.state_for(&stale_key).claimable(),
+            "ERROR(instrument): the stale entry was not detected, so the blast-radius assertion \
+             below is vacuous: state={:?}",
+            l.state_for(&stale_key)
+        );
+        assert!(
+            l.state_for(&sound_key).claimable(),
             "a sound entry stopped proving because a DIFFERENT entry was stale — one shader edit \
              disarming the whole artifact is the 2026-08-02 defect: faults={:?} entry_faults={:?}",
             l.faults,
@@ -3963,10 +4572,9 @@ mod tests {
             l.faults
         );
         assert_eq!(
-            l.len(),
+            l.subject_changed_entries().count(),
             1,
-            "the surviving entry set is not the one entry that is sound: {:?}",
-            l.entries()
+            "exactly one entry's subject moved, and it must be locatable rather than merely gone"
         );
     }
 

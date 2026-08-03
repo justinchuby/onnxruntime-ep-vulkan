@@ -622,6 +622,20 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         # digest, both taken from the EP's own dispatch record rather than re-derived here.
         "shaders_dispatched": c.get("shaders_dispatched", []),
         "shaders_dispatched_digest": c.get("shaders_dispatched_digest", ""),
+        # §8.9.19 FRAME WITNESSES — the toolchain-independent subject digest, and the toolchain.
+        #
+        # `shaders_dispatched_digest` hashes SPIR-V, which is a function of the *compiler* as
+        # much as of the kernel. Ubuntu's shaderc 2023.8 and the Windows SDK's v2026.2 emit
+        # different words for identical GLSL, so on that digest alone a Linux run is
+        # indistinguishable from a rewritten kernel. The source digest is computed from the tree
+        # — variant row, include closure, argv minus version — so it is the same number on both
+        # platforms, and the *disagreement* between the two is what names the toolchain.
+        #
+        # Both are read off the artifact, never recomputed here. A Python re-derivation of the
+        # hashing rule would be a fourth mirror of it, and the mirror that agrees the day it is
+        # written is the one that silently disagrees three weeks later.
+        "shaders_dispatched_source_digest": c.get("shaders_dispatched_source_digest", ""),
+        "shader_toolchain": c.get("shader_toolchain", ""),
         # §8.9.14 input witness — how many inferences this measurement is made of. One is what
         # makes the entry immune to input-cache staleness; the entry records the number so a
         # future multi-inference case cannot inherit that immunity by looking the same.
@@ -668,6 +682,8 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     compute_calls = proof_run.get("compute_calls")
     shaders = sorted(proof_run.get("shaders_dispatched") or [])
     shader_digest = proof_run.get("shaders_dispatched_digest") or ""
+    source_digest = proof_run.get("shaders_dispatched_source_digest") or ""
+    toolchain = proof_run.get("shader_toolchain") or ""
     # THE DEVICE FIELD MUST NAME HARDWARE, NOT A REQUEST (2026-08-02, Mouse).
     #
     # `device` as passed in is `device{N}` — the *selector ordinal*, which is what the caller
@@ -722,6 +738,27 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             f"digest={shader_digest!r}. Without a subject witness the entry would outlive the "
             f"kernel it proves. This is an instrument gap, not a licence to write the entry."
         )
+    # §8.9.19 — A FRAME THE ENTRY DOES NOT RECORD IS A FRAME NOBODY CAN COMPARE.
+    #
+    # Before this field existed, an entry proved on Windows read as `SUBJECT-CHANGED` on Linux
+    # and there was no way for the predicate to tell that from a genuinely rewritten kernel — the
+    # SPIR-V digest is the only subject witness and the compiler moves it. An entry written
+    # *now* without a source digest would inherit exactly that ambiguity, so it is refused rather
+    # than written and explained later.
+    if not source_digest or source_digest == "NONE-DISPATCHED":
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the run reported "
+            f"source_digest={source_digest!r}. Without a toolchain-independent subject witness "
+            f"this entry reads as SUBJECT-CHANGED on any other compiler and cannot be told from "
+            f"a rewritten kernel. Build with a glslc present, or say what a frameless proof "
+            f"means first."
+        )
+    if not toolchain or toolchain == "UNKNOWN":
+        raise SystemExit(
+            f"REFUSING to write an entry for {key}: the run reported "
+            f"toolchain={toolchain!r}. The frame this proof was taken in has to be nameable or "
+            f"the delta against a second toolchain cannot be printed."
+        )
     return json.dumps(
         {
             "key": key,
@@ -739,6 +776,9 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             # --- subject provenance: what code this proof is about (§8.9.11) ---
             "shaders": shaders,
             "shader_digest": shader_digest,
+            # --- frame: what compiled that code, and what the tree said it was (§8.9.19) ---
+            "source_digest": source_digest,
+            "toolchain": toolchain,
             # --- input provenance: how many inferences this proof is made of (§8.9.14) ---
             **({} if compute_calls is None else {"compute_calls": int(compute_calls)}),
             "worst_rel": float(proof_run.get("worst_rel", 0.0)),
@@ -903,12 +943,137 @@ def check_ledger(path: pathlib.Path) -> int:
                 f"entry {key} carries no shader digest ({digest_field!r}); the entry would "
                 f"outlive its subject"
             )
+        # §8.9.19: frame provenance. An entry with a SPIR-V digest and no source digest is not
+        # merely less informative — on a second toolchain it is *indistinguishable* from an
+        # entry whose kernel was rewritten, which is the exact ambiguity this ruling exists to
+        # remove. Checking it here closes the hand-edit route back into that state.
+        source_field = e.get("source_digest")
+        if not isinstance(source_field, str) or not source_field:
+            failures.append(
+                f"entry {key} carries no source_digest; on any other toolchain it reads as "
+                f"SUBJECT-CHANGED and cannot be told from a rewritten kernel "
+                f"(rust/tools/gen_proof_ledger.py --backfill-frame)"
+            )
+        if not isinstance(e.get("toolchain"), str) or not e.get("toolchain"):
+            failures.append(
+                f"entry {key} names no toolchain; the frame delta against a second compiler "
+                f"cannot be printed (rust/tools/gen_proof_ledger.py --backfill-frame)"
+            )
     if failures:
         print(f"FAIL(condition=LEDGER_INVALID): {path}")
         for f in failures:
             print(f"  - {f}")
         return 1
     print(f"PASS: {path} — {len(lines) - 1} entr(ies), digest {digest}")
+    return 0
+
+
+def _shader_subject(lib: pathlib.Path, stems: list[str]) -> dict:
+    """Ask the built EP what *it* hashes `stems` to. Never re-derive it here.
+
+    Returns a dict with `toolchain` and whichever of `spirv_digest`/`source_digest` this build
+    could form. A missing key means the build has no such module — which is a finding, not a
+    default, so it is left missing rather than filled with `""`.
+    """
+    import ctypes
+
+    dll = ctypes.CDLL(str(lib))
+    fn = dll.OrtEpVulkanGetShaderSubject
+    fn.restype = ctypes.c_size_t
+    fn.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
+    arg = ",".join(stems).encode("utf-8")
+    n = fn(arg, None, 0)
+    buf = ctypes.create_string_buffer(n + 1)
+    fn(arg, buf, n)
+    out = {}
+    for line in buf.raw[:n].decode("utf-8", "replace").splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def backfill_frame(path: pathlib.Path, lib: pathlib.Path) -> int:
+    """Stamp `source_digest`/`toolchain` onto entries proven before those fields existed.
+
+    WHY THIS IS RECORDING A FACT AND NOT GUESSING ONE
+    -------------------------------------------------
+    The refusal condition is the whole design: an entry is backfilled **only** when its recorded
+    `shader_digest` equals what this build hashes its shader set to *right now*. That equality is
+    itself the evidence — the SPIR-V this entry was proven against is byte-identical to the SPIR-V
+    this tree produces, so the source that produced it is this source, and stamping this build's
+    source digest records something already known rather than assuming it.
+
+    An entry whose SPIR-V has moved is exactly the entry nobody can speak for: it might be a
+    rewritten kernel or it might be a second compiler, and backfilling it would *manufacture* the
+    `PROVEN-ELSEWHERE` reading for a form that may genuinely have changed. Those are skipped and
+    named, and the remedy for them is `--reprove`, which measures instead of asserting.
+    """
+    if not lib.is_file():
+        print(f"FAIL(condition=NO_ARTIFACT): {lib} does not exist; build the EP first")
+        return 1
+    raw = [x.rstrip("\n") for x in path.read_text(encoding="utf-8").splitlines()]
+    body = [l for l in raw if l.strip() and not l.strip().startswith("#")]
+    if not body:
+        print(f"FAIL(condition=LEDGER_EMPTY): {path}")
+        return 1
+    header, entries = body[0], body[1:]
+
+    stamped, already, skipped = 0, 0, []
+    rewritten: list[str] = []
+    for line in entries:
+        e = json.loads(line)
+        if e.get("source_digest") and e.get("toolchain"):
+            already += 1
+            rewritten.append(line)
+            continue
+        stems = sorted(e.get("shaders") or [])
+        subject = _shader_subject(lib, stems)
+        recorded = e.get("shader_digest") or ""
+        current = subject.get("spirv_digest")
+        if current is None:
+            skipped.append(f"{e['key']}: this build has no module for {stems}")
+            rewritten.append(line)
+            continue
+        if current != recorded:
+            skipped.append(
+                f"{e['key']}: recorded spirv_digest {recorded} != this build's {current}; the "
+                f"subject may genuinely have changed, so its frame cannot be asserted — "
+                f"--reprove it"
+            )
+            rewritten.append(line)
+            continue
+        source = subject.get("source_digest")
+        if not source:
+            skipped.append(f"{e['key']}: this build formed no source digest for {stems}")
+            rewritten.append(line)
+            continue
+        e["source_digest"] = source
+        e["toolchain"] = subject.get("toolchain", "")
+        if not e["toolchain"] or e["toolchain"] == "UNKNOWN":
+            skipped.append(f"{e['key']}: this build cannot name its toolchain")
+            rewritten.append(line)
+            continue
+        rewritten.append(json.dumps(e, separators=(",", ":"), sort_keys=True))
+        stamped += 1
+
+    if stamped == 0 and not skipped:
+        print(f"PASS: {path} — every entry already carries a frame ({already})")
+        return 0
+
+    body_text = "\n".join(rewritten) + "\n"
+    hdr = json.loads(header)
+    hdr["content_fnv1a64"] = f"{fnv1a64(body_text.encode('utf-8')):016x}"
+    hdr["entry_count"] = len(rewritten)
+    path.write_text(
+        json.dumps(hdr, separators=(",", ":"), sort_keys=True) + "\n" + body_text,
+        encoding="utf-8",
+    )
+    print(f"backfilled {stamped} entr(ies); {already} already framed; {len(skipped)} skipped")
+    for s in skipped:
+        print(f"  - SKIP {s}")
+    # Skips are reported, not fatal: a partially framed ledger is strictly better than an
+    # unframed one, and `--check` will fail on whatever is still missing so it cannot be lost.
     return 0
 
 
@@ -935,6 +1100,19 @@ def main() -> int:
              "against the kernel it names and silently outlives it (§8.9.11).",
     )
     ap.add_argument("--check", action="store_true")
+    ap.add_argument(
+        "--backfill-frame",
+        action="store_true",
+        help="stamp source_digest/toolchain (§8.9.19) onto entries proven before those fields "
+             "existed, ONLY where the recorded shader_digest still matches this build's — the "
+             "match is the evidence that the subject is unchanged. Entries whose SPIR-V has "
+             "moved are skipped and named; --reprove them instead.",
+    )
+    ap.add_argument(
+        "--lib",
+        default=os.environ.get("ONNXRUNTIME_VULKAN_EP_LIB", ""),
+        help="path to the built EP, used by --backfill-frame to ask the artifact for its digests",
+    )
     ap.add_argument("--rtol", type=float, default=1e-3)
     ap.add_argument("--atol", type=float, default=1e-5)
     ap.add_argument("--device", default=os.environ.get("ONNXRUNTIME_EP_VULKAN_DEVICE", "0"))
@@ -942,6 +1120,21 @@ def main() -> int:
     args = ap.parse_args()
 
     out = pathlib.Path(args.out)
+    if args.backfill_frame:
+        lib = args.lib
+        if not lib:
+            cands = sorted(
+                (REPO / "rust" / "target" / "debug").glob("*onnxruntime_vulkan_ep*")
+            ) + sorted((REPO / "rust" / "target" / "release").glob("*onnxruntime_vulkan_ep*"))
+            cands = [c for c in cands if c.suffix in (".dll", ".so", ".dylib")]
+            if not cands:
+                print(
+                    "ERROR(instrument): no built EP found; pass --lib or set "
+                    "ONNXRUNTIME_VULKAN_EP_LIB"
+                )
+                return 3
+            lib = str(cands[0])
+        return backfill_frame(out, pathlib.Path(lib))
     if args.check:
         return check_ledger(out)
 

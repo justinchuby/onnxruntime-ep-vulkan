@@ -64,12 +64,22 @@ pub enum FormEvidence {
     /// `Divergent` are two: the reader's action differs. A divergence seen on new hardware
     /// suspects this list first, and today this list is *every* form.
     DeviceUnattributed(&'static LedgerEntry, &'static str),
-    /// The ledger holds a sound `MATCH` obtained on a **named other device**. Not claimed.
+    /// The ledger holds a sound `MATCH` about **this exact subject**, obtained in a frame that
+    /// differs in exactly the components named. **Claimed, and disclosed with its δ set.**
     ///
-    /// This is the slot §10.0.1 R12's `PROVEN-ELSEWHERE` would occupy. It declines while the
-    /// instrument that would promote a per-form key onto second hardware is disputed — see
-    /// `docs/OP_COVERAGE.md` §7.20.
-    ProvenElsewhere(&'static LedgerEntry),
+    /// §8.9.19 part 1. It stopped being a decline because declining it meant a Linux run declined
+    /// every form and produced no op-correctness number at all — and because claiming *while
+    /// naming which frame components moved* is strictly more informative than refusing.
+    ProvenElsewhere(&'static LedgerEntry, Vec<registry::FrameDelta>, String),
+    /// The ledger holds a sound `MATCH` whose SPIR-V is byte-identical to this build's and whose
+    /// **source closure** differs. Claimed, and **named** — §8.9.19's fourth row.
+    SourceCosmetic(&'static LedgerEntry, String, String),
+    /// An entry exists and its **subject moved**: the kernel it proves has been replaced, or its
+    /// SPIR-V differs with no `source_digest` to say which. Not claimed.
+    ///
+    /// Before §8.9.19 this population could not be disclosed at all, because the entry was
+    /// deleted at parse time and the form read as `UNMEASURED`.
+    SubjectChanged(&'static LedgerEntry, String, String, bool),
     /// No entry under this key. Nothing has ever compared this form against the CPU EP.
     Unmeasured,
     /// An entry exists and its verdict is not `MATCH`. Carries that verdict verbatim.
@@ -84,7 +94,9 @@ impl FormEvidence {
         match self {
             FormEvidence::Proven(_) => "PROVEN",
             FormEvidence::DeviceUnattributed(..) => "DEVICE-UNATTRIBUTED",
-            FormEvidence::ProvenElsewhere(_) => "PROVEN-ELSEWHERE",
+            FormEvidence::ProvenElsewhere(..) => "PROVEN-ELSEWHERE",
+            FormEvidence::SourceCosmetic(..) => "SOURCE-COSMETIC",
+            FormEvidence::SubjectChanged(..) => "SUBJECT-CHANGED",
             FormEvidence::Unmeasured => "UNMEASURED",
             FormEvidence::Divergent(_) => "DIVERGENT",
             FormEvidence::LedgerFaulted => "LEDGER-FAULTED",
@@ -97,12 +109,24 @@ impl FormEvidence {
     /// WARN there fires on every form of every run and a WARN that always fires is one a reader
     /// learns to filter — which would cost the `UNMEASURED` WARN its audience. It is disclosed at
     /// INFO, by name, with the label the entry carries and the device the run opened.
-    /// `ProvenElsewhere` **does** warn: it is a decline, and a form dropping to the CPU EP
-    /// is a thing the operator must be able to see without reading a counters file.
+    ///
+    /// **`ProvenElsewhere` does not either, and that changed with §8.9.19.** It used to be a
+    /// decline, so it warned per form. It is now a *claim*, and on a Linux run **every** form is
+    /// toolchain-elsewhere — a per-form WARN there is the always-fires shape again. The claim is
+    /// not silent: it is disclosed per form at INFO with its δ set, counted in
+    /// `proven_elsewhere_claims`, and summarised in **one** WARN naming the δ set and the number
+    /// of forms, which is the §8.9.7 disclosure §8.9.19 part 3 item 3 requires and is what keeps
+    /// this from being the silent extrapolation §8.9.17 refused.
+    ///
+    /// **`SubjectChanged` does warn**: it is a decline, and a form dropping to the CPU EP because
+    /// its kernel was replaced is a thing the operator must see without reading a counters file.
     pub fn warrants_warning(&self) -> bool {
         !matches!(
             self,
-            FormEvidence::Proven(_) | FormEvidence::DeviceUnattributed(..)
+            FormEvidence::Proven(_)
+                | FormEvidence::DeviceUnattributed(..)
+                | FormEvidence::ProvenElsewhere(..)
+                | FormEvidence::SourceCosmetic(..)
         )
     }
 }
@@ -119,12 +143,23 @@ pub fn evidence_for(key: &ProofKey) -> FormEvidence {
         return FormEvidence::Divergent(verdict.to_string());
     }
     if let Some(entry) = ledger.get(key) {
-        return match registry::device_state(&entry.device) {
+        return match registry::entry_state(entry) {
             registry::ProofState::Proven => FormEvidence::Proven(entry),
             registry::ProofState::DeviceUnattributed { reason, .. } => {
                 FormEvidence::DeviceUnattributed(entry, reason)
             }
-            _ => FormEvidence::ProvenElsewhere(entry),
+            registry::ProofState::ProvenElsewhere { deltas, detail } => {
+                FormEvidence::ProvenElsewhere(entry, deltas, detail)
+            }
+            registry::ProofState::SourceCosmetic { recorded, current } => {
+                FormEvidence::SourceCosmetic(entry, recorded, current)
+            }
+            registry::ProofState::SubjectChanged {
+                recorded,
+                current,
+                source_comparable,
+            } => FormEvidence::SubjectChanged(entry, recorded, current, source_comparable),
+            registry::ProofState::Unproven => FormEvidence::Unmeasured,
         };
     }
     if !ledger.faults.is_empty() {
@@ -153,6 +188,23 @@ pub struct Disclosure {
     pub proven: usize,
     /// Distinct claimed forms admitted on a `MATCH` obtained on **another device** (R12).
     pub device_unattributed: usize,
+    /// Distinct claimed forms admitted on a `MATCH` obtained **out of frame** (§8.9.19).
+    pub proven_elsewhere: usize,
+    /// Distinct claimed forms whose source closure moved while their SPIR-V did not.
+    ///
+    /// This counts the **subject** axis, not a state population: a form can be
+    /// `DEVICE-UNATTRIBUTED` (frame) and source-cosmetic (subject) at once, and on today's
+    /// ledger every entry is device-unattributed, so a count taken off the state alone could
+    /// only ever read zero.
+    pub source_cosmetic: usize,
+    /// Distinct claimed forms whose *only* finding is a cosmetic source move — the frame is
+    /// otherwise clean. Subset of [`Self::source_cosmetic`]; this is the one that is a claim
+    /// population, so it is the one `proof_backed` may add.
+    pub source_cosmetic_only: usize,
+    /// Distinct claimed forms declined because their subject moved (§8.9.19).
+    pub subject_changed: usize,
+    /// The union of every δ component seen across this session's out-of-frame claims.
+    pub frame_deltas: Vec<String>,
     /// Distinct claimed forms with no evidence at all.
     pub unmeasured: usize,
     /// Distinct claimed forms whose recorded verdict is not `MATCH`.
@@ -169,16 +221,16 @@ pub struct Disclosure {
 impl Disclosure {
     /// Forms that obliged the WARN.
     pub fn unproven(&self) -> usize {
-        self.unmeasured + self.divergent + self.ledger_faulted
+        self.unmeasured + self.divergent + self.ledger_faulted + self.subject_changed
     }
 
-    /// Forms admitted on ledger evidence, whichever device frame that evidence carries.
+    /// Forms admitted on ledger evidence, whichever frame that evidence carries.
     ///
     /// The WARN's negative arm asserts non-vacuity on **this**, not on `proven`: every one of the
     /// 97 baked entries records a selector ordinal, so `proven` is 0 for every run today and an
     /// arm gated on it would pass because nothing was claimed rather than because nothing warned.
     pub fn proof_backed(&self) -> usize {
-        self.proven + self.device_unattributed
+        self.proven + self.device_unattributed + self.proven_elsewhere + self.source_cosmetic_only
     }
 }
 
@@ -219,9 +271,34 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
             }
             FormEvidence::DeviceUnattributed(entry, reason) => {
                 d.device_unattributed += 1;
+                // SUBJECT AND FRAME ARE DIFFERENT AXES, AND A SINGLE TOKEN CAN ONLY CARRY ONE.
+                //
+                // Found by running the row-4 acceptance rather than reasoning about it: a
+                // comment-only edit to `ew_binary.comp` moved every affected entry's subject to
+                // SOURCE-COSMETIC, and the disclosure said `DEVICE-UNATTRIBUTED` and nothing
+                // else — because the state lattice has to pick one token and the device fact
+                // dominates. Every entry in today's baked ledger is device-unattributed, so the
+                // named row §8.9.19 calls "the row that proves the pair does work" would have
+                // been unobservable in the only ledger that ships, and `source_cosmetic` would
+                // have been a counter whose only possible value is zero.
+                //
+                // The state stays single-valued; the subject verdict is read off the entry and
+                // printed beside it, so neither axis can hide the other.
+                let subject_note = match &entry.subject {
+                    registry::SubjectVerdict::SourceCosmetic { recorded, current } => {
+                        d.source_cosmetic += 1;
+                        format!(
+                            " SUBJECT={}: source closure {recorded} -> {current}, SPIR-V \
+                             byte-identical.",
+                            entry.subject.token()
+                        )
+                    }
+                    registry::SubjectVerdict::Identical => String::new(),
+                    other => format!(" SUBJECT={}.", other.token()),
+                };
                 unattributed_lines.push(format!(
                     "{} x{} [{}] DEVICE-UNATTRIBUTED: proven by {} against {}, entry-device={}, \
-                     running-device={} — {}",
+                     running-device={} — {}{}",
                     form.op_type,
                     form.nodes,
                     key.0,
@@ -234,22 +311,57 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                     },
                     registry::running_device_names().join("; "),
                     reason,
+                    subject_note,
                 ));
             }
-            FormEvidence::ProvenElsewhere(entry) => {
-                // A decline, so it belongs in the WARN list beside UNMEASURED and DIVERGENT: the
-                // operator's action is the same shape — a form they expected on the GPU is not.
-                d.unmeasured += 1;
-                unproven_lines.push(format!(
-                    "{} x{} [{}] PROVEN-ELSEWHERE: proven by {} on {}, and this run is on \
-                     {}. A proof is a property of a form on a device, so this form runs on the \
-                     CPU EP. Prove it here with gen_proof_ledger.py --append",
+            FormEvidence::ProvenElsewhere(entry, deltas, detail) => {
+                // §8.9.19 part 3 item 3: the claim is granted, and the δ set is printed. A claim
+                // granted before its disclosure exists is exactly the trade §8.9.17 refused.
+                d.proven_elsewhere += 1;
+                let tokens: Vec<&str> = deltas.iter().map(registry::FrameDelta::token).collect();
+                for t in &tokens {
+                    if !d.frame_deltas.iter().any(|s| s == t) {
+                        d.frame_deltas.push((*t).to_string());
+                    }
+                }
+                unattributed_lines.push(format!(
+                    "{} x{} [{}] PROVEN-ELSEWHERE{{{}}}: proven by {} against {} — {}. The \
+                     subject is this build's code; only the frame moved, so the claim stands and \
+                     says so.",
                     form.op_type,
                     form.nodes,
                     key.0,
+                    tokens.join(","),
                     entry.artifact,
-                    entry.device,
-                    registry::running_device_names().join("; "),
+                    entry.ort_build,
+                    detail,
+                ));
+            }
+            FormEvidence::SourceCosmetic(entry, recorded, current) => {
+                d.source_cosmetic += 1;
+                d.source_cosmetic_only += 1;
+                unattributed_lines.push(format!(
+                    "{} x{} [{}] SOURCE-COSMETIC: the source closure hashes to {current} where \
+                     the entry recorded {recorded}, and the compiled SPIR-V is byte-identical. \
+                     Proven by {} — claimed, and named because only the digest *pair* can tell \
+                     this from a kernel change.",
+                    form.op_type, form.nodes, key.0, entry.artifact,
+                ));
+            }
+            FormEvidence::SubjectChanged(_entry, recorded, current, source_comparable) => {
+                d.subject_changed += 1;
+                let why = if source_comparable {
+                    "both digests moved, so the kernel itself was replaced"
+                } else {
+                    "the entry records no source_digest, so `different compiler` and `different \
+                     kernel` cannot be told apart and the fail-safe reading is the second; \
+                     backfill it with gen_proof_ledger.py --backfill-frame"
+                };
+                unproven_lines.push(format!(
+                    "{} x{} [{}] SUBJECT-CHANGED: proven against shader digest {recorded}, this \
+                     build's modules hash to {current} — {why}. This form runs on the CPU EP; \
+                     re-prove it with gen_proof_ledger.py --reprove",
+                    form.op_type, form.nodes, key.0,
                 ));
             }
             FormEvidence::Unmeasured => {
@@ -393,8 +505,13 @@ pub fn disclose_ledger_demotions() -> (usize, usize) {
 /// second obligation §8.9.18 attaches, and the same rule Niobe is held to on the amplification
 /// probe.
 pub fn disclose_demotions_of(ledger: &registry::Ledger) -> (usize, usize) {
-    let live = ledger.len();
-    let demoted = ledger.entry_faults.len();
+    // §8.9.19 part 1 made a subject mismatch **survive** parsing, so `entries.len()` is no longer
+    // the live count and `entry_faults.len()` is no longer the demoted count. Reading either
+    // directly here would have silently reported every drifted entry as live from the day entry
+    // survival landed — the obligation satisfied on paper while the number stopped meaning it.
+    let subject_changed: Vec<&registry::LedgerEntry> = ledger.subject_changed_entries().collect();
+    let live = ledger.len() - subject_changed.len();
+    let demoted = ledger.demotion_count();
     if demoted == 0 {
         // The negative polarity still speaks. A run that prints nothing here is
         // indistinguishable from a run whose disclosure did not happen, which is the ambiguity
@@ -407,6 +524,16 @@ pub fn disclose_demotions_of(ledger: &registry::Ledger) -> (usize, usize) {
     }
     // R13: quote the condition, never only the count. A reader told "1 entry demoted" cannot act;
     // a reader told which entry and why can re-prove it.
+    let mut reasons: Vec<String> = ledger.entry_faults.clone();
+    for e in &subject_changed {
+        reasons.push(format!(
+            "ledger entry for {:?} is {} — it was proven against shader digest {} and this \
+             build's modules hash to something else",
+            e.key.0,
+            e.subject.token(),
+            e.shader_digest
+        ));
+    }
     logging::warn_through_ort_sink(
         TARGET,
         &format!(
@@ -414,7 +541,7 @@ pub fn disclose_demotions_of(ledger: &registry::Ledger) -> (usize, usize) {
              entry proves nothing and its form will decline unless something else proves it: {}. \
              Re-prove them with rust/tools/gen_proof_ledger.py --reprove",
             live + demoted,
-            ledger.entry_faults.join("; ")
+            reasons.join("; ")
         ),
     );
     (live, demoted)

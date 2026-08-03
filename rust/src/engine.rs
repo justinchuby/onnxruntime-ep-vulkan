@@ -750,6 +750,7 @@ pub fn loader_probe_report() -> String {
 /// and `build.rs` has one obvious consumer.
 pub mod shaders {
     include!(concat!(env!("OUT_DIR"), "/shader_modules.rs"));
+    include!(concat!(env!("OUT_DIR"), "/shader_toolchain.rs"));
 
     /// Look up an embedded SPIR-V module by shader stem.
     pub fn find(stem: &str) -> Option<&'static [u8]> {
@@ -757,6 +758,24 @@ pub mod shaders {
             .iter()
             .find(|(name, _)| *name == stem)
             .map(|(_, bytes)| *bytes)
+    }
+
+    /// Look up an embedded module's **source-closure digest** by shader stem (§8.9.19 part 2).
+    ///
+    /// `None` means this build embeds no such module — a different fact from "its source hashed
+    /// to nothing", and the caller must keep them apart or a deleted kernel reads as an unchanged
+    /// one.
+    pub fn source_digest(stem: &str) -> Option<&'static str> {
+        SHADER_SOURCE_DIGESTS
+            .iter()
+            .find(|(name, _)| *name == stem)
+            .map(|(_, digest)| *digest)
+    }
+
+    /// `glslc --version` from the build that produced this artifact — a FRAME component.
+    #[inline]
+    pub fn toolchain() -> &'static str {
+        SHADER_TOOLCHAIN
     }
 
     /// True when at least one SPIR-V module was compiled into this artifact.
