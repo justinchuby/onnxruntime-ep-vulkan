@@ -929,6 +929,12 @@ static SUBJECT_CHANGED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// took a second worktree and a second release build. `subject_changed_forms` had carried its
 /// keys since §8.9.19 for exactly this reason; the older and much more common decline had not.
 static UNPROVEN_DECLINE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The subset of `UNPROVEN_DECLINE_FORMS` a proof run cannot clear (see
+/// [`record_unprovable_decline`]). A separate list rather than a flag on the first because the
+/// two answer different questions: "which forms have no entry" and "which of those is worth a
+/// proof run". Deriving the second from the first at read time would put a capability lookup in
+/// the artifact writer, which runs after the claim path it would be describing.
+static UNPROVABLE_DECLINE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// `key recorded=<spec digest> current=<spec digest>` for each specialisation delta (§8.9.20).
 ///
 /// The dispatch-time frame witness's firing state. It is populated from the dispatch path, not
@@ -1229,6 +1235,30 @@ pub fn record_unproven_decline(key: &str) {
 /// The proof keys behind `unproven_declines`, deduplicated, first-seen order.
 pub fn unproven_decline_forms() -> Vec<String> {
     UNPROVEN_DECLINE_FORMS
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
+}
+
+/// Record a form that declined `[unproven]` and that **no proof run can clear**, because its
+/// module declares a SPIR-V capability the engine does not enable.
+///
+/// `unproven_declines` is a true count of forms with no ledger entry, and it reads as a backlog of
+/// forms somebody could go and prove. Two of Phi-3.5's five are not: they need a device feature,
+/// and a proof run against them reports "no unlockable keys". The count is not moved — it is not
+/// wrong — but a reader can now subtract, which is the difference between a number that is honest
+/// and a number that can be acted on.
+pub fn record_unprovable_decline(key: &str) {
+    if let Ok(mut seen) = UNPROVABLE_DECLINE_FORMS.lock()
+        && !seen.iter().any(|r| r == key)
+    {
+        seen.push(key.to_string());
+    }
+}
+
+/// The subset of [`unproven_decline_forms`] that no proof run can clear.
+pub fn unprovable_decline_forms() -> Vec<String> {
+    UNPROVABLE_DECLINE_FORMS
         .lock()
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -2150,6 +2180,15 @@ fn unproven_decline_forms_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
+/// `unprovable_decline_forms` — the subset of the above that no proof run can clear.
+fn unprovable_decline_forms_json() -> String {
+    let Ok(seen) = UNPROVABLE_DECLINE_FORMS.lock() else {
+        return "\"INSTRUMENT-ERROR\"".to_string();
+    };
+    let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
+    format!("[{}]", body.join(", "))
+}
+
 /// `subject_changed_forms` — one row per form declined because its subject moved.
 fn subject_changed_forms_json() -> String {
     let Ok(seen) = SUBJECT_CHANGED_FORMS.lock() else {
@@ -2280,6 +2319,9 @@ pub fn reset() {
     if let Ok(mut seen) = UNPROVEN_DECLINE_FORMS.lock() {
         seen.clear();
     }
+    if let Ok(mut seen) = UNPROVABLE_DECLINE_FORMS.lock() {
+        seen.clear();
+    }
     if let Ok(mut seen) = SPECIALISATION_DELTA_FORMS.lock() {
         seen.clear();
     }
@@ -2349,6 +2391,7 @@ impl VulkanEpCounters {
              \"source_cosmetic_forms\": {},\n  \
              \"subject_changed_forms\": {},\n  \
              \"unproven_decline_forms\": {},\n  \
+             \"unprovable_decline_forms\": {},\n  \
              \"ledger_subject_changed_entries\": {},\n  \
              \"ledger_toolchain_delta_entries\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
@@ -2433,6 +2476,7 @@ impl VulkanEpCounters {
             source_cosmetic_forms_json(),
             subject_changed_forms_json(),
             unproven_decline_forms_json(),
+            unprovable_decline_forms_json(),
             crate::registry::ledger().subject_changed_entries().count(),
             crate::registry::ledger().toolchain_delta_entries().count(),
             json_escape(&crate::registry::running_device_names().join("; ")),
@@ -4144,5 +4188,41 @@ mod tests {
             unproven_decline_forms().is_empty(),
             "a list that survives reset() reports one session's forms against another's counts"
         );
+    }
+
+    /// The backlog and the subset of it nobody can work on are two different lists.
+    ///
+    /// Tank, 2026-08-03. Two of Phi-3.5's five unproven declines need a device feature, not
+    /// evidence; a run that publishes only the union reads as five forms awaiting a proof run.
+    #[test]
+    fn the_unprovable_subset_is_published_beside_the_backlog() {
+        let _g = crate::allocator::ledger::test_lock();
+
+        reset();
+        assert!(unprovable_decline_forms().is_empty());
+
+        record_unproven_decline("ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2");
+        record_unproven_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+        record_unprovable_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+        record_unprovable_decline("ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1");
+
+        assert_eq!(
+            snapshot().unproven_declines,
+            2,
+            "the count is not moved: the form really does lack an entry"
+        );
+        assert_eq!(
+            unprovable_decline_forms(),
+            vec!["ai.onnx::Cast/6+/i64>i32/ew_cast_i64_to_i32/static/n1".to_string()],
+            "deduplicated, and a strict subset of the backlog"
+        );
+        let json = snapshot().to_json();
+        assert!(
+            json.contains("\"unprovable_decline_forms\": [\"ai.onnx::Cast/6+/i64>i32/"),
+            "a subset that never reaches the artifact cannot be subtracted by a reader: {json}"
+        );
+
+        reset();
+        assert!(unprovable_decline_forms().is_empty());
     }
 }
