@@ -489,7 +489,43 @@ pub unsafe extern "C" fn OrtEpVulkanGetShaderSubject(
     bytes.len()
 }
 
-/// Zero the EP's execution counters.///
+/// Answer "what proof ledger is baked into this artifact?" as UTF-8 text; return the length.
+///
+/// ```text
+/// baked_digest=493616a874425910
+/// declared_digest=493616a874425910
+/// declared_count=103
+/// entry_count=103
+/// demoted=0
+/// faults=0
+/// ```
+///
+/// # Why this is an export
+///
+/// The ledger is `include_str!`'d, so **the file on disk and the file in the binary are two
+/// different objects that look like one.** `gen_proof_ledger.py --reprove` rewrites the file and
+/// reports success; the binary keeps claiming from the copy it was compiled with, and nothing in
+/// either report says so. A tool cannot compare them without one number from inside the artifact.
+/// This is that number, and `--check`/`--reprove` refuse when it disagrees with the file.
+///
+/// # Safety
+/// `out` must be null, or writable for `out_bytes` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OrtEpVulkanGetLedgerIdentity(
+    out: *mut std::ffi::c_void,
+    out_bytes: usize,
+) -> usize {
+    let text = registry::baked_ledger_identity();
+    let bytes = text.as_bytes();
+    if !out.is_null() && out_bytes >= bytes.len() {
+        // SAFETY: `out` is non-null and the caller promises `out_bytes` writable bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len()) };
+    }
+    bytes.len()
+}
+
+/// Zero the EP's execution counters.
+///
 /// For a harness that wants to scope a claim to one model run: reset, run, read. Without it the
 /// only available claim is process-cumulative, and "some dispatch executed at some point in this
 /// pytest session" is a much weaker statement than "this model executed on the GPU".

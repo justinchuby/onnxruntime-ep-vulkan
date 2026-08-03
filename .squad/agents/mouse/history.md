@@ -415,3 +415,47 @@ identity, that is the better answer and mine should fold into it.
 📌 Team update (2026-08-03T10-35-00-07-00): Switch found `gen_proof_ledger.py --check` checks the file against itself, not against the running build — the subject comparison only happens at runtime against *this build's* embedded digests, and the ledger is `include_str!`'d (`registry.rs:1890`), so `--reprove` has no effect until a rebuild. The coordinator has quoted `--check` as merge evidence six times; you own the repair. — decided by Switch
 
 📌 Team update (2026-08-03T10-35-00-07-00): Rai opened RAI-012 🟡 — a decline message names the wrong subject (verified in-tree at 0× true-cause WARN against 42× a message false in both clauses, `ledger_faults: 97`). You are the named owner. — decided by Rai
+## §8.9.21 — `--check` was verifying the ledger against itself
+Switch found it: a shader edit moved the SPIR-V, the EP declined all 32 GQA nodes, and
+`gen_proof_ledger.py --check` said `PASS: 103 entries` throughout. It checked the file's header
+count, its fnv1a64 and each entry's shape — all true statements about the wrong subject. The
+entry directly above this one in this file quotes that PASS as merge evidence. So did six other
+places today. Not broken; it resolves anyway.
+`--check` now asks the artifact. `registry::baked_ledger_identity()` + FFI
+`OrtEpVulkanGetLedgerIdentity` join the existing `OrtEpVulkanGetShaderSubject`; Python re-derives
+nothing, so there is still exactly one implementation of the hashing rule. The red/green line
+mirrors `registry::subject_verdict` deliberately — moved SPIR-V FAILs and names the entries,
+`SOURCE-COSMETIC` and toolchain-only are NOTE. When no build can be found the verdict is
+`ERROR(instrument)`, not PASS. That is the whole repair in one sentence: a check that cannot see
+its subject must say so rather than answer about something else.
+`include_str!`: I chose **refuse**, not read-from-disk. Reading the on-disk copy at run time hands
+back the exact property baking exists to deny. `--reprove` refuses before measuring when baked and
+disk differ; a generation run passes `expect_rebuild=True` so the by-construction difference prints
+as `NOTE: REBUILD REQUIRED` instead of failing every successful proof run — failing the happy path
+is how a gate gets switched off.
+`rust/tools/probe_ledger_subject_check.py` is the positive control, 5 arms, predictions written
+first, 5/5. Arm 2 *is* Switch's case. `ci/check_verification_subjects.py` is the sweep:
+**CHECKED 22, classified 22, FOUND 0 SELF** (13 ARTIFACT, 9 EXTERNAL).
+**Three things surprised me.**
+The first run of the new `--check` went red on its own — `_find_lib` preferred the release DLL by
+name and the release artifact in this worktree is stale w.r.t. main's `gqa_f16`. A genuine positive
+control I did not have to build, and it changed the selection rule to newest-by-mtime plus always
+naming the artifact in the verdict.
+`clear_session_devices` was never an uninvoked instrument. `audit_instruments.py` split production
+from test *positionally* at the `#[cfg(test)] mod tests` marker, so a `#[cfg(test)]` item declared
+beside its subject scored uninvoked forever — mis-scoring in the dead direction, the one thing that
+file's own doctrine forbids. I fixed the screen, not the code it accused.
+`proof_ledger_writer_refuses` unwound one refusal at a time: `source_digest`, then `toolchain`,
+then `spec_digest`. The fixture was defective in three independent ways and had collapsed three
+distinct refusal tests into one red.
+**What my verification established:** `cargo test --lib` 532/0, clippy clean, `counters_abi.py
+--check` PASS v8 against the DLL, `--check` PASS with all 103 entries' `shader_digest` agreeing
+with the debug `onnxruntime_vulkan_ep.dll` and baked == on-disk. **What it did not:** anything
+about the release artifact (stale here), anything about another device, and anything about
+`spec_digest` — all 103 remain `SPEC-UNRECORDED`. No claim probe or Phi-3.5 session was run, so
+there is no claimed/hits/declines reading this round. And one of my gates is the thing under
+repair: the PASS I am quoting is produced by the code I just wrote. Its only independent
+corroboration is the 5-arm falsifier.
+**Touched that others own:** `ci/open_reds.json` (Link) — deleted only my three entries, by hand,
+because `json.dumps` reformatted his whole file the first time. `audit_instruments.py` (Link) —
+`survey()` now skips `#[cfg(test)]` items.

@@ -379,13 +379,23 @@ def test_check_ledger_fails_on_a_tampered_artifact(tmp_path):
 
 
 def _proof_run(**over):
-    """A minimal healthy proof-run record, as `prove()` returns on MATCH."""
+    """A minimal healthy proof-run record, as `prove()` returns on MATCH.
+
+    `shaders_dispatched_source_digest` is present because a *healthy* run has one — §8.9.19 made
+    the frame witness mandatory at the writer, and without it every test below refused for the
+    wrong reason (the accepted red `proof_ledger_writer_refuses`, opened 2026-08-03). These
+    tests each plant one specific defect and require the writer to name *that* one; a fixture
+    that is defective in a second way turns them all into one test of the same refusal.
+    """
     run = {
         "worst_rel": 1e-6,
         "claimed_nodes": 1,
         "dispatches_executed": 1,
         "shaders_dispatched": ["ew_binary_add_f32"],
         "shaders_dispatched_digest": "0123456789abcdef",
+        "shaders_dispatched_source_digest": "fedcba9876543210",
+        "shader_toolchain": "shaderc v2026.2 v2026.2",
+        "shaders_dispatched_spec_digest": "abcdef0123456789",
         "compute_calls": 1,
     }
     run.update(over)

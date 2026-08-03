@@ -2491,6 +2491,38 @@ pub fn toolchain_identity() -> &'static str {
     crate::engine::shaders::toolchain()
 }
 
+/// What ledger is **baked into this artifact** — digest, declared digest, entry count, faults.
+///
+/// # Why this exists as a readable fact rather than a comment
+///
+/// [`LEDGER_SOURCE`] is `include_str!`'d, which is the right call (a running process must not be
+/// able to have its evidence swapped underneath it) and has one consequence nobody was told
+/// about: **editing `evidence/proof_ledger.jsonl` changes nothing until the crate is rebuilt.**
+/// `--reprove` would rewrite the file, the tool would report success, and the binary would go on
+/// claiming from the copy it was compiled with. An effect that is invisible until an unrelated
+/// action is taken is an effect that will be trusted wrongly.
+///
+/// The repair is not to start reading the file at run time — that would hand back exactly the
+/// property baking exists to deny. It is to make the two copies *comparable from outside*, so a
+/// tool can refuse when they disagree. That needs one number out of the artifact, and this is it.
+///
+/// Deliberately parsed from [`LEDGER_SOURCE`] here rather than read off [`ledger()`]: the
+/// process-wide ledger folds in [`check_baked_against_disk`] and logs, so its digest is a fact
+/// about a configured process. This is a fact about the *file that was compiled in*, and nothing
+/// in the environment can move it.
+pub fn baked_ledger_identity() -> String {
+    let l = parse_ledger(LEDGER_SOURCE);
+    format!(
+        "baked_digest={}\ndeclared_digest={}\ndeclared_count={}\nentry_count={}\ndemoted={}\nfaults={}\n",
+        l.actual_digest,
+        l.declared_digest,
+        l.declared_count,
+        l.len(),
+        l.demotion_count(),
+        l.faults.len(),
+    )
+}
+
 /// Compare one entry's recorded subject witnesses against this build's — §8.9.19 part 2's table.
 pub fn subject_verdict(recorded_spirv: &str, recorded_source: &str, stems: &[&str]) -> SubjectVerdict {
     let current_spirv = shader_digest_for(stems).unwrap_or_default();
@@ -3944,23 +3976,23 @@ mod tests {
         crate::counters::reset();
         crate::counters::record_pipeline_variant(STEM, &[256, 1]);
         audit_dispatch_specialisation_of(&delta, STEM);
-        let rows = crate::counters::specialisation_delta_forms();
+        let rows = crate::counters::specialisation_delta_forms()
+            .expect("the delta list must be readable");
         assert!(
             rows.iter().any(|r| r.starts_with(KEY)),
             "the audit saw a proof taken on another pipeline and said nothing: {rows:?}"
         );
         audit_dispatch_specialisation_of(&identical, STEM);
         assert_eq!(
-            crate::counters::specialisation_delta_forms().len(),
-            rows.len(),
+            crate::counters::specialisation_delta_forms().map(|v| v.len()),
+            Some(rows.len()),
             "the audit reported a delta for an entry proven under the pipeline this run bound; \
              it is not reading the digests"
         );
         audit_dispatch_specialisation_of(&unrecorded, STEM);
         assert!(
             crate::counters::specialisation_unrecorded_forms()
-                .iter()
-                .any(|r| r == KEY),
+                .is_some_and(|v| v.iter().any(|r| r == KEY)),
             "an entry proven under an unrecorded specialisation was claimed and not disclosed"
         );
         crate::counters::reset();
