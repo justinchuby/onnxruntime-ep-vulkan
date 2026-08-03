@@ -238,22 +238,54 @@ def _rms_norm(elem: int, shape=(4, 8), opset: int = 23) -> onnx.ModelProto:
     return model
 
 
-def _clip(elem: int, opset: int = 21) -> onnx.ModelProto:
-    """`Clip` with **both** optional inputs populated.
+def _clip(elem: int, opset: int = 21, bounds: str = "min+max") -> onnx.ModelProto:
+    """`Clip` with **whichever** optional inputs `bounds` names populated.
 
     The suite's own failing case declines with `[arity] Clip has 1 inputs; this handler takes
     exactly 3` — a *different* finding from `[unproven]`, and it is not fixed by a ledger entry.
-    This case is the three-input form, which is the one the claim log reports as unproven.
+    The three-input form is the one the claim log reports as unproven.
+
+    The four `bounds` values are **four separate proof obligations**, not one with a knob.
+    `populated_input_set` is a component of the proof key, so each populated set gets its own
+    entry, and that is the point: an omitted bound compiles a *different* shader body through
+    `EW_SELECTOR`, so an entry for `min+max` says nothing at all about `max`-only. `max` is the
+    load-bearing one — it is the form with an omitted **interior** input, where a handler that
+    counted inputs instead of reading names would bind `max`'s tensor to `min`'s slot and clamp
+    from below by a number meant as a ceiling.
     """
     x = helper.make_tensor_value_info("X", elem, [4, 8])
     y = helper.make_tensor_value_info("Y", elem, [4, 8])
     np_dt = np.float16 if elem == TensorProto.FLOAT16 else np.float32
-    inits = [
-        onnx.numpy_helper.from_array(np.array(-0.5, dtype=np_dt), name="lo"),
-        onnx.numpy_helper.from_array(np.array(0.5, dtype=np_dt), name="hi"),
-    ]
-    node = helper.make_node("Clip", ["X", "lo", "hi"], ["Y"], name="clip0")
+    inits, names = [], ["X"]
+    if "min" in bounds:
+        inits.append(onnx.numpy_helper.from_array(np.array(-0.5, dtype=np_dt), name="lo"))
+        names.append("lo")
+    elif "max" in bounds:
+        # An omitted *interior* input is named by an empty string, not by a short input list.
+        names.append("")
+    if "max" in bounds:
+        inits.append(onnx.numpy_helper.from_array(np.array(0.5, dtype=np_dt), name="hi"))
+        names.append("hi")
+    node = helper.make_node("Clip", names, ["Y"], name="clip0")
     graph = helper.make_graph([node], "clip_graph", [x], [y], initializer=inits)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def _isinf(elem: int, opset: int = 21, **attrs) -> onnx.ModelProto:
+    """`IsInf`, whose two `detect_*` attributes select four different predicates.
+
+    Each is its own case. The attributes are a **specialisation constant**, so they are part of
+    the proof key, and an entry proving the default `(1, 1)` form describes a shader body that
+    the `(1, 0)` form does not run. Proving only the default would leave the selector itself —
+    the whole mechanism — unexercised while the ledger read full.
+    """
+    x = helper.make_tensor_value_info("X", elem, [4, 8])
+    y = helper.make_tensor_value_info("Y", TensorProto.BOOL, [4, 8])
+    node = helper.make_node("IsInf", ["X"], ["Y"], name="isinf0", **attrs)
+    graph = helper.make_graph([node], "IsInf_graph", [x], [y])
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
     model.ir_version = 10
     onnx.checker.check_model(model)
@@ -529,6 +561,15 @@ BUILDERS.update({
     "tanh_f32_dyn": lambda: _unary_dyn("Tanh", TensorProto.FLOAT),
 
     "clip_f32": lambda: _clip(TensorProto.FLOAT),
+    # The three other populated-input sets. Each is a distinct proof key and a distinct compiled
+    # body; see `_clip`'s docstring for why `max`-only is the load-bearing one.
+    "clip_f32_min_only": lambda: _clip(TensorProto.FLOAT, bounds="min"),
+    "clip_f32_max_only": lambda: _clip(TensorProto.FLOAT, bounds="max"),
+    "clip_f32_no_bounds": lambda: _clip(TensorProto.FLOAT, bounds="none"),
+    # The four IsInf predicates. `detect_*` are specialisation constants and part of the key.
+    "isinf_f32": lambda: _isinf(TensorProto.FLOAT),
+    "isinf_f32_pos_only": lambda: _isinf(TensorProto.FLOAT, detect_negative=0),
+    "isinf_f32_neg_only": lambda: _isinf(TensorProto.FLOAT, detect_positive=0),
     # Pow is a partial function in its *first* argument: a negative base with a non-integral
     # exponent has no real value, and standard_normal supplies both. Sampled positive.
     "pow_f32": lambda: _binary("Pow", TensorProto.FLOAT, opset=21),
@@ -675,6 +716,17 @@ INPUT_DOMAIN.update({
     "equal_f32": "discrete",
     # `IsNaN` on a finite tensor is all-False, likewise.
     "isnan_f32": "withnan",
+})
+
+INPUT_DOMAIN.update({
+    # `IsInf` needs both infinities *and* a NaN in the input, on every one of its three cases.
+    # `withnan` is not enough: it plants `+inf` but no `-inf`, so a shader that ignored
+    # `detect_negative` entirely would return all-False on the negative-only case and match a
+    # reference that was also all-False. The domain that separates the four predicates has to
+    # contain a value each of them decides differently.
+    "isinf_f32": "withinf",
+    "isinf_f32_pos_only": "withinf",
+    "isinf_f32_neg_only": "withinf",
 })
 
 def input_domain(name: str) -> str:

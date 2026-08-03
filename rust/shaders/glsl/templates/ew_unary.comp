@@ -85,6 +85,13 @@ float ew_softplus(float x) {
 
 // -- the op ------------------------------------------------------------------------------------
 
+#if EW_OP == OP_ISINF
+// Declared here rather than in `indexing.glsl` so only the two `isinf` modules change shape. See
+// the header note there: an unused declaration in the shared header would have rewritten every
+// elementwise module's SPIR-V digest and faulted the whole proof ledger.
+layout(constant_id = 2) const uint EW_SELECTOR = 0;
+#endif
+
 #ifdef EW_BOOL_RESULT
 uint apply_bool(COMPUTE_T x) {
 #if EW_OP == OP_NOT
@@ -92,9 +99,17 @@ uint apply_bool(COMPUTE_T x) {
 #elif EW_OP == OP_ISNAN
     return isnan(x) ? 1u : 0u;
 #elif EW_OP == OP_ISINF
-    // ONNX `IsInf` has detect_negative/detect_positive attributes; the row is staged behind
-    // NEEDS_PARAMS, so this compiles the both-detected default.
-    return isinf(x) ? 1u : 0u;
+    // ONNX `IsInf` carries `detect_positive` and `detect_negative`, both defaulting to 1. They
+    // choose an expression rather than supply a value, so they arrive in `EW_SELECTOR`
+    // (bit 0 = detect_positive, bit 1 = detect_negative) rather than in `pc.params`, and both
+    // tests below fold at pipeline creation.
+    //
+    // `isinf(x) && x > 0` rather than `x == +inf`: the comparison is exact for infinities either
+    // way, and this form does not depend on the compiler keeping a literal infinity finite under
+    // whatever fast-math the driver applies.
+    return (isinf(x)
+            && (((EW_SELECTOR & 1u) != 0u && x > COMPUTE_T(0))
+                || ((EW_SELECTOR & 2u) != 0u && x < COMPUTE_T(0)))) ? 1u : 0u;
 #else
 #error "EW_OP claims a boolean result but ew_unary.comp has no case for it"
 #endif

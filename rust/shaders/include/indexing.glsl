@@ -30,6 +30,20 @@
 //
 //     id 0  local_size_x     (workgroup size; 256 unless a per-device tuner overrides it)
 //     id 1  EW_IDENTICAL     (1 when every input already has the output shape)
+//     id 2  EW_SELECTOR      (op-specific bitmask; see `ops/common/selector.rs` for the table)
+//
+// `EW_SELECTOR` is how an attribute that chooses an *expression* reaches the shader, as opposed
+// to `pc.params`, which carries an attribute that supplies a *value*. It is a specialisation
+// constant, so every branch it guards folds at pipeline creation and costs nothing per
+// invocation, and the pipeline cache is keyed on the spec constants so two nodes with different
+// selectors cannot share a pipeline.
+//
+// It is **declared by the templates that read it, not here**, and the host pushes it only for the
+// ops that have one. That is not tidiness: this project's proof ledger records the digest of the
+// SPIR-V module each entry was proven against, so declaring an unused constant in the shared
+// header would have changed all ~100 elementwise modules and faulted every entry in the ledger to
+// add a flag two of them read. A mechanism that invalidates the evidence for ops it does not
+// touch is the wrong mechanism.
 //
 // Descriptor set 0 holds the inputs in order followed by the single output, per `ENGINE.md` §5.2.
 //
