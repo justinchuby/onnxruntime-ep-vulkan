@@ -615,6 +615,7 @@ unsafe fn get_capability_impl(
     if claimed.is_empty() {
         // §8.9.7: disclose the zero-claim outcome on ORT's own channel. Not a warning — ops this
         // EP never claimed running on the CPU EP is the plan, disclosed once in aggregate.
+        crate::disclosure::disclose_ledger_demotions();
         crate::disclosure::disclose_zero_claims(num_nodes, &declined);
         return ptr::null_mut();
     }
@@ -625,6 +626,9 @@ unsafe fn get_capability_impl(
     // A user must learn that a claimed form's correctness is UNMEASURED or DIVERGENT now, not
     // from a wrong answer later.
     {
+        // §8.9.18: the demotion count is a property of the artifact, so it is printed on every
+        // run regardless of what this model claims.
+        crate::disclosure::disclose_ledger_demotions();
         let forms: Vec<crate::disclosure::ClaimedForm> = claimed_forms
             .iter()
             .map(|((op, _), (key, n))| crate::disclosure::ClaimedForm {

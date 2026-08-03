@@ -1,5 +1,5 @@
 {
-  "abi_version": 6,
+  "abi_version": 7,
   "compile_calls": 1,
   "subgraphs_live": 1,
   "subgraphs_stub": 0,
@@ -36,8 +36,8 @@
   "unproven_forms_enabled": [],
   "device_unattributed_claims": 355,
   "device_unattributed_forms": ["ai.onnx::Gather/1+/f16,i64>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "ai.onnx::SimplifiedLayerNormalization/1+/f16,f16>f16/metadata/runtime-extent/n2 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "com.microsoft::MatMulNBits/1+/f16,u8,f16>f16/q_gemv_matmul_nbits_f16/runtime-extent/scales entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "com.microsoft::GroupQueryAttention/1+/f16,f16,f16,i32,i32,f16,f16>f16,f16,f16/metadata/runtime-extent/past_key+past_value+cos_cache+sin_cache entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16,-,-,f16/metadata/runtime-extent/none entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "ai.onnx::Sigmoid/6+/f16>f16/ew_unary_sigmoid_f16/runtime-extent/n1 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "ai.onnx::Mul/7+/f16,f16>f16/ew_binary_mul_f16/runtime-extent/n2 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "com.microsoft::SkipSimplifiedLayerNormalization/1+/f16,f16,f16>f16/metadata/runtime-extent/none entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity"],
-  "device_mismatch_declines": 0,
-  "device_mismatch_forms": [],
+  "proven_elsewhere_declines": 0,
+  "proven_elsewhere_forms": [],
   "running_device_names": "NVIDIA GeForce RTX 4060 Laptop GPU",
   "reproof_forms_admitted": [],
   "shaders_dispatched": [],

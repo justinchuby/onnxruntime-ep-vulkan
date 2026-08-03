@@ -1936,21 +1936,32 @@ pub struct Ledger {
     pub actual_digest: String,
     /// The generator that wrote it.
     pub generator: String,
-    /// **Whole-file** parse or consistency problems: a missing generator, a digest that does not
-    /// match the body, a header count that does not match the lines under it, a duplicate key.
-    /// Non-empty means the file itself cannot be trusted, so every form declines — a broken
-    /// ledger is the safe state, not the permissive one.
+    /// **Whole-file** damage — §8.9.18's second group, *"this artifact is not readable"*: a
+    /// missing generator, a header digest that does not match the body, a header count that does
+    /// not match the lines under it, a duplicate key, a line that does not parse. Non-empty means
+    /// every form declines.
     ///
-    /// A problem with **one entry** does not belong here; see [`Ledger::entry_faults`]. Putting
-    /// it here was the 2026-08-02 defect: one stale shader digest took 97 proofs down with it,
-    /// which is the exact opposite of what the code comment beside it promised.
+    /// The rule that sorts this list from the next one: **fault scope is set by the scope of what
+    /// you cannot locate, not by the severity of what you found.** Each condition here is one you
+    /// cannot attribute to a key — a hand-edited file may have damaged any line, a dropped entry
+    /// is invisible by definition, two duplicates disagree with neither authoritative, and an
+    /// unparseable line cannot be read to find out what it was going to say.
     pub faults: Vec<String>,
-    /// Problems attributable to a **single entry**, which demote that entry and nothing else.
+    /// **Entry-level** damage — §8.9.18's first group, *"this proof is not usable"*: a stale
+    /// `shader_digest`, a missing subject witness, absent or zero attribution witnesses, a
+    /// non-`MATCH` verdict. Each demotes its own entry and nothing else.
     ///
-    /// The entry is simply absent from [`Ledger::entries`], so it reads as `UNMEASURED` (or as
-    /// its recorded verdict, where one was preserved into [`Ledger::demoted`]) while every other
-    /// entry keeps proving what it proves. The text is retained verbatim so a reader is told
-    /// which entry and why — R13: quote the condition, never only the count.
+    /// Escalating these to `faults` was the 2026-08-02 defect: it destroyed 96 sound proofs to
+    /// punish one located one, having already thrown away the localisation it held. The decisive
+    /// case is `TOOLCHAIN-CHANGED`, which is ledger-wide **by nature** — a `glslc` bump changes
+    /// every module's bytes at once, so under the old scope every routine compiler upgrade was a
+    /// total ledger fault for a change that touched no kernel. A fail-safe guaranteed to fire
+    /// spuriously on routine maintenance has a scheduled date for being switched off.
+    ///
+    /// The entry is simply absent from [`Ledger::entries`], so it reads as `UNMEASURED` — or as
+    /// its recorded verdict, where one was preserved into [`Ledger::demoted`]. The text is kept
+    /// verbatim because §8.9.18 obliges the session disclosure to **print** it: a demotion nobody
+    /// is told about is the ledger quietly getting smaller.
     pub entry_faults: Vec<String>,
     /// Keys whose entry carried a verdict other than `MATCH`, with that verdict.
     ///
@@ -2029,7 +2040,7 @@ impl Ledger {
 /// deliberate forgery, because anyone who can edit the file can recompute it. The defence against
 /// that is `check_proof_ledger.py`, which re-hashes each entry's evidence artifact — an entry
 /// whose artifact does not exist or does not match is rejected there.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         h ^= u64::from(b);
@@ -2167,7 +2178,11 @@ fn json_field(line: &str, field: &str) -> Option<String> {    let needle = forma
 }
 
 /// Parse the baked-in ledger source.
-fn parse_ledger(source: &str) -> Ledger {
+///
+/// pub(crate) so the disclosure layer's tests can plant a ledger with a demoted entry. A
+/// demotion path that can only be exercised against the baked 103 entries has no observable
+/// firing state, and §8.9.18 forbids exactly that.
+pub(crate) fn parse_ledger(source: &str) -> Ledger {
     let mut faults: Vec<String> = Vec::new();
     // Entry-level faults are kept apart from whole-file ones. See `Ledger::entry_faults`.
     let mut entry_faults: Vec<String> = Vec::new();
@@ -2200,14 +2215,18 @@ fn parse_ledger(source: &str) -> Ledger {
     for line in lines {
         digest_input.push_str(line);
         digest_input.push('\n');
+        // §8.9.18: **a line that does not parse faults the artifact, not an entry.** You cannot
+        // say which claims it touches, because you cannot tell what it was going to say. This is
+        // the boundary of the localisation rule, and it is the one place in this loop where the
+        // whole-file fault is the correct scope rather than the lazy one.
         let Some(raw_key) = json_field(line, "key") else {
-            entry_faults.push(format!("ledger line has no `key` field: {line}"));
+            faults.push(format!("ledger line has no `key` field: {line}"));
             continue;
         };
         let key = match ProofKey::validate(&raw_key) {
             Ok(k) => k,
             Err(e) => {
-                entry_faults.push(format!(
+                faults.push(format!(
                     "ledger key {raw_key:?} is not a valid proof key: {e}"
                 ));
                 continue;
@@ -2478,7 +2497,7 @@ pub fn is_selector_ordinal(label: &str) -> bool {
 /// holed the argument that licensed it (model-level ULP evidence cannot promote a per-form key
 /// that was never exercised on the second device), so a status meaning "sound on another device"
 /// currently has no instrument standing behind it. Its slot in this enum is
-/// [`ProofState::ProvenOnAnotherDevice`], which is **not claimable** — the fail-safe reading —
+/// [`ProofState::ProvenElsewhere`], which is **not claimable** — the fail-safe reading —
 /// until Morpheus rules on the refutation. See `docs/OP_COVERAGE.md` §7.20 for the specification
 /// of what it would need.
 ///
@@ -2495,7 +2514,7 @@ pub enum ProofState {
     /// **Not claimable.** This is the slot `PROVEN-ELSEWHERE` would occupy. Declining is the
     /// fail-safe answer and the honest one while its promotion instrument is disputed: a claim
     /// granted here would be a status claimed without the thing it claims.
-    ProvenOnAnotherDevice { proved_on: String },
+    ProvenElsewhere { proved_on: String },
     /// A sound entry exists but **no device comparison is possible**: the entry carries a selector
     /// ordinal (so it names no hardware), or this run has not yet opened a device (so it has no
     /// name to be compared against).
@@ -2519,7 +2538,7 @@ impl ProofState {
     pub fn token(&self) -> &'static str {
         match self {
             ProofState::Proven => "PROVEN",
-            ProofState::ProvenOnAnotherDevice { .. } => "PROVEN-ON-ANOTHER-DEVICE",
+            ProofState::ProvenElsewhere { .. } => "PROVEN-ELSEWHERE",
             ProofState::DeviceUnattributed { .. } => "DEVICE-UNATTRIBUTED",
             ProofState::Unproven => "UNPROVEN",
         }
@@ -2527,7 +2546,7 @@ impl ProofState {
 
     /// Whether this state admits a claim.
     ///
-    /// Two states decline. `Unproven` because there is no evidence; `ProvenOnAnotherDevice`
+    /// Two states decline. `Unproven` because there is no evidence; `ProvenElsewhere`
     /// because the evidence is about other hardware and the mechanism that would port it is the
     /// one under dispute.
     pub fn claimable(&self) -> bool {
@@ -2563,7 +2582,7 @@ pub fn device_state(entry_device: &str) -> ProofState {
     if running.iter().any(|n| n == entry_device) {
         ProofState::Proven
     } else {
-        ProofState::ProvenOnAnotherDevice {
+        ProofState::ProvenElsewhere {
             proved_on: entry_device.to_string(),
         }
     }
@@ -2821,8 +2840,8 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     };
     if spec.is_live() && !ledger_hit && !hatch {
         crate::counters::record_unproven_decline();
-        if let ProofState::ProvenOnAnotherDevice { proved_on } = &form_state {
-            crate::counters::record_device_mismatch_decline(&proof_key.0, proved_on);
+        if let ProofState::ProvenElsewhere { proved_on } = &form_state {
+            crate::counters::record_proven_elsewhere_decline(&proof_key.0, proved_on);
             failures.push(decline(
                 DeclineCode::Unproven,
                 format_args!(
@@ -3648,7 +3667,7 @@ mod tests {
         let there = ledger_proved_on(IRIS);
         assert_eq!(
             there.state_for(&key),
-            ProofState::ProvenOnAnotherDevice {
+            ProofState::ProvenElsewhere {
                 proved_on: IRIS.to_string()
             },
             "an entry proven on other hardware must say so — this is the fail-open Link found: \
@@ -3678,7 +3697,7 @@ mod tests {
         );
         assert!(matches!(
             here.state_for(&key),
-            ProofState::ProvenOnAnotherDevice { .. }
+            ProofState::ProvenElsewhere { .. }
         ));
 
         // A selector ordinal names no hardware, so no comparison is possible in either direction.
@@ -3736,7 +3755,7 @@ mod tests {
     fn proof_state_tokens_are_distinct_strings() {
         let tokens = [
             ProofState::Proven.token(),
-            ProofState::ProvenOnAnotherDevice {
+            ProofState::ProvenElsewhere {
                 proved_on: "device9".to_string(),
             }
             .token(),
@@ -3753,7 +3772,7 @@ mod tests {
         assert_eq!(sorted.len(), 4, "two states share a spelling: {tokens:?}");
         assert!(!ProofState::Unproven.claimable());
         assert!(
-            !ProofState::ProvenOnAnotherDevice {
+            !ProofState::ProvenElsewhere {
                 proved_on: "d".to_string()
             }
             .claimable()

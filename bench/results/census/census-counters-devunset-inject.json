@@ -1,5 +1,5 @@
 {
-  "abi_version": 6,
+  "abi_version": 7,
   "compile_calls": 1,
   "subgraphs_live": 1,
   "subgraphs_stub": 0,
@@ -36,8 +36,8 @@
   "unproven_forms_enabled": [],
   "device_unattributed_claims": 6,
   "device_unattributed_forms": ["ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity", "ai.onnx::Mul/7+/f32,f32>f32/ew_binary_mul_f32/static/n2 entry-device=device0 running-device=1=NVIDIA GeForce RTX 4060 Laptop GPU reason=the entry records a selector ordinal, which names no hardware — a selector is a request, not an identity"],
-  "device_mismatch_declines": 0,
-  "device_mismatch_forms": [],
+  "proven_elsewhere_declines": 0,
+  "proven_elsewhere_forms": [],
   "running_device_names": "NVIDIA GeForce RTX 4060 Laptop GPU",
   "reproof_forms_admitted": [],
   "shaders_dispatched": [],

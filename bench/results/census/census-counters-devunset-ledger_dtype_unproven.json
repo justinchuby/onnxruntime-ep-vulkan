@@ -1,5 +1,5 @@
 {
-  "abi_version": 6,
+  "abi_version": 7,
   "compile_calls": 0,
   "subgraphs_live": 0,
   "subgraphs_stub": 0,
@@ -36,8 +36,8 @@
   "unproven_forms_enabled": [],
   "device_unattributed_claims": 0,
   "device_unattributed_forms": [],
-  "device_mismatch_declines": 0,
-  "device_mismatch_forms": [],
+  "proven_elsewhere_declines": 0,
+  "proven_elsewhere_forms": [],
   "running_device_names": "NVIDIA GeForce RTX 4060 Laptop GPU",
   "reproof_forms_admitted": [],
   "shaders_dispatched": [],

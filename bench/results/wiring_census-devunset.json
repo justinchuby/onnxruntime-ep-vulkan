@@ -17,24 +17,24 @@
       "layering_lint": 12000
     },
     "observed_units": {
-      "counters_child_clean": 1055,
-      "counters_child_inject": 657,
-      "add_session_profiling": 21,
-      "counters_child_flags_a": 666,
-      "counters_child_flags_b": 750,
-      "validation_probe": 92,
-      "layering_lint": 4656
+      "counters_child_clean": 1643,
+      "counters_child_inject": 1561,
+      "add_session_profiling": 69,
+      "counters_child_flags_a": 1844,
+      "counters_child_flags_b": 1218,
+      "validation_probe": 88,
+      "layering_lint": 8150
     },
     "observed_max_silence_units": {
-      "counters_child_clean": 58,
-      "counters_child_inject": 55,
-      "add_session_profiling": 21,
-      "counters_child_flags_a": 54,
-      "counters_child_flags_b": 58,
-      "validation_probe": 74,
-      "layering_lint": 3940
+      "counters_child_clean": 209,
+      "counters_child_inject": 96,
+      "add_session_profiling": 69,
+      "counters_child_flags_a": 74,
+      "counters_child_flags_b": 68,
+      "validation_probe": 71,
+      "layering_lint": 5611
     },
-    "clock_units_total": 8947,
+    "clock_units_total": 16415,
     "why_not_a_timeout": "A wall-clock threshold moves the same way for 'the box is loaded' and 'the census hung', so no value of it is right (R9 amendment 5).  A budget in work units does not: contention lowers units-per-second, widening the window in wall time, while a hang leaves the machine producing units and the step producing nothing.",
     "measures_cpu_contention_only": "The reference unit is CPU-bound.  GPU and disk contention slow a step without slowing the clock; observed_units above is recorded on every run so that margin is auditable."
   },
@@ -52,7 +52,7 @@
     "device_state_guard": "FIRED planted_exit=1 planted='DEVICE-STATE: FAIL(condition=STEADY_UNCERTIFIED)' | lane_exit=1 lane='DEVICE-STATE: STEADY_UNCERTIFIED (carried, not claimed) C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-counters-dev0-clean.json'",
     "instrument_census": "exit=1 CENSUS VERDICT: FAIL(drift) | ",
     "ep_entrypoints": "COMPILED-AND-DISPATCHED compile_calls=1 compute_calls=1 subgraphs_stub=0 dispatches_executed=6 (counts are ENTRIES to the ORT entry points, not graph nodes and not islands; planted-failure polarity: compile_calls=1 compute_calls=1 subgraphs_stub=0 \u2014 CONSTANT-ACROSS-POLARITIES)",
-    "flag_frame": "9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel \u2014 requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='NVIDIA GeForce RTX 4060 Laptop GPU')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-backend-probe-devunset.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-claim-log-devunset.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 \u2014 each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, \"unclaimed {op} x{n} ({why})\"). The census graph is a six-node Add/Mul chain that the EP claims in full \u2014 the claim log for this arm recorded every decision as claimed \u2014 so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1022 armed=1032 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))"
+    "flag_frame": "9 switch(es) disclosed; 6 discriminated by an artifact this run produced, 3 UNOBSERVABLE in this frame with a reason. Disclosure is not discrimination: the first says which world the census observed in, only the second can fail. || ONNXRUNTIME_EP_VULKAN_GEMV_PACKED[census_frame='1'] UNOBSERVABLE(armed in arm A and no discriminator exists in this frame: the census graph is a six-node elementwise chain with no MatMulNBits, so the packed GEMV kernel is not reachable and a 'no difference' reading would be a 0 for an event that cannot occur (R12). The kernel-identity observation needs either a GEMV case in the census lane or a counter naming the selected kernel \u2014 requested from Mouse/Switch as `gemv_packed_dispatches`) | ONNXRUNTIME_EP_VULKAN_DEVICE_MEMORY[census_frame='1'] MOVED(alloc_device_frame/frames_declared/device_backed_spans unset=('OFF', 0, 0) armed=('SHARED', 1, 3) (device='NVIDIA GeForce RTX 4060 Laptop GPU')) | ONNXRUNTIME_EP_VULKAN_QUARANTINE_SPANS[census_frame='8'] MOVED(alloc_quarantine_peak_spans/retired unset=(0, 0) armed=(3, 0)) | ONNXRUNTIME_EP_VULKAN_VA_RESERVE_MIB[census_frame='1024'] UNOBSERVABLE(armed at '1024' in arm A and no counter publishes the reservation size, so no artifact this run produced could differ. Requested from Tank: an `alloc_va_reserved_bytes` field, after which this segment becomes a two-arm discriminator like DEVICE_MEMORY's) | ONNXRUNTIME_EP_VULKAN_BACKEND_PROBE[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-backend-probe-devunset.txt'] MOVED(the probe file the EP wrote names backend='sync2' (an artifact the mechanism produced, whose content names its selection)) | ONNXRUNTIME_EP_VULKAN_CLAIM_LOG[census_frame='C:\\\\Users\\\\justinchu\\\\dev\\\\ep-vulkan-mouse\\\\bench\\\\results\\\\census\\\\census-claim-log-devunset.jsonl'] MOVED(6 claim-decision record(s), ops=['Add', 'Mul'] (the count is of DECISIONS, not of graph nodes and not of claimed nodes)) | ONNXRUNTIME_EP_VULKAN_DUMP_OUTPUT_BYTES[census_frame='1'] MOVED('dispatch kernel[' marker lines unset=0 armed=6 \u2014 each names the shader the dispatch used, so this is the one line in the census that observes kernel IDENTITY rather than kernel count) | ONNXRUNTIME_EP_VULKAN_CLAIM_DEBUG[census_frame='1'] UNOBSERVABLE(armed in arm A at child log severity '0' and its only output is a DECLINE report (`ep.rs:605`, \"unclaimed {op} x{n} ({why})\"). The census graph is a six-node Add/Mul chain that the EP claims in full \u2014 the claim log for this arm recorded every decision as claimed \u2014 so the switch has nothing to report in this frame. That is an event that cannot occur here, not a switch that does nothing (R12). Making it discriminable needs a census graph carrying at least one declined op) | ONNXRUNTIME_EP_VULKAN_VERBOSE[census_frame='1'] MOVED(child log lines unset=1023 armed=1033 at child log severity '0' (arm B arms VERBOSE and nothing else, so a difference here is attributable to it alone))"
   },
   "criterion_12": {
     "closes_row": false,

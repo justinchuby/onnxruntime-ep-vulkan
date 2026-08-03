@@ -69,7 +69,7 @@ pub enum FormEvidence {
     /// This is the slot §10.0.1 R12's `PROVEN-ELSEWHERE` would occupy. It declines while the
     /// instrument that would promote a per-form key onto second hardware is disputed — see
     /// `docs/OP_COVERAGE.md` §7.20.
-    ProvenOnAnotherDevice(&'static LedgerEntry),
+    ProvenElsewhere(&'static LedgerEntry),
     /// No entry under this key. Nothing has ever compared this form against the CPU EP.
     Unmeasured,
     /// An entry exists and its verdict is not `MATCH`. Carries that verdict verbatim.
@@ -84,7 +84,7 @@ impl FormEvidence {
         match self {
             FormEvidence::Proven(_) => "PROVEN",
             FormEvidence::DeviceUnattributed(..) => "DEVICE-UNATTRIBUTED",
-            FormEvidence::ProvenOnAnotherDevice(_) => "PROVEN-ON-ANOTHER-DEVICE",
+            FormEvidence::ProvenElsewhere(_) => "PROVEN-ELSEWHERE",
             FormEvidence::Unmeasured => "UNMEASURED",
             FormEvidence::Divergent(_) => "DIVERGENT",
             FormEvidence::LedgerFaulted => "LEDGER-FAULTED",
@@ -97,7 +97,7 @@ impl FormEvidence {
     /// WARN there fires on every form of every run and a WARN that always fires is one a reader
     /// learns to filter — which would cost the `UNMEASURED` WARN its audience. It is disclosed at
     /// INFO, by name, with the label the entry carries and the device the run opened.
-    /// `ProvenOnAnotherDevice` **does** warn: it is a decline, and a form dropping to the CPU EP
+    /// `ProvenElsewhere` **does** warn: it is a decline, and a form dropping to the CPU EP
     /// is a thing the operator must be able to see without reading a counters file.
     pub fn warrants_warning(&self) -> bool {
         !matches!(
@@ -124,7 +124,7 @@ pub fn evidence_for(key: &ProofKey) -> FormEvidence {
             registry::ProofState::DeviceUnattributed { reason, .. } => {
                 FormEvidence::DeviceUnattributed(entry, reason)
             }
-            _ => FormEvidence::ProvenOnAnotherDevice(entry),
+            _ => FormEvidence::ProvenElsewhere(entry),
         };
     }
     if !ledger.faults.is_empty() {
@@ -236,12 +236,12 @@ pub fn disclose_claimed_forms(forms: &[ClaimedForm]) -> Disclosure {
                     reason,
                 ));
             }
-            FormEvidence::ProvenOnAnotherDevice(entry) => {
+            FormEvidence::ProvenElsewhere(entry) => {
                 // A decline, so it belongs in the WARN list beside UNMEASURED and DIVERGENT: the
                 // operator's action is the same shape — a form they expected on the GPU is not.
                 d.unmeasured += 1;
                 unproven_lines.push(format!(
-                    "{} x{} [{}] PROVEN-ON-ANOTHER-DEVICE: proven by {} on {}, and this run is on \
+                    "{} x{} [{}] PROVEN-ELSEWHERE: proven by {} on {}, and this run is on \
                      {}. A proof is a property of a form on a device, so this form runs on the \
                      CPU EP. Prove it here with gen_proof_ledger.py --append",
                     form.op_type,
@@ -368,6 +368,56 @@ pub fn disclose_zero_claims(
         ),
     );
     counters::record_session_disclosure(0, 0, 0, 0, 0, false, false);
+}
+
+/// **§8.9.18 obligation 1 — print the demotions, on every run.**
+///
+/// Per-entry demotion is only a fix if the demotion is *visible*. A ledger that silently gets
+/// smaller is worse than one that faults loudly: the faulted one stops claiming, the shrinking one
+/// keeps claiming and nobody is told which proofs left. So "96 of 97 proofs are live" has to be a
+/// sentence the reader is handed, not a state they infer from a count they did not think to
+/// compare.
+///
+/// Called once per session-creation disclosure, **before** the claim set is known and regardless
+/// of whether this session claims anything, because the demotions are a property of the artifact
+/// and not of what this model happens to touch. Returns `(live, demoted)` so a test can assert on
+/// it without reading a log.
+pub fn disclose_ledger_demotions() -> (usize, usize) {
+    disclose_demotions_of(registry::ledger())
+}
+
+/// The body of [`disclose_ledger_demotions`], against any ledger.
+///
+/// Separated so both polarities are reachable: the baked ledger has no demoted entry, so a
+/// function that could only be called on it would have no observable firing state — which is the
+/// second obligation §8.9.18 attaches, and the same rule Niobe is held to on the amplification
+/// probe.
+pub fn disclose_demotions_of(ledger: &registry::Ledger) -> (usize, usize) {
+    let live = ledger.len();
+    let demoted = ledger.entry_faults.len();
+    if demoted == 0 {
+        // The negative polarity still speaks. A run that prints nothing here is
+        // indistinguishable from a run whose disclosure did not happen, which is the ambiguity
+        // §8.9.7's WARN pair exists to avoid.
+        logging::info_through_ort_sink(
+            TARGET,
+            &format!("[§8.9.18] proof ledger: {live}/{live} entries live, 0 demoted"),
+        );
+        return (live, demoted);
+    }
+    // R13: quote the condition, never only the count. A reader told "1 entry demoted" cannot act;
+    // a reader told which entry and why can re-prove it.
+    logging::warn_through_ort_sink(
+        TARGET,
+        &format!(
+            "[§8.9.18] proof ledger: {live}/{} entries live, {demoted} demoted. Each demoted \
+             entry proves nothing and its form will decline unless something else proves it: {}. \
+             Re-prove them with rust/tools/gen_proof_ledger.py --reprove",
+            live + demoted,
+            ledger.entry_faults.join("; ")
+        ),
+    );
+    (live, demoted)
 }
 
 #[cfg(test)]
@@ -502,5 +552,125 @@ mod tests {
         );
         assert_eq!(FormEvidence::LedgerFaulted.token(), "LEDGER-FAULTED");
         assert!(FormEvidence::LedgerFaulted.warrants_warning());
+    }
+
+    /// **§8.9.18 obligation — the demotion disclosure, seen in its firing state.**
+    ///
+    /// The baked ledger has no demoted entry, so a test that only called this on `registry::
+    /// ledger()` would assert `0 demoted` forever and never show the path working. Both ledgers
+    /// here are planted, they differ only in one entry's `shader_digest`, and the two readings
+    /// must differ — otherwise the count is zero-by-construction, which is precisely what the
+    /// ruling forbids.
+    #[test]
+    fn the_demotion_count_is_printed_and_is_not_zero_by_construction() {
+        let _g = test_lock();
+        const A: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        const B: &str = "ai.onnx::Mul/7+/f32,f32>f32/ew_binary_mul_f32/static/n2";
+        let line = |key: &str, stem: &str, digest: &str| {
+            format!(
+                "{{\"key\":\"{key}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"{stem}\"],\"shader_digest\":\"{digest}\",\
+                 \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            )
+        };
+        let build = |a_digest: &str| {
+            let b_digest = registry::shader_digest_for(&["ew_binary_mul_f32"])
+                .expect("a stem list this build can digest");
+            let body = format!(
+                "{}\n{}\n",
+                line(A, "ew_binary_add_f32", a_digest),
+                line(B, "ew_binary_mul_f32", &b_digest)
+            );
+            let d = format!("{:016x}", registry::fnv1a64(body.as_bytes()));
+            registry::parse_ledger(&format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":2,\
+                 \"generator\":\"test\"}}\n{body}"
+            ))
+        };
+
+        let sound_digest = registry::shader_digest_for(&["ew_binary_add_f32"])
+            .expect("a stem list this build can digest");
+        let clean = build(&sound_digest);
+        assert_eq!(
+            disclose_demotions_of(&clean),
+            (2, 0),
+            "ERROR(instrument): the control ledger is already demoting something, so the arm \
+             below cannot show a demotion being detected: {:?}",
+            clean.entry_faults
+        );
+
+        let drifted = build("0000000000000000");
+        assert_eq!(
+            disclose_demotions_of(&drifted),
+            (1, 1),
+            "one entry's shader digest drifted and the disclosure did not say so: faults={:?} \
+             entry_faults={:?}",
+            drifted.faults,
+            drifted.entry_faults
+        );
+        // The blast radius, stated where the disclosure is asserted: the sound entry survives.
+        assert!(
+            drifted.faults.is_empty(),
+            "a located defect faulted the artifact: {:?}",
+            drifted.faults
+        );
+        assert_ne!(
+            disclose_demotions_of(&clean),
+            disclose_demotions_of(&drifted),
+            "both arms reported the same thing; the demotion count is not being read"
+        );
+    }
+
+    /// §8.9.18's second group: damage you **cannot locate** still faults the whole artifact.
+    ///
+    /// Without this, the per-entry correction reads as "nothing faults the ledger any more",
+    /// which is the weakening the ruling warns the correction can become.
+    #[test]
+    fn unlocatable_damage_still_faults_the_whole_artifact() {
+        let key = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        let digest = registry::shader_digest_for(&["ew_binary_add_f32"]).expect("a stem list");
+        let entry = format!(
+            "{{\"key\":\"{key}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+             \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+             \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest}\",\
+             \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+        );
+        let good = format!("{entry}\n");
+        let good_digest = format!("{:016x}", registry::fnv1a64(good.as_bytes()));
+
+        // Control: the same body under a correct header is sound in both lists.
+        let sound = registry::parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{good_digest}\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{good}"
+        ));
+        assert!(
+            sound.faults.is_empty() && sound.entry_faults.is_empty(),
+            "ERROR(instrument): the control is not sound, so the arms below prove nothing: {:?} \
+             {:?}",
+            sound.faults,
+            sound.entry_faults
+        );
+
+        // A hand-edited body: any line may be affected, so nothing is locatable.
+        let hand_edited = registry::parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"dead0000dead0000\",\"entry_count\":1,\
+             \"generator\":\"test\"}}\n{good}"
+        ));
+        assert!(
+            !hand_edited.faults.is_empty(),
+            "a header digest mismatch did not fault the artifact"
+        );
+
+        // A line that does not parse: you cannot tell what it was going to say.
+        let unparseable = registry::parse_ledger(
+            "{\"__ledger__\":1,\"entry_count\":1,\"generator\":\"test\"}\n{ not json at all\n",
+        );
+        assert!(
+            !unparseable.faults.is_empty(),
+            "an unparseable line was demoted as if it were one located entry, but nothing about \
+             it is located: entry_faults={:?}",
+            unparseable.entry_faults
+        );
     }
 }

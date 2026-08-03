@@ -262,3 +262,37 @@ unsound.
 `claimed_form_evidence` `ALL-PROVEN` → `DEVICE-UNATTRIBUTED-PRESENT`: **a fix**. No node changed
 hands; `ALL-PROVEN` had been asserting a device frame nothing checked. `ledger_entries` 97 → 103 is
 the `main` merge, not this change. 507 lib tests pass, clippy clean, census lane 7 passed/1 xfailed.
+
+
+## 2026-08-02 — §8.9.18 alignment: the ruling landed and the guard bit me
+
+**Morpheus upheld the refutation and withdrew his own paragraph in place.** `PROVEN-ELSEWHERE`
+**keeps disclosure, loses promotion**. His arithmetic is the part I will keep: `proven_key_lookups`
+6 against `ledger_entries` 95 — one clean ULP curve would have promoted 89 keys nothing ever
+touched. My §7.20(c) "condition 4 cannot be satisfied as written" now resolves the other way, and it
+is worth being precise about how: it is not that I was wrong, it is that with promotion withdrawn
+the predicate that must read the status is the *declining* one, and that one does come out negative
+on a planted entry. The condition was unsatisfiable for a status that promotes; it is satisfiable
+for a status that discloses and refuses.
+
+**The layout guard fired on a pure rename, and I did not plan the demonstration.** Renaming
+`device_mismatch_*` → `proven_elsewhere_*` for the ruling's vocabulary moved no offset and changed
+no size; `cargo build --lib` failed with `E0080` regardless, because the hash covers
+`name:offset:size`. v7 `0x16eacc53e6e18d97` ≠ v6 `0xf3fac68aa2c3a3ef` at an identical 152 bytes and
+20 fields. This is the mechanism working in anger on work that was not about layout — and it is
+right, because a name-keyed ctypes reader would have read `0` for the renamed field exactly as
+`ledger_entries` read 0 under `898a2ba`.
+
+**Fault scope: I had the split right and the boundary wrong.** I had put "unparseable line" and
+"invalid key" in `entry_faults`. Morpheus's rule — *fault scope is set by the scope of what you
+cannot locate, not by the severity of what you found* — puts them back on the artifact: you cannot
+locate what a line you cannot read meant to say. Moved. Both attached obligations discharged: a
+demotion count printed on every disclosure (INFO at zero, WARN otherwise), and a demotion test that
+cannot read zero by construction.
+
+**Per-key replay: recorded, not commissioned.** He was careful about that and I will be too. I do
+judge it right, structurally: per-key by construction, so it cannot promote what it did not
+exercise. Still unrun on a second device, so still a proposal.
+
+**Readings after the ABI change: 355 / 355 / 3, unchanged.** 509 lib tests pass, clippy clean, 12
+passed + 1 xfailed on the census + singleton lanes, `counters_abi.py --check` PASS at v7.

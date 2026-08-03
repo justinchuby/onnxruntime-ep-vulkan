@@ -65,7 +65,7 @@ use std::sync::Mutex;
 /// [`COUNTERS_LAYOUT_HASH`], which the compiler computes from the actual field offsets: a layout
 /// change that does not appear in [`COUNTERS_LAYOUT_REGISTRY`] under this version fails the build.
 /// See [`counters_layout_hash`].
-pub const COUNTERS_ABI_VERSION: u32 = 6;
+pub const COUNTERS_ABI_VERSION: u32 = 7;
 
 /// Set to a path to have the EP write a JSON counter snapshot there.
 pub const ENV_COUNTERS_FILE: &str = "ONNXRUNTIME_EP_VULKAN_COUNTERS_FILE";
@@ -597,7 +597,7 @@ pub struct VulkanEpCounters {
     /// because "nothing has proven this form" and "this form was proven on other hardware" are
     /// different facts and a reader who sees only the first will look in the wrong place. Non-zero
     /// requires entries carrying physical device names, so it is zero on today's ledger.
-    pub device_mismatch_declines: u64,
+    pub proven_elsewhere_declines: u64,
 }
 }
 
@@ -695,11 +695,15 @@ pub const COUNTERS_LAYOUT_REGISTRY: &[(u32, u64)] = &[
     (4, 0xcfc7_f82e_9e62_c5ef),
     (5, 0x63c4_641d_754f_2443),
     // v6 = `LedgerEntry.device` becomes load-bearing: `proven_elsewhere_claims` is replaced by
-    // `device_unattributed_claims` and `device_mismatch_declines`. A *rename* is a layout change
+    // `device_unattributed_claims` and `proven_elsewhere_declines`. A *rename* is a layout change
     // here even at an identical size, because the hash covers field names — two builds that
     // disagree about what a field is called disagree about what its number means, and that is the
     // defect this table exists for, one level up from the offset.
     (6, 0xf3fa_c68a_a2c3_a3ef),
+    // v7 renames device_mismatch_* to proven_elsewhere_* (DESIGN §8.9.18 vocabulary).
+    // Same size, same offsets, different names — and the hash moves anyway, which is the point:
+    // two builds that disagree about what a field is CALLED disagree about what its number means.
+    (7, 0x16ea_cc53_e6e1_8d97),
 ];
 
 /// The build fails here when the struct changed and the version did not.
@@ -876,7 +880,7 @@ static REPROOF_KEYS_ADMITTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Nodes claimed on an entry whose device could not be compared to this run's hardware.
 static DEVICE_UNATTRIBUTED_CLAIMS: AtomicU64 = AtomicU64::new(0);
 /// Nodes declined because the entry names a different physical device than this run opened.
-static DEVICE_MISMATCH_DECLINES: AtomicU64 = AtomicU64::new(0);
+static PROVEN_ELSEWHERE_DECLINES: AtomicU64 = AtomicU64::new(0);
 /// `key entry-device=<label> running-device=<names> reason=<why>`, first-seen order.
 ///
 /// The count says how many claims rest on an unattributable frame; this says which forms and why.
@@ -884,7 +888,7 @@ static DEVICE_MISMATCH_DECLINES: AtomicU64 = AtomicU64::new(0);
 /// artifact, and not enough to act on.
 static DEVICE_UNATTRIBUTED_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// `key proved-on=<device> running-device=<names>` for each decline, first-seen order.
-static DEVICE_MISMATCH_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static PROVEN_ELSEWHERE_FORMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Shader stems this process actually dispatched, sorted and deduplicated.
 ///
@@ -1147,9 +1151,9 @@ pub fn record_device_unattributed(key: &str, entry_label: &str, reason: &str) {
 }
 
 /// Record a node declined because its entry names a different physical device than this run.
-pub fn record_device_mismatch_decline(key: &str, proved_on: &str) {
-    DEVICE_MISMATCH_DECLINES.fetch_add(1, ORD);
-    if let Ok(mut seen) = DEVICE_MISMATCH_FORMS.lock() {
+pub fn record_proven_elsewhere_decline(key: &str, proved_on: &str) {
+    PROVEN_ELSEWHERE_DECLINES.fetch_add(1, ORD);
+    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
         let running = crate::allocator::tally::session_devices();
         let row = format!("{key} proved-on={proved_on} running-device={running}");
         if !seen.iter().any(|r| r == &row) {
@@ -1167,8 +1171,8 @@ pub fn device_unattributed_forms() -> Vec<String> {
 }
 
 /// The device-mismatch decline rows recorded so far, deduplicated, first-seen order.
-pub fn device_mismatch_forms() -> Vec<String> {
-    DEVICE_MISMATCH_FORMS
+pub fn proven_elsewhere_forms() -> Vec<String> {
+    PROVEN_ELSEWHERE_FORMS
         .lock()
         .map(|v| v.clone())
         .unwrap_or_default()
@@ -1265,9 +1269,9 @@ fn device_unattributed_forms_json() -> String {
     format!("[{}]", body.join(", "))
 }
 
-/// `device_mismatch_forms` — one row per form declined because it was proven on other hardware.
-fn device_mismatch_forms_json() -> String {
-    let Ok(seen) = DEVICE_MISMATCH_FORMS.lock() else {
+/// `proven_elsewhere_forms` — one row per form declined because it was proven on other hardware.
+fn proven_elsewhere_forms_json() -> String {
+    let Ok(seen) = PROVEN_ELSEWHERE_FORMS.lock() else {
         return "\"INSTRUMENT-ERROR\"".to_string();
     };
     let body: Vec<String> = seen.iter().map(|k| format!("\"{}\"", json_escape(k))).collect();
@@ -1676,7 +1680,7 @@ pub fn snapshot() -> VulkanEpCounters {
         ledger_entries: crate::registry::ledger().len() as u64,
         unproven_forms_claimed: UNPROVEN_FORMS_CLAIMED.load(ORD),
         device_unattributed_claims: DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
-        device_mismatch_declines: DEVICE_MISMATCH_DECLINES.load(ORD),
+        proven_elsewhere_declines: PROVEN_ELSEWHERE_DECLINES.load(ORD),
     }
 }
 
@@ -1728,11 +1732,11 @@ pub fn reset() {
     UNPROVEN_DECLINES.store(0, ORD);
     UNPROVEN_FORMS_CLAIMED.store(0, ORD);
     DEVICE_UNATTRIBUTED_CLAIMS.store(0, ORD);
-    DEVICE_MISMATCH_DECLINES.store(0, ORD);
+    PROVEN_ELSEWHERE_DECLINES.store(0, ORD);
     if let Ok(mut seen) = DEVICE_UNATTRIBUTED_FORMS.lock() {
         seen.clear();
     }
-    if let Ok(mut seen) = DEVICE_MISMATCH_FORMS.lock() {
+    if let Ok(mut seen) = PROVEN_ELSEWHERE_FORMS.lock() {
         seen.clear();
     }
     if let Ok(mut used) = UNPROVEN_KEYS_USED.lock() {
@@ -1791,8 +1795,8 @@ impl VulkanEpCounters {
              \"unproven_forms_enabled\": {},\n  \
              \"device_unattributed_claims\": {},\n  \
              \"device_unattributed_forms\": {},\n  \
-             \"device_mismatch_declines\": {},\n  \
-             \"device_mismatch_forms\": {},\n  \
+             \"proven_elsewhere_declines\": {},\n  \
+             \"proven_elsewhere_forms\": {},\n  \
              \"running_device_names\": \"{}\",\n  \
              \"reproof_forms_admitted\": {},\n  \
              \"shaders_dispatched\": {},\n  \
@@ -1851,8 +1855,8 @@ impl VulkanEpCounters {
             unproven_forms_enabled_json(),
             DEVICE_UNATTRIBUTED_CLAIMS.load(ORD),
             device_unattributed_forms_json(),
-            DEVICE_MISMATCH_DECLINES.load(ORD),
-            device_mismatch_forms_json(),
+            PROVEN_ELSEWHERE_DECLINES.load(ORD),
+            proven_elsewhere_forms_json(),
             json_escape(&crate::registry::running_device_names().join("; ")),
             reproof_forms_admitted_json(),
             shaders_list,
