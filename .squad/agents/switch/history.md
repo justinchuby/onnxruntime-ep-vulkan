@@ -1189,3 +1189,65 @@ yet expected to have moved.
 
 **Next:** make a directly-written device buffer authoritative in `transfer.rs` /
 `host_device_memory.rs`. That is the whole remaining distance to the KV arena, and it is ours.
+
+## Session 46m — 2026-08-03 — the round trip on the real graph
+
+**Question:** does the real Phi-3.5-mini graph, with its 64 KV outputs, actually decline the round
+trip across a multi-step decode chain? The GQA case fixed `past` at 4, so `ROUND_TRIP_REMOVED` was
+a lower bound and never a number.
+
+**Answer: yes, and the slope is flat.** `bench/results/probe_kv_chain_phi35.py`, real 355-node
+island, 64 `present.*` outputs, 6-step chain with each `present` fed back as the next `past`:
+
+- `host` (shipping): 2,030,208 -> 3,996,288 B link traffic, slope **393,216 B per past token** —
+  Niobe's declared figure reproduced to the byte, which is what licenses reading the other lane.
+- `resident`: **64,128 B flat**, slope **0**. Same 355 dispatches/step, 2130 total, both lanes.
+- Bit-identical logits vs `host` on all 6 steps. Same token chain as the CPU EP.
+- Both devices, names read off the run: RTX 4060 Laptop (0x10de) and Iris Xe (0x8086).
+
+**The fix that made it fire.** Step 1b in `vk/session.rs` looped `host_backing_for` over *all*
+inputs, and that refreshes a device-authoritative span — a download — before returning a staging
+address nothing in the dispatch reads. So every KV input Step 1a had just bound on the device was
+downloaded anyway: 64 downloads/step, the whole 393,216 B/past-token slope, sitting on the *input*
+side after the output side stopped paying it. One `continue` and a long comment.
+
+### What surprised me
+**Both of my "findings" this round were my own probe.** `copy_outputs_to_cpu()` materialises every
+bound output — 65 downloads and the entire round trip, charged by the instrument to the thing it
+was measuring. And `binding.get_outputs()` is in **binding** order while `sess.get_outputs()` is in
+**session** order, so indexing one with the other handed me `present.0.key` when I asked for
+`logits`. That fabricated two credible defects: an unexplained residual of exactly 6,144 B/step
+(`32*96*fp16` — a number I could derive from the model, which is precisely why I believed it), and
+a correctness bug I had written up as "ORT's CPU-bound output path returns near-zeros under
+`BIND_OUTPUTS=1`". Neither exists. After the fix the residual is zero and the lanes are bitwise
+equal.
+
+What caught it was not inspection. It was **step 0 disagreeing between two lanes that are the same
+inference**. A byte count cannot tell you it measured the wrong tensor; a bitwise comparison
+against an identical computation can. New standing rule: a bandwidth lane carries a correctness
+control sharing its inputs exactly, and the correctness check is read *before* the byte count.
+
+### Also
+- The four separating cases now run in-probe and pass: session outliving an inference (and the
+  OrtValues it wrote), two sessions on one device interleaved, a context outgrowing its first
+  allocation over 6 growing spans, and a readback taken at the first instant the API permits with
+  no caller sync. None of the four is exercised by the chain.
+- `output_bind_requested()`'s INFO text was still claiming only `copy_outputs_to_cpu` pays.
+  Replaced with the real-graph numbers.
+- Degeneracy guard held: 100% nonzero, ~14,666 distinct values, so the agreement figures are
+  admissible.
+
+### State
+492 lib green, clippy clean (`-D warnings`), DLL `D408A901C4F6A454`. Decision records filed:
+`switch-round-trip-declined-on-real-graph.md`,
+`switch-bound-input-must-not-be-refreshed-through-host.md`,
+`switch-instrument-defects-that-looked-like-runtime-defects.md`.
+
+**Not quoted, deliberately:** no end-to-end improvement. The round trip is declined on the axis it
+was measured on; that is not the same claim as a faster decode.
+
+**Untested and said here rather than in a comment:** `Nq/Nkv = 1.00` on this model — the degenerate
+grouping. It is 4x on Llama-3 8B and the general grouping case has not been run.
+
+**Next:** the general grouping case. Nothing in the fix is keyed on head counts, but nothing has
+proved that either.
