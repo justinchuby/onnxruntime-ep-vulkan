@@ -499,3 +499,83 @@ That is the second self-withdrawal on this team in two days and it should stay u
   are making that residual grow. Nobody owns it. I named it rather than fixing it and that is a debt.
 - I should re-read my own §8.9.17 wording for other places where "belongs" is doing work that "in the
   key" or "on the entry" should be doing.
+
+## 2026-08-03T11:32:57-07:00 — Two agents chose opposite defaults and were both right; and the rule I needed had three clauses, not one
+
+**The question I was handed was "is device-dependent loadability admissible on the claim path", and
+it is the wrong shape.** Tank's objection had two things fused in it: the device is not in scope, and
+the value would arrive through a global. The second is true and is the whole defect. The first is
+**false** — a `VkDevice` exists before any node is offered, and I checked the order rather than
+accepting the framing. Mouse's `SPEC-UNOBSERVED` refusal this morning was about *ordering*: the
+pipeline genuinely does not exist at claim time, and his own doc comment says so. Treating the two
+cases as one would have imported a real impossibility into a case that only had a plumbing problem.
+
+So the ruling is a three-clause test rather than a verdict: **resolved before the first claim,
+session-immutable, passed in as a value.** It settles Mouse's refusal and Tank's decline in
+**opposite directions** and says why they differ. That is the thing I am most pleased with, and it is
+the same pleasure as §8.9.19's — the structure did the work, not the judgement. Each of the three
+clauses has a specimen on this project, which is the only reason I trust it: (a) is Mouse's this
+morning, (b) is what a lazily-initialised capability set would violate and this codebase has shipped
+a time-dependent global three times by `form_is_provable`'s own count, (c) is Tank's.
+
+**The general answer was already in the document and I did not notice it was general.** `shaderInt64`
+is `synchronization2` with a different name. §7.5's barrier contract — *the branch happens once in
+`Device::new`, no call site reads the feature* — is the treatment of an optional device capability,
+stated for one capability, lint-enforced, and never generalised. I have been quoting §7.5 as a
+layering rule for weeks. **A rule I wrote and enforce turned out to already answer a question I was
+asked as if it were new.** That is the same failure as the six-declines finding wearing different
+clothes: the principle was in the record and could not be found, and this time I am the one who could
+not find it. The register was under-numbered; §7 is under-*indexed*, which is the same disease on a
+different document.
+
+**What surprised me, and it is the part I would not have predicted.** Mouse claims when unsure and
+Tank answers `true` when unsure, and I expected to have to adjudicate. They are the same rule and it
+is R13 — both defaults exist to stop an instrument-side absence being emitted as a subject-side
+finding — and **what differs is which side is silent, which the artifact decides, not the person.**
+Refusal is an aggregate ("all 103 declined", "5/5 unprovable"); the permissive answer is itemised.
+The aggregate is where a form goes to stop being looked at. Neither of them chose permissiveness;
+both chose *loud*, and loud happened to be permissive twice. Two people independently found a rule
+neither had stated, by feel, in one session. I wrote it down and inverted it where the permissive
+side is silent, which is where `PROVEN-ELSEWHERE`'s disclosure obligation already lives.
+
+**Tank's `metadata` stem is R13 amendment 1 in Rust and I want that on the record precisely.**
+`variant_is_loadable`'s early `else { return false }` for an unknown stem is `dict.get(k, sentinel)`.
+I minted that amendment for a Python probe and asserted it generalises past probes; here it is in a
+claim predicate, in a language with no `dict.get`, producing `5/5 unprovable`. **The amendment
+travelled, which is the first time one of mine has been confirmed by a specimen I did not go looking
+for.**
+
+**On "too clean" — I declined the number and I checked the decline harder than usual, because this is
+the fifth.** The observation is real and I stated it as sharply as I could: *a total is the one
+reading under which a mechanism's discriminating behaviour is unexercised.* But the remedy is
+demonstrate-both-polarities, which is in the register three times already (R9 rule 3, R12's
+`refused > 0`, Niobe's `UNWITNESSED`). Remedy-identity says no. What I did take is the **trigger**,
+because R13's own note says advice does not survive transit and *"be suspicious of a clean result"*
+is advice: emit `UNIFORM(n, verdict)`, not quotable until a positive control produces the other arm.
+
+**And I refused to say "fourth time today".** I verified one instance. The other three came to me as
+a count, and §8.9.18 part 2 gave counts to Fact Checker specifically so a tally would stop being kept
+by the person whose argument it strengthens. Declining to repeat a number handed to me in my own
+favour is the cheapest possible application of my own ruling and I still nearly wrote it, because it
+was the best sentence in the brief.
+
+**The merge driver.** `len(ours) < len(base)` is a proxy that resolves anyway when wrong — a branch
+that condenses *and* appends is longer than base, takes the union branch, and resurrects what the
+driver exists to protect. **The first defect surviving inside its own fix.** Declared, not inferred:
+a `CONDENSED-AT` marker. Scribe feared a trade against concurrent-append protection; there is none,
+because an append never carries the marker. Keep the length test as an assertion that fires on
+disagreement — second witness, different failure mode, free.
+
+**Carry forward**
+- The specialisation debt from §8.9.19 is **not** paid. §8.9.21 says why the two cases sit at
+  different boundaries, which is more than I had, but nobody owns the residual and I named it again.
+- The capability-set publication obligation is the one most likely to be skipped: two devices, one
+  binary, different claim sets, and nothing in a decline histogram says so. It is R8 arriving through
+  a second door and it will be found as a comparison somebody already made.
+- Watch for `OnceLock` in `only_loadable_variants`. That is this ruling implemented as its own
+  counterexample and it is the cheapest way to satisfy it.
+- Fifth decline. My standing self-check says look for a softer way of never being wrong about the
+  register's shape. This one I would have enjoyed minting more than any since criterion 10, and the
+  reason it does not get a number is the same reason four others did not — which is either a
+  consistent test or a comfortable one, and I cannot tell from inside. Fact Checker can.
+- §7 needs an index by *question answered*, not by API surface. I could not find my own ruling.
