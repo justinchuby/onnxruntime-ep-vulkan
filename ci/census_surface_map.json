@@ -347,7 +347,7 @@
       "kind": "env_switch",
       "id": "ONNXRUNTIME_EP_VULKAN_GEMV_PACKED",
       "disposition": "uncensused",
-      "reason": "Selects the packed GEMV path \u2014 a different kernel, invisible to every census line.",
+      "reason": "Selects the packed GEMV path. Investigated 2026-08-02: the switch is resolved in rust/src/ops/quant.rs:345 and enters the program as SPECIALIZATION CONSTANT index 5 of q_gemv.comp, and rust/src/vk/pipeline.rs keys the pipeline cache on (shader_stem, spec_constants) \u2014 so the two settings really are two different pipelines. But NO artifact this project produces records a pipeline key or a spec constant: trace.rs's Phase set has PipelineLookup and no payload, and no counter names the variant. So a host-side record of the env var would not close this: R10 asks for an artifact the mechanism PRODUCED whose content varies with its input, and reading env::var from a harness proves nothing about what the EP did with it. UNTIL an EP-side change records the resolved value (or the pipeline key) in an artifact, every kernel observation we hold is silent about which kernel it observed. Owed by Mouse (ops/) with Switch (vk/pipeline.rs): emit the spec-constant vector, or the resolved gemv_packed bool, into the trace or the counters.",
       "owner": "Mouse"
     },
     {
@@ -457,6 +457,18 @@
       "mechanism": "instrument_census",
       "name_asserts": "that every instrument in the tree was classified into Tank's six states",
       "discriminator": "an instrument added to the tree and left unclassified turning the verdict from PASS to a finding",
+      "name_verified": false
+    },
+    {
+      "mechanism": "ep_entrypoints",
+      "name_asserts": "that the EP's C ABI entry points were ENTERED and what they did there, so that 'Compute() ran and dispatched nothing' is a state the census can report rather than a gap",
+      "discriminator": "an observation that differs between a run whose Compute() dispatched and one whose Compute() returned early: compute_calls > 0 with dispatches_executed == 0. A mechanism that only reports compile_calls > 0 has not earned this name.",
+      "name_verified": false
+    },
+    {
+      "mechanism": "flag_frame",
+      "name_asserts": "that the nine environment switches were DISCLOSED as part of the run's frame, and \u2014 where a discrimination arm can exist \u2014 that the switch changed something the run produced",
+      "discriminator": "an observation whose CONTENT differs between the switch set and unset. For ONNXRUNTIME_EP_VULKAN_GEMV_PACKED specifically, no such observation exists today: the switch resolves to specialization constant 5 of q_gemv.comp and no artifact records a pipeline key or a spec constant, so disclosure is all this mechanism can currently do and disclosure is not R10 evidence.",
       "name_verified": false
     }
   ]
