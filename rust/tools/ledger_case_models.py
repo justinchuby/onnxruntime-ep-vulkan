@@ -603,6 +603,15 @@ for _op in _VARIADIC_F32:
     BUILDERS[f"{_op.lower()}_f32_v2"] = (lambda o=_op: _variadic(o, TensorProto.FLOAT, n=2))
 
 BUILDERS.update({
+    # §8.9.16 — `Add`/i32 and `Mul`/i32 were unreachable, not unproven. `elementwise::EXERCISED`
+    # vetoed them inside the claim predicate, which runs before a proof key is computed, so the
+    # generator saw no unlockable key and the forms stayed unproven because they were unproven.
+    # With the veto replaced by a loadability test they are ordinary `[unproven]` declines, which
+    # is a decline a proof run can clear. Both go through the same `ew_binary` template as the
+    # f32 rows and the same `_typed_binary` builder as the bitwise i32 cases already here; what
+    # differs is the one-line body, which is exactly what the ledger key does not let them share.
+    "add_i32": lambda: _typed_binary("Add", TensorProto.INT32, TensorProto.INT32, opset=18),
+    "mul_i32": lambda: _typed_binary("Mul", TensorProto.INT32, TensorProto.INT32, opset=18),
     "not_bool": lambda: _typed_unary("Not", TensorProto.BOOL, TensorProto.BOOL, opset=21),
     "bitwisenot_i32": lambda: _typed_unary(
         "BitwiseNot", TensorProto.INT32, TensorProto.INT32, opset=18

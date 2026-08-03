@@ -313,12 +313,10 @@ pub const MANIFEST_PATH: &str = "src/ops/shader_variants.txt";
 // unloadable for as long as they existed.
 
 /// `Shader` — declared by every compute module. Never optional.
-#[cfg(test)]
-pub(crate) const CAP_SHADER: u32 = 1;
+pub const CAP_SHADER: u32 = 1;
 /// `Int64` — declared by every `_i64` variant. Requires `VkPhysicalDeviceFeatures::shaderInt64`,
 /// which the engine's feature chain does **not** currently enable.
-#[cfg(test)]
-pub(crate) const CAP_INT64: u32 = 11;
+pub const CAP_INT64: u32 = 11;
 
 /// Capabilities a *generated* variant may declare.
 ///
@@ -336,8 +334,7 @@ pub(crate) const GENERATED_CAPABILITIES: &[u32] = &[CAP_SHADER, CAP_INT64];
 /// `_i64` module cannot be created on any device we run on. Widening this list means three edits
 /// together, not one: enable the feature in the chain, probe it in `vk::caps`, and decline the
 /// variant on devices that lack it. A capability we generate is not a capability we have.
-#[cfg(test)]
-pub(crate) const ENGINE_ENABLED_CAPABILITIES: &[u32] = &[CAP_SHADER];
+pub const ENGINE_ENABLED_CAPABILITIES: &[u32] = &[CAP_SHADER];
 
 /// Every `OpCapability` declared by a SPIR-V module, decoded from the binary.
 ///
@@ -346,6 +343,10 @@ pub(crate) const ENGINE_ENABLED_CAPABILITIES: &[u32] = &[CAP_SHADER];
 /// section, but scanning the whole module is simpler and cannot miss one.
 #[cfg(test)]
 pub(crate) fn declared_capabilities(spv: &[u8]) -> Vec<u32> {
+    declared_capabilities_impl(spv)
+}
+
+fn declared_capabilities_impl(spv: &[u8]) -> Vec<u32> {
     let words: Vec<u32> = spv
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -363,6 +364,31 @@ pub(crate) fn declared_capabilities(spv: &[u8]) -> Vec<u32> {
         i += len;
     }
     out
+}
+
+/// Can the engine actually create a pipeline from this SPIR-V module on the devices we run on?
+///
+/// §8.9.16 — THE HALF OF `EXERCISED` THAT WAS REAL.
+/// `elementwise::EXERCISED` used to answer two questions with one hand-written list: *does a
+/// kernel exist for this (op, dtype)?* and *has anything ever measured it?* The second question
+/// is the proof ledger's, and answering it in the claim predicate created a deadlock — the veto
+/// fired before a proof key was computed, so no proof run could ever reach the forms it blocked
+/// (`Add`/i32, `Mul`/i32, `Swish`/f32). The first question is real and stays here, derived from
+/// the artifact rather than asserted: a module that declares a capability the engine never
+/// enables cannot be created on any device we run on, and claiming a node it would serve is a
+/// promise we cannot keep whatever the ledger says.
+///
+/// `false` for an unknown stem: a variant the build did not generate is not loadable either.
+pub fn variant_is_loadable(stem: &str) -> bool {
+    let Some((_, spv)) = crate::engine::shaders::SHADER_MODULES
+        .iter()
+        .find(|(name, _)| *name == stem)
+    else {
+        return false;
+    };
+    declared_capabilities_impl(spv)
+        .iter()
+        .all(|c| ENGINE_ENABLED_CAPABILITIES.contains(c))
 }
 
 #[cfg(test)]

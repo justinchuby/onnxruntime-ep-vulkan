@@ -25,7 +25,7 @@
   "ledger_hits": 355,
   "ledger_gate": "MIXED",
   "ledger_miss": "KEY-ABSENT",
-  "ledger_entries": 95,
+  "ledger_entries": 97,
   "ledger_faults": 0,
   "unproven_declines": 3,
   "unproven_forms_claimed": 0,

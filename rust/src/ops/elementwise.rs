@@ -8,11 +8,12 @@
 //! # The elementwise f32 family is live; everything else is [`Staged`]
 //!
 //! The three GLSL templates exist (`shaders/glsl/ew_{unary,binary,select}.comp`) and all 168
-//! variants compile. As of 2026-07-29, **35 of them have executed on both local devices and
-//! matched ORT's CPU EP** through the real ORT wire — see [`EXERCISED`], which names the test for
-//! each. `add_f32` went first, alone; the rest of the f32 elementwise arithmetic family followed in
-//! one step via [`TEMPLATE_LIVE`], because a `Staged` row's differential test cannot compare
-//! anything and so cannot produce the evidence that would justify flipping it.
+//! variants compile. Which of them may be *claimed* is no longer written down here: as of
+//! 2026-08-02 (§8.9.16) the claim predicate asks only whether a **loadable** kernel variant exists
+//! for the node's dtype, and whether anything has ever measured that form is the proof ledger's
+//! answer, given per-key by a harness run naming artifact, device, shader digest and observed
+//! `worst_rel`. The two hand-written evidence lists that used to sit here are gone; see
+//! [`variants::variant_is_loadable`] and `OP_COVERAGE.md` §8.9.16.
 //!
 //! Every live row is live for **f32 only** ([`ew_binary_f32`], [`ew_unary_f32`]). Comparison and
 //! logic ops are not in the set: their output dtype differs from their input, which is a different
@@ -23,7 +24,7 @@
 //! What exists for the staged rows is the full description — opset window, dtype capabilities,
 //! template, variant stems, claim predicate, translate handler, and the shader itself — all of it
 //! unit tested. Flipping a row live once a differential test has executed its variant is a
-//! one-word diff, plus its dtype in [`EXERCISED`].
+//! one-word diff, plus a proof run that mints the ledger entry for the form.
 //!
 //! Three staging reasons appear below and they mean different things:
 //!
@@ -37,7 +38,6 @@
 //!   distinction.
 //! * [`NEEDS_CAST_MATRIX`] — the variant space is keyed on a dtype *pair*.
 
-use crate::engine::DType;
 use crate::kernel;
 use crate::ops::common::claim::{self, ClaimResult};
 use crate::ops::common::dtype::{ANY, BOOL, DTypeSet, F32, FLOAT, INT, NUMERIC, dtype_suffix};
@@ -62,151 +62,18 @@ pub const NEEDS_PARAMS: &str = "its attribute selects a different expression rat
 pub const NEEDS_CAST_MATRIX: &str = "its shader variant space is keyed on a source/destination dtype pair rather than a single \
      dtype, so it needs its own template and manifest column";
 
-/// The `(op, dtype)` pairs that have actually executed on a device through the ORT wire.
-///
-/// This is the evidence list behind every [`Live`] row in this module, and it is deliberately a
-/// *list of pairs* rather than a flag on the row. A row's `caps` describes what the kernel family
-/// is written for and drives shader-variant generation; it is not a statement that every one of
-/// those variants has run. `Add` declares `NUMERIC`, so `add_{f32,f16,i32,i64}` are all compiled
-/// and all shape-checked — but only `add_f32` has been dispatched.
-///
-/// Evidence, as of 2026-07-29:
-///
-/// * `Add`/f32 — `add_f32_dispatches_end_to_end`, the crate's own device test: the shader executes
-///   and computes the right answer on both local devices (Intel Iris Xe 1.4.309, NVIDIA RTX 4060
-///   Laptop 1.4.325), validation layers on, zero errors on either. Then
-///   `tests/ops/test_claim_diagnostics.py::test_add_is_claimed`, which reads ORT's profiling JSON
-///   and requires the node to have run on `VulkanExecutionProvider` — verified by the coordinator
-///   on each device rather than reported.
-/// * **Every other pair here** — `tests/ops/test_op_table.py::test_op_table[<Op>-fp32]`, run on
-///   device 0 and device 1: 39 passed on each, no numerical mismatch against the CPU EP oracle.
-///   Each of those tests asserts placement on `VulkanExecutionProvider` *before* comparing, so a
-///   pass is not the vacuous CPU-fallback pass.
-///
-/// The wire — `Compile` → `OrtNodeComputeInfo` → `VulkanSession::dispatch_ort`, with the plan built
-/// from the **fused node** whose edge order `KernelContext_GetInput/GetOutput` index by — is what
-/// all of these travel, and it is now carried real ORT tensors on two vendors.
-///
-/// Adding a pair here without a named test that ran it on a device is the same category of error
-/// as widening a claim predicate to make a coverage number look better.
-pub const EXERCISED: &[(&str, &str)] = &[
-    // Binary arithmetic.
-    ("Add", "f32"),
-    ("Sub", "f32"),
-    ("Mul", "f32"),
-    ("Div", "f32"),
-    ("Pow", "f32"),
-    // Unary maths.
-    ("Abs", "f32"),
-    ("Neg", "f32"),
-    ("Reciprocal", "f32"),
-    ("Sqrt", "f32"),
-    ("Exp", "f32"),
-    ("Log", "f32"),
-    ("Sin", "f32"),
-    ("Cos", "f32"),
-    ("Tan", "f32"),
-    ("Asin", "f32"),
-    ("Acos", "f32"),
-    ("Atan", "f32"),
-    ("Sinh", "f32"),
-    ("Cosh", "f32"),
-    ("Tanh", "f32"),
-    ("Asinh", "f32"),
-    ("Acosh", "f32"),
-    ("Atanh", "f32"),
-    ("Ceil", "f32"),
-    ("Floor", "f32"),
-    ("Round", "f32"),
-    ("Sign", "f32"),
-    ("Erf", "f32"),
-    ("Identity", "f32"),
-    // Attribute-free activations.
-    ("Relu", "f32"),
-    ("Sigmoid", "f32"),
-    ("HardSwish", "f32"),
-    ("Softplus", "f32"),
-    ("Softsign", "f32"),
-    ("Mish", "f32"),
-    // Parameterised activations — attributes carried in the push-constant tail
-    // (`ops::common::params`). These are listed here rather than in `TEMPLATE_LIVE` because the
-    // tail is a *new code path*, not a new line of arithmetic inside an exercised one: a wrong
-    // offset for `params[0]` would be invisible to every op above, all of which push zeros there
-    // and read none of them. They earned their place by executing, with non-default attribute
-    // values, on both devices.
-    ("HardSigmoid", "f32"),
-    ("LeakyRelu", "f32"),
-    ("Elu", "f32"),
-    ("Selu", "f32"),
-    ("Celu", "f32"),
-    ("ThresholdedRelu", "f32"),
-    ("Shrink", "f32"),
-    ("Gelu", "f32"),
-    // Three-input `Clip` — the ternary template's first execution.
-    ("Clip", "f32"),
-    // ---- f16, 2026-07-30 ------------------------------------------------------------------
-    // The dtype that actually matters: a Phi-3.5 decoder is f16 throughout, so the f32 rows above
-    // are worth zero nodes on it. Evidence: `tests/ops/test_op_table.py::test_op_table[<Op>-fp16]`
-    // on device 0 (Intel Iris Xe) and device 1 (NVIDIA RTX 4060), each asserting placement on
-    // `VulkanExecutionProvider` before comparing against the CPU EP at `FP16_ANY` tolerance.
-    //
-    // These are listed as their own pairs rather than inferred from the f32 rows because f16 is a
-    // **different storage path**, not a different expression: the tensors are packed two to a
-    // `uint` word and stored through `atomicAnd`/`atomicOr` on disjoint 16-bit lanes. A wrong lane
-    // or a wrong word index is invisible to every f32 row here. Same reasoning as the parameter
-    // tail above.
-    ("Add", "f16"),
-    ("Sub", "f16"),
-    ("Mul", "f16"),
-    ("Div", "f16"),
-    ("Relu", "f16"),
-    ("Sigmoid", "f16"),
-    ("Sqrt", "f16"),
-    ("Exp", "f16"),
-    ("Tanh", "f16"),
-    ("Erf", "f16"),
-    ("Gelu", "f16"),
-];
+// §8.9.16 — `EXERCISED` and `TEMPLATE_LIVE` used to live here.
+//
+// They were two hand-maintained lists recording which `(op, dtype)` pairs had executed on a
+// device, consulted by the claim predicate before a proof key was computed. The proof ledger
+// now answers that question from harness-generated evidence — artifact, device, shader digest,
+// observed `worst_rel` — so keeping a second, typed answer was not redundancy but a deadlock:
+// a form the list vetoed could never be offered to the proof run that would justify it. The
+// residual the lists did carry honestly — *does a creatable kernel exist?* — is now derived
+// from the SPIR-V by [`variants::variant_is_loadable`]. A list nobody can falsify is the next
+// stale thing; these are deleted rather than kept as documentation.
 
-/// Rows that are live on **template evidence** rather than on their own dispatch.
-///
-/// Each entry is `(op, the EXERCISED op whose dispatch stands in for it)`. This is a deliberately
-/// weaker claim than [`EXERCISED`] and it is kept in a separate list so that nobody can mistake
-/// one for the other — including me, six weeks from now.
-///
-/// **Currently empty, and the reason is the point.** Thirty-four rows sat here for the length of
-/// one edit on 2026-07-29 — the f32 elementwise arithmetic family, standing on `Add` — and were
-/// promoted into [`EXERCISED`] the same day, because flipping them is what allowed the differential
-/// suite to execute them at all. It stays defined because that transition is the mechanism, not an
-/// accident: the next family (bool-output comparisons, the variadic ops, `Where`, or f16 across the
-/// board) will go through exactly the same two steps.
-///
-/// **What it asserts.** The ORT wire — `GetCapability` → `Compile` → `OrtNodeComputeInfo` →
-/// `VulkanSession::dispatch_ort` — has carried a real ORT tensor to a real device, and every row
-/// here reaches that wire through the *same* `translate` function, the *same* template, the *same*
-/// descriptor layout and the *same* push-constant block as its representative. What differs
-/// between `add_f32` and `mul_f32` is one line of GLSL inside a body the build pipeline generates
-/// from one source.
-///
-/// **What it does not assert.** That the one line is right. `Div` by zero, `Pow` of a negative
-/// base, `Log` of zero and the exact rounding of `Round` are each their own arithmetic, and no
-/// amount of `Add` passing says anything about them. That is what Trinity's differential suite
-/// against the CPU EP is for, and flipping these rows is what lets it run at all: while a row is
-/// `Staged`, its test fails with *"the EP executed no node — the CPU-match check would be a
-/// vacuous pass"*, which is loud but proves nothing. Those failures turn into real comparisons the
-/// moment the rows go live, and if a shader is wrong the suite says so on the next run.
-///
-/// **Why this is not the slippery slope [`EXERCISED`] exists to prevent.** The rule is narrow and
-/// checkable: a row may sit here only if (a) its representative is in [`EXERCISED`] and live, (b)
-/// it goes through that representative's exact template, and (c) its claim predicate is narrowed
-/// to the representative's dtype. It buys nothing for `Sub` at i64, for `Where`, for the variadic
-/// ops, or for anything whose output dtype differs from its input — those are different code
-/// paths, not different arithmetic, and they stay staged. And an entry that has not been promoted
-/// by the next differential run is evidence that the run is not covering it. See
-/// `OP_COVERAGE.md` §7.1.2.
-pub const TEMPLATE_LIVE: &[(&str, &str)] = &[];
-
-/// [`ew_binary`](claim::ew_binary), narrowed to the dtype that has executed.
+/// [`ew_binary`](claim::ew_binary), narrowed to a dtype whose kernel variant loads.
 ///
 /// `OP_COVERAGE.md` §7.1: claim an op only when the attribute/dtype/rank combination is genuinely
 /// handled. The rows using this are `NUMERIC` because the *template* is, and because the variant
@@ -219,73 +86,58 @@ pub const TEMPLATE_LIVE: &[(&str, &str)] = &[];
 /// worth exercising next.
 fn ew_binary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_binary(view, spec)?;
-    only_proved_dtypes(view, spec)
+    only_loadable_variants(view, spec)
 }
 
 /// [`ew_unary`](claim::ew_unary), narrowed the same way and for the same reason.
 fn ew_unary_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary(view, spec)?;
-    only_proved_dtypes(view, spec)
+    only_loadable_variants(view, spec)
 }
 
-/// The shared narrowing: input 0's dtype must be one this op has been *proved* at.
+/// The shared narrowing: a **loadable kernel variant must exist** for input 0's dtype.
 ///
-/// Reads [`EXERCISED`] directly rather than hardcoding f32. That is the whole mechanism: the
-/// evidence list and the claim predicate can no longer disagree, because they are the same list.
-/// Adding `("Mul", "f16")` after a differential run against the CPU EP is then the single act that
-/// widens the claim — there is no second place to remember, and no way to widen a claim without
-/// writing down the evidence that justifies it.
+/// §8.9.16 — WHAT THIS USED TO DO, AND WHY IT STOPPED.
+/// Until 2026-08-02 this function was `only_proved_dtypes` and it consulted `EXERCISED`, a
+/// hand-written `&[(&str, &str)]` of `(op, dtype)` pairs that had run on a device. That list was
+/// right for its time and it is what the proof ledger was built to replace: the ledger answers
+/// the same question — *has anything measured this form?* — with a harness-generated entry naming
+/// the artifact, the device, the shader digest and the observed `worst_rel`, instead of a pair
+/// somebody typed.
 ///
-/// A [`TEMPLATE_LIVE`] row inherits its representative's proved dtypes and nothing more, which is
-/// the same weaker-but-explicit claim that list has always made.
+/// Keeping both was not redundancy, it was a **deadlock**. `EXERCISED` vetoed inside the claim
+/// predicate, which runs *before* a proof key is computed, so a form it blocked could never be
+/// offered to a proof run: `Add`/i32 declined `[dtype]`, the generator saw no unlockable key, and
+/// the form stayed unproven forever because it was unproven. Three forms sat in that loop with
+/// working, compiled shaders.
 ///
-/// The decline is `[dtype]`, so an f16 decoder graph shows up in Niobe's histogram as a dtype
-/// bucket rather than as a mystery. That bucket emptying is the signal that the variant is worth
-/// exercising next.
-fn only_proved_dtypes(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
+/// So the two questions are split. *Does a kernel exist that this engine can create?* stays here,
+/// because claiming a node whose module cannot be instantiated is an `EP_FAIL` at translate time
+/// rather than a decline, and no ledger entry could make it safe. *Has anything measured it?* is
+/// the ledger's, and a form that reaches here now declines `[unproven]` — a decline a proof run
+/// can clear, rather than one it cannot reach.
+///
+/// The decline is still `[dtype]`, so an unloadable variant shows up in Niobe's histogram as a
+/// dtype bucket. What has changed is what the bucket means: it now holds only forms with no
+/// creatable module, not forms nobody has got round to measuring.
+fn only_loadable_variants(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     let edge = claim::input_edge(view, spec, 0)?;
     let dt = edge.dtype;
-    let proved = dt.is_some_and(|d| proved_at(spec.op_type, d));
+    let loadable = dt.is_some_and(|d| {
+        spec.kernel
+            .stem(d)
+            .is_some_and(crate::ops::common::variants::variant_is_loadable)
+    });
     crate::require!(
-        proved,
+        loadable,
         DType,
-        "`{}` is live for {}; this node is {}. That variant of the elementwise shader compiles \
-         but has never executed on a device, and the CPU EP is correct for it",
+        "`{}` has no loadable shader variant at {}; the module either was not generated or \
+         declares a SPIR-V capability this engine does not enable, so no device we run on could \
+         create a pipeline for it. The CPU EP is correct for this node",
         spec.op_type,
-        proved_list(spec.op_type),
         dt.map_or("untyped", dtype_suffix),
     );
     Ok(())
-}
-
-/// Has `op` executed at dtype `d` on a device, directly or through its template representative?
-pub fn proved_at(op: &str, d: DType) -> bool {
-    let suffix = dtype_suffix(d);
-    let representative = TEMPLATE_LIVE
-        .iter()
-        .find(|(row, _)| *row == op)
-        .map_or(op, |(_, rep)| *rep);
-    EXERCISED
-        .iter()
-        .any(|(e, dt)| *e == representative && *dt == suffix)
-}
-
-/// The dtypes `op` is proved at, for the decline message.
-fn proved_list(op: &str) -> String {
-    let representative = TEMPLATE_LIVE
-        .iter()
-        .find(|(row, _)| *row == op)
-        .map_or(op, |(_, rep)| *rep);
-    let mut got: Vec<&str> = EXERCISED
-        .iter()
-        .filter(|(e, _)| *e == representative)
-        .map(|(_, dt)| *dt)
-        .collect();
-    got.sort_unstable();
-    if got.is_empty() {
-        return "no dtype".to_string();
-    }
-    got.join("/")
 }
 
 /// `ai.onnx::Swish` (opset 24) — any `alpha`, now that the parameter tail carries it.
@@ -295,7 +147,7 @@ fn proved_list(op: &str) -> String {
 /// The pin is kept in the tests as a record of *why* it existed, not as a constraint.
 fn ew_unary_params_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary_params(view, spec)?;
-    only_proved_dtypes(view, spec)
+    only_loadable_variants(view, spec)
 }
 
 /// `Gelu` — claim `approximate = "none"` (the exact erf form), decline `"tanh"`.
@@ -308,14 +160,14 @@ fn ew_unary_params_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
 fn gelu(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_unary(view, spec)?;
     claim::attr_string_in(view, spec, "approximate", &["none"], "none")?;
-    only_proved_dtypes(view, spec)
+    only_loadable_variants(view, spec)
 }
 
 /// `Clip` — the three-input form only, f32. See [`claim::ew_clip`] for why the shorter forms
 /// decline rather than defaulting the omitted bound.
 fn clip_f32(view: &NodeView<'_>, spec: &OpSpec) -> ClaimResult {
     claim::ew_clip(view, spec)?;
-    only_proved_dtypes(view, spec)
+    only_loadable_variants(view, spec)
 }
 
 crate::op_table! {
@@ -325,16 +177,12 @@ crate::op_table! {
     //  op            domain  opset window        caps      kernel                       claim               translate               status
     // ---------------------------------------------------------------------------------------
 
-    // `Add` is the one row live on its own dispatch: `add_f32_dispatches_end_to_end` ran it on
-    // both local devices. Live for **f32 only** — `caps` stays NUMERIC because that is what the
-    // template and the variant table are for, and `ew_binary_f32` narrows the claim to the variant
-    // that has actually run. See `EXERCISED`.
-    //
-    // The rows below it marked with `ew_binary_f32` / `ew_unary_f32` are live on *template*
-    // evidence: same template, same wire, same dtype, different one-line body. See `TEMPLATE_LIVE`
-    // for exactly what that does and does not assert. Comparison and logic ops are NOT in that set
-    // — their output dtype differs from their input, which is a different store path in the
-    // shader, not a different expression.
+    // Rows marked `ew_binary_f32` / `ew_unary_f32` narrow the claim to a dtype whose kernel
+    // variant the engine can actually create (`only_loadable_variants`). Whether the form has been
+    // measured is the ledger's answer, not this table's: a row here is an offer, and an offer with
+    // no ledger entry declines `[unproven]`. Comparison and logic ops keep their own predicates —
+    // their output dtype differs from their input, which is a different store path in the shader,
+    // not a different one-line expression.
     "Add",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "add"),    ew_binary_f32,      templates::ew_binary,   Live;
     "Sub",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "sub"),    ew_binary_f32,      templates::ew_binary,   Live;
     "Mul",            Ai,     7 ..= OPSET_ANY,    NUMERIC,  kernel!(EwBinary, "mul"),    ew_binary_f32,      templates::ew_binary,   Live;
@@ -435,54 +283,63 @@ mod tests {
     use super::*;
     use crate::registry::{Domain, OpStatus};
 
-    /// Every [`Live`] row in this module must be justified by [`EXERCISED`] or [`TEMPLATE_LIVE`].
+    /// Every [`Live`] row in this module must offer only forms the ledger can be asked about.
     ///
-    /// This is the structural half of the "no unexecuted claims" rule. It cannot check that the
-    /// named test actually ran — nothing in a unit test can — but it makes going live a two-place
-    /// edit where the second place demands either a device and a test name, or a named
-    /// representative that has one. The cost of flipping a row on a hunch is that you have to
-    /// write a sentence claiming evidence that does not exist.
+    /// §8.9.16. This test used to check that every live row appeared in one of two hand-written
+    /// evidence lists. Those lists are gone, and with them the question they answered: *has this
+    /// form executed?* is now the proof ledger's, answered per key from a harness run. What is left
+    /// for a unit test is the structural half — a live row must carry a **dtype-narrowed**
+    /// predicate, so that going live cannot claim every variant the row's `caps` allow. That is
+    /// asserted by `live_rows_claim_f32_only_and_never_on_caps_alone` below.
     ///
-    /// The evidence lists are keyed by `(op, dtype)`, so one op legitimately appears once per
-    /// dtype it has been exercised at. The set of *ops* is what has to match the set of live rows;
-    /// which dtypes each one carries is [`only_proved_dtypes`]'s business, not this test's.
+    /// What this test asserts is the property that replaced the lists: every live row has at least
+    /// one dtype whose kernel variant this engine could actually create. A live row with no
+    /// loadable variant is a row that will decline `[dtype]` for every node it ever sees, which is
+    /// an offer nobody can accept and a claim table entry that means nothing.
     #[test]
-    fn every_live_row_is_justified_by_one_of_the_two_evidence_lists() {
-        let mut live: Vec<&str> = OPS
+    fn every_live_row_offers_at_least_one_loadable_variant() {
+        use crate::ops::common::variants::variant_is_loadable;
+
+        let dead: Vec<&str> = OPS
             .iter()
             .filter(|s| s.status == OpStatus::Live)
+            .filter(|s| {
+                !crate::ops::common::dtype::ALL_DTYPES.iter().any(|d| {
+                    s.caps.contains(*d) && s.kernel.stem(*d).is_some_and(variant_is_loadable)
+                })
+            })
             .map(|s| s.op_type)
             .collect();
-        let mut justified: Vec<&str> = EXERCISED
-            .iter()
-            .map(|(op, _)| *op)
-            .chain(TEMPLATE_LIVE.iter().map(|(op, _)| *op))
-            .collect();
-        live.sort_unstable();
-        justified.sort_unstable();
-        justified.dedup();
-        assert_eq!(
-            live, justified,
-            "a Live row has no entry in EXERCISED or TEMPLATE_LIVE, or an entry has no Live row"
+        assert!(
+            dead.is_empty(),
+            "a Live row has no loadable kernel variant at any dtype its caps accept, so it can \
+             only ever decline: {dead:?}"
         );
     }
 
     /// No live claim may rest on a variant no device can create.
     ///
     /// The artifact-level guard in [`variants`](crate::ops::common::variants) allows a wider
-    /// capability set than this one, because generating an unloadable variant is harmless. This is
-    /// the rule that actually matters: a `(op, dtype)` pair in [`EXERCISED`] is a promise that the
-    /// pair *ran on a device*, so if its module declares a capability the engine never enables,
-    /// either the promise is false or the evidence was recorded against something else.
+    /// capability set than this one, because *generating* an unloadable variant is harmless. This
+    /// is the rule that actually matters: a live row offers every dtype its `caps` accept, and
+    /// [`only_loadable_variants`] is the thing standing between that offer and a pipeline-creation
+    /// failure at translate time.
+    ///
+    /// §8.9.16: before the split, this test scoped itself by `proved_at` — it only looked at pairs
+    /// somebody had written into `EXERCISED`, which meant it could not see the forms most at risk,
+    /// the ones nobody had thought about. It now walks every dtype the row's `caps` accept and
+    /// asserts the *predicate* refuses the unloadable ones, rather than asserting a list does.
     ///
     /// Live today: the `_i64` variants declare `Int64`, which needs
     /// `VkPhysicalDeviceFeatures::shaderInt64`; `vk::device` passes no `pEnabledFeatures` at all.
-    /// Nothing claims i64, so this passes — and the moment somebody adds `("Sub", "i64")` on the
-    /// strength of the variant existing, it fails here rather than as a device-lost on a user's
-    /// machine. That is the same trap the f16 rows sat in for their whole existence, pre-sprung.
+    /// So `variant_is_loadable` is false for every `_i64` stem and the predicate declines i64 for
+    /// every row — a device-lost on a user's machine turned into a decline, derived from the
+    /// artifact rather than from anybody remembering.
     #[test]
     fn no_live_claim_rests_on_an_unloadable_variant() {
-        use crate::ops::common::variants::{ENGINE_ENABLED_CAPABILITIES, declared_capabilities};
+        use crate::ops::common::variants::{
+            ENGINE_ENABLED_CAPABILITIES, declared_capabilities, variant_is_loadable,
+        };
 
         let modules: std::collections::HashMap<&str, &[u8]> =
             crate::engine::shaders::SHADER_MODULES
@@ -491,27 +348,29 @@ mod tests {
                 .collect();
 
         let mut offenders: Vec<String> = Vec::new();
+        let mut refused = 0usize;
         for spec in OPS.iter().filter(|s| s.status == OpStatus::Live) {
             for d in crate::ops::common::dtype::ALL_DTYPES {
-                if !proved_at(spec.op_type, d) {
-                    continue;
-                }
                 let Some(stem) = spec.kernel.stem(d) else {
                     continue;
                 };
                 let Some(bytes) = modules.get(stem) else {
                     continue;
                 };
-                for cap in declared_capabilities(bytes) {
-                    if !ENGINE_ENABLED_CAPABILITIES.contains(&cap) {
-                        offenders.push(format!(
-                            "`{}` is claimed at {} via `{stem}`, which declares SPIR-V capability \
-                             {cap} — the engine enables no such feature, so that module cannot be \
-                             created on any device",
-                            spec.op_type,
-                            dtype_suffix(d),
-                        ));
-                    }
+                let unloadable = declared_capabilities(bytes)
+                    .iter()
+                    .any(|cap| !ENGINE_ENABLED_CAPABILITIES.contains(cap));
+                if !unloadable {
+                    continue;
+                }
+                refused += 1;
+                if variant_is_loadable(stem) {
+                    offenders.push(format!(
+                        "`{}` at {} goes through `{stem}`, which declares a SPIR-V capability the \
+                         engine does not enable, yet `variant_is_loadable` says yes",
+                        spec.op_type,
+                        dtype_suffix(d),
+                    ));
                 }
             }
         }
@@ -520,38 +379,30 @@ mod tests {
             "a live claim rests on a variant no device can create:\n  {}",
             offenders.join("\n  ")
         );
+        // R12: distinguish "the guard refused things" from "there was nothing to refuse". A zero
+        // here would make this test pass for the wrong reason the day the i64 variants stop being
+        // generated, and it is the same shape as `bypassed` and `all-rejected` sharing one `0`.
+        assert!(
+            refused > 0,
+            "no live row has an unloadable variant at any dtype, so this test asserted nothing; \
+             either the engine now enables every capability we generate — in which case delete \
+             this test and say so — or the variant table stopped generating them"
+        );
     }
 
-    /// A template-live row is only as good as its representative, so the representative must hold.    ///
-    /// Without this the weaker list could quietly outlive the stronger one: if `Add` were ever
-    /// demoted — because the differential suite disproved the wire, which is exactly what flipping
-    /// it is meant to allow — thirty-four rows would still be claiming on evidence that had been
-    /// withdrawn. This turns that into a compile-time-adjacent failure instead of a silent one.
-    #[test]
-    fn every_template_live_row_stands_on_a_representative_that_is_itself_exercised_and_live() {
-        for (op, representative) in TEMPLATE_LIVE {
-            assert!(
-                EXERCISED.iter().any(|(e, _)| e == representative),
-                "{op} stands on {representative}, which is not in EXERCISED"
-            );
-            let rep = OPS
-                .iter()
-                .find(|s| s.op_type == *representative)
-                .unwrap_or_else(|| panic!("{representative} has no row"));
-            assert_eq!(
-                rep.status,
-                OpStatus::Live,
-                "{op} stands on {representative}, which is not Live"
-            );
-        }
-    }
-
-    /// Every live row is live for f32 only, and none of them claims on `caps` alone.
+    /// §8.9.16 — `every_template_live_row_stands_on_a_representative_that_is_itself_exercised_and_live`
+    /// was deleted here. It guarded `TEMPLATE_LIVE`, the weaker of the two evidence lists, against
+    /// outliving `EXERCISED`, the stronger. Both lists are gone: every row that stood on a
+    /// representative's evidence now stands on a ledger entry of its own, keyed on its own dtypes
+    /// and its own shader digest, so there is no longer a borrowed claim to invalidate.
     ///
-    /// The narrowing is the whole point. `Add`'s `caps` is `NUMERIC` so the variant table still
-    /// compiles `add_{f32,f16,i32,i64}` — but only `add_f32` has been dispatched, so only f32 is
-    /// claimed. Using the bare `claim::ew_{unary,binary}` on a live row would claim every variant
-    /// its `caps` allows on the strength of one that ran.
+    /// Every live row is live only at dtypes whose variant loads, and none of them claims on
+    /// `caps` alone.
+    ///
+    /// The narrowing is still the whole point. `Add`'s `caps` is `NUMERIC` so the variant table
+    /// compiles `add_{f32,f16,i32,i64}` — `add_i64` declares `Int64` and cannot be created, so the
+    /// predicate refuses it. Using the bare `claim::ew_{unary,binary}` on a live row would offer
+    /// every variant its `caps` allow, loadable or not.
     #[test]
     fn live_rows_claim_f32_only_and_never_on_caps_alone() {
         let narrowed_predicates: &[crate::registry::ClaimPredicate] = &[
@@ -573,8 +424,9 @@ mod tests {
             );
         }
         assert!(
-            EXERCISED.contains(&("Add", "f32")),
-            "Add/f32 is the representative the whole family stood on"
+            OPS.iter()
+                .any(|s| s.op_type == "Add" && s.status == OpStatus::Live),
+            "Add is the row the whole elementwise family's shape is read from"
         );
     }
 
@@ -632,30 +484,42 @@ mod tests {
         }
     }
 
-    /// `Swish` is the one row of the 2026-08-02 batch that stayed staged, and it is a finding.
+    /// `Swish` was the row the second evidence list held hostage; §8.9.16 released it.
     ///
-    /// Its shader `ew_unary_swish_f32.spv` exists and compiles, but the row declines
-    /// `[dtype] Swish is live for no dtype` — from [`EXERCISED`], a **second, hand-written**
-    /// evidence list that gates independently of the proof ledger. So no proof run can reach it:
-    /// the generator offers the key, the claim fails before the ledger is consulted, and the
-    /// case reports no key at all. Adding `("Swish", "f32")` to `EXERCISED` by hand would make
-    /// that list say something no run has shown, which is the thing the ledger exists to stop.
+    /// Its shader `ew_unary_swish_f32.spv` exists and compiles, but until 2026-08-02 the row
+    /// declined `[dtype] Swish is live for no dtype` — from `EXERCISED`, a second, hand-written
+    /// evidence list that gated independently of the proof ledger. No proof run could reach it:
+    /// the generator offered the key, the claim failed before the ledger was consulted, and the
+    /// case reported no key at all. Adding `("Swish", "f32")` by hand would have made that list
+    /// say something no run had shown, which is the thing the ledger exists to stop. That was the
+    /// deadlock, and deleting the list is what fixed it.
     ///
-    /// It is not a coverage hole in practice — ORT decomposes opset-24 `Swish` into
-    /// `Sigmoid` + `Mul`, both of which we claim and both of which are proven.
+    /// The row is *still* `Staged(UNEXERCISED)`, and that is now an ordinary staging decision
+    /// rather than a trap: `Swish` is opset-24-only and ORT decomposes it into `Sigmoid` + `Mul`
+    /// on every graph we have, both of which we claim and both of which are proven, so no model
+    /// in this repository can produce a `Swish` node for a proof run to measure. It stays staged
+    /// because nothing can exercise it, not because a list forbids it.
+    ///
+    /// What this test asserts is the release: the predicate the row would use if flipped no longer
+    /// consults anything but loadability.
     #[test]
-    fn swish_stays_staged_because_a_second_evidence_list_gates_it() {
+    fn swish_is_staged_for_want_of_a_graph_not_for_want_of_a_list() {
+        use crate::ops::common::variants::variant_is_loadable;
+
         let row = OPS.iter().find(|s| s.op_type == "Swish").unwrap();
         assert_eq!(
             row.status,
             OpStatus::Staged(UNEXERCISED),
-            "Swish was reverted to Staged deliberately: EXERCISED vetoes it before the ledger \
-             is consulted, so it cannot be proven without changing that list by hand"
+            "Swish is staged because no graph we have emits it, not because it cannot work"
         );
+        let stem = row
+            .kernel
+            .stem(crate::engine::DType::F32)
+            .expect("Swish has an f32 variant stem");
         assert!(
-            !EXERCISED.contains(&("Swish", "f32")),
-            "EXERCISED now names Swish/f32. If a run proved it, say which one here; if it was \
-             added by hand, the list is asserting something nothing measured"
+            variant_is_loadable(stem),
+            "`{stem}` is not loadable, so flipping this row would offer a node the engine cannot \
+             serve — that would be a different finding from the one this test records"
         );
     }
 

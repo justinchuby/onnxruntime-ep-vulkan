@@ -4486,6 +4486,155 @@ Phi-3.5 lane's `dispatches_executed`, which was reading `device_losses` througho
 
 ---
 
+### 8.9.16 The second evidence list, and what was left when it went (2026-08-02)
+
+The op suite came into this round at **11 red**. Eight were `test_op_table`, and the coordinator's
+instruction was to separate them rather than batch them, because they are not one thing. They are
+four things, and only one of them was ours to fix by proving something.
+
+**The one that was a defect: `EXERCISED`.**
+
+`Add-i32` and `Mul-i32` declined `[dtype]`, with the text *"that variant of the elementwise shader
+compiles but has never executed on a device."* True, and unfixable — by design, though not by
+anyone's intent. `elementwise::EXERCISED` was a hand-written `&[(&str, &str)]` of `(op, dtype)`
+pairs that had run on a device, and `only_proved_dtypes` consulted it **inside the claim
+predicate**. The claim predicate runs *before* a proof key is computed. So the sequence was:
+
+1. `gen_proof_ledger.py` offers `add_i32.onnx` to the EP;
+2. the predicate vetoes at `[dtype]`, before any key exists;
+3. the run reports `no key at all` — not `[unproven]`, which the generator can unlock, but a
+   decline it cannot see past;
+4. `session.disable_cpu_ep_fallback=1`, which we adopted precisely so that a single-form case
+   cannot silently prove nothing, then makes ORT refuse the session outright.
+
+**The form was unproven because it was unproven.** The only exit was to type the pair into
+`EXERCISED` by hand, which is the exact act — a claim widened by an assertion nobody measured —
+that §8.9 exists to prevent. Three forms sat in that loop: `Add`/i32, `Mul`/i32, and `Swish`/f32,
+which was reverted to `Staged` in §8.9.13 for this reason and documented there as a finding.
+
+This is criterion 11's own shape arriving from inside criterion 11's own module: a second,
+older answer to the question the ledger was built to answer, still wired in front of it.
+
+**The split.** The list was answering two questions with one table:
+
+| question | who answers it now | why |
+| --- | --- | --- |
+| *Does a kernel exist that this engine can create?* | the claim predicate | claiming a node whose module cannot be instantiated is an `EP_FAIL` at translate time, not a decline, and no ledger entry could make it safe |
+| *Has anything measured this form?* | the proof ledger | a harness-generated entry naming artifact, device, shader digest and observed `worst_rel` — provenance a typed pair cannot have |
+
+`only_proved_dtypes` is now `only_loadable_variants`, and the residual the list *did* carry
+honestly is derived from the artifact instead of asserted. `variants::variant_is_loadable(stem)`
+looks the stem up in `engine::shaders::SHADER_MODULES` and checks that every SPIR-V capability the
+module declares is one `ENGINE_ENABLED_CAPABILITIES` contains. Today that refuses every `_i64`
+variant: they declare `Int64` (11), which needs `VkPhysicalDeviceFeatures::shaderInt64`, and
+`vk::device` passes no `pEnabledFeatures` at all. A device-lost on a user's machine becomes a
+decline, computed rather than remembered.
+
+`EXERCISED` and `TEMPLATE_LIVE` are **deleted**, not kept as documentation. A list nobody consults
+is the next stale thing, and the deleted-here comment carries the reasoning that the lists carried.
+
+**What the tests do now.** `no_live_claim_rests_on_an_unloadable_variant` used to scope itself by
+`proved_at` — it looked only at pairs somebody had written down, which meant it could not see the
+forms most at risk, the ones nobody had thought about. It now walks every dtype each live row's
+`caps` accept and asserts the *predicate* refuses the unloadable ones. It also asserts
+`refused > 0` (R12): a zero would let this test pass for the wrong reason the day the `_i64`
+variants stop being generated, which is the same shape as `bypassed` and `all-rejected` sharing
+one `0`. `every_template_live_row_stands_on_a_representative...` is deleted along with the list it
+guarded; every row that stood on a representative's evidence now stands on a ledger entry of its
+own, keyed on its own dtypes and its own shader digest, so there is no borrowed claim left to
+invalidate.
+
+**Stated before the run, per R10.** The prediction written down before `--append` was: `add_i32`
+and `mul_i32` each offer exactly one unlockable key and clear it; `swish_f32` offers **no** key,
+because the `Swish` *row* is still `Staged` and that is a separate gate from the list. The run:
+
+```
+[discover] add_i32.onnx:   1 unlockable key(s)
+    would decline without a proof: ai.onnx::Add/7+/i32,i32>i32/ew_binary_add_i32/static/n2
+[prove]    add_i32.onnx:   MATCH worst_rel 0.0  claimed_nodes 1  dispatches_executed 1
+                           shaders_dispatched ['ew_binary_add_i32']  compute_calls 1
+[discover] mul_i32.onnx:   1 unlockable key(s)
+[prove]    mul_i32.onnx:   MATCH worst_rel 0.0  claimed_nodes 1  dispatches_executed 1
+                           shaders_dispatched ['ew_binary_mul_i32']  compute_calls 1
+[discover] swish_f32.onnx: 0 unlockable key(s)
+[prove]    swish_f32.onnx: UNMEASURED  no unlockable keys on this model
+```
+
+`worst_rel 0.0` on integer arithmetic is exact agreement, not a degenerate comparison: the
+generator's `case_model_degenerate_reference` instrument passes, `dispatches_executed=1` and the
+shader is named, so the arm the EP ran is identified rather than assumed. Ledger **95 → 97**,
+digest `6180b5a3f7d498fb` → `eb7c4e1f90cd7ec2`. `test_op_table` **8 red → 6 red**, and both new
+greens hold on device 1 as well as device 0.
+
+**The guard, applied to myself.** *A ledger that grows while the claimed count does not move.* It
+did not move: Phi-3.5 reads `claimed_nodes 355`, `ledger_hits 355`, unchanged. That is the correct
+outcome here and worth saying why rather than leaving it to be noticed — the two new forms are
+i32 at static extent and Phi-3.5 is an f16 model with no i32 elementwise node, so no key of theirs
+can be looked up on it. The falsifier that *did* move is the op suite, which is the surface these
+two forms exist on.
+
+**`Swish` is released but still staged, and the distinction is the point.** The list no longer
+holds it; the row does. `Swish` is ai.onnx opset-24-only and ORT decomposes it into
+`Sigmoid` + `Mul` on every graph we have, both claimed and both proven, so no model in this
+repository can produce a `Swish` node for a proof run to measure. It stays `Staged(UNEXERCISED)`
+because nothing can exercise it — an ordinary staging decision — rather than because a list forbids
+it. The test that recorded the trap now records the release and asserts `ew_unary_swish_f32` is
+loadable, so if flipping it ever becomes possible the failure will be about the graph, not the
+kernel.
+
+**The other three shapes, reported rather than proved.** Each decline below is quoted from the
+running build, not from the source.
+
+- **`clip_no_bounds` — not a claim-predicate defect.** The coordinator's suspicion was that
+  `[arity] `Clip` has 1 inputs; this handler takes exactly 3` is a handler requiring inputs ONNX
+  makes optional, and that it would keep declining however many forms we prove. The second half is
+  right; the first half is not, and `claim::ew_clip` already says why: Clip's bounds are optional
+  from opset 11, the three-input form rides the ternary template with zero-stride broadcast, and
+  *"the fix is a shader variant that substitutes ±infinity for the omitted bound, not a widening of
+  this predicate: an omitted bound is a different dispatch shape, not a different value, and
+  claiming it here would bind a buffer that does not exist."* Widening the predicate would claim a
+  node and then bind a descriptor for a tensor with no producer. It is a **coverage gap with a
+  written repair**, and the repair is a shader variant, which is engineering rather than a proof
+  run. Filed, not fixed here.
+
+- **`Cast` ×3 — `NEEDS_CAST_MATRIX`, and the staging reason is exact.** *"its shader variant space
+  is keyed on a source/destination dtype pair rather than a single dtype, so it needs its own
+  template and manifest column."* Every other row in the variant table is keyed on one dtype; Cast
+  is the only op whose stem is a *pair*, so it needs a manifest column that does not exist and a
+  template that does not exist. This is the largest of the four pieces of real work here and it is
+  not a proof-run problem: there is nothing to measure until the variants exist.
+
+- **`IsInf` — `NEEDS_PARAMS`, and it is the selector case, not the coefficient case.** *"its
+  attribute selects a different expression rather than supplying a value, so it needs its own
+  shader variant rather than a push-constant parameter."* `detect_negative`/`detect_positive` are
+  four combinations of two booleans, i.e. four bodies, not one body with a uniform. The push-
+  constant path that serves `Elu`'s `alpha` cannot serve it.
+
+- **`Flatten`, `Reshape` — `[not-registered] no Vulkan handler is registered`, and this may be
+  correct.** These are shape-only ops: the output is the input's bytes under a different view. A
+  lone shape op claimed in a one-node island buys **nothing** — the transfer to and from device
+  costs more than the zero arithmetic performed, and the net-benefit gate should and would decline
+  it. Their only value is *not breaking an island* that would otherwise be contiguous. So the
+  question they ask is not "can we compute this" but "does a real graph have one of these between
+  two islands we do claim", and on Phi-3.5 the answer today is no — its 8 remaining unclaimed
+  nodes are the `island-output-consumed-internally` branch in `vk/session.rs`, which is a different
+  finding and not ours. Registering them to turn a test green, absent a graph that needs it, would
+  be widening the claim table for the suite's benefit rather than a model's. **Deliberately not
+  done**, and the test staying red is the honest report of that.
+
+**Count, stated plainly.** Two ops proven and promoted. Six red tests remaining across four
+distinct pieces of work, none of which a proof run can reach: three need a shader variant that does
+not exist (`Clip`, `IsInf`, and the Cast template), and two are a design question about shape-only
+ops that a real graph has not yet asked. After today's round I would rather report four written
+refusals than six promotions nobody can falsify.
+
+**Still open, and it should not disappear into a history file:** *three hand-maintained ctypes
+mirrors of one C ABI is the real defect; one shared reader crosses domains.* §8.9.15 caught the
+mirrors drifting once. Making `struct_size` equality a hard assertion means the next drift is loud,
+but loud in three places is still three places.
+
+---
+
 ## 9. Op module layout
 
 ### 9.1 File tree
