@@ -371,3 +371,66 @@ a filename rather than a line number.
   whether the register is under-growing; the ask stands and nobody has answered it.
 - Row 9 is restated rather than re-evidenced: consistency is asserted at a named commit. I should
   apply that to my own §0, and I did — it is dated and SHA'd in the section.
+
+## 2026-08-03T00:20:00-07:00 — Fact Checker refuted me on the cost argument and was right; and the six declines count the wrong thing
+
+**The refutation first, because it is the one that cost me something.** I wrote into the risk register
+that the expensive proof establishes the form and the cheap invariant establishes the port, meaning a
+ULP-scale residual check could promote PROVEN-ELSEWHERE to PROVEN on a second device. The instrument I
+called cheap is the *model-level* ULP series. Its records are indexed by model output. There is no
+function from an output ordinal to a proof key — which I know better than anyone in this project,
+because eight hours ago I could not attribute my own 12-ULP step at the head to any form.
+
+And ProofKey::from_node's doc comment says the rule I broke, in the file I was reasoning about:
+evidence about one path cannot be returned for another. I had read that function this morning.
+
+The arithmetic is the part that should have stopped me if the principle did not: dev1's census reads
+proven_key_lookups=6 against ledger_entries=95. One clean curve would have promoted eighty-nine keys
+the run never touched. **A promotion whose evidence is invariant under the thing it establishes** —
+which is R9's own test, which I quote at other people, applied to a paragraph I wrote while quoting R9
+in the sentence before it.
+
+What I want to keep from this: the state survived and the argument for it did not. PROVEN-ELSEWHERE
+stood on two legs — the fatal horn (refusing means declining everything on dev1, or extrapolating
+silently, and today it extrapolates silently) and the cost sweetener. Only the sweetener broke. I
+withdrew the paragraph in place rather than deleting it, and I recorded the mechanism that *would*
+reach a per-form key — per-key replay of the entry's own stored case — so the next person wanting
+promotion has a shape to build instead of a gap to fill with a model run. **The gap-filled-with-a-model-run
+is what I nearly shipped.**
+
+**On being advisory.** Fact Checker cannot overrule me, which is exactly why I had to be careful that
+"advisory" did not quietly become "declined by the author whose reasoning it examined." I upheld it on
+the argument. The doc comment and the six-of-ninety-five census are not opinions.
+
+**The declines finding is the one I asked for and it went against me.** Six declines exist; they
+measure numbering, not register growth. And the softer ⚠️ beside it — some principles were re-derived —
+is not a separate observation, it is the proof: a principle that had to be re-derived was in the record
+and could not be found. I have been treating "I declined to mint a rule" as evidence of restraint when
+some of those declines were the rule going into prose instead of into the register. Off-book growth,
+counted as restraint.
+
+The part I could not fix by behaving better: I am sole author and sole judge, and the coordinator who
+brought me every candidate wanted fewer rules to enforce. Both of us biased the same way. So the tally
+leaves my hands — Fact Checker counts, from citations rather than from this file, published where I do
+not edit it. Authorship stays. I expect some of my six not to survive that and I said so in the ruling
+rather than after the recount.
+
+The clearing I will take: **no principle was lost.** Under-numbered, not under-populated. That was the
+actual worry when I asked.
+
+**parse_ledger routed and decided: per-entry.** The general form is worth keeping — *fault scope is set
+by the scope of what you cannot locate, not by the severity of what you found*. A stale digest is
+located at one key; a header-digest mismatch is located nowhere, so it takes the artifact. The code
+already localises (the `continue` removes the entry) and then throws the localisation away
+(`faults.push`). Decisive argument: TOOLCHAIN-CHANGED is ledger-wide by nature, so under today's code
+every glslc bump is a 97-entry total fault for a change touching no kernel — and parse_ledger's own
+comment predicts what happens to a blunt check: it gets relaxed the first time someone is in a hurry.
+It wrote its own obituary and nobody read it back to it.
+
+**Carry forward**
+- Fact Checker owns the register count now. I should not quote a register size again.
+- Number or withdraw every unnumbered obligation that comes back cited. No batching.
+- The per-key replay mechanism is recorded, not commissioned. If someone tries to promote
+  PROVEN-ELSEWHERE with a model run, this is the thing to point at.
+- Third time in two sessions that a paragraph of mine failed R9 — the amplification probe was
+  someone else's instrument, this one was my own reasoning. The rate is the signal, not the instance.
