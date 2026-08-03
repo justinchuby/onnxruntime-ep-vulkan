@@ -636,6 +636,9 @@ unsafe fn copy_one(
     use std::sync::atomic::Ordering::Relaxed;
     COPIES.fetch_add(1, Relaxed);
     COPIED_BYTES.fetch_add(src_len as u64, Relaxed);
+    log::debug!(
+        "[VulkanEP] CopyTensors: {src_len} B {src_side:?} -> {dst_len} B {dst_side:?}"
+    );
     if interior {
         // Worth a line the first time: this is ORT's planner doing pointer arithmetic on a handle
         // and our range lookup resolving it, which is the property the whole scheme exists for.
@@ -846,6 +849,16 @@ fn refresh_from_device_if_authoritative(e: Endpoint, len: usize) -> Result<(), S
         return Ok(());
     }
     let provider = provider_for(device_index, base)?;
+    // Name the transfer. This is the round trip the binding design exists to remove, and a caller
+    // that is paying for it has no other way to find out *which* span it is paying for: the byte
+    // total is the sum over spans and every KV tensor in a decode step is the same size, so a
+    // total cannot distinguish "one tensor, sixty-four times" from "sixty-four tensors, once".
+    // Debug level, so it costs nothing on a normal run and is one `RUST_LOG=debug` away when a
+    // byte count needs attributing.
+    log::debug!(
+        "[VulkanEP] refresh: downloading {len} B from device-authoritative span 0x{base:x}+{offset} \
+         on device {device_index} — a reader asked for host bytes of a span only the device holds"
+    );
     // SAFETY: `host` addresses at least `len` writable bytes — `resolve_endpoint` rejected any
     // range extending past the span's requested size. The slice is used only for this
     // synchronous call and is not retained.
