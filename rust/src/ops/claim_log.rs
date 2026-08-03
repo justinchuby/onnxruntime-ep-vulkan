@@ -317,6 +317,7 @@ mod tests {
             predicate_ok_with_runtime_extents: false,
             proof_key: None,
             ledger_hit: false,
+            proof_state: crate::registry::ProofState::Unproven,
         }
     }
 

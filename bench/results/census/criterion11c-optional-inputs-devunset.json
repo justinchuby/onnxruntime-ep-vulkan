@@ -1,0 +1,30 @@
+{
+  "note": "criterion 11(c): both MatMulNBits forms are proven; the discriminator is that they are two keys, not one",
+  "device_selector": "unset",
+  "arms": [
+    {
+      "arm": "ledger_optin_zp",
+      "proven_key_lookups": 1,
+      "ledger_hits": 1,
+      "ledger_gate": "ALL-PROVEN",
+      "ledger_miss": "HIT",
+      "ledger_entries": 103,
+      "ledger_faults": 0,
+      "unproven_declines": 0,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    },
+    {
+      "arm": "ledger_optin_noz",
+      "proven_key_lookups": 1,
+      "ledger_hits": 1,
+      "ledger_gate": "ALL-PROVEN",
+      "ledger_miss": "HIT",
+      "ledger_entries": 103,
+      "ledger_faults": 0,
+      "unproven_declines": 0,
+      "claimed_nodes": 1,
+      "dispatches_executed": 1
+    }
+  ]
+}

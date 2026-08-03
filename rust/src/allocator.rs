@@ -1275,6 +1275,17 @@ pub mod tally {
         }
     }
 
+    /// Forget every noted session device. **Tests only**, and it exists because the device
+    /// predicate in `registry` cannot be exercised in its positive state without a running device
+    /// name to compare against — and a planted name that outlives its test would answer for every
+    /// test after it.
+    #[cfg(test)]
+    pub fn clear_session_devices() {
+        if let Ok(mut m) = SESSION_DEVICES.lock() {
+            m.clear();
+        }
+    }
+
     /// Record the factory device index the allocator's provider was stood up for.
     pub fn set_allocator_device_index(index: usize) {
         ALLOC_DEVICE_INDEX.store(index as u64, Ordering::Relaxed);

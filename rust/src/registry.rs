@@ -1936,9 +1936,33 @@ pub struct Ledger {
     pub actual_digest: String,
     /// The generator that wrote it.
     pub generator: String,
-    /// Parse or consistency problems. Non-empty means the ledger is not usable and every form
-    /// declines — a broken ledger is the safe state, not the permissive one.
+    /// **Whole-file** damage — §8.9.18's second group, *"this artifact is not readable"*: a
+    /// missing generator, a header digest that does not match the body, a header count that does
+    /// not match the lines under it, a duplicate key, a line that does not parse. Non-empty means
+    /// every form declines.
+    ///
+    /// The rule that sorts this list from the next one: **fault scope is set by the scope of what
+    /// you cannot locate, not by the severity of what you found.** Each condition here is one you
+    /// cannot attribute to a key — a hand-edited file may have damaged any line, a dropped entry
+    /// is invisible by definition, two duplicates disagree with neither authoritative, and an
+    /// unparseable line cannot be read to find out what it was going to say.
     pub faults: Vec<String>,
+    /// **Entry-level** damage — §8.9.18's first group, *"this proof is not usable"*: a stale
+    /// `shader_digest`, a missing subject witness, absent or zero attribution witnesses, a
+    /// non-`MATCH` verdict. Each demotes its own entry and nothing else.
+    ///
+    /// Escalating these to `faults` was the 2026-08-02 defect: it destroyed 96 sound proofs to
+    /// punish one located one, having already thrown away the localisation it held. The decisive
+    /// case is `TOOLCHAIN-CHANGED`, which is ledger-wide **by nature** — a `glslc` bump changes
+    /// every module's bytes at once, so under the old scope every routine compiler upgrade was a
+    /// total ledger fault for a change that touched no kernel. A fail-safe guaranteed to fire
+    /// spuriously on routine maintenance has a scheduled date for being switched off.
+    ///
+    /// The entry is simply absent from [`Ledger::entries`], so it reads as `UNMEASURED` — or as
+    /// its recorded verdict, where one was preserved into [`Ledger::demoted`]. The text is kept
+    /// verbatim because §8.9.18 obliges the session disclosure to **print** it: a demotion nobody
+    /// is told about is the ledger quietly getting smaller.
+    pub entry_faults: Vec<String>,
     /// Keys whose entry carried a verdict other than `MATCH`, with that verdict.
     ///
     /// A demotion **grants nothing** — the matching fault above already makes the whole ledger
@@ -1980,8 +2004,25 @@ impl Ledger {
         self.entries.iter().find(|e| &e.key == key)
     }
 
-    /// The non-`MATCH` verdict recorded for this key, if the file carried one.
+    /// What this ledger says about `key` **on the running device** — the three-state answer.
     ///
+    /// A method on the ledger rather than a free function so a test can plant one. A predicate
+    /// that can only be exercised against the baked 97 entries can only ever be seen in the state
+    /// those entries happen to produce.
+    pub fn state_for(&self, key: &ProofKey) -> ProofState {
+        if !self.faults.is_empty() {
+            // R13: the ledger failing is an instrument error, not a finding about this form. It
+            // is `Unproven` because `Unproven` is the safe state, and the *reason* stays
+            // available through `LedgerLookup::Faulted`.
+            return ProofState::Unproven;
+        }
+        match self.get(key) {
+            None => ProofState::Unproven,
+            Some(e) => device_state(&e.device),
+        }
+    }
+
+    /// The non-`MATCH` verdict recorded for this key, if the file carried one.    ///
     /// Never grants a claim; see [`Ledger::demoted`]. Read by the §8.9.7 session disclosure so a
     /// form the evidence measured and rejected does not read as a form nothing has measured.
     pub fn demotion_for(&self, key: &ProofKey) -> Option<&str> {
@@ -1999,7 +2040,7 @@ impl Ledger {
 /// deliberate forgery, because anyone who can edit the file can recompute it. The defence against
 /// that is `check_proof_ledger.py`, which re-hashes each entry's evidence artifact — an entry
 /// whose artifact does not exist or does not match is rejected there.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         h ^= u64::from(b);
@@ -2137,8 +2178,14 @@ fn json_field(line: &str, field: &str) -> Option<String> {    let needle = forma
 }
 
 /// Parse the baked-in ledger source.
-fn parse_ledger(source: &str) -> Ledger {
+///
+/// pub(crate) so the disclosure layer's tests can plant a ledger with a demoted entry. A
+/// demotion path that can only be exercised against the baked 103 entries has no observable
+/// firing state, and §8.9.18 forbids exactly that.
+pub(crate) fn parse_ledger(source: &str) -> Ledger {
     let mut faults: Vec<String> = Vec::new();
+    // Entry-level faults are kept apart from whole-file ones. See `Ledger::entry_faults`.
+    let mut entry_faults: Vec<String> = Vec::new();
     let mut lines = source
         .lines()
         .map(str::trim)
@@ -2168,6 +2215,10 @@ fn parse_ledger(source: &str) -> Ledger {
     for line in lines {
         digest_input.push_str(line);
         digest_input.push('\n');
+        // §8.9.18: **a line that does not parse faults the artifact, not an entry.** You cannot
+        // say which claims it touches, because you cannot tell what it was going to say. This is
+        // the boundary of the localisation rule, and it is the one place in this loop where the
+        // whole-file fault is the correct scope rather than the lazy one.
         let Some(raw_key) = json_field(line, "key") else {
             faults.push(format!("ledger line has no `key` field: {line}"));
             continue;
@@ -2175,7 +2226,9 @@ fn parse_ledger(source: &str) -> Ledger {
         let key = match ProofKey::validate(&raw_key) {
             Ok(k) => k,
             Err(e) => {
-                faults.push(format!("ledger key {raw_key:?} is not a valid proof key: {e}"));
+                faults.push(format!(
+                    "ledger key {raw_key:?} is not a valid proof key: {e}"
+                ));
                 continue;
             }
         };
@@ -2191,7 +2244,7 @@ fn parse_ledger(source: &str) -> Ledger {
             // as "no proof", and RAI-008's falsifier names those as two states, not one. It
             // grants nothing: `get`/`lookup_key` still refuse while `faults` is non-empty.
             demoted.push((key, verdict.clone()));
-            faults.push(format!(
+            entry_faults.push(format!(
                 "ledger entry for {raw_key:?} carries verdict {verdict:?}; only MATCH proves"
             ));
             continue;
@@ -2205,7 +2258,7 @@ fn parse_ledger(source: &str) -> Ledger {
         let dispatches_executed = json_u64_field(line, "dispatches_executed");
         let (Some(claimed_nodes), Some(dispatches_executed)) = (claimed_nodes, dispatches_executed)
         else {
-            faults.push(format!(
+            entry_faults.push(format!(
                 "ledger entry for {raw_key:?} carries no attribution witness \
                  (claimed_nodes/dispatches_executed); it does not record a proof run and may \
                  have been enumerated from the claim table rather than proven"
@@ -2213,7 +2266,7 @@ fn parse_ledger(source: &str) -> Ledger {
             continue;
         };
         if claimed_nodes == 0 || dispatches_executed == 0 {
-            faults.push(format!(
+            entry_faults.push(format!(
                 "ledger entry for {raw_key:?} records claimed_nodes={claimed_nodes} \
                  dispatches_executed={dispatches_executed}; a run that claimed or dispatched \
                  nothing is UNATTRIBUTED and proves nothing"
@@ -2233,7 +2286,7 @@ fn parse_ledger(source: &str) -> Ledger {
         let recorded_digest = json_field(line, "shader_digest");
         let (Some(shaders), Some(recorded_digest)) = (shaders, recorded_digest) else {
             demoted.push((key, "NO-SUBJECT-WITNESS".to_string()));
-            faults.push(format!(
+            entry_faults.push(format!(
                 "ledger entry for {raw_key:?} names no shader set or digest; it cannot say what \
                  code it proved, so it cannot be invalidated by that code changing. Re-prove it \
                  with `gen_proof_ledger.py --reprove`."
@@ -2246,7 +2299,7 @@ fn parse_ledger(source: &str) -> Ledger {
             Some(now) if *now == recorded_digest => {}
             Some(now) => {
                 demoted.push((key.clone(), "STALE-SHADER".to_string()));
-                faults.push(format!(
+                entry_faults.push(format!(
                     "ledger entry for {raw_key:?} was proven against shader digest \
                      {recorded_digest} but this build's modules {shaders:?} hash to {now}. The \
                      entry describes a kernel that has been replaced; re-prove it with \
@@ -2256,7 +2309,7 @@ fn parse_ledger(source: &str) -> Ledger {
             }
             None => {
                 demoted.push((key.clone(), "NO-SUBJECT-WITNESS".to_string()));
-                faults.push(format!(
+                entry_faults.push(format!(
                     "ledger entry for {raw_key:?} names an empty shader set; a run that \
                      dispatched no module has no subject to have proven"
                 ));
@@ -2286,10 +2339,11 @@ fn parse_ledger(source: &str) -> Ledger {
              rust/tools/gen_proof_ledger.py"
         ));
     }
-    if declared_count != entries.len() && faults.is_empty() {
+    if declared_count != entries.len() + entry_faults.len() && faults.is_empty() {
         faults.push(format!(
-            "ledger header declares {declared_count} entries, {} parsed",
-            entries.len()
+            "ledger header declares {declared_count} entries, {} parsed and {} demoted",
+            entries.len(),
+            entry_faults.len()
         ));
     }
     // Duplicate keys are a generator fault, not a merge convenience: two proofs of one key
@@ -2307,6 +2361,7 @@ fn parse_ledger(source: &str) -> Ledger {
         actual_digest,
         generator,
         faults,
+        entry_faults,
         demoted,
     }
 }
@@ -2404,6 +2459,140 @@ pub fn lookup_key(key: &ProofKey) -> LedgerLookup {
     }
 }
 
+/// The physical device name(s) this run has actually opened, or `None` if it has not opened one.
+///
+/// **Read off the run, never off the selector.** `ONNXRUNTIME_EP_VULKAN_DEVICE` is a *request*:
+/// Trinity demonstrated `DEVICE=0` running on `1=NVIDIA`, and `device0` on this desk is not
+/// `device0` on a CI box. A predicate keyed on the selector would compare two requests and call
+/// the result an identity. This reads `allocator::tally::session_devices()`, which is populated by
+/// the session that actually opened the `VkDevice`.
+pub fn running_device_names() -> Vec<String> {
+    let names = crate::allocator::tally::session_devices();
+    if names == "none" || names == "unknown" {
+        return Vec::new();
+    }
+    names
+        .split("; ")
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(_, name)| name.to_string())
+        .collect()
+}
+
+/// Whether `label` is a selector ordinal (`device0`, `device7`) rather than a device name.
+///
+/// `gen_proof_ledger.py` writes `device{N}` from the selector unless `--device-name` is given, so
+/// this is the shape of all 97 baked entries. It is the *classifier* on which the whole predicate
+/// turns: an ordinal names no hardware, so an entry carrying one cannot be compared to a running
+/// device at all, and saying so is different from saying the devices differ.
+pub fn is_selector_ordinal(label: &str) -> bool {
+    label
+        .strip_prefix("device")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// What the ledger says about one form **on this device**.
+///
+/// §10.0.1 R12 asked for `PROVEN` / `PROVEN-ELSEWHERE` / `UNPROVEN`. `PROVEN-ELSEWHERE` is **not
+/// implemented here**, and the omission is deliberate rather than unfinished: Fact Checker's audit
+/// holed the argument that licensed it (model-level ULP evidence cannot promote a per-form key
+/// that was never exercised on the second device), so a status meaning "sound on another device"
+/// currently has no instrument standing behind it. Its slot in this enum is
+/// [`ProofState::ProvenElsewhere`], which is **not claimable** — the fail-safe reading —
+/// until Morpheus rules on the refutation. See `docs/OP_COVERAGE.md` §7.20 for the specification
+/// of what it would need.
+///
+/// What *is* implemented is the precondition, and it is the part that had no unresolved ruling
+/// behind it: **`LedgerEntry.device` is now read.** Link found it set on 74 of 75 entries and
+/// consulted by nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProofState {
+    /// A sound entry exists and names, by physical device name, the device this run opened.
+    /// Claimable.
+    Proven,
+    /// A sound entry exists and names a physical device that is **not** this one.
+    ///
+    /// **Not claimable.** This is the slot `PROVEN-ELSEWHERE` would occupy. Declining is the
+    /// fail-safe answer and the honest one while its promotion instrument is disputed: a claim
+    /// granted here would be a status claimed without the thing it claims.
+    ProvenElsewhere { proved_on: String },
+    /// A sound entry exists but **no device comparison is possible**: the entry carries a selector
+    /// ordinal (so it names no hardware), or this run has not yet opened a device (so it has no
+    /// name to be compared against).
+    ///
+    /// **Claimable, counted, and disclosed.** Claimable because every one of the 97 baked entries
+    /// is in this class and declining them would take the EP to zero claims on evidence that is
+    /// not actually in question; counted and disclosed because this is exactly the population the
+    /// ledger cannot attribute to hardware, and an unattributable proof that nothing reports is
+    /// the fail-open Link found wearing a different hat.
+    DeviceUnattributed { entry_label: String, reason: &'static str },
+    /// No entry, a demoted one, or a ledger that did not parse. Not claimable.
+    ///
+    /// **This is the state a missing key lands in and it must stay that way.** No absent key may
+    /// ever reach a device-flavoured state, or the device vocabulary becomes a silent fallback
+    /// rather than a reading of evidence.
+    Unproven,
+}
+
+impl ProofState {
+    /// The single token an artifact records.
+    pub fn token(&self) -> &'static str {
+        match self {
+            ProofState::Proven => "PROVEN",
+            ProofState::ProvenElsewhere { .. } => "PROVEN-ELSEWHERE",
+            ProofState::DeviceUnattributed { .. } => "DEVICE-UNATTRIBUTED",
+            ProofState::Unproven => "UNPROVEN",
+        }
+    }
+
+    /// Whether this state admits a claim.
+    ///
+    /// Two states decline. `Unproven` because there is no evidence; `ProvenElsewhere`
+    /// because the evidence is about other hardware and the mechanism that would port it is the
+    /// one under dispute.
+    pub fn claimable(&self) -> bool {
+        matches!(
+            self,
+            ProofState::Proven | ProofState::DeviceUnattributed { .. }
+        )
+    }
+}
+
+/// Classify one entry's `device` against the device this run opened.
+pub fn device_state(entry_device: &str) -> ProofState {
+    if entry_device.is_empty() {
+        return ProofState::DeviceUnattributed {
+            entry_label: String::new(),
+            reason: "the entry records no device at all",
+        };
+    }
+    if is_selector_ordinal(entry_device) {
+        return ProofState::DeviceUnattributed {
+            entry_label: entry_device.to_string(),
+            reason: "the entry records a selector ordinal, which names no hardware — a selector is \
+                     a request, not an identity",
+        };
+    }
+    let running = running_device_names();
+    if running.is_empty() {
+        return ProofState::DeviceUnattributed {
+            entry_label: entry_device.to_string(),
+            reason: "this run has not opened a device yet, so there is no name to compare against",
+        };
+    }
+    if running.iter().any(|n| n == entry_device) {
+        ProofState::Proven
+    } else {
+        ProofState::ProvenElsewhere {
+            proved_on: entry_device.to_string(),
+        }
+    }
+}
+
+/// Resolve one key to its [`ProofState`] on the running device.
+pub fn proof_state(key: &ProofKey) -> ProofState {
+    ledger().state_for(key)
+}
+
 /// The process-wide ledger, parsed once.
 pub fn ledger() -> &'static Ledger {
     static LEDGER: std::sync::OnceLock<Ledger> = std::sync::OnceLock::new();
@@ -2414,6 +2603,11 @@ pub fn ledger() -> &'static Ledger {
         }
         for f in &l.faults {
             log::warn!("[VulkanEP] proof ledger fault: {f}");
+        }
+        // Entry-level faults are warned too, and named. They demote only their own entry, but a
+        // demotion nobody is told about is a proof that silently stopped existing.
+        for f in &l.entry_faults {
+            log::warn!("[VulkanEP] proof ledger entry demoted: {f}");
         }
         l
     })
@@ -2505,7 +2699,12 @@ pub struct ClaimAudit {
     /// Whether the ledger held a proof under that key. Always `false` for a `Staged` row, which
     /// is not a finding about evidence: the lookup does not happen because a row with no kernel
     /// cannot be claimed on any evidence.
+    ///
+    /// **True for `PROVEN-ELSEWHERE` as well as `PROVEN`** — it answers "did evidence admit this",
+    /// which both states do. Read [`ClaimAudit::proof_state`] for which one.
     pub ledger_hit: bool,
+    /// `PROVEN` / `PROVEN-ELSEWHERE` / `UNPROVEN` for this node on **this device** (§10.0.1 R12).
+    pub proof_state: ProofState,
 }
 
 impl ClaimAudit {
@@ -2551,6 +2750,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
             predicate_ok_with_runtime_extents: false,
             proof_key: None,
             ledger_hit: false,
+            proof_state: ProofState::Unproven,
         };
     };
 
@@ -2606,16 +2806,20 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     // `gen_proof_ledger.py` reads to learn which keys a run would need. A key computed only for
     // nodes that already pass is a key that can never bootstrap.
     let proof_key = ProofKey::from_node(view, spec);
-    let ledger_hit = if spec.is_live() {
+    let form_state = if spec.is_live() {
         // RAI-008(d): the outcome, not a `bool`. A miss that was the ledger failing and a miss
         // that was this form being absent are two findings with two different repairs, and the
         // counters artifact has to be able to say which one happened.
         let outcome = lookup_key(&proof_key);
         crate::counters::record_ledger_lookup(outcome);
-        outcome == LedgerLookup::Hit
+        // R12: the entry's frame, read rather than merely recorded. `lookup_key` answers "is
+        // there an entry"; this answers "is there an entry *for this device*", and the two used
+        // to be the same question because nothing consulted `.device`.
+        proof_state(&proof_key)
     } else {
-        false
+        ProofState::Unproven
     };
+    let ledger_hit = form_state.claimable();
     let hatch = if spec.is_live() && !ledger_hit {
         let enabled = claim_unproven_keys().contains(&proof_key);
         if enabled {
@@ -2636,16 +2840,35 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
     };
     if spec.is_live() && !ledger_hit && !hatch {
         crate::counters::record_unproven_decline();
-        failures.push(decline(
-            DeclineCode::Unproven,
-            format_args!(
-                "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
-                 correct on this form, so it runs on the CPU EP, which is always right. Prove it \
-                 with rust/tools/gen_proof_ledger.py, or enable it for development with \
-                 ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
-                proof_key.0, proof_key.0
-            ),
-        ));
+        if let ProofState::ProvenElsewhere { proved_on } = &form_state {
+            crate::counters::record_proven_elsewhere_decline(&proof_key.0, proved_on);
+            failures.push(decline(
+                DeclineCode::Unproven,
+                format_args!(
+                    "the proof ledger entry for `{}` was obtained on `{}`, and this run opened \
+                     `{}`. A proof is a property of a form on a device (§10.0.1 R12), so this \
+                     entry is evidence about other hardware and it runs on the CPU EP. There is \
+                     no PROVEN-ELSEWHERE status to claim: the instrument that would promote a \
+                     per-form key onto a second device is disputed (docs/OP_COVERAGE.md §7.20). \
+                     Prove it here with rust/tools/gen_proof_ledger.py --append, which replays \
+                     the recorded per-form case artifact on this device.",
+                    proof_key.0,
+                    proved_on,
+                    running_device_names().join(", ")
+                ),
+            ));
+        } else {
+            failures.push(decline(
+                DeclineCode::Unproven,
+                format_args!(
+                    "no proof ledger entry for `{}`. The kernel exists; nothing has proven it \
+                     correct on this form, so it runs on the CPU EP, which is always right. Prove \
+                     it with rust/tools/gen_proof_ledger.py, or enable it for development with \
+                     ONNXRUNTIME_EP_VULKAN_CLAIM_UNPROVEN={}",
+                    proof_key.0, proof_key.0
+                ),
+            ));
+        }
     }
 
     let predicate_ok_with_runtime_extents = if !with_counterfactual {
@@ -2657,6 +2880,27 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         (spec.claim)(view, spec).is_ok()
     };
 
+    // The unattributed-device disclosure, recorded **only when the node is actually claimed**.
+    //
+    // Counting it at the lookup instead would count nodes that the ledger admitted and something
+    // else declined, and a disclosure that overstates what was claimed is as wrong as one that
+    // understates it. `failures.is_empty()` is the claim, and this is the last thing before the
+    // audit is returned so that it is read after every check has had its say.
+    //
+    // This is the answer to "what stops it becoming the default nobody looks at?": the default
+    // *is* this state today — all 97 entries carry a selector ordinal — and it is counted on every
+    // claim and named per form in the session disclosure. A field that changes no outcome and
+    // appears in no artifact is the thing being repaired; a field that appears in every artifact
+    // is not that thing, even while it changes no outcome yet.
+    if failures.is_empty()
+        && let ProofState::DeviceUnattributed {
+            entry_label,
+            reason,
+        } = &form_state
+    {
+        crate::counters::record_device_unattributed(&proof_key.0, entry_label, reason);
+    }
+
     ClaimAudit {
         primary: failures.first().cloned(),
         failures,
@@ -2666,6 +2910,7 @@ pub fn claim_audit(view: &NodeView<'_>, with_counterfactual: bool) -> ClaimAudit
         predicate_ok_with_runtime_extents,
         proof_key: Some(proof_key),
         ledger_hit,
+        proof_state: form_state,
     }
 }
 
@@ -3346,9 +3591,12 @@ mod tests {
             "an entry with no attribution witness must not grant a claim"
         );
         assert!(
-            enumerated.faults.iter().any(|f| f.contains("attribution")),
+            enumerated
+                .entry_faults
+                .iter()
+                .any(|f| f.contains("attribution")),
             "the fault must name attribution, not merely fail; got {:?}",
-            enumerated.faults
+            enumerated.entry_faults
         );
 
         // Zero dispatches — the 2026-07-30 specimen: a MATCH from a CPU-vs-CPU run.
@@ -3366,8 +3614,172 @@ mod tests {
         );
     }
 
-    /// A `DIVERGENT` ledger line is **remembered as a demotion**, not merely rejected.
+    /// **`LedgerEntry.device` is load-bearing — every state seen in its own polarity.**
     ///
+    /// The defect Link found was not that the wrong answer was returned; it was that `.device` was
+    /// never read, so the predicate had no state in which it could answer differently. A test that
+    /// only asserts one answer on the baked ledger would reproduce exactly that: one input, one
+    /// answer, no demonstrated sensitivity. So the same ledger is read from two different running
+    /// devices and the answers must differ.
+    ///
+    /// The running device is planted through `note_session_device`, i.e. **the same channel the
+    /// session uses**, because the predicate deliberately reads the device the run opened rather
+    /// than the selector it was asked for — Trinity's `DEVICE=0` ran on `1=NVIDIA`.
+    #[test]
+    fn a_proof_is_a_property_of_a_form_on_a_device() {
+        let _guard = crate::allocator::ledger::test_lock();
+        const KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        const ABSENT: &str = "ai.onnx::Sub/7+/f32,f32>f32/ew_binary_sub_f32/static/n2";
+        const IRIS: &str = "Intel(R) Iris(R) Xe Graphics";
+        const NV: &str = "NVIDIA GeForce RTX 4060 Laptop GPU";
+        let key = ProofKey::validate(KEY).expect("valid key");
+        let absent = ProofKey::validate(ABSENT).expect("valid key");
+
+        let digest_now = shader_digest_for(&["ew_binary_add_f32"]).expect("a non-empty stem list");
+        let ledger_proved_on = |device: &str| {
+            let entry = format!(
+                "{{\"key\":\"{KEY}\",\"verdict\":\"MATCH\",\"device\":\"{device}\",\
+                 \"ort_build\":\"1\",\"tolerance\":\"t\",\"artifact\":\"a\",\
+                 \"generated_at\":\"now\",\"claimed_nodes\":1,\"dispatches_executed\":1,\
+                 \"shaders\":[\"ew_binary_add_f32\"],\"shader_digest\":\"{digest_now}\"}}"
+            );
+            let digest = format!("{:016x}", fnv1a64(format!("{entry}\n").as_bytes()));
+            let header = format!(
+                "{{\"__ledger__\":1,\"content_fnv1a64\":\"{digest}\",\"entry_count\":1,\
+                 \"generator\":\"test\"}}"
+            );
+            parse_ledger(&format!("{header}\n{entry}\n"))
+        };
+
+        crate::allocator::tally::clear_session_devices();
+        crate::allocator::tally::note_session_device(0, NV);
+        assert_eq!(running_device_names(), vec![NV.to_string()]);
+
+        let here = ledger_proved_on(NV);
+        assert!(here.faults.is_empty(), "faults: {:?}", here.faults);
+        assert_eq!(
+            here.state_for(&key),
+            ProofState::Proven,
+            "an entry naming the device this run opened is PROVEN"
+        );
+        assert!(here.state_for(&key).claimable());
+
+        let there = ledger_proved_on(IRIS);
+        assert_eq!(
+            there.state_for(&key),
+            ProofState::ProvenElsewhere {
+                proved_on: IRIS.to_string()
+            },
+            "an entry proven on other hardware must say so — this is the fail-open Link found: \
+             before this predicate existed, both readings answered the same"
+        );
+        assert!(
+            !there.state_for(&key).claimable(),
+            "a proof obtained on other hardware does not admit a claim here. PROVEN-ELSEWHERE \
+             would be the state that does, and it is not implemented: the instrument that would \
+             promote a per-form key onto second hardware is disputed (OP_COVERAGE §7.20)"
+        );
+
+        // Never a silent fallback on a miss: an absent key may not reach a device-flavoured state.
+        assert_eq!(
+            there.state_for(&absent),
+            ProofState::Unproven,
+            "a key with no entry must be UNPROVEN"
+        );
+
+        // The run moves, the file does not: both directions on one pair of ledgers.
+        crate::allocator::tally::clear_session_devices();
+        crate::allocator::tally::note_session_device(0, IRIS);
+        assert_eq!(
+            there.state_for(&key),
+            ProofState::Proven,
+            "the Iris entry is a same-device proof when the run opened the Iris"
+        );
+        assert!(matches!(
+            here.state_for(&key),
+            ProofState::ProvenElsewhere { .. }
+        ));
+
+        // A selector ordinal names no hardware, so no comparison is possible in either direction.
+        // This is the class **every one of the 97 baked entries** is in.
+        let ordinal = ledger_proved_on("device0");
+        assert!(
+            matches!(
+                ordinal.state_for(&key),
+                ProofState::DeviceUnattributed { .. }
+            ),
+            "`device0` is a selector ordinal and must not read as an identity: {:?}",
+            ordinal.state_for(&key)
+        );
+        assert!(
+            ordinal.state_for(&key).claimable(),
+            "the unattributable class stays claimable — declining it would take the EP to zero \
+             claims over a frame question, not an evidence question"
+        );
+
+        // An entry with no device at all is unattributable too, and never PROVEN.
+        let unlabelled = ledger_proved_on("");
+        assert!(matches!(
+            unlabelled.state_for(&key),
+            ProofState::DeviceUnattributed { .. }
+        ));
+
+        // And with no device opened, even a named entry cannot be checked.
+        crate::allocator::tally::clear_session_devices();
+        assert!(
+            matches!(
+                here.state_for(&key),
+                ProofState::DeviceUnattributed { .. }
+            ),
+            "with no device opened there is nothing to compare against, and saying so is not the \
+             same as saying the devices differ"
+        );
+    }
+
+    /// A selector ordinal is recognised as an ordinal, and a device name is not.
+    #[test]
+    fn a_selector_ordinal_is_not_a_device_identity() {
+        assert!(is_selector_ordinal("device0"));
+        assert!(is_selector_ordinal("device1"));
+        assert!(is_selector_ordinal("device12"));
+        assert!(!is_selector_ordinal("device"));
+        assert!(!is_selector_ordinal(""));
+        assert!(!is_selector_ordinal("NVIDIA GeForce RTX 4060 Laptop GPU"));
+        assert!(!is_selector_ordinal("Intel(R) Iris(R) Xe Graphics"));
+        // The one that matters: a physical name that merely starts with the word.
+        assert!(!is_selector_ordinal("device0 (NVIDIA)"));
+    }
+
+    /// The token vocabulary is four tokens, and they are distinct.
+    #[test]
+    fn proof_state_tokens_are_distinct_strings() {
+        let tokens = [
+            ProofState::Proven.token(),
+            ProofState::ProvenElsewhere {
+                proved_on: "device9".to_string(),
+            }
+            .token(),
+            ProofState::DeviceUnattributed {
+                entry_label: "device0".to_string(),
+                reason: "r",
+            }
+            .token(),
+            ProofState::Unproven.token(),
+        ];
+        let mut sorted = tokens.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "two states share a spelling: {tokens:?}");
+        assert!(!ProofState::Unproven.claimable());
+        assert!(
+            !ProofState::ProvenElsewhere {
+                proved_on: "d".to_string()
+            }
+            .claimable()
+        );
+    }
+
+    /// A `DIVERGENT` ledger line is **remembered as a demotion**, not merely rejected.    ///
     /// The falsifier for §8.9.7: without `Ledger::demoted`, a form the evidence measured and found
     /// wrong and a form nothing has ever measured both reach the session disclosure as "no proof",
     /// and RAI-008 names those as two states. The digest is deliberately absent from the header so
@@ -3390,8 +3802,8 @@ mod tests {
             l.demoted
         );
         assert!(
-            !l.faults.is_empty(),
-            "a demotion must still fault the ledger — remembering a verdict must not grant a claim"
+            !l.entry_faults.is_empty(),
+            "a demotion must still fault the ENTRY — remembering a verdict must not grant a claim"
         );
         assert!(
             l.get(&pk).is_none(),
@@ -3478,8 +3890,14 @@ mod tests {
             stale.demoted
         );
         assert!(
-            stale.faults.iter().any(|f| f.contains("--reprove")),
+            stale.entry_faults.iter().any(|f| f.contains("--reprove")),
             "the fault must name the remedy, not merely the condition: {:?}",
+            stale.entry_faults
+        );
+        assert!(
+            stale.faults.is_empty(),
+            "a stale entry was recorded as a WHOLE-FILE fault, which makes every other entry \
+             decline: {:?}",
             stale.faults
         );
 
@@ -3488,6 +3906,67 @@ mod tests {
             fresh.get(&key).is_some(),
             stale.get(&key).is_some(),
             "both arms reached the same outcome; the digest is not being read"
+        );
+    }
+
+    /// **One stale entry must not take the other 96 down with it.**
+    ///
+    /// The blast radius, not the detection. `parse_ledger`'s own comment said "a stale entry
+    /// demotes ITSELF and nothing else" while it pushed the message onto `Ledger::faults`, which
+    /// `Ledger::get` consults for *every* key — so a single shader edit silently disarmed the
+    /// entire artifact. Both polarities are in one ledger here on purpose: a two-file test would
+    /// pass if the sound entry were declining for some unrelated reason of its own.
+    #[test]
+    fn one_stale_entry_does_not_fault_the_entries_beside_it() {
+        const STALE_KEY: &str = "ai.onnx::Add/7+/f32,f32>f32/ew_binary_add_f32/static/n2";
+        const SOUND_KEY: &str = "ai.onnx::Mul/7+/f32,f32>f32/ew_binary_mul_f32/static/n2";
+        let stale_key = ProofKey::validate(STALE_KEY).expect("valid key");
+        let sound_key = ProofKey::validate(SOUND_KEY).expect("valid key");
+        let line = |key: &str, stem: &str, digest: &str| {
+            format!(
+                "{{\"key\":\"{key}\",\"verdict\":\"MATCH\",\"device\":\"d\",\"ort_build\":\"1\",\
+                 \"tolerance\":\"t\",\"artifact\":\"a\",\"generated_at\":\"now\",\
+                 \"shaders\":[\"{stem}\"],\"shader_digest\":\"{digest}\",\
+                 \"claimed_nodes\":1,\"dispatches_executed\":1}}"
+            )
+        };
+        let sound_digest = shader_digest_for(&["ew_binary_mul_f32"]).expect("a stem to digest");
+        let a = line(STALE_KEY, "ew_binary_add_f32", "0000000000000000");
+        let b = line(SOUND_KEY, "ew_binary_mul_f32", &sound_digest);
+        let body = format!("{a}\n{b}\n");
+        let d = format!("{:016x}", fnv1a64(body.as_bytes()));
+        let l = parse_ledger(&format!(
+            "{{\"__ledger__\":1,\"content_fnv1a64\":\"{d}\",\"entry_count\":2,\
+             \"generator\":\"test\"}}\n{body}"
+        ));
+
+        // Non-vacuity: the stale entry must actually be detected, or "the other one still
+        // claims" is the trivial statement that nothing went wrong.
+        assert_eq!(
+            l.demotion_for(&stale_key),
+            Some("STALE-SHADER"),
+            "ERROR(instrument): the stale entry was not detected, so the blast-radius assertion \
+             below is vacuous: entry_faults={:?}",
+            l.entry_faults
+        );
+        assert!(l.get(&stale_key).is_none(), "the stale entry still claims");
+        assert!(
+            l.get(&sound_key).is_some(),
+            "a sound entry stopped proving because a DIFFERENT entry was stale — one shader edit \
+             disarming the whole artifact is the 2026-08-02 defect: faults={:?} entry_faults={:?}",
+            l.faults,
+            l.entry_faults
+        );
+        assert!(
+            l.faults.is_empty(),
+            "an entry-level problem was recorded as a whole-file fault: {:?}",
+            l.faults
+        );
+        assert_eq!(
+            l.len(),
+            1,
+            "the surviving entry set is not the one entry that is sound: {:?}",
+            l.entries()
         );
     }
 

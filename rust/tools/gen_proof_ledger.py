@@ -632,6 +632,13 @@ def prove(model: str, keys: list[str], tolerance: tuple[float, float]) -> tuple[
         "admitted": sorted(admitted_keys),
         "admitted_via_hatch": sorted(hatch),
         "admitted_via_reproof": sorted(reproof),
+        # DEVICE IDENTITY, READ OFF THE RUN (added 2026-08-02, Mouse).
+        #
+        # `--device N` is a *selector ordinal*: a request handed to the loader, not a name for
+        # hardware. Trinity's census shows `DEVICE=0` running on `1=NVIDIA`, so an entry stamped
+        # `device0` names nothing a second run can be compared against. This is the name the EP
+        # reports for the device it actually opened.
+        "running_device_names": c.get("running_device_names", ""),
     }
 
 
@@ -661,6 +668,20 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
     compute_calls = proof_run.get("compute_calls")
     shaders = sorted(proof_run.get("shaders_dispatched") or [])
     shader_digest = proof_run.get("shaders_dispatched_digest") or ""
+    # THE DEVICE FIELD MUST NAME HARDWARE, NOT A REQUEST (2026-08-02, Mouse).
+    #
+    # `device` as passed in is `device{N}` — the *selector ordinal*, which is what the caller
+    # asked the loader for and not what the loader gave it. `DEVICE=0` has run on `1=NVIDIA` in
+    # this very repo. An entry stamped with an ordinal cannot be compared against a second run's
+    # hardware, so `registry::device_state` classifies it `DEVICE-UNATTRIBUTED` and says so.
+    #
+    # The name the EP reports for the device it opened is preferred whenever the run produced
+    # one. The ordinal is kept beside it, under its own key, because it is still the thing to
+    # pass to reproduce the run — it is simply not an identity.
+    running = (proof_run.get("running_device_names") or "").strip()
+    device_selector = device
+    if running and running not in ("none", "unknown"):
+        device = running
     if claimed <= 0 or dispatches <= 0:
         raise SystemExit(
             f"REFUSING to write an entry for {key}: attribution is "
@@ -706,6 +727,7 @@ def entry_line(key: str, device: str, ort_build: str, tolerance: str, artifact: 
             "key": key,
             "verdict": "MATCH",
             "device": device,
+            "device_selector": device_selector,
             "ort_build": ort_build,
             "tolerance": tolerance,
             "artifact": artifact,
