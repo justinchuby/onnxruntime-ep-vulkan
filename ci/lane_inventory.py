@@ -588,6 +588,13 @@ CHECKS: tuple[Check, ...] = (
             "UNDEMONSTRATED on Windows and GATED_NEVER_RUN on Linux. The entry carries "
             "the weaker of the two rather than splitting, and this line is why. A "
             "per-lane status is the right fix if a second such entry appears.",
+            "GATE REMOVED 2026-08-02, STILL NOT OBSERVED IN CI. The eleven compile "
+            "errors are fixed and `cargo check --all-targets` now runs as its own step "
+            "ahead of clippy, so nothing in the workflow blocks this step any more. Run "
+            "by hand on WSL Ubuntu the four targets PASS. That is a local run, not a "
+            "lane: no GitHub Actions job has executed since, so the Linux side of this "
+            "entry stays GATED_NEVER_RUN until an actual run says otherwise. A gate "
+            "removed in YAML is not a check that has run.",
         ),
     ),
     Check(
@@ -617,6 +624,50 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        id="build.compile_all_targets",
+        falsifier=FALSIFIER_OBSERVED,
+        lane="both",
+        step="cargo check --release --all-targets",
+        watches=(
+            "That the crate's test, bench and example targets COMPILE on this lane. "
+            "`cargo build --release` compiles the lib only; everything else was first "
+            "compiled by clippy, because clippy was the lane's first --all-targets "
+            "invocation."
+        ),
+        status=RED_NOW,
+        mutation=(
+            "None needed for the observed arm — the tree WAS the failing arm until "
+            "2026-08-02. Eleven bindgen-signedness errors in rust/src/ep.rs "
+            "(`ort::OrtLoggingLevel` is `c_int` under MSVC and `c_uint` under GCC, both "
+            "verified by reading the two generated `ort.rs` files) made `cargo test "
+            "--lib` refuse to compile on Linux while Windows stayed green. To re-arm it: "
+            "declare a severity carrier as `i32` in any module of ep.rs's test tree."
+        ),
+        arm_healthy=(
+            "Linux `cargo test --lib --no-run` compiles (WSL Ubuntu 24.04, cargo 1.97.1, "
+            "2026-08-02, after the alias fix). NOT YET OBSERVED IN CI — this step is new "
+            "and the workflow has not run since."
+        ),
+        arm_broken=(
+            "error[E0308]: mismatched types x6 and error[E0277]: can't compare `i32` with "
+            "`u32` x5 in src/ep.rs, at lines 2769, 2813, 2825, 2856, 2914 and 3000 — "
+            "reproduced on WSL Ubuntu before the fix, and the reason the seven steps "
+            "behind it had never executed."
+        ),
+        observed="2026-08-02",
+        misses=(
+            "It is `cargo check`, not `cargo build`: it type-checks and borrow-checks "
+            "every target but does not codegen or link them. A defect that only appears "
+            "at link time on one platform is invisible here and is caught, if at all, by "
+            "the build step and the integration targets.",
+            "It says nothing about whether anything is CORRECT. It is the weakest claim "
+            "in the lane on purpose — 'this compiles here' — and its whole value is that "
+            "it is the claim clippy's name was accidentally making.",
+            "It cannot see a platform whose lane does not exist. macOS and Android are "
+            "in PLATFORMS.md and in no job, so nothing compiles them either.",
+        ),
+    ),
+    Check(
         id="build.clippy",
         falsifier=FALSIFIER_OBSERVED,
         lane="both",
@@ -641,6 +692,14 @@ CHECKS: tuple[Check, ...] = (
             "The failures are all in --all-targets (test-profile) code, which is why they "
             "went unnoticed: `cargo build --release` is clean. A lane that builds but "
             "cannot lint its own tests looks healthy from the build step.",
+            "UNTIL 2026-08-02 IT ALSO MISSED THE DIFFERENCE BETWEEN A LINT AND A COMPILE "
+            "ERROR, and reported both under this name. It was the lane's first "
+            "--all-targets invocation, so every compile error in test code arrived here "
+            "wearing a lint's name — which is how eleven Linux-only type errors were "
+            "triaged as low-priority style for a day while seven steps behind them never "
+            "ran. Split: `build.compile_all_targets` now runs first, and this step's red "
+            "means a lint again. The class is recorded in decisions as `misnamed`, second "
+            "specimen after `Phase::Record`.",
         ),
     ),
     # ── device lanes: execution ───────────────────────────────────────────────
@@ -667,7 +726,17 @@ CHECKS: tuple[Check, ...] = (
             "`_probe_vulkan_device` reports that decision as an absent device. Fixing "
             "clippy alone would turn this step GREEN HAVING ASSERTED NOTHING. See "
             "PLATFORMS.md §7.19 and `ci/check_ledger_portability.py`, which goes red on "
-            "exactly that run."
+            "exactly that run.\n\n"
+            "UPDATE 2026-08-02 (Link): THE GATE IS GONE AND THE STEP IS STILL NOT GREEN, "
+            "which is the point. The eleven errors are fixed, `cargo check "
+            "--all-targets` runs as its own named step ahead of clippy, and the whole "
+            "Linux job was then run by hand on WSL Ubuntu. This step: 50 failed, 272 "
+            "passed, 292 skipped. 48 of the 50 do not fail on Windows, and all 48 are "
+            "downstream of the one cause above — the EP claims 0/1 nodes because every "
+            "ledger entry faults, so `epctl --check-counters` reports 0 dispatches and "
+            "the Criterion 10 verdict is UNATTRIBUTED. It remains GATED_NEVER_RUN "
+            "because no CI job has run since; a gate removed in YAML is not a check that "
+            "has run. See PLATFORMS.md §7.21."
         ),
         arm_healthy="op suite green on lavapipe — NOT OBSERVED; the step has never run in CI",
         observed=None,
