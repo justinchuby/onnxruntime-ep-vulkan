@@ -630,3 +630,51 @@ produces a verdict is the one to distrust.
 
 Verified: 479 lib tests, clippy clean, ledger lane 14/14 and both census lanes green on device 0,
 `--check PASS 95 entr(ies)`, shrink guard and ABI guard both mutation-tested in both polarities.
+
+---
+
+## 2026-08-02 — The second evidence list (§8.9.16). Op suite 11 red -> 6 red.
+
+**The defect was mine and it was three weeks old.** `Add-i32`/`Mul-i32` declined `[dtype] ... has
+never executed on a device`. True, and unfixable: `elementwise::EXERCISED` was a hand-written
+`(op, dtype)` list consulted *inside the claim predicate*, which runs before a proof key is
+computed. The form reported no key at all -- not `[unproven]`, which the generator can unlock --
+so `gen_proof_ledger.py` could never reach it and the only exit was to type the pair in by hand.
+A form was unproven because it was unproven. Criterion 11's own shape, arriving from inside
+criterion 11's own module.
+
+**The rule I want to keep:** a gate that runs before the evidence is computed can only ever be
+satisfied by hand. Split it -- capability upstream (claiming an uncreatable module is a crash,
+not a decline), evidence downstream where a run can clear it.
+
+`EXERCISED` and `TEMPLATE_LIVE` deleted; `only_proved_dtypes` -> `only_loadable_variants`, backed
+by `variants::variant_is_loadable`, which reads the SPIR-V and refuses every `_i64` stem because
+`Int64` needs `shaderInt64` and `vk::device` passes no `pEnabledFeatures`. Derived, not
+remembered. `no_live_claim_rests_on_an_unloadable_variant` used to scope itself by `proved_at` --
+it could only see pairs somebody had written down, i.e. not the forms most at risk. It now walks
+every dtype the caps accept and asserts `refused > 0` (R12).
+
+**Stated before running, per R10:** add_i32 and mul_i32 each offer one unlockable key and clear
+it; swish_f32 offers none, because the *row* is still Staged and that is a separate gate. Held
+exactly. MATCH `worst_rel 0.0` both, `dispatches_executed 1`, shader named, `compute_calls 1`.
+Ledger 95 -> 97. Green on device 1 as well as 0.
+
+**My own guard, applied to me:** the ledger grew and `claimed_nodes` did *not* move -- 355 before
+and after. Correct here, and I would rather say why than let it be noticed: the two forms are i32
+at static extent, Phi-3.5 is f16 with no i32 elementwise node, so no key of theirs can be looked
+up on it. The falsifier that moved is the op suite, which is their actual surface.
+
+**Six left, and they are four different pieces of work, none reachable by a proof run.**
+`clip_no_bounds` is *not* a claim-predicate defect -- `claim::ew_clip` already documents the
+refusal and the repair (a variant substituting +/-infinity; an omitted bound is a different
+dispatch shape, and widening the predicate would bind a buffer with no producer). `Cast` x3 needs
+a template and a manifest column keyed on a dtype *pair* -- the only op in the table whose stem is
+not a single dtype. `IsInf` is the selector case, four bodies not one uniform. `Flatten`/`Reshape`
+I deliberately did not register: a lone shape op in a one-node island buys nothing, their only
+value is not breaking an island, and no graph we have asks for that today. Registering them to
+turn a test green would be widening the claim table for the suite's benefit rather than a
+model's.
+
+Verified: 478 lib tests, clippy clean, ledger `--check PASS 97 entr(ies)` digest `eb7c4e1f90cd7ec2`,
+ledger + diagnostics lanes 22/22, census + elementwise 42 pass / 1 expected red, op table 85/6.
+DLL `A61DC855FF85FCAD` (pre) -> `96C19E95C16E4295` (post).
